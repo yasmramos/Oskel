@@ -86,6 +86,7 @@ static void test_arena() {
 #if defined(__linux__) && defined(__x86_64__)
 #define FREESTANDING_EXEC_TESTS 1
 #include <cstdlib>
+#include <signal.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -93,6 +94,10 @@ static void test_arena() {
 #endif
 
 #ifdef FREESTANDING_EXEC_TESTS
+
+static volatile sig_atomic_t gAlarmSeen = 0;
+
+static void onAlarm(int /*sig*/) { gAlarmSeen = 1; }
 
 static void test_platform_roundtrip() {
   PlatformFreestanding platform;
@@ -131,6 +136,52 @@ static void test_platform_roundtrip() {
   check(p1 != nullptr && p2 != nullptr && p1 != p2, "platform alloc returns distinct blocks");
   check(reinterpret_cast<std::uintptr_t>(p1) % 16 == 0, "platform alloc honours alignment");
   platform.dealloc(p1);  // no-op, must not crash
+}
+
+// A signal delivered while `read` blocks on a pipe returns EINTR. The platform
+// must retry, not report the interruption as an error. A SIGALRM one tick after
+// the blocking read starts is enough to exercise the retry path; the writer end
+// of the pipe stays open until the read has returned, so the first `read` really
+// does block and really is interrupted.
+static void test_read_retries_on_eintr() {
+  int fds[2];
+  if (pipe(fds) != 0) {
+    check(false, "pipe() for the EINTR test");
+    return;
+  }
+  pid_t pid = fork();
+  if (pid < 0) {
+    check(false, "fork() for the EINTR test");
+    close(fds[0]);
+    close(fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    // Child: a plain PlatformFreestanding read on the blocking read end. The
+    // handler is installed with `sigaction` and no SA_RESTART: `signal()` would
+    // request restart-on-interrupt, hiding the EINTR path this test exercises.
+    close(fds[1]);
+    struct sigaction sa;
+    std::memset(&sa, 0, sizeof sa);
+    sa.sa_handler = onAlarm;
+    sigaction(SIGALRM, &sa, nullptr);
+    alarm(1);
+    PlatformFreestanding platform;
+    char buffer[8] = {0};
+    std::size_t n = platform.read(fds[0], buffer, sizeof buffer);
+    bool ok = (n == 5) && std::strcmp(buffer, "hello") == 0 && gAlarmSeen == 1;
+    _exit(ok ? 0 : 1);
+  }
+  // Parent: let the child block in read, signal it, then deliver the bytes.
+  sleep(2);
+  ssize_t ignored = ::write(fds[1], "hello", 5);
+  (void)ignored;
+  close(fds[1]);
+  int status = 0;
+  waitpid(pid, &status, 0);
+  close(fds[0]);
+  check(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+        "read retries after EINTR instead of failing");
 }
 
 // Builds a tiny program in `code` that writes `message` (a rodata offset known
@@ -1211,6 +1262,7 @@ int main() {
   test_arena();
 #ifdef FREESTANDING_EXEC_TESTS
   test_platform_roundtrip();
+  test_read_retries_on_eintr();
   test_end_to_end();
   test_boxed_runtime_print();
   test_boxed_runtime_globals();

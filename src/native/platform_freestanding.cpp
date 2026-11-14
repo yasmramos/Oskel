@@ -47,6 +47,13 @@ constexpr long kMapPrivateAnon = 0x22;      // MAP_PRIVATE | MAP_ANONYMOUS
 // A negative return in the range [-4095, -1] is an errno, not a result.
 bool isError(long value) noexcept { return value < 0 && value >= -4095; }
 
+// EINTR: the call was interrupted by a signal before it transferred data. The
+// correct response is to retry, not to report failure. A freestanding binary
+// has no signal handlers of its own, but the process can still receive a
+// signal delivered from outside, so a blocking `read`/`write` can be cut short.
+constexpr long kEintr = 4;
+bool isInterrupted(long value) noexcept { return value == -kEintr; }
+
 }  // namespace
 
 void PlatformFreestanding::write(int fd, const char* data, std::size_t length) {
@@ -56,6 +63,7 @@ void PlatformFreestanding::write(int fd, const char* data, std::size_t length) {
   while (written < length) {
     long n = rawSyscall(kSysWrite, fd, reinterpret_cast<long>(data + written),
                         static_cast<long>(length - written), 0, 0, 0);
+    if (isInterrupted(n)) continue;  // interrupted before any byte: retry
     if (isError(n) || n == 0) {
       // No error channel is available below libc; dropping the rest is the
       // only option that cannot recurse into a failing `writeErr`.
@@ -74,8 +82,11 @@ void PlatformFreestanding::flush(int /*fd*/) {
 }
 
 std::size_t PlatformFreestanding::read(int fd, char* buffer, std::size_t length) {
-  long n = rawSyscall(kSysRead, fd, reinterpret_cast<long>(buffer),
-                      static_cast<long>(length), 0, 0, 0);
+  long n;
+  do {
+    n = rawSyscall(kSysRead, fd, reinterpret_cast<long>(buffer),
+                   static_cast<long>(length), 0, 0, 0);
+  } while (isInterrupted(n));
   if (isError(n) || n < 0) return 0;
   return static_cast<std::size_t>(n);
 }
@@ -83,7 +94,10 @@ std::size_t PlatformFreestanding::read(int fd, char* buffer, std::size_t length)
 int PlatformFreestanding::open(const char* path, OpenMode mode) {
   int flags = kOReadOnly;
   if (mode == OpenMode::Write) flags = kOWriteOnly | kOCreate | kOTrunc;
-  long fd = rawSyscall(kSysOpenAt, kAtFdcwd, reinterpret_cast<long>(path), flags, 0644, 0, 0);
+  long fd;
+  do {
+    fd = rawSyscall(kSysOpenAt, kAtFdcwd, reinterpret_cast<long>(path), flags, 0644, 0, 0);
+  } while (isInterrupted(fd));
   if (isError(fd)) return kInvalidFd;
   return static_cast<int>(fd);
 }
@@ -99,7 +113,10 @@ bool PlatformFreestanding::seek(int fd, std::int64_t offset, SeekOrigin origin) 
     case SeekOrigin::Current: whence = 1; break;
     case SeekOrigin::End: whence = 2; break;
   }
-  long result = rawSyscall(kSysLseek, fd, static_cast<long>(offset), whence, 0, 0, 0);
+  long result;
+  do {
+    result = rawSyscall(kSysLseek, fd, static_cast<long>(offset), whence, 0, 0, 0);
+  } while (isInterrupted(result));
   return !isError(result);
 }
 
