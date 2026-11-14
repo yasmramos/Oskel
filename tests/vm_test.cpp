@@ -977,6 +977,30 @@ void testVmCallsNatives() {
   assert(threw);
 }
 
+void testArgsExcludeTheScriptName() {
+  TEST_SCOPE();
+  // `args()` is the arguments that follow the script name, never the script
+  // name itself (Lua's `arg`, not C's `argv`). The engine only stores what the
+  // CLI hands it, so set them the way `runSource` does and check the array.
+  VM vm;
+  registerBuiltins(vm);
+  vm.scriptArgs = {"one", "two"};
+
+  const Value* args = vm.findGlobal("args");
+  assert(args != nullptr && args->isFunc());
+  Value result = vm.call(*args, {}, 1, 1);
+  assert(result.isArray());
+  const auto& items = result.arrayPtr()->items;
+  assert(items.size() == 2);
+  assert(items[0].isStr() && items[0].asStr() == "one");
+  assert(items[1].isStr() && items[1].asStr() == "two");
+
+  // No script arguments is an empty array, not a missing value.
+  vm.scriptArgs.clear();
+  Value empty = vm.call(*args, {}, 1, 1);
+  assert(empty.isArray() && empty.arrayPtr()->items.empty());
+}
+
 void testMapValueRejectsNonStringKey() {
   TEST_SCOPE();
   VM vm;
@@ -2086,6 +2110,7 @@ int main() {
   testLogicalOperandValues();
   testLogicalEvaluatesRightWhenNeeded();
   testVmCallsNatives();
+  testArgsExcludeTheScriptName();
   testMapValueRejectsNonStringKey();
   testVmCallsBoundMethods();
   testRuntimeErrorCarriesSourcePosition();

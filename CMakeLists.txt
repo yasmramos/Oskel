@@ -224,6 +224,18 @@ if(BUILD_TESTING)
     oskel_add_script_test("oskel.${name}" "${script}")
   endforeach()
 
+  # --- Script arguments (`args()`) ---
+  # `args()` is the arguments that follow the script name, not the script name
+  # itself (like Lua's `arg` table, unlike C's argv). The runner passes extra
+  # arguments after the script path, which the CLI treats as script arguments.
+  add_test(NAME oskel.args
+    COMMAND ${CMAKE_COMMAND}
+      "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+      "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/args/args.oskl"
+      "-DOSKEL_ARGS=one two three"
+      -DEXPECTED_EXIT=0
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_oskel_case.cmake")
+
   # --- examples/*.oskl (auto-detected) ---
   file(GLOB oskel_examples CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/examples/*.oskl"

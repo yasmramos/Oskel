@@ -1880,7 +1880,7 @@ assertEq(sqrt(81), 9.0);
 | `ord(character)` | Code point of a one-character string. |
 | `range(end)` | Range `0..end`. |
 | `range(start, end)` | Range `start..end`. |
-| `args()` | Script arguments as an array of strings. |
+| `args()` | Script arguments as an array of strings (see §15.1). |
 
 ### 12.6 Files
 
@@ -2184,6 +2184,24 @@ for argument in args() {
   print(argument);
 }
 ```
+
+### 15.1 Script arguments
+
+`args()` returns the arguments that follow the script name, as an array of
+strings, in order. It never includes the script name itself and never includes
+the interpreter's own options: it is Lua's `arg` table, not C's `argv`.
+
+```sh
+oskel program.oskl one two three
+```
+
+```oskel
+assertEq(args(), ["one", "two", "three"]);
+```
+
+With no arguments the result is an empty array, not `nil`. With `-e`, the
+arguments after the code are the script arguments; `--` ends the options, so
+`oskel -- -weird.oskl a` runs a file whose name starts with `-`.
 
 `oskel build` runs the full AOT pipeline: lex, parse, compile to bytecode and lower
 that bytecode to machine code, then wrap it in a static executable. The emitted
