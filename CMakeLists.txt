@@ -2,6 +2,21 @@ cmake_minimum_required(VERSION 3.15)
 
 project(oskel VERSION 0.1.0 LANGUAGES CXX)
 
+# `include/version.h` is the version the binary prints; CMake's project version
+# names the packages and the release tag. They must agree, so the configure step
+# fails loudly when they drift instead of shipping a binary whose `--version`
+# disagrees with its own package name. The direct build scripts (build.sh,
+# build.bat) read only the header, so the header is the value that must match.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/version.h" _oskel_version_line
+  REGEX "#define[ \t]+OSKEL_VERSION[ \t]+\"")
+string(REGEX MATCH "\"([0-9]+\\.[0-9]+\\.[0-9]+)\"" _oskel_version_match "${_oskel_version_line}")
+set(OSKEL_HEADER_VERSION "${CMAKE_MATCH_1}")
+if(NOT OSKEL_HEADER_VERSION STREQUAL PROJECT_VERSION)
+  message(FATAL_ERROR
+    "version drift: include/version.h says '${OSKEL_HEADER_VERSION}' but "
+    "CMakeLists.txt says '${PROJECT_VERSION}'; update both to the same value")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -163,6 +178,13 @@ if(BUILD_TESTING)
     COMMAND ${CMAKE_COMMAND}
       -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compiler_boundary.cmake")
+
+  # --- Version consistency: `oskel --version` matches the declared version ---
+  add_test(NAME version_consistency
+    COMMAND ${CMAKE_COMMAND}
+      "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+      "-DOSKEL_EXPECTED_VERSION=${PROJECT_VERSION}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_version.cmake")
 
   # --- Installed layout: `std/` ships with the binary and resolves ---
   add_test(NAME install_stdlib

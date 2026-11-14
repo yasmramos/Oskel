@@ -120,9 +120,11 @@ one in the AOT string-constant pool), all fixed.
 
 ## 4. Low-priority / hygiene
 
-1. **Version metadata.** `kVersion` is a string literal in `src/main.cpp` and
-   `CMakeLists.txt` declares `project(oskel VERSION 0.1.0)`. Generating the
-   header from CMake avoids drift. Low priority.
+1. **Version metadata — resolved.** The version has one source of truth,
+   `include/version.h` (`OSKEL_VERSION`). `CMakeLists.txt` fails to configure
+   when it disagrees with `project(oskel VERSION ...)`, and the
+   `version_consistency` test checks the built binary prints it, so a
+   hard-coded literal in `src/main.cpp` cannot creep back.
 2. **Stack-trace flood — resolved.** `src/diagnostic.cpp` caps the trace to a
    head and a tail with an "… N more …" line.
 3. **Executable bits — resolved.** `build.sh` and `tests/*.sh` are executable in
@@ -136,7 +138,7 @@ one in the AOT string-constant pool), all fixed.
 
 1. `chore(bench)`: add a benchmark harness and record a baseline. *(§3.2)*
 2. `ci`: add an ASan/UBSan job. *(§3.5 — done.)*
-3. `refactor(build)`: derive `kVersion` from the CMake project version. *(§4.1)*
+3. `refactor(build)`: derive `kVersion` from the CMake project version. *(§4.1 — done: `include/version.h` + a configure-time guard.)*
 4. Collection-API consistency (`len` method) and header consolidation are
    optional cleanups that touch the language surface or many includes; schedule
    them deliberately. *(§2.5, §3.4)*

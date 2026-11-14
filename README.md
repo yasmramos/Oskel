@@ -39,7 +39,7 @@ for language in languages {
 
 ## Status
 
-Version **0.1.0**. The language is functional and covered by a test suite, but it is not yet considered stable or complete. See the [limitations](#limitations-and-roadmap) section.
+Version **0.1.0**. The language is functional and covered by a test suite, but it is not yet considered stable or complete. See the [limitations](#limitations-and-roadmap) section and the [changelog](CHANGELOG.md) for what each release contains.
 
 ## Requirements
 
@@ -290,6 +290,23 @@ Ideas for future versions:
 
 Editor support: a VS Code syntax-highlighting extension lives in
 [`editors/vscode`](editors/vscode).
+
+## Releases
+
+Prebuilt packages are published on the
+[releases page](https://github.com/yasmramos/Oskel/releases):
+
+| Platform | Asset |
+| --- | --- |
+| Linux | `oskel-linux-x64.tar.gz`, `.deb`, `.rpm` |
+| Windows | `oskel-windows-x64.zip`, `oskel-windows-x64-setup.exe` |
+| macOS | `oskel-macos-arm64.tar.gz`, `.pkg`, `.dmg` |
+| Editor | `oskel-vscode.vsix` |
+
+Every release also ships a `SHA256SUMS` file; verify a download with
+`sha256sum -c SHA256SUMS`. The changelog for each version is in
+[`CHANGELOG.md`](CHANGELOG.md), and the maintainer checklist is in
+[`docs/RELEASING.md`](docs/RELEASING.md).
 
 ## License
 
