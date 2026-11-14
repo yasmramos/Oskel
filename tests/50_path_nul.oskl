@@ -1,0 +1,25 @@
+// A filesystem path reaches the OS as a NUL-terminated C string, so a string
+// with an embedded NUL would silently truncate: `readFile("a\0b")` would open
+// `a` instead of failing. The file builtins now reject such a path.
+
+let nul = "a" + "\0" + "b";
+
+assertEq(pcall(() => readFile(nul)).ok, false);
+assertEq(pcall(() => readFile(nul)).error.message,
+         "readFile() path must not contain a NUL byte");
+
+assertEq(pcall(() => writeFile(nul, "x")).ok, false);
+assertEq(pcall(() => writeFile(nul, "x")).error.message,
+         "writeFile() path must not contain a NUL byte");
+
+assertEq(pcall(() => fileExists(nul)).ok, false);
+assertEq(pcall(() => fileExists(nul)).error.message,
+         "fileExists() path must not contain a NUL byte");
+
+// A normal path is unaffected: write, read back, then clean up.
+let path = "/tmp/oskel_path_nul_test.txt";
+writeFile(path, "hello");
+assertEq(fileExists(path), true);
+assertEq(readFile(path), "hello");
+
+print("path nul ok");

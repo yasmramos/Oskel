@@ -65,6 +65,19 @@ std::string wantString(Runtime& in, const std::string& fn, const Value& value,
   return value.asStr();
 }
 
+// A filesystem path is handed to the OS as a NUL-terminated C string, so a
+// string with an embedded NUL would silently truncate: `readFile("a\0b")` would
+// open `a`. Reject it instead of operating on a different path than the one the
+// program wrote.
+std::string wantPath(Runtime& in, const std::string& fn, const Value& value,
+                     const std::string& what = "path") {
+  std::string path = wantString(in, fn, value, what);
+  if (path.find('\0') != std::string::npos) {
+    in.fail(fn + "() " + what + " must not contain a NUL byte");
+  }
+  return path;
+}
+
 // Extracts a live pointer argument, rejecting a released handle so a
 // use-after-free is a clear error instead of undefined behaviour.
 PtrObj& wantPtr(Runtime& in, const std::string& fn, const Value& value,
@@ -1251,7 +1264,7 @@ void registerBuiltins(Runtime& in) {
 
   in.addNative("readFile", [](Runtime& in, Args args) -> Value {
     need(in, "readFile", args, 1);
-    std::string path = wantString(in, "readFile", args[0], "path");
+    std::string path = wantPath(in, "readFile", args[0]);
     int fd = in.platform().open(path.c_str(), Platform::OpenMode::Read);
     if (fd == Platform::kInvalidFd) in.fail("cannot read file '" + path + "'");
     std::string contents;
@@ -1267,7 +1280,7 @@ void registerBuiltins(Runtime& in) {
 
   in.addNative("writeFile", [](Runtime& in, Args args) -> Value {
     need(in, "writeFile", args, 2);
-    std::string path = wantString(in, "writeFile", args[0], "path");
+    std::string path = wantPath(in, "writeFile", args[0]);
     std::string contents = wantString(in, "writeFile", args[1], "contents");
     int fd = in.platform().open(path.c_str(), Platform::OpenMode::Write);
     if (fd == Platform::kInvalidFd) in.fail("cannot write file '" + path + "'");
@@ -1278,7 +1291,7 @@ void registerBuiltins(Runtime& in) {
 
   in.addNative("fileExists", [](Runtime& in, Args args) -> Value {
     need(in, "fileExists", args, 1);
-    std::string path = wantString(in, "fileExists", args[0], "path");
+    std::string path = wantPath(in, "fileExists", args[0]);
     int fd = in.platform().open(path.c_str(), Platform::OpenMode::Read);
     if (fd == Platform::kInvalidFd) return Value(false);
     in.platform().close(fd);
