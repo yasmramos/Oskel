@@ -10,6 +10,15 @@ const A = 41;
 assertEq(B, 42);
 assertEq(A, 41);
 
+// A non-const statement may use a top-level const declared later in the file:
+// top-level consts are hoisted to the front (in source order), so the read
+// always happens after the binding.
+var usesLater = LATER + 1;
+const LATER = 100;
+assertEq(usesLater, 101);
+fn readsLater() { return LATER * 2; }
+assertEq(readsLater(), 200);
+
 // String concatenation of constants is folded too.
 const GREETING = "hello" + ", " + "world";
 assertEq(GREETING, "hello, world");

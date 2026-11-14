@@ -44,19 +44,28 @@ bool isCaseLabel(const ExprPtr& label) {
 void Parser::resolveTopLevelConsts(StmtPtr& program) {
   const std::vector<StmtPtr>* stmts = blockStatements(program->node);
   if (!stmts) return;
+  // Stable partition: every top-level `const` moves to the front (keeping its
+  // source order) and the other statements follow in their own source order.
+  // A reference to a top-level `const` from another statement (a `var`, a
+  // `let`, a call argument) compiles to `GETGLOBAL`, which reads the global
+  // the const declaration binds; without the move the read can run before the
+  // binding and fail with "undefined variable". The const initializers
+  // themselves are folded below, so they never depend on this order.
   std::vector<StmtPtr> reordered;
   reordered.reserve(stmts->size());
   std::vector<StmtPtr> consts;
+  std::vector<StmtPtr> rest;
   for (const StmtPtr& stmt : *stmts) {
     const auto* decl = std::get_if<LetStmt>(&stmt->node);
     if (decl && decl->kind == Tok::Const) {
       consts.push_back(stmt);
-      reordered.push_back(stmt);   // <-- mantener en su posición
     } else {
-      reordered.push_back(stmt);
+      rest.push_back(stmt);
     }
   }
   if (consts.empty()) return;
+  reordered.insert(reordered.end(), consts.begin(), consts.end());
+  reordered.insert(reordered.end(), rest.begin(), rest.end());
 
   // Build the const table. A top-level const initializer may reference
   // another top-level const declared later in the file, so a single
