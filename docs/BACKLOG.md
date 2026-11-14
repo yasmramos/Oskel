@@ -345,20 +345,18 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    (whitespace, no quotes).
 6. **[P2]** `bindString` `padStart`/`padEnd` build the padding then trim it
    with `utf8Chars`, O(n) extra for large paddings.
-7. **[P2]** `registerBuiltins` for `float` uses `strtod`, so `float("inf")`
-    returns `inf` instead of an error; decide.
-8. **[P2]** `args()` returns `scriptArgs` without the script name; decide the
+7. **[P2]** `args()` returns `scriptArgs` without the script name; decide the
     contract (Lua-style) and document it.
-9. **[P3]** `bindArray` `push` returns `self`, not `nil`; `sort`/`merge` mutate
+8. **[P3]** `bindArray` `push` returns `self`, not `nil`; `sort`/`merge` mutate
     in place and return `self`. Decide the return-value contract.
-10. **[P3]** `registerBuiltins` for `range` allows `start > end` (descending);
+9. **[P3]** `registerBuiltins` for `range` allows `start > end` (descending);
     verify and test.
-11. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
+10. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
     two programs in the same process share state; correct in a REPL, document
     it.
-12. **[P3]** `registerBuiltins` for `$slice` checks bounds before the array/
+11. **[P3]** `registerBuiltins` for `$slice` checks bounds before the array/
     string type; the check order matters, make it explicit.
-13. **[P3]** `cstring` copies the string with `\0`, truncating at an embedded
+12. **[P3]** `cstring` copies the string with `\0`, truncating at an embedded
     `\0`; expected for C, but document it.
 
 ---
