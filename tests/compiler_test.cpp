@@ -963,6 +963,41 @@ void testDiagnosticSnippetAlignment() {
   assert(lines[3].find('^') == lines[2].find('|') + 2 + 3);
 }
 
+// The lexer folds CRLF and a lone CR to LF before lexing, but the snippet reads
+// the original source. `lineText` must therefore treat all three line endings as
+// breaks, or a file that ends in a lone CR (or uses CR-only endings) reports a
+// diagnostic on a line the snippet cannot find, printing an empty code line and
+// a caret with nothing under it.
+void testDiagnosticSnippetLineEndings() {
+  auto snippetFor = [](const std::string& source, int line, int col) {
+    CapturingPlatform platform;
+    printCompileError("<test>", source, CompileError{"boom", line, col}, platform);
+    std::vector<std::string> lines;
+    std::string current;
+    for (char c : platform.out) {
+      if (c == '\n') {
+        lines.push_back(current);
+        current.clear();
+      } else {
+        current += c;
+      }
+    }
+    return lines;
+  };
+
+  // CRLF: the caret sits under the offending character on the second line.
+  std::vector<std::string> crlf = snippetFor("let x = 1;\r\nlet y = ;\r\n", 2, 9);
+  assert(crlf.size() == 4);
+  assert(crlf[2].find("let y = ;") != std::string::npos);
+  assert(crlf[3].find('^') == crlf[2].find('|') + 2 + 8);
+
+  // Lone CR, including the one that ends the file: the line must still be found.
+  std::vector<std::string> cr = snippetFor("let a = 1;\rlet b = ;\r", 2, 9);
+  assert(cr.size() == 4);
+  assert(cr[2].find("let b = ;") != std::string::npos);
+  assert(cr[3].find('^') == cr[2].find('|') + 2 + 8);
+}
+
 // The runtime stack trace must stay bounded: a deep (often infinite) recursion
 // builds thousands of frames, and printing them all buries the error. The
 // printer keeps the first and last ten frames and elides the middle.
@@ -1672,6 +1707,7 @@ int main() {
   testTypeAnnotationsAccepted();
   testUnionTypes();
   testDiagnosticSnippetAlignment();
+  testDiagnosticSnippetLineEndings();
   testRuntimeTraceElision();
   testMustUse();
   testTypeMismatchErrors();
