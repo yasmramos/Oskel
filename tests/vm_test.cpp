@@ -580,6 +580,94 @@ void testRegisterCount() {
   assert(vm.registerCount() == 3);
 }
 
+// A variadic proto with no declared parameter would underflow
+// `numParams - 1`; the frame push must reject it instead.
+void testVariadicWithoutParamsIsRejected() {
+  TEST_SCOPE();
+  auto proto = std::make_shared<Bytecode>();
+  proto->name = "v";
+  proto->numParams = 0;
+  proto->variadic = true;
+  proto->code = {Instruction{OpCode::HALT, 0, 0, 0, -1, 0, 0}};
+
+  auto function = makeRef<Function>();
+  function->name = "v";
+  function->proto = proto;
+
+  VM vm;
+  std::string message;
+  try {
+    vm.call(Value(function), {}, 1, 1);
+  } catch (const RuntimeError& error) {
+    message = error.message;
+  }
+  assert(message == "v(): a variadic function needs at least one parameter");
+}
+
+// A closure can carry a null upvalue (a hand-built or malformed chunk);
+// GETUPVAL/SETUPVAL must raise instead of dereferencing it.
+void testNullUpvalueIsRejected() {
+  TEST_SCOPE();
+  auto proto = std::make_shared<Bytecode>();
+  proto->name = "u";
+  proto->numRegisters = 1;
+  proto->code = {Instruction{OpCode::GETUPVAL, 0, 0, 0, -1, 0, 0},
+                 Instruction{OpCode::HALT, 0, 0, 0, -1, 0, 0}};
+
+  auto function = makeRef<Function>();
+  function->name = "u";
+  function->proto = proto;
+  function->upvalues.push_back(CellPtr{});  // null cell
+
+  VM vm;
+  std::string message;
+  try {
+    vm.call(Value(function), {}, 1, 1);
+  } catch (const RuntimeError& error) {
+    message = error.message;
+  }
+  assert(message == "undefined upvalue: 0");
+}
+
+// A `RETURN` in the root chunk has no caller: it must behave like `HALT`
+// instead of leaving the frame stack inconsistent.
+void testRootReturnBehavesLikeHalt() {
+  TEST_SCOPE();
+  Bytecode proto;
+  proto.name = "<root-return>";
+  proto.numRegisters = 1;
+  proto.constants = {Value(int64_t{7})};
+  proto.code = {Instruction{OpCode::LOADK, 0, 0, 0, -1, 0, 0},
+                Instruction{OpCode::RETURN, 0, 0, 0, -1, 0, 0}};
+
+  VM vm;
+  Value result = vm.run(proto);
+  assert(result.isInt() && result.asInt() == 7);
+  assert(vm.depth == 0);
+  assert(vm.stack.empty());
+  // The VM is still usable: a second run starts from a clean state.
+  assert(vm.run(proto).asInt() == 7);
+}
+
+// A `fail()` outside `call()` (here an undefined global) must leave the frame
+// stack, the debug stack and `depth` clean for the next run.
+void testFailOutsideCallLeavesVmClean() {
+  TEST_SCOPE();
+  VM vm;
+  std::string message;
+  try {
+    vm.run(compileSource("print(nope);\n"));
+  } catch (const RuntimeError& error) {
+    message = error.message;
+  }
+  assert(message.find("undefined variable 'nope'") != std::string::npos);
+  assert(vm.depth == 0);
+  assert(vm.stack.empty());
+  // A subsequent run succeeds: the dirty state did not leak.
+  runOrFail(vm, compileSource("var ok = 1 + 1;\n"));
+  assert(requireGlobal(vm, "ok").asInt() == 2);
+}
+
 // --------------------------------------------------------- PHASE 5: control
 
 void testIfElseExecution() {
@@ -1941,6 +2029,10 @@ int main() {
   testRuntimeEnforcesGlobalImmutability();
   testDefineGlobalCarriesImmutability();
   testRegisterCount();
+  testVariadicWithoutParamsIsRejected();
+  testNullUpvalueIsRejected();
+  testRootReturnBehavesLikeHalt();
+  testFailOutsideCallLeavesVmClean();
   testIfElseExecution();
   testElseIfChain();
   testIfBranchIsSkipped();
