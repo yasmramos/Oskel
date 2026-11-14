@@ -59,6 +59,13 @@ assertEq(unsorted, [1, 2, 3]);
 assertEq([3, 1, 2].sorted((a, b) => a > b), [3, 2, 1]);
 assertEq(["b", "a", "c"].sorted(), ["a", "b", "c"]);
 
+// A comparator that throws must leave the array unchanged, not half-sorted:
+// `sort` works on a copy and commits only when the comparator finishes.
+var guarded = [3, 1, 2];
+let failure = pcall(() => guarded.sort((a, b) => panic("boom")));
+assertEq(failure.ok, false);
+assertEq(guarded, [3, 1, 2]);
+
 assertEq([1, 2, 3].reversed(), [3, 2, 1]);
 assertEq([1, 2].contains(2), true);
 assertEq([1, 2].contains(3), false);

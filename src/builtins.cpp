@@ -352,7 +352,14 @@ bool bindArray(Runtime&, const ArrayPtr& strongArray, const std::string& name, V
     out = makeNative("array.sort", [array](Runtime& in, Args args) -> Value {
       ArrayPtr self = array;
       needBetween(in, "sort", args, 0, 1);
-      sortItems(in, self->items, args.empty() ? nullptr : &args[0], "sort");
+      // Sort a copy and commit only on success: `std::stable_sort` permutes the
+      // range in place, so a comparator that throws (a runtime error, a stack
+      // overflow) would otherwise leave the array partially sorted. Sorting a
+      // copy gives the strong guarantee: the array is either fully sorted or
+      // unchanged.
+      std::vector<Value> items = self->items;
+      sortItems(in, items, args.empty() ? nullptr : &args[0], "sort");
+      self->items = std::move(items);
       return Value(self);
     });
     trackNativeCapture(out, array);
