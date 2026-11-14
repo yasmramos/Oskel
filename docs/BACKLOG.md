@@ -196,27 +196,23 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    methods — same divergence as item 1.
 10. **[P1]** `emitIterNext` for `str` allocates a string per character — same
     as item 7.
-11. **[P1]** `lowerInstruction` for `HALT` in a child proto is unchecked; the
-    behavior is undefined. Reject it.
-12. **[P1]** `lowerInstruction` for `RETURN` in the root chunk is unchecked; it
-    "publishes R[a] and exits", which is wrong. Reject it or define it.
-13. **[P1]** `collectGlobals` does not detect name-resolution cycles: a
+11. **[P1]** `collectGlobals` does not detect name-resolution cycles: a
     `GETGLOBAL` of a name assigned only inside a never-called function is
     accepted and reads nil at run time. Report it.
-14. **[P1]** `collectGlobals` pre-assigns builtin slots in first-read order; a
+12. **[P1]** `collectGlobals` pre-assigns builtin slots in first-read order; a
     `var print` then overwrites the builtin. Make the precedence explicit.
-15. **[P2]** `emitArith`'s float path depends on `emitToDouble` not clobbering
+13. **[P2]** `emitArith`'s float path depends on `emitToDouble` not clobbering
     `Rdi`/`Rdx`; a change there breaks it. Document the invariant and assert.
-16. **[P2]** `emitCompare`'s `orderMixed` uses `cg.ucomisd(1, 0)` with magic
+14. **[P2]** `emitCompare`'s `orderMixed` uses `cg.ucomisd(1, 0)` with magic
     numbers; use named constants.
-17. **[P2]** `emitStrBuiltin` for `Float`/`Double` allocates ~1KB of stack per
+15. **[P2]** `emitStrBuiltin` for `Float`/`Double` allocates ~1KB of stack per
     interpolation; in a loop that is 1KB per iteration.
-18. **[P2]** `emitStrBuiltin` for a range does not handle `start > end`; a
+16. **[P2]** `emitStrBuiltin` for a range does not handle `start > end`; a
     descending range is not tested.
-19. **[P3]** `emitRootPrologue` reserves `frameBytes + 8` for `rsp` alignment,
+17. **[P3]** `emitRootPrologue` reserves `frameBytes + 8` for `rsp` alignment,
     and `emitFunctionPrologue` reserves `fileLocals + 1` for `self`; document
     the extra slot at the site.
-20. **[P3]** `emitArith` handles `INT64_MIN / -1` on the int path but not on the
+18. **[P3]** `emitArith` handles `INT64_MIN / -1` on the int path but not on the
     float path; consistent semantics, inconsistent code.
 
 ---
