@@ -46,6 +46,7 @@ full_example_output.txt
 cmake-build/
 build-stress/
 build-test/
+build-release/
 
 # Downloaded dependency tarballs (never vendored)
 *.tar.gz
