@@ -8,6 +8,12 @@ extern fn strlen(s: string): int;
 extern fn puts(s: string): int;
 extern fn sqrt(x: double): double;
 
+// The explicit-ABI single-line form is the same sugar: `extern "C" fn ...;`.
+// `labs` takes and returns a C `long`, which is 64-bit on LP64, so `int64`
+// spells the signature exactly.
+extern "C" fn labs(x: int64): int64;
+assertEq(labs(-9), 9);
+
 // A `string` parameter is a valid `const char *` (NUL-terminated and alive for
 // the whole call), so `strlen`/`puts` accept a Oskel string directly.
 assertEq(strlen("hello"), 5);

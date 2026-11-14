@@ -12,19 +12,18 @@ std::string lineText(const std::string& source, int line) {
   size_t pos = 0;
   int current = 1;
   while (current < line) {
-    size_t newline = source.find('\n', pos);
-    if (newline == std::string::npos) {
+    size_t breakAt = source.find_first_of("\r\n", pos);
+    if (breakAt == std::string::npos) {
       pos = source.size();
       break;
     }
-    pos = newline + 1;
+    pos = breakAt + 1;
+    if (source[breakAt] == '\r' && pos < source.size() && source[pos] == '\n') ++pos;
     ++current;
   }
-  size_t end = source.find('\n', pos);
+  size_t end = source.find_first_of("\r\n", pos);
   if (end == std::string::npos) end = source.size();
-  std::string text = source.substr(pos, end - pos);
-  if (!text.empty() && text.back() == '\r') text.pop_back();
-  return text;
+  return source.substr(pos, end - pos);
 }
 
 size_t displayColumns(const std::string& text, size_t byteCount) {

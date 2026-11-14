@@ -467,6 +467,108 @@ static void test_sse() {
   checkBytes("test rax, 1", g12, "48F7C001000000");
 }
 
+static void test_ucomisd_bytes() {
+  // ucomisd is `66 0F 2E /r` (SSE2, no REX for xmm0-7): the destination is the
+  // ModRM reg field, the source the rm field.
+  CodeGen g;
+  g.ucomisd(0, 1);
+  checkBytes("ucomisd xmm0, xmm1", g, "660F2EC1");
+
+  CodeGen g2;
+  g2.ucomisd(1, 0);
+  checkBytes("ucomisd xmm1, xmm0", g2, "660F2EC8");
+
+  // xmm8-15 are selected through REX.R (destination) / REX.B (source), so the
+  // REX byte appears after the mandatory 0x66 prefix.
+  CodeGen g3;
+  g3.ucomisd(8, 1);
+  checkBytes("ucomisd xmm8, xmm1", g3, "66440F2EC1");
+
+  CodeGen g4;
+  g4.ucomisd(0, 9);
+  checkBytes("ucomisd xmm0, xmm9", g4, "66410F2EC1");
+}
+
+static void test_push_pop_all_registers() {
+  // push is `50+rd` and pop is `58+rd`, both with REX.B (0x41) for r8-r15.
+  static const char* kPush[16] = {"50", "51", "52", "53", "54", "55", "56", "57",
+                                  "4150", "4151", "4152", "4153", "4154", "4155",
+                                  "4156", "4157"};
+  static const char* kPop[16] = {"58", "59", "5A", "5B", "5C", "5D", "5E", "5F",
+                                 "4158", "4159", "415A", "415B", "415C", "415D",
+                                 "415E", "415F"};
+  for (int r = 0; r < 16; ++r) {
+    CodeGen g;
+    g.push(static_cast<X64Reg>(r));
+    g.pop(static_cast<X64Reg>(r));
+    checkBytes(("push/pop reg " + std::to_string(r)).c_str(), g,
+               std::string(kPush[r]) + kPop[r]);
+  }
+}
+
+static void test_callrel_bytes() {
+  // call rel32 is `E8 id` with a caller-supplied displacement (no label).
+  CodeGen g;
+  g.callRel(0);
+  checkBytes("call rel32 +0", g, "E800000000");
+
+  CodeGen g2;
+  g2.callRel(-5);
+  checkBytes("call rel32 -5", g2, "E8FBFFFFFF");
+
+  CodeGen g3;
+  g3.callRel(0x12345678);
+  checkBytes("call rel32 wide", g3, "E878563412");
+
+  // A call emitted after other bytes still encodes its own displacement
+  // verbatim: callRel is caller-resolved, so it never records a fixup.
+  CodeGen g4;
+  g4.movImm(X64Reg::Rax, 0);  // 48 C7 C0 00 00 00 00 (7 bytes)
+  g4.callRel(16);
+  checkBytes("mov rax, 0; call rel32 +16", g4, "48C7C000000000E810000000");
+}
+
+static void test_emitbytes_bytes() {
+  // A raw payload is copied byte for byte.
+  CodeGen g;
+  const std::uint8_t payload[] = {0xDE, 0xAD, 0xBE, 0xEF};
+  g.emitBytes(payload, sizeof(payload));
+  checkBytes("emitBytes raw payload", g, "DEADBEEF");
+
+  // An empty payload emits nothing.
+  CodeGen g2;
+  g2.emitBytes(payload, 0);
+  checkBytes("emitBytes empty payload", g2, "");
+
+  // The payload advances the cursor through `emitByte`, so a pending rel32
+  // fixup still resolves against the instruction end, not the payload start.
+  // Emit `jmp L` (records a fixup), then a payload, then bind L: the
+  // displacement must be `label - jmp_end`, and the payload must sit between
+  // the opcode and the label untouched.
+  CodeGen g3;
+  CodeGen::Label target = g3.newLabel();
+  g3.jmp(target);  // E9 + rel32 placeholder (5 bytes)
+  const std::uint8_t filler[] = {0x90, 0x90, 0x90};  // three nops
+  g3.emitBytes(filler, sizeof(filler));
+  g3.bind(target);
+  g3.finalize();
+  // jmp_end == jmp_start + 5, target == jmp_end + 3, so disp == 3.
+  std::string expected = "E9";
+  {
+    const std::int32_t d = 3;
+    char buf[3];
+    for (int b = 0; b < 4; ++b) {
+      std::snprintf(buf, sizeof(buf), "%02X", (static_cast<std::uint32_t>(d) >> (8 * b)) & 0xFF);
+      expected += buf;
+    }
+  }
+  expected += "909090";
+  std::string actual = toHex(g3.code());
+  check(actual == expected,
+        "emitBytes keeps a pending rel32 fixup at the instruction end [" + actual +
+            "] expected [" + expected + "]");
+}
+
 // Byte-level companion for the backward-jmp fix: `jmp rel32` must encode
 // disp = target - (instruction_end), pinned when the slot is reserved,
 // regardless of epilogue bytes emitted afterwards. The expectation is
@@ -1014,6 +1116,10 @@ int main() {
   test_control_flow();
   test_backward_jmp_bytes();
   test_sse();
+  test_ucomisd_bytes();
+  test_push_pop_all_registers();
+  test_callrel_bytes();
+  test_emitbytes_bytes();
   test_x87();
   test_setcc_movzx();
 #ifdef CODEGEN_EXEC_TESTS

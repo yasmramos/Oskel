@@ -44,19 +44,28 @@ bool isCaseLabel(const ExprPtr& label) {
 void Parser::resolveTopLevelConsts(StmtPtr& program) {
   const std::vector<StmtPtr>* stmts = blockStatements(program->node);
   if (!stmts) return;
+  // Stable partition: every top-level `const` moves to the front (keeping its
+  // source order) and the other statements follow in their own source order.
+  // A reference to a top-level `const` from another statement (a `var`, a
+  // `let`, a call argument) compiles to `GETGLOBAL`, which reads the global
+  // the const declaration binds; without the move the read can run before the
+  // binding and fail with "undefined variable". The const initializers
+  // themselves are folded below, so they never depend on this order.
   std::vector<StmtPtr> reordered;
   reordered.reserve(stmts->size());
   std::vector<StmtPtr> consts;
+  std::vector<StmtPtr> rest;
   for (const StmtPtr& stmt : *stmts) {
     const auto* decl = std::get_if<LetStmt>(&stmt->node);
     if (decl && decl->kind == Tok::Const) {
       consts.push_back(stmt);
-      reordered.push_back(stmt);   // <-- mantener en su posición
     } else {
-      reordered.push_back(stmt);
+      rest.push_back(stmt);
     }
   }
   if (consts.empty()) return;
+  reordered.insert(reordered.end(), consts.begin(), consts.end());
+  reordered.insert(reordered.end(), rest.begin(), rest.end());
 
   // Build the const table. A top-level const initializer may reference
   // another top-level const declared later in the file, so a single
@@ -829,6 +838,14 @@ StmtPtr Parser::parseExternDecl() {
                        abiToken.col};
   }
 
+  // `extern "C" fn foo();`: the explicit ABI with a single declaration, sugar
+  // for a one-entry block, exactly like the implicit-ABI `extern fn ...;` form.
+  if (match(Tok::Fn)) {
+    std::vector<FnDeclStmt> decls;
+    decls.push_back(parseExternFnDecl());
+    return makeStmt(ExternBlockStmt{abi, std::move(decls)}, keyword.line, keyword.col);
+  }
+
   consume(Tok::LBrace, "expected '{' after the 'extern' ABI");
   std::vector<FnDeclStmt> decls;
   while (!check(Tok::RBrace)) {
@@ -981,6 +998,10 @@ std::vector<Param> Parser::parseParams() {
       }
       params.push_back(std::move(parsed));
       if (parsed.variadic) {
+        // A trailing comma is allowed after the last parameter (including the
+        // variadic one), so `fn f(a, rest...,)` parses. Anything else after the
+        // variadic is still an error: it must be the last parameter.
+        match(Tok::Comma);
         if (!check(Tok::RParen)) {
           error(peek(), "a variadic parameter must be the last one");
         }

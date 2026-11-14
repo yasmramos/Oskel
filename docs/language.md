@@ -268,7 +268,7 @@ An optional **type annotation** may follow the name: `let x: int = 5`. See
 
 Immutability is also enforced by the engine, not only by the compiler: `SETGLOBAL` carries the write mode (a fresh declaration versus a later assignment), so the VM rejects an assignment to a `let`/`const` binding at run time. This closes the gap the compiler cannot see — a hand-built `.jolc` chunk, or an assignment that comes from a *different* compilation unit (a module body or a `:load`ed file) that mutates a `let` declared by the main program. Such an assignment is a runtime error (`cannot assign to immutable variable 'x'`) instead of silently rebinding the value.
 
-`const` is also immutable, but its value must be a compile-time constant expression: literals, arithmetic (`+ - * / %`), unary minus, comparisons and boolean operators over other constants, and references to other top-level `const` names (including forward references, which the parser resolves to a fixed point). The parser folds each `const` initializer to a literal before the program runs, so uses of the name cost nothing at runtime. If an initializer cannot be folded (for example it calls a function or reads a `var`), the parser reports an error instead of silently falling back to runtime evaluation. Nested blocks fold their `const`s eagerly as well.
+`const` is also immutable, but its value must be a compile-time constant expression: literals, arithmetic (`+ - * / %`), unary minus, comparisons and boolean operators over other constants, and references to other top-level `const` names (including forward references, which the parser resolves to a fixed point). Top-level `const` declarations are hoisted to the front of the program (in source order), so any statement — including one written before the declaration — may reference the constant. The parser folds each `const` initializer to a literal before the program runs, so uses of the name cost nothing at runtime. If an initializer cannot be folded (for example it calls a function or reads a `var`), the parser reports an error instead of silently falling back to runtime evaluation. Nested blocks fold their `const`s eagerly as well.
 
 An integer `const` initializer whose folded value does not fit an `int` (`+ - *` or `**`) still wraps around — the same result the expression would produce at run time — but the parser prints a **warning** naming the operator, so a value that is almost always a mistake does not pass unnoticed. It is a warning and not an error because the program is valid and would run. A shift that drops high bits (`1 << 63`) is not an arithmetic overflow and does not warn.
 
@@ -438,16 +438,17 @@ free(buf);
 The AOT backend (PHASE 7) lowers the same handles to real C pointers, so a
 program that only passes them to natives compiles unchanged.
 
-**`extern "C"` blocks.** A C function is declared with `extern` (PHASE 6.6). Two
-spellings are accepted and compile to the same thing:
+**`extern "C"` blocks.** A C function is declared with `extern` (PHASE 6.6).
+Three spellings are accepted and compile to the same thing:
 
 ```oskel
 extern "C" { fn sqrt(x: float): float; }   // block: explicit ABI
 extern fn sqrt(x: float): float;           // single: implicit "C" ABI
+extern "C" fn sqrt(x: float): float;       // single: explicit ABI
 ```
 
-The single-line form is sugar for a one-entry block; the ABI is implicitly
-`"C"`. The block's ABI is a plain string literal and only `"C"` is supported.
+The single-line forms are sugar for a one-entry block. The block's ABI is a
+plain string literal and only `"C"` is supported.
 Each entry is a bodyless `fn ...;`; the compiler validates the signature against
 the FFI type vocabulary (see §4.6) and records it as compile-time metadata on
 the proto, so a declaration emits no bytecode of its own. Declarations are
@@ -1276,6 +1277,8 @@ last parameter is **variadic**. A parameter written `rest...` collects every
 extra argument into an array; the `...` follows the optional type annotation
 (`rest...` or `parts: int...`), which describes the elements, not the array.
 A variadic parameter must be the last one, and a function may have at most one.
+A trailing comma is allowed after it (`fn f(a, rest...,)`), like after any other
+last parameter.
 
 ```oskel
 fn sum(first, rest...) {
@@ -1875,6 +1878,10 @@ assertEq(sqrt(81), 9.0);
 | `readFile(path)` | Returns the contents of a file as a string. |
 | `writeFile(path, contents)` | Writes the contents (exact binary). |
 | `fileExists(path)` | Checks whether the file can be opened. |
+
+A path is handed to the OS as a NUL-terminated C string, so a path containing an
+embedded NUL (`"a\0b"`) is rejected with a runtime error instead of silently
+operating on the truncated path.
 
 ### 12.7 Assertions and control
 

@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -150,6 +151,31 @@ static void testInvalidUnopSelectorThrows() {
   check(loweringThrows(proto, "UNOP selector"), "an invalid UNOP selector throws");
 }
 
+static void testHaltInChildThrows() {
+  // `HALT` publishes R0 and runs the root epilogue. A child proto has its own
+  // frame and ends in `RETURN`, so a `HALT` there would unwind the wrong frame;
+  // the lowerer rejects it instead of emitting undefined behavior.
+  auto child = std::make_shared<Bytecode>();
+  child->name = "<child>";
+  child->code = {instr(OpCode::HALT)};
+  child->numRegisters = 1;
+  Bytecode root = makeProto({instr(OpCode::CLOSURE, 0, 0), instr(OpCode::HALT)}, {}, 1);
+  root.children.push_back(child);
+  check(loweringThrows(root, "HALT inside a function proto"),
+        "HALT inside a child proto throws");
+}
+
+static void testRootReturnLowers() {
+  // A `RETURN` in the root chunk has no caller. The VM treats it exactly like
+  // `HALT` (a REPL's last expression and a top-level `return` compile to it),
+  // so the lowerer accepts it and runs the root epilogue rather than the
+  // function one. No throw, and the image is non-empty.
+  auto proto = makeProto({instr(OpCode::LOADK, 0, 0), instr(OpCode::RETURN, 0)},
+                         {Value(static_cast<int64_t>(42))}, 1);
+  LoweredChunk chunk = lower(proto);
+  check(!chunk.code.empty(), "RETURN in the root chunk lowers to an image");
+}
+
 // --- Execution tests (Linux x86-64 only) ---
 
 #ifdef LOWER_EXEC_TESTS
@@ -223,6 +249,14 @@ static void checkIntValue(AotValue value, std::int64_t expected, const char* wha
                 static_cast<long long>(static_cast<std::int64_t>(value.payload)),
                 static_cast<long long>(expected));
   }
+}
+
+static void testExecRootReturn() {
+  // A root `RETURN` publishes R[a] and runs the root epilogue, exactly like
+  // `HALT`, so the chunk result is still readable.
+  checkInt(makeProto({instr(OpCode::LOADK, 0, 0), instr(OpCode::RETURN, 0)},
+                     {Value(static_cast<int64_t>(42))}, 1),
+           42, "a root RETURN behaves like HALT and yields R0");
 }
 
 static void testExecLoads() {
@@ -825,8 +859,11 @@ int main() {
   testUnassignedGlobalThrows();
   testHostBindingThrows();
   testInvalidUnopSelectorThrows();
+  testHaltInChildThrows();
+  testRootReturnLowers();
 
 #ifdef LOWER_EXEC_TESTS
+  testExecRootReturn();
   testExecLoads();
   testExecMove();
   testExecArithmetic();

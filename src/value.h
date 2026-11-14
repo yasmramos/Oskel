@@ -505,6 +505,13 @@ struct Value {
   }
 };
 
+// The layout is part of the ABI: the JIT and the AOT backend pass a `Value`
+// across the register file and the machine-code boundary, so a change to the
+// union (a new member, a wider tag) would silently break both. Pin the size
+// and alignment here so such a change fails to compile instead.
+static_assert(sizeof(Value) == 16, "Value must stay a 16-byte tagged union");
+static_assert(alignof(Value) == 8, "Value must stay 8-byte aligned");
+
 // Cell holding a local variable. Locals live in cells so a closure can capture
 // the variable itself (not just its value) and share its mutations. It will be
 // used in PHASE 6; in PHASE 5 it already fixes the model.

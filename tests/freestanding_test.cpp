@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -85,6 +86,7 @@ static void test_arena() {
 #if defined(__linux__) && defined(__x86_64__)
 #define FREESTANDING_EXEC_TESTS 1
 #include <cstdlib>
+#include <signal.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -92,6 +94,10 @@ static void test_arena() {
 #endif
 
 #ifdef FREESTANDING_EXEC_TESTS
+
+static volatile sig_atomic_t gAlarmSeen = 0;
+
+static void onAlarm(int /*sig*/) { gAlarmSeen = 1; }
 
 static void test_platform_roundtrip() {
   PlatformFreestanding platform;
@@ -130,6 +136,52 @@ static void test_platform_roundtrip() {
   check(p1 != nullptr && p2 != nullptr && p1 != p2, "platform alloc returns distinct blocks");
   check(reinterpret_cast<std::uintptr_t>(p1) % 16 == 0, "platform alloc honours alignment");
   platform.dealloc(p1);  // no-op, must not crash
+}
+
+// A signal delivered while `read` blocks on a pipe returns EINTR. The platform
+// must retry, not report the interruption as an error. A SIGALRM one tick after
+// the blocking read starts is enough to exercise the retry path; the writer end
+// of the pipe stays open until the read has returned, so the first `read` really
+// does block and really is interrupted.
+static void test_read_retries_on_eintr() {
+  int fds[2];
+  if (pipe(fds) != 0) {
+    check(false, "pipe() for the EINTR test");
+    return;
+  }
+  pid_t pid = fork();
+  if (pid < 0) {
+    check(false, "fork() for the EINTR test");
+    close(fds[0]);
+    close(fds[1]);
+    return;
+  }
+  if (pid == 0) {
+    // Child: a plain PlatformFreestanding read on the blocking read end. The
+    // handler is installed with `sigaction` and no SA_RESTART: `signal()` would
+    // request restart-on-interrupt, hiding the EINTR path this test exercises.
+    close(fds[1]);
+    struct sigaction sa;
+    std::memset(&sa, 0, sizeof sa);
+    sa.sa_handler = onAlarm;
+    sigaction(SIGALRM, &sa, nullptr);
+    alarm(1);
+    PlatformFreestanding platform;
+    char buffer[8] = {0};
+    std::size_t n = platform.read(fds[0], buffer, sizeof buffer);
+    bool ok = (n == 5) && std::strcmp(buffer, "hello") == 0 && gAlarmSeen == 1;
+    _exit(ok ? 0 : 1);
+  }
+  // Parent: let the child block in read, signal it, then deliver the bytes.
+  sleep(2);
+  ssize_t ignored = ::write(fds[1], "hello", 5);
+  (void)ignored;
+  close(fds[1]);
+  int status = 0;
+  waitpid(pid, &status, 0);
+  close(fds[0]);
+  check(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+        "read retries after EINTR instead of failing");
 }
 
 // Builds a tiny program in `code` that writes `message` (a rodata offset known
@@ -1094,10 +1146,123 @@ static void test_boxed_runtime_float_mod() {
 
 #endif  // FREESTANDING_EXEC_TESTS
 
+// The string builder must grow its block when the current capacity is short.
+// Two edge cases a caller can reach but the hosted engine never does: a
+// capacity of zero (doubling 0 never reaches a positive value, so the loop
+// would spin forever) and a capacity whose double overflows int64. The first
+// must append the exact bytes; the second must stop growing and fail cleanly
+// instead of looping.
+static void test_sb_append_zero_capacity() {
+  CodeGen cg(Target::linuxX64());
+  RuntimeHandles entry = newRuntimeHandles(cg);
+  AotRuntimeHandles rt = newAotRuntimeHandles(cg);
+  CodeGen::Label mainLabel = cg.newLabel();
+  CodeGen::Label data = cg.newLabel();
+
+  const std::string first = "abc";
+  const std::string second = "defgh";
+
+  cg.bind(mainLabel);
+  cg.push(X64Reg::Rbp);
+  cg.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  cg.subRegImm32(X64Reg::Rsp, 32);          // room for the builder header
+  cg.callLabel(entry.initArena);
+  // Builder header at [rbp-24] (length), [rbp-16] (capacity), [rbp-8] (data).
+  cg.leaMem(X64Reg::Rdi, X64Reg::Rbp, -24);
+  cg.xorReg(X64Reg::Rsi, X64Reg::Rsi);      // data = null, unused while capacity is 0
+  cg.xorReg(X64Reg::Rdx, X64Reg::Rdx);      // capacity = 0
+  cg.callLabel(rt.sbInit);
+  // Append "abc", then "defgh".
+  cg.leaMem(X64Reg::Rdi, X64Reg::Rbp, -24);
+  cg.leaRipLabel(X64Reg::Rsi, data);
+  cg.movImm(X64Reg::Rdx, static_cast<std::int64_t>(first.size()));
+  cg.callLabel(rt.sbAppend);
+  cg.leaMem(X64Reg::Rdi, X64Reg::Rbp, -24);
+  cg.leaRipLabel(X64Reg::Rsi, data);
+  cg.addImm32(X64Reg::Rsi, static_cast<std::int32_t>(first.size()));
+  cg.movImm(X64Reg::Rdx, static_cast<std::int64_t>(second.size()));
+  cg.callLabel(rt.sbAppend);
+  // Write the accumulated bytes to stdout.
+  cg.movImm(X64Reg::Rdi, 1);
+  cg.movFromMem(X64Reg::Rsi, X64Reg::Rbp, -8);   // data
+  cg.movFromMem(X64Reg::Rdx, X64Reg::Rbp, -24);  // length
+  cg.callLabel(entry.write);
+  cg.xorReg(X64Reg::Rax, X64Reg::Rax);
+  cg.addImm32(X64Reg::Rsp, 32);
+  cg.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  cg.pop(X64Reg::Rbp);
+  cg.retInsn();
+
+  std::uint64_t start = emitFreestandingRuntime(cg, entry, mainLabel);
+  emitAotRuntime(cg, rt, entry);
+  cg.bind(data);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>(first.data()), first.size());
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>(second.data()), second.size());
+  cg.finalize();
+
+  std::vector<std::uint8_t> elf = buildStaticElf(Target::linuxX64(), cg.code(), {}, start);
+  const std::string path = "/tmp/oskel_sb_zero_capacity";
+  writeFile(path, elf);
+  RunResult result = runProgram(path);
+  check(result.output == "abcdefgh",
+        "a zero-capacity builder grows from the needed size and keeps the bytes");
+  check(result.exitCode == 0, "the zero-capacity builder program exits 0");
+}
+
+// A capacity past INT64_MAX/2 cannot double without overflowing, so the grow
+// loop must fall back to the exact size needed. That size is far past the
+// arena, so the result is a clean "out of memory" exit, never a hang.
+static void test_sb_append_capacity_overflow() {
+  CodeGen cg(Target::linuxX64());
+  RuntimeHandles entry = newRuntimeHandles(cg);
+  AotRuntimeHandles rt = newAotRuntimeHandles(cg);
+  CodeGen::Label mainLabel = cg.newLabel();
+  CodeGen::Label data = cg.newLabel();
+
+  // capacity = INT64_MAX/2 + 1 (doubling it overflows) and needed one past it,
+  // so the grow loop is entered and must stop before `capacity * 2`.
+  const std::int64_t capacity = std::numeric_limits<std::int64_t>::max() / 2 + 1;
+  const std::int64_t len = capacity + 1;
+
+  cg.bind(mainLabel);
+  cg.push(X64Reg::Rbp);
+  cg.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  cg.subRegImm32(X64Reg::Rsp, 32);
+  cg.callLabel(entry.initArena);
+  cg.leaMem(X64Reg::Rdi, X64Reg::Rbp, -24);
+  cg.leaRipLabel(X64Reg::Rsi, data);
+  cg.movImm(X64Reg::Rdx, capacity);
+  cg.callLabel(rt.sbInit);
+  cg.leaMem(X64Reg::Rdi, X64Reg::Rbp, -24);
+  cg.leaRipLabel(X64Reg::Rsi, data);
+  cg.movImm(X64Reg::Rdx, len);
+  cg.callLabel(rt.sbAppend);
+  cg.xorReg(X64Reg::Rax, X64Reg::Rax);
+  cg.addImm32(X64Reg::Rsp, 32);
+  cg.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  cg.pop(X64Reg::Rbp);
+  cg.retInsn();
+
+  std::uint64_t start = emitFreestandingRuntime(cg, entry, mainLabel);
+  emitAotRuntime(cg, rt, entry);
+  cg.bind(data);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("x"), 1);
+  cg.finalize();
+
+  std::vector<std::uint8_t> elf = buildStaticElf(Target::linuxX64(), cg.code(), {}, start);
+  const std::string path = "/tmp/oskel_sb_capacity_overflow";
+  writeFile(path, elf);
+  RunResult result = runProgram(path);
+  check(result.output == "oskel: out of memory\n",
+        "a capacity that cannot double falls back to the needed size and reports OOM");
+  check(result.exitCode == 70, "the overflow case exits through the runtime error path");
+}
+
 int main() {
   test_arena();
 #ifdef FREESTANDING_EXEC_TESTS
   test_platform_roundtrip();
+  test_read_retries_on_eintr();
   test_end_to_end();
   test_boxed_runtime_print();
   test_boxed_runtime_globals();
@@ -1122,6 +1287,8 @@ int main() {
   test_slice_helper_errors();
   test_public_builtins();
   test_public_builtin_errors();
+  test_sb_append_zero_capacity();
+  test_sb_append_capacity_overflow();
 #else
   std::printf("skipped: platform and execution tests require Linux x86-64\n");
 #endif

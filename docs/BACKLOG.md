@@ -39,34 +39,27 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    the input: the hoisting the comment promises is not implemented, and the
    inline comment is in Spanish (language-rule violation). Either implement the
    hoist or delete the dead buffer and the comment.
-2. **[P1]** `parseExternDecl` does not accept `extern "C" fn foo();` (single
-   line with explicit ABI); the comment claims "two spellings" while there are
-   three. Accept all three.
-3. **[P1]** `parseStructLiteralBody` rejects a trailing comma:
-   `Point { x: 1, y: 2, }` fails.
-4. **[P1]** `parseParams` rejects a trailing comma after a variadic:
-   `fn f(a, rest...,)` fails.
-5. **[P1]** `parseStructLiteralBody` does not support the shorthand
+2. **[P1]** `parseStructLiteralBody` does not support the shorthand
    `Point { x, y }`.
-6. **[P1]** `parseSwitch` accepts only literals and ranges as `case` labels;
+3. **[P1]** `parseSwitch` accepts only literals and ranges as `case` labels;
    a `const` label (`case FOO:`) fails. Accept constant expressions.
-7. **[P1]** `parseImport` does not reject `from` being a user variable, so
+4. **[P1]** `parseImport` does not reject `from` being a user variable, so
    `import { x } from from;` is ambiguous.
-8. **[P1]** `parseProgram` pre-scans `structNames_` without requiring `struct`
+5. **[P1]** `parseProgram` pre-scans `structNames_` without requiring `struct`
    to be followed by `{`; a malformed struct is skipped in the pre-scan and
    fails later with a less clear message.
-9. **[P2]** `warn` in `foldConstant` does a linear scan of `warnings_` per
+6. **[P2]** `warn` in `foldConstant` does a linear scan of `warnings_` per
    warning (O(n²) with many overflowing consts). Use a set.
-10. **[P2]** The unary overflow warning uses `expr.line/col` while the binary
+7. **[P2]** The unary overflow warning uses `expr.line/col` while the binary
     case uses `opLine/opCol`. Make them consistent.
-11. **[P3]** `parseRange` rejects chained ranges (`1..2..3`, correctly) but the
+8. **[P3]** `parseRange` rejects chained ranges (`1..2..3`, correctly) but the
     error does not suggest the alternative.
-12. **[P3]** `atLambda` cannot distinguish `(a, b) => ...` from a parenthesized
+9. **[P3]** `atLambda` cannot distinguish `(a, b) => ...` from a parenthesized
     list followed by `=>` in an ambiguous context; fragile, add lookahead.
-13. **[P3]** `parseTypeAnnotation` does not validate that a struct name is
+10. **[P3]** `parseTypeAnnotation` does not validate that a struct name is
     known at annotation time when the struct is declared later; the pre-scan
     covers structs only, not new FFI type names.
-14. **[P3]** `parseFullExpression` accepts an optional `;` then requires `Eof`;
+11. **[P3]** `parseFullExpression` accepts an optional `;` then requires `Eof`;
     in the REPL this can mask errors.
 
 ---
@@ -186,41 +179,33 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    compile or fails at run time.
 5. **[P0]** `error()`/`makeError` is not (or only partially) implemented in
    AOT; errors as values do not behave the same.
-6. **[P0]** `emitSbAppend` with `capacity == 0` is an infinite loop; `sbInit`
-   does not force a non-zero initial capacity. `sbNew` happens to pass 64.
-7. **[P0]** `emitSbAppend` does not handle `capacity * 2` overflow
-   (`addReg(R8, R8)` with `capacity = INT64_MAX/2 + 1` goes negative).
-8. **[P1]** VM/AOT divergence in `map.get`: the VM uses `unordered_map` (O(1)),
+6. **[P1]** VM/AOT divergence in `map.get`: the VM uses `unordered_map` (O(1)),
    AOT uses a linear scan (O(n)), so a loop over a large map is O(n²).
-9. **[P1]** VM/AOT divergence in string iteration: AOT allocates one
+7. **[P1]** VM/AOT divergence in string iteration: AOT allocates one
    `AotString` per character; a 1M-char string means 1M arena allocations.
-10. **[P1]** `emitContains` for arrays uses `AotCompareOp::Eq`, which for
-    arrays/maps is identity, not content — inconsistent with the VM.
-11. **[P1]** `emitMemberGet` for array/string supports only `.length`, no
-    methods — same divergence as item 1.
-12. **[P1]** `emitIterNext` for `str` allocates a string per character — same
-    as item 9.
-13. **[P1]** `lowerInstruction` for `HALT` in a child proto is unchecked; the
-    behavior is undefined. Reject it.
-14. **[P1]** `lowerInstruction` for `RETURN` in the root chunk is unchecked; it
-    "publishes R[a] and exits", which is wrong. Reject it or define it.
-15. **[P1]** `collectGlobals` does not detect name-resolution cycles: a
+8. **[P1]** `emitContains` for arrays uses `AotCompareOp::Eq`, which for
+   arrays/maps is identity, not content — inconsistent with the VM.
+9. **[P1]** `emitMemberGet` for array/string supports only `.length`, no
+   methods — same divergence as item 1.
+10. **[P1]** `emitIterNext` for `str` allocates a string per character — same
+    as item 7.
+11. **[P1]** `collectGlobals` does not detect name-resolution cycles: a
     `GETGLOBAL` of a name assigned only inside a never-called function is
     accepted and reads nil at run time. Report it.
-16. **[P1]** `collectGlobals` pre-assigns builtin slots in first-read order; a
+12. **[P1]** `collectGlobals` pre-assigns builtin slots in first-read order; a
     `var print` then overwrites the builtin. Make the precedence explicit.
-17. **[P2]** `emitArith`'s float path depends on `emitToDouble` not clobbering
+13. **[P2]** `emitArith`'s float path depends on `emitToDouble` not clobbering
     `Rdi`/`Rdx`; a change there breaks it. Document the invariant and assert.
-18. **[P2]** `emitCompare`'s `orderMixed` uses `cg.ucomisd(1, 0)` with magic
+14. **[P2]** `emitCompare`'s `orderMixed` uses `cg.ucomisd(1, 0)` with magic
     numbers; use named constants.
-19. **[P2]** `emitStrBuiltin` for `Float`/`Double` allocates ~1KB of stack per
+15. **[P2]** `emitStrBuiltin` for `Float`/`Double` allocates ~1KB of stack per
     interpolation; in a loop that is 1KB per iteration.
-20. **[P2]** `emitStrBuiltin` for a range does not handle `start > end`; a
+16. **[P2]** `emitStrBuiltin` for a range does not handle `start > end`; a
     descending range is not tested.
-21. **[P3]** `emitRootPrologue` reserves `frameBytes + 8` for `rsp` alignment,
+17. **[P3]** `emitRootPrologue` reserves `frameBytes + 8` for `rsp` alignment,
     and `emitFunctionPrologue` reserves `fileLocals + 1` for `self`; document
     the extra slot at the site.
-22. **[P3]** `emitArith` handles `INT64_MIN / -1` on the int path but not on the
+18. **[P3]** `emitArith` handles `INT64_MIN / -1` on the int path but not on the
     float path; consistent semantics, inconsistent code.
 
 ---
@@ -287,27 +272,23 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 9. Value (`src/value.cpp`, `src/value.h`)
 
-1. **[P1]** `Value` is 16 bytes on 64-bit but has no `static_assert`; a union
-   change could silently break the JIT or AOT. Add the assert.
-2. **[P1]** `Value::typeName` for `Ptr` reads `data.pointer->kind` with no null
-   check; a null pointer would segfault. Guard it.
-3. **[P2]** `Value::equals` for `Array`/`Map` uses a `visited` vector with a
+1. **[P2]** `Value::equals` for `Array`/`Map` uses a `visited` vector with a
    linear scan, O(n²) for large cycles. Use a set.
-4. **[P2]** `Map::erase` calls `rebuildIndex()` (O(n)), O(n²) for many
+2. **[P2]** `Map::erase` calls `rebuildIndex()` (O(n)), O(n²) for many
    deletions. Maintain the index incrementally.
-5. **[P2]** `Range::length` saturates to `INT64_MAX`; `toArray` then fails for
+3. **[P2]** `Range::length` saturates to `INT64_MAX`; `toArray` then fails for
    ranges larger than 10,000,000. Decide the materialization policy.
-6. **[P2]** `Value::repr` caps depth at 8, so `print` of a deep array loses
+4. **[P2]** `Value::repr` caps depth at 8, so `print` of a deep array loses
    information at level 9.
-7. **[P3]** `utf8Chars` does not validate UTF-8; invalid bytes split into
+5. **[P3]** `utf8Chars` does not validate UTF-8; invalid bytes split into
    non-characters.
-8. **[P3]** `appendUtf8` does not validate `cp <= 0x10FFFF`; `chr` checks it,
+6. **[P3]** `appendUtf8` does not validate `cp <= 0x10FFFF`; `chr` checks it,
    the helper does not.
-9. **[P3]** `quoteString` escapes `\xHH` for bytes < 0x20 but not for bytes
+7. **[P3]** `quoteString` escapes `\xHH` for bytes < 0x20 but not for bytes
    > 0x7F; a UTF-8 string renders as bytes, not characters.
-10. **[P3]** `formatFloat`/`formatFloat32` have no `-0.0` test.
-11. **[P3]** `PtrObj::released` is not reset if a handle is reused; impossible
-    today (the `PtrObj` is freed), but assert it.
+8. **[P3]** `formatFloat`/`formatFloat32` have no `-0.0` test.
+9. **[P3]** `PtrObj::released` is not reset if a handle is reused; impossible
+   today (the `PtrObj` is freed), but assert it.
 
 ---
 
@@ -318,14 +299,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 2. **[P2]** `printSnippet` computes `displayColumns` in bytes while `col` is in
    bytes; for UTF-8 lines the caret can point wrong. The existing test is
    ASCII-only, so it does not catch it.
-3. **[P1]** `lineText` does not handle `\r\n`; the lexer normalizes `\r\n` to
-   `\n`, but `lineText` reads the original source, so the `\r` stays and the
-   caret can point wrong.
-4. **[P2]** `Warning` has no code/id, so warnings cannot be suppressed
+3. **[P2]** `Warning` has no code/id, so warnings cannot be suppressed
    selectively.
-5. **[P2]** `CompileError` has no code, so callers must match strings to
+4. **[P2]** `CompileError` has no code, so callers must match strings to
    classify errors.
-6. **[P3]** `printRuntimeError` elides frames after 10+10; a 20-frame stack is
+5. **[P3]** `printRuntimeError` elides frames after 10+10; a 20-frame stack is
    not elided — verify the boundary.
 
 ---
@@ -362,35 +340,33 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    decimal unless the prefix is explicit.
 4. **[P1]** `registerBuiltins` for `pcall` catches `RuntimeError` but not
    `CompileError`; decide and handle.
-5. **[P1]** `readFile`/`writeFile`/`fileExists` do not reject `\0` in the path,
-   so `readFile("a\0b")` opens `a`.
-6. **[P2]** `sortItems` uses `std::stable_sort` with a comparator that calls
+5. **[P2]** `sortItems` uses `std::stable_sort` with a comparator that calls
    `in.call`; if it throws, the array can be left inconsistent. Guard it and
    test a throwing comparator.
-7. **[P2]** `bindArray` `map`/`filter`/`reduce`/`each` invoke the callback
+6. **[P2]** `bindArray` `map`/`filter`/`reduce`/`each` invoke the callback
    through `in.call`, which reenters the VM; add a direct test with a VM
    closure.
-8. **[P2]** `bindString` `split` with no argument uses `std::istringstream`
+7. **[P2]** `bindString` `split` with no argument uses `std::istringstream`
    (whitespace, no quotes).
-9. **[P2]** `bindString` `repeat` with an empty text does not validate the
+8. **[P2]** `bindString` `repeat` with an empty text does not validate the
    size (`repeat("", INT64_MAX)` returns `""` but `repeat("a", INT64_MAX)`
    fails); make the check consistent.
-10. **[P2]** `bindString` `padStart`/`padEnd` build the padding then trim it
-    with `utf8Chars`, O(n) extra for large paddings.
-11. **[P2]** `registerBuiltins` for `float` uses `strtod`, so `float("inf")`
+9. **[P2]** `bindString` `padStart`/`padEnd` build the padding then trim it
+   with `utf8Chars`, O(n) extra for large paddings.
+10. **[P2]** `registerBuiltins` for `float` uses `strtod`, so `float("inf")`
     returns `inf` instead of an error; decide.
-12. **[P2]** `args()` returns `scriptArgs` without the script name; decide the
+11. **[P2]** `args()` returns `scriptArgs` without the script name; decide the
     contract (Lua-style) and document it.
-13. **[P3]** `bindArray` `push` returns `self`, not `nil`; `sort`/`merge` mutate
+12. **[P3]** `bindArray` `push` returns `self`, not `nil`; `sort`/`merge` mutate
     in place and return `self`. Decide the return-value contract.
-14. **[P3]** `registerBuiltins` for `range` allows `start > end` (descending);
+13. **[P3]** `registerBuiltins` for `range` allows `start > end` (descending);
     verify and test.
-15. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
+14. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
     two programs in the same process share state; correct in a REPL, document
     it.
-16. **[P3]** `registerBuiltins` for `$slice` checks bounds before the array/
+15. **[P3]** `registerBuiltins` for `$slice` checks bounds before the array/
     string type; the check order matters, make it explicit.
-17. **[P3]** `cstring` copies the string with `\0`, truncating at an embedded
+16. **[P3]** `cstring` copies the string with `\0`, truncating at an embedded
     `\0`; expected for C, but document it.
 
 ---
@@ -437,15 +413,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 15. Codegen (`src/native/codegen.cpp`)
 
-1. **[P1]** No byte-exact test for `callRel`.
-2. **[P1]** No byte-exact test for `emitBytes`.
-3. **[P1]** No test for `push`/`pop` of all registers (only `rbx` and `r12`).
-4. **[P1]** No unit test for `ucomisd` (used by `floatDiv`/`floatMod`/`compare`).
-5. **[P2]** No execution test for `testAhImm8`, `fldM64`/`fstpM64`/`fprem`/
+1. **[P2]** No execution test for `testAhImm8`, `fldM64`/`fstpM64`/`fprem`/
    `fnstswAx` (`test_x87` covers them byte-exactly only).
-6. **[P3]** `put8` is a free function, not a member; keep the single byte path
+2. **[P3]** `put8` is a free function, not a member; keep the single byte path
    enforced.
-7. **[P3]** `emitBytes` emits byte by byte so fixups keep exact offsets; slow
+3. **[P3]** `emitBytes` emits byte by byte so fixups keep exact offsets; slow
    for large payloads. Optimize while preserving offsets.
 
 ---
@@ -482,19 +454,17 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 18. Platform
 
-1. **[P1]** `PlatformFreestanding::read`/`write`/`seek` do not handle `EINTR`;
-   an interrupted call is treated as an error. Retry on `EINTR`.
-2. **[P1]** `PlatformPosix::lookupSymbol` on Windows does not search
+1. **[P1]** `PlatformPosix::lookupSymbol` on Windows does not search
    `kernel32.dll` or the executable; extend the search.
-3. **[P1]** `PlatformPosix::lookupSymbol` on POSIX relies on `dlsym(RTLD_DEFAULT)`,
+2. **[P1]** `PlatformPosix::lookupSymbol` on POSIX relies on `dlsym(RTLD_DEFAULT)`,
    which needs `-rdynamic` for the executable's own symbols; make it work.
-4. **[P2]** `PlatformFreestanding::alloc` does not validate `alignment == 0` or
+3. **[P2]** `PlatformFreestanding::alloc` does not validate `alignment == 0` or
    non-power-of-two (the `Arena` caller does).
-5. **[P2]** `PlatformFreestanding::open` and `PlatformPosix::open` hardcode mode
+4. **[P2]** `PlatformFreestanding::open` and `PlatformPosix::open` hardcode mode
    `0644`; make it configurable.
-6. **[P2]** `PlatformPosix::write` for `kStdout`/`kStderr` uses buffered
+5. **[P2]** `PlatformPosix::write` for `kStdout`/`kStderr` uses buffered
    `std::cout`/`std::cerr`; verify the flush points.
-7. **[P3]** `rawSyscall` uses inline asm with a `"memory"` clobber and is not
+6. **[P3]** `rawSyscall` uses inline asm with a `"memory"` clobber and is not
    MSVC-portable; note the constraint where it is used.
 
 ---

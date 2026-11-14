@@ -519,6 +519,13 @@ void lowerInstruction(const Instruction& instr, const Bytecode& proto, CodeGen& 
     }
 
     case OpCode::HALT:
+      // `HALT` ends the program by publishing R0 and running the root
+      // epilogue. A child proto has its own frame and ends in `RETURN`, so a
+      // `HALT` there would unwind the wrong frame (and read the root's R0);
+      // reject it instead of emitting undefined behavior.
+      if (frame.hasSelf) {
+        throw LoweringError("lowering: HALT inside a function proto");
+      }
       // The chunk's result is R0, returned as an `AotValue` in rax:rdx (the
       // System V ABI's two-register return), so the test harness can read both
       // the tag and the payload. The process entry discards it and exits 0.
@@ -604,11 +611,17 @@ void lowerInstruction(const Instruction& instr, const Bytecode& proto, CodeGen& 
       break;
     }
     case OpCode::RETURN:
-      // Publish R[a] as the function's result (rax:rdx) and leave the frame.
-      // The root chunk does not use RETURN (it ends in HALT), so this is always
-      // a bytecode function's frame.
+      // Publish R[a] as the frame's result (rax:rdx) and leave the frame. A
+      // `RETURN` in the root chunk has no caller: the VM treats it exactly like
+      // `HALT` (the REPL's last expression and a top-level `return` compile to
+      // it), so publish R[a] and run the root epilogue instead of the function
+      // one. The process entry discards the chunk result and exits 0.
       loadValue(cg, instr.a, X64Reg::Rax, X64Reg::Rdx);
-      emitFunctionEpilogue(cg);
+      if (frame.hasSelf) {
+        emitFunctionEpilogue(cg);
+      } else {
+        emitRootEpilogue(cg);
+      }
       break;
     case OpCode::CLOSURE: {
       if (instr.b < 0 || static_cast<std::size_t>(instr.b) >= proto.children.size()) {
