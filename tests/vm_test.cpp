@@ -977,6 +977,38 @@ void testVmCallsNatives() {
   assert(threw);
 }
 
+void testMapValueRejectsNonStringKey() {
+  TEST_SCOPE();
+  VM vm;
+  registerBuiltins(vm);
+
+  const Value* mapValue = vm.findGlobal("$mapValue");
+  assert(mapValue != nullptr && mapValue->isFunc());
+
+  // The good path: a map and a string key return the paired value.
+  MapPtr map = makeMap();
+  map->set("a", Value(1));
+  Value found = vm.call(*mapValue, {Value(map), Value("a")}, 1, 1);
+  assert(found.isInt() && found.asInt() == 1);
+
+  // A hand-built bytecode could pass a non-string key. Before the guard this
+  // read the string payload out of a non-string union (undefined behaviour);
+  // it must be a clean runtime error instead of a crash.
+  bool threw = false;
+  try {
+    vm.call(*mapValue, {Value(map), Value(7)}, 3, 4);
+  } catch (const RuntimeError& error) {
+    threw = true;
+    assert(error.message.find("string") != std::string::npos);
+    assert(error.line == 3 && error.col == 4);
+  }
+  assert(threw);
+
+  // A non-map first argument still reports the map requirement.
+  assert(runtimeError("for k, v in [1, 2] { print(k, v); }").find("requires a map") !=
+         std::string::npos);
+}
+
 void testVmCallsBoundMethods() {
   TEST_SCOPE();
   VM vm;
@@ -2054,6 +2086,7 @@ int main() {
   testLogicalOperandValues();
   testLogicalEvaluatesRightWhenNeeded();
   testVmCallsNatives();
+  testMapValueRejectsNonStringKey();
   testVmCallsBoundMethods();
   testRuntimeErrorCarriesSourcePosition();
   testFunctionCallAndReturn();
