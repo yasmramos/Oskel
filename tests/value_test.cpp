@@ -40,6 +40,15 @@ void testVoidPointerReportsPtr() {
   assert(value.ptr().bytes.empty());
 }
 
+// A `Ptr` value with a null handle (a hand-built or default-constructed one)
+// must not dereference the null pointer in `typeName`: it reports `ptr`, the
+// safe default, instead of crashing.
+void testNullPtrHandleReportsPtr() {
+  Value value(PtrPtr{});
+  assert(value.isPtr());
+  assert(std::string(value.typeName()) == "ptr");
+}
+
 void testPtrsCompareByIdentity() {
   Value a = makePtr(PtrKind::Void, {}, 7);
   Value b = a;  // a copy shares the same handle
@@ -207,6 +216,7 @@ void testRepeatedChildInOneContainerIsFreedOnce() {
 int main() {
   testCStringKindAndBytes();
   testVoidPointerReportsPtr();
+  testNullPtrHandleReportsPtr();
   testPtrsCompareByIdentity();
   testStringRendering();
   testPointersAreNotTracked();

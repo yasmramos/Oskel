@@ -304,27 +304,23 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 9. Value (`src/value.cpp`, `src/value.h`)
 
-1. **[P1]** `Value` is 16 bytes on 64-bit but has no `static_assert`; a union
-   change could silently break the JIT or AOT. Add the assert.
-2. **[P1]** `Value::typeName` for `Ptr` reads `data.pointer->kind` with no null
-   check; a null pointer would segfault. Guard it.
-3. **[P2]** `Value::equals` for `Array`/`Map` uses a `visited` vector with a
+1. **[P2]** `Value::equals` for `Array`/`Map` uses a `visited` vector with a
    linear scan, O(n²) for large cycles. Use a set.
-4. **[P2]** `Map::erase` calls `rebuildIndex()` (O(n)), O(n²) for many
+2. **[P2]** `Map::erase` calls `rebuildIndex()` (O(n)), O(n²) for many
    deletions. Maintain the index incrementally.
-5. **[P2]** `Range::length` saturates to `INT64_MAX`; `toArray` then fails for
+3. **[P2]** `Range::length` saturates to `INT64_MAX`; `toArray` then fails for
    ranges larger than 10,000,000. Decide the materialization policy.
-6. **[P2]** `Value::repr` caps depth at 8, so `print` of a deep array loses
+4. **[P2]** `Value::repr` caps depth at 8, so `print` of a deep array loses
    information at level 9.
-7. **[P3]** `utf8Chars` does not validate UTF-8; invalid bytes split into
+5. **[P3]** `utf8Chars` does not validate UTF-8; invalid bytes split into
    non-characters.
-8. **[P3]** `appendUtf8` does not validate `cp <= 0x10FFFF`; `chr` checks it,
+6. **[P3]** `appendUtf8` does not validate `cp <= 0x10FFFF`; `chr` checks it,
    the helper does not.
-9. **[P3]** `quoteString` escapes `\xHH` for bytes < 0x20 but not for bytes
+7. **[P3]** `quoteString` escapes `\xHH` for bytes < 0x20 but not for bytes
    > 0x7F; a UTF-8 string renders as bytes, not characters.
-10. **[P3]** `formatFloat`/`formatFloat32` have no `-0.0` test.
-11. **[P3]** `PtrObj::released` is not reset if a handle is reused; impossible
-    today (the `PtrObj` is freed), but assert it.
+8. **[P3]** `formatFloat`/`formatFloat32` have no `-0.0` test.
+9. **[P3]** `PtrObj::released` is not reset if a handle is reused; impossible
+   today (the `PtrObj` is freed), but assert it.
 
 ---
 
