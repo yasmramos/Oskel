@@ -60,4 +60,11 @@ assertEq(spread(10, 1, 2, 3), 13);
 let f = sum;
 assertEq(f(2, 3, 4), 9);
 
+// A trailing comma is allowed after the variadic parameter, like after any
+// other last parameter (`fn f(a, rest...,)`).
+fn trailing(first, rest...,) {
+  return first + len(rest);
+}
+assertEq(trailing(1, 2, 3), 3);
+
 print("variadic ok");

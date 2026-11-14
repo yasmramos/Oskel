@@ -56,34 +56,27 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    the input: the hoisting the comment promises is not implemented, and the
    inline comment is in Spanish (language-rule violation). Either implement the
    hoist or delete the dead buffer and the comment.
-2. **[P1]** `parseExternDecl` does not accept `extern "C" fn foo();` (single
-   line with explicit ABI); the comment claims "two spellings" while there are
-   three. Accept all three.
-3. **[P1]** `parseStructLiteralBody` rejects a trailing comma:
-   `Point { x: 1, y: 2, }` fails.
-4. **[P1]** `parseParams` rejects a trailing comma after a variadic:
-   `fn f(a, rest...,)` fails.
-5. **[P1]** `parseStructLiteralBody` does not support the shorthand
+2. **[P1]** `parseStructLiteralBody` does not support the shorthand
    `Point { x, y }`.
-6. **[P1]** `parseSwitch` accepts only literals and ranges as `case` labels;
+3. **[P1]** `parseSwitch` accepts only literals and ranges as `case` labels;
    a `const` label (`case FOO:`) fails. Accept constant expressions.
-7. **[P1]** `parseImport` does not reject `from` being a user variable, so
+4. **[P1]** `parseImport` does not reject `from` being a user variable, so
    `import { x } from from;` is ambiguous.
-8. **[P1]** `parseProgram` pre-scans `structNames_` without requiring `struct`
+5. **[P1]** `parseProgram` pre-scans `structNames_` without requiring `struct`
    to be followed by `{`; a malformed struct is skipped in the pre-scan and
    fails later with a less clear message.
-9. **[P2]** `warn` in `foldConstant` does a linear scan of `warnings_` per
+6. **[P2]** `warn` in `foldConstant` does a linear scan of `warnings_` per
    warning (O(n²) with many overflowing consts). Use a set.
-10. **[P2]** The unary overflow warning uses `expr.line/col` while the binary
+7. **[P2]** The unary overflow warning uses `expr.line/col` while the binary
     case uses `opLine/opCol`. Make them consistent.
-11. **[P3]** `parseRange` rejects chained ranges (`1..2..3`, correctly) but the
+8. **[P3]** `parseRange` rejects chained ranges (`1..2..3`, correctly) but the
     error does not suggest the alternative.
-12. **[P3]** `atLambda` cannot distinguish `(a, b) => ...` from a parenthesized
+9. **[P3]** `atLambda` cannot distinguish `(a, b) => ...` from a parenthesized
     list followed by `=>` in an ambiguous context; fragile, add lookahead.
-13. **[P3]** `parseTypeAnnotation` does not validate that a struct name is
+10. **[P3]** `parseTypeAnnotation` does not validate that a struct name is
     known at annotation time when the struct is declared later; the pre-scan
     covers structs only, not new FFI type names.
-14. **[P3]** `parseFullExpression` accepts an optional `;` then requires `Eof`;
+11. **[P3]** `parseFullExpression` accepts an optional `;` then requires `Eof`;
     in the REPL this can mask errors.
 
 ---
