@@ -1359,6 +1359,12 @@ void registerBuiltins(Runtime& in) {
       in.fail(std::string("key/value iteration ('for k, v in ...') requires a map, got '") +
               args[0].typeName() + "'");
     }
+    // The key comes from `ITER`, which yields a string for a map, but a
+    // hand-built `.jolc` could pass anything: check before dereferencing the
+    // string payload instead of reading it out of a non-string union.
+    if (!args[1].isStr()) {
+      in.fail(std::string("map keys are strings, got '") + args[1].typeName() + "'");
+    }
     const Value* found = args[0].map().get(args[1].asStr());
     return found ? *found : Value();
   });
