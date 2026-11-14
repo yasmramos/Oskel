@@ -107,16 +107,6 @@ int main() {
   std::uint32_t idataPtr = read32(pe, sh + 40 + 20);
   check(idataVa == 0x2000, ".idata VirtualAddress is 0x2000");
 
-  // DEBUG: print idataPtr and the first 64 bytes of .idata
-  std::printf("DEBUG: idataPtr = 0x%X\n", idataPtr);
-  std::printf("DEBUG: pe.size() = 0x%zX\n", pe.size());
-  std::printf("DEBUG: bytes at idataPtr (first 64):\n");
-  for (std::size_t i = 0; i < 64 && idataPtr + i < pe.size(); ++i) {
-    std::printf("%02X ", pe[idataPtr + i]);
-    if ((i + 1) % 16 == 0) std::printf("\n");
-  }
-  std::printf("\n");
-  
   // --- Import table ---
   // The import directory RVA is 0x2000. The import descriptor is at
   // idataPtr (file offset), and its `Name` field is at +12.
