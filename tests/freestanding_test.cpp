@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -1094,6 +1095,118 @@ static void test_boxed_runtime_float_mod() {
 
 #endif  // FREESTANDING_EXEC_TESTS
 
+// The string builder must grow its block when the current capacity is short.
+// Two edge cases a caller can reach but the hosted engine never does: a
+// capacity of zero (doubling 0 never reaches a positive value, so the loop
+// would spin forever) and a capacity whose double overflows int64. The first
+// must append the exact bytes; the second must stop growing and fail cleanly
+// instead of looping.
+static void test_sb_append_zero_capacity() {
+  CodeGen cg(Target::linuxX64());
+  RuntimeHandles entry = newRuntimeHandles(cg);
+  AotRuntimeHandles rt = newAotRuntimeHandles(cg);
+  CodeGen::Label mainLabel = cg.newLabel();
+  CodeGen::Label data = cg.newLabel();
+
+  const std::string first = "abc";
+  const std::string second = "defgh";
+
+  cg.bind(mainLabel);
+  cg.push(X64Reg::Rbp);
+  cg.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  cg.subRegImm32(X64Reg::Rsp, 32);          // room for the builder header
+  cg.callLabel(entry.initArena);
+  // Builder header at [rbp-24] (length), [rbp-16] (capacity), [rbp-8] (data).
+  cg.leaMem(X64Reg::Rdi, X64Reg::Rbp, -24);
+  cg.xorReg(X64Reg::Rsi, X64Reg::Rsi);      // data = null, unused while capacity is 0
+  cg.xorReg(X64Reg::Rdx, X64Reg::Rdx);      // capacity = 0
+  cg.callLabel(rt.sbInit);
+  // Append "abc", then "defgh".
+  cg.leaMem(X64Reg::Rdi, X64Reg::Rbp, -24);
+  cg.leaRipLabel(X64Reg::Rsi, data);
+  cg.movImm(X64Reg::Rdx, static_cast<std::int64_t>(first.size()));
+  cg.callLabel(rt.sbAppend);
+  cg.leaMem(X64Reg::Rdi, X64Reg::Rbp, -24);
+  cg.leaRipLabel(X64Reg::Rsi, data);
+  cg.addImm32(X64Reg::Rsi, static_cast<std::int32_t>(first.size()));
+  cg.movImm(X64Reg::Rdx, static_cast<std::int64_t>(second.size()));
+  cg.callLabel(rt.sbAppend);
+  // Write the accumulated bytes to stdout.
+  cg.movImm(X64Reg::Rdi, 1);
+  cg.movFromMem(X64Reg::Rsi, X64Reg::Rbp, -8);   // data
+  cg.movFromMem(X64Reg::Rdx, X64Reg::Rbp, -24);  // length
+  cg.callLabel(entry.write);
+  cg.xorReg(X64Reg::Rax, X64Reg::Rax);
+  cg.addImm32(X64Reg::Rsp, 32);
+  cg.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  cg.pop(X64Reg::Rbp);
+  cg.retInsn();
+
+  std::uint64_t start = emitFreestandingRuntime(cg, entry, mainLabel);
+  emitAotRuntime(cg, rt, entry);
+  cg.bind(data);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>(first.data()), first.size());
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>(second.data()), second.size());
+  cg.finalize();
+
+  std::vector<std::uint8_t> elf = buildStaticElf(Target::linuxX64(), cg.code(), {}, start);
+  const std::string path = "/tmp/oskel_sb_zero_capacity";
+  writeFile(path, elf);
+  RunResult result = runProgram(path);
+  check(result.output == "abcdefgh",
+        "a zero-capacity builder grows from the needed size and keeps the bytes");
+  check(result.exitCode == 0, "the zero-capacity builder program exits 0");
+}
+
+// A capacity past INT64_MAX/2 cannot double without overflowing, so the grow
+// loop must fall back to the exact size needed. That size is far past the
+// arena, so the result is a clean "out of memory" exit, never a hang.
+static void test_sb_append_capacity_overflow() {
+  CodeGen cg(Target::linuxX64());
+  RuntimeHandles entry = newRuntimeHandles(cg);
+  AotRuntimeHandles rt = newAotRuntimeHandles(cg);
+  CodeGen::Label mainLabel = cg.newLabel();
+  CodeGen::Label data = cg.newLabel();
+
+  // capacity = INT64_MAX/2 + 1 (doubling it overflows) and needed one past it,
+  // so the grow loop is entered and must stop before `capacity * 2`.
+  const std::int64_t capacity = std::numeric_limits<std::int64_t>::max() / 2 + 1;
+  const std::int64_t len = capacity + 1;
+
+  cg.bind(mainLabel);
+  cg.push(X64Reg::Rbp);
+  cg.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  cg.subRegImm32(X64Reg::Rsp, 32);
+  cg.callLabel(entry.initArena);
+  cg.leaMem(X64Reg::Rdi, X64Reg::Rbp, -24);
+  cg.leaRipLabel(X64Reg::Rsi, data);
+  cg.movImm(X64Reg::Rdx, capacity);
+  cg.callLabel(rt.sbInit);
+  cg.leaMem(X64Reg::Rdi, X64Reg::Rbp, -24);
+  cg.leaRipLabel(X64Reg::Rsi, data);
+  cg.movImm(X64Reg::Rdx, len);
+  cg.callLabel(rt.sbAppend);
+  cg.xorReg(X64Reg::Rax, X64Reg::Rax);
+  cg.addImm32(X64Reg::Rsp, 32);
+  cg.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  cg.pop(X64Reg::Rbp);
+  cg.retInsn();
+
+  std::uint64_t start = emitFreestandingRuntime(cg, entry, mainLabel);
+  emitAotRuntime(cg, rt, entry);
+  cg.bind(data);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("x"), 1);
+  cg.finalize();
+
+  std::vector<std::uint8_t> elf = buildStaticElf(Target::linuxX64(), cg.code(), {}, start);
+  const std::string path = "/tmp/oskel_sb_capacity_overflow";
+  writeFile(path, elf);
+  RunResult result = runProgram(path);
+  check(result.output == "oskel: out of memory\n",
+        "a capacity that cannot double falls back to the needed size and reports OOM");
+  check(result.exitCode == 70, "the overflow case exits through the runtime error path");
+}
+
 int main() {
   test_arena();
 #ifdef FREESTANDING_EXEC_TESTS
@@ -1122,6 +1235,8 @@ int main() {
   test_slice_helper_errors();
   test_public_builtins();
   test_public_builtin_errors();
+  test_sb_append_zero_capacity();
+  test_sb_append_capacity_overflow();
 #else
   std::printf("skipped: platform and execution tests require Linux x86-64\n");
 #endif
