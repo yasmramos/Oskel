@@ -27,11 +27,12 @@
 #include "native/target.h"
 #include "parser.h"
 #include "util.h"
+#include "version.h"
 #include "vm.h"
 
 namespace {
 
-const char *kVersion = "0.1.0";
+const char *kVersion = OSKEL_VERSION;
 
 const char *kUsage =
     "usage:\n"
