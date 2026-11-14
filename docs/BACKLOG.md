@@ -499,19 +499,17 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 18. Platform
 
-1. **[P1]** `PlatformFreestanding::read`/`write`/`seek` do not handle `EINTR`;
-   an interrupted call is treated as an error. Retry on `EINTR`.
-2. **[P1]** `PlatformPosix::lookupSymbol` on Windows does not search
+1. **[P1]** `PlatformPosix::lookupSymbol` on Windows does not search
    `kernel32.dll` or the executable; extend the search.
-3. **[P1]** `PlatformPosix::lookupSymbol` on POSIX relies on `dlsym(RTLD_DEFAULT)`,
+2. **[P1]** `PlatformPosix::lookupSymbol` on POSIX relies on `dlsym(RTLD_DEFAULT)`,
    which needs `-rdynamic` for the executable's own symbols; make it work.
-4. **[P2]** `PlatformFreestanding::alloc` does not validate `alignment == 0` or
+3. **[P2]** `PlatformFreestanding::alloc` does not validate `alignment == 0` or
    non-power-of-two (the `Arena` caller does).
-5. **[P2]** `PlatformFreestanding::open` and `PlatformPosix::open` hardcode mode
+4. **[P2]** `PlatformFreestanding::open` and `PlatformPosix::open` hardcode mode
    `0644`; make it configurable.
-6. **[P2]** `PlatformPosix::write` for `kStdout`/`kStderr` uses buffered
+5. **[P2]** `PlatformPosix::write` for `kStdout`/`kStderr` uses buffered
    `std::cout`/`std::cerr`; verify the flush points.
-7. **[P3]** `rawSyscall` uses inline asm with a `"memory"` clobber and is not
+6. **[P3]** `rawSyscall` uses inline asm with a `"memory"` clobber and is not
    MSVC-portable; note the constraint where it is used.
 
 ---
