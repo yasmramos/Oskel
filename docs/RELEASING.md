@@ -64,6 +64,11 @@ The tag push triggers `.github/workflows/artifacts.yml`, which:
 
 Branch pushes and pull requests stop at the artifacts; only a tag publishes.
 
+Do **not** create the release in the GitHub UI first. The workflow creates it
+from the tag, and it now reuses an existing release instead of failing, but a
+UI-created release (a pre-release, or one with hand-written notes) is a second
+source of truth for the same tag. Let the tag create it.
+
 ## 4. Verify
 
 - Watch the run: `gh run watch` (or the Actions tab).
