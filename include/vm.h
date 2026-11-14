@@ -55,7 +55,7 @@ class VM : public Runtime {
 
   // Enables or disables the JIT. Off by default: the development engine turns
   // it on (`oskel`, `-e`, the REPL) and `oskelc` never does, because the AOT
-  // product must not carry a JIT (AGENT.md §8). While enabled, a call to a
+  // product must not carry a JIT (DEVELOPMENT.md §6). While enabled, a call to a
   // proto the JIT accepts runs the compiled code; every other call is
   // interpreted exactly as before, so results never change.
   void setJitEnabled(bool enabled) { jitEnabled_ = enabled; }

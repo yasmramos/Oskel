@@ -1,4 +1,4 @@
-// Tests for the module resolver and the import compiler (AGENT.md §18).
+// Tests for the module resolver and the import compiler (docs/language.md §18).
 // Uses no external framework: only a failure counter and printf.
 
 // Release builds define NDEBUG, which would compile every assert() out and
@@ -100,7 +100,7 @@ void testStdResolution() {
 
 void testPackageResolution() {
   // A module that exists only under the packages root still resolves: the
-  // project directory is searched first, then packages (AGENT.md §18).
+  // project directory is searched first, then packages (docs/language.md §18).
   ModuleResolver resolver("tests", "std", "tests/packages");
   std::string file;
   std::string message;
@@ -248,7 +248,7 @@ void testNestedNamespaceQualifiedAccess() {
 void testLocalBindingWinsOverWildcard() {
   // A name the importing module declares itself must win over a wildcard
   // import, whatever the order. The import must not silently shadow a local
-  // `fn` or `var` (AGENT.md §18: no silent shadowing).
+  // `fn` or `var` (docs/language.md §18: no silent shadowing).
   {
     VM vm;
     compileAndRun(
@@ -290,7 +290,7 @@ void testLocalBindingWinsOverWildcard() {
 
 // A module's own imports must stay inside the module: the importing program
 // must not see the namespace, alias or wildcard binding a nested module created
-// (AGENT.md §18.2: "importing a module never injects its internals into the
+// (docs/language.md §18.2: "importing a module never injects its internals into the
 // importing program's globals").
 void testModuleImportDoesNotLeakNamespace() {
   // `qualuser` imports `modules.helper`; the importer only imports `qualuser`,
@@ -358,7 +358,7 @@ void testNestedWildcardDoesNotCreatePhantomAmbiguity() {
 }
 
 // A collision between two import forms other than wildcard-vs-wildcard must
-// also be a compile error (AGENT.md §18.3): the conflict detection used to
+// also be a compile error (docs/language.md §18.3): the conflict detection used to
 // cover only two `.*` imports, so an alias could silently shadow a wildcard,
 // an alias or a namespace, and vice versa.
 void testImportConflictAcrossForms() {
@@ -393,7 +393,7 @@ void testImportConflictAcrossForms() {
 
 // The cases that are *not* conflicts must keep working: re-importing the same
 // binding, sibling modules under one package root, and two aliases of one
-// module (AGENT.md §18.3: "importing the same module twice is not a conflict").
+// module (docs/language.md §18.3: "importing the same module twice is not a conflict").
 void testNonConflictingImportCombinations() {
   {
     VM vm;

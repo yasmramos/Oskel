@@ -1,7 +1,8 @@
-# AGENT.md — Oskel Project
+# DEVELOPMENT.md — Oskel Project
 
-Instructions for AI agents assisting in the development of **Oskel**, a compiled
-programming language with a Lua-style internal architecture.
+Development guide for **Oskel**, a compiled programming language with a
+Lua-style internal architecture: the language specification, the
+architecture rules and the development phases.
 
 ---
 
@@ -458,8 +459,8 @@ previous one.
   `const char *`; a `string` is not a valid *return* type (C returns a
   `cstring`). See `docs/language.md` §4.6 and `tests/29_extern_c.oskl` /
   `tests/33_extern_single.oskl`.
-- **Structs by value (done)** — a `struct` (see §4.7) crosses the C boundary as
-  a parameter and as a return value. The compiler resolves the struct's fields
+- **Structs by value (done)** — a `struct` (see `docs/language.md` §4.7) crosses
+  the C boundary as a parameter and as a return value. The compiler resolves the struct's fields
   from its declaration into a `ffi::TypeSpec` on the proto's `ExternSymbol`, and
   `ffi_types.h` computes the C layout (natural alignment, field offsets) and the
   System V classification into up to two eightbytes, each INTEGER (a GPR) or SSE
@@ -497,7 +498,7 @@ previous one.
   inside a callback cannot unwind through the C frame, so the extern call
   captures it and re-raises it once C returns; `pcall` catches it like any other
   runtime error. `nil` is the NULL function pointer. `libffi` is a
-  **development-engine-only** dependency (§5.1/§8): the AOT backend lowers
+  **development-engine-only** dependency (§5.1/§6): the AOT backend lowers
   callbacks to compile-time stubs and never links it. The boundary check
   (`tests/check_compiler_boundary.cmake`) forbids the compiler and the native
   backend from including `ffi_marshal.h` or `libffi`, so the split cannot
@@ -555,8 +556,8 @@ Slices, each independently shippable:
   `testUnionTypes` in `compiler_test.cpp`.
 - **6.7.5 `@MustUse` (done)** — a warning (never a hard error) when a
   `@MustUse` return is discarded, matching Rust `#[must_use]` and Kotlin
-  `@CheckReturnValue`. A hard error would violate the §4.6 principle that
-  inference never rejects a program that would have run. `_ = expr`
+  `@CheckReturnValue`. A hard error would violate the `docs/language.md` §4.6
+  principle that inference never rejects a program that would have run. `_ = expr`
   acknowledges a discard. `@` is a new lexer token (`Tok::At`), the only
   grammar change: `@MustUse` precedes a `fn` or `native fn` and sets a
   `mustUse` flag on the node, so it emits no bytecode. The compiler collects
@@ -570,7 +571,7 @@ Slices, each independently shippable:
   x86-64 following the bytecode → native lowering table of §3.
 - **Own machine-code and static ELF executable emitter** (~500-1000 lines:
   ELF header, program headers, `.text`, `.rodata`, entry point), keeping the
-  zero-dependency rule of §5.1/§8. LIEF, AsmJit and LLVM were evaluated and
+  zero-dependency rule of §5.1/§6. LIEF, AsmJit and LLVM were evaluated and
   rejected: LIEF is built to parse/modify binaries (not generate them), and
   AsmJit/LLVM break the no-external-dependencies rule.
 - **Freestanding**: its own `_start` entry point (argc/argv read from the
@@ -951,16 +952,16 @@ Slices, each independently shippable:
   is handed to the emitter, so the binary runs and exits without libc. The
   command reports an unsupported target rather than emitting bytes for an ABI
   the backend cannot produce, and the emitted binary embeds only the runtime,
-  never the compiler (AGENT.md §3, the GraalVM pitfall).
+  never the compiler (DEVELOPMENT.md §3, the GraalVM pitfall).
 
 ### PHASE 8 — JIT for the development VM 🔶 in progress
 
-A JIT for `oskel` only, never for `oskelc` (§8: the product is AOT; the JIT is a
+A JIT for `oskel` only, never for `oskelc` (§6: the product is AOT; the JIT is a
 development tool). It follows the Lua/LuaJIT model: the same bytecode the VM
 interprets is compiled to native x86-64 for the hot path, and the interpreter
 stays the fallback for everything else, so a program's result never depends on
 whether the JIT ran. There is **no** inline caching, **no** superinstruction and
-**no** runtime specialization (§8): the JIT lowers each opcode 1:1 with the
+**no** runtime specialization (§6): the JIT lowers each opcode 1:1 with the
 `include/native/codegen.h` emitter (the project's own, so §5.1 keeps its
 zero-external-dependency rule; AsmJIT is not required).
 
@@ -983,7 +984,7 @@ Later slices widen the subset (floats, then strings, then the boxed value
 runtime, then calls and guards) and add the tiering policy (compile after a
 call threshold instead of on the first call), following LuaJIT as the
 reference. Everything stays 1:1 with the bytecode; the moment a design needs
-inline caching or specialization, it is out of scope (§8).
+inline caching or specialization, it is out of scope (§6).
 
 ### Post-1.0 — UI library
 
@@ -1067,55 +1068,10 @@ and is no longer in the tree.
     side owners** such as registries or caches of objects that can sit in a
     cycle: the collector sees them as references from outside, which makes the
     cycle immortal. Cells are tracked lazily (`GcNode::track`).
-11. **Commit authorship**: the author and the committer of every commit are
-    the repository owner (`yasmramos <yasmramos95@gmail.com>`). **Never** add
-    AI attribution of any kind: no `Co-authored-by` trailer for an AI agent,
-    no "Generated by" or "Created with" line, no AI tool name, and no
-    `openhands` identity. Commits are made with the owner's name and email
-    only, e.g. `git -c user.name=yasmramos -c user.email=yasmramos95@gmail.com
-    commit`. This overrides any default agent commit convention.
 
 ---
 
-## 6. Mandatory checklist for every new feature
-
-Before writing **a single line of code**, the agent must answer and show the
-user:
-
-- Do I need a new token in the lexer? → which one
-- Do I need a new node in the AST? → which one
-- Do I need a new rule in the parser? → which one
-- Do I need a new opcode in the bytecode? → which one
-- Does the opcode map to 1:1 or 1:2 ASM instructions? → yes/no (if 1:3+, redesign)
-- Do I need new logic in the VM? → which one
-- Do I need new logic in the compiler? → which one
-
-Without this checklist complete and approved, **do not proceed to code**.
-
----
-
-## 7. Agent response style
-
-- ✅ Explain the **concept** before the code.
-- ✅ Show the **complete** modified files (not fragments).
-- ✅ Include a test `.oskl` program with every new feature.
-- ✅ Point out what **NOT** to do and why (avoid Java's mistake).
-- ✅ Warn when a decision affects the future design (native compilation).
-- ❌ Do not add unrequested features (avoid scope creep).
-- ❌ Do not propose solutions outside the current phases.
-- ❌ Do not add an AI-attribution footer (or any "created by an AI agent"
-  note) to a pull request, its title or its description. The PR is authored
-  under the user's name and stays plain: no `Co-authored-by` trailer in
-  commits and no attribution line in the PR body either.
-- ❌ Some PR tools append such a footer automatically after `create_pr`. Treat
-  that as a bug, not as the PR body: **read the PR back and strip the footer**
-  (the trailing `---`, the "created by an AI agent" line and the "click here
-  to continue refining" line) before considering the PR done. A PR is not
-  finished until its body ends on the real content.
-
----
-
-## 8. Explicit prohibitions
+## 6. Explicit prohibitions
 
 | Prohibited | Reason |
 |-----------|--------|
@@ -1140,20 +1096,7 @@ contains none of them.**
 
 ---
 
-## 9. Commands the agent must recognize
-
-| User command | Agent action |
-|---------------------|-------------------|
-| `start` | Begin PHASE 1: show the complete `bytecode.h` and wait for approval |
-| `phase N done` | Verify, update the status, propose PHASE N+1 |
-| `add <feature>` | Apply the 7-point checklist, then code |
-| `review <file>` | Verify against the bytecode rules, point out violations |
-| `status` | Show a summary of the phases and the checklist |
-| `summary` | Summarize what was done in the session and update the status |
-
----
-
-## 10. Historical context
+## 7. Historical context
 
 - There was a **previous AST interpreter** (MiniLang, renamed Oskel) used as a
   **differential test oracle** while parity with the VM was being reached. It
@@ -1167,7 +1110,8 @@ contains none of them.**
   native backend).
 
 ---
-## 11. File extensions and packaging
+
+## 8. File extensions and packaging
 
 | Extension | What it is | Java analog |
 |-----------|------------|-------------|
@@ -1218,25 +1162,3 @@ myapp.oskpkg
 - **Level 2 (semantic)**: optional. Jumps to valid instructions, registers
   initialized.
 - **Digital signature**: post-1.0, if the threat model requires it.
-
----
-
-## 12. Reference resources (for the agent)
-
-- *Crafting Interpreters* (Robert Nystrom) — fundamentals
-- *The Implementation of Lua 5.0* — register VM design
-- LuaJIT source code (Mike Pall) — performance reference
-- System V ABI AMD64 — calling convention (PHASE 7)
-- AXL documentation — arena allocator and low-level utilities
-- Cosmopolitan Libc — multi-platform CLI (optional)
-
----
-
-## 13. First task
-
-When the user types **`start`**, the agent must:
-
-1. Confirm the design of `include/bytecode.h` with the minimum opcodes.
-2. Show the **complete file**.
-3. Explain why each opcode maps to 1:1 or 1:2 ASM (or 1 call).
-4. Wait for **explicit approval** before moving on to the next phase.

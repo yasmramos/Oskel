@@ -2,7 +2,7 @@
 //
 // `??` and `?.` lower to existing opcodes (EQ / JMP_IF_* / GETTABLE / MOVE);
 // `!!` lowers to a call to the hidden `$nonNull` helper. No new opcode is
-// added, so the bytecode stays within the 40-opcode budget (AGENT.md §3).
+// added, so the bytecode stays within the 40-opcode budget (DEVELOPMENT.md §3).
 
 // --- `??` yields the left side unless it is nil ----------------------------
 let a: string? = nil;
