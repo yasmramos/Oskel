@@ -850,7 +850,7 @@ void testTypeAnnotationsAreErased() {
   // PHASE 6.5: type annotations are compile-time metadata. A declaration with
   // an annotation must produce exactly the same bytecode as the same
   // declaration without it, so the register VM and the AOT backend never see
-  // types (AGENT.md §3).
+  // types (DEVELOPMENT.md §3).
   Bytecode annotated = compileSource("let x: int = 5;\n");
   Bytecode plain = compileSource("let x = 5;\n");
   assert(annotated.code.size() == plain.code.size());
@@ -1320,7 +1320,7 @@ void testStructDeclEmitsNoBytecode() {
 
 void testStructLiteralLowersToTable() {
   // The literal is a NEWTABLE followed by one SETTABLE per field; no new
-  // opcode is introduced (AGENT.md §3.3).
+  // opcode is introduced (DEVELOPMENT.md §3.3).
   Bytecode bc = compileSource("struct Point { x: int; y: int; }\nlet p = Point { x: 1, y: 2 };\n");
   bool sawNewTable = false;
   int setTables = 0;

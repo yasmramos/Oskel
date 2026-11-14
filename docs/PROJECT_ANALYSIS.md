@@ -104,7 +104,7 @@ is a deliberate PHASE-level decision, not a drive-by edit.
 ### 3.4 Header placement
 Public headers live in `include/` (`bytecode.h`, `compiler.h`, `ffi_*.h`,
 `platform*.h`, `vm.h`) while siblings (`value.h`, `lexer.h`, `parser.h`, …) live
-in `src/`. AGENT.md rule 7 says every new `.cpp` has its `.h` in `include/`.
+in `src/`. DEVELOPMENT.md rule 7 says every new `.cpp` has its `.h` in `include/`.
 Consolidating the public headers in `include/` would make the rule uniform. Low
 priority; touches many includes.
 
@@ -128,7 +128,7 @@ one in the AOT string-constant pool), all fixed.
 3. **Executable bits — resolved.** `build.sh` and `tests/*.sh` are executable in
    the index.
 4. **Language policy — resolved.** All code, comments and docs are English
-   (AGENT.md rule 6).
+   (DEVELOPMENT.md rule 6).
 
 ---
 

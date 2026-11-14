@@ -26,7 +26,7 @@ using StmtPtr = std::shared_ptr<Stmt>;
 // Types are a compile-time-only concept: they are validated and checked by the
 // parser and compiler, then erased. They never reach the bytecode, so the
 // register VM and the AOT backend see exactly the same instructions with or
-// without an annotation (AGENT.md §3: the bytecode must stay low level).
+// without an annotation (DEVELOPMENT.md §3: the bytecode must stay low level).
 struct TypeRef {
   std::string name;
   bool nullable = false;
@@ -35,7 +35,7 @@ struct TypeRef {
   // `T | E | ...`. An empty vector means "not a union". `nil` is not stored
   // here; it folds into `nullable`, so `int | string | nil` is the union
   // `int | string` with `nullable = true`. Like every type, unions are erased
-  // before the bytecode (AGENT.md §3).
+  // before the bytecode (DEVELOPMENT.md §3).
   std::vector<std::string> alternatives;
 
   // Callback signature (PHASE 6.6): when `name == "fn"`, the parameter and

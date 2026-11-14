@@ -27,7 +27,7 @@ change. Explain the design choice, not the diff line by line.
 ## What NOT to do (and why)
 
 <!--
-Oskel-specific guardrails (AGENT.md §3, §8). Delete if not relevant.
+Oskel-specific guardrails (DEVELOPMENT.md §3, §6). Delete if not relevant.
 - Do **not** add a high-level opcode (`OP_IF`, `OP_EVAL_EXPR`, ...).
 - Do **not** exceed the 40-opcode ceiling (`kOpcodeCount <= 40`).
 - Do **not** repeat Java's mistake: bytecode that cannot be lowered to native.
@@ -36,7 +36,7 @@ Oskel-specific guardrails (AGENT.md §3, §8). Delete if not relevant.
 
 ## Checklist
 
-### Language features only (AGENT.md §6)
+### Language features only (AGENTS.md)
 
 <!-- Delete this block for changes that add no syntax. -->
 
@@ -53,7 +53,7 @@ Oskel-specific guardrails (AGENT.md §3, §8). Delete if not relevant.
 - [ ] §2 toolchain boundary respected: `src/compiler.*` and `src/native/*` do not
       include `interpreter.h` or `vm.h` (`tests/check_compiler_boundary.cmake`)
 - [ ] §3 bytecode contract unchanged, or the change is explained above
-- [ ] §10 no side owners added to the cycle collector (`gc.cpp`)
+- [ ] §5 rule 10 no side owners added to the cycle collector (`gc.cpp`)
 
 ## Tests
 

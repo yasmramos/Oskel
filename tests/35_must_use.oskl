@@ -2,7 +2,7 @@
 //
 // `@MustUse` is compile-time metadata: it tells the compiler that the caller
 // must do something with the return value. Discarding a call to such a function
-// is a *warning*, never an error (AGENT.md §4.6: inference never rejects a
+// is a *warning*, never an error (docs/language.md §4.6: inference never rejects a
 // program that would have run), so this program still exits 0. `_ = f();`
 // acknowledges the discard on purpose.
 

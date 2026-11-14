@@ -13,7 +13,7 @@
 //
 // The JIT belongs to `oskel` (run, REPL, `-e`) only. `oskelc` and the AOT runtime
 // never link it: the product is compiled ahead of time, so a JIT there would
-// violate the "no VM-only features" rule (AGENT.md §8). It is also the reason
+// violate the "no VM-only features" rule (DEVELOPMENT.md §6). It is also the reason
 // the AOT backend must stay able to reject this header (the compiler boundary
 // check forbids it there).
 //
@@ -27,10 +27,10 @@
 // how fast the subset runs.
 //
 // The bytecode contract is untouched: no new opcode, no superinstruction, no
-// inline cache and no runtime specialization (AGENT.md §3.3/§8). The lowering
+// inline cache and no runtime specialization (DEVELOPMENT.md §3.3/§6). The lowering
 // has the same 1:1 shape the AOT backend uses and goes through the same
 // `native/codegen.h` x86-64 assembler, so no external JIT library is needed
-// (AGENT.md §5.1).
+// (DEVELOPMENT.md §5.1).
 
 // Executable memory holding one compiled function. It is mapped read/write,
 // filled, then re-protected read/execute, so the mapping is never writable and
