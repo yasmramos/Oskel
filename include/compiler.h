@@ -349,6 +349,13 @@ class Compiler {
   void patchJump(int index, int target);
   int currentOffset() const;
 
+  // Emits `SETGLOBAL` with the write mode in `c`, so the VM can tell a fresh
+  // declaration from a later assignment (and enforce `let` immutability at run
+  // time). `declareGlobal` is the companion that updates the compiler's own
+  // immutability table.
+  int emitDeclareGlobal(int reg, const std::string& name, bool isImmutable);
+  int emitAssignGlobal(int reg, const std::string& name);
+
   // Scopes and variables. A module body is compiled at scope depth 0 but its
   // bindings must stay local to the module frame, so it is not a global scope.
   bool inGlobalScope() const {

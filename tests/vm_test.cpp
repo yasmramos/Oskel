@@ -470,13 +470,113 @@ void testGlobalsPersistBetweenRuns() {
   assert(x.isInt() && x.asInt() == 6);
 }
 
+// Runs a hand-built chunk (bypassing the compiler) and returns the message of
+// the RuntimeError it raises, or "" when it completes.
+std::string runHandBuiltForError(const Bytecode& proto) {
+  VM vm;
+  try {
+    vm.run(proto);
+  } catch (const RuntimeError& error) {
+    return error.message;
+  }
+  return "";
+}
+
+// `LOADK R0, K0` then `SETGLOBAL R0, K1` with the given write mode.
+Bytecode declareOrAssignGlobal(const Value& value, GlobalWrite mode) {
+  Bytecode proto;
+  proto.name = "<hand>";
+  proto.numRegisters = 1;
+  proto.constants = {value, Value(std::string("x"))};
+  Instruction load;
+  load.op = OpCode::LOADK;
+  load.a = 0;
+  load.b = 0;
+  Instruction store;
+  store.op = OpCode::SETGLOBAL;
+  store.a = 0;
+  store.b = 1;
+  store.c = static_cast<int>(mode);
+  Instruction halt;
+  halt.op = OpCode::HALT;
+  proto.code = {load, store, halt};
+  return proto;
+}
+
+void testRuntimeEnforcesGlobalImmutability() {
+  TEST_SCOPE();
+  // A `let` is declared immutable; a later assignment mode must fail at run
+  // time, even though the compiler never emitted this chunk.
+  Bytecode proto = declareOrAssignGlobal(Value(int64_t{1}), GlobalWrite::DeclareImmutable);
+  Instruction load;
+  load.op = OpCode::LOADK;
+  load.a = 0;
+  load.b = 0;
+  Instruction assign;
+  assign.op = OpCode::SETGLOBAL;
+  assign.a = 0;
+  assign.b = 1;
+  assign.c = static_cast<int>(GlobalWrite::Assign);
+  Instruction halt;
+  halt.op = OpCode::HALT;
+  proto.code = {proto.code[0], proto.code[1], load, assign, halt};
+  assert(runHandBuiltForError(proto) == "cannot assign to immutable variable 'x'");
+
+  // A mutable declaration accepts the assignment.
+  Bytecode mutableProto = declareOrAssignGlobal(Value(int64_t{1}), GlobalWrite::DeclareMutable);
+  mutableProto.code = {mutableProto.code[0], mutableProto.code[1], load, assign, halt};
+  assert(runHandBuiltForError(mutableProto).empty());
+
+  // Re-declaring is a fresh binding (the REPL redefines): a second
+  // `DeclareImmutable` is not an assignment and is allowed.
+  Bytecode redeclare = declareOrAssignGlobal(Value(int64_t{1}), GlobalWrite::DeclareImmutable);
+  Instruction secondDecl;
+  secondDecl.op = OpCode::SETGLOBAL;
+  secondDecl.a = 0;
+  secondDecl.b = 1;
+  secondDecl.c = static_cast<int>(GlobalWrite::DeclareImmutable);
+  redeclare.code = {redeclare.code[0], redeclare.code[1], load, secondDecl, halt};
+  assert(runHandBuiltForError(redeclare).empty());
+}
+
+void testDefineGlobalCarriesImmutability() {
+  TEST_SCOPE();
+  // A host binding declared immutable is protected from a later `Assign`.
+  VM vm;
+  vm.defineGlobal("x", Value(int64_t{7}), /*isImmutable=*/true);
+  Bytecode proto;
+  proto.name = "<hand>";
+  proto.numRegisters = 1;
+  proto.constants = {Value(int64_t{9}), Value(std::string("x"))};
+  Instruction load;
+  load.op = OpCode::LOADK;
+  load.a = 0;
+  load.b = 0;
+  Instruction assign;
+  assign.op = OpCode::SETGLOBAL;
+  assign.a = 0;
+  assign.b = 1;
+  assign.c = static_cast<int>(GlobalWrite::Assign);
+  Instruction halt;
+  halt.op = OpCode::HALT;
+  proto.code = {load, assign, halt};
+  std::string message;
+  try {
+    vm.run(proto);
+  } catch (const RuntimeError& error) {
+    message = error.message;
+  }
+  assert(message == "cannot assign to immutable variable 'x'");
+  // `clearGlobals` forgets the immutability too.
+  vm.clearGlobals();
+  assert(runHandBuiltForError(proto).empty());
+}
+
 void testRegisterCount() {
   TEST_SCOPE();
   Bytecode bytecode = compileSource("let x = 1 + 2 * 3;\n");
-  std::printf("DEBUG: bytecode.numRegisters = %d\n", bytecode.numRegisters);
   VM vm;
   vm.run(bytecode);
-  std::printf("DEBUG: vm.registerCount = %d\n", vm.registerCount());
   assert(vm.registerCount() == 3);
 }
 
@@ -1155,8 +1255,8 @@ void testCapturedLocalsSurviveFrameExit() {
 
 void testCapturedCellsAreNotRetainedByTheVM() {
   TEST_SCOPE();
-  VM vm;                          // <-- construir VM PRIMERO
-  gcCollect();                    // <-- colectar DESPUÉS (builtins ya registrados)
+  VM vm;                          // build the VM first
+  gcCollect();                    // then collect (builtins are already registered)
   const std::size_t before = gcTrackedCount();
   Bytecode bytecode = compileSource(
       "fn make(i) {\n"
@@ -1176,9 +1276,9 @@ void testCapturedCellsAreNotRetainedByTheVM() {
 
 void testClosureCyclesAreCollected() {
   TEST_SCOPE();
-  VM vm;                                          // <-- VM PRIMERO
-  gcCollect();                                    // <-- colectar después
-  const std::size_t before = gcTrackedCount();    // <-- before incluye builtins
+  VM vm;                                          // VM first
+  gcCollect();                                    // then collect
+  const std::size_t before = gcTrackedCount();    // `before` includes the builtins
   Bytecode bytecode = compileSource(
       "fn make(i) {\n"
       "  var a = () => b();\n"
@@ -1838,6 +1938,8 @@ int main() {
   testUndefinedGlobalSuggestsNamespace();
   testInvalidComparison();
   testGlobalsPersistBetweenRuns();
+  testRuntimeEnforcesGlobalImmutability();
+  testDefineGlobalCarriesImmutability();
   testRegisterCount();
   testIfElseExecution();
   testElseIfChain();

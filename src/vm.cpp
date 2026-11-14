@@ -59,10 +59,16 @@ CellPtr& VM::localAt(int index) {
 
 // -------------------------------------------------------------------- runtime
 
-void VM::defineGlobal(const std::string& name, Value value, bool /*isImmutable*/) {
-  // Immutability of globals is enforced by the compiler, which rejects the
-  // assignment before the bytecode exists; the VM has no binding metadata.
+void VM::defineGlobal(const std::string& name, Value value, bool isImmutable) {
+  // A host binding (a builtin, a native fn, an extern symbol) is declared here.
+  // The compiler's own declarations arrive as `SETGLOBAL` in a `Declare*` mode
+  // and go through the same table, so both paths agree on immutability.
   globals_[name] = std::move(value);
+  if (isImmutable) {
+    immutableGlobals_.insert(name);
+  } else {
+    immutableGlobals_.erase(name);
+  }
 }
 
 JitFunction* VM::jitFor(const std::shared_ptr<const Bytecode>& proto,
@@ -508,9 +514,20 @@ Value VM::runFrames(std::size_t stopDepth) {
         }
         break;
 
-      case OpCode::SETGLOBAL:
-        globals_[nameAt(chunk, instruction.b)] = getReg(instruction.a);
+      case OpCode::SETGLOBAL: {
+        const std::string& name = nameAt(chunk, instruction.b);
+        const auto mode = static_cast<GlobalWrite>(instruction.c);
+        if (mode == GlobalWrite::Assign && immutableGlobals_.find(name) != immutableGlobals_.end()) {
+          fail("cannot assign to immutable variable '" + name + "'", line, col);
+        }
+        globals_[name] = getReg(instruction.a);
+        if (mode == GlobalWrite::DeclareImmutable) {
+          immutableGlobals_.insert(name);
+        } else if (mode == GlobalWrite::DeclareMutable) {
+          immutableGlobals_.erase(name);
+        }
         break;
+      }
 
       case OpCode::GETGLOBAL: {
         const std::string& name = nameAt(chunk, instruction.b);

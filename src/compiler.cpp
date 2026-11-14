@@ -286,6 +286,15 @@ int Compiler::emit(OpCode op, int a, int b, int c) {
   return bytecodeEmit(bc_, instruction);
 }
 
+int Compiler::emitDeclareGlobal(int reg, const std::string& name, bool isImmutable) {
+  const auto mode = isImmutable ? GlobalWrite::DeclareImmutable : GlobalWrite::DeclareMutable;
+  return emit(OpCode::SETGLOBAL, reg, addString(name), static_cast<int>(mode));
+}
+
+int Compiler::emitAssignGlobal(int reg, const std::string& name) {
+  return emit(OpCode::SETGLOBAL, reg, addString(name), static_cast<int>(GlobalWrite::Assign));
+}
+
 int Compiler::emitJump(OpCode op, int a) {
   Instruction instruction;
   instruction.op = op;
@@ -1108,8 +1117,9 @@ void Compiler::compileLet(const LetStmt& s) {
   }
 
   if (inGlobalScope()) {
-    // Top level: global variable (persists in the REPL).
-    emit(OpCode::SETGLOBAL, reg, addString(s.name));
+    // Top level: global variable (persists in the REPL). The write mode
+    // records the binding's immutability so the VM enforces it at run time.
+    emitDeclareGlobal(reg, s.name, s.kind != Tok::Var);
     declareGlobal(s.name, s.kind != Tok::Var);
     declareGlobalType(s.name, declared);
     userGlobals_.insert(s.name);
@@ -1395,7 +1405,7 @@ void Compiler::materializeModule(const ImportedModule& module, int line, int col
   int reg = allocReg();
   emit(OpCode::CLOSURE, reg, child);
   emit(OpCode::CALL, reg, 0);
-  emit(OpCode::SETGLOBAL, reg, addString("$module$" + module.path));
+  emitDeclareGlobal(reg, "$module$" + module.path, false);
   freeReg();
 }
 
@@ -1459,7 +1469,7 @@ int Compiler::ensureNamespace(const std::string& prefix, int line, int col) {
       if (current < 0) {
         // Root: the namespace table is a global (module-local inside a module,
         // so a module's own namespace never reaches the importing program).
-        emit(OpCode::SETGLOBAL, next, addString(importBindingName(path)));
+        emitDeclareGlobal(next, importBindingName(path), false);
         declareGlobal(path, false);
       } else {
         // Intermediate: attach the new table to its parent.
@@ -1501,7 +1511,7 @@ void Compiler::compileQualifiedImport(const ImportedModule& module, const std::s
   // namespace tree of maps (`std.math.sqrt` is the ordinary member chain); a
   // bare alias binds the table directly.
   if (isAlias) {
-    emit(OpCode::SETGLOBAL, table, addString(importBindingName(boundName)));
+    emitDeclareGlobal(table, importBindingName(boundName), false);
     declareGlobal(boundName, false);
   } else {
     int parent = ensureNamespace(boundName.substr(0, boundName.rfind('.')), line, col);
@@ -1560,7 +1570,7 @@ void Compiler::compileNameImport(const ImportedModule& module,
     emit(OpCode::GETGLOBAL, table, addString("$module$" + module.path));
     int value = allocReg();
     emit(OpCode::GETTABLE, value, table, -addString(name) - 1);
-    emit(OpCode::SETGLOBAL, value, addString(importBindingName(name)));
+    emitDeclareGlobal(value, importBindingName(name), false);
     declareGlobal(name, false);
     freeReg(nextReg_ - table);
   }
@@ -1590,7 +1600,7 @@ void Compiler::compileFnDecl(const FnDeclStmt& fn, int line, int col) {
   if (inGlobalScope()) {
     // Top-level functions are globals; the interpreter hoists them in the global
     // scope, where they persist across REPL entries.
-    emit(OpCode::SETGLOBAL, reg, addString(fn.name));
+    emitDeclareGlobal(reg, fn.name, false);
     declareGlobal(fn.name, false);
     declareGlobalType(fn.name, TypeRef{"function", false});
     userGlobals_.insert(fn.name);
@@ -2334,7 +2344,7 @@ int Compiler::compileAssign(const AssignExpr& assign, int line, int col) {
       } else if (upvalueSlot >= 0) {
         emit(OpCode::SETUPVAL, value, upvalueSlot);
       } else {
-        emit(OpCode::SETGLOBAL, value, addString(importBindingName(name)));
+        emitAssignGlobal(value, importBindingName(name));
       }
       return value;
     }
@@ -2356,7 +2366,7 @@ int Compiler::compileAssign(const AssignExpr& assign, int line, int col) {
         } else if (upvalueSlot >= 0) {
           emit(OpCode::SETUPVAL, current, upvalueSlot);
         } else {
-          emit(OpCode::SETGLOBAL, current, addString(importBindingName(name)));
+          emitAssignGlobal(current, importBindingName(name));
         }
       });
     }
@@ -2383,7 +2393,7 @@ int Compiler::compileAssign(const AssignExpr& assign, int line, int col) {
     } else if (upvalueSlot >= 0) {
       emit(OpCode::SETUPVAL, current, upvalueSlot);
     } else {
-      emit(OpCode::SETGLOBAL, current, addString(importBindingName(name)));
+      emitAssignGlobal(current, importBindingName(name));
     }
     return current;
   }
