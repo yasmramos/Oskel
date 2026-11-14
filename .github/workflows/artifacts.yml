@@ -52,7 +52,7 @@ jobs:
             archive: oskel-windows-x64.zip
           # `macos-latest` is the Apple Silicon image (macOS 26, arm64). The
           # dev engine is portable C++, so this builds natively; the native
-          # backend stays x86-64 Linux only (see AGENT.md PHASE 7).
+          # backend stays x86-64 Linux only (see DEVELOPMENT.md PHASE 7).
           - os: macos-latest
             artifact: oskel-macos-arm64
             archive: oskel-macos-arm64.tar.gz

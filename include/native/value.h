@@ -20,7 +20,7 @@
 // file of `AotValue`s costs exactly two loads or stores per value and every
 // runtime helper takes and returns a value without touching memory. The layout
 // is fixed here, next to the tags, because it is nearly impossible to change
-// once machine code depends on it (AGENT.md points at LuaJIT's NaN-boxing for
+// once machine code depends on it (DEVELOPMENT.md points at LuaJIT's NaN-boxing for
 // the same reason).
 
 // Value tags. The names and the ordering mirror the hosted `VType` where a

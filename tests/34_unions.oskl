@@ -1,7 +1,7 @@
 // PHASE 6.7 slice 4: union types `T | E`.
 //
 // A union is a compile-time-only type: it names the set of values a slot may
-// hold, and it is erased before the bytecode (AGENT.md §3). It adds no opcode
+// hold, and it is erased before the bytecode (DEVELOPMENT.md §3). It adds no opcode
 // and changes no runtime behaviour; the value that flows through it is an
 // ordinary tagged value.
 

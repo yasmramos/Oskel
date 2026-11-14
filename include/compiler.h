@@ -93,7 +93,7 @@ class Compiler {
   // declaration, and returns the module's parsed program, or throws
   // `CompileError` ("module 'X' not found") when it cannot be resolved. The
   // compiler stays free of any file-system or resolver dependency, which keeps
-  // the toolchain boundary (AGENT.md §2) intact; the CLI injects the loader,
+  // the toolchain boundary (DEVELOPMENT.md §2) intact; the CLI injects the loader,
   // and tests inject their own. Without a loader, `import` reports that the
   // module cannot be resolved.
   using ImportLoader = std::function<StmtPtr(const std::string& path, int line, int col)>;
@@ -470,7 +470,7 @@ class Compiler {
   // A name an import introduces into the current scope, and where it came
   // from. One map holds every form (qualified namespace, alias, wildcard or
   // selective name) so a collision between any two forms is caught, not only
-  // the wildcard-vs-wildcard case (AGENT.md §18.3). Two namespace roots merge
+  // the wildcard-vs-wildcard case (docs/language.md §18.3). Two namespace roots merge
   // (sibling modules under the same root); any other pair that binds the same
   // name is a conflict unless it is the very same binding imported twice.
   struct ImportBinding {
@@ -554,7 +554,7 @@ class Compiler {
   // wildcards. Returns false when the binding must be skipped: a name the
   // importing module declares itself always wins, and re-importing the very
   // same binding is a no-op. Reports a compile error on a genuine collision
-  // (AGENT.md §18.3).
+  // (docs/language.md §18.3).
   bool recordImportBinding(const std::string& visible, ImportBinding::Kind kind,
                            const std::string& module, int line, int col);
 
@@ -566,7 +566,7 @@ class Compiler {
   // The global name a visible import binding maps to while a module body is
   // being compiled. At the top level this is the visible name itself; inside a
   // module it is a hidden per-module name (`$imp$<module>$<name>`), so a
-  // module's own imports never reach the importing program's globals (AGENT.md
+  // module's own imports never reach the importing program's globals (DEVELOPMENT.md
   // §18.2). Every global read/write and every import binding goes through this
   // so the two agree.
   std::string importBindingName(const std::string& visible) const;
@@ -597,7 +597,7 @@ class Compiler {
   // mapped to where it came from. This is the single place conflict detection
   // consults, so a collision between any two import forms (namespace vs alias,
   // alias vs wildcard, ...) is caught, not only wildcard-vs-wildcard
-  // (AGENT.md §18.3).
+  // (docs/language.md §18.3).
   std::unordered_map<std::string, ImportBinding> importedNames_;
 
   // Path of the module body currently being compiled. Empty at the top level.
@@ -606,7 +606,7 @@ class Compiler {
   // Visible names that the module being compiled introduced through `import`.
   // A read/write of one of these names inside the module goes to its hidden
   // per-module global instead of the program's global table, so a module's
-  // imports never leak into the importing program (AGENT.md §18.2).
+  // imports never leak into the importing program (docs/language.md §18.2).
   std::unordered_set<std::string> moduleImportNames_;
 };
 

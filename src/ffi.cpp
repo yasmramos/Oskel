@@ -9,7 +9,7 @@
 
 #ifdef OSKEL_HAVE_LIBFFI
 // libffi builds the trampoline a C function calls back into. It is only used
-// for callbacks, and only in the development engine (AGENT.md §5.1/§6.6).
+// for callbacks, and only in the development engine (DEVELOPMENT.md §5.1/§6.6).
 // `ffi.h` is the system header: the project's own header is `ffi_marshal.h`
 // precisely so this include cannot be shadowed by `-Iinclude`.
 #include <ffi.h>

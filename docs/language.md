@@ -619,7 +619,7 @@ assignment target.
 
 These operators add no opcode: `??` and `?.` lower to `EQ`/`JMP_IF_*`/`GETTABLE`
 and `!!` to a call to a hidden helper, so the bytecode budget is unchanged
-(AGENT.md §3).
+(DEVELOPMENT.md §3).
 
 **Union types.** A type may be a union of alternatives, written with `|`. A
 value of the union's type may be any one of the alternatives, and the
@@ -1458,7 +1458,7 @@ _ = parse(text);      // ok: the discard is deliberate
 
 A warning is a diagnostic, not a rejection. The program still compiles and
 runs, and the exit code is unchanged, so a `@MustUse` annotation can never turn
-a program that would have run into a failure (AGENT.md §4.6). This mirrors Rust's
+a program that would have run into a failure (docs/language.md §4.6). This mirrors Rust's
 `#[must_use]` and Kotlin's `@CheckReturnValue`, and follows Go's
 `errcheck` convention that a deliberate discard should be visible.
 
@@ -2212,7 +2212,7 @@ oskelc -pkg ... -o app.oskpkg  packages a .oskpkg
 - Optional types and nullability are implemented for declarations and expressions (PHASE 6.5). Type annotations (`let x: int = 5`), local inference, the nullable `T?` annotation, and the null-safe expressions `?.`, `??` and `!!` are checked at compile time. `struct` is implemented (see §4.7) and so is `native fn` (see §7.6), the typed declaration of a host-provided function.
 - FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the System V AMD64 ABI without `libffi` for scalars and structs by value. A `fn(P...): R` parameter is a callback: the development engine builds a `libffi` closure that re-enters the VM, while the AOT backend (PHASE 7) lowers callbacks to compile-time stubs and never links `libffi`.
 - No UI library yet. Skia + SDL2 + declarative UI is planned for post-1.0.
-- No async/await, generics, full pattern matching, generators, or transactions. These are out of scope (see `AGENT.md`).
+- No async/await, generics, full pattern matching, generators, or transactions. These are out of scope (see `DEVELOPMENT.md`).
 - Map keys are always strings. Literals accept identifier, string, scalar (`int`, `float`, `double`, `true`, `false`, `nil`) and computed `[expr]` keys; non-string keys are canonicalized to their string form.
 - A body of `if`, `while`, `for` or `for-in` may be a block or a single statement without braces; a brace-less body is wrapped in a block, so its bytecode and scoping match the brace form. `switch` arms always require braces.
 - `for ... in` accepts the loop variable and the iterable with or without parentheses (`for x in xs` and `for (x in xs)`).
