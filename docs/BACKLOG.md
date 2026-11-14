@@ -352,11 +352,6 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 9. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
     two programs in the same process share state; correct in a REPL, document
     it.
-10. **[P3]** `cstring` copies the string with `\0`, truncating at an embedded
-    `\0`; expected for C, but document it.
-
----
-
 ## 13. Ops (`src/ops.cpp`)
 
 1. **[P1]** `unary` `Minus` on `INT64_MIN` wraps to `INT64_MIN` while the
