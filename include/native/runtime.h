@@ -151,6 +151,12 @@ struct AotRuntimeHandles {
   CodeGen::Label chrBuiltin;       // AotValue oskel_builtin_chr(AotValue* args, long argc, AotClosure* self)
   CodeGen::Label assertBuiltin;    // AotValue oskel_builtin_assert(AotValue* args, long argc, AotClosure* self)
   CodeGen::Label panicBuiltin;     // AotValue oskel_builtin_panic(AotValue* args, long argc, AotClosure* self)
+  // The string builder primitives, exposed so a test can drive them directly
+  // (a capacity of zero and a capacity that overflows the doubling must both
+  // terminate and produce the exact bytes).
+  CodeGen::Label sbInit;    // void oskel_sb_init(AotStringBuilder* sb, char* data, long capacity)
+  CodeGen::Label sbAppend;  // void oskel_sb_append(AotStringBuilder* sb, const char* ptr, long len)
+  CodeGen::Label sbNew;     // AotStringBuilder* oskel_sb_new(void)
 };
 
 inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
@@ -166,7 +172,8 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(),
   };
 }
 

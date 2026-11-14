@@ -186,41 +186,37 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    compile or fails at run time.
 5. **[P0]** `error()`/`makeError` is not (or only partially) implemented in
    AOT; errors as values do not behave the same.
-6. **[P0]** `emitSbAppend` with `capacity == 0` is an infinite loop; `sbInit`
-   does not force a non-zero initial capacity. `sbNew` happens to pass 64.
-7. **[P0]** `emitSbAppend` does not handle `capacity * 2` overflow
-   (`addReg(R8, R8)` with `capacity = INT64_MAX/2 + 1` goes negative).
-8. **[P1]** VM/AOT divergence in `map.get`: the VM uses `unordered_map` (O(1)),
+6. **[P1]** VM/AOT divergence in `map.get`: the VM uses `unordered_map` (O(1)),
    AOT uses a linear scan (O(n)), so a loop over a large map is O(n²).
-9. **[P1]** VM/AOT divergence in string iteration: AOT allocates one
+7. **[P1]** VM/AOT divergence in string iteration: AOT allocates one
    `AotString` per character; a 1M-char string means 1M arena allocations.
-10. **[P1]** `emitContains` for arrays uses `AotCompareOp::Eq`, which for
-    arrays/maps is identity, not content — inconsistent with the VM.
-11. **[P1]** `emitMemberGet` for array/string supports only `.length`, no
-    methods — same divergence as item 1.
-12. **[P1]** `emitIterNext` for `str` allocates a string per character — same
-    as item 9.
-13. **[P1]** `lowerInstruction` for `HALT` in a child proto is unchecked; the
+8. **[P1]** `emitContains` for arrays uses `AotCompareOp::Eq`, which for
+   arrays/maps is identity, not content — inconsistent with the VM.
+9. **[P1]** `emitMemberGet` for array/string supports only `.length`, no
+   methods — same divergence as item 1.
+10. **[P1]** `emitIterNext` for `str` allocates a string per character — same
+    as item 7.
+11. **[P1]** `lowerInstruction` for `HALT` in a child proto is unchecked; the
     behavior is undefined. Reject it.
-14. **[P1]** `lowerInstruction` for `RETURN` in the root chunk is unchecked; it
+12. **[P1]** `lowerInstruction` for `RETURN` in the root chunk is unchecked; it
     "publishes R[a] and exits", which is wrong. Reject it or define it.
-15. **[P1]** `collectGlobals` does not detect name-resolution cycles: a
+13. **[P1]** `collectGlobals` does not detect name-resolution cycles: a
     `GETGLOBAL` of a name assigned only inside a never-called function is
     accepted and reads nil at run time. Report it.
-16. **[P1]** `collectGlobals` pre-assigns builtin slots in first-read order; a
+14. **[P1]** `collectGlobals` pre-assigns builtin slots in first-read order; a
     `var print` then overwrites the builtin. Make the precedence explicit.
-17. **[P2]** `emitArith`'s float path depends on `emitToDouble` not clobbering
+15. **[P2]** `emitArith`'s float path depends on `emitToDouble` not clobbering
     `Rdi`/`Rdx`; a change there breaks it. Document the invariant and assert.
-18. **[P2]** `emitCompare`'s `orderMixed` uses `cg.ucomisd(1, 0)` with magic
+16. **[P2]** `emitCompare`'s `orderMixed` uses `cg.ucomisd(1, 0)` with magic
     numbers; use named constants.
-19. **[P2]** `emitStrBuiltin` for `Float`/`Double` allocates ~1KB of stack per
+17. **[P2]** `emitStrBuiltin` for `Float`/`Double` allocates ~1KB of stack per
     interpolation; in a loop that is 1KB per iteration.
-20. **[P2]** `emitStrBuiltin` for a range does not handle `start > end`; a
+18. **[P2]** `emitStrBuiltin` for a range does not handle `start > end`; a
     descending range is not tested.
-21. **[P3]** `emitRootPrologue` reserves `frameBytes + 8` for `rsp` alignment,
+19. **[P3]** `emitRootPrologue` reserves `frameBytes + 8` for `rsp` alignment,
     and `emitFunctionPrologue` reserves `fileLocals + 1` for `self`; document
     the extra slot at the site.
-22. **[P3]** `emitArith` handles `INT64_MIN / -1` on the int path but not on the
+20. **[P3]** `emitArith` handles `INT64_MIN / -1` on the int path but not on the
     float path; consistent semantics, inconsistent code.
 
 ---

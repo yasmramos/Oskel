@@ -1,6 +1,7 @@
 #include "native/runtime.h"
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -3952,13 +3953,17 @@ void emitSbInit(CodeGen& cg, CodeGen::Label label) {
 // `void oskel_sb_append(AotStringBuilder* sb, const char* ptr, long len)`:
 // append `len` bytes from `ptr`, growing the block when the capacity is short.
 // Growth doubles the capacity until it fits, allocates a fresh arena block and
-// copies the bytes already written. Preserves rbx/r12 (the builder and the
-// source pointer), which are callee-saved.
+// copies the bytes already written. A capacity of zero cannot double into a
+// positive value, so the first grow starts from the exact size needed, and the
+// doubling stops (falling back to the needed size) before `capacity * 2` can
+// overflow. Preserves rbx/r12 (the builder and the source pointer), which are
+// callee-saved.
 void emitSbAppend(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
                   CodeGen::Label fail, const DataBlob& msgOom) {
   CodeGen::Label grow = cg.newLabel();
   CodeGen::Label growLoop = cg.newLabel();
   CodeGen::Label growDone = cg.newLabel();
+  CodeGen::Label growUseNeeded = cg.newLabel();
   CodeGen::Label noCopy = cg.newLabel();
   CodeGen::Label copy = cg.newLabel();
   CodeGen::Label oom = cg.newLabel();
@@ -3982,11 +3987,22 @@ void emitSbAppend(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
   cg.bind(grow);
   cg.movFromMem(R8, Rbx, kSbCapacityOffset);
   cg.movFromMem(R9, Rbp, -32);
+  // A zero capacity never doubles to a positive value, so it would loop
+  // forever; start it from the exact size needed instead.
+  cg.testReg(R8);
+  cg.jcc(Jcc::Eq, growUseNeeded);
+  cg.movImm(R11, std::numeric_limits<std::int64_t>::max() / 2);  // doubling limit
   cg.bind(growLoop);
   cg.cmpReg(R8, R9);
   cg.jcc(Jcc::Ae, growDone);
+  // Stop doubling before `capacity * 2` overflows int64: a capacity past
+  // INT64_MAX/2 falls back to the exact size needed.
+  cg.cmpReg(R8, R11);
+  cg.jcc(Jcc::A, growUseNeeded);
   cg.addReg(R8, R8);
   cg.jmp(growLoop);
+  cg.bind(growUseNeeded);
+  cg.movReg(R8, R9);
   cg.bind(growDone);
   cg.movToMem(Rbp, -32, R8);      // newCap
   cg.movReg(Rdi, R8);
@@ -4821,10 +4837,11 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   CodeGen::Label writeInt = cg.newLabel();
   CodeGen::Label printRepr = cg.newLabel();
   CodeGen::Label printStrEsc = cg.newLabel();
-  CodeGen::Label sbInit = cg.newLabel();
-  CodeGen::Label sbAppend = cg.newLabel();
+  CodeGen::Label sbInit = handles.sbInit;
+  // Bound at the public handles so a test can drive them directly.
+  CodeGen::Label sbAppend = handles.sbAppend;
   CodeGen::Label sbAppendByte = cg.newLabel();
-  CodeGen::Label sbNew = cg.newLabel();
+  CodeGen::Label sbNew = handles.sbNew;
   CodeGen::Label sbAppendEscaped = cg.newLabel();
   CodeGen::Label reprInto = cg.newLabel();
   CodeGen::Label reprToString = cg.newLabel();
