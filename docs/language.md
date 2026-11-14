@@ -438,16 +438,17 @@ free(buf);
 The AOT backend (PHASE 7) lowers the same handles to real C pointers, so a
 program that only passes them to natives compiles unchanged.
 
-**`extern "C"` blocks.** A C function is declared with `extern` (PHASE 6.6). Two
-spellings are accepted and compile to the same thing:
+**`extern "C"` blocks.** A C function is declared with `extern` (PHASE 6.6).
+Three spellings are accepted and compile to the same thing:
 
 ```oskel
 extern "C" { fn sqrt(x: float): float; }   // block: explicit ABI
 extern fn sqrt(x: float): float;           // single: implicit "C" ABI
+extern "C" fn sqrt(x: float): float;       // single: explicit ABI
 ```
 
-The single-line form is sugar for a one-entry block; the ABI is implicitly
-`"C"`. The block's ABI is a plain string literal and only `"C"` is supported.
+The single-line forms are sugar for a one-entry block. The block's ABI is a
+plain string literal and only `"C"` is supported.
 Each entry is a bodyless `fn ...;`; the compiler validates the signature against
 the FFI type vocabulary (see §4.6) and records it as compile-time metadata on
 the proto, so a declaration emits no bytecode of its own. Declarations are
@@ -1276,6 +1277,8 @@ last parameter is **variadic**. A parameter written `rest...` collects every
 extra argument into an array; the `...` follows the optional type annotation
 (`rest...` or `parts: int...`), which describes the elements, not the array.
 A variadic parameter must be the last one, and a function may have at most one.
+A trailing comma is allowed after it (`fn f(a, rest...,)`), like after any other
+last parameter.
 
 ```oskel
 fn sum(first, rest...) {

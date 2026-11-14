@@ -838,6 +838,14 @@ StmtPtr Parser::parseExternDecl() {
                        abiToken.col};
   }
 
+  // `extern "C" fn foo();`: the explicit ABI with a single declaration, sugar
+  // for a one-entry block, exactly like the implicit-ABI `extern fn ...;` form.
+  if (match(Tok::Fn)) {
+    std::vector<FnDeclStmt> decls;
+    decls.push_back(parseExternFnDecl());
+    return makeStmt(ExternBlockStmt{abi, std::move(decls)}, keyword.line, keyword.col);
+  }
+
   consume(Tok::LBrace, "expected '{' after the 'extern' ABI");
   std::vector<FnDeclStmt> decls;
   while (!check(Tok::RBrace)) {
@@ -990,6 +998,10 @@ std::vector<Param> Parser::parseParams() {
       }
       params.push_back(std::move(parsed));
       if (parsed.variadic) {
+        // A trailing comma is allowed after the last parameter (including the
+        // variadic one), so `fn f(a, rest...,)` parses. Anything else after the
+        // variadic is still an error: it must be the last parameter.
+        match(Tok::Comma);
         if (!check(Tok::RParen)) {
           error(peek(), "a variadic parameter must be the last one");
         }
