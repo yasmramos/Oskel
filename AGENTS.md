@@ -51,6 +51,8 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
 
 ## Release and artifacts
 
+- The maintainer checklist lives in `docs/RELEASING.md`; the release notes live
+  in `CHANGELOG.md` (Keep a Changelog). Update the changelog before tagging.
 - `.github/workflows/artifacts.yml` builds the engine on Linux, Windows and
   macOS, packages the VS Code extension plus a per-platform installable
   (`packaging/windows/oskel.iss`, `packaging/linux/package-linux.sh`,
@@ -63,6 +65,12 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   environment variable. Every packaging format keeps that layout:
   `/usr/bin/oskel` + `/usr/share/oskel/std` (deb, rpm) and `/usr/local/bin/oskel` +
   `/usr/local/share/oskel/std` (pkg, dmg).
+- Version has one source of truth: `include/version.h` (`OSKEL_VERSION`). CMake
+  refuses to configure when it disagrees with `project(... VERSION ...)` in
+  `CMakeLists.txt`, and the `version_consistency` test checks that the built
+  binary prints it, so a hard-coded literal in `src/main.cpp` fails the suite.
+  The direct build scripts read the header, which a CMake-generated header could
+  not. Bump both files together.
 - Version comes from the tag, or from `CMakeLists.txt` on a branch. Pre-release
   tags need per-format handling: RPM rejects a `-` in `Version`, and GitHub
   rewrites `~` to `.` in asset names (which breaks `SHA256SUMS`), so the `.deb`
