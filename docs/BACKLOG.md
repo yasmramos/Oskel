@@ -12,41 +12,24 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 1. VM (`src/vm.cpp`)
 
-1. **[P0]** `defineGlobal` ignores `isImmutable`, so a `const` global can be
-   reassigned at run time (REPL `:load`, or a native that writes `globals_`).
-   Carry immutability metadata in the runtime, not only in the compiler.
-2. **[P0]** `SETGLOBAL` does not check immutability. Hand-built bytecode or a
-   persistent REPL state can bypass the compiler's check.
-3. **[P0]** `depth` is incremented in `pushOskelFrame` before `stack.push_back`;
-   if the push throws, `depth` is left inconsistent. Make the increment
-   transactional with the push.
-4. **[P1]** `pushOskelFrame` does not validate `numParams` against `variadic`;
-   a variadic proto with `numParams == 0` underflows the required count.
-5. **[P1]** `GETUPVAL`/`SETUPVAL` do not validate that the cell is non-null.
-6. **[P1]** `RETURN` in the root chunk is unsupported (only `HALT`); a
-   hand-built bytecode with `RETURN` at the root behaves inconsistently.
-   Reject it or define it.
-7. **[P1]** `runFrames` has no unwind for the root chunk when `fail()` is
-   raised outside `call()`; `stack`/`depth` can stay dirty between `run()`
-   calls.
-8. **[P1]** `ITER` over a map yields only the key; `for k, v` then does a
+1. **[P1]** `ITER` over a map yields only the key; `for k, v` then does a
    `$mapValue` lookup per iteration. Yield the value directly.
-9. **[P1]** `ITER` (and `compileForIn`) uses `instruction.jump` as the output
+2. **[P1]** `ITER` (and `compileForIn`) uses `instruction.jump` as the output
    register. Replace the private convention with a real operand or a distinct
    opcode.
-10. **[P2]** `namespaceHint` walks every global on each failed `GETGLOBAL`;
-    a repeated typo in a large REPL is slow. Index the global names.
-11. **[P2]** `callNative` always copies the arguments for reentrancy safety,
-    even when the native never reenters. Let a native declare whether it can
-    reenter.
-12. **[P2]** `CALL` copies the arguments into a `std::vector` before entering
-    the frame, one allocation per call. Pass a view into the register window.
-13. **[P2]** `scratchCells_` grows without bound across nested calls and is
-    never reclaimed until the next `run()`.
-14. **[P3]** `JitFunction* jitFor` is not invalidated if the `Bytecode` changes;
-    key the cache on the proto identity/version.
-15. **[P3]** `VM::pushOskelFrame` — keep the frame-slot count derived from one
-    place so the prologue and the VM agree.
+3. **[P2]** `namespaceHint` walks every global on each failed `GETGLOBAL`;
+   a repeated typo in a large REPL is slow. Index the global names.
+4. **[P2]** `callNative` always copies the arguments for reentrancy safety,
+   even when the native never reenters. Let a native declare whether it can
+   reenter.
+5. **[P2]** `CALL` copies the arguments into a `std::vector` before entering
+   the frame, one allocation per call. Pass a view into the register window.
+6. **[P2]** `scratchCells_` grows without bound across nested calls and is
+   never reclaimed until the next `run()`.
+7. **[P3]** `JitFunction* jitFor` is not invalidated if the `Bytecode` changes;
+   key the cache on the proto identity/version.
+8. **[P3]** `VM::pushOskelFrame` — keep the frame-slot count derived from one
+   place so the prologue and the VM agree.
 
 ---
 

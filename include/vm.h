@@ -146,6 +146,13 @@ class VM : public Runtime {
   // returns the value produced by the frame that crossed the boundary.
   Value runFrames(std::size_t stopDepth);
 
+  // Pops every frame still at or above `stopDepth`, shrinking the shared
+  // register and local windows and the debug stack and `depth` with each one.
+  // Shared by `call`'s exception unwind and `run`'s post-`fail` reset, so the
+  // two cannot drift apart. Leaves the scratch slots alone: an outer nested
+  // call still reads its own cell after the frame is popped.
+  void unwindFramesTo(std::size_t stopDepth);
+
   // Pushes the frame for a bytecode function, copying its arguments into the
   // new window. Throws on arity, depth or a function without a proto.
   void pushOskelFrame(FuncPtr function, std::vector<Value> args, std::size_t resultReg, int line,

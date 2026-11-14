@@ -111,6 +111,17 @@ Value VM::callNative(Function& fn, std::vector<Value> args, int line, int col) {
   }
 }
 
+void VM::unwindFramesTo(std::size_t stopDepth) {
+  while (frames_.size() > stopDepth) {
+    CallFrame finished = std::move(frames_.back());
+    frames_.pop_back();
+    registers_.resize(finished.regBase);
+    locals_.resize(finished.localBase);
+    if (!stack.empty()) stack.pop_back();
+    if (depth > 0) --depth;
+  }
+}
+
 void VM::pushOskelFrame(FuncPtr function, std::vector<Value> args, std::size_t resultReg, int line,
                        int col) {
   if (!function->proto) {
@@ -122,8 +133,14 @@ void VM::pushOskelFrame(FuncPtr function, std::vector<Value> args, std::size_t r
   const Bytecode& proto = *function->proto;
   // A variadic function accepts `numParams - 1` or more arguments: the extras
   // are packed into an array bound to the last parameter (PHASE 6.5). A
-  // non-variadic one needs the exact count.
-  const std::size_t required = static_cast<std::size_t>(proto.numParams) - (proto.variadic ? 1 : 0);
+  // non-variadic one needs the exact count. A variadic proto with no parameter
+  // at all is malformed: `numParams - 1` would underflow, so reject it before
+  // the subtraction.
+  const std::size_t paramCount = static_cast<std::size_t>(proto.numParams);
+  if (proto.variadic && paramCount == 0) {
+    fail(function->name + "(): a variadic function needs at least one parameter", line, col);
+  }
+  const std::size_t required = paramCount - (proto.variadic ? 1 : 0);
   const bool arityOk = proto.variadic ? args.size() >= required : args.size() == required;
   if (!arityOk) {
     fail(function->name + "() expects " + std::to_string(required) + " argument" +
@@ -163,9 +180,23 @@ void VM::pushOskelFrame(FuncPtr function, std::vector<Value> args, std::size_t r
   // `resultScratch` defaults to kNoResult; `call` overwrites it with the
   // dedicated scratch slot right after pushing the frame.
   CallFrame frame{function->proto, 0, kNoResult, resultReg, regBase, localBase, function->upvalues};
-  frames_.push_back(std::move(frame));
-  ++depth;
+  // Push the debug stack entry first, then the frame, then bump `depth`: if any
+  // of the three allocations throws, the frame stack, the debug stack and
+  // `depth` must all still agree with each other, because `call`'s unwind and
+  // `run`'s reset both rely on that. `frames_` grows last, so a throw leaves it
+  // at the caller's depth; the rollback below undoes the two entries that did
+  // land and the two window resizes.
   stack.push_back(Frame{function->name, line, col});
+  ++depth;
+  try {
+    frames_.push_back(std::move(frame));
+  } catch (...) {
+    stack.pop_back();
+    --depth;
+    registers_.resize(regBase);
+    locals_.resize(localBase);
+    throw;
+  }
 }
 
 Value VM::call(const Value& callee, std::vector<Value> args, int line, int col) {
@@ -234,20 +265,10 @@ Value VM::call(const Value& callee, std::vector<Value> args, int line, int col) 
   } catch (...) {
     // Unwind: drop every frame this call pushed (and any deeper ones) so the
     // VM stays consistent for a subsequent run(). `leaveFrame` normally does
-    // this bookkeeping; on an exception we replicate it, shrinking the shared
-    // windows. `stopDepth` is the index of
-    // the callee frame, so we unwind while frames remain at or above it.
-    while (frames_.size() > stopDepth) {
-      CallFrame finished = std::move(frames_.back());
-      frames_.pop_back();
-      registers_.resize(finished.regBase);
-      locals_.resize(finished.localBase);
-      // Keep every scratch slot alive: outer nested-call loops still read
-      // their own cell after this frame is popped (PHASE 6b fix).
-      // Slots are reclaimed lazily by the owning `call` scope, never here.
-      if (!stack.empty()) stack.pop_back();
-      if (depth > 0) --depth;
-    }
+    // this bookkeeping; on an exception `unwindFramesTo` replicates it,
+    // shrinking the shared windows. `stopDepth` is the index of the callee
+    // frame, so we unwind while frames remain at or above it.
+    unwindFramesTo(stopDepth);
     currentLine = savedLine;
     currentCol = savedCol;
     throw;
@@ -320,7 +341,20 @@ Value VM::run(const Bytecode& bytecode) {
   scratchCells_.clear();
   std::shared_ptr<const Bytecode> root(&bytecode, [](const Bytecode*) {});
   frames_.push_back(CallFrame{std::move(root), 0, kNoResult, kNoResult, 0, 0, {}});
-  Value result = runFrames(1);
+  Value result;
+  try {
+    result = runFrames(1);
+  } catch (...) {
+    // `fail()` raised outside `call()` (a bad opcode, an out-of-range index, a
+    // type error in a binary op) leaves the frames, the debug stack and
+    // `depth` populated. `call()` unwinds its own frames, but the root chunk
+    // has no owner, so clear everything here: a later `run()` on the same VM
+    // must start from a clean state.
+    unwindFramesTo(0);
+    stack.clear();
+    depth = 0;
+    throw;
+  }
   // `HALT` pops the root frame and shrinks `registers_` / `locals_` to the
   // root's bases (0), so `registerCount()` / `localCount()` would report 0
   // after `run()`. Restore the proto's counts so the public accessors keep
@@ -598,6 +632,10 @@ Value VM::runFrames(std::size_t stopDepth) {
 
       case OpCode::RETURN: {
         Value result = getReg(instruction.a);
+        // `RETURN` at the root chunk has no caller to return to: only `HALT`
+        // ends the program. Accept it as a normal end (hand-built bytecode,
+        // and `return` at the top level of a REPL entry compiles to `RETURN`)
+        // by treating it exactly like `HALT`.
         if (leaveFrame(result)) return result;
         break;
       }
@@ -660,7 +698,11 @@ Value VM::runFrames(std::size_t stopDepth) {
         if (instruction.b < 0 || static_cast<std::size_t>(instruction.b) >= upvalues.size()) {
           fail("upvalue index out of range: " + std::to_string(instruction.b), line, col);
         }
-        setReg(instruction.a, upvalues[static_cast<std::size_t>(instruction.b)]->value);
+        const CellPtr& cell = upvalues[static_cast<std::size_t>(instruction.b)];
+        // A closure built by hand or by a malformed chunk can carry a null
+        // upvalue; dereferencing it would crash instead of raising.
+        if (!cell) fail("undefined upvalue: " + std::to_string(instruction.b), line, col);
+        setReg(instruction.a, cell->value);
         break;
       }
 
@@ -669,7 +711,9 @@ Value VM::runFrames(std::size_t stopDepth) {
         if (instruction.b < 0 || static_cast<std::size_t>(instruction.b) >= upvalues.size()) {
           fail("upvalue index out of range: " + std::to_string(instruction.b), line, col);
         }
-        upvalues[static_cast<std::size_t>(instruction.b)]->value = getReg(instruction.a);
+        CellPtr& cell = upvalues[static_cast<std::size_t>(instruction.b)];
+        if (!cell) fail("undefined upvalue: " + std::to_string(instruction.b), line, col);
+        cell->value = getReg(instruction.a);
         break;
       }
 
