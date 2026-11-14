@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "bytecode.h"
@@ -45,7 +46,10 @@ class VM : public Runtime {
 
   // Forgets every global. The caller re-registers the standard library when
   // it wants to keep it (the REPL's `:clear`).
-  void clearGlobals() { globals_.clear(); }
+  void clearGlobals() {
+    globals_.clear();
+    immutableGlobals_.clear();
+  }
 
   // Number of registers reserved by the last execution.
   int registerCount() const { return static_cast<int>(registers_.size()); }
@@ -109,6 +113,12 @@ class VM : public Runtime {
   // of the shared local windows.
   std::vector<CellPtr> scratchCells_;
   std::unordered_map<std::string, Value> globals_;
+  // Names bound by a `let`/`const` (or a native that declared itself
+  // immutable). A `SETGLOBAL` in `GlobalWrite::Assign` mode against one of
+  // these is a runtime error, so immutability is enforced by the engine and not
+  // only by the compiler (a hand-built bytecode or a persistent REPL state
+  // cannot bypass it).
+  std::unordered_set<std::string> immutableGlobals_;
 
   // Development-engine JIT (slice 1). Disabled unless the CLI turns it on, so
   // the interpreter path is unchanged when it is off.

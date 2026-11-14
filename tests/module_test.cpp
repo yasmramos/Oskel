@@ -194,7 +194,7 @@ void testModuleRunsOnce() {
   // Three imports must run it once, so `runs` ends at 1.
   VM vm;
   compileAndRun(
-      "let runs = 0;\n"
+      "var runs = 0;\n"
       "import modules.counter;\n"
       "import modules.counter as c;\n"
       "import modules.counter.*;\n",

@@ -239,7 +239,7 @@ static void testLoadSharesModuleCache() {
     }
     throw CompileError{"module '" + path + "' not found", line, col};
   };
-  session.entry("let runs = 0;");
+  session.entry("var runs = 0;");
   session.loadFile("import load.mod;", loader);
   check(session.globalInt("runs") == 1, "a loaded file imports a module once");
   session.entry("import load.mod;");

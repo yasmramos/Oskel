@@ -62,8 +62,11 @@ enum class OpCode : std::uint8_t {
   JMP_IF_TRUE,  // if R[a] then pc = jump
 
   // Variables. Globals are resolved by name (a string constant in the pool);
-  // locals by cell index in the current frame.
-  SETGLOBAL,  // globals[constants[b]] = R[a]
+  // locals by cell index in the current frame. `SETGLOBAL` stores the write
+  // mode in `c` (a `GlobalWrite`), so the VM can tell a declaration from a
+  // later assignment and enforce a `let` binding's immutability at run time,
+  // not only at compile time.
+  SETGLOBAL,  // globals[constants[b]] = R[a]  (write mode GlobalWrite(c))
   GETGLOBAL,  // R[a] = globals[constants[b]]
   DECLLOCAL,  // locals[b] = new cell holding R[a]
   SETLOCAL,   // locals[b]->value = R[a]
@@ -117,6 +120,18 @@ enum class UnaryOp : std::uint8_t {
   Negate = 0,  // -x
   Not = 1,     // !x
   BitNot = 2,  // ~x
+};
+
+// Selector stored in `Instruction::c` for `SETGLOBAL`. `Declare` binds a fresh
+// global (a `var`/`let`/`const` declaration, a `fn`, or an import) and records
+// whether the binding is immutable; `Assign` writes an existing one and fails
+// at run time when the binding is immutable. The compiler always emits a
+// `Declare` before any `Assign` of the same name, so a hand-built bytecode that
+// assigns first is the only way to reach the runtime check with no metadata.
+enum class GlobalWrite : std::uint8_t {
+  DeclareMutable = 0,   // bind a `var`/`fn`/import (writable)
+  DeclareImmutable = 1, // bind a `let`/`const` (writable once, at the declaration)
+  Assign = 2,           // assign an existing binding (fails if immutable)
 };
 
 struct Instruction {
