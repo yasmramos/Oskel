@@ -1413,6 +1413,12 @@ void registerBuiltins(Runtime& in) {
   // diagnostic at the slice's line/column.
   in.addNative("$slice", [](Runtime& in, Args args) -> Value {
     need(in, "$slice", args, 4);
+    // The receiver type is checked first: a value that cannot be sliced is the
+    // primary error, so `n["a":"b"]` on an int reports "cannot slice 'int'"
+    // rather than complaining about the bound's type.
+    if (!args[0].isArray() && !args[0].isStr()) {
+      in.fail(std::string("cannot slice a value of type '") + args[0].typeName() + "'");
+    }
     // A nil bound is "not given"; an integer is the bound (negative counts
     // from the end). The two are kept distinct so `s[-3:]` is not read as
     // "no start".
