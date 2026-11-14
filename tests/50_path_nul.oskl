@@ -17,7 +17,7 @@ assertEq(pcall(() => fileExists(nul)).error.message,
          "fileExists() path must not contain a NUL byte");
 
 // A normal path is unaffected: write, read back, then clean up.
-let path = "/tmp/oskel_path_nul_test.txt";
+let path = "oskel_path_nul_test.txt";
 writeFile(path, "hello");
 assertEq(fileExists(path), true);
 assertEq(readFile(path), "hello");
