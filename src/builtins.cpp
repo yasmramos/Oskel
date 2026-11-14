@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <random>
-#include <sstream>
 #include <string>
 #include <vector>
 
@@ -584,9 +583,18 @@ bool bindString(Runtime& in, StringPtr receiver, const std::string& name, Value&
       needBetween(in, "split", args, 0, 1);
       std::vector<Value> items;
       if (args.empty()) {
-        std::istringstream stream(text);
-        std::string word;
-        while (stream >> word) items.emplace_back(word);
+        // Split on runs of ASCII whitespace, with no leading or trailing empty
+        // field. Done by hand so the separator matches `trim*` exactly, instead
+        // of `std::istringstream`, whose whitespace classification is
+        // locale-dependent and could disagree with `std::isspace`.
+        size_t i = 0;
+        while (i < text.size()) {
+          while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+          if (i >= text.size()) break;
+          size_t start = i;
+          while (i < text.size() && !std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+          items.emplace_back(text.substr(start, i - start));
+        }
       } else {
         std::string separator = wantString(in, "split", args[0], "separator");
         if (separator.empty()) {

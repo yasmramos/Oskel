@@ -23,6 +23,18 @@ assertEq("  x  ".trimStart(), "x  ");
 assertEq("  x  ".trimEnd(), "  x");
 assertEq("a,b,c".split(","), ["a", "b", "c"]);
 assertEq("a b  c".split(), ["a", "b", "c"]);
+// With no argument, `split` breaks on runs of ASCII whitespace with no leading
+// or trailing empty field: the separator is the same one `trim*` uses.
+assertEq("  a  b  ".split(), ["a", "b"]);
+assertEq("a\tb\nc\rd".split(), ["a", "b", "c", "d"]);
+assertEq("one".split(), ["one"]);
+assertEq("".split(), []);
+assertEq("   ".split(), []);
+assertEq("\t\n ".split(), []);
+// A separator argument still keeps empty fields, including at the edges.
+assertEq("a,,b".split(","), ["a", "", "b"]);
+assertEq(",a,".split(","), ["", "a", ""]);
+assertEq("abc".split(""), ["a", "b", "c"]);
 assertEq("abc".chars(), ["a", "b", "c"]);
 assertEq("a-b".replace("-", "+"), "a+b");
 assertEq("a-a".replaceFirst("a", "b"), "b-a");
