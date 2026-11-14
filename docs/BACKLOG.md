@@ -454,15 +454,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 15. Codegen (`src/native/codegen.cpp`)
 
-1. **[P1]** No byte-exact test for `callRel`.
-2. **[P1]** No byte-exact test for `emitBytes`.
-3. **[P1]** No test for `push`/`pop` of all registers (only `rbx` and `r12`).
-4. **[P1]** No unit test for `ucomisd` (used by `floatDiv`/`floatMod`/`compare`).
-5. **[P2]** No execution test for `testAhImm8`, `fldM64`/`fstpM64`/`fprem`/
+1. **[P2]** No execution test for `testAhImm8`, `fldM64`/`fstpM64`/`fprem`/
    `fnstswAx` (`test_x87` covers them byte-exactly only).
-6. **[P3]** `put8` is a free function, not a member; keep the single byte path
+2. **[P3]** `put8` is a free function, not a member; keep the single byte path
    enforced.
-7. **[P3]** `emitBytes` emits byte by byte so fixups keep exact offsets; slow
+3. **[P3]** `emitBytes` emits byte by byte so fixups keep exact offsets; slow
    for large payloads. Optimize while preserving offsets.
 
 ---
