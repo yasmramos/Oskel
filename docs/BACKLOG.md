@@ -306,14 +306,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 2. **[P2]** `printSnippet` computes `displayColumns` in bytes while `col` is in
    bytes; for UTF-8 lines the caret can point wrong. The existing test is
    ASCII-only, so it does not catch it.
-3. **[P1]** `lineText` does not handle `\r\n`; the lexer normalizes `\r\n` to
-   `\n`, but `lineText` reads the original source, so the `\r` stays and the
-   caret can point wrong.
-4. **[P2]** `Warning` has no code/id, so warnings cannot be suppressed
+3. **[P2]** `Warning` has no code/id, so warnings cannot be suppressed
    selectively.
-5. **[P2]** `CompileError` has no code, so callers must match strings to
+4. **[P2]** `CompileError` has no code, so callers must match strings to
    classify errors.
-6. **[P3]** `printRuntimeError` elides frames after 10+10; a 20-frame stack is
+5. **[P3]** `printRuntimeError` elides frames after 10+10; a 20-frame stack is
    not elided — verify the boundary.
 
 ---
