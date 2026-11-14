@@ -34,6 +34,13 @@ assertEq("abc".indexOf("z"), -1);
 assertEq("abcdef".substr(1, 3), "bcd");
 assertEq("abcdef".substr(-2), "ef");
 assertEq("ab".repeat(3), "ababab");
+// An empty text repeats to an empty text for any count, including a huge one
+// (the check must not let a huge count hang on an empty text).
+assertEq("".repeat(5), "");
+assertEq("".repeat(0), "");
+assertEq("".repeat(9223372036854775807), "");
+// A huge count on a non-empty text is rejected rather than allocating.
+assertEq(pcall(() => "a".repeat(9223372036854775807)).ok, false);
 assertEq("abc".reversed(), "cba");
 assertEq("5".padStart(3, "0"), "005");
 assertEq("5".padEnd(3, "0"), "500");

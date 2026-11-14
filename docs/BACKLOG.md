@@ -343,25 +343,24 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    closure.
 5. **[P2]** `bindString` `split` with no argument uses `std::istringstream`
    (whitespace, no quotes).
-6. **[P2]** `bindString` `repeat` with an empty text does not validate the
    size (`repeat("", INT64_MAX)` returns `""` but `repeat("a", INT64_MAX)`
    fails); make the check consistent.
-7. **[P2]** `bindString` `padStart`/`padEnd` build the padding then trim it
+6. **[P2]** `bindString` `padStart`/`padEnd` build the padding then trim it
    with `utf8Chars`, O(n) extra for large paddings.
-8. **[P2]** `registerBuiltins` for `float` uses `strtod`, so `float("inf")`
+7. **[P2]** `registerBuiltins` for `float` uses `strtod`, so `float("inf")`
     returns `inf` instead of an error; decide.
-9. **[P2]** `args()` returns `scriptArgs` without the script name; decide the
+8. **[P2]** `args()` returns `scriptArgs` without the script name; decide the
     contract (Lua-style) and document it.
-10. **[P3]** `bindArray` `push` returns `self`, not `nil`; `sort`/`merge` mutate
+9. **[P3]** `bindArray` `push` returns `self`, not `nil`; `sort`/`merge` mutate
     in place and return `self`. Decide the return-value contract.
-11. **[P3]** `registerBuiltins` for `range` allows `start > end` (descending);
+10. **[P3]** `registerBuiltins` for `range` allows `start > end` (descending);
     verify and test.
-12. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
+11. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
     two programs in the same process share state; correct in a REPL, document
     it.
-13. **[P3]** `registerBuiltins` for `$slice` checks bounds before the array/
+12. **[P3]** `registerBuiltins` for `$slice` checks bounds before the array/
     string type; the check order matters, make it explicit.
-14. **[P3]** `cstring` copies the string with `\0`, truncating at an embedded
+13. **[P3]** `cstring` copies the string with `\0`, truncating at an embedded
     `\0`; expected for C, but document it.
 
 ---

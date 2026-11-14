@@ -702,8 +702,12 @@ bool bindString(Runtime& in, StringPtr receiver, const std::string& name, Value&
       need(in, "repeat", args, 1);
       int64_t count = wantInt(in, "repeat", args[0], "count");
       if (count < 0) in.fail("repeat() count cannot be negative");
-      if (count > 0 && text.size() > 0 &&
-          static_cast<uint64_t>(count) > (64ULL * 1024ULL * 1024ULL) / text.size()) {
+      // Repeating an empty text yields an empty text whatever the count, and
+      // the loop below would still spin `count` times: return early so a huge
+      // count is O(1) instead of a hang. The result is consistent with the
+      // small-count case (`repeat("", 5)` is also "").
+      if (text.empty()) return Value(std::string());
+      if (count > 0 && static_cast<uint64_t>(count) > (64ULL * 1024ULL * 1024ULL) / text.size()) {
         in.fail("repeat() result is too large");
       }
       std::string result;
