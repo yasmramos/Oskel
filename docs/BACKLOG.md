@@ -330,9 +330,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 12. Builtins (`src/builtins.cpp`)
 
-1. **[P1]** `registerBuiltins` for `pcall` catches `RuntimeError` but not
-   `CompileError`; decide and handle.
-2. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
+1. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
     two programs in the same process share state; correct in a REPL, document
     it.
 ## 13. Ops (`src/ops.cpp`)

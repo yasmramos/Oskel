@@ -1323,6 +1323,20 @@ void registerBuiltins(Runtime& in) {
       result->set("ok", Value(false));
       result->set("value", Value());
       result->set("error", makeError(error.message));
+    } catch (const std::exception& error) {
+      // A host failure (for example `std::bad_alloc` from `buffer(huge)` or
+      // `std::length_error` from an oversized `repeat`) is not a RuntimeError,
+      // but it must not abort the process either: `VM::call` has already
+      // unwound, so turn it into an error value and keep `pcall`'s contract.
+      result->set("ok", Value(false));
+      result->set("value", Value());
+      result->set("error", makeError(error.what()));
+    } catch (...) {
+      // Nothing may escape `pcall`: an unknown exception still becomes a value
+      // so the caller keeps control.
+      result->set("ok", Value(false));
+      result->set("value", Value());
+      result->set("error", makeError("unknown error"));
     }
     return Value(result);
   });

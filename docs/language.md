@@ -2014,8 +2014,11 @@ print(sum.value);                              // 5
 ```
 
 Every runtime error is catchable, including `panic(...)`, an out-of-range
-index, an undefined variable and an error raised deep in the call stack. After
-`pcall` returns, the program keeps running and the engine stays consistent.
+index, an undefined variable and an error raised deep in the call stack. A
+host failure that is not a runtime error — an allocation the engine cannot
+satisfy, such as `buffer(huge)` or an oversized `repeat` — is also turned into
+an error value instead of aborting the process. After `pcall` returns, the
+program keeps running and the engine stays consistent.
 
 `pcall` is a function, not a keyword, so it compiles to an ordinary call: no
 new syntax and no new bytecode. Passing a non-function as the first argument is
