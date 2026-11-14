@@ -54,7 +54,7 @@ target_link_libraries(oskel_lib PUBLIC ${CMAKE_DL_LIBS})
 # --------------------------------------------------------------------------- libffi (optional)
 # FFI callbacks (PHASE 6.6) need a trampoline that C can call back into the VM.
 # The development engine uses libffi for that; the AOT backend lowers callbacks
-# to compile-time stubs and never links libffi (AGENT.md §5.1/§6.6). The build
+# to compile-time stubs and never links libffi (DEVELOPMENT.md §5.1/§6.6). The build
 # stays green without libffi: `OSKEL_HAVE_LIBFFI` is only defined when found, and
 # the callback path is compiled out otherwise (a clear runtime error instead).
 #
@@ -158,7 +158,7 @@ if(BUILD_TESTING)
       "-DREPL_INPUT=${CMAKE_CURRENT_SOURCE_DIR}/tests/repl/clear.in"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_repl_case.cmake")
 
-  # --- Compiler boundary check (AGENT.md toolchain boundary) ---
+  # --- Compiler boundary check (DEVELOPMENT.md toolchain boundary) ---
   add_test(NAME compiler_boundary
     COMMAND ${CMAKE_COMMAND}
       -DROOT=${CMAKE_CURRENT_SOURCE_DIR}

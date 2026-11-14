@@ -12,7 +12,7 @@
 // Emits native instructions directly as bytes, with labels resolved in two
 // passes: instructions that reference a label are patched once the label is
 // bound to an offset. No external assembler or JIT library is used, keeping
-// the zero-dependency rule of AGENT.md §5.1/§8.
+// the zero-dependency rule of DEVELOPMENT.md §5.1/§6.
 //
 // Register naming follows System V AMD64 conventions. The backend reserves
 // rbx for the register window and r12-r15 for temporary operands.

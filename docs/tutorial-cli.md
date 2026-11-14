@@ -135,7 +135,7 @@ $ echo 'print(range(3));' > r.oskl && oskel build r.oskl
 lowering: global 'range' is read but never assigned
 ```
 
-That is a deliberate design choice (§3 of `AGENT.md`: no VM-only features), not
+That is a deliberate design choice (§3 of `DEVELOPMENT.md`: no VM-only features), not
 a crash: the program is rejected at compile time, never mis-compiled. Until the
 rest of the standard library is lowered, keep `args()` and file I/O in the
 development engine, or pass data in as literals.
@@ -191,7 +191,7 @@ difference is the whole story.
 That is not a bug in the AOT backend; it is the price of a static compiler with
 no runtime type feedback. Oskel forbids exactly the escape hatch that would close
 the gap — profile-guided or on-stack recompilation inside the AOT binary is a
-VM-only feature (§3 of `AGENT.md`: no VM-only features), and per-instruction
+VM-only feature (§3 of `DEVELOPMENT.md`: no VM-only features), and per-instruction
 type annotations for the AOT fast paths are explicitly deferred (PHASE 7,
 "Deferred"). The JIT may specialise because it runs in the development engine,
 where a wrong guess can bail out to the VM; a shipped binary cannot.
@@ -232,7 +232,7 @@ $ scp wordcount server:/usr/local/bin/
 ```
 
 No `oskel` on the target, no matching runtime version, no `LD_LIBRARY_PATH`, no
-container needed just to run a program. That is the model of `AGENT.md` §2:
+container needed just to run a program. That is the model of `DEVELOPMENT.md` §2:
 `oskelc` produces a self-contained native binary; end users never install Oskel
 or any runtime.
 
@@ -241,6 +241,6 @@ or any runtime.
 ## 7. Where to go next
 
 - `docs/language.md` — the full language reference.
-- `AGENT.md` §4 (PHASE 7) — the AOT backend design and its sub-slices.
-- `AGENT.md` §4 (PHASE 8) — the JIT, development engine only.
+- `DEVELOPMENT.md` §4 (PHASE 7) — the AOT backend design and its sub-slices.
+- `DEVELOPMENT.md` §4 (PHASE 8) — the JIT, development engine only.
 - `examples/` — runnable programs (`collections.oskl`, `closures.oskl`, …).

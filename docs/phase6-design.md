@@ -3,7 +3,7 @@
 Status: **approved and in progress**. Slices 6a.0 and 6a are implemented; the
 rest is queued.
 
-Scope (from `AGENT.md` §4, PHASE 6): `CALL`, `RETURN`, `CLOSURE`, `GETUPVAL`,
+Scope (from `DEVELOPMENT.md` §4, PHASE 6): `CALL`, `RETURN`, `CLOSURE`, `GETUPVAL`,
 `SETUPVAL`, per-function protos, a call stack with per-frame registers,
 closures over `Cell`, a `Runtime` interface so builtins can call VM functions
 without re-entering the AST, arrays/maps with indexing and members, ranges,
@@ -92,7 +92,7 @@ Decisions taken while implementing 6a, superseding the text below:
 ### D1 — Opcode budget (approved)
 
 35 opcodes before PHASE 6; the phase needs 9 more (5 for functions, 3 for
-tables, 1 for iteration) plus `IN`. 45 breaks the "~40" rule in `AGENT.md` §3.
+tables, 1 for iteration) plus `IN`. 45 breaks the "~40" rule in `DEVELOPMENT.md` §3.
 
 Approved result: **exactly 40 opcodes**, by folding instructions whose operand
 is a compile-time constant (so native codegen in PHASE 7 specializes them back
@@ -112,7 +112,7 @@ to one instruction each):
 and `NEWTABLE`'s kind bit it is a compiler constant, so it becomes a
 specialized instruction later.
 
-The ceiling is hard, not a target (`AGENT.md` §3.3). Any later slice or
+The ceiling is hard, not a target (`DEVELOPMENT.md` §3.3). Any later slice or
 PHASE 7 feature that needs a new opcode must first execute the next rung of
 the retirement ladder: comparisons → `CMP` (-5), conditional jumps → `JMP_IF`
 (-1), bitwise → `BITOP` (-4), arithmetic → `ARITH` (-5). Never emit a 41st
@@ -223,7 +223,7 @@ duplicated arithmetic in `vm.cpp`.
 > — no libc**: there it runs on `PlatformFreestanding` (direct syscalls), while
 > the dev engine uses `PlatformPosix`. Anything that keeps the runtime tied to
 > the VM or to libc would have to be refactored later. See PHASE 7 in
-> `AGENT.md`. The AOT backend also takes the `Target { arch, os, abi }`
+> `DEVELOPMENT.md`. The AOT backend also takes the `Target { arch, os, abi }`
 > descriptor from `include/native/target.h` from the first slice; only
 > `x86_64-linux-sysv` is implemented, but no entry point hardcodes it.
 
@@ -284,7 +284,7 @@ functions CALL RETURN CLOSURE GETUPVAL SETUPVAL
 tables    NEWTABLE GETTABLE SETTABLE
 iteration ITER
 membership IN
-io        PRINT             (temporary; deleted at 6f, AGENT.md §3.6)
+io        PRINT             (temporary; deleted at 6f, DEVELOPMENT.md §3.6)
 end       HALT
 ```
 

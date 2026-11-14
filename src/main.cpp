@@ -96,7 +96,7 @@ std::string executablePath(const std::string &argv0) {
 }
 
 // Directory of the standard library shipped with the toolchain. `std.*`
-// imports resolve here (see AGENT.md §18: `std.` is reserved).
+// imports resolve here (see docs/language.md §18: `std.` is reserved).
 //
 // `$OSKEL_STDLIB` overrides the search. Otherwise the standard library is
 // looked for in the working directory and, walking up from the executable's
@@ -241,7 +241,7 @@ int runSource(const std::string &source, const std::string &name,
 // binary to `output`. The whole pipeline is the dev engine's: lex, parse,
 // compile to bytecode, then lower the bytecode to machine code and wrap it in
 // a static executable. The emitted binary embeds only the AOT runtime, never
-// the compiler, so it cannot `eval` (AGENT.md §3, the GraalVM pitfall).
+// the compiler, so it cannot `eval` (DEVELOPMENT.md §3, the GraalVM pitfall).
 //
 // Returns 0 on success, 65 for compile errors and 74 for a write failure.
 int buildBinary(const std::string &source, const std::string &name,

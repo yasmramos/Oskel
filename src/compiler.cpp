@@ -1491,7 +1491,7 @@ void Compiler::compileQualifiedImport(const ImportedModule& module, const std::s
   const ImportBinding::Kind kind =
       isAlias ? ImportBinding::Kind::Module : ImportBinding::Kind::Namespace;
   // A local binding wins, a repeated import is a no-op, and a genuine
-  // collision with another import form is a compile error (AGENT.md §18.3).
+  // collision with another import form is a compile error (docs/language.md §18.3).
   if (!recordImportBinding(visible, kind, module.path, line, col)) return;
 
   int table = allocReg();
@@ -1515,7 +1515,7 @@ bool Compiler::recordImportBinding(const std::string& visible, ImportBinding::Ki
                                    const std::string& module, int line, int col) {
   // A name the importing module declares itself (`let`/`var`/`fn`) always wins
   // over an import, whatever the order of the declarations. Such a name is not
-  // an import binding, so it never triggers an ambiguity either (AGENT.md
+  // an import binding, so it never triggers an ambiguity either (DEVELOPMENT.md
   // §18.3).
   if (userGlobals_.find(visible) != userGlobals_.end()) return false;
 

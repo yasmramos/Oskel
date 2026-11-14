@@ -1,7 +1,7 @@
 # Fails when the bytecode compiler or the native backend pulls in the
 # interpreter or the VM.
 #
-# AGENT.md requires this boundary: `src/compiler.*` and `src/native/*` are
+# DEVELOPMENT.md requires this boundary: `src/compiler.*` and `src/native/*` are
 # libraries any entry point may link (today the single `oskel` binary, later a
 # separate `oskelc`), and the AOT runtime must never be able to reach the
 # compiler or the interpreter. Keeping the include graph clean is what makes
@@ -28,7 +28,7 @@ set(forbidden "interpreter[.]h|vm[.]h|jit/jit[.]h")
 # half. `ffi_types.h` is the shared, dependency-free source of truth and is
 # allowed; `ffi_marshal.h` pulls in `runtime.h`/`value.h`, and `ffi.cpp` is the
 # only place that includes libffi. libffi is a development-engine-only
-# dependency (AGENT.md §5.1/§8): the AOT backend lowers callbacks to compile-time
+# dependency (DEVELOPMENT.md §5.1/§6): the AOT backend lowers callbacks to compile-time
 # stubs and must never link it, so the include must not be reachable from the
 # compiler or the native backend.
 set(forbidden_ffi "ffi_marshal[.]h|ffi[.]h|libffi")
@@ -59,7 +59,7 @@ if(violations)
   message(FATAL_ERROR
     "${count} forbidden include(s): the compiler and the native backend must not "
     "include interpreter.h, vm.h, the JIT (jit/jit.h), the FFI runtime "
-    "(ffi_marshal.h) or libffi (see AGENT.md, toolchain boundary).")
+    "(ffi_marshal.h) or libffi (see DEVELOPMENT.md, toolchain boundary).")
 endif()
 
 list(LENGTH boundary_files checked)
