@@ -335,38 +335,35 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    case table.
 2. **[P1]** `$mapValue` does `args[1].asStr()` with no check; a hand-built
    bytecode passing a non-string segfaults.
-3. **[P1]** `registerBuiltins` for `int` uses `strtoll` base 0, so `int("010")`
-   returns 8 (octal). Oskel uses `0o`, so base-0 octal is surprising; parse
-   decimal unless the prefix is explicit.
-4. **[P1]** `registerBuiltins` for `pcall` catches `RuntimeError` but not
+3. **[P1]** `registerBuiltins` for `pcall` catches `RuntimeError` but not
    `CompileError`; decide and handle.
-5. **[P2]** `sortItems` uses `std::stable_sort` with a comparator that calls
+4. **[P2]** `sortItems` uses `std::stable_sort` with a comparator that calls
    `in.call`; if it throws, the array can be left inconsistent. Guard it and
    test a throwing comparator.
-6. **[P2]** `bindArray` `map`/`filter`/`reduce`/`each` invoke the callback
+5. **[P2]** `bindArray` `map`/`filter`/`reduce`/`each` invoke the callback
    through `in.call`, which reenters the VM; add a direct test with a VM
    closure.
-7. **[P2]** `bindString` `split` with no argument uses `std::istringstream`
+6. **[P2]** `bindString` `split` with no argument uses `std::istringstream`
    (whitespace, no quotes).
-8. **[P2]** `bindString` `repeat` with an empty text does not validate the
+7. **[P2]** `bindString` `repeat` with an empty text does not validate the
    size (`repeat("", INT64_MAX)` returns `""` but `repeat("a", INT64_MAX)`
    fails); make the check consistent.
-9. **[P2]** `bindString` `padStart`/`padEnd` build the padding then trim it
+8. **[P2]** `bindString` `padStart`/`padEnd` build the padding then trim it
    with `utf8Chars`, O(n) extra for large paddings.
-10. **[P2]** `registerBuiltins` for `float` uses `strtod`, so `float("inf")`
+9. **[P2]** `registerBuiltins` for `float` uses `strtod`, so `float("inf")`
     returns `inf` instead of an error; decide.
-11. **[P2]** `args()` returns `scriptArgs` without the script name; decide the
+10. **[P2]** `args()` returns `scriptArgs` without the script name; decide the
     contract (Lua-style) and document it.
-12. **[P3]** `bindArray` `push` returns `self`, not `nil`; `sort`/`merge` mutate
+11. **[P3]** `bindArray` `push` returns `self`, not `nil`; `sort`/`merge` mutate
     in place and return `self`. Decide the return-value contract.
-13. **[P3]** `registerBuiltins` for `range` allows `start > end` (descending);
+12. **[P3]** `registerBuiltins` for `range` allows `start > end` (descending);
     verify and test.
-14. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
+13. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
     two programs in the same process share state; correct in a REPL, document
     it.
-15. **[P3]** `registerBuiltins` for `$slice` checks bounds before the array/
+14. **[P3]** `registerBuiltins` for `$slice` checks bounds before the array/
     string type; the check order matters, make it explicit.
-16. **[P3]** `cstring` copies the string with `\0`, truncating at an embedded
+15. **[P3]** `cstring` copies the string with `\0`, truncating at an embedded
     `\0`; expected for C, but document it.
 
 ---

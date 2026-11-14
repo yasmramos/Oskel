@@ -78,6 +78,39 @@ std::string wantPath(Runtime& in, const std::string& fn, const Value& value,
   return path;
 }
 
+// Parses the text of `int(string)` using the same bases the language spells for
+// literals (see docs/language.md section 2.3): an explicit `0x`/`0b`/`0o`
+// prefix, otherwise decimal. `strtoll`'s base-0 mode would read a bare leading
+// zero as octal (`int("010")` -> 8) and reject the `0o` prefix Oskel actually
+// uses, so the base is chosen here instead.
+int64_t parseIntText(Runtime& in, const std::string& original, const std::string& text) {
+  if (text.empty()) in.fail("cannot convert an empty string to int");
+  std::string sign;
+  size_t start = 0;
+  if (text[0] == '+' || text[0] == '-') {
+    sign = text.substr(0, 1);
+    start = 1;
+  }
+  std::string body = text.substr(start);
+  int base = 10;
+  if (body.size() >= 2 && body[0] == '0') {
+    switch (body[1]) {
+      case 'x': case 'X': base = 16; body = body.substr(2); break;
+      case 'b': case 'B': base = 2; body = body.substr(2); break;
+      case 'o': case 'O': base = 8; body = body.substr(2); break;
+      default: break;
+    }
+  }
+  const std::string parse = sign + body;
+  errno = 0;
+  char* end = nullptr;
+  long long result = std::strtoll(parse.c_str(), &end, base);
+  if (errno == ERANGE || end == parse.c_str() || *end != '\0') {
+    in.fail("cannot convert '" + original + "' to int");
+  }
+  return static_cast<int64_t>(result);
+}
+
 // Extracts a live pointer argument, rejecting a released handle so a
 // use-after-free is a clear error instead of undefined behaviour.
 PtrObj& wantPtr(Runtime& in, const std::string& fn, const Value& value,
@@ -1001,13 +1034,7 @@ void registerBuiltins(Runtime& in) {
     if (value.isStr()) {
       std::string text = trim(value.asStr());
       if (text.empty()) in.fail("cannot convert an empty string to int");
-      errno = 0;
-      char* end = nullptr;
-      long long result = std::strtoll(text.c_str(), &end, 0);
-      if (errno == ERANGE || end == nullptr || *end != '\0') {
-        in.fail("cannot convert '" + value.asStr() + "' to int");
-      }
-      return Value(static_cast<int64_t>(result));
+      return Value(parseIntText(in, value.asStr(), text));
     }
     in.fail("cannot convert '" + std::string(value.typeName()) + "' to int");
   });

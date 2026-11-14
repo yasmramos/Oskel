@@ -1,0 +1,47 @@
+// `int(string)` used `strtoll` with base 0, so a bare leading zero was read as
+// octal (`int("010")` returned 8) and the `0o` prefix the language uses for
+// octal literals was rejected. The bases now match the literal forms of
+// docs/language.md section 2.3: an explicit `0x`/`0b`/`0o` prefix, otherwise
+// decimal.
+
+// A leading zero does not switch to octal; the text stays decimal.
+assertEq(int("010"), 10);
+assertEq(int("0"), 0);
+assertEq(int("00"), 0);
+
+// Every prefix the language spells for a literal is accepted.
+assertEq(int("0x1F"), 31);
+assertEq(int("0X1F"), 31);
+assertEq(int("0b101"), 5);
+assertEq(int("0o17"), 15);
+assertEq(int("0O17"), 15);
+
+// The plain decimal form and the sign forms still work.
+assertEq(int("42"), 42);
+assertEq(int("  42  "), 42);
+assertEq(int("-7"), -7);
+assertEq(int("+7"), 7);
+assertEq(int("-0x10"), -16);
+assertEq(int("-0o10"), -8);
+
+// A bare leading zero does not switch to octal; the text stays decimal, just
+// like the lexer reads `08` as 8.
+assertEq(pcall(() => int("08")).ok, true);
+assertEq(int("08"), 8);
+assertEq(int("09"), 9);
+
+// Malformed text keeps failing cleanly.
+assertEq(pcall(() => int("")).ok, false);
+assertEq(pcall(() => int("abc")).ok, false);
+assertEq(pcall(() => int("0x")).ok, false);
+assertEq(pcall(() => int("0o")).ok, false);
+assertEq(pcall(() => int("12abc")).ok, false);
+assertEq(pcall(() => int("0xZZ")).ok, false);
+assertEq(pcall(() => int("+")).ok, false);
+assertEq(pcall(() => int("-")).ok, false);
+
+// Out-of-range magnitudes still fail instead of wrapping.
+assertEq(pcall(() => int("9223372036854775808")).ok, false);
+assertEq(int("9223372036854775807"), 9223372036854775807);
+
+print("int string bases ok");
