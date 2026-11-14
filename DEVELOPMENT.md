@@ -52,7 +52,8 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `vm.cpp` | `Bytecode*` | execution | ✅ |
 | `main.cpp` | CLI | full pipeline | ✅ (VM as dev engine, PHASE 4) |
 | `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slice 1 |
-| `value.cpp` / `env.cpp` | `Value`, scope chain | shared runtime | ✅ |
+| `value.cpp` | `Value`, tagged union | shared runtime | ✅ |
+| `env.cpp` | `Env`, lexical scope chain | **unused** (see note) | ⚠️ |
 | `builtins.cpp` / `ops.cpp` | native builtins, shared operators | runtime library | ✅ |
 | `ffi.cpp` | `extern "C"` declarations | marshalling natives | ✅ PHASE 6.6 |
 | `diagnostic.cpp` | `CompileError`, `Warning`, `RuntimeError` | stderr output | ✅ |
@@ -67,6 +68,15 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `native/arena.cpp` | block + size | aligned allocations | ✅ PHASE 7c.0 |
 | `native/platform_freestanding.cpp` | `Platform` ops | direct Linux syscalls | ✅ PHASE 7c.0 |
 | `native/entry.cpp` | program entry label | `_start` + runtime prelude | ✅ PHASE 7c.0 |
+
+**Note on `env.cpp`.** It is the lexical scope chain of the retired AST
+interpreter. The VM keeps locals in reference-counted `Cell`s and never
+constructs an `Env`, and `Function::closure` (the only `Env` owner left in
+`value.h`) is never assigned, so `env.cpp` is dead code kept only by
+`tests/gc_test.cpp`. It is not part of the AST interpreter path (which is
+gone) nor of the VM; it can be deleted once `gc_test.cpp` drops it. The
+`functionGcOps` visitor in `value.cpp` still walks `closure`, so removing it
+is a small, self-contained cleanup.
 
 ### Toolchain binaries and the compiler boundary
 
@@ -275,14 +285,14 @@ previous one.
 - `run()` resets the registers and keeps the globals between executions
 - Each opcode: 2-3 lines of C++
 
-### PHASE 4 — `src/main.cpp` (VM as the dev engine) ⬜ (runs after PHASE 6)
+### PHASE 4 — `src/main.cpp` (VM as the dev engine) ✅
 - Lua/LuaJIT model: `oskel`, `oskel -e` and the REPL **always** compile to
   bytecode and run on the VM as the **development mode**. The AST is never
   executed in production.
 - REPL with **a single persistent VM**: each input is compiled to a chunk and
   run on the same globals.
-- Temporary `--ast` only for differential tests (comparing AST vs VM); it is
-  removed from the binary once parity is reached.
+- The temporary `--ast` differential flag was removed from the binary once
+  VM/AST parity was reached; it is gone.
 - `oskel -c file.oskl` compiles without running.
 - `oskel build file.oskl` → PHASE 7 AOT backend: freestanding static native
   binary (no libc), no Oskel installation needed by end users.
@@ -1015,7 +1025,7 @@ inline caching or specialization, it is out of scope (§6).
 Phase 1: ✅ completed and reviewed
 Phase 2: ✅ completed
 Phase 3: ✅ completed
-Phase 4: ⬜ pending (VM as the dev engine; requires PHASE 6)
+Phase 4: ✅ completed (VM as the dev engine: `oskel`, `oskel -e` and the REPL compile to bytecode and run on the VM; the AST interpreter and its `--ast` flag are gone)
 Phase 5: ✅ completed and tested
 Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair through the hidden `$mapValue` helper, no new opcode) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)

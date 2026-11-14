@@ -33,7 +33,9 @@ for language in languages {
 - Interactive REPL with session state, commands and expression evaluation.
 - **Ahead-of-time native compilation**: `oskel build file.oskl` emits a
   self-contained static executable (no libc, no runtime to install; `ldd`
-  reports *"not a dynamic executable"*). See the
+  reports *"not a dynamic executable"*). The AOT backend covers the language
+  core, not the whole runtime; see
+  [What runs where](#what-runs-where-vm-vs-aot) for the exact split and the
   [CLI tutorial](docs/tutorial-cli.md).
 - Diagnostics with file, line, column, code snippet and stack trace.
 
@@ -227,6 +229,47 @@ print("${person.name} is ${person.age} years old");
 
 The full reference is in **[docs/language.md](docs/language.md)**.
 
+## What runs where (VM vs AOT)
+
+Oskel has two execution paths: the register-based **VM** (used by `oskel`,
+`oskel -e` and the REPL) and the **AOT backend** (used by `oskel build`, which
+emits a static native binary). The AOT backend covers the language core, not
+the whole runtime yet, so a program can run on the VM and fail to build — or
+behave differently — under AOT. This is the exact split in 0.1.0.
+
+**Available in both:**
+
+- Arithmetic, comparisons, logical and bitwise operators, control flow
+  (`if`/`while`/`for`/`for-in`/`switch`), functions, closures, `defer`,
+  `struct`, ranges, slicing, string interpolation.
+- Arrays and maps (literals, indexing, `in`, `for-in`, printing).
+- These builtins: `print`, `write`, `eprint`, `len`, `type`, `str`, `repr`,
+  `bool`, `ord`, `chr`, `assert`, `panic`, `isError`.
+
+**VM only — not yet available in `oskel build` (a build error names the global):**
+
+- Collection methods such as `arr.push`, `map.keys`, `str.upper`. They compile
+  but fail at runtime with `value has no such member`.
+- `pcall`, and the remaining standard-library builtins: `int`, `float`,
+  `double`, the math block (`sqrt`, `pow`, `sin`, ...), `readFile`,
+  `writeFile`, `fileExists`, `args`, `exit`, `random`, `seed`, `clock`. A
+  program using any of them does not build.
+
+**Available in both, but with different semantics:**
+
+- **`try`/`catch` does not catch in AOT.** The AOT runtime has no error values
+  yet, so `$isError` always reports "not an error": the success path of `try`
+  and `catch` runs, and a real failure still exits 70 instead of being
+  recovered. `try`/`catch` only behaves as documented on the VM.
+- **Structural equality is identity in AOT.** `[1, 2] == [1, 2]` is `true` on
+  the VM (compared by content) and `false` in an AOT binary (compared by
+  identity).
+- **`map.get` is O(n) in AOT** (linear scan) instead of O(1) (hash lookup), so
+  a loop that looks up every key of a large map is O(n²) in a compiled binary.
+
+The divergences are tracked internally in `docs/BACKLOG.md`; closing them (and
+a VM/AOT parity test) is the goal of the remaining AOT work.
+
 ## Tests
 
 The simplest way to run everything (all `.oskl` scripts, the error cases, the
@@ -266,13 +309,15 @@ The positive tests use `assert` and `assertEq`; a script exits with a non-zero c
 
 Current limitations:
 
-- Dynamic typing. The product model is Lua's: source code is always compiled to bytecode and run on the VM. The CLI and the REPL both compile to bytecode and run on the register-based VM; the AST is never executed. The development engine (`oskel`) also ships a **JIT** for the integer subset of the bytecode: a leaf function whose body only manipulates `nil`/`bool`/`int` is compiled to native x86-64 the first time it is called (about 25x faster on a tight integer loop), while everything else keeps running on the interpreter, so results never change. It is a development-engine feature only: `oskel build` and the generated binary never contain it (`oskel --no-jit` disables it).
+- Dynamic typing. The product model is Lua's: source code is always compiled to bytecode and run on the VM. The CLI and the REPL both compile to bytecode and run on the register-based VM; the AST is never executed.
+- The development engine (`oskel`) also ships an **experimental JIT** for a narrow integer subset: a *leaf* function whose body only manipulates `nil`/`bool`/`int` is compiled to native x86-64 the first time it is called (about 25x faster on a tight integer loop). Everything else keeps running on the interpreter, so results never change. It is a development-engine feature only: `oskel build` and the generated binary never contain it (`oskel --no-jit` disables it).
 - There are no classes, interfaces or inheritance; maps and closures replace them. A `struct` (data only, no methods) is a named map shape checked at compile time, not a class.
 - There is no `try`/`catch` *statement* or catchable exceptions. Errors are values: `error(message, code?)` builds a first-class error value and `isError(value)` detects it. `pcall(fn, ...)` turns a raised runtime error into a `{ok, value, error}` map instead of aborting. Two operators work on error values: `try expr` propagates one to the caller (Rust's `?`) and `expr catch default` recovers locally (Zig's `catch`). `panic()` is for unrecoverable errors.
 - Modules use Java-style `import` (`import std.math;`, `import std.math.*;`, `import std.math as m;`, `import { sqrt } from std.math;`) with compile-time conflict detection for `.*` and a reserved `std.` prefix. There is no `require`; modules are loaded eagerly and a cyclic import is a compile error.
 - There is no `++`/`--` or default parameters. `switch` on literals and integer ranges is supported, with no fallthrough, and so is the post-test loop `do { ... } while (cond);`.
 - `defer { ... }` runs a block when its scope exits, in LIFO order, on fall-through, `return` and `break`/`continue` alike; it compiles to no new opcode.
 - Optional types and nullability are compile-time only and are erased before the bytecode; a union (`T | E`) has no C representation, so it is rejected in `extern "C"`/`native fn` signatures and struct fields.
+- FFI **callbacks** need `libffi`, which is an optional dependency of the development engine only. When it is absent the build stays green and a callback reports a clear runtime error; the AOT backend never links `libffi` (it lowers callbacks to compile-time stubs).
 - Map keys are always strings. Map literals accept identifier, string, scalar (`int`, `true`, `false`, `nil`) and computed `[expr]` keys; non-string keys are canonicalized to their string form.
 - The body of `if`, `while`, `for` and `for-in` may be a block or a single statement without braces; a brace-less body is wrapped in a block, so its bytecode and scoping match the brace form. `switch` arms always require braces.
 - Slicing syntax works for strings and arrays (`s[1:3]`, `a[2:]`, `a[:-1]`), with negative bounds counted from the end and an optional step (`a[::2]`, `a[::-1]` reverses); `substr`/`slice` remain available.
@@ -293,7 +338,7 @@ Editor support: a VS Code syntax-highlighting extension lives in
 
 ## Releases
 
-Prebuilt packages are published on the
+**0.1.0 is the first release.** Prebuilt packages are published on the
 [releases page](https://github.com/yasmramos/Oskel/releases):
 
 | Platform | Asset |
@@ -307,6 +352,9 @@ Every release also ships a `SHA256SUMS` file; verify a download with
 `sha256sum -c SHA256SUMS`. The changelog for each version is in
 [`CHANGELOG.md`](CHANGELOG.md), and the maintainer checklist is in
 [`docs/RELEASING.md`](docs/RELEASING.md).
+
+`oskel build` is the AOT entry point in 0.1.0. A separate host compiler,
+`oskelc`, is planned for a later release; it is not part of 0.1.0.
 
 ## License
 
