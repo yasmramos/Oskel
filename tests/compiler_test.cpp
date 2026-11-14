@@ -112,11 +112,6 @@ void testNumericConstantTypes() {
 
 void testLeftAssociativePrecedence() {
   Bytecode bc = compileSource("print(1 + 2 * 3);\n");
-for (size_t i = 0; i < bc.code.size(); ++i) {
-  const Instruction& ins = bc.code[i];
-  std::printf("%zu: op=%d a=%d b=%d c=%d jump=%d\n",
-              i, static_cast<int>(ins.op), ins.a, ins.b, ins.c, ins.jump);
-}
   // GETGLOBAL "print", LOADK 1, LOADK 2, LOADK 3, MUL, ADD, CALL 0, 1, HALT
   assert(bc.code.size() == 8);
   assert(bc.code[0].op == OpCode::GETGLOBAL);  // "print"

@@ -9,9 +9,21 @@ may change between minor versions.
 
 ## [Unreleased]
 
-### Added
+### Changed
 
-- Nothing yet.
+- The README documents the VM/AOT split explicitly (a "What runs where" section):
+  the AOT backend covers the language core, so collection methods (`arr.push`,
+  `map.keys`, `str.upper`), `pcall`, the remaining standard-library builtins and
+  catchable `try`/`catch` are VM-only in 0.1.0, while structural equality and
+  `map.get` behave differently in an AOT binary. The FFI callback dependency on
+  `libffi` and the JIT's narrow scope are now stated in the README too.
+- `DEVELOPMENT.md` marks PHASE 4 completed and notes that `env.cpp` is unused
+  dead code (kept only by `tests/gc_test.cpp`).
+
+### Fixed
+
+- Removed leftover debug `printf` output from the compiler, VM and PE test
+  suites.
 
 ## [0.1.0] - 2026-11-14
 
