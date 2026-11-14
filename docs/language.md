@@ -1876,6 +1876,10 @@ assertEq(sqrt(81), 9.0);
 | `writeFile(path, contents)` | Writes the contents (exact binary). |
 | `fileExists(path)` | Checks whether the file can be opened. |
 
+A path is handed to the OS as a NUL-terminated C string, so a path containing an
+embedded NUL (`"a\0b"`) is rejected with a runtime error instead of silently
+operating on the truncated path.
+
 ### 12.7 Assertions and control
 
 | Function | Description |
