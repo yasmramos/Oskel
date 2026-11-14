@@ -1144,8 +1144,6 @@ static void test_boxed_runtime_float_mod() {
   check(result.exitCode == 0, "the float mod program exits 0");
 }
 
-#endif  // FREESTANDING_EXEC_TESTS
-
 // The string builder must grow its block when the current capacity is short.
 // Two edge cases a caller can reach but the hosted engine never does: a
 // capacity of zero (doubling 0 never reaches a positive value, so the loop
@@ -1257,6 +1255,8 @@ static void test_sb_append_capacity_overflow() {
         "a capacity that cannot double falls back to the needed size and reports OOM");
   check(result.exitCode == 70, "the overflow case exits through the runtime error path");
 }
+
+#endif  // FREESTANDING_EXEC_TESTS
 
 int main() {
   test_arena();
