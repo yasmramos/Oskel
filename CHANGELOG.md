@@ -47,6 +47,15 @@ may change between minor versions.
 
 ### Fixed
 
+- The PE emitter padded the image only to the end of `.text`'s bytes, not to
+  the `SizeOfRawData` the section header declares, so the file could end up to
+  `FileAlignment` bytes short of the image it described. Windows rejected such
+  an `.exe` with `ERROR_BAD_EXE_FORMAT` (Wine tolerated it, which hid the bug);
+  the same short image made `pe_test` hang on Windows when it launched the
+  rejected binary and the loader's error dialog blocked. The emitter now pads
+  to the declared size and publishes the IAT data directory
+  (`DataDirectory[12]`), which was left zero. `pe_test` asserts both, on every
+  platform.
 - Removed leftover debug `printf` output from the compiler, VM and PE test
   suites.
 
