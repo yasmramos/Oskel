@@ -64,10 +64,10 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `native/runtime.cpp` | boxed values | runtime helpers as machine code | ✅ PHASE 7c.3 |
 | `native/dtoa.cpp` | float/double | shortest round-trip text | ✅ PHASE 7c.1b |
 | `native/elf.cpp` | text + rodata | static ELF64 bytes | ✅ |
-| `native/pe.cpp` | text + rdata | static PE32+ bytes | ✅ |
+| `native/pe.cpp` | text + rdata | static PE32+ bytes (imports) | ✅ PHASE 7e |
 | `native/arena.cpp` | block + size | aligned allocations | ✅ PHASE 7c.0 |
 | `native/platform_freestanding.cpp` | `Platform` ops | direct Linux syscalls | ✅ PHASE 7c.0 |
-| `native/entry.cpp` | program entry label | `_start` + runtime prelude | ✅ PHASE 7c.0 |
+| `native/entry.cpp` | program entry label | `_start`/entry + prelude (Linux syscalls, Windows kernel32) | ✅ PHASE 7c.0/7e |
 
 **Note on `env.cpp`.** It is the lexical scope chain of the retired AST
 interpreter. The VM keeps locals in reference-counted `Cell`s and never
@@ -296,6 +296,8 @@ previous one.
 - `oskel -c file.oskl` compiles without running.
 - `oskel build file.oskl` → PHASE 7 AOT backend: freestanding static native
   binary (no libc), no Oskel installation needed by end users.
+  `--target x86_64-windows-win64` emits a Windows PE32+ (PHASE 7e); the default
+  target follows the host.
 
 ### PHASE 5 — Control flow and locals ✅
 - Opcodes: `JMP`, `JMP_IF_FALSE`, `JMP_IF_TRUE`
@@ -597,10 +599,13 @@ Slices, each independently shippable:
   6a.0 (PHASE 6) must be built on this interface from the start.
 - **Target descriptor from day one**: `include/native/target.h` defines
   `Target { arch, os, abi }` and every backend entry point takes one.
-  `CodeGen` validates it and currently accepts only `x86_64-linux-sysv`, so
-  adding Windows, macOS or WebAssembly is a new backend behind the same
-  descriptor instead of a driver rewrite.
-- Initial target: Linux x86-64 only (direct syscalls = one concrete ABI).
+  `CodeGen` validates it and accepts `x86_64-linux-sysv` and
+  `x86_64-windows-win64`, so adding macOS or WebAssembly is a new backend
+  behind the same descriptor instead of a driver rewrite.
+- Initial targets: Linux x86-64 (direct syscalls) and Windows x86-64
+  (kernel32 through the Microsoft x64 ABI). Both share the x86-64 lowering and
+  the embedded runtime byte for byte; only the entry prelude differs, because
+  the two systems reach the outside world differently.
 - Subslices:
   - **7a** — "hello world" spike: hand-written `_start` + `write` syscall →
     static freestanding ELF → `./hello` runs, no libc.
@@ -931,6 +936,21 @@ Slices, each independently shippable:
       the error paths) and the `oskel build` fixture. The math block (`sqrt`,
       `pow`, `sin`, ...) still needs an embedded libm because the freestanding
       binary cannot call the host's.
+    - **7c.6** (done) — variadic parameter packs. A function with a trailing
+      `rest...` parameter was a lowering error ("variadic function",
+      `PHASE 7c.3`); it now compiles. The child proto's prologue checks the
+      argument count against `numParams - 1` (a variadic function accepts that
+      many or more, unlike the exact match a fixed function needs), copies the
+      fixed arguments into R0..R(n-2) and calls the new runtime helper
+      `oskel_pack_rest(first, count)` to build an array from the extras and
+      bind it to the last slot. The caller's argument window grows *down*, so
+      `first` is `args - 16 * (numParams - 1)` and item `i` sits at
+      `first - 16 * i`; the helper allocates an array header, grows its block
+      once and copies the extras in order, yielding an ordinary `Array` value
+      (the VM's packed `rest` binding). No new opcode and no bytecode change:
+      `Bytecode::variadic`/`numParams` already carried the information. Covered
+      by `tests/freestanding_test.cpp` (zero, one and many extras, `for-in`
+      over the pack, `len`, the arity error) and the `oskel build` fixture.
     - **7c.1+** — boxed `Value` over the arena, `print`/`toString` (own dtoa),
       collections and functions. The AOT runtime has its own boxed value and
       its own arena-backed objects, sharing *semantics* with `ops.h` but not
@@ -940,10 +960,27 @@ Slices, each independently shippable:
     [-o <out>]` (default output: the script's base name without extension)
     runs the whole AOT pipeline and writes the static executable. See the
     `oskel build` paragraph above for the details.
+  - **7e** (done) — Windows x86-64 as a second AOT target. The `Target`
+    descriptor gains `Target::winX64()` and `isSupportedTarget` accepts
+    `x86_64-windows-win64`; `oskel build --target x86_64-windows-win64` (the
+    default follows the host, and a Windows output name gets `.exe`) selects
+    it. The lowering and the embedded runtime are shared with Linux unchanged:
+    the Microsoft x64 ABI lives only in the entry prelude
+    (`emitWindowsRuntime` in `src/native/entry.cpp`), which reaches kernel32
+    instead of issuing syscalls — `oskel_write` marshals `GetStdHandle` +
+    `WriteFile` (retrying for a full write, with the mandatory NULL
+    `lpOverlapped` and shadow space), `oskel_exit` calls `ExitProcess` and
+    `oskel_init_arena` calls `VirtualAlloc`. `src/native/pe.cpp` emits a static
+    PE32+ with a real import table built from a fixed list
+    (`WriteFile`, `GetStdHandle`, `ExitProcess`, `VirtualAlloc`), a `.idata`
+    section pinned at RVA 0x1000 so the IAT slots are constant and the prelude
+    calls through them RIP-relative, and `IMAGE_FILE_RELOCS_STRIPPED` so a
+    Windows with "Force ASLR" maps the non-PIE image instead of aborting it.
+    Covered by `tests/pe_test.cpp` (structure and, on Windows, execution) and
+    the `oskel.build_binary` CTest case on Windows (`tests/build_binary_pe.cmake`).
 - Deferred: per-instruction type annotations for fast paths without dynamic
   dispatch (bridge toward the speculative work in
-  `docs/ARCHITECTURE_ANALYSIS.md`); other targets (macOS/Windows via libc or
-  stubs).
+  `docs/ARCHITECTURE_ANALYSIS.md`); other targets (macOS via libc or stubs).
 - Afterwards, LuaJIT's JIT as a reference (see PHASE 8 below).
 - **In the tree now**: the `Target` descriptor (`include/native/target.h`) and
   the x86-64 instruction emitter (`include/native/codegen.h`,
@@ -1050,7 +1087,7 @@ Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair through the hidden `$mapValue` helper, no new opcode) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d done)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e done)
 Phase 8: 🔶 in progress (JIT for the development VM, slice 1 done: integer leaf protos)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)

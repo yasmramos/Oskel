@@ -62,10 +62,14 @@ static void test_target_descriptor() {
         "codegen defaults to x86_64-linux-sysv");
   check(targetName(Target::linuxX64()) == "x86_64-linux-sysv",
         "target name is stable");
+  check(targetName(Target::winX64()) == "x86_64-windows-win64",
+        "windows target name is stable");
+  check(isSupportedTarget(Target::winX64()),
+        "windows x86-64 has a backend");
 
   bool rejected = false;
   try {
-    CodeGen unsupported(Target{Arch::X86_64, Os::Windows, Abi::Win64});
+    CodeGen unsupported(Target{Arch::Aarch64, Os::MacOs, Abi::Aapcs64});
     (void)unsupported;
   } catch (const std::invalid_argument&) {
     rejected = true;

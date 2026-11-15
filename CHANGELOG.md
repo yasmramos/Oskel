@@ -9,8 +9,33 @@ may change between minor versions.
 
 ## [Unreleased]
 
+### Added
+
+- **Windows AOT target** (PHASE 7e). `oskel build --target
+  x86_64-windows-win64` emits a static Windows PE32+ executable; the default
+  target follows the host, and a Windows output name gets the `.exe` suffix.
+  The lowering and the embedded runtime are shared with the Linux target
+  unchanged — only the entry prelude differs, reaching kernel32
+  (`GetStdHandle`/`WriteFile`, `ExitProcess`, `VirtualAlloc`) through the
+  Microsoft x64 ABI. The PE emitter now writes a real import table with a
+  `.idata` section pinned at a fixed RVA and declares
+  `IMAGE_FILE_RELOCS_STRIPPED`, so the non-PIE image is mapped by a Windows
+  with "Force ASLR" instead of aborting.
+- Variadic functions (`rest...`) now compile to a static binary (PHASE 7c.6).
+  The AOT prologue accepts `numParams - 1` or more arguments and builds the
+  packed array with the new runtime helper `oskel_pack_rest`, so a program
+  using variadic parameters behaves the same on the VM and in an AOT binary.
+
 ### Changed
 
+- `examples/tui_editor.oskl` now exercises every feature its header claims:
+  the non-null assertion `!!`, safe access `?.` with `??`, a union return type
+  (`configValue`), `byteLen`/`buffer`/`cstring` and a range, all checked by the
+  self-test. The header's FFI list is corrected (`system`, not `stty`), it
+  documents both ways to run the example, and the untestable parts
+  (`render`/`readKey`/`enableRawMode`/`restoreTerminal`) are called out. The
+  self-test cleans up its temporary file, and the editor reports a clear status
+  for `Ctrl-S`/`:wq` with no file name and for a failed `:wq`.
 - The README documents the VM/AOT split explicitly (a "What runs where" section):
   the AOT backend covers the language core, so collection methods (`arr.push`,
   `map.keys`, `str.upper`), `pcall`, the remaining standard-library builtins and

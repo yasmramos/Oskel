@@ -777,6 +777,17 @@ void CodeGen::callReg(X64Reg target) {
   emitByte(static_cast<std::uint8_t>(0xD0 | (t & 0x07)));
 }
 
+// `call qword ptr [rip + disp32]`: opcode FF /2 with rm = 101 (RIP-relative)
+// and a mandatory disp32. The displacement is relative to the end of the
+// instruction, so the caller supplies it already measured from the next
+// instruction (it can, because the target RVA and the current offset are both
+// known when the call is emitted).
+void CodeGen::callRipRel(std::int32_t ripDelta) {
+  emitByte(0xFF);
+  emitByte(0x15);
+  emit32(ripDelta);
+}
+
 void CodeGen::push(X64Reg reg) {
   std::uint8_t r = enc(reg);
   if (highReg(r)) emitByte(0x41);

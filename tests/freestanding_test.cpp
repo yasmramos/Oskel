@@ -1368,6 +1368,48 @@ static void test_sb_append_capacity_overflow() {
   check(result.exitCode == 70, "the overflow case exits through the runtime error path");
 }
 
+// Variadic parameters (PHASE 7c.6), end to end: a trailing `rest...` parameter
+// binds an array of the extras. The AOT prologue binds the fixed parameters and
+// calls `oskel_pack_rest` to build the array, so a compiled program behaves like
+// the VM for zero, one and many extras.
+static void test_variadic() {
+  Bytecode proto = compileSource(
+      "fn sum(first, rest...) {\n"
+      "  var total = first;\n"
+      "  for x in rest { total = total + x; }\n"
+      "  return total;\n"
+      "}\n"
+      "print(sum(1), sum(1, 2), sum(1, 2, 3, 4, 5));\n"
+      "fn count(rest...) { return len(rest); }\n"
+      "print(count(), count(7), count(1, 2, 3));\n"
+      "fn join(sep, parts...) {\n"
+      "  var out = \"\";\n"
+      "  var first = true;\n"
+      "  for p in parts {\n"
+      "    if (first) { out = out + p; first = false; }\n"
+      "    else { out = out + sep + p; }\n"
+      "  }\n"
+      "  return out;\n"
+      "}\n"
+      "print(join(\",\"), join(\",\", \"a\"), join(\",\", \"a\", \"b\", \"c\"));\n");
+  RunResult result = buildAndRun("/tmp/oskel_variadic", proto);
+  check(result.output == "1 3 15\n0 1 3\n a a,b,c\n",
+        "a compiled program packs variadic extras into an array");
+  check(result.exitCode == 0, "a program using variadic parameters exits 0");
+}
+
+// A variadic function called with fewer than its fixed parameters is an arity
+// error and exits 70, matching the VM's arity check.
+static void test_variadic_arity_error() {
+  Bytecode proto = compileSource(
+      "fn join(sep, parts...) { return len(parts); }\n"
+      "print(join());\n");
+  RunResult result = buildAndRun("/tmp/oskel_variadic_arity", proto);
+  check(result.exitCode == 70, "a variadic call below the fixed arity exits 70");
+  check(result.output.find("wrong number of arguments") != std::string::npos,
+        "the variadic arity error names the wrong argument count");
+}
+
 #endif  // FREESTANDING_EXEC_TESTS
 
 int main() {
@@ -1405,6 +1447,8 @@ int main() {
   test_int_string_conversion_errors();
   test_sb_append_zero_capacity();
   test_sb_append_capacity_overflow();
+  test_variadic();
+  test_variadic_arity_error();
 #else
   std::printf("skipped: platform and execution tests require Linux x86-64\n");
 #endif

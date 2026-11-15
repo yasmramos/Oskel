@@ -194,9 +194,10 @@ if(BUILD_TESTING)
       "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/21_std_math.oskl"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_stdlib.cmake")
 
-  # --- `oskel build`: compile to a native binary and run it (PHASE 7d) ---
-  # The AOT backend targets x86_64-linux-sysv, so this runs on Linux x86-64
-  # only; elsewhere the generated image would not execute.
+  # --- `oskel build`: compile to a native binary and run it (PHASE 7d/7e) ---
+  # The AOT backend has a Linux and a Windows target; each test runs on the
+  # host whose target the generated image can execute. A cross-built image
+  # would not run on the other OS, so the two are separate.
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
      CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
     add_test(NAME oskel.build_binary
@@ -222,6 +223,12 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/examples/mandelbrot.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+  elseif(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    add_test(NAME oskel.build_binary
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary_pe.cmake")
   endif()
 
   # --- .oskl script tests (auto-detected) ---

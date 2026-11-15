@@ -873,10 +873,6 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     const int fnLocals = fn.numLocals > 0 ? fn.numLocals : 0;
     emitFunctionPrologue(cg, fnRegisters, fnLocals);
 
-    // A variadic function packs its extras into an array, which needs a
-    // collection (7c.3); reject it before emitting anything else.
-    if (fn.variadic) unsupported("variadic function", "PHASE 7c.3");
-
     // Save the closure this frame was entered with (`self`, in rdx) just below
     // the locals. `GETUPVAL`/`SETUPVAL` and a nested `CLOSURE` read the captured
     // cells through it. `self` is the callee's payload, so it is never null for
@@ -886,11 +882,18 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     // The compiler does not check a user function's arity -- the hosted engine
     // does at run time -- so the prologue checks `argc` (rsi) against the
     // declared parameter count and reports the mismatch. A non-variadic
-    // function needs an exact match.
+    // function needs an exact match; a variadic one accepts `numParams - 1` or
+    // more (the last slot takes the packed extras, PHASE 7c.6).
+    const int fixedParams = fn.numParams - (fn.variadic ? 1 : 0);
     {
       CodeGen::Label arityOk = cg.newLabel();
-      cg.cmpImm32(X64Reg::Rsi, fn.numParams);
-      cg.jcc(Jcc::Eq, arityOk);
+      if (fn.variadic) {
+        cg.cmpImm32(X64Reg::Rsi, fixedParams);
+        cg.jcc(Jcc::Ge, arityOk);
+      } else {
+        cg.cmpImm32(X64Reg::Rsi, fn.numParams);
+        cg.jcc(Jcc::Eq, arityOk);
+      }
       cg.callLabel(rt.arityError);
       cg.bind(arityOk);
     }
@@ -901,15 +904,26 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     frame.hasSelf = true;
     frame.capturedSlots = capturedLocalSlots(fn);
 
-    // Copy the arguments into the register file. `args` points at the caller's
-    // R[a+1]; the file grows *down*, so consecutive registers sit 16 bytes
-    // *below* each other, and args[i] is at `args - 16*i`. Copying rather than
-    // aliasing keeps the callee's writes out of the caller's registers.
-    for (int i = 0; i < fn.numParams; ++i) {
+    // Copy the fixed arguments into the register file. `args` points at the
+    // caller's R[a+1]; the file grows *down*, so consecutive registers sit 16
+    // bytes *below* each other, and args[i] is at `args - 16*i`. Copying rather
+    // than aliasing keeps the callee's writes out of the caller's registers.
+    for (int i = 0; i < fixedParams; ++i) {
       const std::int64_t off = -16LL * i;
       cg.movFromMem(X64Reg::Rax, X64Reg::Rdi, off);
       cg.movFromMem(X64Reg::Rdx, X64Reg::Rdi, off + 8);
       storeValue(cg, i, X64Reg::Rax, X64Reg::Rdx);
+    }
+
+    // A variadic function packs its extras into an array and binds it to the
+    // last parameter slot. `rdi`/`rsi` still hold `args`/`argc` (the copy loop
+    // only read them), so the first extra is `args - 16 * fixedParams` and there
+    // are `argc - fixedParams` of them.
+    if (fn.variadic) {
+      cg.subRegImm32(X64Reg::Rdi, static_cast<std::int32_t>(16 * fixedParams));
+      cg.subRegImm32(X64Reg::Rsi, fixedParams);
+      cg.callLabel(rt.packRest);
+      storeValue(cg, fixedParams, X64Reg::Rax, X64Reg::Rdx);
     }
 
     std::vector<CodeGen::Label> labels;
@@ -936,7 +950,14 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   cg.pop(X64Reg::Rbp);
   cg.retInsn();
 
-  std::uint64_t startOffset = emitFreestandingRuntime(cg, entry, mainEntry);
+  // The entry prelude reaches the system, and that is the one place the two
+  // targets differ: Linux goes through syscalls, Windows through kernel32 with
+  // the Microsoft x64 ABI. Everything else -- the lowering and the embedded
+  // runtime -- is the same machine code for both. The prelude binds the
+  // `entry` handles the runtime already references (write/exit/init_arena).
+  std::uint64_t startOffset =
+      target.os == Os::Windows ? emitWindowsRuntime(cg, entry, mainEntry)
+                               : emitFreestandingRuntime(cg, entry, mainEntry);
   emitAotRuntime(cg, rt, entry);
   // String constants last: their bytes are addressed by `lea` from the code
   // above, and no path falls through into them.

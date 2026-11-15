@@ -63,3 +63,18 @@ constexpr std::int64_t kAotArenaFirstOffset = 16;
 // point.
 std::uint64_t emitFreestandingRuntime(CodeGen& code, const RuntimeHandles& handles,
                                       CodeGen::Label programEntry);
+
+// Windows x86-64 entry prelude (PHASE 7e). Same contract as
+// `emitFreestandingRuntime` -- it binds the same three handles and returns the
+// offset of the entry point -- but it reaches the system through the Windows
+// API instead of Linux syscalls: `oskel_write` marshals to
+// `GetStdHandle`+`WriteFile`, `oskel_exit` to `ExitProcess` and
+// `oskel_init_arena` to `VirtualAlloc`, all imported from kernel32.dll and
+// called with the Microsoft x64 ABI (rcx/rdx/r8/r9 + 32 bytes of shadow space).
+// The embedded runtime itself is unchanged: the ABI boundary lives only here.
+//
+// The entry point has no argc/argv (the loader calls it directly), so the
+// program entry is invoked with no arguments -- the lowering's `main` ignores
+// them anyway -- and its return value becomes the process exit code.
+std::uint64_t emitWindowsRuntime(CodeGen& code, const RuntimeHandles& handles,
+                                 CodeGen::Label programEntry);
