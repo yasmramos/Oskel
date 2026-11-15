@@ -234,20 +234,28 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 12. **[P1]** `wrapPointerValue` for `cstring` calls `strlen`, which reads past
     the buffer if the pointer is not NUL-terminated — UB from a host that
     returns a non-terminated `char *`. Bound it or reject.
-13. **[P1]** `oskellCallbackTrampoline` catches `std::exception` with a generic
-    message; a non-`RuntimeError` type is lost.
-14. **[P1]** `CallbackObj::pendingError` is not reset between invocations; a
-    second call sees the first call's pending error. Reset it per call.
-15. **[P2]** `makeExternNative` does not validate `address != nullptr` (the
-    caller does).
-16. **[P2]** `makeCallback` does not validate that the value is a `Func` before
-    building the `CallbackObj` (the caller does).
-17. **[P2]** `dispatch` for callbacks is limited to `kMaxExternArgs = 6`; the
-    error message does not say so.
+13. ~~**[P1]** `oskellCallbackTrampoline` catches `std::exception` with a generic
+    message; a non-`RuntimeError` type is lost.~~ **Done**: the trampoline now
+    catches `std::exception` and keeps `what()`.
+14. ~~**[P1]** `CallbackObj::pendingError` is not reset between invocations; a
+    second call sees the first call's pending error. Reset it per call.~~
+    **Not a bug**: the trampoline short-circuits while a pending error is set
+    and the extern call re-raises it before any second call can run.
+15. ~~**[P2]** `makeExternNative` does not validate `address != nullptr` (the
+    caller does).~~ **Done**: the factory rejects a null address itself.
+16. ~~**[P2]** `makeCallback` does not validate that the value is a `Func` before
+    building the `CallbackObj` (the caller does).~~ **Done**: `makeCallback`
+    checks `isFunc()` itself.
+17. ~~**[P2]** `dispatch` for callbacks is limited to `kMaxExternArgs = 6`; the
+    error message does not say so.~~ **Not a bug**: callbacks go through libffi,
+    not `dispatch`, so they are not bound by `kMaxExternArgs`; an 8-parameter
+    callback compiles and runs. The scalar path still rejects more than six
+    eightbytes at compile time with a message that names the limit.
 18. **[P2]** `pointerAddress` for a `str` uses `asStr().c_str()`; valid for the
     call, but a footgun if the host mutates it.
-19. **[P3]** `installExterns` recurses over children; make it iterative for
-    deep module trees.
+19. ~~**[P3]** `installExterns` recurses over children; make it iterative for
+    deep module trees.~~ **Done**: `VM::installExterns` now walks the module
+    tree with an explicit stack.
 
 ---
 

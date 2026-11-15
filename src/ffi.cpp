@@ -405,9 +405,11 @@ void oskelCallbackTrampoline(ffi_cif* cif, void* ret, void** args, void* userDat
   (void)cif;
   CallbackObj* callback = static_cast<CallbackObj*>(userData);
   if (callback->hasPendingError) {
-    // C may ignore the result, but never leave the return storage with a stale
-    // value. A `void` callback writes nothing.
-    if (callback->returnType != "void") std::memset(ret, 0, 8);
+    // The extern call already recorded a failure and will re-raise it once C
+    // returns. C may invoke the callback again before that, so short-circuit:
+    // re-entering the VM after an error is not meaningful. Leave a zero of the
+    // declared width, never a stale value, in the return storage.
+    writeCallbackResult(callback->returnType, Value(), ret);
     return;
   }
   std::vector<Value> oskelArgs;
@@ -424,12 +426,19 @@ void oskelCallbackTrampoline(ffi_cif* cif, void* ret, void** args, void* userDat
     callback->pendingMessage = error.message;
     callback->pendingLine = error.line;
     callback->pendingCol = error.col;
-    if (callback->returnType != "void") std::memset(ret, 0, 8);
+    writeCallbackResult(callback->returnType, Value(), ret);
+    return;
+  } catch (const std::exception& error) {
+    // A non-`RuntimeError` (a `std::bad_alloc`, a `std::logic_error`) would
+    // otherwise be flattened into a generic message; keep what it says.
+    callback->hasPendingError = true;
+    callback->pendingMessage = std::string("the callback raised: ") + error.what();
+    writeCallbackResult(callback->returnType, Value(), ret);
     return;
   } catch (...) {
     callback->hasPendingError = true;
     callback->pendingMessage = "the callback raised an unknown error";
-    if (callback->returnType != "void") std::memset(ret, 0, 8);
+    writeCallbackResult(callback->returnType, Value(), ret);
     return;
   }
   writeCallbackResult(callback->returnType, result, ret);
@@ -438,6 +447,10 @@ void oskelCallbackTrampoline(ffi_cif* cif, void* ret, void** args, void* userDat
 // Builds the closure for one Oskel function bound to a callback parameter.
 Ref<CallbackObj> makeCallback(Runtime& rt, const std::string& name, const TypeSpec& spec,
                               const Value& function) {
+  if (!function.isFunc()) {
+    rt.fail("a callback argument to '" + name + "' must be a function, got '" +
+            std::string(function.typeName()) + "'");
+  }
   auto callback = makeRef<CallbackObj>();
   callback->runtime = &rt;
   callback->function = function;
@@ -475,7 +488,12 @@ Ref<CallbackObj> makeCallback(Runtime& rt, const std::string& name, const TypeSp
 
 Value makeExternNative(Runtime& rt, const std::string& name, void* address,
                        const std::vector<TypeSpec>& paramTypes, const TypeSpec& returnType) {
-  (void)rt;
+  if (address == nullptr) {
+    // `VM::installExtern` already rejects an unresolved symbol; this guards the
+    // other callers (the AOT backend, tests) from binding a thunk to NULL, which
+    // would turn a bad declaration into a call to address zero.
+    rt.fail("extern \"C\" symbol '" + name + "' has no address to bind");
+  }
   // Precompute the return disposition once: its class, its shape (for a struct)
   // and its resolved layout, so the call site only marshals arguments.
   ReturnClass rc = ReturnClass::Int;
@@ -587,6 +605,14 @@ Value makeExternNative(Runtime& rt, const std::string& name, void* address,
           values.push_back(Value(bits));
         }
       }
+    }
+    if (classes.size() > kMaxExternArgs) {
+      // `ffi::validateSignature` rejects this at compile time; the guard keeps a
+      // signature that skipped validation (a hand-built `ExternSymbol`) from
+      // silently dropping its trailing arguments in `dispatch`.
+      in.fail("'" + name + "' passes " + std::to_string(classes.size()) +
+              " register-sized values; at most " + std::to_string(kMaxExternArgs) +
+              " are supported");
     }
     Value result = dispatch<0>(address, rc, shape, layout, returnScalar, classes, types, values, in);
 #ifdef OSKEL_HAVE_LIBFFI

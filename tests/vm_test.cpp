@@ -18,6 +18,7 @@
 
 #include "builtins.h"
 #include "compiler.h"
+#include "ffi_marshal.h"
 #include "lexer.h"
 #include "ops.h"
 #include "parser.h"
@@ -1776,6 +1777,11 @@ extern "C" int oskelTestApplyVoid(void (*f)(int), int x) {
   f(x);
   return x;
 }
+// A callback whose declared return is a single byte: the error path must zero
+// exactly that width, not eight bytes (which would overrun the return slot).
+extern "C" int oskelTestApplyNarrow(signed char (*f)(int), int x) {
+  return static_cast<int>(f(x));
+}
 
 // A host that resolves the symbols above. Everything else behaves like the
 // dev platform (writes go to captured strings, so a test can read them).
@@ -1815,6 +1821,8 @@ struct SymbolPlatform final : Platform {
     if (symbol == "oskelTestApplyDouble") return reinterpret_cast<void*>(&oskelTestApplyDouble);
     if (symbol == "oskelTestApplyTwice") return reinterpret_cast<void*>(&oskelTestApplyTwice);
     if (symbol == "oskelTestApplyVoid") return reinterpret_cast<void*>(&oskelTestApplyVoid);
+    if (symbol == "oskelTestApplyNarrow")
+      return reinterpret_cast<void*>(&oskelTestApplyNarrow);
     return nullptr;
   }
 };
@@ -2038,6 +2046,29 @@ void testExternCallbackErrorIsReraisedAfterCReturns() {
       "print(r.error.message);\n");
   assert(out == "false\ncallback failed\n");
 }
+
+void testExternCallbackNarrowReturnIsWrittenAtItsOwnWidth() {
+  TEST_SCOPE();
+  // The callback's declared return is one byte. The trampoline must write the
+  // result at that width and, on the error path, zero exactly that width: a
+  // hard-coded eight-byte `memset` would overrun the return slot libffi sized
+  // for a `signed char` (caught under ASan; a wrong result otherwise).
+  const std::string out = runWithSymbols(
+      "extern \"C\" { fn oskelTestApplyNarrow(f: fn(int): int8, x: int): int; }\n"
+      "fn narrow(v: int): int8 { return 7; }\n"
+      "print(oskelTestApplyNarrow(narrow, 0));\n");
+  assert(out == "7\n");
+
+  // The same callback raising: C observes a zero byte, and the error is
+  // re-raised once the extern call returns.
+  const std::string raised = runWithSymbols(
+      "extern \"C\" { fn oskelTestApplyNarrow(f: fn(int): int8, x: int): int; }\n"
+      "fn boom(v: int): int8 { panic(\"narrow failed\"); }\n"
+      "let r = pcall(() => oskelTestApplyNarrow(boom, 0));\n"
+      "print(r.ok);\n"
+      "print(r.error.message);\n");
+  assert(raised == "false\nnarrow failed\n");
+}
 #endif  // OSKEL_HAVE_LIBFFI
 
 void testExternRejectsLargeStructAtCompileTime() {
@@ -2058,6 +2089,25 @@ void testExternRejectsNonScalarStructFieldAtCompileTime() {
       "struct Outer { p: Inner; q: int; }\n"
       "extern \"C\" { fn f(x: Outer): int; }\n");
   assert(message.find("cross the C boundary") != std::string::npos);
+}
+
+void testExternRejectsNullAddress() {
+  TEST_SCOPE();
+  // `VM::installExtern` rejects an unresolved symbol before reaching the
+  // marshalling, but the factory itself must not bind a thunk to NULL: another
+  // caller (the AOT backend, a test) could otherwise turn a bad declaration into
+  // a call to address zero.
+  SymbolPlatform platform;
+  VM vm(platform);
+  registerBuiltins(vm);
+  std::string message;
+  try {
+    ffi::makeExternNative(vm, "whatever", nullptr, {}, ffi::TypeSpec{});
+  } catch (const RuntimeError& error) {
+    message = error.message;
+  }
+  assert(message.find("whatever") != std::string::npos);
+  assert(message.find("no address") != std::string::npos);
 }
 
 void testExternMissingSymbolIsAClearRuntimeError() {
@@ -2234,10 +2284,12 @@ int main() {
   testExternCallbackVoidReturnAndClosure();
   testExternCallbackInvokedRepeatedly();
   testExternCallbackErrorIsReraisedAfterCReturns();
+  testExternCallbackNarrowReturnIsWrittenAtItsOwnWidth();
 #endif
   testExternRejectsLargeStructAtCompileTime();
   testExternRejectsNonScalarStructFieldAtCompileTime();
   testExternMissingSymbolIsAClearRuntimeError();
+  testExternRejectsNullAddress();
   testExternRejectsUnsupportedSignatureAtCompileTime();
   testExternRejectsVariadicDeclarationAtCompileTime();
 

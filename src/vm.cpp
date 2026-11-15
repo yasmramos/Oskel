@@ -320,9 +320,17 @@ void VM::installExtern(const ExternSymbol& symbol) {
 }
 
 void VM::installExterns(const Bytecode& proto) {
-  for (const ExternSymbol& symbol : proto.externs) installExtern(symbol);
-  for (const std::shared_ptr<Bytecode>& child : proto.children) {
-    if (child) installExterns(*child);
+  // Iterative so a deep module tree cannot overflow the C++ stack. A proto's
+  // externs are installed before its children's, matching the recursive order;
+  // installation only binds globals, so the relative order does not matter.
+  std::vector<const Bytecode*> pending{&proto};
+  while (!pending.empty()) {
+    const Bytecode* current = pending.back();
+    pending.pop_back();
+    for (const ExternSymbol& symbol : current->externs) installExtern(symbol);
+    for (const std::shared_ptr<Bytecode>& child : current->children) {
+      if (child) pending.push_back(child.get());
+    }
   }
 }
 
