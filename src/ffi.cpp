@@ -120,11 +120,24 @@ Value wrapInteger(Runtime& rt, const std::string& typeName, std::int64_t raw) {
   rt.fail("unsupported C return type '" + typeName + "'");
 }
 
-Value wrapPointerValue(const std::string& typeName, std::int64_t raw) {
+// A `cstring` a C function returns is a `const char *`, and the C contract is
+// that it is NUL-terminated. A host that breaks that contract would make an
+// unbounded `strlen` walk off the end of the buffer, so the scan is capped: past
+// the cap the read stops with a clear runtime error instead of an unbounded
+// walk. The cap is generous (a C string that large is almost always a bug).
+constexpr std::size_t kMaxCStringBytes = 1u << 24;  // 16 MiB
+
+Value wrapPointerValue(Runtime& rt, const std::string& typeName, std::int64_t raw) {
   if (raw == 0) return Value();  // NULL
   if (typeName == "ptr") return makePtr(PtrKind::Void, {}, raw);
   const char* text = reinterpret_cast<const char*>(static_cast<std::uintptr_t>(raw));
-  std::vector<char> bytes(text, text + std::strlen(text));
+  std::size_t length = 0;
+  while (length < kMaxCStringBytes && text[length] != '\0') ++length;
+  if (length == kMaxCStringBytes) {
+    rt.fail("a C function returned a 'cstring' longer than " + std::to_string(kMaxCStringBytes) +
+            " bytes with no NUL terminator; the host broke the `const char *` contract");
+  }
+  std::vector<char> bytes(text, text + length);
   bytes.push_back('\0');
   return makePtr(PtrKind::CString, std::move(bytes));
 }
@@ -175,7 +188,7 @@ Value readStructField(Runtime& rt, const char* bytes, std::size_t offset,
   scalarFieldLayout(type, size, alignment, cls);
   std::int64_t raw = 0;
   std::memcpy(&raw, bytes + offset, size);
-  if (type == "ptr" || isFfiCStringTypeName(type)) return wrapPointerValue(type, raw);
+  if (type == "ptr" || isFfiCStringTypeName(type)) return wrapPointerValue(rt, type, raw);
   return wrapInteger(rt, type.empty() ? "int" : type, raw);
 }
 
@@ -227,7 +240,7 @@ Value invoke(void* address, ReturnClass rc, StructShape shape, const StructLayou
     case ReturnClass::Ptr:
     case ReturnClass::CString: {
       auto result = reinterpret_cast<std::int64_t (*)(Built...)>(address)(built...);
-      return wrapPointerValue(returnType, result);
+      return wrapPointerValue(rt, returnType, result);
     }
     case ReturnClass::Struct:
       switch (shape) {
@@ -344,7 +357,7 @@ Value readCallbackArg(Runtime& rt, const std::string& typeName, void* slot) {
   if (typeName == "double") return Value(*static_cast<double*>(slot));
   if (typeName == "ptr" || isFfiCStringTypeName(typeName)) {
     auto raw = reinterpret_cast<std::int64_t>(*static_cast<void**>(slot));
-    return wrapPointerValue(typeName, raw);
+    return wrapPointerValue(rt, typeName, raw);
   }
   std::int64_t raw = 0;
   std::size_t size = 8;

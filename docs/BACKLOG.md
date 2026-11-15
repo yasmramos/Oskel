@@ -231,9 +231,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     compiler now keeps a session-wide canonical signature per C symbol and
     rejects a mismatch (`tests/errors/extern_conflicting_signature.oskl`,
     `module_test.cpp::testConflictingExternAcrossModules`).
-12. **[P1]** `wrapPointerValue` for `cstring` calls `strlen`, which reads past
+12. ~~**[P1]** `wrapPointerValue` for `cstring` calls `strlen`, which reads past
     the buffer if the pointer is not NUL-terminated — UB from a host that
-    returns a non-terminated `char *`. Bound it or reject.
+    returns a non-terminated `char *`. Bound it or reject.~~ **Done**: the scan
+    is capped (`kMaxCStringBytes`) and a host that breaks the `const char *`
+    contract is a clear runtime error, not an out-of-bounds walk
+    (`vm_test.cpp::testExternUnterminatedCStringReturnIsBounded`).
 13. ~~**[P1]** `oskellCallbackTrampoline` catches `std::exception` with a generic
     message; a non-`RuntimeError` type is lost.~~ **Done**: the trampoline now
     catches `std::exception` and keeps `what()`.

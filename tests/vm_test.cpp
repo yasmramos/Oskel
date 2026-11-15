@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -1739,6 +1740,15 @@ extern "C" int oskelTestBump(int* p) {
   *p = previous + 1;
   return previous;
 }
+// Returns a `const char *` with no NUL terminator, the contract the marshalling
+// must not trust: the read has to stop at its own bound instead of walking past
+// the buffer. The array is one byte longer than the cap so the capped scan stays
+// in bounds while it proves the guard fires.
+extern "C" const char* oskelTestUnterminated() {
+  static char unterminated[(1u << 24) + 1];
+  std::memset(unterminated, 'a', sizeof(unterminated));
+  return unterminated;
+}
 
 // Struct-by-value host functions (PHASE 6.6). Each returns or takes a small
 // struct so the marshalling is exercised across the six System V register
@@ -1805,6 +1815,8 @@ struct SymbolPlatform final : Platform {
     if (symbol == "oskelTestAdd") return reinterpret_cast<void*>(&oskelTestAdd);
     if (symbol == "oskelTestScale") return reinterpret_cast<void*>(&oskelTestScale);
     if (symbol == "oskelTestGreeting") return reinterpret_cast<void*>(&oskelTestGreeting);
+    if (symbol == "oskelTestUnterminated")
+      return reinterpret_cast<void*>(&oskelTestUnterminated);
     if (symbol == "oskelTestBump") return reinterpret_cast<void*>(&oskelTestBump);
     if (symbol == "oskelTestMakePair") return reinterpret_cast<void*>(&oskelTestMakePair);
     if (symbol == "oskelTestMakePairDouble")
@@ -1879,6 +1891,28 @@ void testExternMarshalsStringReturnAsCString() {
       "extern \"C\" { fn oskelTestGreeting(): cstring; }\n"
       "print(cstr(oskelTestGreeting()));\n");
   assert(out == "hi\n");
+}
+
+void testExternUnterminatedCStringReturnIsBounded() {
+  TEST_SCOPE();
+  // The host returns a `const char *` with no NUL: the read must stop at its
+  // own bound with a clear runtime error, not walk off the buffer (UB). The
+  // test also proves the capped scan stays in bounds (the array is one byte
+  // longer than the cap), so it is safe under ASan.
+  Bytecode bytecode = compileSource(
+      "extern \"C\" { fn oskelTestUnterminated(): cstring; }\n"
+      "let s = oskelTestUnterminated();\n"
+      "print(byteLen(s));\n");
+  SymbolPlatform platform;
+  VM vm(platform);
+  registerBuiltins(vm);
+  std::string message;
+  try {
+    vm.run(bytecode);
+  } catch (const RuntimeError& error) {
+    message = error.message;
+  }
+  assert(message.find("NUL terminator") != std::string::npos);
 }
 
 void testExternMarshalsPointerArgument() {
@@ -2268,6 +2302,7 @@ int main() {
   testExternTruncatesNarrowReturnToDeclaredWidth();
   testExternMarshalsDoubleReturnAndArgument();
   testExternMarshalsStringReturnAsCString();
+  testExternUnterminatedCStringReturnIsBounded();
   testExternMarshalsPointerArgument();
 #if OSKEL_FFI_STRUCT_BY_VALUE
   testExternMarshalsStructReturnTwoIntegers();
