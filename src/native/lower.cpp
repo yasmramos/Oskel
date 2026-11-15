@@ -826,6 +826,13 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       {"int", rt.intBuiltin},
       {"float", rt.floatBuiltin},
       {"double", rt.doubleBuiltin},
+      // The exact math builtins (PHASE 7c.5b.3): `floor`, `ceil`, `round` and
+      // `sqrt`. Correctly rounded, so they match the hosted engine bit for bit
+      // without an embedded libm.
+      {"floor", rt.floorBuiltin},
+      {"ceil", rt.ceilBuiltin},
+      {"round", rt.roundBuiltin},
+      {"sqrt", rt.sqrtBuiltin},
   };
 
   const GlobalSlots globals = collectGlobals(protos, builtins);

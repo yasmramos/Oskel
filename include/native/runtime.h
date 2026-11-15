@@ -167,6 +167,14 @@ struct AotRuntimeHandles {
   CodeGen::Label intBuiltin;       // AotValue oskel_builtin_int(AotValue* args, long argc, AotClosure* self)
   CodeGen::Label floatBuiltin;     // AotValue oskel_builtin_float(AotValue* args, long argc, AotClosure* self)
   CodeGen::Label doubleBuiltin;    // AotValue oskel_builtin_double(AotValue* args, long argc, AotClosure* self)
+  // The exact math builtins (PHASE 7c.5b.3): `floor`, `ceil`, `round` and
+  // `sqrt`. They are correctly rounded -- SSE `roundsd`-free rounding plus
+  // `sqrtsd` -- so they reproduce the hosted engine bit for bit without an
+  // embedded libm. `sqrt` of a negative operand fails like the hosted one.
+  CodeGen::Label floorBuiltin;     // AotValue oskel_builtin_floor(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label ceilBuiltin;      // AotValue oskel_builtin_ceil(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label roundBuiltin;     // AotValue oskel_builtin_round(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label sqrtBuiltin;      // AotValue oskel_builtin_sqrt(AotValue* args, long argc, AotClosure* self)
   // The integer text parser behind `int(string)` (PHASE 7c.5b.2a). It is not a
   // public builtin: `oskel_builtin_int` calls it with the trimmed string bytes.
   CodeGen::Label intTextParser;    // int64_t oskel_parse_int_text(char* data, long length)
@@ -193,7 +201,8 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel()
   };
 }
 

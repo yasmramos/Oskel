@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -476,6 +477,18 @@ static void test_sse() {
   CodeGen g12;
   g12.testImm32(X64Reg::Rax, 1);
   checkBytes("test rax, 1", g12, "48F7C001000000");
+
+  // sqrtsd xmm0, xmm0 -> F2 0F 51 C0 (the destination is the reg field, the
+  // source the rm field; xmm0-7 need no REX). It is the only user of `sqrtsd`,
+  // the correctly-rounded square root the freestanding `sqrt` builtin uses.
+  CodeGen g13;
+  g13.sqrtsd(kXmmBase + 0, kXmmBase + 0);
+  checkBytes("sqrtsd xmm0, xmm0", g13, "F20F51C0");
+
+  // sqrtsd xmm9, xmm3 -> dst=9 in reg (REX.R) -> 44 F2 0F 51 CB.
+  CodeGen g14;
+  g14.sqrtsd(kXmmBase + 9, kXmmBase + 3);
+  checkBytes("sqrtsd xmm9, xmm3", g14, "F2440F51CB");
 }
 
 static void test_ucomisd_bytes() {
@@ -1075,6 +1088,23 @@ static void test_exec_setcc() {
   auto fn3 = reinterpret_cast<std::int64_t (*)()>(emitExecutable(g3.code()));
   check(fn3() == 0, "exec: (9 < 5) materializes as 0");
 }
+
+static void test_exec_sqrtsd() {
+  // double f(double x) { return sqrt(x); } -- the operand arrives in xmm0 and
+  // the result returns in xmm0, so `sqrtsd xmm0, xmm0; ret` is the whole body.
+  CodeGen g;
+  g.sqrtsd(kXmmBase + 0, kXmmBase + 0);
+  g.retInsn();
+  auto fn = reinterpret_cast<double (*)(double)>(emitExecutable(g.code()));
+  check(fn(4.0) == 2.0, "exec: sqrt(4.0) == 2.0");
+  check(fn(2.0) == std::sqrt(2.0), "exec: sqrt(2.0) is the correctly rounded value");
+  check(fn(0.0) == 0.0, "exec: sqrt(0.0) == 0.0");
+  // sqrt(-0.0) is -0.0, whose sign the `==` comparison cannot see.
+  double negZero = fn(-0.0);
+  check(std::signbit(negZero), "exec: sqrt(-0.0) preserves the negative zero");
+  // A negative operand produces the canonical quiet NaN.
+  check(std::isnan(fn(-1.0)), "exec: sqrt(-1.0) is NaN");
+}
 #endif
 
 // Byte-exact encodings for the x87 helpers float `%` uses. Verified against
@@ -1142,6 +1172,7 @@ int main() {
   test_exec_rbp_disp32_roundtrip();
   test_exec_syscall_write();
   test_exec_setcc();
+  test_exec_sqrtsd();
 #else
   std::printf("skipped: execution tests require Linux x86-64\n");
 #endif
