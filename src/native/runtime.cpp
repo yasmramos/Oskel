@@ -4487,7 +4487,8 @@ void emitOrdBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label utf8Len,
 // UTF-8 encoded into a fresh arena string.
 void emitChrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
                     CodeGen::Label fail, const DataBlob& msgChrInt,
-                    const DataBlob& msgChrRange, const DataBlob& msgOom) {
+                    const DataBlob& msgChrRange, const DataBlob& msgChrSurrogate,
+                    const DataBlob& msgOom) {
   CodeGen::Label isInt = cg.newLabel();
   CodeGen::Label len1 = cg.newLabel();
   CodeGen::Label len2 = cg.newLabel();
@@ -4498,6 +4499,7 @@ void emitChrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
   CodeGen::Label enc3 = cg.newLabel();
   CodeGen::Label enc4 = cg.newLabel();
   CodeGen::Label failRange = cg.newLabel();
+  CodeGen::Label failSurrogate = cg.newLabel();
   CodeGen::Label oom = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
 
@@ -4516,6 +4518,13 @@ void emitChrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
   cg.jcc(Jcc::S, failRange);    // negative
   cg.cmpImm32(R8, 0x10FFFF);
   cg.jcc(Jcc::Gt, failRange);
+  // A surrogate (0xD800..0xDFFF) is not a Unicode scalar value; encoding it
+  // would produce CESU-8, which is not valid UTF-8. `R8 - 0xD800 <= 0x7FF`
+  // unsigned matches the whole range in one compare.
+  cg.movReg(R9, R8);
+  cg.subRegImm32(R9, 0xD800);
+  cg.cmpImm32(R9, 0x7FF);
+  cg.jcc(Jcc::Be, failSurrogate);
   cg.cmpImm32(R8, 0x7F);
   cg.jcc(Jcc::Le, len1);
   cg.cmpImm32(R8, 0x7FF);
@@ -4624,6 +4633,8 @@ void emitChrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
 
   cg.bind(failRange);
   emitFailCall(cg, fail, msgChrRange);
+  cg.bind(failSurrogate);
+  emitFailCall(cg, fail, msgChrSurrogate);
   cg.bind(oom);
   emitFailCall(cg, fail, msgOom);
 }
@@ -5848,6 +5859,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgOrdChar = addText("oskel: ord() expects a single character\n");
   DataBlob msgChrInt = addText("oskel: chr() expects an integer argument\n");
   DataBlob msgChrRange = addText("oskel: chr() code point out of range\n");
+  DataBlob msgChrSurrogate = addText("oskel: chr() code point is a surrogate\n");
   DataBlob msgAssert = addText("oskel: assertion failed\n");
   DataBlob msgPanic = addText("oskel: panic\n");
   DataBlob msgConvertInt = addText("oskel: cannot convert this value to int\n");
@@ -6013,7 +6025,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitBoolBuiltin(cg, handles.boolBuiltin, handles.truthy);
   emitOrdBuiltin(cg, handles.ordBuiltin, env.utf8Len, fail, msgOrdType, msgOrdChar);
   emitChrBuiltin(cg, handles.chrBuiltin, handles.alloc, fail, msgChrInt, msgChrRange,
-                 msgOom);
+                 msgChrSurrogate, msgOom);
   emitAssertBuiltin(cg, handles.assertBuiltin, handles.truthy, fail, failDynamic,
                     msgAssert);
   emitPanicBuiltin(cg, handles.panicBuiltin, fail, failDynamic, msgPanic);

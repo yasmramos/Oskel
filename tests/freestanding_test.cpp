@@ -756,6 +756,18 @@ static void test_public_builtin_errors() {
   check(chr.output.find("chr() code point out of range") != std::string::npos,
         "the failed chr names the code-point range");
 
+  // A surrogate is a valid code point numerically but not a Unicode scalar
+  // value; encoding it would produce CESU-8, which is not valid UTF-8.
+  Bytecode surrogateChr = compileSource("print(chr(0xD800));\n");
+  RunResult surrogate = buildAndRun("/tmp/oskel_builtin_surrogate_chr", surrogateChr);
+  check(surrogate.exitCode == 70, "chr of a surrogate exits 70");
+  check(surrogate.output.find("chr() code point is a surrogate") != std::string::npos,
+        "the failed chr names the surrogate rule");
+
+  Bytecode boundaryChr = compileSource("print(chr(0xD7FF), chr(0xE000));\n");
+  RunResult boundary = buildAndRun("/tmp/oskel_builtin_boundary_chr", boundaryChr);
+  check(boundary.exitCode == 0, "chr of the scalar values around the range succeeds");
+
   Bytecode failedAssert = compileSource("assert(false);\n");
   RunResult assertion = buildAndRun("/tmp/oskel_builtin_assert", failedAssert);
   check(assertion.exitCode == 70, "a failed assert exits 70");

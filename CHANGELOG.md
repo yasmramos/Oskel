@@ -86,6 +86,12 @@ may change between minor versions.
 
 ### Fixed
 
+- `chr(code)` now rejects a lone surrogate (U+D800..U+DFFF) instead of
+  encoding it as CESU-8 (three bytes, invalid UTF-8), matching the `\uXXXX`
+  escape. The check lives in the builtin, so the VM and the AOT backend reject
+  the same value with the same message (`chr() code point is a surrogate`) and
+  the same exit code. The scalar values on either side of the range
+  (U+D7FF, U+E000) still encode.
 - A `\uXXXX` string escape whose value is a lone surrogate (U+D800..U+DFFF) is
   now a compile error instead of producing a string with invalid UTF-8. The
   lexer previously encoded the code point as CESU-8 (three bytes), so
