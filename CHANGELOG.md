@@ -49,6 +49,12 @@ may change between minor versions.
 
 ### Changed
 
+- The AOT backend compares two arrays or maps by content, like the hosted
+  engine, instead of by pointer identity. `[1, 2] == [1, 2]` is now true in a
+  compiled binary, and `in` over an array of arrays matches the VM. The
+  equality helper tracks the pairs already under comparison on the stack, the
+  same `visited` rule as `Value::equals`, so a cyclic structure compares equal
+  to an isomorphic one and terminates instead of recursing forever.
 - `examples/tui_editor.oskl` now exercises every feature its header claims:
   the non-null assertion `!!`, safe access `?.` with `??`, a union return type
   (`configValue`), `byteLen`/`buffer`/`cstring` and a range, all checked by the
