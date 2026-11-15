@@ -40,6 +40,12 @@ may change between minor versions.
   instead of the generic unassigned-global error a typo produces. The symbol
   still cannot be lowered (PHASE 7f work), but the failure now names the real
   problem. Pinned by `tests/build_error.cmake`.
+- FFI: `extern "C"` declarations support a C variadic. A trailing bare `...`
+  (`fn printf(fmt: cstring, ...): int`) declares one; the named parameters are
+  the fixed prefix and the extra arguments pass through the default argument
+  promotions. Like a class-MEMORY struct, the call goes through `libffi` and the
+  declaration needs the System V AMD64 ABI, so off that it is rejected at
+  compile time instead of mis-called.
 
 ### Changed
 

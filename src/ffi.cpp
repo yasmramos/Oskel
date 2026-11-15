@@ -614,19 +614,102 @@ struct PreparedLibffiCall {
   std::vector<ffi_type*> argTypes;
 };
 
+// The libffi type of a trailing argument of a C variadic call, after the
+// default argument promotions: a `float` widens to `double`, a `bool` becomes
+// an `int`, and a string, pointer or nil is a `void*`. A Oskel `int` keeps its
+// natural 64-bit width (the register holds the whole value either way, and the
+// callee's length modifier decides how many bits to read), so `printf("%d", 5)`
+// and `printf("%ld", 5)` both work.
+ffi_type* variadicPromotedType(const Value& value) {
+  if (value.isFloat() || value.isDouble()) return &ffi_type_double;
+  if (value.isStr() || value.isPtr() || value.isNil()) return &ffi_type_pointer;
+  if (value.isBool()) return &ffi_type_sint32;
+  return &ffi_type_sint64;
+}
+
+// Writes one trailing variadic argument into `slot`, matching
+// `variadicPromotedType`. The caller has already rejected a value with no C
+// representation, so this only sees an int, bool, float, double, string,
+// pointer or nil.
+void writePromotedArg(Runtime& rt, const Value& value, AlignedBytes& slot) {
+  if (value.isFloat()) {
+    double d = static_cast<double>(value.number());
+    std::memcpy(slot.data(), &d, sizeof(d));
+    return;
+  }
+  if (value.isDouble()) {
+    double d = value.number();
+    std::memcpy(slot.data(), &d, sizeof(d));
+    return;
+  }
+  if (value.isStr() || value.isPtr() || value.isNil()) {
+    std::int64_t raw = pointerAddress(rt, value, "ptr");
+    std::memcpy(slot.data(), &raw, sizeof(raw));
+    return;
+  }
+  std::int64_t raw = value.isBool() ? (value.asBool() ? 1 : 0) : value.asInt();
+  std::memcpy(slot.data(), &raw, sizeof(raw));
+}
+
 // Calls `address` through libffi. Used when the signature carries a struct of
 // class MEMORY (> 16 bytes): such a struct travels on the stack and comes back
 // through a hidden `sret` pointer, a shape the register thunks cannot express,
 // and libffi reproduces the stack layout at run time.
+//
+// It also drives a C variadic call (`variadic` true): the `ffi_cif` is prepared
+// per call with `ffi_prep_cif_var`, because the number of trailing arguments
+// changes from one call to the next, and each trailing argument is marshalled
+// with the default promotions.
 Value callWithLibffi(Runtime& rt, const std::string& name, void* address,
                      const std::vector<TypeSpec>& paramTypes, const TypeSpec& returnType,
-                     PreparedLibffiCall& prepared, std::vector<Value>& args) {
+                     PreparedLibffiCall* prepared, bool variadic, std::vector<Value>& args) {
+  const std::size_t fixedCount = paramTypes.size();
+  // A variadic call prepares its own `cif`; a fixed call reuses the one built
+  // once in `prepareLibffiCall`. Both `cif` and `argTypes` stay alive for the
+  // whole call, which is what libffi requires.
+  std::vector<ffi_type*> variadicArgTypes;
+  ffi_cif variadicCif{};
+  ffi_cif* cif = nullptr;
+  if (variadic) {
+    variadicArgTypes.reserve(args.size());
+    for (std::size_t i = 0; i < fixedCount; ++i) {
+      variadicArgTypes.push_back(libffiTypeFor(paramTypes[i].scalarType));
+    }
+    for (std::size_t i = fixedCount; i < args.size(); ++i) {
+      variadicArgTypes.push_back(variadicPromotedType(args[i]));
+    }
+    ffi_type* returnTypeFfi = returnType.scalarType.empty() || returnType.scalarType == "void"
+                                  ? &ffi_type_void
+                                  : libffiTypeFor(returnType.scalarType);
+    if (ffi_prep_cif_var(&variadicCif, FFI_DEFAULT_ABI, static_cast<unsigned>(fixedCount),
+                         static_cast<unsigned>(variadicArgTypes.size()), returnTypeFfi,
+                         variadicArgTypes.data()) != FFI_OK) {
+      rt.fail("cannot prepare the variadic libffi call for extern \"C\" symbol '" + name + "'");
+    }
+    cif = &variadicCif;
+  } else {
+    cif = &prepared->cif;
+  }
+
   std::vector<AlignedBytes> storage;
-  storage.reserve(paramTypes.size());
+  storage.reserve(args.size());
   std::vector<void*> avalue;
-  avalue.reserve(paramTypes.size());
+  avalue.reserve(args.size());
   std::vector<Ref<CallbackObj>> callbacks;
-  for (std::size_t i = 0; i < paramTypes.size(); ++i) {
+  for (std::size_t i = 0; i < args.size(); ++i) {
+    if (i >= fixedCount) {
+      // A trailing argument of a C variadic: promoted, so it is never a struct
+      // or a callback. A value with no C representation is rejected here.
+      if (!(args[i].isInt() || args[i].isBool() || args[i].isFloat() || args[i].isDouble() ||
+            args[i].isStr() || args[i].isPtr() || args[i].isNil())) {
+        rt.fail("argument " + std::to_string(i + 1) + " of '" + name + "' has type '" +
+                args[i].typeName() + "', which cannot cross the C variadic boundary");
+      }
+      storage.emplace_back(8);
+      writePromotedArg(rt, args[i], storage.back());
+      avalue.push_back(storage.back().data());
+      continue;
+    }
     const TypeSpec& spec = paramTypes[i];
     if (spec.isCallback) {
       std::int64_t code = 0;
@@ -676,7 +759,7 @@ Value callWithLibffi(Runtime& rt, const std::string& name, void* address,
   }
   AlignedBytes ret(returnType.isStruct ? retLayout.size : 8);
 
-  ffi_call(&prepared.cif, FFI_FN(address), ret.data(), avalue.data());
+  ffi_call(cif, FFI_FN(address), ret.data(), avalue.data());
 
   for (const Ref<CallbackObj>& callback : callbacks) {
     if (callback->hasPendingError) {
@@ -774,7 +857,8 @@ std::shared_ptr<PreparedLibffiCall> prepareLibffiCall(const std::vector<TypeSpec
 }  // namespace
 
 Value makeExternNative(Runtime& rt, const std::string& name, void* address,
-                       const std::vector<TypeSpec>& paramTypes, const TypeSpec& returnType) {
+                       const std::vector<TypeSpec>& paramTypes, const TypeSpec& returnType,
+                       bool variadic) {
   if (address == nullptr) {
     // `VM::installExtern` already rejects an unresolved symbol; this guards the
     // other callers (the AOT backend, tests) from binding a thunk to NULL, which
@@ -816,6 +900,25 @@ Value makeExternNative(Runtime& rt, const std::string& name, void* address,
   // whole call goes through libffi instead. `prepareLibffiCall` returns null for
   // every other signature, which keeps the register path.
 #ifdef OSKEL_HAVE_LIBFFI
+  if (variadic) {
+    // A C variadic always goes through libffi: the number of trailing arguments
+    // changes per call, so the `cif` is prepared at the call site with
+    // `ffi_prep_cif_var`. `validateSignature` already rejected a variadic build
+    // without libffi, so reaching here without support is a programming error.
+    if (!kCVariadicSupported) {
+      rt.fail("a variadic 'extern \"C\"' declaration needs libffi and the System V AMD64 ABI");
+    }
+    return makeNative(name, [name, address, paramTypes, returnType](
+                                Runtime& in, std::vector<Value>& args) -> Value {
+      if (args.size() < paramTypes.size()) {
+        in.fail("'" + name + "' expects at least " + std::to_string(paramTypes.size()) +
+                " argument" + (paramTypes.size() == 1 ? "" : "s") + ", got " +
+                std::to_string(args.size()));
+      }
+      return callWithLibffi(in, name, address, paramTypes, returnType, /*prepared=*/nullptr,
+                            /*variadic=*/true, args);
+    });
+  }
   bool libffiOk = true;
   std::shared_ptr<PreparedLibffiCall> libffiCall = prepareLibffiCall(paramTypes, returnType, libffiOk);
   if (!libffiOk) {
@@ -828,10 +931,19 @@ Value makeExternNative(Runtime& rt, const std::string& name, void* address,
         in.fail("'" + name + "' expects " + std::to_string(paramTypes.size()) + " argument" +
                 (paramTypes.size() == 1 ? "" : "s") + ", got " + std::to_string(args.size()));
       }
-      return callWithLibffi(in, name, address, paramTypes, returnType, *libffiCall, args);
+      return callWithLibffi(in, name, address, paramTypes, returnType, libffiCall.get(),
+                            /*variadic=*/false, args);
     });
   }
 #endif
+
+  if (variadic) {
+    // Unreachable in practice: the compiler rejects a variadic declaration when
+    // the build cannot express it (`validateSignature`). The guard keeps a
+    // hand-built `ExternSymbol` from falling through to the fixed-arity path,
+    // where the trailing arguments would be reported as an arity error.
+    rt.fail("a variadic 'extern \"C\"' declaration needs libffi and the System V AMD64 ABI");
+  }
 
   // The address, the signature and the (flattened) parameter classes are
   // captured by value, so the native is self-contained.

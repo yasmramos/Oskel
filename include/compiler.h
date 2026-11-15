@@ -263,6 +263,11 @@ class Compiler {
     std::vector<Param> params;
     TypeRef returnType;
     bool mustUse = false;
+    // True for a C variadic (`extern "C" fn printf(fmt: cstring, ...): int`).
+    // `params` then holds the named prefix; a call may pass any number of extra
+    // arguments, which the call-site check does not type-check (C applies the
+    // default promotions at run time).
+    bool cVariadic = false;
   };
   std::unordered_map<std::string, NativeSig> nativeSigs_;
 

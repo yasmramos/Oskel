@@ -316,7 +316,7 @@ void VM::installExtern(const ExternSymbol& symbol) {
     fail("extern \"C\" symbol '" + symbol.name + "' was not found in the host");
   }
   defineGlobal(symbol.name, ffi::makeExternNative(*this, symbol.name, address, symbol.paramTypes,
-                                                  symbol.returnType));
+                                                  symbol.returnType, symbol.variadic));
 }
 
 void VM::installExterns(const Bytecode& proto) {

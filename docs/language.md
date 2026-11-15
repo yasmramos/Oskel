@@ -575,6 +575,47 @@ returns that does not match the declared shape (not a map, a missing field, a
 field of the wrong type) fails the same way. The AOT backend
 (PHASE 7) will lower callbacks to compile-time stubs and never links `libffi`.
 
+**C variadics.** A trailing bare `...` declares a C variadic function: the named
+parameters are the fixed prefix and every extra argument is passed through the
+default argument promotions.
+
+```oskel
+extern "C" {
+  fn snprintf(buf: cstring, size: size_t, fmt: cstring, ...): int;
+}
+
+let buf = cstring("          ");
+snprintf(buf, 10, "%s-%d", "id", 7);   // "id-7"
+```
+
+The `...` must be the last parameter. The spelling is a *bare* `...`, told apart
+from the Oskel parameter pack `rest...` (`fn sum(first, rest...)`), which
+collects the extra arguments into an array and cannot cross the C boundary — a
+`rest...` in an `extern` declaration is a compile error. A variadic call applies
+the C default promotions: a `float` argument is passed as a `double`, a `bool`
+as an `int`, and a string or pointer as a `const char *`. The compiler checks
+only that the fixed prefix is present and that the earlier arguments match; the
+trailing arguments are **not** type-checked, because C promotes and consumes
+them at run time, so a wrong format is the program's responsibility.
+
+A variadic call always goes through `libffi` (the argument count changes per
+call, so the call interface is prepared each time with `ffi_prep_cif_var`). Like
+a class-MEMORY struct, a variadic declaration therefore needs `libffi` and the
+System V AMD64 ABI; on any other target it is rejected at compile time with a
+clear message. The return type must be a scalar. A declaration that is variadic
+and one that is not are different C types, so declaring one symbol both ways is
+a compile error (see above).
+
+**Scope of the boundary.** A C type crosses the boundary when Oskel has a value
+that spells it: integers (including a C enum, which *is* an `int`), `float`/
+`double`, `bool`, pointers (`ptr`/`cstring`/`string`), a `struct` of scalar
+fields, and a `fn(...)` callback. The C types with no Oskel value — `long
+double`, `__int128`, an array by value (it decays to a pointer at the ABI, so
+`ptr` spells it), a union, a bitfield, and a callback that itself takes a
+callback — are out of scope: a declaration that uses one is rejected at compile
+time with a clear message instead of a wrong call. See `docs/BACKLOG.md` §7 for
+the reason for each.
+
 **Local inference.** With no annotation, the compiler infers the type from the
 initializer when it is a literal or another typed binding, and then checks
 later assignments against it:
@@ -2280,7 +2321,7 @@ oskelc -pkg ... -o app.oskpkg  packages a .oskpkg
 - Modules use Java-style `import` (see §18). `import` is only allowed at the top level of a module: nesting an import inside a function or block is a compile error. `require` (Lua-style) is dropped — `import` is the only module form. A module is loaded once, eagerly, when the program is compiled, and a cyclic import is a compile error rather than a crash.
 - No `++`, `--` or default parameters. A trailing `rest...` parameter makes a function variadic (see §7.1). `switch` on literals and ranges is supported (see §6.10), and so is the post-test loop `do { ... } while (cond);` (see §6.4).
 - Optional types and nullability are implemented for declarations and expressions (PHASE 6.5). Type annotations (`let x: int = 5`), local inference, the nullable `T?` annotation, and the null-safe expressions `?.`, `??` and `!!` are checked at compile time. `struct` is implemented (see §4.7) and so is `native fn` (see §7.6), the typed declaration of a host-provided function.
-- FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the System V AMD64 ABI without `libffi` for scalars and structs by value. A `fn(P...): R` parameter is a callback: the development engine builds a `libffi` closure that re-enters the VM (its `R` may be a scalar or a struct by value), while the AOT backend (PHASE 7) lowers callbacks to compile-time stubs and never links `libffi`.
+- FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the System V AMD64 ABI without `libffi` for scalars and structs by value. A `fn(P...): R` parameter is a callback: the development engine builds a `libffi` closure that re-enters the VM (its `R` may be a scalar or a struct by value), while the AOT backend (PHASE 7) lowers callbacks to compile-time stubs and never links `libffi`. A trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...): int`), which applies the C default argument promotions and goes through `libffi`; like a class-MEMORY struct it needs the System V AMD64 ABI plus `libffi`, and is rejected at compile time elsewhere.
 - No UI library yet. Skia + SDL2 + declarative UI is planned for post-1.0.
 - No async/await, generics, full pattern matching, generators, or transactions. These are out of scope (see `DEVELOPMENT.md`).
 - Map keys are always strings. Literals accept identifier, string, scalar (`int`, `float`, `double`, `true`, `false`, `nil`) and computed `[expr]` keys; non-string keys are canonicalized to their string form.

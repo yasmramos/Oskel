@@ -169,6 +169,10 @@ struct ExternSymbol {
   // the declaration had no annotation, which the FFI marshalling reads as C's
   // implicit `int`; `void` is stored literally.
   ffi::TypeSpec returnType;
+  // True for a C variadic (`fn printf(fmt: cstring, ...): int`). The fixed
+  // `paramTypes` are the named parameters; the trailing arguments of a call are
+  // marshalled at run time with the default promotions and `ffi_prep_cif_var`.
+  bool variadic = false;
 };
 
 // A function prototype. The root chunk is the `<main>` proto and nested

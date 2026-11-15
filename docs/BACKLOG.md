@@ -221,10 +221,21 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 7. FFI (`src/ffi.cpp`)
 
-1. **[P1]** `extern "C"` does not support variadics; `printf` cannot be
-   declared. Provide a way (or a documented reason it is out of scope).
-2. **[P1]** `extern "C"` does not support structs larger than 16 bytes by value
-   (System V passes them via a hidden pointer / `sret`).
+1. ~~**[P1]** `extern "C"` does not support variadics; `printf` cannot be
+   declared. Provide a way (or a documented reason it is out of scope).~~ **Done**:
+   a trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...):
+   int`). The compiler records the flag on the `ExternSymbol` and checks only the
+   fixed prefix; the runtime prepares an `ffi_prep_cif_var` call per call and
+   applies the default argument promotions. Needs `libffi` plus the System V
+   AMD64 ABI (`kCVariadicSupported`), so off that the declaration is rejected at
+   compile time. See `tests/53_ffi_variadic.oskl`,
+   `vm_test.cpp::testExternVariadic*` and `docs/language.md` §4.6.
+2. ~~**[P1]** `extern "C"` does not support structs larger than 16 bytes by value
+   (System V passes them via a hidden pointer / `sret`).~~ **Done**: a struct
+   larger than 16 bytes (class MEMORY) is passed on the stack and returned through
+   the hidden `sret` pointer via the `libffi` path (`kMemoryStructsSupported`).
+   Off System V + `libffi` the declaration is rejected at compile time. See
+   `vm_test.cpp::testExternMarshalsMemoryStruct*` and `docs/language.md` §4.6.
 3. ~~**[P1]** `extern "C"` does not support callbacks returning structs (scalars
    only).~~ **Done**: a callback may return a struct by value. The compiler
    resolves the struct name of the callback return to its fields
@@ -238,13 +249,31 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `tests/errors/extern_callback_struct_return_nested.oskl`,
    `vm_test.cpp::testExternCallbackReturnsStruct`/`ReturnsMixedStruct`).
 4. **[P1]** `extern "C"` does not support nested callbacks (a callback that
-   takes another callback).
-5. **[P1]** `extern "C"` does not support `long double`.
-6. **[P1]** `extern "C"` does not support `__int128`.
-7. **[P1]** `extern "C"` does not support arrays by value.
-8. **[P1]** `extern "C"` does not support C unions.
-9. **[P1]** `extern "C"` does not support bitfields.
-10. **[P1]** `extern "C"` does not support C enums (only `int`).
+   takes another callback). **Out of scope**: `TypeSpec` stores a callback's
+   signature as scalar type names, so supporting a callback parameter would need
+   a recursive `TypeSpec`, and the libffi closure path would have to build a
+   nested `ffi_cif`. A nested callback has no Oskel spelling either (the type
+   grammar reads a callback parameter as a scalar name), so the declaration is
+   rejected with a clear message rather than mis-parsed.
+5. **[P1]** `extern "C"` does not support `long double`. **Out of scope**: Oskel
+   has no 80-bit type, so there is no way to hold the value on either side of
+   the boundary. `double` (binary64) is the widest float Oskel exposes.
+6. **[P1]** `extern "C"` does not support `__int128`. **Out of scope**: Oskel's
+   integer is 64-bit; a 128-bit argument would need a type the language does not
+   have. Pass a pointer to the 128-bit value instead.
+7. **[P1]** `extern "C"` does not support arrays by value. **Out of scope**: a C
+   array parameter decays to a pointer at the ABI, so `ptr`/`cstring` already
+   spells it; a struct field that is an array is not expressible in Oskel's
+   `struct` (fields are scalars), which is the same rule as a nested struct.
+8. **[P1]** `extern "C"` does not support C unions. **Out of scope**: a C union
+   is a memory layout, not a type; Oskel's `struct` is a map and has no field
+   aliasing. A union crosses the boundary as a `ptr`/buffer the caller fills.
+9. **[P1]** `extern "C"` does not support bitfields. **Out of scope**: a bitfield
+   is an intra-struct packing detail; Oskel's `struct` fields are whole scalars
+   at natural alignment, and bit manipulation is done with `&`/`|`/shifts.
+10. **[P1]** `extern "C"` does not support C enums (only `int`). **Not a gap**: a
+    C enum is an `int` at the ABI, so `int` is the exact spelling; the enum's
+    named constants are a header concern the program supplies itself.
 11. ~~**[P1]** `installExtern` does not detect two `extern "C"` declarations of
     the same name in different modules; the last wins silently.~~ **Done**: the
     compiler now keeps a session-wide canonical signature per C symbol and
