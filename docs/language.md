@@ -1651,6 +1651,7 @@ Details:
 
 - `upper` and `lower` only transform `A-Z` and `a-z`; the rest of Unicode is unchanged.
 - `trim*` considers ASCII whitespace (`std::isspace`), not every Unicode space.
+- `split` with no argument breaks on runs of that same ASCII whitespace and keeps no leading or trailing empty field (`"  a  b  ".split()` is `["a", "b"]`, `"   ".split()` is `[]`); with a separator it keeps empty fields (`"a,,b".split(",")` is `["a", "", "b"]`).
 - `lines` does not add an empty trailing line if the string ends with `\n`.
 - `indexOf` searches bytes but returns the index in code points.
 - `substr` counts code points; a negative `length` produces an empty string.

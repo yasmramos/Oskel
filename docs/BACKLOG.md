@@ -341,11 +341,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 4. **[P2]** `bindArray` `map`/`filter`/`reduce`/`each` invoke the callback
    through `in.call`, which reenters the VM; add a direct test with a VM
    closure.
-5. **[P2]** `bindString` `split` with no argument uses `std::istringstream`
-   (whitespace, no quotes).
-6. **[P2]** `bindString` `padStart`/`padEnd` build the padding then trim it
+5. **[P2]** `bindString` `padStart`/`padEnd` build the padding then trim it
    with `utf8Chars`, O(n) extra for large paddings.
-7. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
+6. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
     two programs in the same process share state; correct in a REPL, document
     it.
 ## 13. Ops (`src/ops.cpp`)
