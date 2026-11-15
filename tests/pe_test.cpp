@@ -110,7 +110,10 @@ int main() {
 
   // DataDirectory[1] is the import table, inside .idata.
   check(read32(pe, kOh + 112 + 8) == 0x1000, "import directory RVA is 0x1000");
-  check(read32(pe, kOh + 112 + 12) == 5 * 20, "import directory size is 5 descriptors");
+  // The import directory table holds one descriptor per DLL, not one per
+  // imported function, so a single kernel32.dll descriptor plus the terminator.
+  check(read32(pe, kOh + 112 + 12) == 2 * 20,
+        "import directory size is one descriptor + terminator");
   // DataDirectory[12] is the IAT; it must be published, not left zero.
   check(read32(pe, kOh + 112 + 12 * 8) == importIatRva(PeImport::WriteFile),
         "IAT directory points at the first slot");
@@ -167,9 +170,10 @@ int main() {
     check(slotValue == entryRva, "IAT slot points at its hint/name entry");
   }
 
-  // The import list is terminated by a zero descriptor.
-  check(read32(pe, idataPtr + 4 * 20) == 0 &&
-            read32(pe, idataPtr + 4 * 20 + 4) == 0,
+  // The import list is terminated by a zero descriptor. There is exactly one
+  // real descriptor (kernel32.dll), so the terminator is at index 1.
+  check(read32(pe, idataPtr + 1 * 20) == 0 &&
+            read32(pe, idataPtr + 1 * 20 + 4) == 0,
         "import descriptors are zero-terminated");
 
 #if defined(_WIN32)
