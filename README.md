@@ -170,10 +170,13 @@ Available commands:
 
 ## Examples
 
-In the `examples/` directory:
+In the `examples/` directory (see `examples/README.md` for details):
 
 | File | Contents |
 | --- | --- |
+| `calc.oskl` | An arithmetic expression evaluator: lexer, parser and evaluator. Builds with `oskel build`. |
+| `mandelbrot.oskl` | The Mandelbrot set rendered as ASCII art. Builds with `oskel build`. |
+| `tui_editor.oskl` | A minimal terminal text editor (interactive; VM only). |
 | `hello.oskl` | Greeting and string interpolation. |
 | `fizzbuzz.oskl` | Loops, conditionals and modulo. |
 | `fibonacci.oskl` | Recursion and an iterative version. |
@@ -182,6 +185,7 @@ In the `examples/` directory:
 
 ```sh
 oskel examples/fizzbuzz.oskl
+oskel build examples/calc.oskl -o calc && ./calc
 ```
 
 ## The language in a minute
