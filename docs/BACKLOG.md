@@ -207,6 +207,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     the extra slot at the site.
 18. **[P3]** `emitArith` handles `INT64_MIN / -1` on the int path but not on the
     float path; consistent semantics, inconsistent code.
+19. **[P0]** The AOT backend has no FFI: an `extern "C"` symbol (or a `native
+    fn`) is a host binding with no host, so `oskel build` cannot lower it. The
+    read now fails with a dedicated message (`extern "C" symbol 'X' cannot be
+    resolved by the AOT backend (PHASE 7f)`) instead of the generic
+    unassigned-global one, but the lowering itself is PHASE 7f work: a design
+    decision (curated syscall stubs, an object + external link, or a dynamic
+    ELF) is still open, since the generated binary is freestanding today
+    (`ldd` reports "not a dynamic executable"). `tests/build_error.cmake` pins
+    the current behaviour.
 
 ---
 

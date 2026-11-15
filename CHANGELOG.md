@@ -35,6 +35,11 @@ may change between minor versions.
   trampoline serialises the map the Oskel function returns into the C return
   storage using the struct layout, so C reads the fields back through the
   registers the ABI assigns.
+- AOT: `oskel build` reports an `extern "C"` symbol with a dedicated message
+  (`extern "C" symbol 'X' cannot be resolved by the AOT backend (PHASE 7f)`)
+  instead of the generic unassigned-global error a typo produces. The symbol
+  still cannot be lowered (PHASE 7f work), but the failure now names the real
+  problem. Pinned by `tests/build_error.cmake`.
 
 ### Changed
 

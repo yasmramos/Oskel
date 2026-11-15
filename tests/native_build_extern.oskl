@@ -1,0 +1,11 @@
+// Fixture for the `oskel build` extern-error test (tests/build_error.cmake).
+//
+// `getpid` is a real C symbol the development VM resolves through its host
+// registry, so this program runs on the VM. The AOT backend has no host to
+// resolve an `extern "C"` symbol against (the FFI lowering is PHASE 7f), so
+// `oskel build` must fail with the dedicated message instead of the generic
+// unassigned-global one a typo produces.
+extern "C" {
+  fn getpid(): int;
+}
+print(getpid());

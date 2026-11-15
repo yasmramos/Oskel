@@ -145,6 +145,27 @@ static void testHostBindingThrows() {
   check(!chunk.code.empty(), "an ordinary global assignment still lowers");
 }
 
+static void testExternSymbolGetsDedicatedMessage() {
+  // When the proto carries an `extern "C"` declaration for the name, the read
+  // is a C symbol the host would provide, not a typo: the lowerer names the
+  // real problem (the AOT backend has no host) instead of the generic
+  // unassigned-global message. `proto.externs` is the compiler's link metadata.
+  auto proto = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::SETGLOBAL, 0, 0),
+                          instr(OpCode::HALT)},
+                         {Value(std::string("getpid"))}, 1);
+  proto.externs.push_back(ExternSymbol{"getpid", {}, ffi::TypeSpec{}});
+  check(loweringThrows(proto, "extern \"C\" symbol 'getpid' cannot be resolved"),
+        "an extern symbol read names the AOT limitation, not a typo");
+
+  // The dedicated message is only for a declared symbol: an undeclared read of
+  // the same shape still gets the generic message.
+  auto typo = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::SETGLOBAL, 0, 0),
+                         instr(OpCode::HALT)},
+                        {Value(std::string("getpid"))}, 1);
+  check(loweringThrows(typo, "global 'getpid' is read but never assigned"),
+        "an undeclared read keeps the generic message");
+}
+
 static void testInvalidUnopSelectorThrows() {
   auto proto = makeProto(
       {instr(OpCode::UNOP, 0, 0, 99), instr(OpCode::HALT)}, {}, 1);
@@ -858,6 +879,7 @@ int main() {
   testBadJumpTargetThrows();
   testUnassignedGlobalThrows();
   testHostBindingThrows();
+  testExternSymbolGetsDedicatedMessage();
   testInvalidUnopSelectorThrows();
   testHaltInChildThrows();
   testRootReturnLowers();
