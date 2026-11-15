@@ -1047,6 +1047,43 @@ void testVmCallsBoundMethods() {
   assert(array->items[1].isInt() && array->items[1].asInt() == 2);
 }
 
+void testArrayCallbackReentersTheVm() {
+  TEST_SCOPE();
+  // The callback passed to `map` is a VM closure, so the builtin must re-enter
+  // the VM while its own frame is still live. The result comes back to the
+  // builtin, which returns the mapped array.
+  VM vm;
+  registerBuiltins(vm);
+  runOrFail(vm, compileSource("fn twice(x) { return x * 2; }"));
+  const Value& twice = requireGlobal(vm, "twice");
+
+  ArrayPtr array = makeArray({Value(1), Value(2), Value(3)});
+  Value map = ops::memberGet(vm, Value(array), "map", 1, 1);
+  assert(map.isFunc());
+  Value result = vm.call(map, {twice}, 1, 1);
+  assert(result.isArray());
+  const auto& items = result.arr().items;
+  assert(items.size() == 3);
+  assert(items[0].asInt() == 2 && items[1].asInt() == 4 && items[2].asInt() == 6);
+
+  // An error raised inside the callback unwinds out of the builtin and reaches
+  // the caller as an ordinary runtime error.
+  VM inner;
+  registerBuiltins(inner);
+  runOrFail(inner, compileSource("fn boom(x) { panic(\"boom\"); }"));
+  const Value& boom = requireGlobal(inner, "boom");
+  ArrayPtr source = makeArray({Value(1)});
+  Value innerMap = ops::memberGet(inner, Value(source), "map", 1, 1);
+  bool threw = false;
+  try {
+    inner.call(innerMap, {boom}, 1, 1);
+  } catch (const RuntimeError& error) {
+    threw = true;
+    assert(error.message == "boom");
+  }
+  assert(threw);
+}
+
 void testRuntimeErrorCarriesSourcePosition() {
   TEST_SCOPE();
   Bytecode bytecode = compileSource("let a = 1;\nlet b = 1 / 0;\n");
@@ -2113,6 +2150,7 @@ int main() {
   testArgsExcludeTheScriptName();
   testMapValueRejectsNonStringKey();
   testVmCallsBoundMethods();
+  testArrayCallbackReentersTheVm();
   testRuntimeErrorCarriesSourcePosition();
   testFunctionCallAndReturn();
   testFunctionWithoutReturnYieldsNil();

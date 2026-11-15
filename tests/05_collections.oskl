@@ -76,6 +76,26 @@ var seen = [];
 });
 assertEq(seen, [10, 20]);
 
+// The callback is a VM closure: `map`/`filter`/`reduce`/`each` call back into
+// the VM while the builtin itself is running. These cases exercise the
+// reentry directly: a nested builtin inside a callback, a callback that reads
+// a captured outer binding, and an error raised inside a callback, which must
+// unwind out of the builtin and be catchable with `pcall`.
+assertEq([[1, 2], [3, 4]].map(row => row.map(x => x * 2)), [[2, 4], [6, 8]]);
+assertEq([[1, 2], [3, 4]].filter(row => row.any(x => x > 3)), [[3, 4]]);
+assertEq([[1, 2, 3], [4, 5]].map(row => row.reduce((a, x) => a + x, 0)), [6, 9]);
+
+var factor = 3;
+fn scale(xs) { return xs.map(x => x * factor); }
+assertEq(scale([1, 2, 3]), [3, 6, 9]);
+
+var raised = pcall(() => [1, 2, 3].map(x => {
+  if (x == 2) { panic("boom"); }
+  return x;
+}));
+assertEq(raised.ok, false);
+assertEq(raised.error.message, "boom");
+
 assertEq([1, 2, 3].find(x => x > 1), 2);
 assertEq([1, 2].find(x => x > 9), nil);
 assertEq([1, 2, 3].any(x => x == 3), true);

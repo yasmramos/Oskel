@@ -1577,6 +1577,7 @@ Details:
 - `slice` clamps the indexes to the size of the array and accepts negatives. If `end < start`, it returns an empty array.
 - `sort` and `sorted` use ascending order by default. The comparator receives `(a, b)` and must return `true` if `a` should come before `b`; the sort is stable.
 - `reduce` without an initial value uses the first element as the accumulator and fails if the array is empty.
+- `map`, `filter`, `reduce`, `each`, `find`, `any` and `all` call their callback through the VM, so the callback may itself call a builtin (a nested `map`), read a captured outer binding, or raise. An error raised inside a callback unwinds out of the builtin and can be caught with `pcall`, like any other runtime error.
 - `sum` requires all elements to be numbers; it returns `int` if all are integers and `double` otherwise.
 - `clone` is shallow: nested arrays and maps are shared.
 - The in-place mutators (`push`, `unshift`, `insert`, `sort`, `clear`, and the
