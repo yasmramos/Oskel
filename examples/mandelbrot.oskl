@@ -1,0 +1,88 @@
+// mandelbrot.oskl — the Mandelbrot set rendered as ASCII art.
+//
+// A small graphics program that runs anywhere: it computes the set on a grid
+// of complex points and maps each escape count to a character, so the image is
+// plain text on stdout. It is the visual counterpart to `calc.oskl`: where
+// calc exercises strings and maps, this one leans on floating-point math,
+// nested loops and tight numeric code.
+//
+//   oskel examples/mandelbrot.oskl
+//   oskel build examples/mandelbrot.oskl -o mandelbrot && ./mandelbrot
+//
+// It stays inside the AOT subset: no string/array methods, no `std` imports,
+// no float `**` (a power with a float exponent needs libm, so there is none
+// here) and no `int()`/`float()` conversions. Every value is an ordinary
+// number, which the backend lowers to native floating point.
+//
+// Exercised: functions and recursion, `while` and nested loops, floating-point
+// arithmetic and comparisons, arrays, string building and indexing, the modulo
+// operator, `if`/`else`, and `assert`.
+
+// The palette, from an early escape (bright) to a late one (dark). Indexing a
+// string by code point is how a single character is picked out.
+fn rampChar(iteration, maxIter) {
+  if (iteration >= maxIter) {
+    return " ";
+  }
+  var ramp = " .:-=+*#%@";
+  return ramp[iteration % ramp.length];
+}
+
+// The escape-time iteration count for the point (cx, cy): iterate z = z^2 + c
+// from z = 0 until |z| exceeds 2 or `maxIter` steps pass. Points that never
+// escape are "inside" the set and return `maxIter`.
+fn mandelbrot(cx, cy, maxIter) {
+  var x = 0.0;
+  var y = 0.0;
+  var i = 0;
+  while (i < maxIter) {
+    var x2 = x * x;
+    var y2 = y * y;
+    if (x2 + y2 > 4.0) {
+      return i;
+    }
+    // (x + yi)^2 + c, with the imaginary part computed from the old x and y.
+    var nextX = x2 - y2 + cx;
+    y = 2.0 * x * y + cy;
+    x = nextX;
+    i = i + 1;
+  }
+  return maxIter;
+}
+
+// Renders one row of the image: maps each column to a complex point inside the
+// viewing window and appends the shaded character.
+fn renderRow(row, rows, cols, maxIter) {
+  var line = "";
+  var x = 0;
+  while (x < cols) {
+    // The window is Re in [-2, 1] and Im in [-1.2, 1.2].
+    var cx = -2.0 + 3.0 * x / cols;
+    var cy = -1.2 + 2.4 * row / rows;
+    line = line + rampChar(mandelbrot(cx, cy, maxIter), maxIter);
+    x = x + 1;
+  }
+  return line;
+}
+
+// ---------------------------------------------------------------- driver
+
+var ROWS = 16;
+var COLS = 64;
+var MAX_ITER = 32;
+
+print("Mandelbrot set (${COLS}x${ROWS}, ${MAX_ITER} iterations)");
+print("");
+
+var row = 0;
+while (row < ROWS) {
+  print(renderRow(row, ROWS, COLS, MAX_ITER));
+  row = row + 1;
+}
+
+// A self-check so the example also acts as a test. The origin is inside the
+// set (it never escapes), and the point 2 + 2i escapes on the first step.
+assert(mandelbrot(0.0, 0.0, MAX_ITER) == MAX_ITER, "the origin is in the set");
+assert(mandelbrot(2.0, 2.0, MAX_ITER) < MAX_ITER, "2 + 2i escapes");
+assert(mandelbrot(-1.0, 0.0, MAX_ITER) == MAX_ITER, "-1 is in the set");
+print("mandelbrot: all checks passed");

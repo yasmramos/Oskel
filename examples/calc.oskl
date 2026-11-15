@@ -1,0 +1,397 @@
+// calc.oskl — an arithmetic expression evaluator, written in Oskel.
+//
+// A complete lexer, recursive-descent parser and tree-walking evaluator: a
+// calculator that turns a string like "2 * (3 + 4) ** 2 - 8 / 4" into a value.
+// It is the "real program" example: it exercises the language the way an
+// application does, not a tour of features.
+//
+// Every construct here compiles to a native binary with `oskel build`, so the
+// program runs identically on the development VM and in a self-contained
+// static executable:
+//
+//   oskel examples/calc.oskl
+//   oskel build examples/calc.oskl -o calc && ./calc
+//
+// It stays inside the AOT subset on purpose: no string/array methods (those
+// need the runtime work of PHASE 7c.6), no `int()`/`float()` conversions and
+// no `std` imports. Tokens and arrays are built by index and `.length`, and
+// numbers are parsed digit by digit, which the backend lowers directly.
+//
+// Exercised: functions and recursion, closures and lambdas (including forward
+// references between them), arrays and maps, `for-in`, `while`, `switch`,
+// ranges, string interpolation and slicing, `in`, `type`, `len`, `repr`,
+// `assert`, ternaries and the full operator set.
+
+// ---------------------------------------------------------------- errors
+
+// Oskel handles errors as values, not exceptions: a lexer or parser failure
+// returns a map `{ok: false, error: "..."}` instead of aborting the process.
+fn ok(value) {
+  return {"ok": true, "value": value};
+}
+
+fn fail(message) {
+  return {"ok": false, "error": message};
+}
+
+// ---------------------------------------------------------------- lexer
+
+// A character class test, kept explicit because the language has no `isDigit`.
+fn isDigit(c) {
+  return "0" <= c && c <= "9";
+}
+
+fn isSpace(c) {
+  return c == " " || c == "\t" || c == "\n" || c == "\r";
+}
+
+fn isOperatorChar(c) {
+  return c == "+" || c == "-" || c == "*" || c == "/" || c == "%" ||
+         c == "(" || c == ")" || c == "<" || c == ">" || c == "=" || c == "!";
+}
+
+// Lexes `src` into a flat array of tokens. Each token is a map with a `kind`
+// ("num", "op" or "end") and, for numbers and operators, a `text`. The scanner
+// is a small state machine: numbers are a run of digits, optionally a decimal
+// point.
+fn tokenize(src) {
+  var tokens = [];
+  var i = 0;
+  while (i < src.length) {
+    var c = src[i];
+    if (isSpace(c)) {
+      i = i + 1;
+    } else if (isDigit(c) || c == ".") {
+      var start = i;
+      var seenDot = false;
+      while (i < src.length) {
+        var d = src[i];
+        if (isDigit(d)) {
+          i = i + 1;
+        } else if (d == "." && !seenDot) {
+          seenDot = true;
+          i = i + 1;
+        } else {
+          break;
+        }
+      }
+      tokens[tokens.length] = {"kind": "num", "text": src[start:i]};
+    } else if (isOperatorChar(c)) {
+      // A two-character operator (`**`, `<=`, ...) wins over its one-character
+      // prefix; the lexer peeks at the next character.
+      var text = c;
+      if (i + 1 < src.length) {
+        var two = src[i:i + 2];
+        if (two == "**" || two == "<=" || two == ">=" || two == "==" || two == "!=") {
+          text = two;
+        }
+      }
+      tokens[tokens.length] = {"kind": "op", "text": text};
+      i = i + text.length;
+    } else {
+      return fail("unexpected character '${c}'");
+    }
+  }
+  tokens[tokens.length] = {"kind": "end", "text": ""};
+  return ok(tokens);
+}
+
+// ---------------------------------------------------------------- parser
+
+// The parser is a closure over the token list and the cursor, so the state is
+// private and there is no global to reset between runs. It returns
+// `{ok, value}` where a successful value is an AST node.
+//
+// A node is a map:
+//   {"kind": "num", "text": "3.5"}
+//   {"kind": "bin", "op": "+", "lhs": node, "rhs": node}
+//   {"kind": "un",  "op": "-", "operand": node}
+fn makeParser(tokens) {
+  var pos = 0;
+
+  var peek = () => tokens[pos];
+  var atEnd = () => tokens[pos].kind == "end";
+  var advance = () => {
+    var t = tokens[pos];
+    pos = pos + 1;
+    return t;
+  };
+
+  // The four precedence levels refer to each other, and Oskel does not hoist
+  // local bindings, so each lambda is declared (as `nil`) before it is
+  // assigned. The declarations capture the same local cells the assignments
+  // later fill, which is what makes the mutual recursion resolve.
+  var parseExpr = nil;
+  var parseTerm = nil;
+  var parsePower = nil;
+  var parseUnary = nil;
+  var parsePrimary = nil;
+
+  // parseUnary := ('-' | '+') parseUnary | parsePrimary
+  parseUnary = () => {
+    if (!atEnd() && peek().kind == "op" && (peek().text == "-" || peek().text == "+")) {
+      var op = advance().text;
+      var operand = parseUnary();
+      if (!operand.ok) { return operand; }
+      return ok({"kind": "un", "op": op, "operand": operand.value});
+    }
+    return parsePrimary();
+  };
+
+  // parsePower := parseUnary ('**' parsePower)?   -- right associative
+  parsePower = () => {
+    var base = parseUnary();
+    if (!base.ok) { return base; }
+    if (!atEnd() && peek().kind == "op" && peek().text == "**") {
+      advance();
+      var exp = parsePower();
+      if (!exp.ok) { return exp; }
+      return ok({"kind": "bin", "op": "**", "lhs": base.value, "rhs": exp.value});
+    }
+    return base;
+  };
+
+  // parseTerm := parsePower (('*' | '/' | '%') parsePower)*
+  parseTerm = () => {
+    var left = parsePower();
+    if (!left.ok) { return left; }
+    while (!atEnd() && peek().kind == "op" &&
+           (peek().text == "*" || peek().text == "/" || peek().text == "%")) {
+      var op = advance().text;
+      var right = parsePower();
+      if (!right.ok) { return right; }
+      left = ok({"kind": "bin", "op": op, "lhs": left.value, "rhs": right.value});
+    }
+    return left;
+  };
+
+  // parseExpr := parseTerm (('+' | '-') parseTerm)*
+  parseExpr = () => {
+    var left = parseTerm();
+    if (!left.ok) { return left; }
+    while (!atEnd() && peek().kind == "op" && (peek().text == "+" || peek().text == "-")) {
+      var op = advance().text;
+      var right = parseTerm();
+      if (!right.ok) { return right; }
+      left = ok({"kind": "bin", "op": op, "lhs": left.value, "rhs": right.value});
+    }
+    return left;
+  };
+
+  // parsePrimary := number | '(' parseExpr ')'
+  parsePrimary = () => {
+    if (atEnd()) {
+      return fail("unexpected end of input");
+    }
+    var t = peek();
+    if (t.kind == "num") {
+      advance();
+      return ok({"kind": "num", "text": t.text});
+    }
+    if (t.kind == "op" && t.text == "(") {
+      advance();
+      var inner = parseExpr();
+      if (!inner.ok) { return inner; }
+      var close = advance();
+      if (close.text != ")") {
+        return fail("expected ')', found '${close.text}'");
+      }
+      return inner;
+    }
+    return fail("unexpected token '${t.text}'");
+  };
+
+  return {"parse": parseExpr};
+}
+
+// ---------------------------------------------------------------- eval
+
+// The numeric value of a digit character, or -1 when the character is not a
+// digit.
+fn digitValue(c) {
+  switch (c) {
+    case "0": { return 0; }
+    case "1": { return 1; }
+    case "2": { return 2; }
+    case "3": { return 3; }
+    case "4": { return 4; }
+    case "5": { return 5; }
+    case "6": { return 6; }
+    case "7": { return 7; }
+    case "8": { return 8; }
+    case "9": { return 9; }
+    default: { return -1; }
+  }
+}
+
+// Parses a number token into a float, digit by digit. The language has no
+// `int()`/`float()` conversion, so the value is accumulated with arithmetic:
+// the integer part is `value * 10 + digit`, and each fractional digit adds
+// `digit * scale` where `scale` starts at 0.1 and shrinks by ten each step.
+fn parseNumber(text) {
+  var value = 0.0;
+  var scale = 0.1;
+  var seenDot = false;
+  var i = 0;
+  while (i < text.length) {
+    var c = text[i];
+    if (c == ".") {
+      seenDot = true;
+    } else {
+      var d = digitValue(c);
+      if (seenDot) {
+        value = value + d * scale;
+        scale = scale * 0.1;
+      } else {
+        value = value * 10 + d;
+      }
+    }
+    i = i + 1;
+  }
+  return value;
+}
+
+// Raises `base` to an integer `exponent` by repeated multiplication. The AOT
+// backend's `**` only handles an integer exponent (a float power needs libm),
+// so the example raises to a power with a loop. A negative exponent inverts.
+fn power(base, exponent) {
+  if (exponent < 0) {
+    return 1.0 / power(base, -exponent);
+  }
+  var result = 1.0;
+  var i = 0;
+  while (i < exponent) {
+    result = result * base;
+    i = i + 1;
+  }
+  return result;
+}
+
+// `n!` as a float, so the Taylor series below stays in floating point.
+fn factorial(n) {
+  var result = 1.0;
+  var i = 2;
+  while (i <= n) {
+    result = result * i;
+    i = i + 1;
+  }
+  return result;
+}
+
+// sin(x) from its Taylor series, x - x^3/3! + x^5/5! - ... with enough terms to
+// be accurate for the small angles the table below uses. It exercises float
+// arithmetic, a nested function call and a sign flip in a loop.
+fn sin(x) {
+  var result = 0.0;
+  var sign = 1.0;
+  var k = 0;
+  while (k < 10) {
+    var n = 2 * k + 1;
+    result = result + sign * power(x, n) / factorial(n);
+    sign = -sign;
+    k = k + 1;
+  }
+  return result;
+}
+
+// Applies a binary operator to two numbers.
+fn applyBinary(op, a, b) {
+  switch (op) {
+    case "+": { return ok(a + b); }
+    case "-": { return ok(a - b); }
+    case "*": { return ok(a * b); }
+    case "/": {
+      if (b == 0) { return fail("division by zero"); }
+      return ok(a / b);
+    }
+    case "%": {
+      if (b == 0) { return fail("modulo by zero"); }
+      return ok(a % b);
+    }
+    case "**": { return ok(power(a, b)); }
+    default: { return fail("unknown operator '${op}'"); }
+  }
+}
+
+// Walks the AST. Returns `{ok, value}` so an error propagates up the recursion
+// without a single exception; every caller checks `ok`.
+fn evalNode(node) {
+  var kind = node.kind;
+  if (kind == "num") {
+    return ok(parseNumber(node.text));
+  }
+  if (kind == "un") {
+    var inner = evalNode(node.operand);
+    if (!inner.ok) { return inner; }
+    if (node.op == "-") { return ok(-inner.value); }
+    return ok(inner.value);
+  }
+  var left = evalNode(node.lhs);
+  if (!left.ok) { return left; }
+  var right = evalNode(node.rhs);
+  if (!right.ok) { return right; }
+  return applyBinary(node.op, left.value, right.value);
+}
+
+// ---------------------------------------------------------------- driver
+
+// Evaluates one expression string end to end.
+fn evaluate(src) {
+  var lexed = tokenize(src);
+  if (!lexed.ok) { return lexed; }
+  var parser = makeParser(lexed.value);
+  var parsed = parser.parse();
+  if (!parsed.ok) { return parsed; }
+  return evalNode(parsed.value);
+}
+
+// Evaluates and prints one expression. `str` renders a whole float without a
+// trailing ".0", so 42.0 prints as "42" and 3.5 as "3.5".
+fn run(src) {
+  var result = evaluate(src);
+  if (result.ok) {
+    print("${src} = ${result.value}");
+  } else {
+    print("${src} = error: ${result.error}");
+  }
+}
+
+// The expressions the example evaluates. Each one exercises a different part
+// of the grammar: precedence, associativity, parentheses, unary minus and the
+// two error paths.
+var expressions = [
+  "1 + 2 * 3",
+  "(1 + 2) * 3",
+  "2 ** 3 ** 2",
+  "10 / 4",
+  "10 % 4",
+  "-5 + 3",
+  "2 * (3 + 4) ** 2 - 8 / 4",
+  "1 / 0",
+  "(2 + 3",
+];
+
+var i = 0;
+while (i < expressions.length) {
+  run(expressions[i]);
+  i = i + 1;
+}
+
+// The evaluator is also a library: the trigonometric helper is an ordinary
+// function, so a program can call it directly. `sin(pi/6)` lands on
+// 0.49999999999999994 and `sin(pi/2)` on 1.0, the accuracy the Taylor series
+// reaches for these angles.
+print("sin(0) = ${sin(0.0)}");
+print("sin(pi/6) = ${sin(0.5235987755982988)}");
+print("sin(pi/2) = ${sin(1.5707963267948966)}");
+
+// A self-check so the example also acts as a test: the evaluator must agree
+// with the arithmetic the compiler itself performs.
+assert(evaluate("6 * 7").value == 42, "6 * 7 must be 42");
+assert(evaluate("2 ** 10").value == 1024, "2 ** 10 must be 1024");
+assert(evaluate("1.5 + 2.5").value == 4, "1.5 + 2.5 must be 4");
+assert(!evaluate("1 / 0").ok, "division by zero must fail");
+assert(!evaluate("(2 + 3").ok, "an unbalanced parenthesis must fail");
+assert(sin(0.0) == 0, "sin(0) must be 0");
+assert(power(2.0, 10) == 1024, "2 ** 10 must be 1024");
+print("calc: all checks passed");

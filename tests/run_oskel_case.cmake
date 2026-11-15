@@ -18,6 +18,11 @@ endif()
 
 execute_process(
   COMMAND "${OSKEL_EXE}" "${OSKEL_SCRIPT}" ${extra_args}
+  # A test must never inherit the developer's terminal: a script that reads
+  # stdin (or that switches on `isatty`) would otherwise block or take a
+  # different path under an interactive `ctest`. An empty stdin makes every
+  # script test deterministic.
+  INPUT_FILE "/dev/null"
   RESULT_VARIABLE actual_exit
   OUTPUT_VARIABLE script_stdout
   ERROR_VARIABLE script_stderr

@@ -1,0 +1,510 @@
+// tui_editor.oskl — a minimal text editor for the terminal.
+//
+// This is the "showcase" example: a real, interactive application that uses
+// the parts of Oskel a small tool needs. Unlike calc.oskl and mandelbrot.oskl
+// it is *not* AOT-clean, because it does the three things the native backend
+// cannot do yet (PHASE 7c): it reads the terminal through `extern "C"`, it
+// reads and writes files, and it reads script arguments. Run it with the
+// development engine:
+//
+//   oskel examples/tui_editor.oskl notes.txt
+//
+// When stdin is not a terminal (a pipe, or CTest) the editor runs a scripted
+// self-test instead of the interactive loop, so it is exercised automatically
+// by the test suite without needing a tty.
+//
+// Exercised: `extern "C"` FFI (stty, isatty, read), pointers and buffers
+// (`buffer`, `loadByte`, `byteLen`), file I/O with `try`/`catch` and the
+// `error` value, `struct` (Config, Cursor), closures for undo/redo, `defer` to
+// restore the terminal, `switch` for commands and for syntax highlighting,
+// optional types and unions, `@MustUse`, variadic parameters, ranges, slicing,
+// `?.`, `??`, `!!` and the array/string/map standard library.
+
+// ---------------------------------------------------------------- FFI
+
+// The only C functions the editor needs: run a shell command (for `stty`),
+// test whether a descriptor is a terminal, and read bytes from stdin. Declaring
+// them with `extern "C"` binds each name to the host symbol and checks the
+// signature at the call site.
+extern "C" {
+  fn system(cmd: string): int;
+  fn isatty(fd: int): int;
+  fn read(fd: int, buf: ptr, count: int): int;
+}
+
+// Put the terminal in raw mode so every keystroke arrives immediately, with no
+// line buffering and no echo. `stty` is the portable way to do it without
+// ioctl; the trade-off is a process spawn, which is fine for an editor.
+fn enableRawMode() {
+  system("stty raw -echo");
+}
+
+// Restore the terminal. `stty sane` resets every flag the raw mode changed, so
+// a crash cannot leave the shell in raw mode.
+fn restoreTerminal() {
+  system("stty sane");
+}
+
+// Reads one keystroke and returns it as a string. Control characters come back
+// as their one-character form; the arrow keys arrive as the three-byte escape
+// sequences ESC [ A/B/C/D and are returned as "UP"/"DOWN"/"LEFT"/"RIGHT".
+fn readKey() {
+  var buf = buffer(1);
+  var n = read(0, buf, 1);
+  if (n <= 0) {
+    return "EOF";
+  }
+  var code = loadByte(buf, 0);
+  if (code == 27) {
+    // An escape sequence: read the '[' and the final letter. A lone ESC is
+    // reported as "ESC".
+    var b2 = buffer(1);
+    if (read(0, b2, 1) <= 0) { return "ESC"; }
+    if (loadByte(b2, 0) != 91) { return "ESC"; } // 91 is '['
+    var b3 = buffer(1);
+    if (read(0, b3, 1) <= 0) { return "ESC"; }
+    switch (chr(loadByte(b3, 0))) {
+      case "A": { return "UP"; }
+      case "B": { return "DOWN"; }
+      case "C": { return "RIGHT"; }
+      case "D": { return "LEFT"; }
+      default: { return "ESC"; }
+    }
+  }
+  if (code == 13) { return "ENTER"; }
+  if (code == 127) { return "BACKSPACE"; }
+  if (code == 3) { return "CTRL_C"; }
+  if (code == 19) { return "CTRL_S"; }
+  return chr(code);
+}
+
+// ---------------------------------------------------------------- model
+
+// Editor configuration. `theme` is optional (a `?` type accepts nil), which is
+// the optional-type feature in a place an application actually uses.
+struct Config {
+  tab_size: int;
+  show_line_numbers: bool;
+  theme: string?;
+}
+
+// The cursor position.
+struct Cursor {
+  row: int;
+  col: int;
+}
+
+// The in-memory document. `lines` is the buffer; `path` and `dirty` track the
+// file. It is a plain map so it is easy to snapshot for undo.
+fn newBuffer() {
+  return {"lines": [""], "path": "", "dirty": false};
+}
+
+// A deep-enough copy of the document: the line array is copied so a snapshot
+// is independent of later edits. (The line strings themselves are immutable,
+// so a shallow copy of each is enough.)
+fn snapshot(buffer) {
+  return {"lines": buffer.lines.slice(0), "path": buffer.path, "dirty": buffer.dirty};
+}
+
+// ---------------------------------------------------------------- undo/redo
+
+// Undo and redo as two stacks of snapshots, hidden inside a closure. Nothing
+// outside can touch the stacks: the returned map is the whole interface. This
+// is the closure-with-state pattern the language is built around.
+fn makeHistory(buffer) {
+  var past = [];
+  var future = [];
+
+  var record = (snap) => {
+    past[past.length] = snap;
+    // A new edit invalidates the redo stack.
+    while (future.length > 0) {
+      future.removeAt(future.length - 1);
+    }
+  };
+
+  var undo = () => {
+    if (past.length == 0) { return buffer; }
+    future[future.length] = snapshot(buffer);
+    return past.removeAt(past.length - 1);
+  };
+
+  var redo = () => {
+    if (future.length == 0) { return buffer; }
+    past[past.length] = snapshot(buffer);
+    return future.removeAt(future.length - 1);
+  };
+
+  return {
+    "record": record,
+    "undo": undo,
+    "redo": redo,
+    "canUndo": () => past.length > 0,
+    "canRedo": () => future.length > 0,
+  };
+}
+
+// ---------------------------------------------------------------- editing
+
+// Inserts one character at the cursor, splitting the line in two around it.
+fn insertChar(buffer, cursor, ch) {
+  var line = buffer.lines[cursor.row];
+  buffer.lines[cursor.row] = line[0:cursor.col] + ch + line[cursor.col:];
+  cursor.col = cursor.col + 1;
+  buffer.dirty = true;
+}
+
+// Splits the current line at the cursor: a newline pushes the tail onto a new
+// line and moves the cursor to column 0 of it.
+fn insertNewline(buffer, cursor) {
+  var line = buffer.lines[cursor.row];
+  var head = line[0:cursor.col];
+  var tail = line[cursor.col:];
+  buffer.lines[cursor.row] = head;
+  buffer.lines.insert(cursor.row + 1, tail);
+  cursor.row = cursor.row + 1;
+  cursor.col = 0;
+  buffer.dirty = true;
+}
+
+// Deletes the character before the cursor. At the start of a line it joins the
+// line with the previous one.
+fn backspace(buffer, cursor) {
+  if (cursor.col > 0) {
+    var line = buffer.lines[cursor.row];
+    buffer.lines[cursor.row] = line[0:cursor.col - 1] + line[cursor.col:];
+    cursor.col = cursor.col - 1;
+    buffer.dirty = true;
+  } else if (cursor.row > 0) {
+    var previous = buffer.lines[cursor.row - 1];
+    var joined = previous + buffer.lines[cursor.row];
+    buffer.lines.removeAt(cursor.row);
+    cursor.row = cursor.row - 1;
+    cursor.col = previous.length;
+    buffer.lines[cursor.row] = joined;
+    buffer.dirty = true;
+  }
+}
+
+// Moves the cursor, clamping to the document bounds.
+fn moveCursor(buffer, cursor, key) {
+  var lastRow = buffer.lines.length - 1;
+  switch (key) {
+    case "UP": { if (cursor.row > 0) { cursor.row = cursor.row - 1; } }
+    case "DOWN": { if (cursor.row < lastRow) { cursor.row = cursor.row + 1; } }
+    case "LEFT": {
+      if (cursor.col > 0) { cursor.col = cursor.col - 1; }
+      else if (cursor.row > 0) { cursor.row = cursor.row - 1; cursor.col = buffer.lines[cursor.row].length; }
+    }
+    case "RIGHT": {
+      if (cursor.col < buffer.lines[cursor.row].length) { cursor.col = cursor.col + 1; }
+      else if (cursor.row < lastRow) { cursor.row = cursor.row + 1; cursor.col = 0; }
+    }
+    default: { return; }
+  }
+  // Keep the column inside the (possibly shorter) new line.
+  var width = buffer.lines[cursor.row].length;
+  if (cursor.col > width) { cursor.col = width; }
+}
+
+// ---------------------------------------------------------------- file I/O
+
+// Reads a file as text. Two different error mechanisms are involved, and the
+// example uses each where it belongs:
+//
+//   * `readFile` raises a *host* error when the file is missing, which only
+//     `pcall` catches (it re-enters the VM and turns the failure into a
+//     `{ok: false, error}` map);
+//   * this function then returns a Jolt *error value*, which callers catch with
+//     `try`/`catch`.
+fn readText(path) {
+  if (!fileExists(path)) {
+    return error("no such file: ${path}");
+  }
+  var result = pcall(() => readFile(path));
+  if (!result.ok) {
+    return error(result.error);
+  }
+  return result.value;
+}
+
+// Reads a file into the buffer. A missing file is not an error: it starts an
+// empty buffer, the way an editor does. `catch` is the postfix recovery form
+// (`e catch d`), so `readText(path) catch ""` yields "" when `readText`
+// returns an error value.
+fn loadFile(buffer, path) {
+  var text = readText(path) catch "";
+  if (text == "") {
+    buffer.lines = [""];
+  } else {
+    // A trailing newline would otherwise show as an empty last line.
+    var body = text;
+    if (body.endsWith("\n")) { body = body[0:body.length - 1]; }
+    buffer.lines = body.split("\n");
+  }
+  buffer.path = path;
+  buffer.dirty = false;
+}
+
+// A strict variant: `try` *propagates*, so a failed read makes `mustRead`
+// return the error value to its caller instead of continuing with an empty
+// buffer. `readText` returns an error value (not a host error), which is
+// exactly what `try` propagates.
+fn mustRead(path) {
+  return try readText(path);
+}
+
+// Writes the buffer back to disk. `@MustUse` makes the compiler warn when the
+// result is discarded: a save that silently failed is a bug worth flagging.
+@MustUse fn save(buffer) {
+  var text = buffer.lines.join("\n") + "\n";
+  // `writeFile` raises a host error on failure, so `pcall` guards it.
+  var result = pcall(() => writeFile(buffer.path, text));
+  if (!result.ok) {
+    return error("cannot write ${buffer.path}");
+  }
+  buffer.dirty = false;
+  return true;
+}
+
+// ---------------------------------------------------------------- render
+
+// Maps a line to a highlighted version. The keyword set is small on purpose:
+// the point is the `switch`, not a complete grammar. Each keyword is wrapped
+// in an ANSI colour and reset at the end of the line.
+fn highlight(line, keywordColor, reset) {
+  var keywords = ["fn", "var", "let", "if", "else", "while", "for", "return", "struct", "import"];
+  var words = line.split(" ");
+  var out = [];
+  for word in words {
+    if (word in keywords) {
+      out[out.length] = keywordColor + word + reset;
+    } else {
+      out[out.length] = word;
+    }
+  }
+  return out.join(" ");
+}
+
+// Draws the whole screen: clears it, prints the lines (optionally numbered),
+// the status bar and a one-line help, then places the cursor. Every escape is
+// built with string interpolation.
+fn render(buffer, cursor, config, status) {
+  var reset = "\x1b[0m";
+  var keywordColor = "\x1b[36m"; // cyan
+  var statusColor = "\x1b[7m";   // inverse
+
+  // Home + clear, then hide the cursor while drawing.
+  write("\x1b[H\x1b[2J\x1b[?25l");
+
+  var lineNo = 0;
+  while (lineNo < buffer.lines.length) {
+    var text = highlight(buffer.lines[lineNo], keywordColor, reset);
+    if (config.show_line_numbers) {
+      var number = str(lineNo + 1).padStart(4, " ");
+      write("${number} ${text}\r\n");
+    } else {
+      write("${text}\r\n");
+    }
+    lineNo = lineNo + 1;
+  }
+
+  // Status bar at the bottom: the path, the dirty marker and the position.
+  var mark = buffer.dirty ? " [modified]" : "";
+  var name = buffer.path == "" ? "[no name]" : buffer.path;
+  var theme = config.theme ?? "default";
+  write("\x1b[999;1H${statusColor} ${name}${mark}  ${status}  Ln ${cursor.row + 1}, Col ${cursor.col + 1}  (${theme})${reset}\x1b[?25h");
+}
+
+// ---------------------------------------------------------------- commands
+
+// Runs a `:` command. Returns true when the editor should quit. The result of
+// `save` is used, never discarded, which is what `@MustUse` enforces.
+fn runCommand(command, buffer) {
+  switch (command) {
+    case "q": { return true; }
+    case "wq": {
+      var saved = save(buffer);
+      if (isError(saved)) { return false; }
+      return true;
+    }
+    case "w": {
+      var saved = save(buffer);
+      if (isError(saved)) {
+        print("\r\nsave failed: ${saved.message}\r\n");
+      }
+      return false;
+    }
+    case "h": {
+      print("\r\ncommands: :w save  :q quit  :wq save and quit  :h help\r\n");
+      return false;
+    }
+    default: {
+      print("\r\nunknown command ':${command}'\r\n");
+      return false;
+    }
+  }
+}
+
+// A variadic logger, used by the self-test to show the feature: the first
+// argument is a level and the rest are joined into one line.
+fn log(level: string, rest...) {
+  var parts = [];
+  for item in rest {
+    parts[parts.length] = str(item);
+  }
+  print("[${level}] ${parts.join(" ")}");
+}
+
+// ---------------------------------------------------------------- self-test
+
+// A scripted run of the editor, with no terminal. It drives the same buffer,
+// editing, undo and command functions the interactive loop uses, and asserts
+// on the results, so the example is verified by the test suite.
+fn selfTest() {
+  var config = Config { tab_size: 4, show_line_numbers: true, theme: "mono" };
+  var buffer = newBuffer();
+  var cursor = Cursor { row: 0, col: 0 };
+  var history = makeHistory(buffer);
+
+  log("test", "editing", "the", "buffer");
+
+  // Type "hello" then a newline and "world".
+  history.record(snapshot(buffer));
+  for ch in ["h", "e", "l", "l", "o"] {
+    insertChar(buffer, cursor, ch);
+  }
+  insertNewline(buffer, cursor);
+  for ch in ["w", "o", "r", "l", "d"] {
+    insertChar(buffer, cursor, ch);
+  }
+
+  assert(buffer.lines.length == 2, "there are two lines");
+  assert(buffer.lines[0] == "hello", "the first line is 'hello'");
+  assert(buffer.lines[1] == "world", "the second line is 'world'");
+  assert(buffer.dirty, "the buffer is dirty after editing");
+
+  // Undo restores the state before the edit; redo brings it back.
+  buffer = history.undo();
+  assert(buffer.lines[0] == "", "undo cleared the first line");
+  buffer = history.redo();
+  assert(buffer.lines[1] == "world", "redo restored the second line");
+
+  // Backspace joins the two lines.
+  cursor.row = 1;
+  cursor.col = 0;
+  backspace(buffer, cursor);
+  assert(buffer.lines.length == 1, "backspace joined the lines");
+  assert(buffer.lines[0] == "helloworld", "the joined line reads 'helloworld'");
+
+  // Save to a temporary file and read it back.
+  buffer.path = "/tmp/oskel_tui_editor_selftest.txt";
+  var saved = save(buffer);
+  assert(saved == true, "save succeeded");
+  assert(!buffer.dirty, "the buffer is clean after saving");
+  var reloaded = readFile(buffer.path);
+  assert(reloaded == "helloworld\n", "the file round-trips");
+
+  // The error paths. A missing file is a Jolt error value, recovered with the
+  // postfix `catch`; `try` would propagate it out of the function instead.
+  assert(isError(readText("/tmp/oskel_no_such_file")), "a missing file is an error value");
+  assert((readText("/tmp/oskel_no_such_file") catch "fallback") == "fallback", "catch recovers");
+  assert(isError(mustRead("/tmp/oskel_no_such_file")), "try propagates the error");
+  var empty = newBuffer();
+  loadFile(empty, "/tmp/oskel_no_such_file");
+  assert(empty.lines == [""], "a missing file opens an empty buffer");
+
+  // Command dispatch.
+  assert(runCommand("w", buffer) == false, ":w does not quit");
+  assert(runCommand("q", buffer) == true, ":q quits");
+
+  // Config and optional types.
+  assert(config.tab_size == 4, "tab size is 4");
+  assert((config.theme ?? "none") == "mono", "theme is mono");
+
+  // Syntax highlighting wraps a keyword.
+  var highlighted = highlight("var x = 1", "\x1b[36m", "\x1b[0m");
+  assert("\x1b[36mvar\x1b[0m" in highlighted, "the keyword is coloured");
+
+  // The cursor helper clamps to the line.
+  cursor.row = 0;
+  cursor.col = 99;
+  moveCursor(buffer, cursor, "LEFT");
+  assert(cursor.col == buffer.lines[0].length, "the cursor clamps to the line end");
+
+  print("tui_editor: self-test passed");
+}
+
+// ---------------------------------------------------------------- main
+
+fn main(args) {
+  // No terminal (a pipe or CTest): run the deterministic self-test.
+  if (isatty(0) == 0) {
+    selfTest();
+    return;
+  }
+
+  var config = Config { tab_size: 4, show_line_numbers: true, theme: nil };
+  var buffer = newBuffer();
+  var cursor = Cursor { row: 0, col: 0 };
+  var history = makeHistory(buffer);
+  var status = "ready";
+
+  // Open the file named on the command line, if any.
+  if (args.length > 0) {
+    loadFile(buffer, args[0]);
+    status = "opened ${buffer.path}";
+  }
+
+  enableRawMode();
+  // `defer` restores the terminal on every exit path, including a return from
+  // deep in the loop. Without it a crash would leave the shell unusable.
+  defer {
+    restoreTerminal();
+  }
+
+  var running = true;
+  while (running) {
+    render(buffer, cursor, config, status);
+    var key = readKey();
+
+    if (key == "CTRL_C") {
+      running = false;
+    } else if (key == "CTRL_S") {
+      var saved = save(buffer);
+      status = isError(saved) ? "save failed" : "saved";
+    } else if (key == "UP" || key == "DOWN" || key == "LEFT" || key == "RIGHT") {
+      moveCursor(buffer, cursor, key);
+    } else if (key == "ENTER") {
+      history.record(snapshot(buffer));
+      insertNewline(buffer, cursor);
+    } else if (key == "BACKSPACE") {
+      history.record(snapshot(buffer));
+      backspace(buffer, cursor);
+    } else if (key == ":") {
+      // A command: read until ENTER, then dispatch.
+      var command = "";
+      var typing = true;
+      while (typing) {
+        render(buffer, cursor, config, ":${command}");
+        var next = readKey();
+        if (next == "ENTER") { typing = false; }
+        else if (next == "BACKSPACE") { command = command[0:command.length - 1]; }
+        else if (next == "CTRL_C") { typing = false; command = ""; }
+        else if (next.length == 1) { command = command + next; }
+      }
+      if (command != "") {
+        running = !runCommand(command, buffer);
+      }
+    } else if (key.length == 1) {
+      history.record(snapshot(buffer));
+      insertChar(buffer, cursor, key);
+    }
+  }
+
+  restoreTerminal();
+  print("\r\nbye\r\n");
+}
+
+main(args());

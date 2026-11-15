@@ -204,6 +204,24 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The flagship example must also build and agree with the VM, so the AOT
+    # backend is exercised by a real program (a lexer, a parser and an
+    # evaluator), not only by the small fixture above.
+    add_test(NAME oskel.build_binary_calc
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/examples/calc.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The floating-point example builds too, so the numeric paths of the backend
+    # (float arithmetic, comparisons, modulo) are checked against the VM by a
+    # real program.
+    add_test(NAME oskel.build_binary_mandelbrot
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/examples/mandelbrot.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
   endif()
 
   # --- .oskl script tests (auto-detected) ---
@@ -242,8 +260,22 @@ if(BUILD_TESTING)
   )
   foreach(script IN LISTS oskel_examples)
     get_filename_component(name "${script}" NAME_WE)
+    # `tui_editor` is a POSIX-only interactive program (it drives the terminal
+    # through `extern "C"` and reads from `/tmp`); it is registered separately
+    # for UNIX below, and skipped here so Windows stays green.
+    if(name STREQUAL "tui_editor")
+      continue()
+    endif()
     oskel_add_script_test("examples.${name}" "${script}")
   endforeach()
+
+  # --- examples/tui_editor.oskl (UNIX only) ---
+  # The terminal editor needs `stty`, `isatty` and `read`; on a non-tty stdin it
+  # runs its deterministic self-test, which is what CTest executes here.
+  if(UNIX)
+    oskel_add_script_test("examples.tui_editor"
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/tui_editor.oskl")
+  endif()
 
   # --- tests/errors/*.oskl (auto-detected) ---
   file(GLOB oskel_error_tests CONFIGURE_DEPENDS
