@@ -456,8 +456,12 @@ hoisted, so a function may call one declared later. Like `import`, `struct` and
 `native fn`, they are module-level metadata: nesting one is a compile error.
 
 Before a proto runs, the engine resolves each declared name through
-`Platform::lookupSymbol` and binds it to a marshalling native. The call passes
-its arguments and reads its result across the System V AMD64 ABI without
+`Platform::lookupSymbol` and binds it to a marshalling native. On POSIX the
+search is `dlsym(RTLD_DEFAULT)`, which reaches libc, libm and the host program;
+on Windows it walks the process image, `kernel32.dll` (the Win32 base API:
+`GetTickCount`, `Sleep`, ...) and the C runtime, so a declaration can name a CRT
+function or a Win32 one. The call passes its arguments and reads its result
+across the System V AMD64 ABI without
 `libffi`: integers, bools and pointers travel in general-purpose registers and
 `float`/`double` in SSE registers, and the result is read back at the exact
 width the declaration named (so a C `int` is not read as a 64-bit value). A

@@ -290,6 +290,11 @@ if(BUILD_TESTING)
     if(name STREQUAL "53_ffi_variadic" AND NOT OSKEL_FFI_VARIADIC)
       continue()
     endif()
+    # Win32 `extern "C"` symbols live in kernel32.dll, which only exists on
+    # Windows; elsewhere `lookupSymbol` cannot resolve them, so skip.
+    if(name STREQUAL "54_ffi_win32" AND NOT WIN32)
+      continue()
+    endif()
     oskel_add_script_test("oskel.${name}" "${script}")
   endforeach()
 

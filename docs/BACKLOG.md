@@ -484,8 +484,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 18. Platform
 
-1. **[P1]** `PlatformPosix::lookupSymbol` on Windows does not search
-   `kernel32.dll` or the executable; extend the search.
+1. **[P1] [done]** `PlatformPosix::lookupSymbol` on Windows did not search
+   `kernel32.dll`, so an `extern "C"` to the Win32 API (`GetTickCount`,
+   `Sleep`, ...) failed at run time. The search now walks the process image,
+   `kernel32.dll` and the C runtime in turn; the executable was already covered
+   by `GetModuleHandleA(nullptr)`. Covered by `tests/54_ffi_win32.oskl`.
 2. **[P1]** `PlatformPosix::lookupSymbol` on POSIX relies on `dlsym(RTLD_DEFAULT)`,
    which needs `-rdynamic` for the executable's own symbols; make it work.
 3. **[P2]** `PlatformFreestanding::alloc` does not validate `alignment == 0` or
