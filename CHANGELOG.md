@@ -9,6 +9,13 @@ may change between minor versions.
 
 ## [Unreleased]
 
+### Added
+
+- Variadic functions (`rest...`) now compile to a static binary (PHASE 7c.6).
+  The AOT prologue accepts `numParams - 1` or more arguments and builds the
+  packed array with the new runtime helper `oskel_pack_rest`, so a program
+  using variadic parameters behaves the same on the VM and in an AOT binary.
+
 ### Changed
 
 - The README documents the VM/AOT split explicitly (a "What runs where" section):
