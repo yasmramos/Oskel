@@ -100,3 +100,13 @@ print("float =", float(1), float(2.5), float(0.1), float(16777217));
 print("double =", double(1), double(1.5), double(true), double(false));
 print("convert types =", type(int(1.5)), type(float(1)), type(double(1)));
 print("convert sum =", float(1) + float(2), int(1.5) + int(2.9));
+
+// `int(string)` parses like the hosted engine (PHASE 7c.5b.2a): sign, a
+// 0x/0b/0o base prefix and trimmed whitespace. Only forms whose result is
+// portable are asserted here (this fixture also runs on the VM on every
+// platform); the glibc-specific second-prefix re-detection lives in the
+// Linux-only freestanding test.
+print("int str =", int("42"), int("-7"), int("0x10"), int("0b101"), int("0o17"));
+print("int str big =", int("9223372036854775807"), int("-0x8000000000000000"));
+print("int str edge =", int("0x0b1"), int(" 42 "), int("42 "), int("007"));
+print("int str sum =", int("42") + int("8"));

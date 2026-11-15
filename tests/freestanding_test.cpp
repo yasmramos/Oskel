@@ -809,18 +809,18 @@ static void test_numeric_conversions() {
   check(result.exitCode == 0, "a program using the numeric conversions exits 0");
 }
 
-// A string operand is deferred to 7c.5b.2, so every conversion rejects it with a
-// message and exit 70; a nil, a collection and a wrong argument count do the
-// same, matching the hosted engine's runtime-error code.
+// A nil, a collection and a wrong argument count fail with a message and exit
+// 70, matching the hosted engine's runtime-error code. (The string operand of
+// `int` parses since 7c.5b.2a; see `test_int_string_conversion`.)
 static void test_numeric_conversion_errors() {
-  Bytecode fromString = compileSource("print(int(\"42\"));\n");
-  RunResult string = buildAndRun("/tmp/oskel_convert_string", fromString);
-  check(string.exitCode == 70, "int of a string exits 70 until 7c.5b.2");
-  check(string.output.find("cannot convert this value to int") != std::string::npos,
+  Bytecode fromNil = compileSource("print(int(nil));\n");
+  RunResult nilInt = buildAndRun("/tmp/oskel_convert_int_nil", fromNil);
+  check(nilInt.exitCode == 70, "int of nil exits 70");
+  check(nilInt.output.find("cannot convert this value to int") != std::string::npos,
         "the failed int reports the conversion message");
 
-  Bytecode fromNil = compileSource("print(float(nil));\n");
-  RunResult nil = buildAndRun("/tmp/oskel_convert_nil", fromNil);
+  Bytecode fromFloatNil = compileSource("print(float(nil));\n");
+  RunResult nil = buildAndRun("/tmp/oskel_convert_nil", fromFloatNil);
   check(nil.exitCode == 70, "float of nil exits 70");
   check(nil.output.find("cannot convert this value to float") != std::string::npos,
         "the failed float reports the conversion message");
@@ -834,6 +834,63 @@ static void test_numeric_conversion_errors() {
   Bytecode noArgs = compileSource("print(int());\n");
   RunResult arity = buildAndRun("/tmp/oskel_convert_arity", noArgs);
   check(arity.exitCode == 70, "int with no argument exits 70");
+}
+
+// `int(string)` parses like the hosted engine (PHASE 7c.5b.2a): an optional
+// sign, a `0x`/`0b`/`0o` base prefix (base 10 with a plain leading zero), the
+// surrounding whitespace trimmed, and `strtoll`'s second prefix re-detection
+// inside the body (`"0x0x10"` is 16). A malformed text or an out-of-range value
+// fails with a message and exit 70, matching the hosted runtime-error code.
+static void test_int_string_conversion() {
+  Bytecode proto = compileSource(
+      "print(int(\"42\"), int(\"-7\"), int(\"+7\"), int(\"0x10\"), int(\"0X1F\"));\n"
+      "print(int(\"0b101\"), int(\"0o17\"), int(\"0\"), int(\"007\"), int(\" 42 \"), int(\"-0x10\"));\n"
+      "print(int(\"9223372036854775807\"), int(\"-9223372036854775808\"));\n"
+      "print(int(\"0x7fffffffffffffff\"), int(\"-0x8000000000000000\"));\n"
+      "print(int(\"0x0x10\"), int(\"0b0b101\"), int(\"0x0b1\"), int(\"  0x1f  \"));\n"
+      "print(int(\"4\\u00002\"));\n"
+      "print(int(\"42\") + int(\"8\"));\n");
+  RunResult result = buildAndRun("/tmp/oskel_int_string", proto);
+  std::string expected =
+      "42 -7 7 16 31\n"
+      "5 15 0 7 42 -16\n"
+      "9223372036854775807 -9223372036854775808\n"
+      "9223372036854775807 -9223372036854775808\n"
+      "16 5 177 31\n"
+      "4\n"
+      "50\n";
+  check(result.output == expected,
+        "int(string) parses like the hosted engine");
+  check(result.exitCode == 0, "a program using int(string) exits 0");
+}
+
+// A malformed or out-of-range `int(string)` must fail with a message and exit
+// 70; the string forms of `float`/`double` are still deferred to 7c.5b.2b, so
+// they keep failing too.
+static void test_int_string_conversion_errors() {
+  Bytecode empty = compileSource("print(int(\"\"));\n");
+  RunResult blank = buildAndRun("/tmp/oskel_int_string_empty", empty);
+  check(blank.exitCode == 70, "int of an empty string exits 70");
+
+  Bytecode junk = compileSource("print(int(\"12ab\"));\n");
+  RunResult trailing = buildAndRun("/tmp/oskel_int_string_junk", junk);
+  check(trailing.exitCode == 70, "int of a string with trailing text exits 70");
+  check(trailing.output.find("cannot convert") != std::string::npos,
+        "the failed int(string) reports the conversion message");
+
+  Bytecode noDigits = compileSource("print(int(\"0x\"));\n");
+  RunResult barePrefix = buildAndRun("/tmp/oskel_int_string_prefix", noDigits);
+  check(barePrefix.exitCode == 70, "int of a bare base prefix exits 70");
+
+  Bytecode overflow = compileSource("print(int(\"99999999999999999999999\"));\n");
+  RunResult big = buildAndRun("/tmp/oskel_int_string_overflow", overflow);
+  check(big.exitCode == 70, "int of an out-of-range string exits 70");
+
+  Bytecode fromFloatString = compileSource("print(float(\"2.5\"));\n");
+  RunResult deferred = buildAndRun("/tmp/oskel_float_string", fromFloatString);
+  check(deferred.exitCode == 70, "float of a string exits 70 until 7c.5b.2b");
+  check(deferred.output.find("cannot convert this value to float") != std::string::npos,
+        "the deferred float(string) reports the conversion message");
 }
 
 // Drives the boxed printer directly: the runtime's `oskel_print_value` is what
@@ -1344,6 +1401,8 @@ int main() {
   test_public_builtin_errors();
   test_numeric_conversions();
   test_numeric_conversion_errors();
+  test_int_string_conversion();
+  test_int_string_conversion_errors();
   test_sb_append_zero_capacity();
   test_sb_append_capacity_overflow();
 #else
