@@ -338,12 +338,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 3. **[P2]** `sortItems` uses `std::stable_sort` with a comparator that calls
    `in.call`; if it throws, the array can be left inconsistent. Guard it and
    test a throwing comparator.
-4. **[P2]** `bindArray` `map`/`filter`/`reduce`/`each` invoke the callback
-   through `in.call`, which reenters the VM; add a direct test with a VM
-   closure.
-5. **[P2]** `bindString` `padStart`/`padEnd` build the padding then trim it
+4. **[P2]** `bindString` `padStart`/`padEnd` build the padding then trim it
    with `utf8Chars`, O(n) extra for large paddings.
-6. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
+5. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
     two programs in the same process share state; correct in a REPL, document
     it.
 ## 13. Ops (`src/ops.cpp`)
