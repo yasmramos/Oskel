@@ -255,6 +255,17 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+
+    # A runtime error in a generated binary must behave exactly like the VM:
+    # the same stderr text and the same exit code (70), with no recovery. The
+    # fixture also runs on the VM as an ordinary script (oskel.aot_runtime_error
+    # below), which is the reference this test compares against.
+    add_test(NAME oskel.build_runtime_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.oskl"
+        "-DOSKEL_EXPECTED_EXIT=70"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.cmake")
   elseif(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
     add_test(NAME oskel.build_binary
       COMMAND ${CMAKE_COMMAND}

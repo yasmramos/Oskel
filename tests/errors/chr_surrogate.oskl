@@ -1,0 +1,4 @@
+// expect-exit: 70
+// A surrogate (U+D800..U+DFFF) is not a Unicode scalar value: `chr` used to
+// encode it as CESU-8, which is not valid UTF-8. It is a runtime error now.
+print(chr(0xD800));

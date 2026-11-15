@@ -1962,7 +1962,7 @@ assertEq(sqrt(81), 9.0);
 | Function | Description |
 | --- | --- |
 | `len(value)` | Length of a string, array, map or range. |
-| `chr(code)` | Unicode character from a code point. |
+| `chr(code)` | Unicode character from a code point (`0..0x10FFFF`, not a lone surrogate). |
 | `ord(character)` | Code point of a one-character string. |
 | `range(end)` | Range `0..end`. |
 | `range(start, end)` | Range `start..end`. |

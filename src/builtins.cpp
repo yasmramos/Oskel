@@ -1166,6 +1166,10 @@ void registerBuiltins(Runtime& in) {
     need(in, "chr", args, 1);
     int64_t code = wantInt(in, "chr", args[0]);
     if (code < 0 || code > 0x10FFFF) in.fail("chr() code point out of range");
+    // A surrogate is not a Unicode scalar value; encoding it would produce
+    // CESU-8 (three bytes), which is not valid UTF-8. Reject it so `chr` and a
+    // `\uXXXX` escape agree on what a valid code point is.
+    if (code >= 0xD800 && code <= 0xDFFF) in.fail("chr() code point is a surrogate");
     std::string text;
     appendUtf8(text, static_cast<uint32_t>(code));
     return Value(std::move(text));

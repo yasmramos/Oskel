@@ -86,6 +86,9 @@ print("repr =", repr("hi"), repr([1, "two"]), repr(7));
 print("bool =", bool(0), bool(1), bool(nil), bool(""), bool(squares));
 print("ord =", ord("A"), ord("é"), ord("😀"));
 print("chr =", chr(65), chr(233), chr(128512));
+// The scalar values on either side of the surrogate range encode in both
+// engines; the range itself is a runtime error (tests/aot_runtime_error.oskl).
+print("chr bounds =", ord(chr(0xD7FF)), ord(chr(0xE000)), ord(chr(0x10FFFF)));
 assert(true);
 assert(len(squares) == 3, "squares has three entries");
 print("isError =", isError(5), isError("x"));
