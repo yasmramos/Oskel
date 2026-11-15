@@ -114,6 +114,14 @@ struct AotRuntimeHandles {
   CodeGen::Label contains;   // AotValue oskel_contains(AotValue needle, AotValue haystack)
   CodeGen::Label iterNext;   // AotValue oskel_iter_next(AotValue* cursor, AotValue iterable)
   CodeGen::Label strEq;      // long oskel_str_eq(AotString* a, AotString* b)
+  // `AotValue oskel_pack_rest(AotValue* first, long count)`: the variadic
+  // parameter pack (PHASE 7c.6). A variadic function accepts `numParams - 1` or
+  // more arguments; its prologue binds the fixed parameters and calls this
+  // helper to build an array from the extras and bind it to the last slot. The
+  // argument window grows *down*, so `first` points at the first extra (the
+  // highest address) and item `i` sits at `first - 16 * i`. The result is an
+  // ordinary `Array` value, exactly like the VM's packed `rest` binding.
+  CodeGen::Label packRest;   // AotValue oskel_pack_rest(AotValue* first, long count)
   // The hidden `$mapValue` helper (`for k, v in map`), with the proto
   // convention. It returns the value paired with a key, so the key/value loop
   // form lowers to an ordinary call.
@@ -185,7 +193,7 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(),
+      code.newLabel(), code.newLabel(),
   };
 }
 

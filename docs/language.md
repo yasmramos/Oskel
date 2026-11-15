@@ -2235,6 +2235,11 @@ numeric conversions `int`/`float`/`double` are not lowered yet: the math block
 needs an embedded libm (the freestanding binary cannot call the host's), and the
 conversions need a freestanding string parser. They land in a later slice.
 
+A compiled binary supports variadic functions (§7.1): a trailing `rest...`
+parameter binds an ordinary array of the extras, built by the runtime's
+`oskel_pack_rest`, so a program using them behaves the same on the VM and in the
+static binary.
+
 **Planned (PHASE 7)**:
 
 ```sh

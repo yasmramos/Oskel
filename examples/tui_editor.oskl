@@ -7,13 +7,14 @@
 // reads and writes files, and it reads script arguments. Run it with the
 // development engine:
 //
-//   oskel examples/tui_editor.oskl notes.txt
+//   oskel examples/tui_editor.oskl notes.txt     # interactive
+//   echo "" | oskel examples/tui_editor.oskl     # self-test (no tty)
 //
 // When stdin is not a terminal (a pipe, or CTest) the editor runs a scripted
 // self-test instead of the interactive loop, so it is exercised automatically
 // by the test suite without needing a tty.
 //
-// Exercised: `extern "C"` FFI (stty, isatty, read), pointers and buffers
+// Exercised: `extern "C"` FFI (system, isatty, read), pointers and buffers
 // (`buffer`, `loadByte`, `byteLen`), file I/O with `try`/`catch` and the
 // `error` value, `struct` (Config, Cursor), closures for undo/redo, `defer` to
 // restore the terminal, `switch` for commands and for syntax highlighting,
@@ -48,6 +49,9 @@ fn restoreTerminal() {
 // Reads one keystroke and returns it as a string. Control characters come back
 // as their one-character form; the arrow keys arrive as the three-byte escape
 // sequences ESC [ A/B/C/D and are returned as "UP"/"DOWN"/"LEFT"/"RIGHT".
+//
+// This editor is byte-oriented; multi-byte UTF-8 input (accented characters)
+// is not handled.
 fn readKey() {
   var buf = buffer(1);
   var n = read(0, buf, 1);
@@ -149,6 +153,9 @@ fn makeHistory(buffer) {
 
 // Inserts one character at the cursor, splitting the line in two around it.
 fn insertChar(buffer, cursor, ch) {
+  if (cursor.col > buffer.lines[cursor.row].length) {
+    cursor.col = buffer.lines[cursor.row].length;
+  }
   var line = buffer.lines[cursor.row];
   buffer.lines[cursor.row] = line[0:cursor.col] + ch + line[cursor.col:];
   cursor.col = cursor.col + 1;
@@ -258,6 +265,9 @@ fn mustRead(path) {
 // Writes the buffer back to disk. `@MustUse` makes the compiler warn when the
 // result is discarded: a save that silently failed is a bug worth flagging.
 @MustUse fn save(buffer) {
+  if (buffer.path == "") {
+    return error("no file name");
+  }
   var text = buffer.lines.join("\n") + "\n";
   // `writeFile` raises a host error on failure, so `pcall` guards it.
   var result = pcall(() => writeFile(buffer.path, text));
@@ -290,6 +300,11 @@ fn highlight(line, keywordColor, reset) {
 // Draws the whole screen: clears it, prints the lines (optionally numbered),
 // the status bar and a one-line help, then places the cursor. Every escape is
 // built with string interpolation.
+//
+// This renderer does not wrap long lines; they are truncated by the terminal.
+// A real editor would wrap or scroll horizontally. Each line ends with the
+// erase-to-end-of-line escape (`\x1b[K`) so a line that got shorter does not
+// leave the tail of the previous frame behind.
 fn render(buffer, cursor, config, status) {
   var reset = "\x1b[0m";
   var keywordColor = "\x1b[36m"; // cyan
@@ -303,9 +318,9 @@ fn render(buffer, cursor, config, status) {
     var text = highlight(buffer.lines[lineNo], keywordColor, reset);
     if (config.show_line_numbers) {
       var number = str(lineNo + 1).padStart(4, " ");
-      write("${number} ${text}\r\n");
+      write("${number} ${text}\x1b[K\r\n");
     } else {
-      write("${text}\r\n");
+      write("${text}\x1b[K\r\n");
     }
     lineNo = lineNo + 1;
   }
@@ -323,10 +338,15 @@ fn render(buffer, cursor, config, status) {
 // `save` is used, never discarded, which is what `@MustUse` enforces.
 fn runCommand(command, buffer) {
   switch (command) {
+    // `:q` quits without prompting; a real editor would ask "save before
+    // quit?" when the buffer is dirty.
     case "q": { return true; }
     case "wq": {
       var saved = save(buffer);
-      if (isError(saved)) { return false; }
+      if (isError(saved)) {
+        print("\r\nsave failed: ${saved.message}\r\n");
+        return false;
+      }
       return true;
     }
     case "w": {
@@ -357,11 +377,35 @@ fn log(level: string, rest...) {
   print("[${level}] ${parts.join(" ")}");
 }
 
+// Looks up a configuration value by name. The return type is a *union*
+// (`int | string | nil`): a setting is an integer (tab size) or a string
+// (theme), and an unknown key yields nil. The caller must handle every
+// alternative, which is what makes the union useful.
+fn configValue(config, key): int | string | nil {
+  switch (key) {
+    case "tab_size": { return config.tab_size; }
+    case "theme": { return config.theme; }
+    default: { return nil; }
+  }
+}
+
+// Pointer and buffer builtins, in a function of their own because the
+// self-test's local `buffer` shadows the global `buffer(...)` builtin.
+fn pointerChecks() {
+  assert(byteLen(buffer(1)) == 1, "a one-byte buffer has length 1");
+  assert(byteLen(cstring("hi")) == 2, "a cstring 'hi' has length 2");
+}
+
 // ---------------------------------------------------------------- self-test
 
 // A scripted run of the editor, with no terminal. It drives the same buffer,
 // editing, undo and command functions the interactive loop uses, and asserts
 // on the results, so the example is verified by the test suite.
+//
+// render/readKey/enableRawMode/restoreTerminal are not tested here: they write
+// ANSI escapes to stdout, read from stdin, or spawn `stty`. The interactive
+// loop is exercised by hand; the self-test covers the pure functions (buffer,
+// editing, undo, file I/O, commands, config).
 fn selfTest() {
   var config = Config { tab_size: 4, show_line_numbers: true, theme: "mono" };
   var buffer = newBuffer();
@@ -423,6 +467,31 @@ fn selfTest() {
   assert(config.tab_size == 4, "tab size is 4");
   assert((config.theme ?? "none") == "mono", "theme is mono");
 
+  // A union return value: the tab size comes back as `int | string | nil`.
+  var tabSize: int | string | nil = configValue(config, "tab_size");
+  assert(tabSize == 4, "configValue returns the tab size");
+  assert(configValue(config, "missing") == nil, "an unknown key yields nil");
+
+  // Safe access (`?.`) and null coalescing (`??`): a config with no theme falls
+  // back to "default" instead of dereferencing nil.
+  var noTheme = Config { tab_size: 2, show_line_numbers: false, theme: nil };
+  var themeName = noTheme?.theme ?? "default";
+  assert(themeName == "default", "a nil theme falls back to the default");
+
+  // The non-null assertion (`!!`): the buffer has a path here, so `!!` unwraps
+  // it safely.
+  assert(buffer.path!! == buffer.path, "!! unwraps a non-nil value");
+
+  // Pointer and buffer builtins (in their own function: see `pointerChecks`).
+  pointerChecks();
+
+  // Ranges: sum 1..=5.
+  var total = 0;
+  for n in 1..=5 {
+    total = total + n;
+  }
+  assert(total == 15, "a range sums 1..=5");
+
   // Syntax highlighting wraps a keyword.
   var highlighted = highlight("var x = 1", "\x1b[36m", "\x1b[0m");
   assert("\x1b[36mvar\x1b[0m" in highlighted, "the keyword is coloured");
@@ -432,6 +501,9 @@ fn selfTest() {
   cursor.col = 99;
   moveCursor(buffer, cursor, "LEFT");
   assert(cursor.col == buffer.lines[0].length, "the cursor clamps to the line end");
+
+  // Clean up the temporary file the self-test wrote.
+  writeFile(buffer.path, "");
 
   print("tui_editor: self-test passed");
 }
@@ -449,11 +521,17 @@ fn main(args) {
   var buffer = newBuffer();
   var cursor = Cursor { row: 0, col: 0 };
   var history = makeHistory(buffer);
-  var status = "ready";
 
-  // Open the file named on the command line, if any.
+  // Safe access (`?.`) and null coalescing (`??`): the config's theme is
+  // optional, so a nil theme falls back to a name.
+  var themeName = config?.theme ?? "default";
+  var status = "ready (${themeName})";
+
+  // Open the file named on the command line, if any. The `!!` asserts the
+  // argument is non-nil, which is safe here because `args.length > 0`.
   if (args.length > 0) {
-    loadFile(buffer, args[0]);
+    var path = args[0]!!;
+    loadFile(buffer, path);
     status = "opened ${buffer.path}";
   }
 
@@ -472,8 +550,12 @@ fn main(args) {
     if (key == "CTRL_C") {
       running = false;
     } else if (key == "CTRL_S") {
-      var saved = save(buffer);
-      status = isError(saved) ? "save failed" : "saved";
+      if (buffer.path == "") {
+        status = "no file name";
+      } else {
+        var saved = save(buffer);
+        status = isError(saved) ? "save failed" : "saved";
+      }
     } else if (key == "UP" || key == "DOWN" || key == "LEFT" || key == "RIGHT") {
       moveCursor(buffer, cursor, key);
     } else if (key == "ENTER") {
@@ -495,7 +577,7 @@ fn main(args) {
         else if (next.length == 1) { command = command + next; }
       }
       if (command != "") {
-        running = !runCommand(command, buffer);
+        if (runCommand(command, buffer)) { running = false; }
       }
     } else if (key.length == 1) {
       history.record(snapshot(buffer));

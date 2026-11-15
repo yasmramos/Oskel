@@ -69,13 +69,14 @@ and saves with `:w`/`:wq`. It is the showcase for the features the native
 backend cannot compile yet.
 
 ```sh
-oskel examples/tui_editor.oskl notes.txt
+oskel examples/tui_editor.oskl notes.txt   # interactive
+echo "" | oskel examples/tui_editor.oskl   # self-test (no tty)
 ```
 
 Keys: arrows to move, `Enter` and `Backspace` to edit, `Ctrl-S` to save,
 `Ctrl-C` to quit, `:` to enter a command (`:w`, `:q`, `:wq`, `:h`).
 
-**Not AOT-clean (yet).** It uses `extern "C"` FFI (`stty`, `isatty`, `read`),
+**Not AOT-clean (yet).** It uses `extern "C"` FFI (`system`, `isatty`, `read`),
 pointers and buffers, file I/O, and `args()` — none of which the freestanding
 backend supports today (PHASE 7c). It also exercises `struct`, closures for
 undo/redo, `defer` to restore the terminal, `switch`, optional types and unions,
