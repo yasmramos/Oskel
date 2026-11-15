@@ -497,13 +497,19 @@ previous one.
   `tests/31_ffi_struct.oskl`.
 - **Callbacks (done)** — a parameter typed `fn(P...): R` is a C function
   pointer. `fn` is a keyword, so `parseTypeAnnotation` reads the signature
-  before the ordinary type-name path; the parameters and return are scalar FFI
-  names (a nested callback or a struct by value is out of scope). A callback is
-  only meaningful as a parameter: a callback return type is rejected at compile
+  before the ordinary type-name path; the parameters are scalar FFI names and
+  the return is a scalar or a struct by value (a nested callback, a non-scalar
+  callback parameter and a struct *parameter* inside the callback are out of
+  scope). A callback is
+  only meaningful as a parameter: a `fn` type as the *return type of the
+  `extern "C"` function* is rejected at compile
   time, as is a non-scalar callback parameter. In the development engine the
   callback is a `libffi` closure (`ffi_closure_alloc`/`ffi_prep_closure_loc`):
   the trampoline re-enters the VM through `Runtime::call`, boxing the C
-  arguments as Oskel values and writing the result back in the declared C type.
+  arguments as Oskel values and writing the result back in the declared C type
+  (a struct return is serialised field by field into the return storage using
+  its layout, and needs the by-value struct marshalling, plus the `libffi` path
+  for a class-MEMORY struct).
   The closure lives in a reference-counted `CallbackObj` held for the whole
   extern call, so the trampoline address stays valid while C runs (a callback C
   stores for a later call is out of scope for this phase). An error raised

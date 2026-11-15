@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -18,6 +19,7 @@
 
 #include "builtins.h"
 #include "compiler.h"
+#include "ffi_marshal.h"
 #include "lexer.h"
 #include "ops.h"
 #include "parser.h"
@@ -1738,6 +1740,15 @@ extern "C" int oskelTestBump(int* p) {
   *p = previous + 1;
   return previous;
 }
+// Returns a `const char *` with no NUL terminator, the contract the marshalling
+// must not trust: the read has to stop at its own bound instead of walking past
+// the buffer. The array is one byte longer than the cap so the capped scan stays
+// in bounds while it proves the guard fires.
+extern "C" const char* oskelTestUnterminated() {
+  static char unterminated[(1u << 24) + 1];
+  std::memset(unterminated, 'a', sizeof(unterminated));
+  return unterminated;
+}
 
 // Struct-by-value host functions (PHASE 6.6). Each returns or takes a small
 // struct so the marshalling is exercised across the six System V register
@@ -1767,6 +1778,26 @@ extern "C" double oskelTestMixMagnitude(OskelMixed m) { return m.a + m.b; }
 extern "C" struct OskelTwoBytes { char a; char b; };
 extern "C" OskelTwoBytes oskelTestMakeTwoBytes(char a, char b) { return OskelTwoBytes{a, b}; }
 
+// Structs larger than 16 bytes, class MEMORY (PHASE 6.6): passed on the stack
+// and returned through a hidden `sret` pointer. `{int; double; int; int64}` is
+// 32 bytes after alignment, so it exercises both directions of the libffi path.
+extern "C" struct OskelBig { int a; double b; int c; long long d; };
+extern "C" OskelBig oskelTestMakeBig(int a, double b, int c, long long d) {
+  return OskelBig{a, b, c, d};
+}
+extern "C" long long oskelTestSumBig(OskelBig x) {
+  return static_cast<long long>(x.a) + static_cast<long long>(x.b) + x.c + x.d;
+}
+// A MEMORY struct argument beside a scalar on each side, so the stack slot is
+// placed correctly among the register arguments.
+extern "C" long long oskelTestMixBig(int lead, OskelBig x, double tail) {
+  return lead + static_cast<long long>(x.a) + x.c + x.d + static_cast<long long>(tail);
+}
+// Two MEMORY structs at once, so the stack layout of both is exercised.
+extern "C" long long oskelTestSumTwoBig(OskelBig x, OskelBig y) {
+  return x.a + x.c + x.d + y.a + y.c + y.d;
+}
+
 // C functions that call a Oskel callback, one per ABI shape: a GPR argument and
 // return, an SSE argument and return, and a `void` callback.
 extern "C" int oskelTestApply(int (*f)(int), int x) { return f(x); }
@@ -1776,6 +1807,16 @@ extern "C" int oskelTestApplyVoid(void (*f)(int), int x) {
   f(x);
   return x;
 }
+// A callback whose declared return is a single byte: the error path must zero
+// exactly that width, not eight bytes (which would overrun the return slot).
+extern "C" int oskelTestApplyNarrow(signed char (*f)(int), int x) {
+  return static_cast<int>(f(x));
+}
+// A callback that *returns* a struct (PHASE 6.6): C calls it and receives the
+// struct by value. Two shapes are covered, an INTEGER eightbyte (`PairInt`) and
+// a mixed IS pair (`Mixed`), so both return-class layouts are exercised.
+extern "C" OskelPairInt oskelTestApplyStruct(OskelPairInt (*f)(int), int x) { return f(x); }
+extern "C" OskelMixed oskelTestApplyMixedStruct(OskelMixed (*f)(int), int x) { return f(x); }
 
 // A host that resolves the symbols above. Everything else behaves like the
 // dev platform (writes go to captured strings, so a test can read them).
@@ -1799,6 +1840,8 @@ struct SymbolPlatform final : Platform {
     if (symbol == "oskelTestAdd") return reinterpret_cast<void*>(&oskelTestAdd);
     if (symbol == "oskelTestScale") return reinterpret_cast<void*>(&oskelTestScale);
     if (symbol == "oskelTestGreeting") return reinterpret_cast<void*>(&oskelTestGreeting);
+    if (symbol == "oskelTestUnterminated")
+      return reinterpret_cast<void*>(&oskelTestUnterminated);
     if (symbol == "oskelTestBump") return reinterpret_cast<void*>(&oskelTestBump);
     if (symbol == "oskelTestMakePair") return reinterpret_cast<void*>(&oskelTestMakePair);
     if (symbol == "oskelTestMakePairDouble")
@@ -1811,10 +1854,20 @@ struct SymbolPlatform final : Platform {
     if (symbol == "oskelTestScalePair") return reinterpret_cast<void*>(&oskelTestScalePair);
     if (symbol == "oskelTestMixMagnitude") return reinterpret_cast<void*>(&oskelTestMixMagnitude);
     if (symbol == "oskelTestMakeTwoBytes") return reinterpret_cast<void*>(&oskelTestMakeTwoBytes);
+    if (symbol == "oskelTestMakeBig") return reinterpret_cast<void*>(&oskelTestMakeBig);
+    if (symbol == "oskelTestSumBig") return reinterpret_cast<void*>(&oskelTestSumBig);
+    if (symbol == "oskelTestMixBig") return reinterpret_cast<void*>(&oskelTestMixBig);
+    if (symbol == "oskelTestSumTwoBig") return reinterpret_cast<void*>(&oskelTestSumTwoBig);
     if (symbol == "oskelTestApply") return reinterpret_cast<void*>(&oskelTestApply);
     if (symbol == "oskelTestApplyDouble") return reinterpret_cast<void*>(&oskelTestApplyDouble);
     if (symbol == "oskelTestApplyTwice") return reinterpret_cast<void*>(&oskelTestApplyTwice);
     if (symbol == "oskelTestApplyVoid") return reinterpret_cast<void*>(&oskelTestApplyVoid);
+    if (symbol == "oskelTestApplyNarrow")
+      return reinterpret_cast<void*>(&oskelTestApplyNarrow);
+    if (symbol == "oskelTestApplyStruct")
+      return reinterpret_cast<void*>(&oskelTestApplyStruct);
+    if (symbol == "oskelTestApplyMixedStruct")
+      return reinterpret_cast<void*>(&oskelTestApplyMixedStruct);
     return nullptr;
   }
 };
@@ -1871,6 +1924,28 @@ void testExternMarshalsStringReturnAsCString() {
       "extern \"C\" { fn oskelTestGreeting(): cstring; }\n"
       "print(cstr(oskelTestGreeting()));\n");
   assert(out == "hi\n");
+}
+
+void testExternUnterminatedCStringReturnIsBounded() {
+  TEST_SCOPE();
+  // The host returns a `const char *` with no NUL: the read must stop at its
+  // own bound with a clear runtime error, not walk off the buffer (UB). The
+  // test also proves the capped scan stays in bounds (the array is one byte
+  // longer than the cap), so it is safe under ASan.
+  Bytecode bytecode = compileSource(
+      "extern \"C\" { fn oskelTestUnterminated(): cstring; }\n"
+      "let s = oskelTestUnterminated();\n"
+      "print(byteLen(s));\n");
+  SymbolPlatform platform;
+  VM vm(platform);
+  registerBuiltins(vm);
+  std::string message;
+  try {
+    vm.run(bytecode);
+  } catch (const RuntimeError& error) {
+    message = error.message;
+  }
+  assert(message.find("NUL terminator") != std::string::npos);
 }
 
 void testExternMarshalsPointerArgument() {
@@ -1979,6 +2054,59 @@ void testExternMarshalsSubEightbyteStruct() {
 }
 #endif  // OSKEL_FFI_STRUCT_BY_VALUE
 
+#if OSKEL_FFI_MEMORY_STRUCTS
+// A struct larger than 16 bytes is class MEMORY: it is passed on the stack and
+// returned through a hidden `sret` pointer, which only the libffi-backed call
+// path expresses. These tests prove both directions and the mixed cases.
+void testExternMarshalsMemoryStructReturn() {
+  TEST_SCOPE();
+  const std::string out = runWithSymbols(
+      "struct Big { a: int; b: double; c: int; d: int64; }\n"
+      "extern \"C\" { fn oskelTestMakeBig(a: int, b: double, c: int, d: int64): Big; }\n"
+      "let r = oskelTestMakeBig(7, 2.5, 9, 1000000000000);\n"
+      "print(r.a);\n"
+      "print(r.b);\n"
+      "print(r.c);\n"
+      "print(r.d);\n");
+  assert(out == "7\n2.5\n9\n1000000000000\n");
+}
+
+void testExternMarshalsMemoryStructArgument() {
+  TEST_SCOPE();
+  // The struct argument is placed on the stack; the callee reads its fields
+  // back and returns a scalar, so a wrong byte layout changes the result.
+  const std::string out = runWithSymbols(
+      "struct Big { a: int; b: double; c: int; d: int64; }\n"
+      "extern \"C\" { fn oskelTestSumBig(x: Big): int64; }\n"
+      "let s = oskelTestSumBig({a: 4, b: 0.0, c: 6, d: 10});\n"
+      "print(s);\n");
+  assert(out == "20\n");
+}
+
+void testExternMarshalsMemoryStructAmongScalars() {
+  TEST_SCOPE();
+  // A MEMORY struct between two register scalars: the stack slot must not
+  // disturb the register arguments.
+  const std::string out = runWithSymbols(
+      "struct Big { a: int; b: double; c: int; d: int64; }\n"
+      "extern \"C\" { fn oskelTestMixBig(lead: int, x: Big, tail: double): int64; }\n"
+      "let s = oskelTestMixBig(100, {a: 1, b: 0.0, c: 2, d: 3}, 4.0);\n"
+      "print(s);\n");
+  assert(out == "110\n");
+}
+
+void testExternMarshalsTwoMemoryStructs() {
+  TEST_SCOPE();
+  // Two MEMORY structs at once, so both stack slots are exercised.
+  const std::string out = runWithSymbols(
+      "struct Big { a: int; b: double; c: int; d: int64; }\n"
+      "extern \"C\" { fn oskelTestSumTwoBig(x: Big, y: Big): int64; }\n"
+      "let s = oskelTestSumTwoBig({a: 1, b: 0.0, c: 2, d: 3}, {a: 10, b: 0.0, c: 20, d: 30});\n"
+      "print(s);\n");
+  assert(out == "66\n");
+}
+#endif  // OSKEL_FFI_MEMORY_STRUCTS
+
 #ifdef OSKEL_HAVE_LIBFFI
 void testExternCallbackGprShape() {
   TEST_SCOPE();
@@ -2038,16 +2166,91 @@ void testExternCallbackErrorIsReraisedAfterCReturns() {
       "print(r.error.message);\n");
   assert(out == "false\ncallback failed\n");
 }
+
+void testExternCallbackNarrowReturnIsWrittenAtItsOwnWidth() {
+  TEST_SCOPE();
+  // The callback's declared return is one byte. The trampoline must write the
+  // result at that width and, on the error path, zero exactly that width: a
+  // hard-coded eight-byte `memset` would overrun the return slot libffi sized
+  // for a `signed char` (caught under ASan; a wrong result otherwise).
+  const std::string out = runWithSymbols(
+      "extern \"C\" { fn oskelTestApplyNarrow(f: fn(int): int8, x: int): int; }\n"
+      "fn narrow(v: int): int8 { return 7; }\n"
+      "print(oskelTestApplyNarrow(narrow, 0));\n");
+  assert(out == "7\n");
+
+  // The same callback raising: C observes a zero byte, and the error is
+  // re-raised once the extern call returns.
+  const std::string raised = runWithSymbols(
+      "extern \"C\" { fn oskelTestApplyNarrow(f: fn(int): int8, x: int): int; }\n"
+      "fn boom(v: int): int8 { panic(\"narrow failed\"); }\n"
+      "let r = pcall(() => oskelTestApplyNarrow(boom, 0));\n"
+      "print(r.ok);\n"
+      "print(r.error.message);\n");
+  assert(raised == "false\nnarrow failed\n");
+}
+
+void testExternCallbackReturnsStruct() {
+  TEST_SCOPE();
+  // A callback returning a struct by value (PHASE 6.6). The trampoline
+  // serialises the map the Oskel function returns into the C return storage,
+  // so C reads the two INTEGER fields back from `rax`.
+  const std::string out = runWithSymbols(
+      "struct PairInt { a: int; b: int; }\n"
+      "extern \"C\" { fn oskelTestApplyStruct(f: fn(int): PairInt, x: int): PairInt; }\n"
+      "fn make(v: int): PairInt { return {a: v, b: v + 1}; }\n"
+      "let r = oskelTestApplyStruct(make, 41);\n"
+      "print(r.a);\n"
+      "print(r.b);\n");
+  assert(out == "41\n42\n");
+}
+
+void testExternCallbackReturnsMixedStruct() {
+  TEST_SCOPE();
+  // A mixed INTEGER/SSE struct return: the first eightbyte goes to a GPR and the
+  // second to an xmm register, so a wrong layout changes the observed values.
+  const std::string out = runWithSymbols(
+      "struct Mixed { a: int; b: double; }\n"
+      "extern \"C\" { fn oskelTestApplyMixedStruct(f: fn(int): Mixed, x: int): Mixed; }\n"
+      "fn make(v: int): Mixed { return {a: v, b: 2.5}; }\n"
+      "let r = oskelTestApplyMixedStruct(make, 7);\n"
+      "print(r.a);\n"
+      "print(r.b);\n");
+  assert(out == "7\n2.5\n");
+}
+
+void testExternCallbackStructReturnErrorIsReraised() {
+  TEST_SCOPE();
+  // A struct-returning callback that raises: the trampoline must record the
+  // error (not unwind through the C frame) and leave a zeroed buffer, and the
+  // extern call re-raises it once C returns.
+  const std::string out = runWithSymbols(
+      "struct PairInt { a: int; b: int; }\n"
+      "extern \"C\" { fn oskelTestApplyStruct(f: fn(int): PairInt, x: int): PairInt; }\n"
+      "fn boom(v: int): PairInt { panic(\"struct callback failed\"); }\n"
+      "let r = pcall(() => oskelTestApplyStruct(boom, 1));\n"
+      "print(r.ok);\n"
+      "print(r.error.message);\n");
+  assert(out == "false\nstruct callback failed\n");
+}
 #endif  // OSKEL_HAVE_LIBFFI
 
 void testExternRejectsLargeStructAtCompileTime() {
   TEST_SCOPE();
-  // A struct larger than 16 bytes is passed in memory, a shape the register
-  // marshalling does not support, so the declaration is rejected up front.
-  const std::string message = compileErrorMessage(
+  // A struct larger than 16 bytes is class MEMORY: passed on the stack and
+  // returned through a hidden pointer. Where the libffi-backed marshalling can
+  // express that (System V + libffi) the declaration is accepted; elsewhere it
+  // is rejected up front with a message naming the reason.
+  const std::string source =
       "struct Big { a: int; b: int; c: int; d: int; e: int; }\n"
-      "extern \"C\" { fn f(x: Big): int; }\n");
-  assert(message.find("memory") != std::string::npos);
+      "extern \"C\" { fn f(x: Big): int; }\n";
+#if OSKEL_FFI_MEMORY_STRUCTS
+  // Accepted where the libffi-backed marshalling expresses class MEMORY.
+  compileSource(source);
+#else
+  const std::string message = compileErrorMessage(source);
+  assert(message.find("MEMORY") != std::string::npos);
+#endif
 }
 
 void testExternRejectsNonScalarStructFieldAtCompileTime() {
@@ -2058,6 +2261,25 @@ void testExternRejectsNonScalarStructFieldAtCompileTime() {
       "struct Outer { p: Inner; q: int; }\n"
       "extern \"C\" { fn f(x: Outer): int; }\n");
   assert(message.find("cross the C boundary") != std::string::npos);
+}
+
+void testExternRejectsNullAddress() {
+  TEST_SCOPE();
+  // `VM::installExtern` rejects an unresolved symbol before reaching the
+  // marshalling, but the factory itself must not bind a thunk to NULL: another
+  // caller (the AOT backend, a test) could otherwise turn a bad declaration into
+  // a call to address zero.
+  SymbolPlatform platform;
+  VM vm(platform);
+  registerBuiltins(vm);
+  std::string message;
+  try {
+    ffi::makeExternNative(vm, "whatever", nullptr, {}, ffi::TypeSpec{});
+  } catch (const RuntimeError& error) {
+    message = error.message;
+  }
+  assert(message.find("whatever") != std::string::npos);
+  assert(message.find("no address") != std::string::npos);
 }
 
 void testExternMissingSymbolIsAClearRuntimeError() {
@@ -2218,6 +2440,7 @@ int main() {
   testExternTruncatesNarrowReturnToDeclaredWidth();
   testExternMarshalsDoubleReturnAndArgument();
   testExternMarshalsStringReturnAsCString();
+  testExternUnterminatedCStringReturnIsBounded();
   testExternMarshalsPointerArgument();
 #if OSKEL_FFI_STRUCT_BY_VALUE
   testExternMarshalsStructReturnTwoIntegers();
@@ -2228,16 +2451,27 @@ int main() {
   testExternMarshalsStructArgumentAndReturnTogether();
   testExternMarshalsSubEightbyteStruct();
 #endif
+#if OSKEL_FFI_MEMORY_STRUCTS
+  testExternMarshalsMemoryStructReturn();
+  testExternMarshalsMemoryStructArgument();
+  testExternMarshalsMemoryStructAmongScalars();
+  testExternMarshalsTwoMemoryStructs();
+#endif
 #ifdef OSKEL_HAVE_LIBFFI
   testExternCallbackGprShape();
   testExternCallbackSseShape();
   testExternCallbackVoidReturnAndClosure();
   testExternCallbackInvokedRepeatedly();
   testExternCallbackErrorIsReraisedAfterCReturns();
+  testExternCallbackNarrowReturnIsWrittenAtItsOwnWidth();
+  testExternCallbackReturnsStruct();
+  testExternCallbackReturnsMixedStruct();
+  testExternCallbackStructReturnErrorIsReraised();
 #endif
   testExternRejectsLargeStructAtCompileTime();
   testExternRejectsNonScalarStructFieldAtCompileTime();
   testExternMissingSymbolIsAClearRuntimeError();
+  testExternRejectsNullAddress();
   testExternRejectsUnsupportedSignatureAtCompileTime();
   testExternRejectsVariadicDeclarationAtCompileTime();
 

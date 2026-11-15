@@ -374,7 +374,7 @@ vocabulary (PHASE 6.6) adds pointers and fixed-width/unsigned integers:
 | `uint8` `uint16` `uint32` `uint64` | `uint8_t` … `uint64_t` | Unsigned, fixed width. |
 | `uint` | `unsigned int` | Unsigned. |
 | `size_t` | `size_t` | Unsigned size. |
-| `fn(P...): R` | `R (*)(P...)` | C function pointer (callback). Only scalar types in `P`; `void` return allowed. |
+| `fn(P...): R` | `R (*)(P...)` | C function pointer (callback). Only scalar types in `P`; `R` is a scalar or a struct by value. |
 
 These are **compile-time annotations**: the integer family is erased before the
 bytecode (the runtime value is still an `int`) and `type()` keeps reporting the
@@ -462,6 +462,16 @@ its arguments and reads its result across the System V AMD64 ABI without
 `float`/`double` in SSE registers, and the result is read back at the exact
 width the declaration named (so a C `int` is not read as a 64-bit value). A
 symbol the host cannot resolve is a clear runtime error, never a wild call.
+
+A C symbol is bound to a single marshalling thunk, so two declarations of the
+same name must agree on their signature. A second declaration with a different
+signature is a compile error rather than a silent last-wins; the check spans the
+whole program, so a conflict between two imported modules is caught too.
+
+```oskel
+extern "C" { fn abs(x: int): int; }
+extern "C" { fn abs(x: double): double; }  // error: two different signatures
+```
 
 ```oskel
 extern "C" {
@@ -552,9 +562,17 @@ pointer for a later call is out of scope for this phase. `nil` is the NULL
 function pointer.
 
 A callback can only be a **parameter**; a C function that returns a function
-pointer is not supported. An error raised inside a callback cannot unwind
+pointer is not supported. A callback may return a **struct by value** (its
+fields are scalars, like a struct parameter): the trampoline serialises the map
+the Oskel function returns into the C return storage using the struct's layout,
+so C reads the fields back through the registers the ABI assigns. A struct
+larger than 16 bytes (class MEMORY) is returned through the hidden `sret`
+pointer, which needs the same `libffi`-backed path as a large struct argument.
+An error raised inside a callback cannot unwind
 through the C frame, so the extern call captures it and re-raises it once C
-returns: `pcall` catches it like any other runtime error. The AOT backend
+returns: `pcall` catches it like any other runtime error. A struct the callback
+returns that does not match the declared shape (not a map, a missing field, a
+field of the wrong type) fails the same way. The AOT backend
 (PHASE 7) will lower callbacks to compile-time stubs and never links `libffi`.
 
 **Local inference.** With no annotation, the compiler infers the type from the
@@ -2262,7 +2280,7 @@ oskelc -pkg ... -o app.oskpkg  packages a .oskpkg
 - Modules use Java-style `import` (see §18). `import` is only allowed at the top level of a module: nesting an import inside a function or block is a compile error. `require` (Lua-style) is dropped — `import` is the only module form. A module is loaded once, eagerly, when the program is compiled, and a cyclic import is a compile error rather than a crash.
 - No `++`, `--` or default parameters. A trailing `rest...` parameter makes a function variadic (see §7.1). `switch` on literals and ranges is supported (see §6.10), and so is the post-test loop `do { ... } while (cond);` (see §6.4).
 - Optional types and nullability are implemented for declarations and expressions (PHASE 6.5). Type annotations (`let x: int = 5`), local inference, the nullable `T?` annotation, and the null-safe expressions `?.`, `??` and `!!` are checked at compile time. `struct` is implemented (see §4.7) and so is `native fn` (see §7.6), the typed declaration of a host-provided function.
-- FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the System V AMD64 ABI without `libffi` for scalars and structs by value. A `fn(P...): R` parameter is a callback: the development engine builds a `libffi` closure that re-enters the VM, while the AOT backend (PHASE 7) lowers callbacks to compile-time stubs and never links `libffi`.
+- FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the System V AMD64 ABI without `libffi` for scalars and structs by value. A `fn(P...): R` parameter is a callback: the development engine builds a `libffi` closure that re-enters the VM (its `R` may be a scalar or a struct by value), while the AOT backend (PHASE 7) lowers callbacks to compile-time stubs and never links `libffi`.
 - No UI library yet. Skia + SDL2 + declarative UI is planned for post-1.0.
 - No async/await, generics, full pattern matching, generators, or transactions. These are out of scope (see `DEVELOPMENT.md`).
 - Map keys are always strings. Literals accept identifier, string, scalar (`int`, `float`, `double`, `true`, `false`, `nil`) and computed `[expr]` keys; non-string keys are canonicalized to their string form.

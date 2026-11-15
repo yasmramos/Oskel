@@ -1,0 +1,7 @@
+// Fixture for the conflicting-extern-across-modules error test: declares the C
+// symbol `abs` with an integer signature.
+extern "C" { fn abs(x: int): int; }
+
+fn magnitude(): int {
+  return abs(-3);
+}

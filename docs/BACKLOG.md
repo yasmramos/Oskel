@@ -216,8 +216,18 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    declared. Provide a way (or a documented reason it is out of scope).
 2. **[P1]** `extern "C"` does not support structs larger than 16 bytes by value
    (System V passes them via a hidden pointer / `sret`).
-3. **[P1]** `extern "C"` does not support callbacks returning structs (scalars
-   only).
+3. ~~**[P1]** `extern "C"` does not support callbacks returning structs (scalars
+   only).~~ **Done**: a callback may return a struct by value. The compiler
+   resolves the struct name of the callback return to its fields
+   (`TypeSpec::callbackReturnsStruct`/`callbackReturnFields`), `makeCallback`
+   builds the struct `ffi_type` for the `ffi_cif`, and the trampoline serialises
+   the returned map into the C return storage using the layout (a shape that
+   does not match is a re-raised error, not a wild write). A struct over 16
+   bytes (class MEMORY) needs the `libffi` path, like a large struct argument;
+   elsewhere the declaration is rejected at compile time
+   (`tests/check/ffi_callback_struct_return.oskl`,
+   `tests/errors/extern_callback_struct_return_nested.oskl`,
+   `vm_test.cpp::testExternCallbackReturnsStruct`/`ReturnsMixedStruct`).
 4. **[P1]** `extern "C"` does not support nested callbacks (a callback that
    takes another callback).
 5. **[P1]** `extern "C"` does not support `long double`.
@@ -226,25 +236,39 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 8. **[P1]** `extern "C"` does not support C unions.
 9. **[P1]** `extern "C"` does not support bitfields.
 10. **[P1]** `extern "C"` does not support C enums (only `int`).
-11. **[P1]** `installExtern` does not detect two `extern "C"` declarations of
-    the same name in different modules; the last wins silently.
-12. **[P1]** `wrapPointerValue` for `cstring` calls `strlen`, which reads past
+11. ~~**[P1]** `installExtern` does not detect two `extern "C"` declarations of
+    the same name in different modules; the last wins silently.~~ **Done**: the
+    compiler now keeps a session-wide canonical signature per C symbol and
+    rejects a mismatch (`tests/errors/extern_conflicting_signature.oskl`,
+    `module_test.cpp::testConflictingExternAcrossModules`).
+12. ~~**[P1]** `wrapPointerValue` for `cstring` calls `strlen`, which reads past
     the buffer if the pointer is not NUL-terminated — UB from a host that
-    returns a non-terminated `char *`. Bound it or reject.
-13. **[P1]** `oskellCallbackTrampoline` catches `std::exception` with a generic
-    message; a non-`RuntimeError` type is lost.
-14. **[P1]** `CallbackObj::pendingError` is not reset between invocations; a
-    second call sees the first call's pending error. Reset it per call.
-15. **[P2]** `makeExternNative` does not validate `address != nullptr` (the
-    caller does).
-16. **[P2]** `makeCallback` does not validate that the value is a `Func` before
-    building the `CallbackObj` (the caller does).
-17. **[P2]** `dispatch` for callbacks is limited to `kMaxExternArgs = 6`; the
-    error message does not say so.
+    returns a non-terminated `char *`. Bound it or reject.~~ **Done**: the scan
+    is capped (`kMaxCStringBytes`) and a host that breaks the `const char *`
+    contract is a clear runtime error, not an out-of-bounds walk
+    (`vm_test.cpp::testExternUnterminatedCStringReturnIsBounded`).
+13. ~~**[P1]** `oskellCallbackTrampoline` catches `std::exception` with a generic
+    message; a non-`RuntimeError` type is lost.~~ **Done**: the trampoline now
+    catches `std::exception` and keeps `what()`.
+14. ~~**[P1]** `CallbackObj::pendingError` is not reset between invocations; a
+    second call sees the first call's pending error. Reset it per call.~~
+    **Not a bug**: the trampoline short-circuits while a pending error is set
+    and the extern call re-raises it before any second call can run.
+15. ~~**[P2]** `makeExternNative` does not validate `address != nullptr` (the
+    caller does).~~ **Done**: the factory rejects a null address itself.
+16. ~~**[P2]** `makeCallback` does not validate that the value is a `Func` before
+    building the `CallbackObj` (the caller does).~~ **Done**: `makeCallback`
+    checks `isFunc()` itself.
+17. ~~**[P2]** `dispatch` for callbacks is limited to `kMaxExternArgs = 6`; the
+    error message does not say so.~~ **Not a bug**: callbacks go through libffi,
+    not `dispatch`, so they are not bound by `kMaxExternArgs`; an 8-parameter
+    callback compiles and runs. The scalar path still rejects more than six
+    eightbytes at compile time with a message that names the limit.
 18. **[P2]** `pointerAddress` for a `str` uses `asStr().c_str()`; valid for the
     call, but a footgun if the host mutates it.
-19. **[P3]** `installExterns` recurses over children; make it iterative for
-    deep module trees.
+19. ~~**[P3]** `installExterns` recurses over children; make it iterative for
+    deep module trees.~~ **Done**: `VM::installExterns` now walks the module
+    tree with an explicit stack.
 
 ---
 
