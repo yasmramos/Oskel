@@ -714,11 +714,14 @@ void CodeGen::movsdFromXmm(X64Reg base, std::int64_t disp, int xmm) {
 void CodeGen::cvttsd2si(X64Reg dst, int srcXmm) {
   std::uint8_t d = enc(dst);
   std::uint8_t s = static_cast<std::uint8_t>(srcXmm - kXmmBase);
-  std::uint8_t byte = 0x40 | 0x08;  // W=1
+  std::uint8_t byte = 0x40 | 0x08;  // W=1: a 64-bit destination, not a 32-bit one
   if (d >= 8) byte |= 0x01;
   if (s >= 8) byte |= 0x04;
-  if (byte != 0x48) emitByte(byte);
+  // F2 is the mandatory prefix and must precede REX; a REX separated from the
+  // opcode by a legacy prefix is ignored, which would silently select the
+  // 32-bit form (the result zero-extends instead of sign-extending).
   emitByte(0xF2);
+  emitByte(byte);
   emitByte(0x0F);
   emitByte(0x2C);
   emitByte(static_cast<std::uint8_t>(0xC0 | ((d & 0x07) << 3) | (s & 0x07)));

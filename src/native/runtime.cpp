@@ -3571,6 +3571,213 @@ void emitTypeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
   epilogue(cg);
 }
 
+// The three numeric conversions (PHASE 7c.5b.1): the public `int`, `float` and
+// `double` for a numeric or boolean operand. They match the hosted conversions
+// and are pure SSE -- no libm, no libc -- so they link into the freestanding
+// binary. A string operand needs a parser and is deferred to 7c.5b.2, so it
+// fails with a clear message. `args` is in rdi, `argc` in rsi on entry; the
+// helpers make no call before they are done with their inputs, so `rsp` stays
+// 16-byte aligned at the `fail` call and they save nothing.
+void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
+                                   CodeGen::Label floatLabel, CodeGen::Label doubleLabel,
+                                   CodeGen::Label fail, const DataBlob& msgInt,
+                                   const DataBlob& msgFloat, const DataBlob& msgDouble) {
+  constexpr int Xmm3 = kXmmBase + 3;
+  constexpr int Xmm4 = kXmmBase + 4;
+  // 2^63 and -2^63 as binary64 bit patterns: the exclusive/inclusive bounds the
+  // hosted `int` uses (`-2^63 <= x < 2^63`).
+  constexpr std::int64_t kTwoPow63 = 0x43E0000000000000ULL;
+  constexpr std::int64_t kNegTwoPow63 = 0xC3E0000000000000ULL;
+
+  // --- int ---
+  {
+    CodeGen::Label asInt = cg.newLabel();
+    CodeGen::Label asBool = cg.newLabel();
+    CodeGen::Label asNum = cg.newLabel();
+    CodeGen::Label badArgc = cg.newLabel();
+    CodeGen::Label failFinite = cg.newLabel();
+    CodeGen::Label failRange = cg.newLabel();
+    CodeGen::Label done = cg.newLabel();
+
+    cg.bind(intLabel);
+    prologue(cg);
+    cg.cmpImm32(Rsi, 1);
+    cg.jcc(Jcc::Ne, badArgc);
+    cg.movFromMem(Rax, Rdi, 0);   // tag
+    cg.movFromMem(Rcx, Rdi, 8);   // payload
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+    cg.jcc(Jcc::Eq, asInt);
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagBool));
+    cg.jcc(Jcc::Eq, asBool);
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagFloat));
+    cg.jcc(Jcc::Eq, asNum);
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
+    cg.jcc(Jcc::Eq, asNum);
+    emitFailCall(cg, fail, msgInt);
+
+    cg.bind(asInt);
+    cg.movReg(Rdx, Rcx);
+    cg.movImm(Rax, kTagInt);
+    cg.jmp(done);
+
+    cg.bind(asBool);
+    cg.movReg(Rdx, Rcx);
+    cg.movImm(Rax, kTagInt);
+    cg.jmp(done);
+
+    cg.bind(asNum);
+    cg.movqToXmm(Xmm0, Rcx);
+    // Reject NaN/Inf: `x - x == 0` holds for every finite number and is
+    // unordered (PF=1) for NaN and both infinities.
+    cg.movsdReg(Xmm1, Xmm0);
+    cg.subsd(Xmm1, Xmm0);
+    cg.xorps(Xmm2, Xmm2);
+    cg.ucomisd(Xmm1, Xmm2);
+    cg.jcc(Jcc::P, failFinite);
+    cg.jcc(Jcc::Ne, failFinite);
+    // `ucomisd` sets the flags as an unsigned compare, so `jae` is `x >= 2^63`
+    // and `ja` on `-2^63 ?= x` is `x < -2^63`. NaN is already rejected.
+    cg.movImm(R9, kTwoPow63);
+    cg.movqToXmm(Xmm3, R9);
+    cg.ucomisd(Xmm0, Xmm3);
+    cg.jcc(Jcc::Ae, failRange);
+    cg.movImm(R9, kNegTwoPow63);
+    cg.movqToXmm(Xmm4, R9);
+    cg.ucomisd(Xmm4, Xmm0);
+    cg.jcc(Jcc::A, failRange);
+    cg.cvttsd2si(Rdx, Xmm0);
+    cg.movImm(Rax, kTagInt);
+    cg.jmp(done);
+
+    cg.bind(badArgc);
+    emitFailCall(cg, fail, msgInt);
+    cg.bind(failFinite);
+    emitFailCall(cg, fail, msgInt);
+    cg.bind(failRange);
+    emitFailCall(cg, fail, msgInt);
+
+    cg.bind(done);
+    epilogue(cg);
+  }
+
+  // --- double ---
+  {
+    CodeGen::Label asInt = cg.newLabel();
+    CodeGen::Label asBool = cg.newLabel();
+    CodeGen::Label asFloat = cg.newLabel();
+    CodeGen::Label asDouble = cg.newLabel();
+    CodeGen::Label badArgc = cg.newLabel();
+    CodeGen::Label finish = cg.newLabel();
+    CodeGen::Label done = cg.newLabel();
+
+    cg.bind(doubleLabel);
+    prologue(cg);
+    cg.cmpImm32(Rsi, 1);
+    cg.jcc(Jcc::Ne, badArgc);
+    cg.movFromMem(Rax, Rdi, 0);   // tag
+    cg.movFromMem(Rcx, Rdi, 8);   // payload
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+    cg.jcc(Jcc::Eq, asInt);
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagBool));
+    cg.jcc(Jcc::Eq, asBool);
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagFloat));
+    cg.jcc(Jcc::Eq, asFloat);
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
+    cg.jcc(Jcc::Eq, asDouble);
+    emitFailCall(cg, fail, msgDouble);
+
+    cg.bind(asInt);
+    cg.cvtsi2sd(Xmm0, Rcx);
+    cg.jmp(finish);
+
+    cg.bind(asBool);
+    cg.xorps(Xmm0, Xmm0);
+    cg.testReg(Rcx);
+    cg.jcc(Jcc::Eq, finish);
+    cg.movImm(R8, 1);
+    cg.cvtsi2sd(Xmm0, R8);
+    cg.jmp(finish);
+
+    cg.bind(asFloat);
+    cg.movqToXmm(Xmm0, Rcx);
+    cg.cvtss2sd(Xmm0, Xmm0);
+    cg.jmp(finish);
+
+    cg.bind(asDouble);
+    cg.movqToXmm(Xmm0, Rcx);      // a double payload is already a binary64 value
+
+    cg.bind(finish);
+    cg.movqFromXmm(Rdx, Xmm0);
+    cg.movImm(Rax, kTagDouble);
+    cg.jmp(done);
+
+    cg.bind(badArgc);
+    emitFailCall(cg, fail, msgDouble);
+
+    cg.bind(done);
+    epilogue(cg);
+  }
+
+  // --- float ---
+  {
+    CodeGen::Label asInt = cg.newLabel();
+    CodeGen::Label asBool = cg.newLabel();
+    CodeGen::Label asFloat = cg.newLabel();
+    CodeGen::Label asDouble = cg.newLabel();
+    CodeGen::Label badArgc = cg.newLabel();
+    CodeGen::Label roundToFloat = cg.newLabel();
+    CodeGen::Label done = cg.newLabel();
+
+    cg.bind(floatLabel);
+    prologue(cg);
+    cg.cmpImm32(Rsi, 1);
+    cg.jcc(Jcc::Ne, badArgc);
+    cg.movFromMem(Rax, Rdi, 0);   // tag
+    cg.movFromMem(Rcx, Rdi, 8);   // payload
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+    cg.jcc(Jcc::Eq, asInt);
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagBool));
+    cg.jcc(Jcc::Eq, asBool);
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagFloat));
+    cg.jcc(Jcc::Eq, asFloat);
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
+    cg.jcc(Jcc::Eq, asDouble);
+    emitFailCall(cg, fail, msgFloat);
+
+    cg.bind(asInt);
+    cg.cvtsi2sd(Xmm0, Rcx);
+    cg.jmp(roundToFloat);
+
+    cg.bind(asBool);
+    cg.xorps(Xmm0, Xmm0);
+    cg.testReg(Rcx);
+    cg.jcc(Jcc::Eq, roundToFloat);
+    cg.movImm(R8, 1);
+    cg.cvtsi2sd(Xmm0, R8);
+    cg.jmp(roundToFloat);
+
+    cg.bind(asFloat);
+    cg.movqToXmm(Xmm0, Rcx);
+    cg.jmp(roundToFloat);
+
+    cg.bind(asDouble);
+    cg.movqToXmm(Xmm0, Rcx);
+
+    cg.bind(roundToFloat);
+    cg.cvtsd2ss(Xmm0, Xmm0);      // round to binary32 ...
+    cg.cvtss2sd(Xmm0, Xmm0);      // ... and widen back, as the hosted `Float` holds
+    cg.movqFromXmm(Rdx, Xmm0);
+    cg.movImm(Rax, kTagFloat);
+    cg.jmp(done);
+
+    cg.bind(badArgc);
+    emitFailCall(cg, fail, msgFloat);
+
+    cg.bind(done);
+    epilogue(cg);
+  }
+}
+
 // `AotValue oskel_builtin_repr(AotValue* args, long argc, AotClosure* self)`: the
 // public `repr`. It renders through the same recursive repr `$str` uses for a
 // collection, which is exactly `Value::repr()` for every type (a top-level
@@ -4831,6 +5038,9 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgChrRange = addText("oskel: chr() code point out of range\n");
   DataBlob msgAssert = addText("oskel: assertion failed\n");
   DataBlob msgPanic = addText("oskel: panic\n");
+  DataBlob msgConvertInt = addText("oskel: cannot convert this value to int\n");
+  DataBlob msgConvertFloat = addText("oskel: cannot convert this value to float\n");
+  DataBlob msgConvertDouble = addText("oskel: cannot convert this value to double\n");
 
   CodeGen::Label fail = cg.newLabel();
   CodeGen::Label failDynamic = cg.newLabel();
@@ -4988,6 +5198,9 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitAssertBuiltin(cg, handles.assertBuiltin, handles.truthy, fail, failDynamic,
                     msgAssert);
   emitPanicBuiltin(cg, handles.panicBuiltin, fail, failDynamic, msgPanic);
+  emitNumericConversionBuiltins(cg, handles.intBuiltin, handles.floatBuiltin,
+                                handles.doubleBuiltin, fail, msgConvertInt,
+                                msgConvertFloat, msgConvertDouble);
   dtoa::emitDtoa(cg, dtoaHandles);
 
   // The "length" member name is a raw `AotString` (8-byte length + bytes), laid

@@ -804,6 +804,11 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       {"assert", rt.assertBuiltin},
       {"panic", rt.panicBuiltin},
       {"isError", rt.isErrorBuiltin},
+      // The numeric conversions (PHASE 7c.5b.1): `int`/`float`/`double` for a
+      // numeric or boolean operand, matching the hosted conversion.
+      {"int", rt.intBuiltin},
+      {"float", rt.floatBuiltin},
+      {"double", rt.doubleBuiltin},
   };
 
   const GlobalSlots globals = collectGlobals(protos, builtins);
