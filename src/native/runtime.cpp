@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "native/dtoa.h"
+#include "native/parse_float.h"
 
 namespace {
 
@@ -3891,6 +3892,7 @@ void emitIntTextParser(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
 void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
                                    CodeGen::Label floatLabel, CodeGen::Label doubleLabel,
                                    CodeGen::Label fail, CodeGen::Label intTextParser,
+                                   CodeGen::Label floatTextParser,
                                    const DataBlob& msgInt,
                                    const DataBlob& msgFloat, const DataBlob& msgDouble) {
   constexpr int Xmm3 = kXmmBase + 3;
@@ -3899,6 +3901,12 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
   // hosted `int` uses (`-2^63 <= x < 2^63`).
   constexpr std::int64_t kTwoPow63 = 0x43E0000000000000ULL;
   constexpr std::int64_t kNegTwoPow63 = 0xC3E0000000000000ULL;
+  // Stack frame for `oskel_parse_float_text`: the scratch block followed by the
+  // 8-byte output word, rounded up so rsp stays 16-byte aligned at the call.
+  constexpr std::int64_t kParseScratchBytes =
+      static_cast<std::int64_t>(parse_float::kParseScratchBytes);
+  constexpr std::int64_t kParseFrame =
+      (kParseScratchBytes + 8 + 15) & ~static_cast<std::int64_t>(15);
 
   // --- int ---
   {
@@ -3989,6 +3997,8 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     CodeGen::Label asBool = cg.newLabel();
     CodeGen::Label asFloat = cg.newLabel();
     CodeGen::Label asDouble = cg.newLabel();
+    CodeGen::Label asStr = cg.newLabel();
+    CodeGen::Label failStr = cg.newLabel();
     CodeGen::Label badArgc = cg.newLabel();
     CodeGen::Label finish = cg.newLabel();
     CodeGen::Label done = cg.newLabel();
@@ -4007,7 +4017,29 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     cg.jcc(Jcc::Eq, asFloat);
     cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
     cg.jcc(Jcc::Eq, asDouble);
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+    cg.jcc(Jcc::Eq, asStr);
     emitFailCall(cg, fail, msgDouble);
+
+    // A string: parse the text with the freestanding parser, which yields the
+    // binary64 pattern or a failure the hosted engine reports as an error.
+    cg.bind(asStr);
+    cg.movReg(Rdi, Rcx);                          // AotString*
+    cg.movFromMem(Rsi, Rcx, 0);                   // length
+    cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+    cg.subRegImm32(Rsp, static_cast<std::int32_t>(kParseFrame));
+    cg.movReg(Rcx, Rsp);                          // scratch
+    cg.movReg(Rdx, Rsp);
+    cg.addImm32(Rdx, static_cast<std::int32_t>(kParseScratchBytes));  // outBits
+    cg.callLabel(floatTextParser);
+    cg.testReg(Rax);
+    cg.jcc(Jcc::Ne, failStr);
+    cg.movFromMem(Rdx, Rsp, static_cast<std::int32_t>(kParseScratchBytes));
+    cg.movReg(R11, Rsp);
+    cg.addImm32(R11, static_cast<std::int32_t>(kParseFrame));
+    cg.movReg(Rsp, R11);
+    cg.movImm(Rax, kTagDouble);
+    cg.jmp(done);
 
     cg.bind(asInt);
     cg.cvtsi2sd(Xmm0, Rcx);
@@ -4036,6 +4068,8 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
 
     cg.bind(badArgc);
     emitFailCall(cg, fail, msgDouble);
+    cg.bind(failStr);
+    emitFailCall(cg, fail, msgDouble);
 
     cg.bind(done);
     epilogue(cg);
@@ -4047,6 +4081,8 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     CodeGen::Label asBool = cg.newLabel();
     CodeGen::Label asFloat = cg.newLabel();
     CodeGen::Label asDouble = cg.newLabel();
+    CodeGen::Label asStr = cg.newLabel();
+    CodeGen::Label failStr = cg.newLabel();
     CodeGen::Label badArgc = cg.newLabel();
     CodeGen::Label roundToFloat = cg.newLabel();
     CodeGen::Label done = cg.newLabel();
@@ -4065,7 +4101,29 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     cg.jcc(Jcc::Eq, asFloat);
     cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
     cg.jcc(Jcc::Eq, asDouble);
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+    cg.jcc(Jcc::Eq, asStr);
     emitFailCall(cg, fail, msgFloat);
+
+    // A string: parse to binary64, then narrow, matching the hosted `float`
+    // (which parses with `strtod` and casts the result to `float`).
+    cg.bind(asStr);
+    cg.movReg(Rdi, Rcx);                          // AotString*
+    cg.movFromMem(Rsi, Rcx, 0);                   // length
+    cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+    cg.subRegImm32(Rsp, static_cast<std::int32_t>(kParseFrame));
+    cg.movReg(Rcx, Rsp);
+    cg.movReg(Rdx, Rsp);
+    cg.addImm32(Rdx, static_cast<std::int32_t>(kParseScratchBytes));
+    cg.callLabel(floatTextParser);
+    cg.testReg(Rax);
+    cg.jcc(Jcc::Ne, failStr);
+    cg.movFromMem(Rax, Rsp, static_cast<std::int32_t>(kParseScratchBytes));
+    cg.movqToXmm(Xmm0, Rax);
+    cg.movReg(R11, Rsp);
+    cg.addImm32(R11, static_cast<std::int32_t>(kParseFrame));
+    cg.movReg(Rsp, R11);
+    cg.jmp(roundToFloat);
 
     cg.bind(asInt);
     cg.cvtsi2sd(Xmm0, Rcx);
@@ -4094,6 +4152,8 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     cg.jmp(done);
 
     cg.bind(badArgc);
+    emitFailCall(cg, fail, msgFloat);
+    cg.bind(failStr);
     emitFailCall(cg, fail, msgFloat);
 
     cg.bind(done);
@@ -5382,6 +5442,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   // The float/double formatter is part of the embedded runtime: bind its
   // handles and emit the whole dtoa routine so `oskel_print_value` can call it.
   dtoa::DtoaHandles dtoaHandles = dtoa::newDtoaHandles(cg);
+  parse_float::ParseFloatHandles parseFloatHandles = parse_float::newParseFloatHandles(cg);
 
   // Collection helpers reference one another and the printers, so the env is
   // built from the handles and the labels above before any of them is emitted.
@@ -5524,9 +5585,11 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitPanicBuiltin(cg, handles.panicBuiltin, fail, failDynamic, msgPanic);
   emitNumericConversionBuiltins(cg, handles.intBuiltin, handles.floatBuiltin,
                                 handles.doubleBuiltin, fail, handles.intTextParser,
-                                msgConvertInt, msgConvertFloat, msgConvertDouble);
+                                parseFloatHandles.parseDouble, msgConvertInt,
+                                msgConvertFloat, msgConvertDouble);
   emitIntTextParser(cg, handles.intTextParser, fail, msgConvertInt);
   dtoa::emitDtoa(cg, dtoaHandles);
+  parse_float::emitParseFloat(cg, parseFloatHandles, dtoaHandles);
 
   // The "length" member name is a raw `AotString` (8-byte length + bytes), laid
   // out with the other data islands so no code falls through into it.
