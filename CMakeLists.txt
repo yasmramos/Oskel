@@ -204,6 +204,15 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The flagship example must also build and agree with the VM, so the AOT
+    # backend is exercised by a real program (a lexer, a parser and an
+    # evaluator), not only by the small fixture above.
+    add_test(NAME oskel.build_binary_calc
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/examples/calc.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
   endif()
 
   # --- .oskl script tests (auto-detected) ---
