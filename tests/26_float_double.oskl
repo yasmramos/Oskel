@@ -57,6 +57,23 @@ assertEq(int(2.9f), 2);
 assertEq(float("2.5"), 2.5f);
 assertEq(double("2.5"), 2.5);
 
+// The non-finite spellings are accepted, in either case and with a sign.
+assertEq(float("inf"), float("infinity"));
+assertEq(float("-inf"), float("-infinity"));
+assertEq(double("Infinity"), double("inf"));
+assertEq(double("-Infinity"), double("-inf"));
+assertEq(str(float("inf")), "inf");
+assertEq(str(double("-inf")), "-inf");
+assertEq(str(double("nan")), "nan");
+
+// A silent overflow is rejected: `strtod` would turn `1e400` into `inf`, so
+// only the explicit spellings above may produce a non-finite value.
+assertEq(pcall(() => double("1e400")).ok, false);
+assertEq(pcall(() => double("-1e400")).ok, false);
+assertEq(pcall(() => float("1e40")).ok, false);
+assertEq(pcall(() => double("abc")).ok, false);
+assertEq(pcall(() => double("")).ok, false);
+
 // floor/ceil/round return `int` for an `int` and `double` for any float type.
 assertEq(type(floor(2.7)), "double");
 assertEq(type(floor(2)), "int");
