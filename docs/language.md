@@ -416,7 +416,7 @@ these builtins:
 | Builtin | Meaning |
 | --- | --- |
 | `cstring(s)` | Builds a `cstring` from a Oskel string (bytes plus a NUL). |
-| `cstr(p)` | Reads a `cstring`/buffer back as a Oskel string. |
+| `cstr(p)` | Reads a `cstring`/buffer back as a Oskel string. A `cstring` is NUL-terminated, so the read stops at the first `\0` (an embedded NUL truncates, like C); a buffer is read whole. |
 | `buffer(n)` | Allocates `n` zero-initialised bytes and returns a `ptr`. |
 | `byteLen(p)` | Bytes the handle owns (`cstring` excludes the NUL; `void *` is 0). |
 | `loadByte(p, i)` | Byte `0..255` at index `i` (bounds-checked). |
@@ -1556,7 +1556,7 @@ bounds, so `5["a":"b"]` reports the receiver, not the bound.
 | `slice(start?, end?)` | Returns a new array with the range `[start, end)`. |
 | `concat(other)` | Returns a new array with both arrays. |
 | `join(separator?)` | Joins the elements into a string. |
-| `sort(comparator?)` | Sorts the array in place and returns it. |
+| `sort(comparator?)` | Sorts the array in place and returns it. If the comparator throws, the array is left unchanged. |
 | `sorted(comparator?)` | Returns a sorted copy. |
 | `reversed()` | Returns a reversed copy. |
 | `contains(value)` | Checks structural equality. |
@@ -1577,8 +1577,14 @@ Details:
 - `slice` clamps the indexes to the size of the array and accepts negatives. If `end < start`, it returns an empty array.
 - `sort` and `sorted` use ascending order by default. The comparator receives `(a, b)` and must return `true` if `a` should come before `b`; the sort is stable.
 - `reduce` without an initial value uses the first element as the accumulator and fails if the array is empty.
+- `map`, `filter`, `reduce`, `each`, `find`, `any` and `all` call their callback through the VM, so the callback may itself call a builtin (a nested `map`), read a captured outer binding, or raise. An error raised inside a callback unwinds out of the builtin and can be caught with `pcall`, like any other runtime error.
 - `sum` requires all elements to be numbers; it returns `int` if all are integers and `double` otherwise.
 - `clone` is shallow: nested arrays and maps are shared.
+- The in-place mutators (`push`, `unshift`, `insert`, `sort`, `clear`, and the
+  map's `merge`) return the receiver, not `nil`, so they can be chained
+  (`a.push(1).push(2)`) or assigned back (`a = a.push(1)`). `pop`, `shift` and
+  `removeAt` instead return the removed element, since that is the value the
+  caller wants.
 
 ```oskel
 let nums = [3, 1, 2];
@@ -1586,6 +1592,9 @@ assertEq(nums.sorted(), [1, 2, 3]);
 assertEq(nums.sorted((a, b) => a > b), [3, 2, 1]);
 assertEq(nums.map(n => n * 2), [6, 2, 4]);
 assertEq(nums.reduce((a, n) => a + n, 0), 6);
+
+let chain = [1].push(2).push(3);   // mutators return the receiver
+assertEq(chain, [1, 2, 3]);
 ```
 
 ---
@@ -1619,8 +1628,8 @@ assertEq(s[::-1], "olleh");
 
 | Method | Description |
 | --- | --- |
-| `upper()` | Converts ASCII letters to uppercase. |
-| `lower()` | Converts ASCII letters to lowercase. |
+| `upper()` | Applies the Unicode simple uppercase mapping. |
+| `lower()` | Applies the Unicode simple lowercase mapping. |
 | `trim()` | Removes ASCII whitespace at the start and end. |
 | `trimStart()` | Removes ASCII whitespace at the start. |
 | `trimEnd()` | Removes ASCII whitespace at the end. |
@@ -1641,8 +1650,13 @@ assertEq(s[::-1], "olleh");
 
 Details:
 
-- `upper` and `lower` only transform `A-Z` and `a-z`; the rest of Unicode is unchanged.
+- `upper` and `lower` apply the Unicode simple case mapping (one code point to
+  one code point), so `"á".upper()` is `"Á"`. A code point whose full mapping
+  expands to several code points (for example `ß` -> `SS`, `İ` -> `i` plus a
+  combining dot, the `ﬁ` ligature -> `FI`) has no simple mapping and is left
+  unchanged. Greek final sigma is mapped to the ordinary small sigma.
 - `trim*` considers ASCII whitespace (`std::isspace`), not every Unicode space.
+- `split` with no argument breaks on runs of that same ASCII whitespace and keeps no leading or trailing empty field (`"  a  b  ".split()` is `["a", "b"]`, `"   ".split()` is `[]`); with a separator it keeps empty fields (`"a,,b".split(",")` is `["a", "", "b"]`).
 - `lines` does not add an empty trailing line if the string ends with `\n`.
 - `indexOf` searches bytes but returns the index in code points.
 - `substr` counts code points; a negative `length` produces an empty string.
@@ -1872,7 +1886,7 @@ assertEq(sqrt(81), 9.0);
 | `ord(character)` | Code point of a one-character string. |
 | `range(end)` | Range `0..end`. |
 | `range(start, end)` | Range `start..end`. |
-| `args()` | Script arguments as an array of strings. |
+| `args()` | Script arguments as an array of strings (see §15.1). |
 
 ### 12.6 Files
 
@@ -1908,7 +1922,7 @@ are never a machine address the program can dereference.
 | Function | Description |
 | --- | --- |
 | `cstring(s)` | Builds a `cstring` from a string (bytes plus a NUL). |
-| `cstr(p)` | Reads a `cstring`/buffer back as a string. |
+| `cstr(p)` | Reads a `cstring`/buffer back as a string (a `cstring` stops at the first NUL). |
 | `buffer(n)` | Allocates `n` zero-initialised bytes and returns a `ptr`. |
 | `byteLen(p)` | Bytes the handle owns. |
 | `loadByte(p, i)` | Byte `0..255` at index `i` (bounds-checked). |
@@ -2000,8 +2014,11 @@ print(sum.value);                              // 5
 ```
 
 Every runtime error is catchable, including `panic(...)`, an out-of-range
-index, an undefined variable and an error raised deep in the call stack. After
-`pcall` returns, the program keeps running and the engine stays consistent.
+index, an undefined variable and an error raised deep in the call stack. A
+host failure that is not a runtime error — an allocation the engine cannot
+satisfy, such as `buffer(huge)` or an oversized `repeat` — is also turned into
+an error value instead of aborting the process. After `pcall` returns, the
+program keeps running and the engine stays consistent.
 
 `pcall` is a function, not a keyword, so it compiles to an ordinary call: no
 new syntax and no new bytecode. Passing a non-function as the first argument is
@@ -2177,6 +2194,24 @@ for argument in args() {
 }
 ```
 
+### 15.1 Script arguments
+
+`args()` returns the arguments that follow the script name, as an array of
+strings, in order. It never includes the script name itself and never includes
+the interpreter's own options: it is Lua's `arg` table, not C's `argv`.
+
+```sh
+oskel program.oskl one two three
+```
+
+```oskel
+assertEq(args(), ["one", "two", "three"]);
+```
+
+With no arguments the result is an empty array, not `nil`. With `-e`, the
+arguments after the code are the script arguments; `--` ends the options, so
+`oskel -- -weird.oskl a` runs a file whose name starts with `-`.
+
 `oskel build` runs the full AOT pipeline: lex, parse, compile to bytecode and lower
 that bytecode to machine code, then wrap it in a static executable. The emitted
 binary is freestanding — it carries its own runtime and calls the Linux kernel
@@ -2229,7 +2264,7 @@ oskelc -pkg ... -o app.oskpkg  packages a .oskpkg
 - A body of `if`, `while`, `for` or `for-in` may be a block or a single statement without braces; a brace-less body is wrapped in a block, so its bytecode and scoping match the brace form. `switch` arms always require braces.
 - `for ... in` accepts the loop variable and the iterable with or without parentheses (`for x in xs` and `for (x in xs)`).
 - Slicing syntax `s[start:end:step]` works for strings and arrays, with an optional step (`s[::-1]` reverses); the methods `substr`/`slice` remain available.
-- `upper` and `lower` only work with ASCII.
+- `upper` and `lower` apply the Unicode simple case mapping (see §9).
 - Maximum call depth: 2000.
 - Source nesting is bounded: deeply nested expressions and statements (nested parentheses, arrays, blocks, string interpolation, or a very long operator chain) are rejected at compile time with `expression nesting is too deep` instead of overflowing the stack. The limit is far above any nesting a real program reaches.
 - Memory is managed with reference counting plus a cycle collector. Unreachable cycles (a function stored in the scope it closes over, an array that contains itself, **a bound method stored in its own receiver such as `a.f = a.push`**) are reclaimed. Destruction is deferred to an explicit work list, so a deeply nested structure — a container chain (`a = [a]` in a loop), a closure chain (each closure capturing the previous one) or any mix — is freed with a constant C++ stack depth instead of overflowing the stack.

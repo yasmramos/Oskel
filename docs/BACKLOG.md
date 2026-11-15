@@ -330,33 +330,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 12. Builtins (`src/builtins.cpp`)
 
-1. **[P1]** `bindString` `upper`/`lower` use `std::tolower`/`std::toupper` with
-   `unsigned char` (ASCII only); `"Á".upper()` does not work. Use a Unicode
-   case table.
-2. **[P1]** `registerBuiltins` for `pcall` catches `RuntimeError` but not
-   `CompileError`; decide and handle.
-3. **[P2]** `sortItems` uses `std::stable_sort` with a comparator that calls
-   `in.call`; if it throws, the array can be left inconsistent. Guard it and
-   test a throwing comparator.
-4. **[P2]** `bindArray` `map`/`filter`/`reduce`/`each` invoke the callback
-   through `in.call`, which reenters the VM; add a direct test with a VM
-   closure.
-5. **[P2]** `bindString` `split` with no argument uses `std::istringstream`
-   (whitespace, no quotes).
-6. **[P2]** `bindString` `padStart`/`padEnd` build the padding then trim it
-   with `utf8Chars`, O(n) extra for large paddings.
-7. **[P2]** `args()` returns `scriptArgs` without the script name; decide the
-    contract (Lua-style) and document it.
-8. **[P3]** `bindArray` `push` returns `self`, not `nil`; `sort`/`merge` mutate
-    in place and return `self`. Decide the return-value contract.
-9. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
+1. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
     two programs in the same process share state; correct in a REPL, document
     it.
-10. **[P3]** `cstring` copies the string with `\0`, truncating at an embedded
-    `\0`; expected for C, but document it.
-
----
-
 ## 13. Ops (`src/ops.cpp`)
 
 1. **[P1]** `unary` `Minus` on `INT64_MIN` wraps to `INT64_MIN` while the

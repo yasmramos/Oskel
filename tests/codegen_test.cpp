@@ -432,6 +432,13 @@ static void test_sse() {
   g5.cvtsi2sd(kXmmBase + 0, X64Reg::Rax);
   checkBytes("cvtsi2sd xmm0, rax", g5, "F2480F2AC0");
 
+  // cvttsd2si rax, xmm0 -> F2 48 0F 2C C0 (REX.W is mandatory: without it the
+  // instruction truncates to a 32-bit destination and zero-extends, so a
+  // negative result comes back as its unsigned low half).
+  CodeGen g5b;
+  g5b.cvttsd2si(X64Reg::Rax, kXmmBase + 0);
+  checkBytes("cvttsd2si rax, xmm0", g5b, "F2480F2CC0");
+
   // movq xmm0, rax -> 66 48 0F 6E C0 (REX.W is mandatory: without it the
   // instruction degrades to the 32-bit `movd`).
   CodeGen g6;

@@ -8,11 +8,11 @@
 #include <cstdint>
 #include <cstdlib>
 #include <random>
-#include <sstream>
 #include <string>
 #include <vector>
 
 #include "runtime.h"
+#include "unicode_case.h"
 #include "util.h"
 
 using Args = std::vector<Value>&;
@@ -167,21 +167,39 @@ int64_t clampIndex(int64_t index, int64_t length) {
   return index;
 }
 
-uint32_t decodeFirstCodePoint(const std::string& ch) {
-  unsigned char b0 = static_cast<unsigned char>(ch[0]);
-  auto byteAt = [&](size_t i) {
-    return i < ch.size() ? static_cast<unsigned char>(ch[i]) : static_cast<unsigned char>(0);
+// Decode the UTF-8 code point that starts at `index` and report the number of
+// bytes it uses through `length`. A truncated sequence is decoded as far as it
+// goes, matching the permissive handling used elsewhere.
+uint32_t decodeCodePointAt(const std::string& text, size_t index, size_t& length) {
+  unsigned char b0 = static_cast<unsigned char>(text[index]);
+  auto byteAt = [&](size_t k) {
+    return index + k < text.size() ? static_cast<unsigned char>(text[index + k])
+                                   : static_cast<unsigned char>(0);
   };
-  if (b0 < 0x80) return b0;
-  if ((b0 & 0xE0) == 0xC0) return ((b0 & 0x1F) << 6) | (byteAt(1) & 0x3F);
+  if (b0 < 0x80) {
+    length = 1;
+    return b0;
+  }
+  if ((b0 & 0xE0) == 0xC0) {
+    length = 2;
+    return ((b0 & 0x1F) << 6) | (byteAt(1) & 0x3F);
+  }
   if ((b0 & 0xF0) == 0xE0) {
+    length = 3;
     return ((b0 & 0x0F) << 12) | ((byteAt(1) & 0x3F) << 6) | (byteAt(2) & 0x3F);
   }
   if ((b0 & 0xF8) == 0xF0) {
+    length = 4;
     return ((b0 & 0x07) << 18) | ((byteAt(1) & 0x3F) << 12) | ((byteAt(2) & 0x3F) << 6) |
            (byteAt(3) & 0x3F);
   }
+  length = 1;
   return b0;
+}
+
+uint32_t decodeFirstCodePoint(const std::string& ch) {
+  size_t length = 0;
+  return decodeCodePointAt(ch, 0, length);
 }
 
 void sortItems(Runtime& in, std::vector<Value>& items, const Value* comparator,
@@ -334,7 +352,14 @@ bool bindArray(Runtime&, const ArrayPtr& strongArray, const std::string& name, V
     out = makeNative("array.sort", [array](Runtime& in, Args args) -> Value {
       ArrayPtr self = array;
       needBetween(in, "sort", args, 0, 1);
-      sortItems(in, self->items, args.empty() ? nullptr : &args[0], "sort");
+      // Sort a copy and commit only on success: `std::stable_sort` permutes the
+      // range in place, so a comparator that throws (a runtime error, a stack
+      // overflow) would otherwise leave the array partially sorted. Sorting a
+      // copy gives the strong guarantee: the array is either fully sorted or
+      // unchanged.
+      std::vector<Value> items = self->items;
+      sortItems(in, items, args.empty() ? nullptr : &args[0], "sort");
+      self->items = std::move(items);
       return Value(self);
     });
     trackNativeCapture(out, array);
@@ -525,14 +550,24 @@ bool bindArray(Runtime&, const ArrayPtr& strongArray, const std::string& name, V
 
 // -------------------------------------------------------------- string methods
 
-std::string asciiLower(std::string text) {
-  for (char& c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  return text;
-}
-
-std::string asciiUpper(std::string text) {
-  for (char& c : text) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-  return text;
+// Case mapping works on code points, so an accented letter or a Greek sigma
+// is mapped too; a code point with no simple mapping (including one whose full
+// mapping expands to several code points) is copied unchanged.
+std::string mapCase(const std::string& text, bool upper) {
+  std::string out;
+  out.reserve(text.size());
+  for (size_t i = 0; i < text.size();) {
+    size_t length = 0;
+    uint32_t codePoint = decodeCodePointAt(text, i, length);
+    uint32_t mapped = upper ? toUpperCodePoint(codePoint) : toLowerCodePoint(codePoint);
+    if (mapped == codePoint) {
+      out.append(text, i, length);
+    } else {
+      appendUtf8(out, mapped);
+    }
+    i += length;
+  }
+  return out;
 }
 
 bool bindString(Runtime& in, StringPtr receiver, const std::string& name, Value& out) {
@@ -543,14 +578,14 @@ bool bindString(Runtime& in, StringPtr receiver, const std::string& name, Value&
   if (name == "upper") {
     out = makeNative("string.upper", [text](Runtime& in, Args args) -> Value {
       need(in, "upper", args, 0);
-      return Value(asciiUpper(text));
+      return Value(mapCase(text, true));
     });
     return true;
   }
   if (name == "lower") {
     out = makeNative("string.lower", [text](Runtime& in, Args args) -> Value {
       need(in, "lower", args, 0);
-      return Value(asciiLower(text));
+      return Value(mapCase(text, false));
     });
     return true;
   }
@@ -584,9 +619,18 @@ bool bindString(Runtime& in, StringPtr receiver, const std::string& name, Value&
       needBetween(in, "split", args, 0, 1);
       std::vector<Value> items;
       if (args.empty()) {
-        std::istringstream stream(text);
-        std::string word;
-        while (stream >> word) items.emplace_back(word);
+        // Split on runs of ASCII whitespace, with no leading or trailing empty
+        // field. Done by hand so the separator matches `trim*` exactly, instead
+        // of `std::istringstream`, whose whitespace classification is
+        // locale-dependent and could disagree with `std::isspace`.
+        size_t i = 0;
+        while (i < text.size()) {
+          while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+          if (i >= text.size()) break;
+          size_t start = i;
+          while (i < text.size() && !std::isspace(static_cast<unsigned char>(text[i]))) ++i;
+          items.emplace_back(text.substr(start, i - start));
+        }
       } else {
         std::string separator = wantString(in, "split", args[0], "separator");
         if (separator.empty()) {
@@ -770,17 +814,25 @@ bool bindString(Runtime& in, StringPtr receiver, const std::string& name, Value&
       if (static_cast<uint64_t>(keep) > 64ULL * 1024ULL * 1024ULL) {
         in.fail(methodName + "() result is too large");
       }
-      // Build the padding once: the previous loop re-counted the whole buffer
-      // with `utf8Length` on every turn, making a wide pad quadratic.
+      // Build the padding once and clip it as it is built. Splitting the whole
+      // (possibly oversized) padding into code points only to drop the tail
+      // would allocate one string per code point; instead repeat the fill while
+      // a whole copy fits, then append the first code points of one last copy.
       int64_t fillChars = static_cast<int64_t>(utf8Length(fill));
       std::string padding;
       padding.reserve(static_cast<size_t>(keep) + fill.size());
-      for (int64_t filled = 0; filled < keep; filled += fillChars) padding += fill;
-      // Clip to `keep` characters (the last repetition may overshoot).
-      std::vector<std::string> chars = utf8Chars(padding);
-      std::string clipped = utf8Join(std::vector<std::string>(
-          chars.begin(), chars.begin() + static_cast<size_t>(keep)));
-      return Value(atStart ? clipped + text : text + clipped);
+      int64_t remaining = keep;
+      while (remaining >= fillChars) {
+        padding += fill;
+        remaining -= fillChars;
+      }
+      if (remaining > 0) {
+        auto fillCodePoints = utf8Chars(fill);
+        for (int64_t i = 0; i < remaining; ++i) {
+          padding += fillCodePoints[static_cast<size_t>(i)];
+        }
+      }
+      return Value(atStart ? padding + text : text + padding);
     });
     return true;
   }
@@ -1271,6 +1323,20 @@ void registerBuiltins(Runtime& in) {
       result->set("ok", Value(false));
       result->set("value", Value());
       result->set("error", makeError(error.message));
+    } catch (const std::exception& error) {
+      // A host failure (for example `std::bad_alloc` from `buffer(huge)` or
+      // `std::length_error` from an oversized `repeat`) is not a RuntimeError,
+      // but it must not abort the process either: `VM::call` has already
+      // unwound, so turn it into an error value and keep `pcall`'s contract.
+      result->set("ok", Value(false));
+      result->set("value", Value());
+      result->set("error", makeError(error.what()));
+    } catch (...) {
+      // Nothing may escape `pcall`: an unknown exception still becomes a value
+      // so the caller keeps control.
+      result->set("ok", Value(false));
+      result->set("value", Value());
+      result->set("error", makeError("unknown error"));
     }
     return Value(result);
   });

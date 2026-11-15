@@ -977,6 +977,30 @@ void testVmCallsNatives() {
   assert(threw);
 }
 
+void testArgsExcludeTheScriptName() {
+  TEST_SCOPE();
+  // `args()` is the arguments that follow the script name, never the script
+  // name itself (Lua's `arg`, not C's `argv`). The engine only stores what the
+  // CLI hands it, so set them the way `runSource` does and check the array.
+  VM vm;
+  registerBuiltins(vm);
+  vm.scriptArgs = {"one", "two"};
+
+  const Value* args = vm.findGlobal("args");
+  assert(args != nullptr && args->isFunc());
+  Value result = vm.call(*args, {}, 1, 1);
+  assert(result.isArray());
+  const auto& items = result.arrayPtr()->items;
+  assert(items.size() == 2);
+  assert(items[0].isStr() && items[0].asStr() == "one");
+  assert(items[1].isStr() && items[1].asStr() == "two");
+
+  // No script arguments is an empty array, not a missing value.
+  vm.scriptArgs.clear();
+  Value empty = vm.call(*args, {}, 1, 1);
+  assert(empty.isArray() && empty.arrayPtr()->items.empty());
+}
+
 void testMapValueRejectsNonStringKey() {
   TEST_SCOPE();
   VM vm;
@@ -1009,6 +1033,32 @@ void testMapValueRejectsNonStringKey() {
          std::string::npos);
 }
 
+void testPcallCatchesHostExceptions() {
+  TEST_SCOPE();
+  // A native can fail with a host exception (std::bad_alloc from an oversized
+  // `buffer`, std::length_error from an oversized `repeat`), which is not a
+  // RuntimeError. `pcall` must still turn it into an error value instead of
+  // letting it escape and abort the process.
+  VM vm;
+  registerBuiltins(vm);
+  vm.defineGlobal("boom", makeNative("boom", [](Runtime&, std::vector<Value>&) -> Value {
+    throw std::length_error("host failure");
+  }));
+
+  const Value* pcall = vm.findGlobal("pcall");
+  assert(pcall != nullptr && pcall->isFunc());
+  const Value* boom = vm.findGlobal("boom");
+  assert(boom != nullptr);
+
+  Value result = vm.call(*pcall, {*boom}, 1, 1);
+  assert(result.isMap());
+  Map& map = result.map();
+  assert(map.get("ok") != nullptr && map.get("ok")->isBool() && !map.get("ok")->asBool());
+  const Value* error = map.get("error");
+  assert(error != nullptr && error->isError());
+  assert(error->err().message.find("host failure") != std::string::npos);
+}
+
 void testVmCallsBoundMethods() {
   TEST_SCOPE();
   VM vm;
@@ -1021,6 +1071,43 @@ void testVmCallsBoundMethods() {
 
   assert(array->items.size() == 2);
   assert(array->items[1].isInt() && array->items[1].asInt() == 2);
+}
+
+void testArrayCallbackReentersTheVm() {
+  TEST_SCOPE();
+  // The callback passed to `map` is a VM closure, so the builtin must re-enter
+  // the VM while its own frame is still live. The result comes back to the
+  // builtin, which returns the mapped array.
+  VM vm;
+  registerBuiltins(vm);
+  runOrFail(vm, compileSource("fn twice(x) { return x * 2; }"));
+  const Value& twice = requireGlobal(vm, "twice");
+
+  ArrayPtr array = makeArray({Value(1), Value(2), Value(3)});
+  Value map = ops::memberGet(vm, Value(array), "map", 1, 1);
+  assert(map.isFunc());
+  Value result = vm.call(map, {twice}, 1, 1);
+  assert(result.isArray());
+  const auto& items = result.arr().items;
+  assert(items.size() == 3);
+  assert(items[0].asInt() == 2 && items[1].asInt() == 4 && items[2].asInt() == 6);
+
+  // An error raised inside the callback unwinds out of the builtin and reaches
+  // the caller as an ordinary runtime error.
+  VM inner;
+  registerBuiltins(inner);
+  runOrFail(inner, compileSource("fn boom(x) { panic(\"boom\"); }"));
+  const Value& boom = requireGlobal(inner, "boom");
+  ArrayPtr source = makeArray({Value(1)});
+  Value innerMap = ops::memberGet(inner, Value(source), "map", 1, 1);
+  bool threw = false;
+  try {
+    inner.call(innerMap, {boom}, 1, 1);
+  } catch (const RuntimeError& error) {
+    threw = true;
+    assert(error.message == "boom");
+  }
+  assert(threw);
 }
 
 void testRuntimeErrorCarriesSourcePosition() {
@@ -2086,8 +2173,11 @@ int main() {
   testLogicalOperandValues();
   testLogicalEvaluatesRightWhenNeeded();
   testVmCallsNatives();
+  testArgsExcludeTheScriptName();
   testMapValueRejectsNonStringKey();
+  testPcallCatchesHostExceptions();
   testVmCallsBoundMethods();
+  testArrayCallbackReentersTheVm();
   testRuntimeErrorCarriesSourcePosition();
   testFunctionCallAndReturn();
   testFunctionWithoutReturnYieldsNil();

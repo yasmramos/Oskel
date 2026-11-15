@@ -781,6 +781,61 @@ static void test_public_builtin_errors() {
         "a bare panic reports the default message");
 }
 
+// The numeric conversions `int`/`float`/`double` (PHASE 7c.5b.1) for numeric and
+// boolean operands must match the hosted engine: `int` truncates toward zero, a
+// `float` rounds to binary32 (then stores the widened value), a `double` is the
+// binary64 form. The string forms are deferred to 7c.5b.2 and are covered by
+// the error test below.
+static void test_numeric_conversions() {
+  Bytecode proto = compileSource(
+      "print(int(3.9), int(-3.9), int(7), int(true), int(false));\n"
+      "print(int(9007199254740993.0), int(-9007199254740993.0));\n"
+      "print(float(1), float(2.5), float(0.1));\n"
+      "print(float(16777217), float(16777216));\n"  // 2^24+1 is not a binary32
+      "print(double(1), double(1.5), double(true), double(false));\n"
+      "print(float(1) + float(2));\n"
+      "print(type(int(1.5)), type(float(1)), type(double(1)));\n");
+  RunResult result = buildAndRun("/tmp/oskel_numeric_conversions", proto);
+  std::string expected =
+      "3 -3 7 1 0\n"
+      "9007199254740992 -9007199254740992\n"
+      "1 2.5 0.1\n"
+      "16777216 16777216\n"
+      "1 1.5 1 0\n"
+      "3\n"
+      "int float double\n";
+  check(result.output == expected,
+        "the numeric conversions match the hosted engine");
+  check(result.exitCode == 0, "a program using the numeric conversions exits 0");
+}
+
+// A string operand is deferred to 7c.5b.2, so every conversion rejects it with a
+// message and exit 70; a nil, a collection and a wrong argument count do the
+// same, matching the hosted engine's runtime-error code.
+static void test_numeric_conversion_errors() {
+  Bytecode fromString = compileSource("print(int(\"42\"));\n");
+  RunResult string = buildAndRun("/tmp/oskel_convert_string", fromString);
+  check(string.exitCode == 70, "int of a string exits 70 until 7c.5b.2");
+  check(string.output.find("cannot convert this value to int") != std::string::npos,
+        "the failed int reports the conversion message");
+
+  Bytecode fromNil = compileSource("print(float(nil));\n");
+  RunResult nil = buildAndRun("/tmp/oskel_convert_nil", fromNil);
+  check(nil.exitCode == 70, "float of nil exits 70");
+  check(nil.output.find("cannot convert this value to float") != std::string::npos,
+        "the failed float reports the conversion message");
+
+  Bytecode fromArray = compileSource("print(double([1]));\n");
+  RunResult array = buildAndRun("/tmp/oskel_convert_array", fromArray);
+  check(array.exitCode == 70, "double of an array exits 70");
+  check(array.output.find("cannot convert this value to double") != std::string::npos,
+        "the failed double reports the conversion message");
+
+  Bytecode noArgs = compileSource("print(int());\n");
+  RunResult arity = buildAndRun("/tmp/oskel_convert_arity", noArgs);
+  check(arity.exitCode == 70, "int with no argument exits 70");
+}
+
 // Drives the boxed printer directly: the runtime's `oskel_print_value` is what
 // the `print` builtin will call once `CALL` lands (7c.2), so this checks the
 // integer-to-text routine (including the negative case) and the boolean/nil
@@ -1287,6 +1342,8 @@ int main() {
   test_slice_helper_errors();
   test_public_builtins();
   test_public_builtin_errors();
+  test_numeric_conversions();
+  test_numeric_conversion_errors();
   test_sb_append_zero_capacity();
   test_sb_append_capacity_overflow();
 #else

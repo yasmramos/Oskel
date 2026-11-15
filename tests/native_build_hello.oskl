@@ -89,3 +89,14 @@ print("chr =", chr(65), chr(233), chr(128512));
 assert(true);
 assert(len(squares) == 3, "squares has three entries");
 print("isError =", isError(5), isError("x"));
+
+// The numeric conversions (PHASE 7c.5b.1): `int`/`float`/`double` for a numeric
+// or boolean operand. `int` truncates toward zero, `float` rounds to binary32,
+// `double` is the binary64 form, and all three are pure SSE (no libm), so the
+// static binary agrees with the VM byte for byte.
+print("int =", int(3.9), int(-3.9), int(7), int(true), int(false));
+print("int big =", int(9007199254740993.0), int(-9007199254740993.0));
+print("float =", float(1), float(2.5), float(0.1), float(16777217));
+print("double =", double(1), double(1.5), double(true), double(false));
+print("convert types =", type(int(1.5)), type(float(1)), type(double(1)));
+print("convert sum =", float(1) + float(2), int(1.5) + int(2.9));

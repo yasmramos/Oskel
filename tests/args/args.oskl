@@ -1,0 +1,9 @@
+// `args()` is the contract for script arguments: it returns the arguments that
+// follow the script name, as an array of strings, and never includes the
+// script name itself (Lua's `arg`, not C's `argv`). Registered by CMakeLists.txt
+// as `oskel.args` with `one two three`, so the list is exact and order matters.
+assertEq(args(), ["one", "two", "three"]);
+assertEq(len(args()), 3);
+assertEq(args()[0], "one");
+assertEq(args()[2], "three");
+print("args ok");
