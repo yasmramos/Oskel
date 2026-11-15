@@ -79,6 +79,13 @@ may change between minor versions.
   `call [ExitProcess]` displacement from two bytes past the call site, so the
   stub faulted once the image loaded; the offset is now exact. `pe_test`
   asserts the image size and the IAT directory on every platform.
+- The PE import directory table held one descriptor per imported function
+  (four identical kernel32.dll descriptors) instead of one per DLL, which the
+  PE/COFF specification requires ("one entry for each DLL"). Windows tolerated
+  the duplicates, so it never surfaced at run time, but the table was
+  non-conformant and `objdump` interpreted it as four kernel32.dll imports.
+  The emitter now writes a single descriptor for kernel32.dll followed by the
+  null terminator, and `pe_test` pins the descriptor count.
 - FFI: two `extern "C"` declarations of the same C symbol with different
   signatures are now a compile error instead of a silent last-wins. The check
   spans the whole program, so a conflict between two imported modules is caught

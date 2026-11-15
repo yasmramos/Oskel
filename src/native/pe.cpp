@@ -30,6 +30,11 @@ constexpr std::uint16_t kCharacteristicsRelocsStripped = 0x0001;
 
 constexpr int kImportCount = static_cast<int>(PeImport::Count);
 
+// The image imports from a single DLL (kernel32.dll). The import directory
+// table holds one descriptor per DLL, not one per imported function, so this
+// is 1 even though `kImportCount` functions are resolved from it.
+constexpr int kDllCount = 1;
+
 const char* importName(PeImport import) {
   switch (import) {
     case PeImport::WriteFile:
@@ -65,7 +70,7 @@ struct IdataLayout {
 IdataLayout idataLayout() {
   IdataLayout layout{};
   const std::uint32_t descriptorBytes =
-      static_cast<std::uint32_t>((kImportCount + 1) * 20);
+      static_cast<std::uint32_t>((kDllCount + 1) * 20);
   const std::uint32_t thunkBytes =
       static_cast<std::uint32_t>((kImportCount + 1) * 8);
 
@@ -138,14 +143,14 @@ void appendCString(std::vector<std::uint8_t>& out, const char* text) {
 std::vector<std::uint8_t> buildIdata(const IdataLayout& layout) {
   std::vector<std::uint8_t> idata;
 
-  // 1. Import Directory Table: one descriptor per import, then a terminator.
-  for (int i = 0; i < kImportCount; ++i) {
-    write32(idata, layout.ilt);        // OriginalFirstThunk (ILT RVA)
-    write32(idata, 0);                 // TimeDateStamp
-    write32(idata, 0);                 // ForwarderChain
-    write32(idata, layout.dllName);    // Name (DLL name RVA)
-    write32(idata, layout.iat);        // FirstThunk (IAT RVA)
-  }
+  // 1. Import Directory Table: one descriptor per DLL (kernel32.dll is the
+  //    only one), then a null terminator. The single descriptor's ILT/IAT span
+  //    every imported function.
+  write32(idata, layout.ilt);        // OriginalFirstThunk (ILT RVA)
+  write32(idata, 0);                 // TimeDateStamp
+  write32(idata, 0);                 // ForwarderChain
+  write32(idata, layout.dllName);    // Name (DLL name RVA)
+  write32(idata, layout.iat);        // FirstThunk (IAT RVA)
   for (int i = 0; i < 5; ++i) write32(idata, 0);  // terminator (20 bytes)
 
   // 2. Import Lookup Table: the RVA of each hint/name entry, then a terminator.
@@ -254,7 +259,7 @@ std::vector<std::uint8_t> buildStaticPe(const Target& target,
   // DataDirectory[1] = Import Table.
   write32At(out, oh + 112 + 8, layout.descriptors);
   write32At(out, oh + 112 + 12,
-            static_cast<std::uint32_t>((kImportCount + 1) * 20));
+            static_cast<std::uint32_t>((kDllCount + 1) * 20));
 
   // DataDirectory[12] = Import Address Table. Windows reads it to find the
   // bound thunks; a zero entry is tolerated by some loaders but not all, so
