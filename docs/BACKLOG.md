@@ -349,14 +349,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     contract (Lua-style) and document it.
 8. **[P3]** `bindArray` `push` returns `self`, not `nil`; `sort`/`merge` mutate
     in place and return `self`. Decide the return-value contract.
-9. **[P3]** `registerBuiltins` for `range` allows `start > end` (descending);
-    verify and test.
-10. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
+9. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
     two programs in the same process share state; correct in a REPL, document
     it.
-11. **[P3]** `registerBuiltins` for `$slice` checks bounds before the array/
-    string type; the check order matters, make it explicit.
-12. **[P3]** `cstring` copies the string with `\0`, truncating at an embedded
+10. **[P3]** `cstring` copies the string with `\0`, truncating at an embedded
     `\0`; expected for C, but document it.
 
 ---

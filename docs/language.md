@@ -1534,7 +1534,10 @@ assertEq(a[3:0:-1], [40, 30, 20]);
 ```
 
 The same syntax works on strings, slicing by UTF-8 character
-(`"hello"[::-1]` is `"olleh"`). A zero step is a runtime error.
+(`"hello"[::-1]` is `"olleh"`). A zero step is a runtime error. Slicing a
+value that is neither an array nor a string (for example `5[1:2]`) is a
+runtime error that names the receiver's type; that check runs before the
+bounds, so `5["a":"b"]` reports the receiver, not the bound.
 
 ### 8.2 Members
 
@@ -1763,7 +1766,7 @@ assertEq((3..=0).toArray(), [3, 2, 1, 0]);
 - `.contains(value)`: same as `value in range`.
 - Equality compares start, end and inclusiveness: `1..3 != 1..=3`.
 
-The `range(end)` function produces `0..end`, and `range(start, end)` produces `start..end` (always exclusive).
+The `range(end)` function produces `0..end`, and `range(start, end)` produces `start..end` (always exclusive). Like the literal form, `range(start, end)` descends when `start > end`, and equal bounds give an empty range.
 
 Range values are lightweight: they only store the bounds and the inclusiveness flag. Iterating a range with `for ... in` is lazy (constant memory); operations that need all elements at once, such as `toArray()` or passing the range to `map`/`filter`-style builtins, materialize them and are capped at 10,000,000 elements. A range wider than `INT64_MAX` elements reports a `.length` of `9223372036854775807` (the count saturates rather than overflowing).
 
