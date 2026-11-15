@@ -934,14 +934,24 @@ Slices, each independently shippable:
       detection inside the body (`"0x0x10"` is 16, `"0b0b101"` is 5) and its
       overflow rules (`-2^63` is accepted, `2^63` is not). The parser is pure
       integer code -- no libm, no libc -- so it links into the freestanding
-      binary. The `float(string)`/`double(string)` parse needs a correctly
-      rounded `strtod` (subnormals, `1e400`, inf/nan) and is deferred to
-      **7c.5b.2b**; a string operand of `float`/`double` still fails with a
-      clear message. Covered by `tests/freestanding_test.cpp` (the numeric
-      sources, the 2^24+1 binary32 rounding, the `int(string)` bases/bounds,
-      the error paths) and the `oskel build` fixture. The math block (`sqrt`,
-      `pow`, `sin`, ...) still needs an embedded libm because the freestanding
-      binary cannot call the host's.
+      binary. **7c.5b.2b** (done) adds the `float(string)`/`double(string)`
+      parse: a freestanding decimal/hex text to binary64 parser that is
+      correctly rounded, matching the hosted `strtod` bit for bit. It keeps the
+      exact value in a fixed bignum (32-bit limbs, the `dtoa` representation)
+      and rounds once, so subnormals, ties to even and the `1e400` overflow
+      edge all agree with the host; a silent overflow is a clean error, and
+      `inf`/`infinity`/`nan` (case-insensitive, optional sign) are accepted.
+      `float` parses to binary64 and narrows, exactly as the hosted `float`
+      does. It reuses the `bn_*` primitives `dtoa.cpp` already emits and needs
+      no libm or libc, so it links into the freestanding binary. The algorithm
+      was prototyped and validated against `strtod` over hundreds of thousands
+      of random inputs (binary64, subnormals, hex floats) before being emitted.
+      Covered by `tests/parse_float_test.cpp` (the emitted code called through
+      a function pointer against `strtod`, 500k random cases plus the edges)
+      and `tests/freestanding_test.cpp` (the builtin paths under the real
+      `_start`) and the `oskel build` fixture. The math block (`sqrt`, `pow`,
+      `sin`, ...) still needs an embedded libm because the freestanding binary
+      cannot call the host's.
     - **7c.6** (done) — variadic parameter packs. A function with a trailing
       `rest...` parameter was a lowering error ("variadic function",
       `PHASE 7c.3`); it now compiles. The child proto's prologue checks the

@@ -865,8 +865,7 @@ static void test_int_string_conversion() {
 }
 
 // A malformed or out-of-range `int(string)` must fail with a message and exit
-// 70; the string forms of `float`/`double` are still deferred to 7c.5b.2b, so
-// they keep failing too.
+// 70, the hosted runtime-error code.
 static void test_int_string_conversion_errors() {
   Bytecode empty = compileSource("print(int(\"\"));\n");
   RunResult blank = buildAndRun("/tmp/oskel_int_string_empty", empty);
@@ -886,11 +885,47 @@ static void test_int_string_conversion_errors() {
   RunResult big = buildAndRun("/tmp/oskel_int_string_overflow", overflow);
   check(big.exitCode == 70, "int of an out-of-range string exits 70");
 
-  Bytecode fromFloatString = compileSource("print(float(\"2.5\"));\n");
-  RunResult deferred = buildAndRun("/tmp/oskel_float_string", fromFloatString);
-  check(deferred.exitCode == 70, "float of a string exits 70 until 7c.5b.2b");
-  check(deferred.output.find("cannot convert this value to float") != std::string::npos,
-        "the deferred float(string) reports the conversion message");
+  Bytecode fromFloatString = compileSource("print(float(\"abc\"));\n");
+  RunResult bad = buildAndRun("/tmp/oskel_float_string", fromFloatString);
+  check(bad.exitCode == 70, "float of a malformed string exits 70");
+  check(bad.output.find("cannot convert this value to float") != std::string::npos,
+        "the failed float(string) reports the conversion message");
+}
+
+// `float(string)`/`double(string)` (7c.5b.2b) parse decimal and hex text to the
+// nearest binary64 with the freestanding parser and must match the hosted
+// engine bit for bit, including the subnormal and overflow edges.
+static void test_float_string_conversion() {
+  Bytecode proto = compileSource(
+      "print(double(\"3.14\"), float(\"3.14\"), double(\"1e10\"), double(\"-2.5\"));\n"
+      "print(double(\"0.1\") == 0.1, float(\"0.1\") == 0.1);\n"
+      "print(double(\"  42  \"), double(\"+.5\"), double(\".5\"), double(\"5.\"));\n"
+      "print(double(\"9007199254740993\"), double(\"1.7976931348623157e308\"));\n"
+      "print(double(\"5e-324\"), double(\"2.4703282292062328e-324\"));\n"
+      "print(double(\"inf\"), double(\"-inf\"), double(\"infinity\"), double(\"NaN\"));\n"
+      "print(double(\"0x1.8p1\"), double(\"0x1p-1074\"), double(\"0x1.8\"));\n"
+      "print(float(\"0.1\") + float(\"0.2\"));\n");
+  RunResult result = buildAndRun("/tmp/oskel_float_string_ok", proto);
+  std::string expected =
+      "3.14 3.14 1e+10 -2.5\n"
+      "true false\n"
+      "42 0.5 0.5 5\n"
+      "9007199254740992 1.7976931348623157e+308\n"
+      "5e-324 5e-324\n"
+      "inf -inf inf nan\n"
+      "3 5e-324 1.5\n"
+      "0.3\n";
+  check(result.output == expected,
+        "float(string)/double(string) parse like the hosted engine");
+  check(result.exitCode == 0, "a program using float(string) exits 0");
+
+  // A silent overflow (`1e400`) is a clean error, not an infinity, exactly as
+  // the hosted engine rejects it.
+  Bytecode overflow = compileSource("print(double(\"1e400\"));\n");
+  RunResult big = buildAndRun("/tmp/oskel_float_string_overflow", overflow);
+  check(big.exitCode == 70, "double of an overflowing string exits 70");
+  check(big.output.find("cannot convert this value to double") != std::string::npos,
+        "the overflow reports the conversion message");
 }
 
 // Drives the boxed printer directly: the runtime's `oskel_print_value` is what
@@ -1445,6 +1480,7 @@ int main() {
   test_numeric_conversion_errors();
   test_int_string_conversion();
   test_int_string_conversion_errors();
+  test_float_string_conversion();
   test_sb_append_zero_capacity();
   test_sb_append_capacity_overflow();
   test_variadic();
