@@ -1,0 +1,3457 @@
+Start testing: Nov 15 17:25 UTC
+----------------------------------------------------------
+2/193 Testing: module_test
+2/193 Test: module_test
+Command: "/workspace/project/Jolt/build-pe/module_test"
+Directory: /workspace/project/Jolt
+"module_test" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+ok: single segment -> math.oskl
+ok: std.math -> std/math.oskl
+ok: dotted path -> nested directories
+ok: 'std' is reserved
+ok: 'std.math' is reserved
+ok: 'stdlib' is not reserved
+ok: 'myapp.std' is not reserved
+ok: unresolved path returns false
+ok: exact not-found message
+ok: std.math resolves against the stdlib directory
+ok: std.math resolves to std/math.oskl
+ok: a package-only module resolves
+ok: a package-only module resolves to the packages root
+ok: the shadowed module still resolves
+ok: the project directory shadows the packages root
+ok: a module loaded from the packages root runs
+ok: qualified import: util.square(5) == 25
+ok: alias import: u.cube(3) == 27
+ok: wildcard import: square(6) == 36
+ok: selective import binds only the listed names
+ok: a private name (leading underscore) is not exported
+ok: two wildcards exporting the same name is a compile error
+ok: ambiguity error uses the specified wording
+ok: ambiguity error names both modules
+ok: a module body runs exactly once however many times it is imported
+ok: a module can import another module (nested resolution)
+ok: importing the same module twice is not an error
+ok: a 3-segment qualified import resolves through the nested namespace
+ok: two modules under the same nested namespace share the namespace tables
+ok: a local fn declared after a wildcard wins
+ok: a local fn declared before a wildcard wins
+ok: a local var declared after a wildcard wins
+ok: a local fn wins over an alias of the same name
+ok: a module's qualified import does not leak its namespace to the importer
+ok: a module's wildcard import does not leak its names to the importer
+ok: a module function sees its own wildcard import
+ok: a module function sees its own qualified import
+ok: a module's wildcard import does not create a phantom ambiguity in the importer
+ok: no phantom ambiguity from a module's internal wildcard import
+ok: two aliases with the same name are a compile error
+ok: an alias shadowing a wildcard name is a compile error
+ok: a wildcard shadowing an alias is a compile error
+ok: an alias colliding with a namespace root is a compile error
+ok: a repeated qualified import is not a conflict
+ok: two aliases of the same module are not a conflict
+ok: sibling modules under one root share the namespace
+all module checks passed
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"module_test" end time: Nov 15 17:25 UTC
+"module_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+1/193 Testing: compiler_test
+1/193 Test: compiler_test
+Command: "/workspace/project/Jolt/build-pe/compiler_test"
+Directory: /workspace/project/Jolt
+"compiler_test" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+compiler tests passed
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"compiler_test" end time: Nov 15 17:25 UTC
+"compiler_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/193 Testing: repl_test
+6/193 Test: repl_test
+Command: "/workspace/project/Jolt/build-pe/repl_test"
+Directory: /workspace/project/Jolt
+"repl_test" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+ok: :load preserves existing global 'x'
+ok: :load preserves the value of 'x' (42)
+ok: :load defines new global 'y'
+ok: :load defines 'y' with value 10
+ok: script defines global 'z'
+ok: clearGlobals() forgets 'z'
+ok: switch at the REPL runs the matching case
+ok: defer at the REPL defines 'result'
+ok: defer at the REPL runs the deferred block after the body
+ok: a `let` from an earlier entry is immutable in a later entry
+ok: the rejected assignment left `x` at 1
+ok: a type annotation from an earlier entry is enforced later
+ok: redefining a `let` in a later entry wins
+ok: a struct literal from an earlier entry resolves later
+ok: a struct annotation from an earlier entry resolves later
+ok: the failing entry is reported
+ok: an import from a failed entry can be imported again cleanly
+ok: a fresh compiler does not inherit another session's bindings
+ok: after clearSession a name can be redeclared as a mutable binding
+ok: the new binding after clearSession takes effect
+ok: a loaded file defines a global
+ok: a `let` from a loaded file is immutable in a later entry
+ok: the rejected assignment left `z` at 10
+ok: a loaded file is checked against the session's types
+ok: a loaded file sees the session's structs
+ok: a struct from a loaded file reaches later entries
+ok: a loaded file imports a module once
+ok: a later entry reuses the module body, not re-runs it
+ok: the failing file is reported
+ok: a failed load commits nothing
+all repl tests passed
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"repl_test" end time: Nov 15 17:25 UTC
+"repl_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/193 Testing: gc_test
+7/193 Test: gc_test
+Command: "/workspace/project/Jolt/build-pe/gc_test"
+Directory: /workspace/project/Jolt
+"gc_test" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+gc tests passed
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"gc_test" end time: Nov 15 17:25 UTC
+"gc_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/193 Testing: jit_test
+4/193 Test: jit_test
+Command: "/workspace/project/Jolt/build-pe/jit_test"
+Directory: /workspace/project/Jolt
+"jit_test" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+ok: add(2,3) matches the VM
+ok: sub(10,40) matches the VM
+ok: mul(7,6) matches the VM
+ok: mix(4,5,3) matches the VM
+ok: negate(9) matches the VM
+ok: bits(12,10) matches the VM
+ok: a < b matches the VM
+ok: a < b (false) matches the VM
+ok: a <= b matches the VM
+ok: a > b matches the VM
+ok: a >= b (false) matches the VM
+ok: a == b matches the VM
+ok: a != b matches the VM
+ok: !0 is false (0 is truthy) like the VM
+ok: !7 is false like the VM
+ok: !true through a branch matches the VM
+ok: sumTo(10) loop matches the VM
+ok: sumTo(0) loop matches the VM
+ok: sumTo(1000) loop matches the VM
+ok: a proto with a recursive CALL is rejected
+ok: classify(-5) matches the VM
+ok: classify(0) matches the VM
+ok: classify(9) matches the VM
+ok: abs(-42) matches the VM
+ok: abs(42) matches the VM
+ok: large ints add like the VM
+ok: negate(-1) matches the VM
+ok: a string return is rejected
+ok: a float literal is rejected
+ok: a proto that CALLs is rejected
+ok: a proto with a child closure is rejected
+ok: Jit::get caches the compiled proto
+ok: the cache holds one entry after two gets
+ok: the cached function still computes
+ok: VM result is identical with the JIT on
+ok: the JIT compiles nothing while disabled
+ok: the JIT compiles an accepted proto while enabled
+ok: random integer leaf functions match the VM
+ok: every random integer leaf function was compiled
+
+all JIT tests passed
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"jit_test" end time: Nov 15 17:25 UTC
+"jit_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/193 Testing: vm_test
+3/193 Test: vm_test
+Command: "/workspace/project/Jolt/build-pe/vm_test"
+Directory: /workspace/project/Jolt
+"vm_test" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+vm tests passed
+<end of output>
+Test time =   0.15 sec
+----------------------------------------------------------
+Test Passed.
+"vm_test" end time: Nov 15 17:25 UTC
+"vm_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+10/193 Testing: elf_test
+10/193 Test: elf_test
+Command: "/workspace/project/Jolt/build-pe/elf_test"
+Directory: /workspace/project/Jolt
+"elf_test" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+ok: ELF has at least 64 bytes
+ok: ELF magic is 7F 45 4C 46
+ok: ELF class is 64-bit
+ok: ELF data is little-endian
+ok: e_type is ET_EXEC
+ok: e_machine is EM_X86_64
+ok: e_entry is 0x401000
+ok: e_phnum is 2
+ok: ELF contains .text section
+ok: .text starts at file offset 0x1000
+all elf tests passed
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"elf_test" end time: Nov 15 17:25 UTC
+"elf_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+11/193 Testing: pe_test
+11/193 Test: pe_test
+Command: "/workspace/project/Jolt/build-pe/pe_test"
+Directory: /workspace/project/Jolt
+"pe_test" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+ok: PE has at least 512 bytes
+ok: DOS magic is MZ
+ok: e_lfanew is 0x40
+ok: PE signature is PE\0\0
+ok: machine is AMD64
+ok: number of sections is 2
+ok: SizeOfOptionalHeader is 240
+ok: characteristics mark an executable
+ok: characteristics mark the relocations stripped
+ok: characteristics mark large-address-aware
+ok: optional magic is PE32+
+ok: AddressOfEntryPoint is .text + 0
+ok: ImageBase is 0x140000000
+ok: SectionAlignment is 0x1000
+ok: FileAlignment is 0x200
+ok: Subsystem is console
+ok: import directory RVA is 0x1000
+ok: import directory size is 5 descriptors
+ok: IAT directory points at the first slot
+ok: IAT directory covers every slot
+ok: section 1 is .idata
+ok: .idata VirtualAddress is 0x1000
+ok: .idata is writable
+ok: section 2 is .text
+ok: .text VirtualAddress is 0x2000
+ok: .text is executable
+ok: section raw data fits inside the file
+ok: section raw data fits inside the file
+ok: DLL name is kernel32.dll
+ok: import lookup table lives in .idata
+ok: import address table lives in .idata
+ok: WriteFile
+ok: IAT slot points at its hint/name entry
+ok: GetStdHandle
+ok: IAT slot points at its hint/name entry
+ok: ExitProcess
+ok: IAT slot points at its hint/name entry
+ok: VirtualAlloc
+ok: IAT slot points at its hint/name entry
+ok: import descriptors are zero-terminated
+skipped: execution test requires Windows
+all pe tests passed
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"pe_test" end time: Nov 15 17:25 UTC
+"pe_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+12/193 Testing: lower_test
+12/193 Test: lower_test
+Command: "/workspace/project/Jolt/build-pe/lower_test"
+Directory: /workspace/project/Jolt
+"lower_test" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+1
+ok: the lowered image is not empty
+ok: the chunk entry is inside the image
+ok: the _start entry is inside the image
+ok: the chunk and _start entries differ
+ok: NEWTABLE lowers to an image
+ok: an out-of-range jump target throws
+ok: reading an unassigned global throws
+ok: a native/extern host binding throws
+ok: a self-referential declaration throws
+ok: an ordinary global assignment still lowers
+ok: an invalid UNOP selector throws
+ok: HALT inside a child proto throws
+ok: RETURN in the root chunk lowers to an image
+ok: a root RETURN behaves like HALT and yields R0
+ok: exec: LOADK int 42
+ok: exec: LOADK int -7
+ok: exec: LOADK true
+ok: exec: LOADK false
+ok: exec: LOADK nil
+ok: exec: MOVE preserves tag and payload
+ok: exec: 2 + 3 == 5
+ok: exec: 10 - 3 == 7
+ok: exec: 6 * 7 == 42
+ok: exec: R2 = R0 + R1 (distinct destination)
+ok: exec: 12 & 10 == 8
+ok: exec: 12 | 10 == 14
+ok: exec: 12 ^ 10 == 6
+ok: exec: (5 == 5) is true
+ok: exec: (5 == 6) is false
+ok: exec: (5 != 6) is true
+ok: exec: (5 < 9) is true
+ok: exec: (9 < 5) is false
+ok: exec: (5 <= 5) is true
+ok: exec: (9 > 5) is true
+ok: exec: (5 >= 9) is false
+ok: exec: 1 == true is false (tags differ)
+ok: exec: -7
+ok: exec: ~0 == -1
+ok: exec: !0 is false (0 is truthy)
+ok: exec: !nil is true
+ok: exec: JMP skips an instruction
+ok: exec: JMP_IF_FALSE does not jump on integer 0 (truthy)
+ok: exec: JMP_IF_FALSE jumps on nil (falsy)
+ok: exec: JMP_IF_TRUE jumps on true
+ok: exec: countdown loop terminates at 0
+ok: exec: 40 registers are usable (no physical-register ceiling)
+ok: exec: LOADK double 1.5
+ok: exec: LOADK float 0.1f
+ok: exec: 1.5 + 2.5 == 4.0 (double)
+ok: exec: 5.5 - 2.0 == 3.5 (double)
+ok: exec: 1.5 * 2.0 == 3.0 (double)
+ok: exec: 7.0 / 2.0 == 3.5 (double)
+ok: exec: 0.1f + 0.2f == 0.3f (binary32 rounding)
+ok: exec: 1 + 1.5f == 2.5 (float)
+ok: exec: 1.5f + 1.5 == 3.0 (double)
+ok: exec: 7.0 % 2.5 == 2.0 (double)
+ok: exec: -7.0 % 3.0 == -1.0 (double)
+ok: exec: 7.0 % -3.0 == 1.0 (double)
+ok: exec: 1.0 % 3.0 == 1.0 (double)
+ok: exec: 5.5f % 2.0f == 1.5f (float)
+ok: exec: 7 % 2.5 == 2.0 (int widens to double)
+ok: exec: 7 / 2 == 3 (int)
+ok: exec: 7 % 3 == 1 (int)
+ok: exec: 2 ** 10 == 1024 (int)
+ok: exec: 3 ** 0 == 1 (int)
+ok: exec: INT64_MIN / -1 wraps (int)
+ok: exec: INT64_MIN % -1 == 0 (int)
+ok: exec: 1 << 4 == 16
+ok: exec: -8 >> 1 == -4 (arithmetic)
+ok: exec: 1 << 63 == INT64_MIN
+ok: exec: 1.5 == 1.5 is true
+ok: exec: 1.5 == 1.6 is false
+ok: exec: 1.5 < 1.6 is true
+ok: exec: 1.5 > 1.6 is false
+ok: exec: 1 == 1.0 is true (numeric equality)
+ok: exec: 1 < 1.5f is true (mixed ordering)
+ok: exec: -(1.5) == -1.5 (double)
+ok: exec: LOADK string "hello"
+ok: exec: LOADK string with an embedded NUL
+ok: exec: LOADK empty string
+ok: exec: "foo" + "bar" == "foobar"
+ok: exec: "" + "x" == "x"
+ok: exec: "x" + "" == "x"
+ok: exec: "abc" == "abc" is true
+ok: exec: "abc" == "abd" is false
+ok: exec: "abc" == "ab" is false (lengths differ)
+ok: exec: "abc" != "abd" is true
+ok: exec: "abc" < "abd" is true
+ok: exec: "ab" < "abc" is true (prefix)
+ok: exec: "abd" > "abc" is true
+ok: exec: "abc" <= "abc" is true
+ok: exec: "abc" >= "abc" is true
+ok: exec: "Z" < "a" (unsigned byte order)
+ok: exec: a global assigned 5 reads back 5
+ok: exec: reassigning a global keeps the last value
+ok: exec: distinct globals keep separate slots
+ok: exec: a global holds a string
+ok: exec: a local declared 5 reads back 5
+ok: exec: overwriting a local keeps the last value
+ok: exec: distinct locals keep separate slots
+ok: exec: a local and a global do not collide
+ok: exec: a local holds a string
+ok: compiled: let x = 5; let y = x + 2; yields 7 in R0
+ok: compiled: print(1) lowers and returns nil
+ok: compiled: a nested block with a local yields 7 in R0
+ok: compiled: a classic for over a local induction variable sums 0..3
+ok: compiled: add(2, 3) == 5 through a real call
+ok: compiled: fact(5) == 120 (recursion)
+ok: compiled: isEven(10) == 1 (mutual recursion)
+ok: compiled: double(7) == 14 after an earlier double(3)
+ok: compiled: a capture-free lambda returns 42
+ok: compiled: a closure reads a captured local (7)
+ok: compiled: a counter closure increments a shared captured cell
+ok: compiled: two closures share one captured cell
+ok: compiled: a nested closure captures through two frames
+ok: compiled: a closure captures a parameter
+ok: compiled: closures created at different times share one cell
+ok: compiled: a local recursive function captures its own cell
+all lower tests passed
+<end of output>
+Test time =   0.10 sec
+----------------------------------------------------------
+Test Passed.
+"lower_test" end time: Nov 15 17:25 UTC
+"lower_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/193 Testing: value_test
+5/193 Test: value_test
+Command: "/workspace/project/Jolt/build-pe/value_test"
+Directory: /workspace/project/Jolt
+"value_test" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+value tests passed
+<end of output>
+Test time =   0.28 sec
+----------------------------------------------------------
+Test Passed.
+"value_test" end time: Nov 15 17:25 UTC
+"value_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+14/193 Testing: repl.clear
+14/193 Test: repl.clear
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DREPL_INPUT=/workspace/project/Jolt/tests/repl/clear.in" "-P" "/workspace/project/Jolt/tests/run_repl_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"repl.clear" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"repl.clear" end time: Nov 15 17:25 UTC
+"repl.clear" time elapsed: 00:00:00
+----------------------------------------------------------
+
+15/193 Testing: compiler_boundary
+15/193 Test: compiler_boundary
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DROOT=/workspace/project/Jolt" "-P" "/workspace/project/Jolt/tests/check_compiler_boundary.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"compiler_boundary" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+-- compiler boundary intact (22 file(s) checked)
+<end of output>
+Test time =   0.14 sec
+----------------------------------------------------------
+Test Passed.
+"compiler_boundary" end time: Nov 15 17:25 UTC
+"compiler_boundary" time elapsed: 00:00:00
+----------------------------------------------------------
+
+16/193 Testing: version_consistency
+16/193 Test: version_consistency
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_EXPECTED_VERSION=0.1.0" "-P" "/workspace/project/Jolt/tests/check_version.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"version_consistency" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"version_consistency" end time: Nov 15 17:25 UTC
+"version_consistency" time elapsed: 00:00:00
+----------------------------------------------------------
+
+17/193 Testing: install_stdlib
+17/193 Test: install_stdlib
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_SOURCE_DIR=/workspace/project/Jolt" "-DOSKEL_BUILD_DIR=/workspace/project/Jolt/build-pe" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/21_std_math.oskl" "-P" "/workspace/project/Jolt/tests/install_stdlib.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"install_stdlib" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"install_stdlib" end time: Nov 15 17:25 UTC
+"install_stdlib" time elapsed: 00:00:00
+----------------------------------------------------------
+
+18/193 Testing: oskel.build_binary
+18/193 Test: oskel.build_binary
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/native_build_hello.oskl" "-P" "/workspace/project/Jolt/tests/build_binary.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.build_binary" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.build_binary" end time: Nov 15 17:25 UTC
+"oskel.build_binary" time elapsed: 00:00:00
+----------------------------------------------------------
+
+19/193 Testing: oskel.build_binary_calc
+19/193 Test: oskel.build_binary_calc
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/examples/calc.oskl" "-P" "/workspace/project/Jolt/tests/build_binary.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.build_binary_calc" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.build_binary_calc" end time: Nov 15 17:25 UTC
+"oskel.build_binary_calc" time elapsed: 00:00:00
+----------------------------------------------------------
+
+20/193 Testing: oskel.build_binary_mandelbrot
+20/193 Test: oskel.build_binary_mandelbrot
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/examples/mandelbrot.oskl" "-P" "/workspace/project/Jolt/tests/build_binary.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.build_binary_mandelbrot" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.03 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.build_binary_mandelbrot" end time: Nov 15 17:25 UTC
+"oskel.build_binary_mandelbrot" time elapsed: 00:00:00
+----------------------------------------------------------
+
+21/193 Testing: oskel.01_basics
+21/193 Test: oskel.01_basics
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/01_basics.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.01_basics" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.01_basics" end time: Nov 15 17:25 UTC
+"oskel.01_basics" time elapsed: 00:00:00
+----------------------------------------------------------
+
+22/193 Testing: oskel.02_strings
+22/193 Test: oskel.02_strings
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/02_strings.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.02_strings" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.02_strings" end time: Nov 15 17:25 UTC
+"oskel.02_strings" time elapsed: 00:00:00
+----------------------------------------------------------
+
+23/193 Testing: oskel.03_control
+23/193 Test: oskel.03_control
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/03_control.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.03_control" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.03_control" end time: Nov 15 17:25 UTC
+"oskel.03_control" time elapsed: 00:00:00
+----------------------------------------------------------
+
+24/193 Testing: oskel.04_functions
+24/193 Test: oskel.04_functions
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/04_functions.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.04_functions" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.04_functions" end time: Nov 15 17:25 UTC
+"oskel.04_functions" time elapsed: 00:00:00
+----------------------------------------------------------
+
+25/193 Testing: oskel.05_collections
+25/193 Test: oskel.05_collections
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/05_collections.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.05_collections" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.05_collections" end time: Nov 15 17:25 UTC
+"oskel.05_collections" time elapsed: 00:00:00
+----------------------------------------------------------
+
+26/193 Testing: oskel.06_operators
+26/193 Test: oskel.06_operators
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/06_operators.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.06_operators" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.06_operators" end time: Nov 15 17:25 UTC
+"oskel.06_operators" time elapsed: 00:00:00
+----------------------------------------------------------
+
+27/193 Testing: oskel.07_scope
+27/193 Test: oskel.07_scope
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/07_scope.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.07_scope" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.07_scope" end time: Nov 15 17:25 UTC
+"oskel.07_scope" time elapsed: 00:00:00
+----------------------------------------------------------
+
+28/193 Testing: oskel.08_constants
+28/193 Test: oskel.08_constants
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/08_constants.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.08_constants" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.08_constants" end time: Nov 15 17:25 UTC
+"oskel.08_constants" time elapsed: 00:00:00
+----------------------------------------------------------
+
+29/193 Testing: oskel.09_lambdas
+29/193 Test: oskel.09_lambdas
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/09_lambdas.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.09_lambdas" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.09_lambdas" end time: Nov 15 17:25 UTC
+"oskel.09_lambdas" time elapsed: 00:00:00
+----------------------------------------------------------
+
+30/193 Testing: oskel.10_closure_scopes
+30/193 Test: oskel.10_closure_scopes
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/10_closure_scopes.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.10_closure_scopes" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.10_closure_scopes" end time: Nov 15 17:25 UTC
+"oskel.10_closure_scopes" time elapsed: 00:00:00
+----------------------------------------------------------
+
+31/193 Testing: oskel.11_cycles
+31/193 Test: oskel.11_cycles
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/11_cycles.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.11_cycles" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.16 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.11_cycles" end time: Nov 15 17:25 UTC
+"oskel.11_cycles" time elapsed: 00:00:00
+----------------------------------------------------------
+
+32/193 Testing: oskel.12_float_map_keys
+32/193 Test: oskel.12_float_map_keys
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/12_float_map_keys.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.12_float_map_keys" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.12_float_map_keys" end time: Nov 15 17:25 UTC
+"oskel.12_float_map_keys" time elapsed: 00:00:00
+----------------------------------------------------------
+
+33/193 Testing: oskel.13_modules
+33/193 Test: oskel.13_modules
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/13_modules.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.13_modules" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.13_modules" end time: Nov 15 17:25 UTC
+"oskel.13_modules" time elapsed: 00:00:00
+----------------------------------------------------------
+
+34/193 Testing: oskel.14_switch
+34/193 Test: oskel.14_switch
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/14_switch.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.14_switch" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.14_switch" end time: Nov 15 17:25 UTC
+"oskel.14_switch" time elapsed: 00:00:00
+----------------------------------------------------------
+
+35/193 Testing: oskel.15_defer
+35/193 Test: oskel.15_defer
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/15_defer.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.15_defer" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.15_defer" end time: Nov 15 17:25 UTC
+"oskel.15_defer" time elapsed: 00:00:00
+----------------------------------------------------------
+
+36/193 Testing: oskel.16_types
+36/193 Test: oskel.16_types
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/16_types.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.16_types" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.16_types" end time: Nov 15 17:25 UTC
+"oskel.16_types" time elapsed: 00:00:00
+----------------------------------------------------------
+
+37/193 Testing: oskel.17_nullability
+37/193 Test: oskel.17_nullability
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/17_nullability.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.17_nullability" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.17_nullability" end time: Nov 15 17:25 UTC
+"oskel.17_nullability" time elapsed: 00:00:00
+----------------------------------------------------------
+
+38/193 Testing: oskel.18_structs
+38/193 Test: oskel.18_structs
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/18_structs.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.18_structs" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.18_structs" end time: Nov 15 17:25 UTC
+"oskel.18_structs" time elapsed: 00:00:00
+----------------------------------------------------------
+
+39/193 Testing: oskel.19_native_fn
+39/193 Test: oskel.19_native_fn
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/19_native_fn.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.19_native_fn" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.19_native_fn" end time: Nov 15 17:25 UTC
+"oskel.19_native_fn" time elapsed: 00:00:00
+----------------------------------------------------------
+
+40/193 Testing: oskel.20_variadic
+40/193 Test: oskel.20_variadic
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/20_variadic.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.20_variadic" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.20_variadic" end time: Nov 15 17:25 UTC
+"oskel.20_variadic" time elapsed: 00:00:00
+----------------------------------------------------------
+
+41/193 Testing: oskel.21_std_math
+41/193 Test: oskel.21_std_math
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/21_std_math.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.21_std_math" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.21_std_math" end time: Nov 15 17:25 UTC
+"oskel.21_std_math" time elapsed: 00:00:00
+----------------------------------------------------------
+
+42/193 Testing: oskel.22_slicing
+42/193 Test: oskel.22_slicing
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/22_slicing.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.22_slicing" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.22_slicing" end time: Nov 15 17:25 UTC
+"oskel.22_slicing" time elapsed: 00:00:00
+----------------------------------------------------------
+
+43/193 Testing: oskel.23_pcall
+43/193 Test: oskel.23_pcall
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/23_pcall.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.23_pcall" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.23_pcall" end time: Nov 15 17:25 UTC
+"oskel.23_pcall" time elapsed: 00:00:00
+----------------------------------------------------------
+
+44/193 Testing: oskel.24_error_type
+44/193 Test: oskel.24_error_type
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/24_error_type.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.24_error_type" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.24_error_type" end time: Nov 15 17:25 UTC
+"oskel.24_error_type" time elapsed: 00:00:00
+----------------------------------------------------------
+
+45/193 Testing: oskel.25_try_catch
+45/193 Test: oskel.25_try_catch
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/25_try_catch.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.25_try_catch" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.25_try_catch" end time: Nov 15 17:25 UTC
+"oskel.25_try_catch" time elapsed: 00:00:00
+----------------------------------------------------------
+
+46/193 Testing: oskel.26_float_double
+46/193 Test: oskel.26_float_double
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/26_float_double.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.26_float_double" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.26_float_double" end time: Nov 15 17:25 UTC
+"oskel.26_float_double" time elapsed: 00:00:00
+----------------------------------------------------------
+
+47/193 Testing: oskel.27_void
+47/193 Test: oskel.27_void
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/27_void.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.27_void" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.27_void" end time: Nov 15 17:25 UTC
+"oskel.27_void" time elapsed: 00:00:00
+----------------------------------------------------------
+
+48/193 Testing: oskel.28_ffi_types
+48/193 Test: oskel.28_ffi_types
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/28_ffi_types.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.28_ffi_types" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.28_ffi_types" end time: Nov 15 17:25 UTC
+"oskel.28_ffi_types" time elapsed: 00:00:00
+----------------------------------------------------------
+
+49/193 Testing: oskel.29_extern_c
+49/193 Test: oskel.29_extern_c
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/29_extern_c.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.29_extern_c" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.29_extern_c" end time: Nov 15 17:25 UTC
+"oskel.29_extern_c" time elapsed: 00:00:00
+----------------------------------------------------------
+
+50/193 Testing: oskel.30_ffi_ptr
+50/193 Test: oskel.30_ffi_ptr
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/30_ffi_ptr.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.30_ffi_ptr" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.30_ffi_ptr" end time: Nov 15 17:25 UTC
+"oskel.30_ffi_ptr" time elapsed: 00:00:00
+----------------------------------------------------------
+
+51/193 Testing: oskel.31_ffi_struct
+51/193 Test: oskel.31_ffi_struct
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/31_ffi_struct.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.31_ffi_struct" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.31_ffi_struct" end time: Nov 15 17:25 UTC
+"oskel.31_ffi_struct" time elapsed: 00:00:00
+----------------------------------------------------------
+
+52/193 Testing: oskel.32_ffi_callback
+52/193 Test: oskel.32_ffi_callback
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/32_ffi_callback.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.32_ffi_callback" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.32_ffi_callback" end time: Nov 15 17:25 UTC
+"oskel.32_ffi_callback" time elapsed: 00:00:00
+----------------------------------------------------------
+
+53/193 Testing: oskel.33_extern_single
+53/193 Test: oskel.33_extern_single
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/33_extern_single.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.33_extern_single" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.33_extern_single" end time: Nov 15 17:25 UTC
+"oskel.33_extern_single" time elapsed: 00:00:00
+----------------------------------------------------------
+
+54/193 Testing: oskel.34_unions
+54/193 Test: oskel.34_unions
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/34_unions.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.34_unions" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.34_unions" end time: Nov 15 17:25 UTC
+"oskel.34_unions" time elapsed: 00:00:00
+----------------------------------------------------------
+
+55/193 Testing: oskel.35_must_use
+55/193 Test: oskel.35_must_use
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/35_must_use.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.35_must_use" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.35_must_use" end time: Nov 15 17:25 UTC
+"oskel.35_must_use" time elapsed: 00:00:00
+----------------------------------------------------------
+
+56/193 Testing: oskel.36_logical_assign
+56/193 Test: oskel.36_logical_assign
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/36_logical_assign.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.36_logical_assign" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.36_logical_assign" end time: Nov 15 17:25 UTC
+"oskel.36_logical_assign" time elapsed: 00:00:00
+----------------------------------------------------------
+
+57/193 Testing: oskel.37_do_while
+57/193 Test: oskel.37_do_while
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/37_do_while.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.37_do_while" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.37_do_while" end time: Nov 15 17:25 UTC
+"oskel.37_do_while" time elapsed: 00:00:00
+----------------------------------------------------------
+
+58/193 Testing: oskel.37_slice_step
+58/193 Test: oskel.37_slice_step
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/37_slice_step.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.37_slice_step" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.37_slice_step" end time: Nov 15 17:25 UTC
+"oskel.37_slice_step" time elapsed: 00:00:00
+----------------------------------------------------------
+
+59/193 Testing: oskel.38_braceless_bodies
+59/193 Test: oskel.38_braceless_bodies
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/38_braceless_bodies.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.38_braceless_bodies" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.38_braceless_bodies" end time: Nov 15 17:25 UTC
+"oskel.38_braceless_bodies" time elapsed: 00:00:00
+----------------------------------------------------------
+
+60/193 Testing: oskel.39_for_in_parens
+60/193 Test: oskel.39_for_in_parens
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/39_for_in_parens.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.39_for_in_parens" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.39_for_in_parens" end time: Nov 15 17:25 UTC
+"oskel.39_for_in_parens" time elapsed: 00:00:00
+----------------------------------------------------------
+
+61/193 Testing: oskel.40_for_in_key_value
+61/193 Test: oskel.40_for_in_key_value
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/40_for_in_key_value.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.40_for_in_key_value" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.40_for_in_key_value" end time: Nov 15 17:25 UTC
+"oskel.40_for_in_key_value" time elapsed: 00:00:00
+----------------------------------------------------------
+
+62/193 Testing: oskel.41_float_literal_range
+62/193 Test: oskel.41_float_literal_range
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/41_float_literal_range.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.41_float_literal_range" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.41_float_literal_range" end time: Nov 15 17:25 UTC
+"oskel.41_float_literal_range" time elapsed: 00:00:00
+----------------------------------------------------------
+
+63/193 Testing: oskel.42_double_format
+63/193 Test: oskel.42_double_format
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/42_double_format.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.42_double_format" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.42_double_format" end time: Nov 15 17:25 UTC
+"oskel.42_double_format" time elapsed: 00:00:00
+----------------------------------------------------------
+
+64/193 Testing: oskel.43_cyclic_equality
+64/193 Test: oskel.43_cyclic_equality
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/43_cyclic_equality.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.43_cyclic_equality" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.43_cyclic_equality" end time: Nov 15 17:25 UTC
+"oskel.43_cyclic_equality" time elapsed: 00:00:00
+----------------------------------------------------------
+
+65/193 Testing: oskel.44_range_length
+65/193 Test: oskel.44_range_length
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/44_range_length.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.44_range_length" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.44_range_length" end time: Nov 15 17:25 UTC
+"oskel.44_range_length" time elapsed: 00:00:00
+----------------------------------------------------------
+
+66/193 Testing: oskel.45_int_conversion
+66/193 Test: oskel.45_int_conversion
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/45_int_conversion.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.45_int_conversion" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.45_int_conversion" end time: Nov 15 17:25 UTC
+"oskel.45_int_conversion" time elapsed: 00:00:00
+----------------------------------------------------------
+
+67/193 Testing: oskel.46_string_pad
+67/193 Test: oskel.46_string_pad
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/46_string_pad.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.46_string_pad" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.11 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.46_string_pad" end time: Nov 15 17:25 UTC
+"oskel.46_string_pad" time elapsed: 00:00:00
+----------------------------------------------------------
+
+68/193 Testing: oskel.47_deep_container_teardown
+68/193 Test: oskel.47_deep_container_teardown
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/47_deep_container_teardown.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.47_deep_container_teardown" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.40 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.47_deep_container_teardown" end time: Nov 15 17:25 UTC
+"oskel.47_deep_container_teardown" time elapsed: 00:00:00
+----------------------------------------------------------
+
+69/193 Testing: oskel.48_int64_min
+69/193 Test: oskel.48_int64_min
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/48_int64_min.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.48_int64_min" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.48_int64_min" end time: Nov 15 17:25 UTC
+"oskel.48_int64_min" time elapsed: 00:00:00
+----------------------------------------------------------
+
+70/193 Testing: oskel.49_const_overflow
+70/193 Test: oskel.49_const_overflow
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/49_const_overflow.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.49_const_overflow" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.49_const_overflow" end time: Nov 15 17:25 UTC
+"oskel.49_const_overflow" time elapsed: 00:00:00
+----------------------------------------------------------
+
+71/193 Testing: oskel.50_path_nul
+71/193 Test: oskel.50_path_nul
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/50_path_nul.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.50_path_nul" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.50_path_nul" end time: Nov 15 17:25 UTC
+"oskel.50_path_nul" time elapsed: 00:00:00
+----------------------------------------------------------
+
+72/193 Testing: oskel.51_int_string_bases
+72/193 Test: oskel.51_int_string_bases
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/51_int_string_bases.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.51_int_string_bases" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.51_int_string_bases" end time: Nov 15 17:25 UTC
+"oskel.51_int_string_bases" time elapsed: 00:00:00
+----------------------------------------------------------
+
+73/193 Testing: oskel.52_unicode_case
+73/193 Test: oskel.52_unicode_case
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/52_unicode_case.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.52_unicode_case" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.52_unicode_case" end time: Nov 15 17:25 UTC
+"oskel.52_unicode_case" time elapsed: 00:00:00
+----------------------------------------------------------
+
+74/193 Testing: oskel.native_build_hello
+74/193 Test: oskel.native_build_hello
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/native_build_hello.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.native_build_hello" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.native_build_hello" end time: Nov 15 17:25 UTC
+"oskel.native_build_hello" time elapsed: 00:00:00
+----------------------------------------------------------
+
+75/193 Testing: oskel.args
+75/193 Test: oskel.args
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/args/args.oskl" "-DOSKEL_ARGS=one two three" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.args" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.args" end time: Nov 15 17:25 UTC
+"oskel.args" time elapsed: 00:00:00
+----------------------------------------------------------
+
+76/193 Testing: examples.builtins
+76/193 Test: examples.builtins
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/examples/builtins.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"examples.builtins" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"examples.builtins" end time: Nov 15 17:25 UTC
+"examples.builtins" time elapsed: 00:00:00
+----------------------------------------------------------
+
+77/193 Testing: examples.calc
+77/193 Test: examples.calc
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/examples/calc.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"examples.calc" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"examples.calc" end time: Nov 15 17:25 UTC
+"examples.calc" time elapsed: 00:00:00
+----------------------------------------------------------
+
+78/193 Testing: examples.closures
+78/193 Test: examples.closures
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/examples/closures.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"examples.closures" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"examples.closures" end time: Nov 15 17:25 UTC
+"examples.closures" time elapsed: 00:00:00
+----------------------------------------------------------
+
+79/193 Testing: examples.collections
+79/193 Test: examples.collections
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/examples/collections.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"examples.collections" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"examples.collections" end time: Nov 15 17:25 UTC
+"examples.collections" time elapsed: 00:00:00
+----------------------------------------------------------
+
+80/193 Testing: examples.fibonacci
+80/193 Test: examples.fibonacci
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/examples/fibonacci.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"examples.fibonacci" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"examples.fibonacci" end time: Nov 15 17:25 UTC
+"examples.fibonacci" time elapsed: 00:00:00
+----------------------------------------------------------
+
+81/193 Testing: examples.fizzbuzz
+81/193 Test: examples.fizzbuzz
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/examples/fizzbuzz.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"examples.fizzbuzz" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"examples.fizzbuzz" end time: Nov 15 17:25 UTC
+"examples.fizzbuzz" time elapsed: 00:00:00
+----------------------------------------------------------
+
+82/193 Testing: examples.full
+82/193 Test: examples.full
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/examples/full.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"examples.full" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"examples.full" end time: Nov 15 17:25 UTC
+"examples.full" time elapsed: 00:00:00
+----------------------------------------------------------
+
+83/193 Testing: examples.hello
+83/193 Test: examples.hello
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/examples/hello.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"examples.hello" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"examples.hello" end time: Nov 15 17:25 UTC
+"examples.hello" time elapsed: 00:00:00
+----------------------------------------------------------
+
+84/193 Testing: examples.imports
+84/193 Test: examples.imports
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/examples/imports.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"examples.imports" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"examples.imports" end time: Nov 15 17:25 UTC
+"examples.imports" time elapsed: 00:00:00
+----------------------------------------------------------
+
+85/193 Testing: examples.mandelbrot
+85/193 Test: examples.mandelbrot
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/examples/mandelbrot.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"examples.mandelbrot" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.02 sec
+----------------------------------------------------------
+Test Passed.
+"examples.mandelbrot" end time: Nov 15 17:25 UTC
+"examples.mandelbrot" time elapsed: 00:00:00
+----------------------------------------------------------
+
+86/193 Testing: examples.math_imports
+86/193 Test: examples.math_imports
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/examples/math_imports.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"examples.math_imports" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"examples.math_imports" end time: Nov 15 17:25 UTC
+"examples.math_imports" time elapsed: 00:00:00
+----------------------------------------------------------
+
+87/193 Testing: examples.structs
+87/193 Test: examples.structs
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/examples/structs.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"examples.structs" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"examples.structs" end time: Nov 15 17:25 UTC
+"examples.structs" time elapsed: 00:00:00
+----------------------------------------------------------
+
+88/193 Testing: examples.wordcount
+88/193 Test: examples.wordcount
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/examples/wordcount.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"examples.wordcount" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"examples.wordcount" end time: Nov 15 17:25 UTC
+"examples.wordcount" time elapsed: 00:00:00
+----------------------------------------------------------
+
+89/193 Testing: examples.tui_editor
+89/193 Test: examples.tui_editor
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/examples/tui_editor.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"examples.tui_editor" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"examples.tui_editor" end time: Nov 15 17:25 UTC
+"examples.tui_editor" time elapsed: 00:00:00
+----------------------------------------------------------
+
+90/193 Testing: oskel.errors.ambiguous_wildcard
+90/193 Test: oskel.errors.ambiguous_wildcard
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/ambiguous_wildcard.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.ambiguous_wildcard" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.ambiguous_wildcard" end time: Nov 15 17:25 UTC
+"oskel.errors.ambiguous_wildcard" time elapsed: 00:00:00
+----------------------------------------------------------
+
+91/193 Testing: oskel.errors.attribute_before_let
+91/193 Test: oskel.errors.attribute_before_let
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/attribute_before_let.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.attribute_before_let" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.attribute_before_let" end time: Nov 15 17:25 UTC
+"oskel.errors.attribute_before_let" time elapsed: 00:00:00
+----------------------------------------------------------
+
+92/193 Testing: oskel.errors.braceless_body_two_statements
+92/193 Test: oskel.errors.braceless_body_two_statements
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/braceless_body_two_statements.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.braceless_body_two_statements" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.braceless_body_two_statements" end time: Nov 15 17:25 UTC
+"oskel.errors.braceless_body_two_statements" time elapsed: 00:00:00
+----------------------------------------------------------
+
+93/193 Testing: oskel.errors.break_inside_function
+93/193 Test: oskel.errors.break_inside_function
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/break_inside_function.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.break_inside_function" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.break_inside_function" end time: Nov 15 17:25 UTC
+"oskel.errors.break_inside_function" time elapsed: 00:00:00
+----------------------------------------------------------
+
+94/193 Testing: oskel.errors.break_outside_loop
+94/193 Test: oskel.errors.break_outside_loop
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/break_outside_loop.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.break_outside_loop" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.break_outside_loop" end time: Nov 15 17:25 UTC
+"oskel.errors.break_outside_loop" time elapsed: 00:00:00
+----------------------------------------------------------
+
+95/193 Testing: oskel.errors.case_label_not_literal
+95/193 Test: oskel.errors.case_label_not_literal
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/case_label_not_literal.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.case_label_not_literal" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.case_label_not_literal" end time: Nov 15 17:25 UTC
+"oskel.errors.case_label_not_literal" time elapsed: 00:00:00
+----------------------------------------------------------
+
+96/193 Testing: oskel.errors.case_outside_switch
+96/193 Test: oskel.errors.case_outside_switch
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/case_outside_switch.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.case_outside_switch" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.case_outside_switch" end time: Nov 15 17:25 UTC
+"oskel.errors.case_outside_switch" time elapsed: 00:00:00
+----------------------------------------------------------
+
+97/193 Testing: oskel.errors.const_no_init
+97/193 Test: oskel.errors.const_no_init
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/const_no_init.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.const_no_init" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.const_no_init" end time: Nov 15 17:25 UTC
+"oskel.errors.const_no_init" time elapsed: 00:00:00
+----------------------------------------------------------
+
+98/193 Testing: oskel.errors.const_non_constant
+98/193 Test: oskel.errors.const_non_constant
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/const_non_constant.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.const_non_constant" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.const_non_constant" end time: Nov 15 17:25 UTC
+"oskel.errors.const_non_constant" time elapsed: 00:00:00
+----------------------------------------------------------
+
+99/193 Testing: oskel.errors.const_reassign
+99/193 Test: oskel.errors.const_reassign
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/const_reassign.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.const_reassign" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.const_reassign" end time: Nov 15 17:25 UTC
+"oskel.errors.const_reassign" time elapsed: 00:00:00
+----------------------------------------------------------
+
+100/193 Testing: oskel.errors.continue_outside_loop
+100/193 Test: oskel.errors.continue_outside_loop
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/continue_outside_loop.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.continue_outside_loop" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.continue_outside_loop" end time: Nov 15 17:25 UTC
+"oskel.errors.continue_outside_loop" time elapsed: 00:00:00
+----------------------------------------------------------
+
+101/193 Testing: oskel.errors.cyclic_import
+101/193 Test: oskel.errors.cyclic_import
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/cyclic_import.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.cyclic_import" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.cyclic_import" end time: Nov 15 17:25 UTC
+"oskel.errors.cyclic_import" time elapsed: 00:00:00
+----------------------------------------------------------
+
+102/193 Testing: oskel.errors.default_outside_switch
+102/193 Test: oskel.errors.default_outside_switch
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/default_outside_switch.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.default_outside_switch" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.default_outside_switch" end time: Nov 15 17:25 UTC
+"oskel.errors.default_outside_switch" time elapsed: 00:00:00
+----------------------------------------------------------
+
+103/193 Testing: oskel.errors.defer_break_inside
+103/193 Test: oskel.errors.defer_break_inside
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/defer_break_inside.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.defer_break_inside" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.defer_break_inside" end time: Nov 15 17:25 UTC
+"oskel.errors.defer_break_inside" time elapsed: 00:00:00
+----------------------------------------------------------
+
+104/193 Testing: oskel.errors.defer_continue_inside
+104/193 Test: oskel.errors.defer_continue_inside
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/defer_continue_inside.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.defer_continue_inside" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.defer_continue_inside" end time: Nov 15 17:25 UTC
+"oskel.errors.defer_continue_inside" time elapsed: 00:00:00
+----------------------------------------------------------
+
+105/193 Testing: oskel.errors.defer_outside_function
+105/193 Test: oskel.errors.defer_outside_function
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/defer_outside_function.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.defer_outside_function" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.defer_outside_function" end time: Nov 15 17:25 UTC
+"oskel.errors.defer_outside_function" time elapsed: 00:00:00
+----------------------------------------------------------
+
+106/193 Testing: oskel.errors.defer_return_inside
+106/193 Test: oskel.errors.defer_return_inside
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/defer_return_inside.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.defer_return_inside" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.defer_return_inside" end time: Nov 15 17:25 UTC
+"oskel.errors.defer_return_inside" time elapsed: 00:00:00
+----------------------------------------------------------
+
+107/193 Testing: oskel.errors.defer_without_block
+107/193 Test: oskel.errors.defer_without_block
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/defer_without_block.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.defer_without_block" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.defer_without_block" end time: Nov 15 17:25 UTC
+"oskel.errors.defer_without_block" time elapsed: 00:00:00
+----------------------------------------------------------
+
+108/193 Testing: oskel.errors.division_by_zero
+108/193 Test: oskel.errors.division_by_zero
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/division_by_zero.oskl" "-DEXPECTED_EXIT=70" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.division_by_zero" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.division_by_zero" end time: Nov 15 17:25 UTC
+"oskel.errors.division_by_zero" time elapsed: 00:00:00
+----------------------------------------------------------
+
+109/193 Testing: oskel.errors.do_while_missing_paren
+109/193 Test: oskel.errors.do_while_missing_paren
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/do_while_missing_paren.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.do_while_missing_paren" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.do_while_missing_paren" end time: Nov 15 17:25 UTC
+"oskel.errors.do_while_missing_paren" time elapsed: 00:00:00
+----------------------------------------------------------
+
+110/193 Testing: oskel.errors.do_while_missing_while
+110/193 Test: oskel.errors.do_while_missing_while
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/do_while_missing_while.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.do_while_missing_while" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.do_while_missing_while" end time: Nov 15 17:25 UTC
+"oskel.errors.do_while_missing_while" time elapsed: 00:00:00
+----------------------------------------------------------
+
+111/193 Testing: oskel.errors.duplicate_default
+111/193 Test: oskel.errors.duplicate_default
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/duplicate_default.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.duplicate_default" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.duplicate_default" end time: Nov 15 17:25 UTC
+"oskel.errors.duplicate_default" time elapsed: 00:00:00
+----------------------------------------------------------
+
+112/193 Testing: oskel.errors.extern_bad_abi
+112/193 Test: oskel.errors.extern_bad_abi
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/extern_bad_abi.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.extern_bad_abi" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.extern_bad_abi" end time: Nov 15 17:25 UTC
+"oskel.errors.extern_bad_abi" time elapsed: 00:00:00
+----------------------------------------------------------
+
+113/193 Testing: oskel.errors.extern_callback_param_type
+113/193 Test: oskel.errors.extern_callback_param_type
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/extern_callback_param_type.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.extern_callback_param_type" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.extern_callback_param_type" end time: Nov 15 17:25 UTC
+"oskel.errors.extern_callback_param_type" time elapsed: 00:00:00
+----------------------------------------------------------
+
+114/193 Testing: oskel.errors.extern_callback_return
+114/193 Test: oskel.errors.extern_callback_return
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/extern_callback_return.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.extern_callback_return" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.extern_callback_return" end time: Nov 15 17:25 UTC
+"oskel.errors.extern_callback_return" time elapsed: 00:00:00
+----------------------------------------------------------
+
+115/193 Testing: oskel.errors.extern_nested
+115/193 Test: oskel.errors.extern_nested
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/extern_nested.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.extern_nested" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.extern_nested" end time: Nov 15 17:25 UTC
+"oskel.errors.extern_nested" time elapsed: 00:00:00
+----------------------------------------------------------
+
+116/193 Testing: oskel.errors.extern_not_fn
+116/193 Test: oskel.errors.extern_not_fn
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/extern_not_fn.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.extern_not_fn" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.extern_not_fn" end time: Nov 15 17:25 UTC
+"oskel.errors.extern_not_fn" time elapsed: 00:00:00
+----------------------------------------------------------
+
+117/193 Testing: oskel.errors.extern_single_nested
+117/193 Test: oskel.errors.extern_single_nested
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/extern_single_nested.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.extern_single_nested" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.extern_single_nested" end time: Nov 15 17:25 UTC
+"oskel.errors.extern_single_nested" time elapsed: 00:00:00
+----------------------------------------------------------
+
+118/193 Testing: oskel.errors.extern_single_string_return
+118/193 Test: oskel.errors.extern_single_string_return
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/extern_single_string_return.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.extern_single_string_return" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.extern_single_string_return" end time: Nov 15 17:25 UTC
+"oskel.errors.extern_single_string_return" time elapsed: 00:00:00
+----------------------------------------------------------
+
+119/193 Testing: oskel.errors.extern_single_with_body
+119/193 Test: oskel.errors.extern_single_with_body
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/extern_single_with_body.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.extern_single_with_body" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.extern_single_with_body" end time: Nov 15 17:25 UTC
+"oskel.errors.extern_single_with_body" time elapsed: 00:00:00
+----------------------------------------------------------
+
+120/193 Testing: oskel.errors.extern_struct_nested_field
+120/193 Test: oskel.errors.extern_struct_nested_field
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/extern_struct_nested_field.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.extern_struct_nested_field" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.extern_struct_nested_field" end time: Nov 15 17:25 UTC
+"oskel.errors.extern_struct_nested_field" time elapsed: 00:00:00
+----------------------------------------------------------
+
+121/193 Testing: oskel.errors.extern_struct_too_large
+121/193 Test: oskel.errors.extern_struct_too_large
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/extern_struct_too_large.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.extern_struct_too_large" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.extern_struct_too_large" end time: Nov 15 17:25 UTC
+"oskel.errors.extern_struct_too_large" time elapsed: 00:00:00
+----------------------------------------------------------
+
+122/193 Testing: oskel.errors.extern_symbol_not_found
+122/193 Test: oskel.errors.extern_symbol_not_found
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/extern_symbol_not_found.oskl" "-DEXPECTED_EXIT=70" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.extern_symbol_not_found" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.extern_symbol_not_found" end time: Nov 15 17:25 UTC
+"oskel.errors.extern_symbol_not_found" time elapsed: 00:00:00
+----------------------------------------------------------
+
+123/193 Testing: oskel.errors.extern_unsupported_type
+123/193 Test: oskel.errors.extern_unsupported_type
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/extern_unsupported_type.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.extern_unsupported_type" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.extern_unsupported_type" end time: Nov 15 17:25 UTC
+"oskel.errors.extern_unsupported_type" time elapsed: 00:00:00
+----------------------------------------------------------
+
+124/193 Testing: oskel.errors.extern_variadic
+124/193 Test: oskel.errors.extern_variadic
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/extern_variadic.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.extern_variadic" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.extern_variadic" end time: Nov 15 17:25 UTC
+"oskel.errors.extern_variadic" time elapsed: 00:00:00
+----------------------------------------------------------
+
+125/193 Testing: oskel.errors.extern_with_body
+125/193 Test: oskel.errors.extern_with_body
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/extern_with_body.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.extern_with_body" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.extern_with_body" end time: Nov 15 17:25 UTC
+"oskel.errors.extern_with_body" time elapsed: 00:00:00
+----------------------------------------------------------
+
+126/193 Testing: oskel.errors.float_literal_overflow
+126/193 Test: oskel.errors.float_literal_overflow
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/float_literal_overflow.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.float_literal_overflow" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.float_literal_overflow" end time: Nov 15 17:25 UTC
+"oskel.errors.float_literal_overflow" time elapsed: 00:00:00
+----------------------------------------------------------
+
+127/193 Testing: oskel.errors.float_literal_overflow_f32
+127/193 Test: oskel.errors.float_literal_overflow_f32
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/float_literal_overflow_f32.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.float_literal_overflow_f32" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.float_literal_overflow_f32" end time: Nov 15 17:25 UTC
+"oskel.errors.float_literal_overflow_f32" time elapsed: 00:00:00
+----------------------------------------------------------
+
+128/193 Testing: oskel.errors.float_literal_underflow
+128/193 Test: oskel.errors.float_literal_underflow
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/float_literal_underflow.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.float_literal_underflow" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.float_literal_underflow" end time: Nov 15 17:25 UTC
+"oskel.errors.float_literal_underflow" time elapsed: 00:00:00
+----------------------------------------------------------
+
+129/193 Testing: oskel.errors.fn_anonymous_declaration
+129/193 Test: oskel.errors.fn_anonymous_declaration
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/fn_anonymous_declaration.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.fn_anonymous_declaration" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.fn_anonymous_declaration" end time: Nov 15 17:25 UTC
+"oskel.errors.fn_anonymous_declaration" time elapsed: 00:00:00
+----------------------------------------------------------
+
+130/193 Testing: oskel.errors.fn_arrow_missing_semicolon
+130/193 Test: oskel.errors.fn_arrow_missing_semicolon
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/fn_arrow_missing_semicolon.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.fn_arrow_missing_semicolon" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.fn_arrow_missing_semicolon" end time: Nov 15 17:25 UTC
+"oskel.errors.fn_arrow_missing_semicolon" time elapsed: 00:00:00
+----------------------------------------------------------
+
+131/193 Testing: oskel.errors.fn_as_expression
+131/193 Test: oskel.errors.fn_as_expression
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/fn_as_expression.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.fn_as_expression" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.fn_as_expression" end time: Nov 15 17:25 UTC
+"oskel.errors.fn_as_expression" time elapsed: 00:00:00
+----------------------------------------------------------
+
+132/193 Testing: oskel.errors.for_key_value_missing_second
+132/193 Test: oskel.errors.for_key_value_missing_second
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/for_key_value_missing_second.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.for_key_value_missing_second" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.for_key_value_missing_second" end time: Nov 15 17:25 UTC
+"oskel.errors.for_key_value_missing_second" time elapsed: 00:00:00
+----------------------------------------------------------
+
+133/193 Testing: oskel.errors.for_key_value_not_map
+133/193 Test: oskel.errors.for_key_value_not_map
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/for_key_value_not_map.oskl" "-DEXPECTED_EXIT=70" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.for_key_value_not_map" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.for_key_value_not_map" end time: Nov 15 17:25 UTC
+"oskel.errors.for_key_value_not_map" time elapsed: 00:00:00
+----------------------------------------------------------
+
+134/193 Testing: oskel.errors.index_out_of_range
+134/193 Test: oskel.errors.index_out_of_range
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/index_out_of_range.oskl" "-DEXPECTED_EXIT=70" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.index_out_of_range" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.index_out_of_range" end time: Nov 15 17:25 UTC
+"oskel.errors.index_out_of_range" time elapsed: 00:00:00
+----------------------------------------------------------
+
+135/193 Testing: oskel.errors.int64_min_bare
+135/193 Test: oskel.errors.int64_min_bare
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/int64_min_bare.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.int64_min_bare" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.int64_min_bare" end time: Nov 15 17:25 UTC
+"oskel.errors.int64_min_bare" time elapsed: 00:00:00
+----------------------------------------------------------
+
+136/193 Testing: oskel.errors.int64_min_bare_pow
+136/193 Test: oskel.errors.int64_min_bare_pow
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/int64_min_bare_pow.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.int64_min_bare_pow" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.int64_min_bare_pow" end time: Nov 15 17:25 UTC
+"oskel.errors.int64_min_bare_pow" time elapsed: 00:00:00
+----------------------------------------------------------
+
+137/193 Testing: oskel.errors.lambda_bad_parameter
+137/193 Test: oskel.errors.lambda_bad_parameter
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/lambda_bad_parameter.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.lambda_bad_parameter" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.lambda_bad_parameter" end time: Nov 15 17:25 UTC
+"oskel.errors.lambda_bad_parameter" time elapsed: 00:00:00
+----------------------------------------------------------
+
+138/193 Testing: oskel.errors.let_reassign
+138/193 Test: oskel.errors.let_reassign
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/let_reassign.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.let_reassign" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.let_reassign" end time: Nov 15 17:25 UTC
+"oskel.errors.let_reassign" time elapsed: 00:00:00
+----------------------------------------------------------
+
+139/193 Testing: oskel.errors.logical_assign_immutable
+139/193 Test: oskel.errors.logical_assign_immutable
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/logical_assign_immutable.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.logical_assign_immutable" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.logical_assign_immutable" end time: Nov 15 17:25 UTC
+"oskel.errors.logical_assign_immutable" time elapsed: 00:00:00
+----------------------------------------------------------
+
+140/193 Testing: oskel.errors.logical_assign_safe_member
+140/193 Test: oskel.errors.logical_assign_safe_member
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/logical_assign_safe_member.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.logical_assign_safe_member" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.logical_assign_safe_member" end time: Nov 15 17:25 UTC
+"oskel.errors.logical_assign_safe_member" time elapsed: 00:00:00
+----------------------------------------------------------
+
+141/193 Testing: oskel.errors.missing_semicolon
+141/193 Test: oskel.errors.missing_semicolon
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/missing_semicolon.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.missing_semicolon" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.missing_semicolon" end time: Nov 15 17:25 UTC
+"oskel.errors.missing_semicolon" time elapsed: 00:00:00
+----------------------------------------------------------
+
+142/193 Testing: oskel.errors.module_not_found
+142/193 Test: oskel.errors.module_not_found
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/module_not_found.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.module_not_found" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.module_not_found" end time: Nov 15 17:25 UTC
+"oskel.errors.module_not_found" time elapsed: 00:00:00
+----------------------------------------------------------
+
+143/193 Testing: oskel.errors.native_fn_arg_type
+143/193 Test: oskel.errors.native_fn_arg_type
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/native_fn_arg_type.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.native_fn_arg_type" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.native_fn_arg_type" end time: Nov 15 17:25 UTC
+"oskel.errors.native_fn_arg_type" time elapsed: 00:00:00
+----------------------------------------------------------
+
+144/193 Testing: oskel.errors.native_fn_arity
+144/193 Test: oskel.errors.native_fn_arity
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/native_fn_arity.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.native_fn_arity" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.native_fn_arity" end time: Nov 15 17:25 UTC
+"oskel.errors.native_fn_arity" time elapsed: 00:00:00
+----------------------------------------------------------
+
+145/193 Testing: oskel.errors.native_fn_body
+145/193 Test: oskel.errors.native_fn_body
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/native_fn_body.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.native_fn_body" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.native_fn_body" end time: Nov 15 17:25 UTC
+"oskel.errors.native_fn_body" time elapsed: 00:00:00
+----------------------------------------------------------
+
+146/193 Testing: oskel.errors.native_fn_in_module
+146/193 Test: oskel.errors.native_fn_in_module
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/native_fn_in_module.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.native_fn_in_module" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.native_fn_in_module" end time: Nov 15 17:25 UTC
+"oskel.errors.native_fn_in_module" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/193 Testing: codegen_test
+8/193 Test: codegen_test
+Command: "/workspace/project/Jolt/build-pe/codegen_test"
+Directory: /workspace/project/Jolt
+"codegen_test" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+ok: codegen defaults to x86_64-linux-sysv
+ok: target name is stable
+ok: windows target name is stable
+ok: windows x86-64 has a backend
+ok: codegen rejects a target with no backend
+ok: mov rcx, 0 encoding [48C7C100000000] expected [48C7C100000000]
+ok: movabs rax, imm64 encoding [48B88877665544332211] expected [48B88877665544332211]
+ok: mov r9, 5 encoding [49C7C105000000] expected [49C7C105000000]
+ok: mov rax, -1 encoding [48C7C0FFFFFFFF] expected [48C7C0FFFFFFFF]
+ok: mov rdi, rsi encoding [4889F7] expected [4889F7]
+ok: push/pop rbx encoding [535B] expected [535B]
+ok: push/pop r12 encoding [4154415C] expected [4154415C]
+ok: mov [rbp+0x10], rax encoding [48894510] expected [48894510]
+ok: mov [rbp+0x1234], rax encoding [48898534120000] expected [48898534120000]
+ok: mov rax, [rsp] (SIB) encoding [488B0424] expected [488B0424]
+ok: mov rax, [rbp] (forced disp8) encoding [488B4500] expected [488B4500]
+ok: movsd [rbp+0x18], xmm1 encoding [F20F114D18] expected [F20F114D18]
+ok: movsd [rbp], xmm9 (REX.R) encoding [F2440F114D00] expected [F2440F114D00]
+ok: lea rsi, [rip+0x77] encoding [488D3577000000] expected [488D3577000000]
+ok: mov qword [rbp-16], 5 encoding [48C745F005000000] expected [48C745F005000000]
+ok: mov byte [rbp], 'A' encoding [C6450041] expected [C6450041]
+ok: mov byte [r8], 'A' (REX.B) encoding [41C60041] expected [41C60041]
+ok: mov [rbp-1], dl encoding [408855FF] expected [408855FF]
+ok: mov [rbp], r8b (REX.R) encoding [44884500] expected [44884500]
+ok: cmp rax, 2 encoding [4881F802000000] expected [4881F802000000]
+ok: unsigned div rcx encoding [4831D248F7F1] expected [4831D248F7F1]
+ok: signed idiv rcx encoding [489948F7F9] expected [489948F7F9]
+ok: lea rax, [rip+label] (forward fixup) encoding [488D0500000000C3] expected [488D0500000000C3]
+ok: lea rax, [rip+label] (backward fixup) encoding [C3488D05F8FFFFFFC3] expected [C3488D05F8FFFFFFC3]
+ok: lea rax, [rbp-16] encoding [488D45F0] expected [488D45F0]
+ok: lea rdi, [rsp] (SIB) encoding [488D3C24] expected [488D3C24]
+ok: lea rsi, [rbp+0x1234] encoding [488DB534120000] expected [488DB534120000]
+ok: lea r8, [rbp] (REX.R) encoding [4C8D4500] expected [4C8D4500]
+ok: call rax encoding [FFD0] expected [FFD0]
+ok: call r11 (REX.B) encoding [41FFD3] expected [41FFD3]
+ok: add rax, rcx encoding [4801C8] expected [4801C8]
+ok: sub rax, rcx encoding [4829C8] expected [4829C8]
+ok: imul rax, rcx encoding [480FAFC1] expected [480FAFC1]
+ok: imul rax, rcx, 10 encoding [4869C10A000000] expected [4869C10A000000]
+ok: and rax, 0x7FF encoding [4881E0FF070000] expected [4881E0FF070000]
+ok: shl rax,32; shr rcx,29 encoding [48C1E02048C1E91D] expected [48C1E02048C1E91D]
+ok: bsr rax, rcx encoding [480FBDC1] expected [480FBDC1]
+ok: div rcx encoding [48F7F1] expected [48F7F1]
+ok: xor rax, rax encoding [4831C0] expected [4831C0]
+ok: idiv rcx encoding [48F7F9] expected [48F7F9]
+ok: cmp rax, rcx encoding [4839C8] expected [4839C8]
+ok: mov eax, ecx encoding [89C8] expected [89C8]
+ok: mov r10d, r11d encoding [4589DA] expected [4589DA]
+ok: mov [rax+8], ecx encoding [894808] expected [894808]
+ok: mov ecx, [rax+8] encoding [8B4808] expected [8B4808]
+ok: mov [r10+0x100], r11d encoding [45899A00010000] expected [45899A00010000]
+ok: ud2; ret encoding [0F0BC3] expected [0F0BC3]
+ok: syscall encoding [0F05] expected [0F05]
+ok: jmp rel32 patched encoding [E9030000004889F7] expected [E9030000004889F7]
+ok: je rel32 patched encoding [0F84030000004889F7] expected [0F84030000004889F7]
+ok: jmp rel32 backward encoding [48C7C0FFFFFFFFE9F4FFFFFF] expected [48C7C0FFFFFFFFE9F4FFFFFF]
+ok: bind() of an unknown label throws std::logic_error
+ok: bind() does not emit bytes (position unchanged)
+ok: binding the same label twice throws std::logic_error
+ok: jmp to already bound label encoding [E9FBFFFFFFC3] expected [E9FBFFFFFFC3]
+ok: backward jmp pins next_rip before trailing epilogue encoding [48C7C00000000048C7C101000000E9F4FFFFFF] expected [48C7C00000000048C7C101000000E9F4FFFFFF]
+ok: backward jmp with no trailing code encoding [48C7C10100000048C7C000000000E9F4FFFFFF] expected [48C7C10100000048C7C000000000E9F4FFFFFF]
+ok: xorps xmm0, xmm0 encoding [0F57C0] expected [0F57C0]
+ok: addsd xmm1, xmm2 encoding [F20F58CA] expected [F20F58CA]
+ok: addsd xmm9, xmm2 encoding [F2440F58CA] expected [F2440F58CA]
+ok: movsd xmm0, [rsi] encoding [F20F1006] expected [F20F1006]
+ok: cvtsi2sd xmm0, rax encoding [F2480F2AC0] expected [F2480F2AC0]
+ok: cvttsd2si rax, xmm0 encoding [F2480F2CC0] expected [F2480F2CC0]
+ok: movq xmm0, rax encoding [66480F6EC0] expected [66480F6EC0]
+ok: movq rax, xmm0 encoding [66480F7EC0] expected [66480F7EC0]
+ok: movsd xmm0, xmm1 encoding [F20F10C1] expected [F20F10C1]
+ok: cvtsd2ss xmm0, xmm0 encoding [F20F5AC0] expected [F20F5AC0]
+ok: cvtss2sd xmm0, xmm0 encoding [F30F5AC0] expected [F30F5AC0]
+ok: shr rax, cl encoding [48D3E8] expected [48D3E8]
+ok: test rax, 1 encoding [48F7C001000000] expected [48F7C001000000]
+ok: ucomisd xmm0, xmm1 encoding [660F2EC1] expected [660F2EC1]
+ok: ucomisd xmm1, xmm0 encoding [660F2EC8] expected [660F2EC8]
+ok: ucomisd xmm8, xmm1 encoding [66440F2EC1] expected [66440F2EC1]
+ok: ucomisd xmm0, xmm9 encoding [66410F2EC1] expected [66410F2EC1]
+ok: push/pop reg 0 encoding [5058] expected [5058]
+ok: push/pop reg 1 encoding [5159] expected [5159]
+ok: push/pop reg 2 encoding [525A] expected [525A]
+ok: push/pop reg 3 encoding [535B] expected [535B]
+ok: push/pop reg 4 encoding [545C] expected [545C]
+ok: push/pop reg 5 encoding [555D] expected [555D]
+ok: push/pop reg 6 encoding [565E] expected [565E]
+ok: push/pop reg 7 encoding [575F] expected [575F]
+ok: push/pop reg 8 encoding [41504158] expected [41504158]
+ok: push/pop reg 9 encoding [41514159] expected [41514159]
+ok: push/pop reg 10 encoding [4152415A] expected [4152415A]
+ok: push/pop reg 11 encoding [4153415B] expected [4153415B]
+ok: push/pop reg 12 encoding [4154415C] expected [4154415C]
+ok: push/pop reg 13 encoding [4155415D] expected [4155415D]
+ok: push/pop reg 14 encoding [4156415E] expected [4156415E]
+ok: push/pop reg 15 encoding [4157415F] expected [4157415F]
+ok: call rel32 +0 encoding [E800000000] expected [E800000000]
+ok: call rel32 -5 encoding [E8FBFFFFFF] expected [E8FBFFFFFF]
+ok: call rel32 wide encoding [E878563412] expected [E878563412]
+ok: mov rax, 0; call rel32 +16 encoding [48C7C000000000E810000000] expected [48C7C000000000E810000000]
+ok: emitBytes raw payload encoding [DEADBEEF] expected [DEADBEEF]
+ok: emitBytes empty payload encoding [] expected []
+ok: emitBytes keeps a pending rel32 fixup at the instruction end [E903000000909090] expected [E903000000909090]
+ok: fld qword [rbp-16] encoding [DD45F0] expected [DD45F0]
+ok: fld qword [rsp] encoding [DD0424] expected [DD0424]
+ok: fstp qword [rsp+8] encoding [DD5C2408] expected [DD5C2408]
+ok: fstp st(0) encoding [DDD8] expected [DDD8]
+ok: fprem encoding [D9F8] expected [D9F8]
+ok: fnstsw ax encoding [DFE0] expected [DFE0]
+ok: test ah, 4 encoding [F6C404] expected [F6C404]
+ok: sete al encoding [0F94C0] expected [0F94C0]
+ok: setne al encoding [0F95C0] expected [0F95C0]
+ok: setl al encoding [0F9CC0] expected [0F9CC0]
+ok: sete spl (REX needed) encoding [400F94C4] expected [400F94C4]
+ok: sete r8b (REX.B) encoding [410F94C0] expected [410F94C0]
+ok: test r8, r8 (ModRM mask) encoding [4D85C0] expected [4D85C0]
+ok: test r15, r15 (ModRM mask) encoding [4D85FF] expected [4D85FF]
+ok: mov r13, r14 (ModRM mask) encoding [4D89F5] expected [4D89F5]
+ok: cmp r12, r13 (ModRM mask) encoding [4D39EC] expected [4D39EC]
+ok: imul r9, r10 (ModRM mask) encoding [4D0FAFCA] expected [4D0FAFCA]
+ok: movzx rax, al encoding [480FB6C0] expected [480FB6C0]
+ok: movzx r8, al (REX.R) encoding [4C0FB6C0] expected [4C0FB6C0]
+ok: add rax, 8 encoding [4881C008000000] expected [4881C008000000]
+ok: add r8, 8 (ModRM mask) encoding [4981C008000000] expected [4981C008000000]
+ok: sub rax, 16 encoding [4881E810000000] expected [4881E810000000]
+ok: sub r15, 16 (ModRM mask) encoding [4981EF10000000] expected [4981EF10000000]
+ok: call label (displacement 0) encoding [E800000000] expected [E800000000]
+ok: exec: 2 + 3 * 4 == 14 (got 14)
+ok: exec: 100 / 7 == 14 (got 14)
+ok: exec: countdown loop returns 0 (got 0)
+ok: exec: push/add/pop sequence returns 18 (got 18)
+ok: exec: backward jcc with trailing epilogue terminates at 0 (got 0)
+ok: exec: unconditional backward jmp spins (watchdog -1), got -1 result=24301
+Oskelok: exec: [rbp+disp32] store->load roundtrip on a private stack preserves imm64 (status=0, diff=0, cell=0x77aa3355deadbeef)
+ok: mov [rbp+0x1234]/[rbp+0x1234] byte-exact ModRM (mod=10, rm=101)
+ok: exec: write("Oskel\n", stdout) via syscall returned 0
+ok: exec: (5 == 5) materializes as 1
+ok: exec: (5 < 9) materializes as 1
+ok: exec: (9 < 5) materializes as 0
+all codegen tests passed
+<end of output>
+Test time =   2.04 sec
+----------------------------------------------------------
+Test Passed.
+"codegen_test" end time: Nov 15 17:25 UTC
+"codegen_test" time elapsed: 00:00:02
+----------------------------------------------------------
+
+147/193 Testing: oskel.errors.native_fn_not_top_level
+147/193 Test: oskel.errors.native_fn_not_top_level
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/native_fn_not_top_level.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.native_fn_not_top_level" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.native_fn_not_top_level" end time: Nov 15 17:25 UTC
+"oskel.errors.native_fn_not_top_level" time elapsed: 00:00:00
+----------------------------------------------------------
+
+148/193 Testing: oskel.errors.native_fn_return_type
+148/193 Test: oskel.errors.native_fn_return_type
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/native_fn_return_type.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.native_fn_return_type" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.native_fn_return_type" end time: Nov 15 17:25 UTC
+"oskel.errors.native_fn_return_type" time elapsed: 00:00:00
+----------------------------------------------------------
+
+149/193 Testing: oskel.errors.nesting_array
+149/193 Test: oskel.errors.nesting_array
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/nesting_array.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.nesting_array" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.nesting_array" end time: Nov 15 17:25 UTC
+"oskel.errors.nesting_array" time elapsed: 00:00:00
+----------------------------------------------------------
+
+150/193 Testing: oskel.errors.nesting_block
+150/193 Test: oskel.errors.nesting_block
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/nesting_block.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.nesting_block" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.nesting_block" end time: Nov 15 17:25 UTC
+"oskel.errors.nesting_block" time elapsed: 00:00:00
+----------------------------------------------------------
+
+151/193 Testing: oskel.errors.nesting_chain
+151/193 Test: oskel.errors.nesting_chain
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/nesting_chain.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.nesting_chain" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.nesting_chain" end time: Nov 15 17:25 UTC
+"oskel.errors.nesting_chain" time elapsed: 00:00:00
+----------------------------------------------------------
+
+152/193 Testing: oskel.errors.nesting_interp
+152/193 Test: oskel.errors.nesting_interp
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/nesting_interp.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.nesting_interp" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.nesting_interp" end time: Nov 15 17:25 UTC
+"oskel.errors.nesting_interp" time elapsed: 00:00:00
+----------------------------------------------------------
+
+153/193 Testing: oskel.errors.nesting_paren
+153/193 Test: oskel.errors.nesting_paren
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/nesting_paren.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.nesting_paren" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.nesting_paren" end time: Nov 15 17:25 UTC
+"oskel.errors.nesting_paren" time elapsed: 00:00:00
+----------------------------------------------------------
+
+154/193 Testing: oskel.errors.nonnull_on_nil
+154/193 Test: oskel.errors.nonnull_on_nil
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/nonnull_on_nil.oskl" "-DEXPECTED_EXIT=70" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.nonnull_on_nil" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.nonnull_on_nil" end time: Nov 15 17:25 UTC
+"oskel.errors.nonnull_on_nil" time elapsed: 00:00:00
+----------------------------------------------------------
+
+155/193 Testing: oskel.errors.ptr_from_int
+155/193 Test: oskel.errors.ptr_from_int
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/ptr_from_int.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.ptr_from_int" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.ptr_from_int" end time: Nov 15 17:25 UTC
+"oskel.errors.ptr_from_int" time elapsed: 00:00:00
+----------------------------------------------------------
+
+156/193 Testing: oskel.errors.reserved_std
+156/193 Test: oskel.errors.reserved_std
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/reserved_std.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.reserved_std" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.reserved_std" end time: Nov 15 17:25 UTC
+"oskel.errors.reserved_std" time elapsed: 00:00:00
+----------------------------------------------------------
+
+157/193 Testing: oskel.errors.return_outside_function
+157/193 Test: oskel.errors.return_outside_function
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/return_outside_function.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.return_outside_function" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.return_outside_function" end time: Nov 15 17:25 UTC
+"oskel.errors.return_outside_function" time elapsed: 00:00:00
+----------------------------------------------------------
+
+158/193 Testing: oskel.errors.safe_member_assignment
+158/193 Test: oskel.errors.safe_member_assignment
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/safe_member_assignment.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.safe_member_assignment" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.safe_member_assignment" end time: Nov 15 17:25 UTC
+"oskel.errors.safe_member_assignment" time elapsed: 00:00:00
+----------------------------------------------------------
+
+159/193 Testing: oskel.errors.slice_assignment
+159/193 Test: oskel.errors.slice_assignment
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/slice_assignment.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.slice_assignment" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.slice_assignment" end time: Nov 15 17:25 UTC
+"oskel.errors.slice_assignment" time elapsed: 00:00:00
+----------------------------------------------------------
+
+160/193 Testing: oskel.errors.slice_not_sliceable
+160/193 Test: oskel.errors.slice_not_sliceable
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/slice_not_sliceable.oskl" "-DEXPECTED_EXIT=70" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.slice_not_sliceable" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.slice_not_sliceable" end time: Nov 15 17:25 UTC
+"oskel.errors.slice_not_sliceable" time elapsed: 00:00:00
+----------------------------------------------------------
+
+161/193 Testing: oskel.errors.slice_step_zero
+161/193 Test: oskel.errors.slice_step_zero
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/slice_step_zero.oskl" "-DEXPECTED_EXIT=70" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.slice_step_zero" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.slice_step_zero" end time: Nov 15 17:25 UTC
+"oskel.errors.slice_step_zero" time elapsed: 00:00:00
+----------------------------------------------------------
+
+162/193 Testing: oskel.errors.struct_duplicate
+162/193 Test: oskel.errors.struct_duplicate
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/struct_duplicate.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.struct_duplicate" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.struct_duplicate" end time: Nov 15 17:25 UTC
+"oskel.errors.struct_duplicate" time elapsed: 00:00:00
+----------------------------------------------------------
+
+163/193 Testing: oskel.errors.struct_duplicate_field
+163/193 Test: oskel.errors.struct_duplicate_field
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/struct_duplicate_field.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.struct_duplicate_field" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.struct_duplicate_field" end time: Nov 15 17:25 UTC
+"oskel.errors.struct_duplicate_field" time elapsed: 00:00:00
+----------------------------------------------------------
+
+164/193 Testing: oskel.errors.struct_field_type
+164/193 Test: oskel.errors.struct_field_type
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/struct_field_type.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.struct_field_type" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.struct_field_type" end time: Nov 15 17:25 UTC
+"oskel.errors.struct_field_type" time elapsed: 00:00:00
+----------------------------------------------------------
+
+165/193 Testing: oskel.errors.struct_missing_field
+165/193 Test: oskel.errors.struct_missing_field
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/struct_missing_field.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.struct_missing_field" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.struct_missing_field" end time: Nov 15 17:25 UTC
+"oskel.errors.struct_missing_field" time elapsed: 00:00:00
+----------------------------------------------------------
+
+166/193 Testing: oskel.errors.struct_not_top_level
+166/193 Test: oskel.errors.struct_not_top_level
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/struct_not_top_level.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.struct_not_top_level" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.struct_not_top_level" end time: Nov 15 17:25 UTC
+"oskel.errors.struct_not_top_level" time elapsed: 00:00:00
+----------------------------------------------------------
+
+167/193 Testing: oskel.errors.struct_unknown_field
+167/193 Test: oskel.errors.struct_unknown_field
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/struct_unknown_field.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.struct_unknown_field" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.struct_unknown_field" end time: Nov 15 17:25 UTC
+"oskel.errors.struct_unknown_field" time elapsed: 00:00:00
+----------------------------------------------------------
+
+168/193 Testing: oskel.errors.try_inside_defer
+168/193 Test: oskel.errors.try_inside_defer
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/try_inside_defer.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.try_inside_defer" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.try_inside_defer" end time: Nov 15 17:25 UTC
+"oskel.errors.try_inside_defer" time elapsed: 00:00:00
+----------------------------------------------------------
+
+169/193 Testing: oskel.errors.try_outside_function
+169/193 Test: oskel.errors.try_outside_function
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/try_outside_function.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.try_outside_function" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.try_outside_function" end time: Nov 15 17:25 UTC
+"oskel.errors.try_outside_function" time elapsed: 00:00:00
+----------------------------------------------------------
+
+170/193 Testing: oskel.errors.type_double_not_float
+170/193 Test: oskel.errors.type_double_not_float
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/type_double_not_float.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.type_double_not_float" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.type_double_not_float" end time: Nov 15 17:25 UTC
+"oskel.errors.type_double_not_float" time elapsed: 00:00:00
+----------------------------------------------------------
+
+171/193 Testing: oskel.errors.type_float_literal_not_int
+171/193 Test: oskel.errors.type_float_literal_not_int
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/type_float_literal_not_int.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.type_float_literal_not_int" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.type_float_literal_not_int" end time: Nov 15 17:25 UTC
+"oskel.errors.type_float_literal_not_int" time elapsed: 00:00:00
+----------------------------------------------------------
+
+172/193 Testing: oskel.errors.type_float_not_int
+172/193 Test: oskel.errors.type_float_not_int
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/type_float_not_int.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.type_float_not_int" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.type_float_not_int" end time: Nov 15 17:25 UTC
+"oskel.errors.type_float_not_int" time elapsed: 00:00:00
+----------------------------------------------------------
+
+173/193 Testing: oskel.errors.type_mismatch_assign
+173/193 Test: oskel.errors.type_mismatch_assign
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/type_mismatch_assign.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.type_mismatch_assign" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.type_mismatch_assign" end time: Nov 15 17:25 UTC
+"oskel.errors.type_mismatch_assign" time elapsed: 00:00:00
+----------------------------------------------------------
+
+174/193 Testing: oskel.errors.type_mismatch_let
+174/193 Test: oskel.errors.type_mismatch_let
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/type_mismatch_let.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.type_mismatch_let" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.type_mismatch_let" end time: Nov 15 17:25 UTC
+"oskel.errors.type_mismatch_let" time elapsed: 00:00:00
+----------------------------------------------------------
+
+175/193 Testing: oskel.errors.type_mismatch_return
+175/193 Test: oskel.errors.type_mismatch_return
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/type_mismatch_return.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.type_mismatch_return" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.type_mismatch_return" end time: Nov 15 17:25 UTC
+"oskel.errors.type_mismatch_return" time elapsed: 00:00:00
+----------------------------------------------------------
+
+176/193 Testing: oskel.errors.type_nil_not_nullable
+176/193 Test: oskel.errors.type_nil_not_nullable
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/type_nil_not_nullable.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.type_nil_not_nullable" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.type_nil_not_nullable" end time: Nov 15 17:25 UTC
+"oskel.errors.type_nil_not_nullable" time elapsed: 00:00:00
+----------------------------------------------------------
+
+177/193 Testing: oskel.errors.type_unknown_name
+177/193 Test: oskel.errors.type_unknown_name
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/type_unknown_name.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.type_unknown_name" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.type_unknown_name" end time: Nov 15 17:25 UTC
+"oskel.errors.type_unknown_name" time elapsed: 00:00:00
+----------------------------------------------------------
+
+178/193 Testing: oskel.errors.undefined_variable
+178/193 Test: oskel.errors.undefined_variable
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/undefined_variable.oskl" "-DEXPECTED_EXIT=70" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.undefined_variable" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.undefined_variable" end time: Nov 15 17:25 UTC
+"oskel.errors.undefined_variable" time elapsed: 00:00:00
+----------------------------------------------------------
+
+179/193 Testing: oskel.errors.undefined_variable_namespace_hint
+179/193 Test: oskel.errors.undefined_variable_namespace_hint
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/undefined_variable_namespace_hint.oskl" "-DEXPECTED_EXIT=70" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.undefined_variable_namespace_hint" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.undefined_variable_namespace_hint" end time: Nov 15 17:25 UTC
+"oskel.errors.undefined_variable_namespace_hint" time elapsed: 00:00:00
+----------------------------------------------------------
+
+180/193 Testing: oskel.errors.union_in_extern
+180/193 Test: oskel.errors.union_in_extern
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/union_in_extern.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.union_in_extern" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.union_in_extern" end time: Nov 15 17:25 UTC
+"oskel.errors.union_in_extern" time elapsed: 00:00:00
+----------------------------------------------------------
+
+181/193 Testing: oskel.errors.union_in_struct
+181/193 Test: oskel.errors.union_in_struct
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/union_in_struct.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.union_in_struct" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.union_in_struct" end time: Nov 15 17:25 UTC
+"oskel.errors.union_in_struct" time elapsed: 00:00:00
+----------------------------------------------------------
+
+182/193 Testing: oskel.errors.union_nil_not_nullable
+182/193 Test: oskel.errors.union_nil_not_nullable
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/union_nil_not_nullable.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.union_nil_not_nullable" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.union_nil_not_nullable" end time: Nov 15 17:25 UTC
+"oskel.errors.union_nil_not_nullable" time elapsed: 00:00:00
+----------------------------------------------------------
+
+183/193 Testing: oskel.errors.union_no_member
+183/193 Test: oskel.errors.union_no_member
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/union_no_member.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.union_no_member" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.union_no_member" end time: Nov 15 17:25 UTC
+"oskel.errors.union_no_member" time elapsed: 00:00:00
+----------------------------------------------------------
+
+184/193 Testing: oskel.errors.union_void_member
+184/193 Test: oskel.errors.union_void_member
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/union_void_member.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.union_void_member" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.union_void_member" end time: Nov 15 17:25 UTC
+"oskel.errors.union_void_member" time elapsed: 00:00:00
+----------------------------------------------------------
+
+185/193 Testing: oskel.errors.unknown_attribute
+185/193 Test: oskel.errors.unknown_attribute
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/unknown_attribute.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.unknown_attribute" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.unknown_attribute" end time: Nov 15 17:25 UTC
+"oskel.errors.unknown_attribute" time elapsed: 00:00:00
+----------------------------------------------------------
+
+186/193 Testing: oskel.errors.variadic_not_last
+186/193 Test: oskel.errors.variadic_not_last
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/variadic_not_last.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.variadic_not_last" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.variadic_not_last" end time: Nov 15 17:25 UTC
+"oskel.errors.variadic_not_last" time elapsed: 00:00:00
+----------------------------------------------------------
+
+187/193 Testing: oskel.errors.void_returns_value
+187/193 Test: oskel.errors.void_returns_value
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/void_returns_value.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.void_returns_value" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.void_returns_value" end time: Nov 15 17:25 UTC
+"oskel.errors.void_returns_value" time elapsed: 00:00:00
+----------------------------------------------------------
+
+188/193 Testing: oskel.errors.void_variable
+188/193 Test: oskel.errors.void_variable
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/void_variable.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.void_variable" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.void_variable" end time: Nov 15 17:25 UTC
+"oskel.errors.void_variable" time elapsed: 00:00:00
+----------------------------------------------------------
+
+189/193 Testing: oskel.errors.wrong_argument_count
+189/193 Test: oskel.errors.wrong_argument_count
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/errors/wrong_argument_count.oskl" "-DEXPECTED_EXIT=70" "-P" "/workspace/project/Jolt/tests/run_oskel_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.errors.wrong_argument_count" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.errors.wrong_argument_count" end time: Nov 15 17:25 UTC
+"oskel.errors.wrong_argument_count" time elapsed: 00:00:00
+----------------------------------------------------------
+
+190/193 Testing: oskel.check.missing_import
+190/193 Test: oskel.check.missing_import
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/check/missing_import.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_check_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.check.missing_import" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.check.missing_import" end time: Nov 15 17:25 UTC
+"oskel.check.missing_import" time elapsed: 00:00:00
+----------------------------------------------------------
+
+191/193 Testing: oskel.check.ok
+191/193 Test: oskel.check.ok
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/check/ok.oskl" "-DEXPECTED_EXIT=0" "-P" "/workspace/project/Jolt/tests/run_check_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.check.ok" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.check.ok" end time: Nov 15 17:25 UTC
+"oskel.check.ok" time elapsed: 00:00:00
+----------------------------------------------------------
+
+192/193 Testing: oskel.check.syntax_error
+192/193 Test: oskel.check.syntax_error
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/check/syntax_error.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_check_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.check.syntax_error" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.check.syntax_error" end time: Nov 15 17:25 UTC
+"oskel.check.syntax_error" time elapsed: 00:00:00
+----------------------------------------------------------
+
+193/193 Testing: oskel.check.type_error
+193/193 Test: oskel.check.type_error
+Command: "/home/openhands/.local/lib/python3.13/site-packages/cmake/data/bin/cmake" "-DOSKEL_EXE=/workspace/project/Jolt/build-pe/oskel" "-DOSKEL_SCRIPT=/workspace/project/Jolt/tests/check/type_error.oskl" "-DEXPECTED_EXIT=65" "-P" "/workspace/project/Jolt/tests/run_check_case.cmake"
+Directory: /workspace/project/Jolt/build-pe
+"oskel.check.type_error" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+<end of output>
+Test time =   0.01 sec
+----------------------------------------------------------
+Test Passed.
+"oskel.check.type_error" end time: Nov 15 17:25 UTC
+"oskel.check.type_error" time elapsed: 00:00:00
+----------------------------------------------------------
+
+13/193 Testing: freestanding_test
+13/193 Test: freestanding_test
+Command: "/workspace/project/Jolt/build-pe/freestanding_test"
+Directory: /workspace/project/Jolt
+"freestanding_test" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+ok: arena reports its capacity
+ok: arena starts empty
+ok: first allocation is at the block start
+ok: 1-byte alignment
+ok: 8-byte alignment honoured
+ok: distinct allocations do not overlap
+ok: 16-byte alignment honoured
+ok: zero-size allocations are distinct
+ok: exhausted arena returns nullptr
+ok: reset reclaims the region
+ok: allocation after reset reuses the block start
+ok: null-block arena fails every allocation
+ok: non-power-of-two alignment rejected
+ok: open(Write) returns a descriptor
+ok: open(Read) returns a descriptor
+ok: read returns the written length
+ok: read returns the written bytes
+ok: seek(Start) succeeds
+ok: seek repositions the cursor
+ok: open(Read) on a missing file fails
+ok: platform alloc returns distinct blocks
+ok: platform alloc honours alignment
+ok: read retries after EINTR instead of failing
+ok: the generated binary prints the expected bytes
+ok: the generated binary exits with the program's code
+ok: the program's return value becomes the exit code
+ok: the generated binary has no dynamic dependencies
+ok: the boxed runtime prints int, bool, nil, double and float
+ok: the printing program exits 0
+ok: the boxed runtime keeps globals in distinct slots and starts them nil
+ok: the global program exits 0
+ok: a runtime type error exits 70
+ok: the runtime error names the unsupported operand types
+ok: a division by zero exits 70
+ok: the runtime error names the division by zero
+ok: a locals-only chunk prints nothing
+ok: a chunk with a local region exits 0 through _start
+ok: a lowered CALL returns the callee's result (20 + 22 == 42)
+ok: a chunk with a call exits 0 through _start
+ok: calling a non-function exits 70
+ok: the runtime error names the non-function call
+ok: a lowered closure reads a captured local (40 + 40 == 80)
+ok: a chunk with a captured local exits 0 through _start
+ok: the boxed runtime concatenates and prints strings from the arena
+ok: the string program exits 0
+ok: the boxed runtime computes float remainders with fprem
+ok: the float mod program exits 0
+ok: a compiled program prints through the print/write builtins
+ok: a program using print exits 0 through _start
+ok: a compiled program runs collections and prints them
+ok: a program using collections exits 0 through _start
+ok: a compiled program runs the non-null and catch helpers
+ok: a program using the hidden helpers exits 0
+ok: a failed '!!' exits 70
+ok: the failed '!!' names the non-null assertion
+ok: a compiled program interpolates scalars like the VM
+ok: a program using interpolation exits 0
+ok: a compiled program handles ranges like the VM
+ok: a program using ranges exits 0
+ok: a non-integer range bound exits 70
+ok: the failed range names the integer-bounds rule
+ok: a nested array/map prints with the recursive repr
+ok: nested strings print with the interpreter's escapes
+ok: a self-referential map stops at the depth cap
+ok: a self-referential program still exits 0
+ok: a compiled program interpolates collections and functions like print
+ok: interpolating a self-referential map stops at the depth cap
+ok: a collection expression interpolates with the recursive repr
+ok: a program interpolating a collection exits 0
+ok: a compiled program slices arrays and strings like the VM
+ok: a program using slices exits 0
+ok: a non-integer slice start exits 70
+ok: the failed slice names the integer-start rule
+ok: a zero slice step exits 70
+ok: the failed slice names the non-zero-step rule
+ok: slicing a non-collection exits 70
+ok: the failed slice names the non-sliceable operand
+ok: the public builtins compute like the hosted engine
+ok: a program using the public builtins exits 0
+ok: len of a non-collection exits 70
+ok: the failed len names the unsupported type
+ok: ord of a non-string exits 70
+ok: the failed ord names the string argument
+ok: ord of a multi-character string exits 70
+ok: the failed ord names the single-character rule
+ok: chr of an out-of-range code point exits 70
+ok: the failed chr names the code-point range
+ok: a failed assert exits 70
+ok: a failed assert reports the default message
+ok: a failed assert with a message exits 70
+ok: a failed assert reports the caller's message
+ok: panic exits 70
+ok: panic reports the caller's message
+ok: a bare panic exits 70
+ok: a bare panic reports the default message
+ok: the numeric conversions match the hosted engine
+ok: a program using the numeric conversions exits 0
+ok: int of nil exits 70
+ok: the failed int reports the conversion message
+ok: float of nil exits 70
+ok: the failed float reports the conversion message
+ok: double of an array exits 70
+ok: the failed double reports the conversion message
+ok: int with no argument exits 70
+ok: int(string) parses like the hosted engine
+ok: a program using int(string) exits 0
+ok: int of an empty string exits 70
+ok: int of a string with trailing text exits 70
+ok: the failed int(string) reports the conversion message
+ok: int of a bare base prefix exits 70
+ok: int of an out-of-range string exits 70
+ok: float of a string exits 70 until 7c.5b.2b
+ok: the deferred float(string) reports the conversion message
+ok: a zero-capacity builder grows from the needed size and keeps the bytes
+ok: the zero-capacity builder program exits 0
+ok: a capacity that cannot double falls back to the needed size and reports OOM
+ok: the overflow case exits through the runtime error path
+ok: a compiled program packs variadic extras into an array
+ok: a program using variadic parameters exits 0
+ok: a variadic call below the fixed arity exits 70
+ok: the variadic arity error names the wrong argument count
+all freestanding tests passed
+<end of output>
+Test time =   2.10 sec
+----------------------------------------------------------
+Test Passed.
+"freestanding_test" end time: Nov 15 17:25 UTC
+"freestanding_test" time elapsed: 00:00:02
+----------------------------------------------------------
+
+9/193 Testing: dtoa_test
+9/193 Test: dtoa_test
+Command: "/workspace/project/Jolt/build-pe/dtoa_test"
+Directory: /workspace/project/Jolt
+"dtoa_test" start time: Nov 15 17:25 UTC
+Output:
+----------------------------------------------------------
+dtoa tests passed
+<end of output>
+Test time =  14.87 sec
+----------------------------------------------------------
+Test Passed.
+"dtoa_test" end time: Nov 15 17:25 UTC
+"dtoa_test" time elapsed: 00:00:14
+----------------------------------------------------------
+
+End testing: Nov 15 17:25 UTC

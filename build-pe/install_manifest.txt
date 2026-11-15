@@ -1,0 +1,2 @@
+/workspace/project/Jolt/build-pe/install-prefix/bin/oskel
+/workspace/project/Jolt/build-pe/install-prefix/share/oskel/std/math.oskl

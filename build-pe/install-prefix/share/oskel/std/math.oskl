@@ -1,0 +1,59 @@
+// Standard library: math.
+//
+// Imported as `import std.math;` (qualified: `std.math.sqrt`),
+// `import std.math.*;` (unqualified: `sqrt`), or
+// `import { sqrt, pow } from std.math;` (selective).
+//
+// A leading underscore marks a binding private: `_helper` below is not part
+// of the module's public surface and is not exported.
+//
+// The primitives that need C++ (libm) are declared `native fn`: the name binds
+// to the host function of the same name, and the signature is checked at the
+// call site. Everything that can be written in Oskel (abs, min, max, clamp) is
+// plain Oskel, so the standard library is mostly Oskel.
+
+native fn sqrt(x: double): double;
+native fn pow(base: double, exponent: double): double;
+native fn sin(x: double): double;
+native fn cos(x: double): double;
+native fn tan(x: double): double;
+native fn log(x: double): double;
+native fn exp(x: double): double;
+native fn floor(x: double): double;
+native fn ceil(x: double): double;
+native fn round(x: double): double;
+
+const PI = 3.141592653589793;
+const E = 2.718281828459045;
+
+fn abs(x) {
+  return x < 0 ? -x : x;
+}
+
+fn min(first, rest...) {
+  var best = first;
+  for x in rest {
+    if (x < best) {
+      best = x;
+    }
+  }
+  return best;
+}
+
+fn max(first, rest...) {
+  var best = first;
+  for x in rest {
+    if (x > best) {
+      best = x;
+    }
+  }
+  return best;
+}
+
+fn clamp(x, lo, hi) {
+  return min(max(x, lo), hi);
+}
+
+fn _helper() {
+  return "private";
+}
