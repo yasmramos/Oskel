@@ -197,6 +197,13 @@ assertEq(0..0, 0..0);
 assertEq(0..0 == 0..=0, false);
 assertEq(range(3).toArray(), [0, 1, 2]);
 assertEq(range(2, 5).toArray(), [2, 3, 4]);
+// A descending range counts down; equal bounds are empty.
+assertEq(range(4, 1).toArray(), [4, 3, 2]);
+assertEq(range(4, 1).length, 3);
+assertEq(range(2, 2).toArray(), []);
+assertEq(range(-2, 2).toArray(), [-2, -1, 0, 1]);
+assertEq(range(4, 1).contains(2), true);
+assertEq(range(4, 1).contains(5), false);
 
 // Nested structures, deep equality and shared references.
 var nested = {list: [1, [2, 3]], inner: {ok: true}};
