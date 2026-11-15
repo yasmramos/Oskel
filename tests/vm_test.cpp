@@ -1033,6 +1033,32 @@ void testMapValueRejectsNonStringKey() {
          std::string::npos);
 }
 
+void testPcallCatchesHostExceptions() {
+  TEST_SCOPE();
+  // A native can fail with a host exception (std::bad_alloc from an oversized
+  // `buffer`, std::length_error from an oversized `repeat`), which is not a
+  // RuntimeError. `pcall` must still turn it into an error value instead of
+  // letting it escape and abort the process.
+  VM vm;
+  registerBuiltins(vm);
+  vm.defineGlobal("boom", makeNative("boom", [](Runtime&, std::vector<Value>&) -> Value {
+    throw std::length_error("host failure");
+  }));
+
+  const Value* pcall = vm.findGlobal("pcall");
+  assert(pcall != nullptr && pcall->isFunc());
+  const Value* boom = vm.findGlobal("boom");
+  assert(boom != nullptr);
+
+  Value result = vm.call(*pcall, {*boom}, 1, 1);
+  assert(result.isMap());
+  Map& map = result.map();
+  assert(map.get("ok") != nullptr && map.get("ok")->isBool() && !map.get("ok")->asBool());
+  const Value* error = map.get("error");
+  assert(error != nullptr && error->isError());
+  assert(error->err().message.find("host failure") != std::string::npos);
+}
+
 void testVmCallsBoundMethods() {
   TEST_SCOPE();
   VM vm;
@@ -2149,6 +2175,7 @@ int main() {
   testVmCallsNatives();
   testArgsExcludeTheScriptName();
   testMapValueRejectsNonStringKey();
+  testPcallCatchesHostExceptions();
   testVmCallsBoundMethods();
   testArrayCallbackReentersTheVm();
   testRuntimeErrorCarriesSourcePosition();
