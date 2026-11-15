@@ -126,4 +126,49 @@ switch (7) {
   }
 }
 
+// A case label may be a `const` name instead of a literal, so a shared
+// constant reads as a label rather than a repeated magic number.
+const ONE = 1;
+const TWO = 2;
+const THREE = 3;
+
+fn labelWord(n) {
+  switch (n) {
+    case ONE: { return "one"; }
+    case TWO: case THREE: { return "few"; }
+    default: { return "many"; }
+  }
+}
+assertEq(labelWord(1), "one");
+assertEq(labelWord(2), "few");
+assertEq(labelWord(3), "few");
+assertEq(labelWord(9), "many");
+
+// A local `const` or `let` in the same frame is a fixed value too.
+fn localLabel(n) {
+  const TARGET = 42;
+  switch (n) {
+    case TARGET: { return true; }
+    default: { return false; }
+  }
+}
+assertEq(localLabel(42), true);
+assertEq(localLabel(41), false);
+
+// A `const` local of an enclosing function is captured as an upvalue and is a
+// fixed value too.
+fn makeMatcher() {
+  const TARGET = 99;
+  fn match(n) {
+    switch (n) {
+      case TARGET: { return "yes"; }
+      default: { return "no"; }
+    }
+  }
+  return match;
+}
+let match = makeMatcher();
+assertEq(match(99), "yes");
+assertEq(match(98), "no");
+
 print("ok");

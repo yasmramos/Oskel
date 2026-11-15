@@ -378,6 +378,11 @@ class Compiler {
   int declareLocal(const std::string& name, bool isImmutable, const TypeRef& type = TypeRef{});
   bool resolveLocal(const std::string& name, LocalVar& out) const;
   void declareGlobal(const std::string& name, bool isImmutable);
+  // Checks a `case` label that is a bare name (PHASE 6.5): it must resolve to
+  // an immutable binding in the current frame (a `const`/`let` local) or to a
+  // top-level `const`, so the label is a fixed value. A `var`, an unknown name
+  // or a captured binding is rejected. See `compileSwitch`.
+  void checkCaseLabelName(const std::string& name, int line, int col);
 
   // Type annotations (PHASE 6.5). Types are compile-time metadata: they are
   // inferred from literals, checked against annotations, and then erased, so
@@ -456,6 +461,11 @@ class Compiler {
   // against its signature. It also descends into `extern "C"` blocks: their
   // declarations are natives too.
   void registerNativeDecls(const BlockStmt& block);
+  // Registers the name of every top-level immutable `let`/`const` binding of
+  // `block` before it is compiled, so a `case` label that names a top-level
+  // `const` is recognized as a fixed value even when a hoisted function that
+  // uses it is compiled first. See `checkCaseLabelName`.
+  void registerGlobalConstDecls(const BlockStmt& block);
   // Registers the `@MustUse` flag of non-native functions declared directly in
   // `block` before it is compiled, so a call from an earlier (hoisted) function
   // is checked whatever the declaration order (PHASE 6.7.5).

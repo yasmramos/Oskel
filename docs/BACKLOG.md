@@ -35,14 +35,20 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 2. Parser (`src/parser.cpp`)
 
-1. **[P0]** `resolveTopLevelConsts` builds `reordered` but it is identical to
+1. ~~**[P0]** `resolveTopLevelConsts` builds `reordered` but it is identical to
    the input: the hoisting the comment promises is not implemented, and the
-   inline comment is in Spanish (language-rule violation). Either implement the
-   hoist or delete the dead buffer and the comment.
-2. **[P1]** `parseStructLiteralBody` does not support the shorthand
-   `Point { x, y }`.
-3. **[P1]** `parseSwitch` accepts only literals and ranges as `case` labels;
-   a `const` label (`case FOO:`) fails. Accept constant expressions.
+   inline comment is in Spanish (language-rule violation).~~ **Done**: the
+   stable partition now hoists top-level `const` declarations to the front and
+   the comments are in English.
+2. ~~**[P1]** `parseStructLiteralBody` does not support the shorthand
+   `Point { x, y }`.~~ **Done**: the field name alone (no `:`) desugars to a
+   `VariableExpr` of the same name. No new token, node or opcode.
+3. ~~**[P1]** `parseSwitch` accepts only literals and ranges as `case` labels;
+   a `const` label (`case FOO:`) fails.~~ **Done**: a `case` label may now be a
+   `const` name (a top-level `const`, or a local `const`/`let` in the same
+   frame). The parser accepts a bare-name label and the compiler
+   (`Compiler::checkCaseLabelName`) rejects a `var`, an unknown name or a
+   captured binding, so the label stays a fixed value. No new opcode.
 4. **[P1]** `parseImport` does not reject `from` being a user variable, so
    `import { x } from from;` is ambiguous.
 5. **[P1]** `parseProgram` pre-scans `structNames_` without requiring `struct`
