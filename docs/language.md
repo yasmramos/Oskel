@@ -2306,10 +2306,12 @@ produce.
 
 A compiled binary carries the standard-library builtins that need no libm:
 `print`/`write`/`eprint`, `len`, `type`, `str`, `repr`, `bool`, `ord`, `chr`,
-`assert`, `panic` and `isError`. The math builtins (`sqrt`, `pow`, ...) and the
-numeric conversions `int`/`float`/`double` are not lowered yet: the math block
-needs an embedded libm (the freestanding binary cannot call the host's), and the
-conversions need a freestanding string parser. They land in a later slice.
+`assert`, `panic`, `isError`, the numeric conversions `int`/`float`/`double`
+(including the string forms) and the exact math builtins `floor`, `ceil`,
+`round` and `sqrt` (correctly rounded from SSE alone, so they match the hosted
+engine bit for bit). The remaining math builtins (`pow`, `sin`, `cos`, `tan`,
+`log`, `exp`) are not lowered yet: they need an embedded libm because the
+freestanding binary cannot call the host's, and they land in a later slice.
 
 A compiled binary supports variadic functions (§7.1): a trailing `rest...`
 parameter binds an ordinary array of the extras, built by the runtime's

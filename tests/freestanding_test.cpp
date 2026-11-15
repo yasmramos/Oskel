@@ -928,6 +928,63 @@ static void test_float_string_conversion() {
         "the overflow reports the conversion message");
 }
 
+// The exact math builtins (PHASE 7c.5b.3): `floor`, `ceil`, `round` and `sqrt`
+// are correctly rounded from SSE alone, so a compiled program matches the
+// hosted engine bit for bit, negative zero included. The values below cover the
+// classic traps: a value just under a half (`0.49999999999999994`, whose sum
+// with 0.5 rounds up and would break a naive `trunc(x + 0.5)`), the int
+// passthrough, the `|x| >= 2^63` bypass and `sqrt(-0.0)`.
+static void test_math_builtins() {
+  Bytecode proto = compileSource(
+      "print(floor(2.5), floor(-2.5), ceil(2.1), ceil(-2.1), round(2.5), round(-2.5));\n"
+      "print(floor(2), ceil(-3), round(7), sqrt(9), sqrt(0));\n"
+      "print(type(floor(1.5)), type(floor(1)), type(sqrt(4)));\n"
+      "print(round(0.49999999999999994), round(4503599627370495.5));\n"
+      "print(round(0.5), round(1.5), round(2.5), round(-0.5), round(-1.5));\n"
+      "print(sqrt(2.0));\n"
+      "print(floor(1e300), ceil(-1e300), round(1e300));\n");
+  RunResult result = buildAndRun("/tmp/oskel_math_builtins", proto);
+  std::string expected =
+      "2 -3 3 -2 3 -3\n"
+      "2 -3 7 3 0\n"
+      "double int double\n"
+      "0 4503599627370496\n"
+      "1 2 3 -1 -2\n"
+      "1.4142135623730951\n"
+      "1e+300 -1e+300 1e+300\n";
+  check(result.output == expected, "the math builtins match the hosted engine");
+  check(result.exitCode == 0, "a program using the math builtins exits 0");
+
+  // The negative-zero sign is preserved, so `str` renders "-0" as it does in
+  // the hosted engine (a plain `== 0.0` comparison cannot see the sign).
+  Bytecode zeros = compileSource(
+      "print(floor(-0.0), ceil(-0.3), round(-0.5), sqrt(-0.0));\n"
+      "print(floor(0.0), ceil(0.0), round(0.0));\n");
+  RunResult zero = buildAndRun("/tmp/oskel_math_negative_zero", zeros);
+  check(zero.output == "-0 -0 -1 -0\n0 0 0\n",
+        "the math builtins preserve the sign of a zero result");
+}
+
+// A wrong operand type or a negative `sqrt` fails with a message and exit 70,
+// matching the hosted engine's runtime-error code.
+static void test_math_builtin_errors() {
+  Bytecode boolArg = compileSource("print(floor(true));\n");
+  RunResult fromBool = buildAndRun("/tmp/oskel_math_bool", boolArg);
+  check(fromBool.exitCode == 70, "floor of a bool exits 70");
+  check(fromBool.output.find("floor() expects a number argument") != std::string::npos,
+        "the failed floor reports its type message");
+
+  Bytecode negative = compileSource("print(sqrt(-1.0));\n");
+  RunResult neg = buildAndRun("/tmp/oskel_math_sqrt_negative", negative);
+  check(neg.exitCode == 70, "sqrt of a negative number exits 70");
+  check(neg.output.find("sqrt() of a negative number") != std::string::npos,
+        "the failed sqrt reports the negative-operand message");
+
+  Bytecode noArgs = compileSource("print(round());\n");
+  RunResult arity = buildAndRun("/tmp/oskel_math_arity", noArgs);
+  check(arity.exitCode == 70, "round with no argument exits 70");
+}
+
 // Drives the boxed printer directly: the runtime's `oskel_print_value` is what
 // the `print` builtin will call once `CALL` lands (7c.2), so this checks the
 // integer-to-text routine (including the negative case) and the boolean/nil
@@ -1537,6 +1594,8 @@ int main() {
   test_int_string_conversion();
   test_int_string_conversion_errors();
   test_float_string_conversion();
+  test_math_builtins();
+  test_math_builtin_errors();
   test_sb_append_zero_capacity();
   test_sb_append_capacity_overflow();
   test_variadic();

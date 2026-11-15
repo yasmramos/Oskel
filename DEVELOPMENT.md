@@ -968,9 +968,24 @@ Slices, each independently shippable:
       Covered by `tests/parse_float_test.cpp` (the emitted code called through
       a function pointer against `strtod`, 500k random cases plus the edges)
       and `tests/freestanding_test.cpp` (the builtin paths under the real
-      `_start`) and the `oskel build` fixture. The math block (`sqrt`, `pow`,
-      `sin`, ...) still needs an embedded libm because the freestanding binary
-      cannot call the host's.
+      `_start`) and the `oskel build` fixture. **7c.5b.3** (done) adds the exact
+      math builtins `floor`, `ceil`, `round` and `sqrt`. They need no libm:
+      `floor`/`ceil`/`round` are `cvttsd2si` (truncate) plus a correction
+      (`floor` subtracts one when `trunc(x) > x`, `ceil` adds one when
+      `trunc(x) < x`, and `round` moves one away from zero when the exact
+      remainder `|x - trunc(x)| >= 0.5`, which avoids the double rounding that
+      `trunc(x + copysign(0.5, x))` suffers for `0.49999999999999994`), and
+      `sqrt` is the SSE `sqrtsd`, correctly rounded for every input. Every
+      result matches the hosted engine (glibc) bit for bit, including the sign
+      of a zero result (`floor(-0.3)` is `-0`) and the `|x| >= 2^63`, inf and
+      NaN passthrough; a negative `sqrt` fails like the hosted one. The
+      transcendental block (`pow`, `sin`, `cos`, `tan`, `log`, `exp`) is the
+      next slice and is where the embedded-libm decision lives, because glibc
+      is not correctly rounded there and an exact libm would diverge from the
+      hosted engine. Covered by `tests/codegen_test.cpp` (the `sqrtsd` encoding
+      and its execution) and `tests/freestanding_test.cpp` (the builtins and
+      the failure paths under the real `_start`), plus a 11k-case differential
+      run against the hosted engine.
     - **7c.6** (done) — variadic parameter packs. A function with a trailing
       `rest...` parameter was a lowering error ("variadic function",
       `PHASE 7c.3`); it now compiles. The child proto's prologue checks the

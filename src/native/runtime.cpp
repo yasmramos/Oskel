@@ -4723,6 +4723,239 @@ void emitPanicBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   emitFailCall(cg, fail, msgPanic);
 }
 
+// The exact math builtins (PHASE 7c.5b.3): `floor`, `ceil`, `round` and `sqrt`.
+// Every one is correctly rounded -- no libm, no approximation -- so it
+// reproduces the hosted engine (glibc) bit for bit, negative zero included:
+//
+//   floor(x) = the largest integer <= x   (round toward -inf)
+//   ceil(x)  = the smallest integer >= x  (round toward +inf)
+//   round(x) = the nearest integer, halves away from zero (C `round`)
+//   sqrt(x)  = the IEEE-754 square root   (`sqrtsd`)
+//
+// `floor`/`ceil`/`round` are built from `cvttsd2si` (truncate) plus a
+// correction, because the SSE4.1 `roundsd` instruction is not part of the
+// x86-64 baseline the backend targets. `t = trunc(x)` is exact; `floor`
+// subtracts one when `t > x`, `ceil` adds one when `t < x`, and `round` moves
+// one away from zero when the exact remainder `|x - t| >= 0.5` (comparing the
+// remainder rather than computing `trunc(x + copysign(0.5, x))` avoids the
+// double rounding that turns `0.49999999999999994` into 1). Every result is
+// converted back to binary64, which is exact for the integers produced, and the
+// sign of a zero result is preserved (floor/ceil/round of a negative value in
+// (-1, 0] yield -0.0, as C does). A value too large for int64 (`|x| >= 2^63`,
+// inf, nan) is already an integer or non-finite, so the `cvttsd2si` result is
+// discarded and the operand is returned unchanged -- which is exactly what C
+// `floor`, `ceil` and `round` return for those inputs.
+//
+// An int operand is returned unchanged, matching the hosted builtins'
+// `if (args[0].isInt()) return args[0]`; any other type fails with the message
+// the caller passes.
+
+// Emits the shared tail that turns `xmm0` (the binary64 result) into a `Double`
+// `AotValue` in rax:rdx and returns.
+void emitMathReturn(CodeGen& cg) {
+  cg.movqFromXmm(Rdx, kXmmBase + 0);
+  cg.movImm(Rax, kTagDouble);
+}
+
+// The three rounding builtins share one shape: check arity, branch on the tag
+// (int passes through, float/double compute, anything else fails), then convert.
+// `mode` selects the correction applied after the truncation.
+enum class AotRoundMode { Floor, Ceil, Round };
+
+void emitRoundingBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+                         const DataBlob& message, AotRoundMode mode) {
+  constexpr int Xmm0 = kXmmBase + 0;
+  constexpr int Xmm1 = kXmmBase + 1;
+  constexpr int Xmm2 = kXmmBase + 2;
+  constexpr int Xmm3 = kXmmBase + 3;
+  constexpr int Xmm4 = kXmmBase + 4;
+  // The sign mask (only the sign bit set), the abs mask and the constant 0.5,
+  // as binary64 bit patterns.
+  constexpr std::int64_t kSignMask = static_cast<std::int64_t>(0x8000000000000000ULL);
+  constexpr std::int64_t kAbsMask = 0x7FFFFFFFFFFFFFFFLL;
+  constexpr std::int64_t kHalf = 0x3FE0000000000000LL;
+  constexpr std::int64_t kOne = 0x3FF0000000000000LL;
+  // 2^63: `|x| >= 2^63` cannot be represented as int64, and such a value is
+  // already an integer, so it is returned unchanged (`cvttsd2si` would return
+  // INT64_MIN and the correction would corrupt it).
+  constexpr std::int64_t kTwoPow63 = 0x43E0000000000000LL;
+
+  CodeGen::Label asInt = cg.newLabel();
+  CodeGen::Label asNumber = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label compute = cg.newLabel();
+  CodeGen::Label keep = cg.newLabel();
+  CodeGen::Label roundAdd = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
+  cg.movFromMem(Rax, Rdi, 0);   // tag
+  cg.movFromMem(Rcx, Rdi, 8);   // payload
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Eq, asInt);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagFloat));
+  cg.jcc(Jcc::Eq, asNumber);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
+  cg.jcc(Jcc::Eq, asNumber);
+  emitFailCall(cg, fail, message);
+
+  cg.bind(badArgc);
+  emitFailCall(cg, fail, message);
+
+  // An int is already an integer: return it unchanged (its own tag).
+  cg.bind(asInt);
+  cg.movReg(Rdx, Rcx);
+  cg.movImm(Rax, kTagInt);
+  epilogue(cg);
+
+  cg.bind(asNumber);
+  cg.movqToXmm(Xmm0, Rcx);      // x
+  cg.movsdReg(Xmm4, Xmm0);      // keep x for the negative-zero sign fix
+  // `x - x` is 0 for a finite value and NaN for NaN or either infinity, so an
+  // unordered result returns the operand unchanged -- which is what C floor,
+  // ceil and round do for NaN and the infinities.
+  cg.movsdReg(Xmm1, Xmm0);
+  cg.subsd(Xmm1, Xmm0);
+  cg.xorps(Xmm2, Xmm2);
+  cg.ucomisd(Xmm1, Xmm2);
+  cg.jcc(Jcc::P, done);         // NaN / +-inf: return x unchanged
+
+  // `|x| >= 2^63` is already an integer: return it unchanged.
+  cg.movqFromXmm(R9, Xmm0);
+  cg.movImm(R10, kAbsMask);
+  cg.andReg(R9, R10);
+  cg.movqToXmm(Xmm2, R9);       // |x|
+  cg.movImm(R9, kTwoPow63);
+  cg.movqToXmm(Xmm1, R9);
+  cg.ucomisd(Xmm2, Xmm1);
+  cg.jcc(Jcc::Ae, done);        // |x| >= 2^63
+
+  cg.bind(compute);
+  cg.cvttsd2si(Rdx, Xmm0);    // trunc(x): toward zero, exact
+  cg.cvtsi2sd(Xmm1, Rdx);     // t = (double) trunc(x), exact
+  cg.ucomisd(Xmm1, Xmm0);     // t ?= x
+  if (mode == AotRoundMode::Round) {
+    // round(x): move t away from zero when |x - t| >= 0.5. Comparing the exact
+    // remainder |x - t| against 0.5 avoids the double rounding that
+    // `trunc(x + copysign(0.5, x))` suffers for values like
+    // 0.49999999999999994 (whose sum rounds up to 0.5).
+    cg.movsdReg(Xmm2, Xmm0);
+    cg.subsd(Xmm2, Xmm1);     // x - t
+    cg.movqFromXmm(R9, Xmm2);
+    cg.movImm(R10, kAbsMask);
+    cg.andReg(R9, R10);       // |x - t|
+    cg.movqToXmm(Xmm2, R9);
+    cg.movImm(R9, kHalf);
+    cg.movqToXmm(Xmm3, R9);
+    cg.ucomisd(Xmm2, Xmm3);   // |x - t| ?= 0.5
+    cg.jcc(Jcc::B, keep);     // < 0.5: t is the answer
+    // >= 0.5: move one away from zero; the sign of x picks the direction.
+    cg.movImm(R9, kOne);
+    cg.movqToXmm(Xmm3, R9);
+    cg.ucomisd(Xmm1, Xmm0);   // t ?= x
+    cg.jcc(Jcc::B, roundAdd); // t < x (x positive): add one
+    cg.subsd(Xmm1, Xmm3);     // t > x (x negative): subtract one
+    cg.jmp(keep);
+    cg.bind(roundAdd);
+    cg.addsd(Xmm1, Xmm3);
+    cg.jmp(keep);
+  } else if (mode == AotRoundMode::Floor) {
+    // floor subtracts one when trunc(x) > x; otherwise trunc(x) is the answer.
+    cg.jcc(Jcc::Be, keep);
+    cg.movImm(R9, kOne);
+    cg.movqToXmm(Xmm3, R9);
+    cg.subsd(Xmm1, Xmm3);
+  } else {
+    // ceil adds one when trunc(x) < x; otherwise trunc(x) is the answer.
+    cg.jcc(Jcc::Ae, keep);
+    cg.movImm(R9, kOne);
+    cg.movqToXmm(Xmm3, R9);
+    cg.addsd(Xmm1, Xmm3);
+  }
+  cg.bind(keep);
+  cg.movsdReg(Xmm0, Xmm1);
+
+  // Preserve the sign of a zero result: floor/ceil/round of a negative value in
+  // (-1, 0] is -0.0, as C returns. A +0.0 result has all bits clear, so OR in
+  // the sign bit of the operand when it is negative.
+  cg.movqFromXmm(R9, Xmm0);
+  cg.testReg(R9);
+  cg.jcc(Jcc::Ne, done);        // nonzero: nothing to fix
+  cg.movqFromXmm(R8, Xmm4);     // bits of the original x
+  cg.movImm(R10, kSignMask);
+  cg.andReg(R8, R10);
+  cg.orReg(R9, R8);
+  cg.movqToXmm(Xmm0, R9);
+
+  cg.bind(done);
+  emitMathReturn(cg);
+  epilogue(cg);
+}
+
+// `AotValue oskel_builtin_sqrt(AotValue* args, long argc, AotClosure* self)`: the
+// public `sqrt`. `sqrtsd` is correctly rounded for every input, so it matches
+// `std::sqrt` bit for bit. An int operand is converted to binary64 first (the
+// hosted `wantNumber` accepts it); a negative operand fails with the hosted
+// message. `sqrt(-0.0)` is -0.0 and `sqrt(NaN)` is NaN, neither of which is a
+// negative value.
+void emitSqrtBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+                     const DataBlob& msgType, const DataBlob& msgNegative) {
+  constexpr int Xmm0 = kXmmBase + 0;
+  constexpr int Xmm1 = kXmmBase + 1;
+
+  CodeGen::Label asInt = cg.newLabel();
+  CodeGen::Label asNumber = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label check = cg.newLabel();
+  CodeGen::Label negative = cg.newLabel();
+  CodeGen::Label compute = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
+  cg.movFromMem(Rax, Rdi, 0);   // tag
+  cg.movFromMem(Rcx, Rdi, 8);   // payload
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Eq, asInt);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagFloat));
+  cg.jcc(Jcc::Eq, asNumber);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
+  cg.jcc(Jcc::Eq, asNumber);
+  emitFailCall(cg, fail, msgType);
+
+  cg.bind(badArgc);
+  emitFailCall(cg, fail, msgType);
+
+  cg.bind(asInt);
+  cg.cvtsi2sd(Xmm0, Rcx);
+  cg.jmp(check);
+  cg.bind(asNumber);
+  cg.movqToXmm(Xmm0, Rcx);
+
+  cg.bind(check);
+  // A negative operand fails; NaN is unordered (PF=1) and -0.0 compares equal to
+  // +0.0, so neither is a negative value.
+  cg.xorps(Xmm1, Xmm1);
+  cg.ucomisd(Xmm0, Xmm1);
+  cg.jcc(Jcc::B, negative);     // x < 0
+  cg.jmp(compute);
+
+  cg.bind(negative);
+  emitFailCall(cg, fail, msgNegative);
+
+  cg.bind(compute);
+  cg.sqrtsd(Xmm0, Xmm0);
+
+  cg.bind(done);
+  emitMathReturn(cg);
+  epilogue(cg);
+}
+
 // `void oskel_sb_init(AotStringBuilder* sb, char* data, long capacity)`: start a
 // builder over a caller-owned buffer (`data`/`capacity`) with `length` zero. A
 // caller that renders a `print` value passes a stack buffer, so a small render
@@ -5620,6 +5853,11 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgConvertInt = addText("oskel: cannot convert this value to int\n");
   DataBlob msgConvertFloat = addText("oskel: cannot convert this value to float\n");
   DataBlob msgConvertDouble = addText("oskel: cannot convert this value to double\n");
+  DataBlob msgFloorType = addText("oskel: floor() expects a number argument\n");
+  DataBlob msgCeilType = addText("oskel: ceil() expects a number argument\n");
+  DataBlob msgRoundType = addText("oskel: round() expects a number argument\n");
+  DataBlob msgSqrtType = addText("oskel: sqrt() expects a number argument\n");
+  DataBlob msgSqrtNegative = addText("oskel: sqrt() of a negative number\n");
 
   CodeGen::Label fail = cg.newLabel();
   CodeGen::Label failDynamic = cg.newLabel();
@@ -5783,6 +6021,10 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                                 handles.doubleBuiltin, fail, handles.intTextParser,
                                 parseFloatHandles.parseDouble, msgConvertInt,
                                 msgConvertFloat, msgConvertDouble);
+  emitRoundingBuiltin(cg, handles.floorBuiltin, fail, msgFloorType, AotRoundMode::Floor);
+  emitRoundingBuiltin(cg, handles.ceilBuiltin, fail, msgCeilType, AotRoundMode::Ceil);
+  emitRoundingBuiltin(cg, handles.roundBuiltin, fail, msgRoundType, AotRoundMode::Round);
+  emitSqrtBuiltin(cg, handles.sqrtBuiltin, fail, msgSqrtType, msgSqrtNegative);
   emitIntTextParser(cg, handles.intTextParser, fail, msgConvertInt);
   dtoa::emitDtoa(cg, dtoaHandles);
   parse_float::emitParseFloat(cg, parseFloatHandles, dtoaHandles);
