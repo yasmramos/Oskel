@@ -1534,7 +1534,10 @@ assertEq(a[3:0:-1], [40, 30, 20]);
 ```
 
 The same syntax works on strings, slicing by UTF-8 character
-(`"hello"[::-1]` is `"olleh"`). A zero step is a runtime error.
+(`"hello"[::-1]` is `"olleh"`). A zero step is a runtime error. Slicing a
+value that is neither an array nor a string (for example `5[1:2]`) is a
+runtime error that names the receiver's type; that check runs before the
+bounds, so `5["a":"b"]` reports the receiver, not the bound.
 
 ### 8.2 Members
 

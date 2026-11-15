@@ -70,4 +70,13 @@ assertEq(len(a[start + 1:end]), 2);
 assertEq(a[1], 20);
 assertEq(s[0], "h");
 
+// --- errors: the receiver type is checked first ---------------------------
+
+// A value that cannot be sliced reports the receiver's type, even when a bound
+// is also invalid: the primary error wins over the bound's type.
+assertEq(pcall(() => (5)[1:2]).error.message, "cannot slice a value of type 'int'");
+assertEq(pcall(() => (5)["a":"b"]).error.message, "cannot slice a value of type 'int'");
+assertEq(pcall(() => (true)[0:1]).error.message, "cannot slice a value of type 'bool'");
+assertEq(pcall(() => (nil)[0:1]).error.message, "cannot slice a value of type 'nil'");
+
 print("ok");
