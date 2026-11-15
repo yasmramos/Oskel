@@ -915,14 +915,22 @@ Slices, each independently shippable:
       range check that matches the hosted bound), `float` rounds to binary32
       and stores the widened value (`cvtsd2ss` + `cvtss2sd`, as the hosted
       `Float` holds), and `double` is the binary64 form. All three are pure SSE
-      -- no libm, no libc -- so they link into the freestanding binary; a
-      string operand is rejected with a clear message. A string parse
-      (`int("42")`, `float("3.14")`) needs a correctly rounded parser and is
-      deferred to **7c.5b.2**. Covered by `tests/freestanding_test.cpp` (the
-      numeric sources, the 2^24+1 binary32 rounding, the error paths) and the
-      `oskel build` fixture. The math block (`sqrt`, `pow`, `sin`, ...) still
-      needs an embedded libm because the freestanding binary cannot call the
-      host's.
+      -- no libm, no libc -- so they link into the freestanding binary.
+      **7c.5b.2a** (done) adds the `int(string)` parse, matching the hosted
+      `int` byte for byte: it trims ASCII whitespace, accepts a `+`/`-` sign
+      and a `0x`/`0X`, `0b`/`0B` or `0o`/`0O` base prefix (a plain leading zero
+      keeps base 10), and reproduces `strtoll`'s second `0x`/`0b` prefix
+      detection inside the body (`"0x0x10"` is 16, `"0b0b101"` is 5) and its
+      overflow rules (`-2^63` is accepted, `2^63` is not). The parser is pure
+      integer code -- no libm, no libc -- so it links into the freestanding
+      binary. The `float(string)`/`double(string)` parse needs a correctly
+      rounded `strtod` (subnormals, `1e400`, inf/nan) and is deferred to
+      **7c.5b.2b**; a string operand of `float`/`double` still fails with a
+      clear message. Covered by `tests/freestanding_test.cpp` (the numeric
+      sources, the 2^24+1 binary32 rounding, the `int(string)` bases/bounds,
+      the error paths) and the `oskel build` fixture. The math block (`sqrt`,
+      `pow`, `sin`, ...) still needs an embedded libm because the freestanding
+      binary cannot call the host's.
     - **7c.1+** — boxed `Value` over the arena, `print`/`toString` (own dtoa),
       collections and functions. The AOT runtime has its own boxed value and
       its own arena-backed objects, sharing *semantics* with `ops.h` but not

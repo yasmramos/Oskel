@@ -3571,16 +3571,252 @@ void emitTypeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
   epilogue(cg);
 }
 
+// `int64_t oskel_parse_int_text(char* data, long length)`: parses the text of an
+// `int(string)` conversion (PHASE 7c.5b.2a). The hosted `int` trims the text and
+// then calls `strtoll` with a base taken from a leading `0x`/`0b`/`0o` prefix (a
+// leading zero alone keeps base 10); the whole text must be consumed and the
+// value must fit in an int64, or the conversion fails. `strtoll` re-detects a
+// `0x`/`0b` prefix once more inside the body (so `"0x0x10"` is 16), which is
+// reproduced here so the two engines agree byte for byte. `data` is in rdi and
+// `length` in rsi on entry, the result is in rax. Pure integer code -- no libm,
+// no libc -- so it links into the freestanding binary.
+void emitIntTextParser(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+                       const DataBlob& message) {
+  CodeGen::Label trimLeft = cg.newLabel();
+  CodeGen::Label trimLeftSkip = cg.newLabel();
+  CodeGen::Label trimRight = cg.newLabel();
+  CodeGen::Label trimRightSkip = cg.newLabel();
+  CodeGen::Label trimRightDone = cg.newLabel();
+  CodeGen::Label consumeSign = cg.newLabel();
+  CodeGen::Label afterSign = cg.newLabel();
+  CodeGen::Label prefix16 = cg.newLabel();
+  CodeGen::Label prefix2 = cg.newLabel();
+  CodeGen::Label prefix8 = cg.newLabel();
+  CodeGen::Label noPrefix = cg.newLabel();
+  CodeGen::Label recheckX = cg.newLabel();
+  CodeGen::Label recheckB = cg.newLabel();
+  CodeGen::Label skipRecheckX = cg.newLabel();
+  CodeGen::Label skipRecheckB = cg.newLabel();
+  CodeGen::Label afterRecheck = cg.newLabel();
+  CodeGen::Label haveLimit = cg.newLabel();
+  CodeGen::Label digitLoop = cg.newLabel();
+  CodeGen::Label notDec = cg.newLabel();
+  CodeGen::Label tryUpper = cg.newLabel();
+  CodeGen::Label haveDigit = cg.newLabel();
+  CodeGen::Label accumulate = cg.newLabel();
+  CodeGen::Label digitsDone = cg.newLabel();
+  CodeGen::Label bytesDone = cg.newLabel();
+  CodeGen::Label finish = cg.newLabel();
+  CodeGen::Label bad = cg.newLabel();
+
+  constexpr std::int64_t kInt64Max = 0x7FFFFFFFFFFFFFFFLL;
+  constexpr std::int64_t kInt64Min = static_cast<std::int64_t>(0x8000000000000000ULL);
+
+  cg.bind(label);
+  cg.push(Rbx);
+  cg.addReg(Rsi, Rdi);                    // rsi = end = data + length
+
+  // Trim leading whitespace, as the hosted `trim` does.
+  cg.bind(trimLeft);
+  cg.cmpReg(Rdi, Rsi);
+  cg.jcc(Jcc::Ae, trimRight);
+  cg.movzxFromMem(Rcx, Rdi, 0);
+  cg.cmpImm32(Rcx, 32); cg.jcc(Jcc::Eq, trimLeftSkip);
+  cg.cmpImm32(Rcx, 9);  cg.jcc(Jcc::Eq, trimLeftSkip);
+  cg.cmpImm32(Rcx, 10); cg.jcc(Jcc::Eq, trimLeftSkip);
+  cg.cmpImm32(Rcx, 11); cg.jcc(Jcc::Eq, trimLeftSkip);
+  cg.cmpImm32(Rcx, 12); cg.jcc(Jcc::Eq, trimLeftSkip);
+  cg.cmpImm32(Rcx, 13); cg.jcc(Jcc::Eq, trimLeftSkip);
+  cg.jmp(trimRight);
+  cg.bind(trimLeftSkip);
+  cg.addImm32(Rdi, 1);
+  cg.jmp(trimLeft);
+
+  // Trim trailing whitespace.
+  cg.bind(trimRight);
+  cg.cmpReg(Rdi, Rsi);
+  cg.jcc(Jcc::Ae, trimRightDone);
+  cg.movzxFromMem(Rcx, Rsi, -1);
+  cg.cmpImm32(Rcx, 32); cg.jcc(Jcc::Eq, trimRightSkip);
+  cg.cmpImm32(Rcx, 9);  cg.jcc(Jcc::Eq, trimRightSkip);
+  cg.cmpImm32(Rcx, 10); cg.jcc(Jcc::Eq, trimRightSkip);
+  cg.cmpImm32(Rcx, 11); cg.jcc(Jcc::Eq, trimRightSkip);
+  cg.cmpImm32(Rcx, 12); cg.jcc(Jcc::Eq, trimRightSkip);
+  cg.cmpImm32(Rcx, 13); cg.jcc(Jcc::Eq, trimRightSkip);
+  cg.jmp(trimRightDone);
+  cg.bind(trimRightSkip);
+  cg.addImm32(Rsi, -1);
+  cg.jmp(trimRight);
+
+  cg.bind(trimRightDone);
+  cg.cmpReg(Rdi, Rsi);
+  cg.jcc(Jcc::Ae, bad);                   // empty text
+
+  // Optional sign. r10 holds the negative flag.
+  cg.xorReg(R10, R10);
+  cg.movzxFromMem(Rcx, Rdi, 0);
+  cg.cmpImm32(Rcx, '+');
+  cg.jcc(Jcc::Eq, consumeSign);
+  cg.cmpImm32(Rcx, '-');
+  cg.jcc(Jcc::Ne, afterSign);
+  cg.movImm(R10, 1);
+  cg.bind(consumeSign);
+  cg.addImm32(Rdi, 1);
+  cg.bind(afterSign);
+
+  // Base prefix: `0x`/`0X`, `0b`/`0B`, `0o`/`0O`, or base 10.
+  cg.movImm(R8, 10);
+  cg.leaMem(Rcx, Rdi, 2);
+  cg.cmpReg(Rcx, Rsi);
+  cg.jcc(Jcc::A, noPrefix);               // fewer than two characters left
+  cg.movzxFromMem(Rcx, Rdi, 0);
+  cg.cmpImm32(Rcx, '0');
+  cg.jcc(Jcc::Ne, noPrefix);
+  cg.movzxFromMem(Rcx, Rdi, 1);
+  cg.cmpImm32(Rcx, 'x'); cg.jcc(Jcc::Eq, prefix16);
+  cg.cmpImm32(Rcx, 'X'); cg.jcc(Jcc::Eq, prefix16);
+  cg.cmpImm32(Rcx, 'b'); cg.jcc(Jcc::Eq, prefix2);
+  cg.cmpImm32(Rcx, 'B'); cg.jcc(Jcc::Eq, prefix2);
+  cg.cmpImm32(Rcx, 'o'); cg.jcc(Jcc::Eq, prefix8);
+  cg.cmpImm32(Rcx, 'O'); cg.jcc(Jcc::Eq, prefix8);
+  cg.jmp(noPrefix);
+  cg.bind(prefix16);
+  cg.movImm(R8, 16);
+  cg.addImm32(Rdi, 2);
+  cg.jmp(noPrefix);
+  cg.bind(prefix2);
+  cg.movImm(R8, 2);
+  cg.addImm32(Rdi, 2);
+  cg.jmp(noPrefix);
+  cg.bind(prefix8);
+  cg.movImm(R8, 8);
+  cg.addImm32(Rdi, 2);
+
+  // `strtoll` re-detects a `0x`/`0b` prefix once more in the body; base 8 does
+  // not, so `"0o0o17"` is an error while `"0x0x10"` is 16.
+  cg.bind(noPrefix);
+  cg.cmpImm32(R8, 16);
+  cg.jcc(Jcc::Eq, recheckX);
+  cg.cmpImm32(R8, 2);
+  cg.jcc(Jcc::Eq, recheckB);
+  cg.jmp(afterRecheck);
+  cg.bind(recheckX);
+  cg.leaMem(Rcx, Rdi, 2);
+  cg.cmpReg(Rcx, Rsi);
+  cg.jcc(Jcc::A, afterRecheck);
+  cg.movzxFromMem(Rcx, Rdi, 0);
+  cg.cmpImm32(Rcx, '0');
+  cg.jcc(Jcc::Ne, afterRecheck);
+  cg.movzxFromMem(Rcx, Rdi, 1);
+  cg.cmpImm32(Rcx, 'x'); cg.jcc(Jcc::Eq, skipRecheckX);
+  cg.cmpImm32(Rcx, 'X'); cg.jcc(Jcc::Ne, afterRecheck);
+  cg.bind(skipRecheckX);
+  cg.addImm32(Rdi, 2);
+  cg.jmp(afterRecheck);
+  cg.bind(recheckB);
+  cg.leaMem(Rcx, Rdi, 2);
+  cg.cmpReg(Rcx, Rsi);
+  cg.jcc(Jcc::A, afterRecheck);
+  cg.movzxFromMem(Rcx, Rdi, 0);
+  cg.cmpImm32(Rcx, '0');
+  cg.jcc(Jcc::Ne, afterRecheck);
+  cg.movzxFromMem(Rcx, Rdi, 1);
+  cg.cmpImm32(Rcx, 'b'); cg.jcc(Jcc::Eq, skipRecheckB);
+  cg.cmpImm32(Rcx, 'B'); cg.jcc(Jcc::Ne, afterRecheck);
+  cg.bind(skipRecheckB);
+  cg.addImm32(Rdi, 2);
+
+  // The largest magnitude the result may reach: 2^63-1 for a positive value and
+  // 2^63 for a negative one. From it the per-digit cutoff and remainder make the
+  // overflow test `acc < cutoff || (acc == cutoff && digit <= rem)`.
+  cg.bind(afterRecheck);
+  cg.movImm(Rax, kInt64Max);
+  cg.testReg(R10);
+  cg.jcc(Jcc::Eq, haveLimit);
+  cg.movImm(Rax, kInt64Min);
+  cg.bind(haveLimit);
+  cg.divUnsigned(R8);                     // rax = cutoff, rdx = rem
+  cg.movReg(R11, Rax);
+  cg.movReg(Rax, Rdx);
+
+  cg.movReg(Rbx, Rdi);                    // position of the first digit
+  cg.xorReg(R9, R9);                      // acc = 0
+  cg.bind(digitLoop);
+  cg.cmpReg(Rdi, Rsi);
+  cg.jcc(Jcc::Ae, digitsDone);
+  cg.movzxFromMem(Rcx, Rdi, 0);
+  cg.movImm(Rdx, -1);                     // digit, -1 means "not a digit"
+  cg.cmpImm32(Rcx, '0'); cg.jcc(Jcc::B, notDec);
+  cg.cmpImm32(Rcx, '9'); cg.jcc(Jcc::A, notDec);
+  cg.movReg(Rdx, Rcx);
+  cg.subRegImm32(Rdx, '0');
+  cg.jmp(haveDigit);
+  cg.bind(notDec);
+  cg.cmpImm32(R8, 16);
+  cg.jcc(Jcc::Ne, haveDigit);
+  cg.cmpImm32(Rcx, 'a'); cg.jcc(Jcc::B, tryUpper);
+  cg.cmpImm32(Rcx, 'f'); cg.jcc(Jcc::A, tryUpper);
+  cg.movReg(Rdx, Rcx);
+  cg.subRegImm32(Rdx, 'a');
+  cg.addImm32(Rdx, 10);
+  cg.jmp(haveDigit);
+  cg.bind(tryUpper);
+  cg.cmpImm32(Rcx, 'A'); cg.jcc(Jcc::B, haveDigit);
+  cg.cmpImm32(Rcx, 'F'); cg.jcc(Jcc::A, haveDigit);
+  cg.movReg(Rdx, Rcx);
+  cg.subRegImm32(Rdx, 'A');
+  cg.addImm32(Rdx, 10);
+  cg.bind(haveDigit);
+  cg.cmpImm32(Rdx, 0);
+  cg.jcc(Jcc::Lt, digitsDone);            // not a digit
+  cg.cmpReg(Rdx, R8);
+  cg.jcc(Jcc::Ae, digitsDone);            // digit out of the base's range
+  cg.cmpReg(R9, R11);
+  cg.jcc(Jcc::A, bad);                    // acc > cutoff: overflow
+  cg.jcc(Jcc::B, accumulate);
+  cg.cmpReg(Rdx, Rax);
+  cg.jcc(Jcc::A, bad);                    // acc == cutoff and digit > rem
+  cg.bind(accumulate);
+  cg.imulReg(R9, R8);
+  cg.addReg(R9, Rdx);
+  cg.addImm32(Rdi, 1);
+  cg.jmp(digitLoop);
+
+  cg.bind(digitsDone);
+  cg.cmpReg(Rdi, Rbx);
+  cg.jcc(Jcc::Eq, bad);                   // no digits
+  cg.cmpReg(Rdi, Rsi);
+  cg.jcc(Jcc::Eq, bytesDone);             // consumed every byte
+  cg.movzxFromMem(Rcx, Rdi, 0);
+  cg.testReg(Rcx);
+  cg.jcc(Jcc::Ne, bad);                   // trailing characters
+  // A NUL ends the text, exactly as it ends a C string for the hosted
+  // `strtoll`: `int("4\u00002")` is 4 in both engines.
+  cg.bind(bytesDone);
+  cg.testReg(R10);
+  cg.jcc(Jcc::Eq, finish);
+  cg.negReg(R9);
+  cg.bind(finish);
+  cg.movReg(Rax, R9);
+  cg.pop(Rbx);
+  cg.retInsn();
+
+  cg.bind(bad);
+  emitFailCall(cg, fail, message);
+}
+
 // The three numeric conversions (PHASE 7c.5b.1): the public `int`, `float` and
 // `double` for a numeric or boolean operand. They match the hosted conversions
 // and are pure SSE -- no libm, no libc -- so they link into the freestanding
-// binary. A string operand needs a parser and is deferred to 7c.5b.2, so it
-// fails with a clear message. `args` is in rdi, `argc` in rsi on entry; the
-// helpers make no call before they are done with their inputs, so `rsp` stays
-// 16-byte aligned at the `fail` call and they save nothing.
+// binary. `int` also accepts a string and calls `intTextParser` (7c.5b.2a);
+// `float`/`double` reject a string until 7c.5b.2b, with a clear message. `args`
+// is in rdi, `argc` in rsi on entry; the helpers make no call before they are
+// done with their inputs, so `rsp` stays 16-byte aligned at the `fail` call and
+// they save nothing.
 void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
                                    CodeGen::Label floatLabel, CodeGen::Label doubleLabel,
-                                   CodeGen::Label fail, const DataBlob& msgInt,
+                                   CodeGen::Label fail, CodeGen::Label intTextParser,
+                                   const DataBlob& msgInt,
                                    const DataBlob& msgFloat, const DataBlob& msgDouble) {
   constexpr int Xmm3 = kXmmBase + 3;
   constexpr int Xmm4 = kXmmBase + 4;
@@ -3594,6 +3830,7 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     CodeGen::Label asInt = cg.newLabel();
     CodeGen::Label asBool = cg.newLabel();
     CodeGen::Label asNum = cg.newLabel();
+    CodeGen::Label asStr = cg.newLabel();
     CodeGen::Label badArgc = cg.newLabel();
     CodeGen::Label failFinite = cg.newLabel();
     CodeGen::Label failRange = cg.newLabel();
@@ -3613,7 +3850,18 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     cg.jcc(Jcc::Eq, asNum);
     cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
     cg.jcc(Jcc::Eq, asNum);
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+    cg.jcc(Jcc::Eq, asStr);
     emitFailCall(cg, fail, msgInt);
+
+    cg.bind(asStr);
+    cg.movReg(Rdi, Rcx);                          // AotString*
+    cg.movFromMem(Rsi, Rcx, 0);                   // length
+    cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+    cg.callLabel(intTextParser);
+    cg.movReg(Rdx, Rax);
+    cg.movImm(Rax, kTagInt);
+    cg.jmp(done);
 
     cg.bind(asInt);
     cg.movReg(Rdx, Rcx);
@@ -5199,8 +5447,9 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                     msgAssert);
   emitPanicBuiltin(cg, handles.panicBuiltin, fail, failDynamic, msgPanic);
   emitNumericConversionBuiltins(cg, handles.intBuiltin, handles.floatBuiltin,
-                                handles.doubleBuiltin, fail, msgConvertInt,
-                                msgConvertFloat, msgConvertDouble);
+                                handles.doubleBuiltin, fail, handles.intTextParser,
+                                msgConvertInt, msgConvertFloat, msgConvertDouble);
+  emitIntTextParser(cg, handles.intTextParser, fail, msgConvertInt);
   dtoa::emitDtoa(cg, dtoaHandles);
 
   // The "length" member name is a raw `AotString` (8-byte length + bytes), laid
