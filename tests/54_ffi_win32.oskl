@@ -1,0 +1,32 @@
+// requires: win32
+// PHASE 6.6 / Windows: `extern "C"` resolves symbols from the Win32 API.
+//
+// `Platform::lookupSymbol` on Windows searches the process image, kernel32.dll
+// and the C runtime, in that order. The Win32 base API has no CRT equivalent,
+// so while the search only covered the CRT a declaration such as
+// `GetTickCount` failed with "was not found in the host". The functions below
+// all live in kernel32.dll, present on every Windows, so the test runs there
+// and is skipped elsewhere (POSIX has no kernel32, and `dlsym(RTLD_DEFAULT)`
+// cannot see it).
+
+extern "C" {
+  fn GetTickCount(): uint32;
+  fn GetCurrentProcessId(): uint32;
+  fn Sleep(ms: uint32): void;
+}
+
+// A zero-argument Win32 call resolves and returns a plausible value: the tick
+// count is a positive millisecond counter.
+let first = GetTickCount();
+assert(first > 0);
+
+// The current process id is always positive.
+assert(GetCurrentProcessId() > 0);
+
+// `Sleep` returns void and does not move the tick counter backwards: a later
+// read is never smaller.
+Sleep(1);
+let second = GetTickCount();
+assert(second >= first);
+
+print("ffi win32 ok");

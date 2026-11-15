@@ -80,6 +80,13 @@ may change between minor versions.
 
 ### Fixed
 
+- `extern "C"` declarations on Windows could not name the Win32 API. The
+  development engine's `lookupSymbol` searched only the process image and the
+  C runtime, so a declaration such as `GetTickCount` or `Sleep` — which live in
+  `kernel32.dll` and have no CRT equivalent — failed at run time with
+  `extern "C" symbol '...' was not found in the host`. The search now also
+  covers `kernel32.dll`, matching the set of modules `dlsym(RTLD_DEFAULT)`
+  reaches on POSIX; the CRT names still resolve.
 - The PE emitter padded the image only to the end of `.text`'s bytes, not to
   the `SizeOfRawData` the section header declares, so the file could end up to
   `FileAlignment` bytes short of the image it described. Windows rejected such
