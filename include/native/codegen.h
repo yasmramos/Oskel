@@ -222,6 +222,12 @@ class CodeGen {
   // uses it to dispatch a bytecode `CALL`, whose callee (and therefore its
   // code address) is only known at run time.
   void callReg(X64Reg target);
+  // `call qword ptr [rip + delta]` (FF 15). An indirect call through a
+  // RIP-relative pointer, used by the Windows prelude to call an imported
+  // function through its IAT slot: the slot's RVA is known when the
+  // instruction is emitted, so the displacement is a constant and needs no
+  // fixup. The caller computes `delta` from `offset()`.
+  void callRipRel(std::int32_t ripDelta);
 
   // Stack.
   void push(X64Reg reg);
