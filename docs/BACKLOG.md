@@ -345,9 +345,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    (whitespace, no quotes).
 6. **[P2]** `bindString` `padStart`/`padEnd` build the padding then trim it
    with `utf8Chars`, O(n) extra for large paddings.
-7. **[P2]** `args()` returns `scriptArgs` without the script name; decide the
-    contract (Lua-style) and document it.
-8. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
+7. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
     two programs in the same process share state; correct in a REPL, document
     it.
 ## 13. Ops (`src/ops.cpp`)
