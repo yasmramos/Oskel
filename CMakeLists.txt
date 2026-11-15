@@ -116,6 +116,16 @@ else()
   set(OSKEL_FFI_MEMORY_STRUCTS FALSE)
 endif()
 
+# A C variadic call needs `ffi_prep_cif_var` and the System V AMD64 default
+# argument promotions, so it needs libffi *and* that ABI; elsewhere the
+# declaration is rejected at compile time and the test that exercises it is
+# skipped. This mirrors `OSKEL_FFI_VARIADIC` in `include/ffi_types.h`.
+if(OSKEL_LIBFFI_FOUND AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
+  set(OSKEL_FFI_VARIADIC TRUE)
+else()
+  set(OSKEL_FFI_VARIADIC FALSE)
+endif()
+
 # --------------------------------------------------------------------------- main binary
 add_executable(oskel "${OSKEL_MAIN}")
 target_link_libraries(oskel PRIVATE oskel_lib)
@@ -272,6 +282,11 @@ if(BUILD_TESTING)
     # its `extern "C"` symbol (`getpid`): on Windows the VM cannot bind it, so
     # the script is skipped there.
     if(name STREQUAL "native_build_extern" AND WIN32)
+      continue()
+    endif()
+    # C variadics need libffi plus the System V AMD64 ABI; the declaration is
+    # rejected at compile time elsewhere, so the test is skipped.
+    if(name STREQUAL "53_ffi_variadic" AND NOT OSKEL_FFI_VARIADIC)
       continue()
     endif()
     oskel_add_script_test("oskel.${name}" "${script}")

@@ -9,6 +9,7 @@
 
 #include <cassert>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1807,6 +1808,33 @@ extern "C" int oskelTestApplyVoid(void (*f)(int), int x) {
   f(x);
   return x;
 }
+
+// A C variadic host function (PHASE 6.6): sums its trailing integer arguments
+// and appends the format-like prefix, so a test proves both the named prefix and
+// the promoted tail reach C. `oskelTestVCount` counts them; `oskelTestVDouble`
+// sums one trailing `double` after the fixed `int`, exercising the `float`-to-
+// `double` promotion.
+extern "C" int oskelTestVCount(const char* tag, ...) {
+  (void)tag;
+  return 3;
+}
+extern "C" int oskelTestVSumInts(int seed, ...) {
+  va_list ap;
+  va_start(ap, seed);
+  int total = seed;
+  for (int i = 0; i < 3; ++i) total += va_arg(ap, int);
+  va_end(ap);
+  return total;
+}
+extern "C" double oskelTestVSumDouble(double seed, ...) {
+  va_list ap;
+  va_start(ap, seed);
+  double total = seed;
+  total += va_arg(ap, double);
+  total += va_arg(ap, double);
+  va_end(ap);
+  return total;
+}
 // A callback whose declared return is a single byte: the error path must zero
 // exactly that width, not eight bytes (which would overrun the return slot).
 extern "C" int oskelTestApplyNarrow(signed char (*f)(int), int x) {
@@ -1868,6 +1896,9 @@ struct SymbolPlatform final : Platform {
       return reinterpret_cast<void*>(&oskelTestApplyStruct);
     if (symbol == "oskelTestApplyMixedStruct")
       return reinterpret_cast<void*>(&oskelTestApplyMixedStruct);
+    if (symbol == "oskelTestVCount") return reinterpret_cast<void*>(&oskelTestVCount);
+    if (symbol == "oskelTestVSumInts") return reinterpret_cast<void*>(&oskelTestVSumInts);
+    if (symbol == "oskelTestVSumDouble") return reinterpret_cast<void*>(&oskelTestVSumDouble);
     return nullptr;
   }
 };
@@ -2235,6 +2266,155 @@ void testExternCallbackStructReturnErrorIsReraised() {
 }
 #endif  // OSKEL_HAVE_LIBFFI
 
+// The C variadic path (PHASE 6.6). A variadic declaration is accepted only where
+// the build can express it (`kCVariadicSupported`, i.e. libffi on System V
+// AMD64), so the tests that run one are guarded exactly like the callback ones.
+#if OSKEL_FFI_VARIADIC
+void testExternVariadicPassesPromotedIntegers() {
+  TEST_SCOPE();
+  // `seed` is the named prefix; the three trailing `int`s are promoted and read
+  // back with `va_arg`, proving the tail reaches C in order.
+  const std::string out = runWithSymbols(
+      "extern \"C\" { fn oskelTestVSumInts(seed: int, ...): int; }\n"
+      "print(oskelTestVSumInts(10, 1, 2, 3));\n");
+  assert(out == "16\n");
+}
+
+void testExternVariadicPromotesFloatToDouble() {
+  TEST_SCOPE();
+  // A trailing Oskel `float` is a C `float`, which the default promotion widens
+  // to `double`; the callee reads `double`, so passing `1.5` as a float literal
+  // must still arrive as 1.5 (not as a misread eightbyte).
+  const std::string out = runWithSymbols(
+      "extern \"C\" { fn oskelTestVSumDouble(seed: double, ...): double; }\n"
+      "print(oskelTestVSumDouble(1.0, 2.5, 3.5));\n");
+  assert(out == "7\n");
+}
+
+void testExternVariadicAcceptsZeroTrailingArguments() {
+  TEST_SCOPE();
+  // A variadic call may pass only the named prefix; the tail is empty, so the
+  // `ffi_prep_cif_var` is prepared with zero variadic arguments.
+  const std::string out = runWithSymbols(
+      "extern \"C\" { fn oskelTestVCount(tag: cstring, ...): int; }\n"
+      "print(oskelTestVCount(\"x\"));\n");
+  assert(out == "3\n");
+}
+
+void testExternVariadicRejectsWrongFixedArity() {
+  TEST_SCOPE();
+  // The named prefix is mandatory: a call with fewer arguments than the fixed
+  // parameters is a compile error, exactly like a fixed-arity native.
+  bool threw = false;
+  try {
+    auto tokens = lex("extern \"C\" { fn oskelTestVSumInts(seed: int, ...): int; }\n"
+                      "oskelTestVSumInts();\n");
+    Parser parser(std::move(tokens), "<vm-test>");
+    auto program = parser.parseProgram();
+    compileProgram(program);
+  } catch (const CompileError& error) {
+    threw = true;
+    assert(error.message.find("expects 1 argument or more") != std::string::npos);
+  }
+  assert(threw);
+}
+#endif  // OSKEL_FFI_VARIADIC
+
+void testExternRejectsOskelRestInExternDeclaration() {
+  TEST_SCOPE();
+  // A Oskel `rest...` collects arguments into an array, which a C call cannot
+  // pass; the parser must reject it and point at the C spelling instead.
+  bool threw = false;
+  try {
+    auto tokens = lex("extern \"C\" { fn printf(fmt: cstring, rest...): int; }");
+    Parser parser(std::move(tokens), "<vm-test>");
+    parser.parseProgram();
+  } catch (const CompileError& error) {
+    threw = true;
+    assert(error.message.find("rest...") != std::string::npos);
+  }
+  assert(threw);
+}
+
+void testExternRejectsBareEllipsisNotLast() {
+  TEST_SCOPE();
+  bool threw = false;
+  try {
+    auto tokens = lex("extern \"C\" { fn bad(a: int, ..., b: int): int; }");
+    Parser parser(std::move(tokens), "<vm-test>");
+    parser.parseProgram();
+  } catch (const CompileError& error) {
+    threw = true;
+    assert(error.message.find("last parameter") != std::string::npos);
+  }
+  assert(threw);
+}
+
+void testExternVariadicAndFixedDeclarationsConflict() {
+  TEST_SCOPE();
+  // `printf(a: int)` and `printf(a: int, ...)` are different C types; declaring
+  // one symbol both ways must be a compile error, not a silent last-wins. The
+  // check needs the variadic declaration to pass `validateSignature` first, so
+  // it only runs where a variadic is expressible.
+#if OSKEL_FFI_VARIADIC
+  bool threw = false;
+  try {
+    auto tokens = lex("extern \"C\" {\n"
+                      "  fn foo(a: int, ...): int;\n"
+                      "  fn foo(a: int): int;\n"
+                      "}");
+    Parser parser(std::move(tokens), "<vm-test>");
+    auto program = parser.parseProgram();
+    compileProgram(program);
+  } catch (const CompileError& error) {
+    threw = true;
+    assert(error.message.find("two different signatures") != std::string::npos);
+  }
+  assert(threw);
+#endif
+}
+
+void testExternVariadicRejectsStructPrefix() {
+  TEST_SCOPE();
+  // A variadic's fixed prefix is limited to scalars: the per-call `cif` builds
+  // the prefix types with `libffiTypeFor`, which cannot express a struct, so the
+  // declaration must be rejected up front.
+#if OSKEL_FFI_VARIADIC
+  bool threw = false;
+  try {
+    auto tokens = lex("struct P { x: int; y: int; }\n"
+                      "extern \"C\" { fn foo(p: P, ...): int; }");
+    Parser parser(std::move(tokens), "<vm-test>");
+    auto program = parser.parseProgram();
+    compileProgram(program);
+  } catch (const CompileError& error) {
+    threw = true;
+    assert(error.message.find("scalar parameters") != std::string::npos);
+  }
+  assert(threw);
+#endif
+}
+
+void testExternVariadicRejectedWithoutSupport() {
+  TEST_SCOPE();
+  // Where the build cannot express a variadic call, the declaration is rejected
+  // at compile time with a message naming the missing support, so it never
+  // reaches a run-time failure.
+#if !OSKEL_FFI_VARIADIC
+  bool threw = false;
+  try {
+    auto tokens = lex("extern \"C\" { fn printf(fmt: cstring, ...): int; }");
+    Parser parser(std::move(tokens), "<vm-test>");
+    auto program = parser.parseProgram();
+    compileProgram(program);
+  } catch (const CompileError& error) {
+    threw = true;
+    assert(error.message.find("variadic") != std::string::npos);
+  }
+  assert(threw);
+#endif
+}
+
 void testExternRejectsLargeStructAtCompileTime() {
   TEST_SCOPE();
   // A struct larger than 16 bytes is class MEMORY: passed on the stack and
@@ -2319,6 +2499,8 @@ void testExternRejectsUnsupportedSignatureAtCompileTime() {
 
 void testExternRejectsVariadicDeclarationAtCompileTime() {
   TEST_SCOPE();
+  // A Oskel `rest...` is not a C variadic: it collects into an array, which a C
+  // call cannot pass, so the declaration is rejected at parse time.
   bool threw = false;
   try {
     auto tokens = lex("extern \"C\" { fn bad(rest...): int; }");
@@ -2327,7 +2509,7 @@ void testExternRejectsVariadicDeclarationAtCompileTime() {
     compileProgram(program);
   } catch (const CompileError& error) {
     threw = true;
-    assert(error.message.find("variadic") != std::string::npos);
+    assert(error.message.find("array") != std::string::npos);
   }
   assert(threw);
 }
@@ -2474,6 +2656,17 @@ int main() {
   testExternRejectsNullAddress();
   testExternRejectsUnsupportedSignatureAtCompileTime();
   testExternRejectsVariadicDeclarationAtCompileTime();
+#if OSKEL_FFI_VARIADIC
+  testExternVariadicPassesPromotedIntegers();
+  testExternVariadicPromotesFloatToDouble();
+  testExternVariadicAcceptsZeroTrailingArguments();
+  testExternVariadicRejectsWrongFixedArity();
+#endif
+  testExternVariadicRejectsStructPrefix();
+  testExternRejectsOskelRestInExternDeclaration();
+  testExternRejectsBareEllipsisNotLast();
+  testExternVariadicAndFixedDeclarationsConflict();
+  testExternVariadicRejectedWithoutSupport();
 
   std::puts("vm tests passed");
   return 0;

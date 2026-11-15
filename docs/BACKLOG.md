@@ -221,10 +221,21 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 7. FFI (`src/ffi.cpp`)
 
-1. **[P1]** `extern "C"` does not support variadics; `printf` cannot be
-   declared. Provide a way (or a documented reason it is out of scope).
-2. **[P1]** `extern "C"` does not support structs larger than 16 bytes by value
-   (System V passes them via a hidden pointer / `sret`).
+1. ~~**[P1]** `extern "C"` does not support variadics; `printf` cannot be
+   declared. Provide a way (or a documented reason it is out of scope).~~ **Done**:
+   a trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...):
+   int`). The compiler records the flag on the `ExternSymbol` and checks only the
+   fixed prefix; the runtime prepares an `ffi_prep_cif_var` call per call and
+   applies the default argument promotions. Needs `libffi` plus the System V
+   AMD64 ABI (`kCVariadicSupported`), so off that the declaration is rejected at
+   compile time. See `tests/53_ffi_variadic.oskl`,
+   `vm_test.cpp::testExternVariadic*` and `docs/language.md` §4.6.
+2. ~~**[P1]** `extern "C"` does not support structs larger than 16 bytes by value
+   (System V passes them via a hidden pointer / `sret`).~~ **Done**: a struct
+   larger than 16 bytes (class MEMORY) is passed on the stack and returned through
+   the hidden `sret` pointer via the `libffi` path (`kMemoryStructsSupported`).
+   Off System V + `libffi` the declaration is rejected at compile time. See
+   `vm_test.cpp::testExternMarshalsMemoryStruct*` and `docs/language.md` §4.6.
 3. ~~**[P1]** `extern "C"` does not support callbacks returning structs (scalars
    only).~~ **Done**: a callback may return a struct by value. The compiler
    resolves the struct name of the callback return to its fields

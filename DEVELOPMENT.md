@@ -522,6 +522,21 @@ previous one.
   backend from including `ffi_marshal.h` or `libffi`, so the split cannot
   regress. See `docs/language.md` §4.6, `tests/32_ffi_callback.oskl` and
   `tests/vm_test.cpp`.
+- **C variadics (done)** — a trailing bare `...` declares a C variadic
+  (`extern "C" { fn printf(fmt: cstring, ...): int; }`): the named parameters
+  are the fixed prefix and every extra argument is passed through the default
+  argument promotions (`float` widens to `double`, `bool` to `int`, a string to
+  `const char *`). The spelling is a bare `...`, told apart from the Oskel
+  `rest...` parameter pack (which collects into an array and cannot cross the
+  boundary, so it is rejected in an `extern` declaration). A variadic
+  declaration is recorded on the `ExternSymbol` (`variadic`), and the compiler
+  checks only that the fixed prefix is present — the tail is not type-checked,
+  because C promotes and consumes it at run time. The call always goes through
+  `libffi` (`ffi_prep_cif_var`, prepared per call because the argument count
+  changes), so like a class-MEMORY struct it needs `kCVariadicSupported`
+  (libffi + System V AMD64); off that the declaration is rejected at compile
+  time (`OSKEL_FFI_VARIADIC` skips the script test). See `docs/language.md`
+  §4.6 and `tests/53_ffi_variadic.oskl`.
 
 ### PHASE 6.7 — Error handling 🔶 in progress
 

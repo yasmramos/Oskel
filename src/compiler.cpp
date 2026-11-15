@@ -535,18 +535,26 @@ std::string Compiler::assignError(const TypeRef& from, const TypeRef& to,
 void Compiler::checkNativeCall(const std::string& name, const NativeSig& sig,
                                const CallExpr& call, int line, int col) {
   const bool variadic = !sig.params.empty() && sig.params.back().variadic;
+  // A C variadic (`extern "C" fn printf(fmt: cstring, ...): int`) takes its
+  // named parameters and then any number of extra arguments, which C promotes
+  // and consumes at run time, so the call site checks only that the fixed
+  // prefix is present and never type-checks the tail.
+  const bool cVariadic = sig.cVariadic;
   // A variadic native accepts `params.size() - 1` or more arguments; the extras
   // are checked against the variadic parameter's element type.
   const size_t required = sig.params.size() - (variadic ? 1 : 0);
-  const bool arityOk =
-      variadic ? call.args.size() >= required : call.args.size() == required;
+  const bool arityOk = variadic   ? call.args.size() >= required
+                       : cVariadic ? call.args.size() >= sig.params.size()
+                                   : call.args.size() == required;
   if (!arityOk) {
     fail("'" + name + "' expects " + std::to_string(required) + " argument" +
-             (required == 1 ? "" : "s") + (variadic ? " or more" : "") + ", got " +
+             (required == 1 ? "" : "s") + (variadic || cVariadic ? " or more" : "") + ", got " +
              std::to_string(call.args.size()),
          line, col);
   }
-  for (size_t i = 0; i < call.args.size(); ++i) {
+  const size_t checked = cVariadic ? std::min(call.args.size(), sig.params.size())
+                                   : call.args.size();
+  for (size_t i = 0; i < checked; ++i) {
     // Arguments past the fixed parameters all bind the variadic element type.
     const size_t slot = i < required ? i : sig.params.size() - 1;
     const TypeRef& param = sig.params[slot].type;
@@ -1610,7 +1618,7 @@ void Compiler::compileFnDecl(const FnDeclStmt& fn, int line, int col) {
     // Keep the signature table in step with the binding that actually wins: a
     // native keeps its signature, any other global of the same name drops it.
     if (fn.isNative) {
-      nativeSigs_[fn.name] = NativeSig{fn.params, fn.returnType, fn.mustUse};
+      nativeSigs_[fn.name] = NativeSig{fn.params, fn.returnType, fn.mustUse, fn.cVariadic};
     } else {
       nativeSigs_.erase(fn.name);
     }
@@ -1689,12 +1697,14 @@ void Compiler::registerNativeDecls(const BlockStmt& block) {
   for (const auto& child : block.stmts) {
     if (!child) continue;
     if (const auto* fn = std::get_if<FnDeclStmt>(&child->node)) {
-      if (fn->isNative) nativeSigs_[fn->name] = NativeSig{fn->params, fn->returnType, fn->mustUse};
+      if (fn->isNative) {
+        nativeSigs_[fn->name] = NativeSig{fn->params, fn->returnType, fn->mustUse, fn->cVariadic};
+      }
     } else if (const auto* ext = std::get_if<ExternBlockStmt>(&child->node)) {
       // An `extern "C"` declaration is a native, so a hoisted function that
       // calls one is checked against its signature exactly like `native fn`.
       for (const FnDeclStmt& decl : ext->decls) {
-        nativeSigs_[decl.name] = NativeSig{decl.params, decl.returnType};
+        nativeSigs_[decl.name] = NativeSig{decl.params, decl.returnType, false, decl.cVariadic};
       }
     }
   }
@@ -1727,10 +1737,6 @@ void Compiler::registerMustUseDecls(const BlockStmt& block) {
 // path so the call site is type-checked and the binding is emitted.
 void Compiler::compileExternBlock(const ExternBlockStmt& block, int line, int col) {
   for (const FnDeclStmt& fn : block.decls) {
-    if (std::any_of(fn.params.begin(), fn.params.end(),
-                    [](const Param& p) { return p.variadic; })) {
-      fail("extern \"C\" function '" + fn.name + "' cannot be variadic", line, col);
-    }
     std::vector<ffi::TypeSpec> paramTypes;
     paramTypes.reserve(fn.params.size());
     for (const Param& param : fn.params) {
@@ -1741,7 +1747,7 @@ void Compiler::compileExternBlock(const ExternBlockStmt& block, int line, int co
     rejectUnionForFfi(fn.returnType, "return type of extern \"C\" function '" + fn.name + "'",
                       line, col);
     const ffi::TypeSpec returnType = resolveTypeSpec(fn.returnType);
-    std::string problem = ffi::validateSignature(paramTypes, returnType);
+    std::string problem = ffi::validateSignature(paramTypes, returnType, fn.cVariadic);
     if (!problem.empty()) {
       fail("extern \"C\" function '" + fn.name + "': " + problem, line, col);
     }
@@ -1750,7 +1756,7 @@ void Compiler::compileExternBlock(const ExternBlockStmt& block, int line, int co
     // would silently make an earlier call go through the wrong signature. The
     // table is session-wide (it is not reset per module), so the check also
     // catches a conflict between two imported modules, not just one file.
-    const std::string signature = ffi::canonicalSignature(paramTypes, returnType);
+    const std::string signature = ffi::canonicalSignature(paramTypes, returnType, fn.cVariadic);
     auto previous = externSignatures_.find(fn.name);
     if (previous != externSignatures_.end() && previous->second != signature) {
       fail("extern \"C\" symbol '" + fn.name + "' is declared with two different signatures (" +
@@ -1760,7 +1766,9 @@ void Compiler::compileExternBlock(const ExternBlockStmt& block, int line, int co
     externSignatures_[fn.name] = signature;
     // The engine reads this to resolve the symbol and build the marshalling
     // thunk; the compiler stays free of any host/ABI dependency (§2 boundary).
-    bc_.externs.push_back(ExternSymbol{fn.name, std::move(paramTypes), returnType});
+    ExternSymbol symbol{fn.name, std::move(paramTypes), returnType};
+    symbol.variadic = fn.cVariadic;
+    bc_.externs.push_back(std::move(symbol));
     compileFnDecl(fn, line, col);
   }
 }

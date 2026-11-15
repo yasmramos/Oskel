@@ -25,14 +25,17 @@ namespace ffi {
 // Builds the native function that stands in for a resolved `extern "C"` symbol.
 //
 // `address` is the resolved symbol; `paramTypes` and `returnType` are the
-// declared FFI types (a scalar or a resolved struct), in order. The returned
-// `Value` is a native ready to be defined as a global. `Runtime::fail` is used
-// for a wrong argument type or arity, so a bad call is a clean runtime error,
-// never a wild C call.
+// declared FFI types (a scalar or a resolved struct), in order. `variadic` is
+// true for a C variadic declaration, whose fixed prefix is `paramTypes` and
+// whose trailing arguments are marshalled with the default promotions. The
+// returned `Value` is a native ready to be defined as a global. `Runtime::fail`
+// is used for a wrong argument type or arity, so a bad call is a clean runtime
+// error, never a wild C call.
 //
 // The caller validates the signature with `ffi::validateSignature` first; a
 // signature that reaches here unsupported is a programming error.
 Value makeExternNative(Runtime& rt, const std::string& name, void* address,
-                       const std::vector<TypeSpec>& paramTypes, const TypeSpec& returnType);
+                       const std::vector<TypeSpec>& paramTypes, const TypeSpec& returnType,
+                       bool variadic = false);
 
 }  // namespace ffi

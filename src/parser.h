@@ -199,7 +199,7 @@ class Parser {
   ExprPtr parseLambda();
 
   ExprPtr buildString(const Token& token);
-  std::vector<Param> parseParams();
+  std::vector<Param> parseParams(bool allowBareEllipsis = false, bool* outCVariadic = nullptr);
   // Parses an optional `: <type>` annotation after a name (variable, parameter
   // or return type). Returns an empty TypeRef when no `:` is present. Rejects
   // unknown type names at parse time.

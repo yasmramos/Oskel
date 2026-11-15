@@ -70,6 +70,24 @@ constexpr std::size_t kMaxExternArgs = 6;
 
 constexpr bool kStructByValueSupported = OSKEL_FFI_STRUCT_BY_VALUE != 0;
 
+// Whether an `extern "C"` declaration may be variadic (`fn printf(fmt: cstring,
+// ...): int`). A C variadic call needs `ffi_prep_cif_var`, so it needs libffi,
+// and the default-argument promotions it applies are the System V AMD64 ones
+// (the Microsoft x64 ABI passes a variadic floating-point argument in *both* an
+// xmm and a general-purpose register, a shape the register thunks cannot
+// express). Scalars stay portable, but variadics are a development-engine,
+// System V feature, exactly like a class-MEMORY struct. A macro, not only a
+// `constexpr`, for the same `#if` reason as `OSKEL_FFI_STRUCT_BY_VALUE`.
+#ifndef OSKEL_FFI_VARIADIC
+#if defined(OSKEL_HAVE_LIBFFI) && defined(__x86_64__) && !defined(_WIN32)
+#define OSKEL_FFI_VARIADIC 1
+#else
+#define OSKEL_FFI_VARIADIC 0
+#endif
+#endif
+
+constexpr bool kCVariadicSupported = OSKEL_FFI_VARIADIC != 0;
+
 // Whether a struct larger than 16 bytes (System V class MEMORY) may cross the
 // boundary. The register thunks express a struct only as up to two eightbytes,
 // so a MEMORY struct — passed on the stack, and returned through a hidden
@@ -444,13 +462,16 @@ inline std::string canonicalTypeSpec(const TypeSpec& spec) {
 // The canonical spelling of a whole signature, parameters then return. Two
 // `extern "C"` declarations of one symbol agree exactly when these strings are
 // equal; the compiler rejects a mismatch instead of letting one silently win.
+// The trailing `...` of a C variadic is part of the signature: `printf(a: int)`
+// and `printf(a: int, ...)` are different declarations.
 inline std::string canonicalSignature(const std::vector<TypeSpec>& params,
-                                      const TypeSpec& returnType) {
+                                      const TypeSpec& returnType, bool variadic = false) {
   std::string out = "(";
   for (std::size_t i = 0; i < params.size(); ++i) {
     if (i != 0) out += ",";
     out += canonicalTypeSpec(params[i]);
   }
+  if (variadic) out += params.empty() ? "..." : ",...";
   out += ")->";
   out += canonicalTypeSpec(returnType);
   return out;
@@ -460,13 +481,20 @@ inline std::string canonicalSignature(const std::vector<TypeSpec>& params,
 // Returns an empty string when the signature is fine, or a message naming the
 // first problem. The compiler calls this so an unsupported declaration fails
 // at compile time with a clear error instead of at the first call.
+//
+// `variadic` is true for a C variadic (`fn printf(fmt: cstring, ...): int`).
+// Such a declaration always goes through `libffi` (the register thunks cannot
+// express a variable argument list), so it needs `kCVariadicSupported` and is
+// not bound by the register budget below; its return must be a scalar.
 inline std::string validateSignature(const std::vector<TypeSpec>& params,
-                                     const TypeSpec& returnType) {
+                                     const TypeSpec& returnType, bool variadic = false) {
   // The bound is on flattened eightbytes, not parameters: a struct contributes
   // one per 8 bytes it spans. Keeping the total at or below the number of
   // general-purpose argument registers guarantees every eightbyte lands in a
   // register, so none spills to the stack (a partly-registered aggregate is
-  // passed wholly in memory, which the register thunks cannot express).
+  // passed wholly in memory, which the register thunks cannot express). A
+  // variadic call goes through libffi, which reproduces the stack layout, so
+  // the bound does not apply to it.
   std::size_t eightbytes = 0;
   for (const TypeSpec& spec : params) {
     if (spec.isStruct) {
@@ -481,6 +509,21 @@ inline std::string validateSignature(const std::vector<TypeSpec>& params,
     }
     std::string problem = validateTypeSpec(spec, /*isReturn=*/false);
     if (!problem.empty()) return problem;
+  }
+  if (variadic) {
+    if (!kCVariadicSupported) {
+      return "a variadic 'extern \"C\"' declaration needs libffi and the System V AMD64 ABI, "
+             "which this build does not have";
+    }
+    for (const TypeSpec& spec : params) {
+      if (spec.isStruct || spec.isCallback) {
+        return "a variadic 'extern \"C\"' function takes only scalar parameters before the '...'";
+      }
+    }
+    if (returnType.isStruct) {
+      return "a variadic 'extern \"C\"' function must return a scalar";
+    }
+    return validateTypeSpec(returnType, /*isReturn=*/true);
   }
   if (eightbytes > kMaxExternArgs) {
     return "an 'extern' function may pass at most " + std::to_string(kMaxExternArgs) +
