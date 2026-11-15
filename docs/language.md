@@ -1579,6 +1579,11 @@ Details:
 - `reduce` without an initial value uses the first element as the accumulator and fails if the array is empty.
 - `sum` requires all elements to be numbers; it returns `int` if all are integers and `double` otherwise.
 - `clone` is shallow: nested arrays and maps are shared.
+- The in-place mutators (`push`, `unshift`, `insert`, `sort`, `clear`, and the
+  map's `merge`) return the receiver, not `nil`, so they can be chained
+  (`a.push(1).push(2)`) or assigned back (`a = a.push(1)`). `pop`, `shift` and
+  `removeAt` instead return the removed element, since that is the value the
+  caller wants.
 
 ```oskel
 let nums = [3, 1, 2];
@@ -1586,6 +1591,9 @@ assertEq(nums.sorted(), [1, 2, 3]);
 assertEq(nums.sorted((a, b) => a > b), [3, 2, 1]);
 assertEq(nums.map(n => n * 2), [6, 2, 4]);
 assertEq(nums.reduce((a, n) => a + n, 0), 6);
+
+let chain = [1].push(2).push(3);   // mutators return the receiver
+assertEq(chain, [1, 2, 3]);
 ```
 
 ---
