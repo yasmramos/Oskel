@@ -766,6 +766,19 @@ struct name. A field annotation is optional; when present, the value is checked
 with the same rules as every other annotation (including `int` → `float` →
 `double` widening).
 
+A field may be written in **shorthand**: `Point { x, y }` is sugar for
+`Point { x: x, y: y }`, taking each value from the variable of the same name in
+scope (like Go, JavaScript and Rust). The shorthand and the `name: value` form
+mix freely in one literal, and a shorthand value is an ordinary expression, so
+it is type-checked exactly like the explicit form.
+
+```oskel
+let x = 1;
+let y = 2;
+let p = Point { x, y };        // Point { x: 1, y: 2 }
+let q = Point { x, y: 5 };     // Point { x: 1, y: 5 }
+```
+
 ```oskel
 struct Pair { first; second; }          // untyped fields
 let a = Pair { first: 1, second: "x" }; // ok: any value fits

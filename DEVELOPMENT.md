@@ -378,8 +378,10 @@ previous one.
   no opcode; a `Point { x: 1, y: 2 }` literal is checked against the
   declaration (unknown, missing, duplicate or mistyped field is a compile
   error) and then lowered to the same `NEWTABLE`/`SETTABLE` sequence as a map
-  literal, so a struct value is a plain map at runtime. A struct name is a
-  valid annotation and is visible to the whole file (like a hoisted `fn`). See
+  literal, so a struct value is a plain map at runtime. A field may use the
+  shorthand `Point { x, y }` (sugar for `Point { x: x, y: y }`, from the
+  variables in scope), a parser-only desugaring. A struct name is a valid
+  annotation and is visible to the whole file (like a hoisted `fn`). See
   `docs/language.md` §4.7 and `tests/18_structs.oskl`.
 - `switch` simple (literals and ranges) — **done**: no fallthrough, labels are
   literals or integer ranges, optional single `default`; compiles to the

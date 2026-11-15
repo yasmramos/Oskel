@@ -11,6 +11,12 @@ may change between minor versions.
 
 ### Added
 
+- `struct` literals support field shorthand: `Point { x, y }` is sugar for
+  `Point { x: x, y: y }`, taking each value from the variable of the same name
+  in scope. The shorthand and the `name: value` form mix freely in one literal
+  (`Point { x, y: 5 }`). It is a parser-level desugaring — no new token, node,
+  opcode or runtime change — so the lowered bytecode is identical to the
+  explicit form and the VM and the AOT backend are unaffected.
 - **Windows AOT target** (PHASE 7e). `oskel build --target
   x86_64-windows-win64` emits a static Windows PE32+ executable; the default
   target follows the host, and a Windows output name gets the `.exe` suffix.
