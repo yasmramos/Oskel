@@ -414,6 +414,13 @@ class Lexer {
           char digit = advance();
           value = value * 16 + (isDigit(digit) ? digit - '0' : (std::tolower(digit) - 'a' + 10));
         }
+        // A lone surrogate is not a Unicode scalar value; `appendUtf8` would
+        // encode it as CESU-8 (three bytes), which is not valid UTF-8 and
+        // contradicts the language's "strings are UTF-8" guarantee. Surrogate
+        // pairs are not supported either, so reject the whole range.
+        if (value >= 0xD800 && value <= 0xDFFF) {
+          error("surrogate code point in '\\u' escape is not valid UTF-8", startLine, startCol);
+        }
         std::string encoded;
         appendUtf8(encoded, value);
         return encoded;

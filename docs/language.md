@@ -138,7 +138,11 @@ Escape sequences:
 | `\"` | Double quote |
 | `\$` | Literal dollar sign |
 | `\xNN` | Hexadecimal byte (two digits) |
-| `\uXXXX` | Unicode code point (four digits) |
+| `\uXXXX` | Unicode code point (four digits, not a lone surrogate) |
+
+A `\uXXXX` escape must name a Unicode scalar value, so the surrogate range
+`U+D800`..`U+DFFF` is a compile error. Surrogate pairs are not supported; write
+the four-digit escape of the code point itself (`\uXXXX` for `U+0000`..`U+FFFF`).
 
 ### 2.5 Interpolation
 

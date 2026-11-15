@@ -1,0 +1,5 @@
+// expect-exit: 65
+// A `\uXXXX` escape must be a Unicode scalar value. A lone surrogate encodes
+// as CESU-8 (three bytes), which is not valid UTF-8, so the lexer rejects it
+// instead of producing a string the rest of the language cannot trust.
+let s = "\uD800";
