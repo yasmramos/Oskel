@@ -778,17 +778,25 @@ bool bindString(Runtime& in, StringPtr receiver, const std::string& name, Value&
       if (static_cast<uint64_t>(keep) > 64ULL * 1024ULL * 1024ULL) {
         in.fail(methodName + "() result is too large");
       }
-      // Build the padding once: the previous loop re-counted the whole buffer
-      // with `utf8Length` on every turn, making a wide pad quadratic.
+      // Build the padding once and clip it as it is built. Splitting the whole
+      // (possibly oversized) padding into code points only to drop the tail
+      // would allocate one string per code point; instead repeat the fill while
+      // a whole copy fits, then append the first code points of one last copy.
       int64_t fillChars = static_cast<int64_t>(utf8Length(fill));
       std::string padding;
       padding.reserve(static_cast<size_t>(keep) + fill.size());
-      for (int64_t filled = 0; filled < keep; filled += fillChars) padding += fill;
-      // Clip to `keep` characters (the last repetition may overshoot).
-      std::vector<std::string> chars = utf8Chars(padding);
-      std::string clipped = utf8Join(std::vector<std::string>(
-          chars.begin(), chars.begin() + static_cast<size_t>(keep)));
-      return Value(atStart ? clipped + text : text + clipped);
+      int64_t remaining = keep;
+      while (remaining >= fillChars) {
+        padding += fill;
+        remaining -= fillChars;
+      }
+      if (remaining > 0) {
+        auto fillCodePoints = utf8Chars(fill);
+        for (int64_t i = 0; i < remaining; ++i) {
+          padding += fillCodePoints[static_cast<size_t>(i)];
+        }
+      }
+      return Value(atStart ? padding + text : text + padding);
     });
     return true;
   }

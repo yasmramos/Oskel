@@ -36,4 +36,16 @@ assertEq("ab".padEnd(1000000).length, 1000000);
 assertEq(pcall(() => "ab".padStart(100000000)).ok, false);
 assertEq(pcall(() => "ab".padEnd(100000000)).ok, false);
 
+// A wide pad with a multi-character fill clips the last repetition exactly and
+// does not build one string per code point to drop the tail.
+assertEq("ab".padStart(7, "xy").length, 7);
+assertEq("ab".padStart(7, "xy"), "xyxyxab");
+assertEq("ab".padEnd(7, "xy"), "abxyxyx");
+assertEq("ab".padStart(1000000, "xy").length, 1000000);
+assertEq("ab".padStart(1000000, "xy").substr(0, 4), "xyxy");
+assertEq("ab".padEnd(1000000, "xy").substr(-4), "xyxy");
+// The clip works on code points, not bytes, for a multi-byte fill.
+assertEq("x".padStart(5, "é").length, 5);
+assertEq("x".padStart(5, "é"), "ééééx");
+
 print("string pad ok");
