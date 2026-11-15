@@ -1806,6 +1806,81 @@ void emitTableNew(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   emitFailCall(cg, env.fail, *env.msgOom);
 }
 
+// `AotValue oskel_pack_rest(AotValue* first, long count)`: build the array a
+// variadic function binds to its trailing `rest...` parameter (PHASE 7c.3). The
+// caller's argument window grows *down* (consecutive arguments sit 16 bytes
+// apart, the first at the highest address), so item `i` is at `first - 16 * i`.
+// The helper allocates the array header, grows the items block once to `count`
+// and copies the extras in order. `count == 0` yields an empty array, matching
+// the VM's packed `rest` binding for a call with no extras.
+void emitPackRest(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
+  CodeGen::Label empty = cg.newLabel();
+  CodeGen::Label copyLoop = cg.newLabel();
+  CodeGen::Label copyDone = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 16);
+  cg.movToMem(Rbp, -24, Rdi);  // first extra
+  cg.movReg(R12, Rsi);         // count
+
+  // The array header, zeroed.
+  cg.movImm(Rdi, static_cast<std::int64_t>(kAotArrayHeaderSize));
+  cg.callLabel(env.alloc);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movReg(Rbx, Rax);  // header
+  cg.movImmToMem(Rbx, kTableLengthOffset, 0);
+  cg.movImmToMem(Rbx, kTableCapacityOffset, 0);
+  cg.movImmToMem(Rbx, kTableBlockOffset, 0);
+
+  cg.testReg(R12);
+  cg.jcc(Jcc::Eq, empty);
+
+  // Grow the items block to `count` items.
+  cg.movReg(Rdi, Rbx);
+  cg.movReg(Rsi, R12);
+  cg.movImm(Rdx, kArrayItemSize);
+  cg.callLabel(env.blockEnsure);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+
+  // Copy the extras: block[i] = first[-16 * i].
+  cg.xorReg(R8, R8);                     // i
+  cg.movFromMem(R9, Rbp, -24);           // src cursor = first
+  cg.movReg(R10, Rax);                   // dst cursor = block
+  cg.bind(copyLoop);
+  cg.cmpReg(R8, R12);
+  cg.jcc(Jcc::Ae, copyDone);
+  cg.movFromMem(R11, R9, 0);             // tag
+  cg.movToMem(R10, 0, R11);
+  cg.movFromMem(R11, R9, 8);             // payload
+  cg.movToMem(R10, 8, R11);
+  cg.subRegImm32(R9, 16);                // next extra (window grows down)
+  cg.addImm32(R10, static_cast<std::int32_t>(kArrayItemSize));
+  cg.addImm32(R8, 1);
+  cg.jmp(copyLoop);
+  cg.bind(copyDone);
+  cg.movToMem(Rbx, kTableLengthOffset, R12);
+
+  cg.bind(empty);
+  cg.movReg(Rdx, Rbx);
+  cg.movImm(Rax, kTagArray);
+  cg.jmp(done);
+
+  cg.bind(done);
+  cg.addImm32(Rsp, 16);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(oom);
+  emitFailCall(cg, env.fail, *env.msgOom);
+}
+
 // `AotValue oskel_table_get(AotValue obj, AotValue index)`: `obj[index]` for an
 // array (int index, negative from the end), a string (int code-point index) or
 // a map (string key, missing key yields nil), mirroring `ops::indexGet`.
@@ -5415,6 +5490,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitUtf8Len(cg, env.utf8Len);
   emitUtf8CharAt(cg, env.utf8CharAt);
   emitTableNew(cg, handles.tableNew, env);
+  emitPackRest(cg, handles.packRest, env);
   emitTableGet(cg, handles.tableGet, env);
   emitMemberGet(cg, handles.memberGet, env);
   emitTableSet(cg, handles.tableSet, env);

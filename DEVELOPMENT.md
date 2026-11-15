@@ -931,6 +931,21 @@ Slices, each independently shippable:
       the error paths) and the `oskel build` fixture. The math block (`sqrt`,
       `pow`, `sin`, ...) still needs an embedded libm because the freestanding
       binary cannot call the host's.
+    - **7c.6** (done) — variadic parameter packs. A function with a trailing
+      `rest...` parameter was a lowering error ("variadic function",
+      `PHASE 7c.3`); it now compiles. The child proto's prologue checks the
+      argument count against `numParams - 1` (a variadic function accepts that
+      many or more, unlike the exact match a fixed function needs), copies the
+      fixed arguments into R0..R(n-2) and calls the new runtime helper
+      `oskel_pack_rest(first, count)` to build an array from the extras and
+      bind it to the last slot. The caller's argument window grows *down*, so
+      `first` is `args - 16 * (numParams - 1)` and item `i` sits at
+      `first - 16 * i`; the helper allocates an array header, grows its block
+      once and copies the extras in order, yielding an ordinary `Array` value
+      (the VM's packed `rest` binding). No new opcode and no bytecode change:
+      `Bytecode::variadic`/`numParams` already carried the information. Covered
+      by `tests/freestanding_test.cpp` (zero, one and many extras, `for-in`
+      over the pack, `len`, the arity error) and the `oskel build` fixture.
     - **7c.1+** — boxed `Value` over the arena, `print`/`toString` (own dtoa),
       collections and functions. The AOT runtime has its own boxed value and
       its own arena-backed objects, sharing *semantics* with `ops.h` but not
