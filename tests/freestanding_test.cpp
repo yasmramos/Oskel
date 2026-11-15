@@ -1445,6 +1445,62 @@ static void test_variadic_arity_error() {
         "the variadic arity error names the wrong argument count");
 }
 
+// Structural equality of arrays and maps (PHASE 7 divergence fix). The hosted
+// engine compares two collections by content (`Value::equals`), so a compiled
+// binary must too: `[1, 2] == [1, 2]` is true, not pointer identity. The
+// recursion in the equality helper also fixes `in` over an array of arrays.
+static void test_structural_equality() {
+  Bytecode proto = compileSource(
+      "print([1, 2] == [1, 2]);\n"
+      "print([1, 2] == [1, 3]);\n"
+      "print([1, 2] == [1, 2, 3]);\n"
+      "print([[1, 2]] == [[1, 2]]);\n"
+      "print([[1, 2]] == [[1, 3]]);\n"
+      "print({\"a\": 1, \"b\": 2} == {\"b\": 2, \"a\": 1});\n"
+      "print({\"a\": 1} == {\"a\": 2});\n"
+      "print({\"a\": 1} == {\"a\": 1, \"b\": 2});\n"
+      "print([1, \"x\", true, nil] == [1, \"x\", true, nil]);\n"
+      "print([1, \"x\", true, nil] == [1, \"x\", true, 0]);\n"
+      "print([1.0] == [1]);\n"
+      "print([] == []);\n"
+      "print({} == {});\n"
+      "print(1 == 1.0);\n"
+      "print(nil == nil);\n"
+      "print([1, 2] != [1, 3]);\n"
+      "print([1, 2] != [1, 2]);\n"
+      "print([1, 2] in [[1, 2], [3, 4]]);\n"
+      "print([9] in [[1, 2], [3, 4]]);\n"
+      "let a = [1, 2];\n"
+      "a[0] = a;\n"
+      "let b = [1, 2];\n"
+      "b[0] = b;\n"
+      "print(a == a);\n"
+      "print(a == b);\n"
+      "print(a == [1, 2]);\n"
+      "let m1 = {\"x\": 1};\n"
+      "m1[\"self\"] = m1;\n"
+      "let m2 = {\"x\": 1};\n"
+      "m2[\"self\"] = m2;\n"
+      "print(m1 == m2);\n"
+      "var deepA = [0];\n"
+      "var deepB = [1];\n"
+      "var n = 0;\n"
+      "while (n < 50) { deepA = [deepA]; deepB = [deepB]; n = n + 1; }\n"
+      "print(deepA == deepB);\n"
+      "print(deepA == deepA);\n");
+  RunResult result = buildAndRun("/tmp/oskel_structural_equality", proto);
+  std::string expected =
+      "true\nfalse\nfalse\ntrue\nfalse\n"
+      "true\nfalse\nfalse\ntrue\nfalse\n"
+      "true\ntrue\ntrue\ntrue\ntrue\n"
+      "true\nfalse\ntrue\nfalse\n"
+      "true\ntrue\nfalse\ntrue\n"
+      "false\ntrue\n";
+  check(result.output == expected,
+        "a compiled program compares arrays and maps by content");
+  check(result.exitCode == 0, "structural equality exits 0 through _start");
+}
+
 #endif  // FREESTANDING_EXEC_TESTS
 
 int main() {
@@ -1485,6 +1541,7 @@ int main() {
   test_sb_append_capacity_overflow();
   test_variadic();
   test_variadic_arity_error();
+  test_structural_equality();
 #else
   std::printf("skipped: platform and execution tests require Linux x86-64\n");
 #endif

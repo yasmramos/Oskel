@@ -169,9 +169,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 1. **[P0]** VM/AOT divergence in collection methods: `arr.push`, `map.keys`,
    `str.upper`, ... work in the VM and fail in AOT with "no such member".
-2. **[P0]** VM/AOT divergence in structural equality: `[1,2] == [1,2]` is true
-   in the VM (content) and false in AOT (identity). A semantic change, not just
-   speed.
+2. **[P0] [done]** VM/AOT divergence in structural equality: `[1,2] == [1,2]`
+   is true in the VM (content) and false in AOT (identity). The equality helper
+   in `oskel_compare` now descends into arrays and maps (equal length, equal
+   items/entries), tracking the pairs already under comparison so a cyclic
+   structure compares equal to an isomorphic one, matching the hosted
+   `Value::equals`.
 3. **[P0]** VM/AOT divergence in `try`/`catch`: `$isError` in AOT always
    returns false, so `try`/`catch` never catches; a runtime error kills the
    process (exit 70) with no recovery.
@@ -183,8 +186,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    AOT uses a linear scan (O(n)), so a loop over a large map is O(n²).
 7. **[P1]** VM/AOT divergence in string iteration: AOT allocates one
    `AotString` per character; a 1M-char string means 1M arena allocations.
-8. **[P1]** `emitContains` for arrays uses `AotCompareOp::Eq`, which for
-   arrays/maps is identity, not content — inconsistent with the VM.
+8. **[P1] [done]** `emitContains` for arrays uses `AotCompareOp::Eq`, which
+   used to be identity for arrays/maps; now that equality is structural, `in`
+   over an array of arrays matches the VM (fixed with item 2).
 9. **[P1]** `emitMemberGet` for array/string supports only `.length`, no
    methods — same divergence as item 1.
 10. **[P1]** `emitIterNext` for `str` allocates a string per character — same
