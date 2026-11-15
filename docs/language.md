@@ -606,6 +606,16 @@ clear message. The return type must be a scalar. A declaration that is variadic
 and one that is not are different C types, so declaring one symbol both ways is
 a compile error (see above).
 
+**Scope of the boundary.** A C type crosses the boundary when Oskel has a value
+that spells it: integers (including a C enum, which *is* an `int`), `float`/
+`double`, `bool`, pointers (`ptr`/`cstring`/`string`), a `struct` of scalar
+fields, and a `fn(...)` callback. The C types with no Oskel value — `long
+double`, `__int128`, an array by value (it decays to a pointer at the ABI, so
+`ptr` spells it), a union, a bitfield, and a callback that itself takes a
+callback — are out of scope: a declaration that uses one is rejected at compile
+time with a clear message instead of a wrong call. See `docs/BACKLOG.md` §7 for
+the reason for each.
+
 **Local inference.** With no annotation, the compiler infers the type from the
 initializer when it is a literal or another typed binding, and then checks
 later assignments against it:
