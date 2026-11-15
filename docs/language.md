@@ -1644,7 +1644,7 @@ Details:
 - `indexOf` searches bytes but returns the index in code points.
 - `substr` counts code points; a negative `length` produces an empty string.
 - `padStart` and `padEnd` pad by code points and trim the fill to the exact width. The result has the same 64 MB limit as `repeat`.
-- `repeat` has a 64 MB limit on the result.
+- `repeat` has a 64 MB limit on the result. An empty text repeats to an empty text for any non-negative count (including a very large one), and a negative count is an error.
 
 ```oskel
 assertEq("  hello  ".trim(), "hello");

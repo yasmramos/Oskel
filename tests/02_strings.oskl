@@ -34,6 +34,15 @@ assertEq("abc".indexOf("z"), -1);
 assertEq("abcdef".substr(1, 3), "bcd");
 assertEq("abcdef".substr(-2), "ef");
 assertEq("ab".repeat(3), "ababab");
+// An empty text repeats to an empty text for any count, including a huge one:
+// the loop must not run for an empty text (`"".repeat(INT64_MAX)` used to spin
+// through the full count). A zero count is empty too.
+assertEq("".repeat(0), "");
+assertEq("".repeat(5), "");
+assertEq("".repeat(9223372036854775807), "");
+assertEq("ab".repeat(0), "");
+assertEq(pcall(() => "a".repeat(-1)).ok, false);
+assertEq(pcall(() => "a".repeat(1000000000)).ok, false);
 assertEq("abc".reversed(), "cba");
 assertEq("5".padStart(3, "0"), "005");
 assertEq("5".padEnd(3, "0"), "500");

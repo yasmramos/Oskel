@@ -702,8 +702,12 @@ bool bindString(Runtime& in, StringPtr receiver, const std::string& name, Value&
       need(in, "repeat", args, 1);
       int64_t count = wantInt(in, "repeat", args[0], "count");
       if (count < 0) in.fail("repeat() count cannot be negative");
-      if (count > 0 && text.size() > 0 &&
-          static_cast<uint64_t>(count) > (64ULL * 1024ULL * 1024ULL) / text.size()) {
+      // An empty text repeats to an empty text for any count, so answer it
+      // without entering the loop: `"".repeat(INT64_MAX)` would otherwise spin
+      // through the full count. The size guard below also skips an empty text
+      // (there are no bytes to bound), so this is the only place it is caught.
+      if (text.empty() || count == 0) return Value("");
+      if (static_cast<uint64_t>(count) > (64ULL * 1024ULL * 1024ULL) / text.size()) {
         in.fail("repeat() result is too large");
       }
       std::string result;
