@@ -1275,7 +1275,7 @@ switch (value) {
 }
 ```
 
-A `switch` evaluates its subject **exactly once** and compares it against the case labels in order. A label is either a **literal** (`nil`, `true`, `false`, a number or a string, optionally signed as in `-1`), or an **integer range** (`10..20`, `10..=20`). A literal matches by equality; a range matches by membership, exactly like `value in 10..=20`.
+A `switch` evaluates its subject **exactly once** and compares it against the case labels in order. A label is a **literal** (`nil`, `true`, `false`, a number or a string, optionally signed as in `-1`), an **integer range** (`10..20`, `10..=20`), or a **`const` name** (a top-level `const`, or a local `const`/`let` in the same frame) whose value is used as the label. A literal matches by equality; a range matches by membership, exactly like `value in 10..=20`; a `const` name matches by equality against its value. A name that is not an immutable binding (a `var`, an unknown name, or a captured binding) is a compile error, so a label is always a fixed value.
 
 The first matching case runs and then control leaves the switch. **There is no fallthrough**: unlike C or Java, the body of the next case does not run after a match, so a forgotten `break` cannot cause a bug. Several labels may share one body (`case 2: case 3:`), and a `default` clause (at most one) runs only when nothing matched; it is optional, so a switch with no match simply does nothing.
 

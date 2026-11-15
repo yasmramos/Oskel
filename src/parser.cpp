@@ -1314,10 +1314,14 @@ StmtPtr Parser::parseSwitch() {
     // One or more labels may share a body: `case 2: case 3: { ... }`.
     while (true) {
       auto label = parseExpression();
-      // Only fixed values (literals, signed numeric literals and ranges) are
-      // valid case labels; a variable or a call would not be a fixed value.
-      if (!isCaseLabel(label)) {
-        throw CompileError{"a 'case' label must be a literal or a range", label->line, label->col};
+      // A case label is a fixed value: a literal (optionally signed), an
+      // integer range, or a bare name the compiler resolves to an immutable
+      // `const`/`let` binding. A call or any other expression is not a fixed
+      // value and is rejected here; the compiler rejects a name that is not an
+      // immutable binding.
+      if (!isCaseLabel(label) && !std::holds_alternative<VariableExpr>(label->node)) {
+        throw CompileError{"a 'case' label must be a literal, a range or a 'const' name",
+                           label->line, label->col};
       }
       entry.values.push_back(std::move(label));
       consume(Tok::Colon, "expected ':' after the case label");

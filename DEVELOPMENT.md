@@ -384,7 +384,9 @@ previous one.
   annotation and is visible to the whole file (like a hoisted `fn`). See
   `docs/language.md` §4.7 and `tests/18_structs.oskl`.
 - `switch` simple (literals and ranges) — **done**: no fallthrough, labels are
-  literals or integer ranges, optional single `default`; compiles to the
+  literals, integer ranges or `const` names (a top-level `const`, or a local
+  `const`/`let` in the same frame; the compiler rejects any other name, so a
+  label stays a fixed value), optional single `default`; compiles to the
   existing `EQ`/`IN`/`JMP` opcodes (no new opcode). See `docs/language.md` §6.10.
 - **`native fn`** for internal FFI (stdlib in Oskel) — **done**: a bodyless,
   module-level declaration (`native fn sqrt(x: float): float;`) that binds a

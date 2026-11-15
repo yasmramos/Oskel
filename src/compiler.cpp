@@ -397,6 +397,29 @@ void Compiler::declareGlobal(const std::string& name, bool isImmutable) {
   }
 }
 
+void Compiler::checkCaseLabelName(const std::string& name, int line, int col) {
+  // A label that is a bare name must be a fixed value, so the binding has to be
+  // immutable. A `const`/`let` local of the current frame qualifies; so does a
+  // `const`/`let` local of an enclosing function (the label captures it as an
+  // upvalue) and a top-level `const` (its slot is a global that never changes
+  // after its declaration is hoisted). Anything else -- a `var`, an unknown
+  // name -- is rejected rather than silently compiling to a mutable read.
+  LocalVar local;
+  if (resolveLocal(name, local)) {
+    if (local.isImmutable) return;
+    fail("a 'case' label name must be an immutable 'const' or 'let' binding", line, col);
+  }
+  for (FuncState* frame = funcStack_.empty() ? nullptr : &funcStack_.back(); frame != nullptr;
+       frame = frame->enclosing) {
+    if (resolveLocalIn(frame->scopes, name, local)) {
+      if (local.isImmutable) return;
+      fail("a 'case' label name must be an immutable 'const' or 'let' binding", line, col);
+    }
+  }
+  if (globalConsts_.find(name) != globalConsts_.end()) return;
+  fail("a 'case' label name must be an immutable 'const' or 'let' binding", line, col);
+}
+
 // --------------------------------------------------------------- type checks
 
 void Compiler::declareGlobalType(const std::string& name, const TypeRef& type) {
@@ -750,6 +773,9 @@ Bytecode Compiler::compileTopLevelBody(const StmtPtr& program) {
     // Register native signatures too: a hoisted function may call one and must
     // be checked against its signature.
     registerNativeDecls(*block);
+    // Register the top-level `const` names, so a hoisted function's `case`
+    // label that names one is accepted even when the declaration comes later.
+    registerGlobalConstDecls(*block);
     // Register `@MustUse` flags as well, for the same reason: a hoisted
     // function is compiled before the declarations that follow it.
     registerMustUseDecls(*block);
@@ -943,7 +969,11 @@ void Compiler::compileBlockBody(const BlockStmt& block) {
     std::unordered_map<std::string, TypeRef> blockTypes;
     std::unordered_map<std::string, bool> blockNatives;
     std::unordered_map<std::string, bool> blockMustUse;
-    for (const auto& [name, local] : scopes_.back().vars) blockSlots[name] = local.slot;
+    std::unordered_map<std::string, bool> blockImmutable;
+    for (const auto& [name, local] : scopes_.back().vars) {
+      blockSlots[name] = local.slot;
+      blockImmutable[name] = local.isImmutable;
+    }
 
     int nilReg = -1;
     auto ensureNil = [&]() {
@@ -970,6 +1000,7 @@ void Compiler::compileBlockBody(const BlockStmt& block) {
           if (type.name == "void") type = TypeRef{};
         }
         blockTypes[let->name] = type;
+        blockImmutable[let->name] = let->kind != Tok::Var;
         auto found = blockSlots.find(let->name);
         if (let->kind == Tok::Var && found != blockSlots.end()) {
           predeclaredLetSlots_[let] = found->second;
@@ -1006,8 +1037,8 @@ void Compiler::compileBlockBody(const BlockStmt& block) {
     // bodies capture the right cells even when the declaration appears later.
     std::unordered_map<std::string, LocalVar> beforeHoisting = scopes_.back().vars;
     for (const auto& [name, slot] : blockSlots) {
-      scopes_.back().vars[name] =
-          LocalVar{name, slot, false, blockTypes[name], blockNatives[name], blockMustUse[name]};
+      scopes_.back().vars[name] = LocalVar{name, slot, blockImmutable[name], blockTypes[name],
+                                           blockNatives[name], blockMustUse[name]};
     }
     for (const auto& child : block.stmts) {
       if (!child) continue;
@@ -1710,6 +1741,22 @@ void Compiler::registerNativeDecls(const BlockStmt& block) {
   }
 }
 
+// Registers the name of every top-level immutable `let`/`const` binding of
+// `block` before anything in it is compiled. A hoisted function is compiled
+// first, so without this pass a `case` label that names a top-level `const`
+// declared later in the file would not be recognized as a fixed value. A later
+// mutable binding of the same name clears the entry (see `declareGlobal`), so
+// the pass does not change which binding wins.
+void Compiler::registerGlobalConstDecls(const BlockStmt& block) {
+  if (!inGlobalScope()) return;
+  for (const auto& child : block.stmts) {
+    if (!child) continue;
+    if (const auto* let = std::get_if<LetStmt>(&child->node)) {
+      if (let->kind != Tok::Var) globalConsts_.insert(let->name);
+    }
+  }
+}
+
 // Registers the `@MustUse` flag of every non-native function declared directly
 // in `block`, for the same reason `registerNativeDecls` registers the natives:
 // a function is compiled (and so its calls are checked) before the declarations
@@ -2200,6 +2247,9 @@ void Compiler::compileSwitch(const SwitchStmt& s) {
     const SwitchCase& entry = s.cases[i];
     testStart[i] = currentOffset();
     for (const ExprPtr& label : entry.values) {
+      if (const auto* name = std::get_if<VariableExpr>(&label->node)) {
+        checkCaseLabelName(name->name, label->line, label->col);
+      }
       if (std::holds_alternative<RangeExpr>(label->node)) {
         int range = compileExpr(*label);
         emit(OpCode::IN, range, subject, range);
