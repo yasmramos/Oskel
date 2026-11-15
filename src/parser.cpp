@@ -1749,8 +1749,15 @@ ExprPtr Parser::parseStructLiteralBody(const std::string& typeName, int line, in
         throw CompileError{"duplicate field '" + field.lexeme + "' in the struct literal",
                            field.line, field.col};
       }
-      consume(Tok::Colon, "expected ':' after the field name");
-      entries.push_back(StructLitEntry{field.lexeme, parseExpression()});
+      // Field shorthand: `Point { x, y }` is sugar for `Point { x: x, y: y }`,
+      // so the field's value is the variable of the same name in scope. The
+      // colon form and the shorthand may mix freely (`Point { x, y: 2 }`).
+      if (match(Tok::Colon)) {
+        entries.push_back(StructLitEntry{field.lexeme, parseExpression()});
+      } else {
+        entries.push_back(StructLitEntry{
+            field.lexeme, makeExpr(VariableExpr{field.lexeme}, field.line, field.col)});
+      }
       if (!match(Tok::Comma)) break;
     }
   }

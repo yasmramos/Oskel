@@ -71,4 +71,16 @@ let line = Line { a: Point { x: 0, y: 0 }, b: Point { x: 1, y: 1 } };
 assertEq(line.a.x, 0);
 assertEq(line.b.y, 1);
 
+// Field shorthand: `Point { x, y }` is sugar for `Point { x: x, y: y }`, the
+// value taken from the variable of the same name in scope.
+let x = 10;
+let y = 20;
+assertEq(Point { x, y }, Point { x: 10, y: 20 });
+// The colon form and the shorthand mix in one literal.
+assertEq(Point { x, y: 5 }, Point { x: 10, y: 5 });
+assertEq(Point { x: 7, y }, Point { x: 7, y: 20 });
+// A shorthand field value is an ordinary expression, so it is type-checked
+// exactly like `x: x`.
+assertEq(Point { x, y }.y, 20);
+
 print("structs ok");
