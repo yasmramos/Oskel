@@ -40,8 +40,14 @@ struct Target {
   Os os = Os::Linux;
   Abi abi = Abi::SysV;
 
-  // The only target with a backend today.
+  // The targets with a backend today: Linux x86-64 (direct syscalls) and
+  // Windows x86-64 (kernel32 through the Microsoft x64 ABI). Both share the
+  // x86-64 lowering; only the entry prelude differs, because the two systems
+  // reach the outside world differently.
   static constexpr Target linuxX64() { return Target{}; }
+  static constexpr Target winX64() {
+    return Target{Arch::X86_64, Os::Windows, Abi::Win64};
+  }
 };
 
 inline const char* archName(Arch arch) {
@@ -92,8 +98,10 @@ inline std::string targetName(const Target& target) {
 }
 
 inline bool isSupportedTarget(const Target& target) {
-  return target.arch == Arch::X86_64 && target.os == Os::Linux &&
-         target.abi == Abi::SysV;
+  if (target.arch != Arch::X86_64) return false;
+  if (target.os == Os::Linux && target.abi == Abi::SysV) return true;
+  if (target.os == Os::Windows && target.abi == Abi::Win64) return true;
+  return false;
 }
 
 // Fails loudly instead of emitting bytes for an ABI the encoder does not know.
@@ -102,6 +110,7 @@ inline bool isSupportedTarget(const Target& target) {
 inline void requireSupportedTarget(const Target& target) {
   if (!isSupportedTarget(target)) {
     throw std::invalid_argument("native: no backend for target " + targetName(target) +
-                                " (supported: " + targetName(Target::linuxX64()) + ")");
+                                " (supported: " + targetName(Target::linuxX64()) + ", " +
+                                targetName(Target::winX64()) + ")");
   }
 }

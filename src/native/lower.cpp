@@ -950,7 +950,14 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   cg.pop(X64Reg::Rbp);
   cg.retInsn();
 
-  std::uint64_t startOffset = emitFreestandingRuntime(cg, entry, mainEntry);
+  // The entry prelude reaches the system, and that is the one place the two
+  // targets differ: Linux goes through syscalls, Windows through kernel32 with
+  // the Microsoft x64 ABI. Everything else -- the lowering and the embedded
+  // runtime -- is the same machine code for both. The prelude binds the
+  // `entry` handles the runtime already references (write/exit/init_arena).
+  std::uint64_t startOffset =
+      target.os == Os::Windows ? emitWindowsRuntime(cg, entry, mainEntry)
+                               : emitFreestandingRuntime(cg, entry, mainEntry);
   emitAotRuntime(cg, rt, entry);
   // String constants last: their bytes are addressed by `lea` from the code
   // above, and no path falls through into them.

@@ -24,6 +24,7 @@
 #include "native/codegen.h"
 #include "native/elf.h"
 #include "native/lower.h"
+#include "native/pe.h"
 #include "native/target.h"
 #include "parser.h"
 #include "util.h"
@@ -48,7 +49,9 @@ const char *kUsage =
     "  -e, --eval <code>         evaluate code from the command line\n"
     "  -c, --check               only check the script for errors\n"
     "  --no-jit                  disable the JIT (development engine only)\n"
-    "  -o, --output <file>       output path for `build` (default: the script's base name)\n";
+    "  -o, --output <file>       output path for `build` (default: the script's base name)\n"
+    "  --target <name>           build target for `build` (default: the host);\n"
+    "                            x86_64-linux-sysv or x86_64-windows-win64\n";
 
 // Joins a directory and a relative path without doubling the separator.
 std::string joinPath(const std::string &dir, const std::string &relative) {
@@ -238,15 +241,43 @@ int runSource(const std::string &source, const std::string &name,
   return 0;
 }
 
+// The AOT targets `--target` accepts, keyed by the canonical backend name from
+// `targetName()`. The default is the host's own target, so `oskel build` on
+// Linux produces an ELF and on Windows an EXE without a flag.
+bool parseTargetName(const std::string &name, Target &out) {
+  if (name == targetName(Target::linuxX64())) {
+    out = Target::linuxX64();
+    return true;
+  }
+  if (name == targetName(Target::winX64())) {
+    out = Target::winX64();
+    return true;
+  }
+  return false;
+}
+
+Target hostTarget() {
+#ifdef _WIN32
+  return Target::winX64();
+#else
+  return Target::linuxX64();
+#endif
+}
+
 // Compiles `source` (resolving imports) and writes a freestanding native
 // binary to `output`. The whole pipeline is the dev engine's: lex, parse,
 // compile to bytecode, then lower the bytecode to machine code and wrap it in
 // a static executable. The emitted binary embeds only the AOT runtime, never
 // the compiler, so it cannot `eval` (DEVELOPMENT.md §3, the GraalVM pitfall).
 //
+// `target` selects the executable format: Linux gets a static ELF, Windows a
+// static PE32+ (PHASE 7e). Both share the lowering and the runtime; only the
+// entry prelude and the container differ.
+//
 // Returns 0 on success, 65 for compile errors and 74 for a write failure.
 int buildBinary(const std::string &source, const std::string &name,
-                const std::string &output, const std::string &argv0) {
+                const std::string &output, const std::string &argv0,
+                const Target &target) {
   std::vector<Token> tokens;
   try {
     tokens = lex(source);
@@ -282,14 +313,19 @@ int buildBinary(const std::string &source, const std::string &name,
     printCompileWarning(name, source, warning, platformPosix());
   }
 
-  const Target target = Target::linuxX64();
   std::vector<std::uint8_t> image;
   try {
     LoweredChunk chunk = lowerToX64(target, bytecode, CodeGen{});
-    image = buildStaticElf(target, chunk.code, {}, chunk.processEntry);
+    image = target.os == Os::Windows
+                ? buildStaticPe(target, chunk.code, {}, chunk.processEntry)
+                : buildStaticElf(target, chunk.code, {}, chunk.processEntry);
   } catch (const LoweringError &error) {
     std::string message = error.what();
     message += '\n';
+    platformPosix().writeErr(message.data(), message.size());
+    return 65;
+  } catch (const std::exception &error) {
+    std::string message = std::string("oskel: ") + error.what() + "\n";
     platformPosix().writeErr(message.data(), message.size());
     return 65;
   }
@@ -581,6 +617,7 @@ int main(int argc, char **argv) {
   if (!arguments.empty() && arguments[0] == "build") {
     std::string buildFile;
     std::string buildOutput;
+    Target buildTarget = hostTarget();
     for (size_t i = 1; i < arguments.size(); ++i) {
       const std::string &arg = arguments[i];
       if (arg == "-o" || arg == "--output") {
@@ -589,6 +626,20 @@ int main(int argc, char **argv) {
           return 64;
         }
         buildOutput = arguments[++i];
+        continue;
+      }
+      if (arg == "--target") {
+        if (i + 1 >= arguments.size()) {
+          std::cerr << "oskel: option '" << arg << "' needs an argument\n";
+          return 64;
+        }
+        const std::string name = arguments[++i];
+        if (!parseTargetName(name, buildTarget)) {
+          std::cerr << "oskel: unknown target '" << name << "' (supported: "
+                    << targetName(Target::linuxX64()) << ", "
+                    << targetName(Target::winX64()) << ")\n";
+          return 64;
+        }
         continue;
       }
       if (arg == "-h" || arg == "--help") {
@@ -609,13 +660,17 @@ int main(int argc, char **argv) {
       std::cerr << "oskel: build requires a file\n";
       return 64;
     }
-    if (buildOutput.empty()) buildOutput = stripExtension(buildFile);
+    if (buildOutput.empty()) {
+      buildOutput = stripExtension(buildFile);
+      // The output name follows the target: a Windows image is an `.exe`.
+      if (buildTarget.os == Os::Windows) buildOutput += ".exe";
+    }
     std::string buildSource;
     if (!readSourceFile(buildFile, buildSource)) {
       std::cerr << "oskel: cannot read file '" << buildFile << "'\n";
       return 66;
     }
-    return buildBinary(buildSource, buildFile, buildOutput, argv[0]);
+    return buildBinary(buildSource, buildFile, buildOutput, argv[0], buildTarget);
   }
 
   std::string file;

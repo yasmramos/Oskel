@@ -390,16 +390,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    it or drop the parameter.
 2. **[P1]** `buildStaticElf` does not set `p_memsz` correctly for `.rodata` when
    its size is not a page multiple; Linux rounds up today, but fix it.
-3. **[P1]** `buildStaticPe` has no relocations; a modern PE without `.reloc` is
-   rejected by Windows "Force ASLR". Emit `.reloc` or set the image flags.
-4. **[P1]** `buildStaticElf`/`buildStaticPe` error paths (`text.empty()`,
-   `entryOffset` out of range) throw `std::runtime_error` but have no tests.
-5. **[P2]** `buildStaticPe` hardcodes `.idata` at 99 bytes and several offsets
-   (`0x2028`, `0x2056`, `0x2038`, `0x2048`); compute them from the layout.
-6. **[P2]** `buildStaticPe` ignores `rdata`; either use it or drop it.
-7. **[P3]** `writeProgramHeader` hardcodes `p_align = 0x1000`; make it a
+3. **[P1]** `buildStaticElf` error paths (`text.empty()`, `entryOffset` out of
+   range) throw `std::runtime_error` but have no tests.
+4. **[P2]** `buildStaticPe` ignores `rdata`; either use it or drop it.
+5. **[P3]** `writeProgramHeader` hardcodes `p_align = 0x1000`; make it a
    parameter for other page sizes.
-8. **[P3]** `padTo` assumes a power-of-two alignment; assert it.
+6. **[P3]** `padTo` assumes a power-of-two alignment; assert it.
 
 ---
 
