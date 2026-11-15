@@ -1556,7 +1556,7 @@ bounds, so `5["a":"b"]` reports the receiver, not the bound.
 | `slice(start?, end?)` | Returns a new array with the range `[start, end)`. |
 | `concat(other)` | Returns a new array with both arrays. |
 | `join(separator?)` | Joins the elements into a string. |
-| `sort(comparator?)` | Sorts the array in place and returns it. |
+| `sort(comparator?)` | Sorts the array in place and returns it. If the comparator throws, the array is left unchanged. |
 | `sorted(comparator?)` | Returns a sorted copy. |
 | `reversed()` | Returns a reversed copy. |
 | `contains(value)` | Checks structural equality. |
