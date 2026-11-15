@@ -64,7 +64,7 @@ static constexpr std::size_t kSh = kOh + 240;   // first section header offset
 // The delta is measured from the end of the 6-byte call, and the .idata section
 // sits at a fixed RVA, so it can be computed here exactly as the prelude does.
 static std::vector<std::uint8_t> exitProgram() {
-  const std::int64_t callSiteRva = static_cast<std::int64_t>(kPeTextRva) + 8;  // after the two prologue instructions
+  const std::int64_t callSiteRva = static_cast<std::int64_t>(kPeTextRva) + 6;  // the `call` follows 4 + 2 bytes of prologue
   const std::int64_t next = callSiteRva + 6;
   const std::int64_t delta =
       static_cast<std::int64_t>(importIatRva(PeImport::ExitProcess)) - next;
