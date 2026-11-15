@@ -98,6 +98,15 @@ may change between minor versions.
 
 ### Fixed
 
+- A Windows AOT binary was killed with no message when a program recursed a few
+  thousand frames with a non-trivial frame. The PE emitter reserved only 1 MiB
+  of stack (the Windows default) while the AOT runtime has no call-depth guard,
+  so the recursion a native binary reaches is bounded only by the OS stack;
+  Linux hands a process 8 MiB (`ulimit -s`), so the same program ran there and
+  was torn down silently on Windows (exit code 1, no output). The emitter now
+  reserves 8 MiB, matching Linux, and `pe_test` pins the value. Covered by
+  `tests/native_build_deep_recursion.oskl` (`oskel.build_binary_deep_recursion`
+  on Linux and Windows).
 - `chr(code)` now rejects a lone surrogate (U+D800..U+DFFF) instead of
   encoding it as CESU-8 (three bytes, invalid UTF-8), matching the `\uXXXX`
   escape. The check lives in the builtin, so the VM and the AOT backend reject

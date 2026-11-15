@@ -250,8 +250,8 @@ std::vector<std::uint8_t> buildStaticPe(const Target& target,
   write32At(out, oh + 56, sizeOfImage);
   write32At(out, oh + 60, kIdataFileOffset);  // SizeOfHeaders
   write16At(out, oh + 68, 3);                 // Subsystem = console
-  write64At(out, oh + 72, 0x100000);          // SizeOfStackReserve
-  write64At(out, oh + 80, 0x1000);            // SizeOfStackCommit
+  write64At(out, oh + 72, kPeStackReserve);   // SizeOfStackReserve
+  write64At(out, oh + 80, kPeStackCommit);    // SizeOfStackCommit
   write64At(out, oh + 88, 0x100000);          // SizeOfHeapReserve
   write64At(out, oh + 96, 0x1000);            // SizeOfHeapCommit
   write32At(out, oh + 108, 16);               // NumberOfRvaAndSizes
