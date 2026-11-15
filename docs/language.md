@@ -416,7 +416,7 @@ these builtins:
 | Builtin | Meaning |
 | --- | --- |
 | `cstring(s)` | Builds a `cstring` from a Oskel string (bytes plus a NUL). |
-| `cstr(p)` | Reads a `cstring`/buffer back as a Oskel string. |
+| `cstr(p)` | Reads a `cstring`/buffer back as a Oskel string. A `cstring` is NUL-terminated, so the read stops at the first `\0` (an embedded NUL truncates, like C); a buffer is read whole. |
 | `buffer(n)` | Allocates `n` zero-initialised bytes and returns a `ptr`. |
 | `byteLen(p)` | Bytes the handle owns (`cstring` excludes the NUL; `void *` is 0). |
 | `loadByte(p, i)` | Byte `0..255` at index `i` (bounds-checked). |
@@ -1908,7 +1908,7 @@ are never a machine address the program can dereference.
 | Function | Description |
 | --- | --- |
 | `cstring(s)` | Builds a `cstring` from a string (bytes plus a NUL). |
-| `cstr(p)` | Reads a `cstring`/buffer back as a string. |
+| `cstr(p)` | Reads a `cstring`/buffer back as a string (a `cstring` stops at the first NUL). |
 | `buffer(n)` | Allocates `n` zero-initialised bytes and returns a `ptr`. |
 | `byteLen(p)` | Bytes the handle owns. |
 | `loadByte(p, i)` | Byte `0..255` at index `i` (bounds-checked). |

@@ -23,6 +23,18 @@ assertEq(loadByte(b, 0), 65);
 assertEq(loadByte(b, 3), 68);
 assertEq(cstr(b), "A\x00\x00D");
 
+// A `cstring` is NUL-terminated, so reading it back stops at the first NUL:
+// `cstr(cstring(s))` truncates at an embedded `\0` (C behaviour). A buffer is
+// not NUL-terminated, so `cstr` reads all its bytes.
+let embedded = cstring("a\x00b");
+assertEq(byteLen(embedded), 3);   // the handle still owns all three bytes
+assertEq(cstr(embedded), "a");    // but the text stops at the NUL
+let withNul = buffer(3);
+storeByte(withNul, 0, 97);
+storeByte(withNul, 1, 0);
+storeByte(withNul, 2, 98);
+assertEq(cstr(withNul), "a\x00b");
+
 // A `void *` handle is an opaque token: it round-trips through an integer but
 // cannot be dereferenced.
 let t = intToPtr(1234);
