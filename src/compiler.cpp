@@ -711,6 +711,7 @@ void Compiler::clearSession() {
   globalTypes_.clear();
   structDefs_.clear();
   nativeSigs_.clear();
+  externSignatures_.clear();
   mustUseGlobals_.clear();
   loadedModules_.clear();
   materializedModules_.clear();
@@ -811,6 +812,7 @@ Compiler::SessionSnapshot Compiler::snapshotSession() const {
   snapshot.globalTypes = globalTypes_;
   snapshot.structDefs = structDefs_;
   snapshot.nativeSigs = nativeSigs_;
+  snapshot.externSignatures = externSignatures_;
   snapshot.mustUseGlobals = mustUseGlobals_;
   snapshot.loadedModules = loadedModules_;
   snapshot.materializedModules = materializedModules_;
@@ -825,6 +827,7 @@ void Compiler::restoreSession(SessionSnapshot snapshot) {
   globalTypes_ = std::move(snapshot.globalTypes);
   structDefs_ = std::move(snapshot.structDefs);
   nativeSigs_ = std::move(snapshot.nativeSigs);
+  externSignatures_ = std::move(snapshot.externSignatures);
   mustUseGlobals_ = std::move(snapshot.mustUseGlobals);
   loadedModules_ = std::move(snapshot.loadedModules);
   materializedModules_ = std::move(snapshot.materializedModules);
@@ -1742,6 +1745,19 @@ void Compiler::compileExternBlock(const ExternBlockStmt& block, int line, int co
     if (!problem.empty()) {
       fail("extern \"C\" function '" + fn.name + "': " + problem, line, col);
     }
+    // Two declarations of one C symbol must agree: the engine binds the name to
+    // a single marshalling thunk built from the last declaration, so a mismatch
+    // would silently make an earlier call go through the wrong signature. The
+    // table is session-wide (it is not reset per module), so the check also
+    // catches a conflict between two imported modules, not just one file.
+    const std::string signature = ffi::canonicalSignature(paramTypes, returnType);
+    auto previous = externSignatures_.find(fn.name);
+    if (previous != externSignatures_.end() && previous->second != signature) {
+      fail("extern \"C\" symbol '" + fn.name + "' is declared with two different signatures (" +
+               previous->second + " and " + signature + ")",
+           line, col);
+    }
+    externSignatures_[fn.name] = signature;
     // The engine reads this to resolve the symbol and build the marshalling
     // thunk; the compiler stays free of any host/ABI dependency (§2 boundary).
     bc_.externs.push_back(ExternSymbol{fn.name, std::move(paramTypes), returnType});

@@ -226,8 +226,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 8. **[P1]** `extern "C"` does not support C unions.
 9. **[P1]** `extern "C"` does not support bitfields.
 10. **[P1]** `extern "C"` does not support C enums (only `int`).
-11. **[P1]** `installExtern` does not detect two `extern "C"` declarations of
-    the same name in different modules; the last wins silently.
+11. ~~**[P1]** `installExtern` does not detect two `extern "C"` declarations of
+    the same name in different modules; the last wins silently.~~ **Done**: the
+    compiler now keeps a session-wide canonical signature per C symbol and
+    rejects a mismatch (`tests/errors/extern_conflicting_signature.oskl`,
+    `module_test.cpp::testConflictingExternAcrossModules`).
 12. **[P1]** `wrapPointerValue` for `cstring` calls `strlen`, which reads past
     the buffer if the pointer is not NUL-terminated — UB from a host that
     returns a non-terminated `char *`. Bound it or reject.

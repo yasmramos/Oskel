@@ -463,6 +463,16 @@ its arguments and reads its result across the System V AMD64 ABI without
 width the declaration named (so a C `int` is not read as a 64-bit value). A
 symbol the host cannot resolve is a clear runtime error, never a wild call.
 
+A C symbol is bound to a single marshalling thunk, so two declarations of the
+same name must agree on their signature. A second declaration with a different
+signature is a compile error rather than a silent last-wins; the check spans the
+whole program, so a conflict between two imported modules is caught too.
+
+```oskel
+extern "C" { fn abs(x: int): int; }
+extern "C" { fn abs(x: double): double; }  // error: two different signatures
+```
+
 ```oskel
 extern "C" {
   fn strlen(s: cstring): size_t;

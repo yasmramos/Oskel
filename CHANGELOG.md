@@ -47,6 +47,10 @@ may change between minor versions.
 
 ### Fixed
 
+- FFI: two `extern "C"` declarations of the same C symbol with different
+  signatures are now a compile error instead of a silent last-wins. The check
+  spans the whole program, so a conflict between two imported modules is caught
+  as well.
 - Removed leftover debug `printf` output from the compiler, VM and PE test
   suites.
 

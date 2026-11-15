@@ -341,6 +341,52 @@ inline std::string validateTypeSpec(const TypeSpec& spec, bool isReturn) {
   return "";
 }
 
+// A canonical, comparable spelling of one resolved type spec. Two declarations
+// of the same C symbol must resolve to the same spec; this string is the key
+// that makes the comparison exact (a scalar by name, a struct by its ordered
+// field names and types, a callback by its signature). It is deliberately a
+// pure function of the spec: no ABI detail leaks in, so the compiler can detect
+// a conflict without knowing the target.
+inline std::string canonicalTypeSpec(const TypeSpec& spec) {
+  if (spec.isCallback) {
+    std::string out = "fn(";
+    for (std::size_t i = 0; i < spec.callbackParams.size(); ++i) {
+      if (i != 0) out += ",";
+      out += spec.callbackParams[i].empty() ? "int" : spec.callbackParams[i];
+    }
+    out += "):";
+    out += spec.callbackReturn.empty() ? "void" : spec.callbackReturn;
+    return out;
+  }
+  if (spec.isStruct) {
+    std::string out = "struct{";
+    for (std::size_t i = 0; i < spec.fields.size(); ++i) {
+      if (i != 0) out += ",";
+      out += spec.fields[i].name;
+      out += ":";
+      out += spec.fields[i].type.empty() ? "int" : spec.fields[i].type;
+    }
+    out += "}";
+    return out;
+  }
+  return spec.scalarType.empty() ? "int" : spec.scalarType;
+}
+
+// The canonical spelling of a whole signature, parameters then return. Two
+// `extern "C"` declarations of one symbol agree exactly when these strings are
+// equal; the compiler rejects a mismatch instead of letting one silently win.
+inline std::string canonicalSignature(const std::vector<TypeSpec>& params,
+                                      const TypeSpec& returnType) {
+  std::string out = "(";
+  for (std::size_t i = 0; i < params.size(); ++i) {
+    if (i != 0) out += ",";
+    out += canonicalTypeSpec(params[i]);
+  }
+  out += ")->";
+  out += canonicalTypeSpec(returnType);
+  return out;
+}
+
 // Checks one `extern "C"` signature against what the marshalling can honour.
 // Returns an empty string when the signature is fine, or a message naming the
 // first problem. The compiler calls this so an unsupported declaration fails

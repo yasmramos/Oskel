@@ -419,6 +419,27 @@ void testNonConflictingImportCombinations() {
   }
 }
 
+// Two `extern "C"` declarations of one C symbol must agree, and the check spans
+// modules: a conflict between two imported modules is rejected just like a
+// conflict inside one file (the marshalling thunk is built once per symbol).
+void testConflictingExternAcrossModules() {
+  ModuleResolver resolver("tests/errors", "std", "");
+  Compiler compiler;
+  compiler.setImportLoader(loaderFor(resolver));
+  bool threw = false;
+  std::string message;
+  try {
+    compiler.compile(parseSource("import mods.externint;\nimport mods.externdouble;\n"));
+  } catch (const CompileError& error) {
+    threw = true;
+    message = error.message;
+  }
+  check(threw, "one symbol with two signatures across modules is a compile error");
+  check(message.find("abs") != std::string::npos &&
+            message.find("two different signatures") != std::string::npos,
+        "the cross-module conflict names the symbol and the problem");
+}
+
 }  // namespace
 
 int main() {
@@ -445,6 +466,7 @@ int main() {
   testNestedWildcardDoesNotCreatePhantomAmbiguity();
   testImportConflictAcrossForms();
   testNonConflictingImportCombinations();
+  testConflictingExternAcrossModules();
 
   if (g_failures != 0) {
     std::printf("%d check(s) failed\n", g_failures);
