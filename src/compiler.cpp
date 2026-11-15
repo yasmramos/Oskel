@@ -1788,7 +1788,19 @@ ffi::TypeSpec Compiler::resolveTypeSpec(const TypeRef& type) {
   if (type.isCallback()) {
     spec.isCallback = true;
     spec.callbackParams = type.callbackParams;
-    spec.callbackReturn = type.callbackReturn.empty() ? "void" : type.callbackReturn;
+    // A callback return is usually a scalar, but it may name a struct
+    // (PHASE 6.6): resolve the name to its field list so the runtime can build
+    // the return `ffi_type`, exactly as a struct parameter does.
+    const std::string& returnName = type.callbackReturn;
+    auto returnDef = structDefs_.find(returnName);
+    if (!returnName.empty() && returnName != "void" && returnDef != structDefs_.end()) {
+      spec.callbackReturnsStruct = true;
+      for (const StructField& field : returnDef->second) {
+        spec.callbackReturnFields.push_back(ffi::FfiField{field.name, field.type.name});
+      }
+    } else {
+      spec.callbackReturn = returnName.empty() ? "void" : returnName;
+    }
     return spec;
   }
   const std::string& typeName = type.name;

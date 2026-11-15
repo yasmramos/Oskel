@@ -132,6 +132,12 @@ struct TypeSpec {
   bool isCallback = false;
   std::vector<std::string> callbackParams;
   std::string callbackReturn;  // "void" for a callback that returns nothing
+  // A callback may return a struct (PHASE 6.6): `callbackReturnsStruct` marks
+  // it and `callbackReturnFields` carries the resolved shape, exactly as a
+  // struct parameter carries `fields`. A struct field is a scalar (a nested
+  // struct is rejected by `buildStructLayout`), so one level suffices.
+  bool callbackReturnsStruct = false;
+  std::vector<FfiField> callbackReturnFields;
 };
 
 // A Oskel `string` and a `cstring` are both a NUL-terminated `const char *` at
@@ -331,6 +337,23 @@ inline std::string validateTypeSpec(const TypeSpec& spec, bool isReturn) {
                "' cannot cross the C boundary";
       }
     }
+    if (spec.callbackReturnsStruct) {
+      StructLayout layout;
+      std::string reason;
+      if (!buildStructLayout(spec.callbackReturnFields, layout, reason)) return reason;
+      if (layout.isMemory) {
+        if (!kMemoryStructsSupported) {
+          return "a callback returning a struct of " + std::to_string(layout.size) +
+                 " bytes is class MEMORY (> 16 bytes: passed on the stack, returned through a "
+                 "hidden pointer), which this build does not support: it needs the System V AMD64 "
+                 "ABI and libffi in the development engine";
+        }
+      } else if (!kStructByValueSupported) {
+        return "a callback cannot return a struct by value on this target: the marshalling "
+               "implements the System V AMD64 ABI only";
+      }
+      return "";
+    }
     if (!spec.callbackReturn.empty() && spec.callbackReturn != "void") {
       ReturnClass ignored;
       if (!classifyReturn(spec.callbackReturn, ignored)) {
@@ -390,7 +413,18 @@ inline std::string canonicalTypeSpec(const TypeSpec& spec) {
       out += spec.callbackParams[i].empty() ? "int" : spec.callbackParams[i];
     }
     out += "):";
-    out += spec.callbackReturn.empty() ? "void" : spec.callbackReturn;
+    if (spec.callbackReturnsStruct) {
+      out += "struct{";
+      for (std::size_t i = 0; i < spec.callbackReturnFields.size(); ++i) {
+        if (i != 0) out += ",";
+        out += spec.callbackReturnFields[i].name;
+        out += ":";
+        out += spec.callbackReturnFields[i].type.empty() ? "int" : spec.callbackReturnFields[i].type;
+      }
+      out += "}";
+    } else {
+      out += spec.callbackReturn.empty() ? "void" : spec.callbackReturn;
+    }
     return out;
   }
   if (spec.isStruct) {

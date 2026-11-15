@@ -341,6 +341,36 @@ ffi_type* libffiTypeFor(const std::string& typeName) {
   return &ffi_type_sint32;
 }
 
+// Owns every libffi object one signature needs, so a single `ffi_prep_cif` can
+// keep them alive for as long as the `cif` lives. A struct type needs its
+// element array to outlive it (libffi reads it during preparation), so both the
+// `ffi_type` and the element vector are owned here.
+struct LibffiSignature {
+  std::vector<std::unique_ptr<ffi_type>> types;
+  std::vector<std::unique_ptr<std::vector<ffi_type*>>> elementArrays;
+};
+
+// Builds the libffi type of a struct from its C layout, appending the owned
+// objects to `sig`. A field is always a scalar (a nested struct is rejected by
+// `buildStructLayout`), so the element list is one level deep.
+ffi_type* libffiStructType(const StructLayout& layout, LibffiSignature& sig) {
+  auto elements = std::make_unique<std::vector<ffi_type*>>();
+  elements->reserve(layout.fields.size() + 1);
+  for (const FfiField& field : layout.fields) {
+    elements->push_back(libffiTypeFor(field.type));
+  }
+  elements->push_back(nullptr);
+  auto type = std::make_unique<ffi_type>();
+  type->type = FFI_TYPE_STRUCT;
+  type->size = 0;
+  type->alignment = 0;
+  type->elements = elements->data();
+  ffi_type* raw = type.get();
+  sig.elementArrays.push_back(std::move(elements));
+  sig.types.push_back(std::move(type));
+  return raw;
+}
+
 // The state behind one Oskel function passed to C as a callback: the function
 // itself, its prepared `ffi_cif`, and the libffi closure C calls. The object is
 // kept alive for the whole extern call (the caller holds a `Ref`), so the
@@ -357,6 +387,13 @@ struct CallbackObj : RefCounted {
   std::vector<std::string> paramTypes;
   std::string returnType;  // "void" for no result
   std::vector<ffi_type*> argTypes;
+  // A callback that returns a struct (PHASE 6.6): the return `ffi_type` is built
+  // from these, and the trampoline serialises the resulting map into the return
+  // storage using this layout. `signature` owns the libffi objects so they
+  // outlive the `cif`.
+  bool returnsStruct = false;
+  StructLayout returnLayout;
+  LibffiSignature signature;
   ffi_cif cif{};
   ffi_closure* closure = nullptr;
   void* code = nullptr;
@@ -390,8 +427,26 @@ Value readCallbackArg(Runtime& rt, const std::string& typeName, void* slot) {
 
 // Writes the Oskel callback's result into the storage libffi provides, in the
 // declared C type. `void` writes nothing; the error path writes zero of the
-// declared width so C never observes an uninitialised return.
-void writeCallbackResult(const std::string& typeName, const Value& value, void* ret) {
+// declared width so C never observes an uninitialised return. A struct return
+// is serialised field by field into the same storage using its layout.
+void writeCallbackResult(const CallbackObj& callback, const Value& value, void* ret) {
+  const std::string& typeName = callback.returnType;
+  if (callback.returnsStruct) {
+    // The error path passes an empty `Value`, which is not a map: zero the whole
+    // buffer so the caller never reads stale bytes.
+    std::vector<char> bytes(callback.returnLayout.size, 0);
+    if (value.isMap()) {
+      for (std::size_t k = 0; k < callback.returnLayout.fields.size(); ++k) {
+        const Value* field = value.map().get(callback.returnLayout.fields[k].name);
+        if (field != nullptr) {
+          writeStructField(bytes, callback.returnLayout.offsets[k],
+                           callback.returnLayout.fields[k].type, *field, *callback.runtime);
+        }
+      }
+    }
+    std::memcpy(ret, bytes.data(), callback.returnLayout.size);
+    return;
+  }
   if (typeName.empty() || typeName == "void") return;
   if (typeName == "float") {
     *static_cast<float*>(ret) = value.isNumber() ? static_cast<float>(value.number()) : 0.0f;
@@ -442,7 +497,7 @@ void oskelCallbackTrampoline(ffi_cif* cif, void* ret, void** args, void* userDat
     // returns. C may invoke the callback again before that, so short-circuit:
     // re-entering the VM after an error is not meaningful. Leave a zero of the
     // declared width, never a stale value, in the return storage.
-    writeCallbackResult(callback->returnType, Value(), ret);
+    writeCallbackResult(*callback, Value(), ret);
     return;
   }
   std::vector<Value> oskelArgs;
@@ -459,22 +514,34 @@ void oskelCallbackTrampoline(ffi_cif* cif, void* ret, void** args, void* userDat
     callback->pendingMessage = error.message;
     callback->pendingLine = error.line;
     callback->pendingCol = error.col;
-    writeCallbackResult(callback->returnType, Value(), ret);
+    writeCallbackResult(*callback, Value(), ret);
     return;
   } catch (const std::exception& error) {
     // A non-`RuntimeError` (a `std::bad_alloc`, a `std::logic_error`) would
     // otherwise be flattened into a generic message; keep what it says.
     callback->hasPendingError = true;
     callback->pendingMessage = std::string("the callback raised: ") + error.what();
-    writeCallbackResult(callback->returnType, Value(), ret);
+    writeCallbackResult(*callback, Value(), ret);
     return;
   } catch (...) {
     callback->hasPendingError = true;
     callback->pendingMessage = "the callback raised an unknown error";
-    writeCallbackResult(callback->returnType, Value(), ret);
+    writeCallbackResult(*callback, Value(), ret);
     return;
   }
-  writeCallbackResult(callback->returnType, result, ret);
+  try {
+    writeCallbackResult(*callback, result, ret);
+  } catch (const RuntimeError& error) {
+    // A struct return that does not match the declared shape (not a map, a
+    // missing field, a field of the wrong type) fails here. Record it exactly
+    // like an error raised inside the callback: it must not unwind through the
+    // C frame that called the trampoline.
+    callback->hasPendingError = true;
+    callback->pendingMessage = error.message;
+    callback->pendingLine = error.line;
+    callback->pendingCol = error.col;
+    writeCallbackResult(*callback, Value(), ret);
+  }
 }
 
 // Builds the closure for one Oskel function bound to a callback parameter.
@@ -494,8 +561,18 @@ Ref<CallbackObj> makeCallback(Runtime& rt, const std::string& name, const TypeSp
   for (const std::string& type : callback->paramTypes) {
     callback->argTypes.push_back(libffiTypeFor(type));
   }
-  ffi_type* returnType =
-      callback->returnType == "void" ? &ffi_type_void : libffiTypeFor(callback->returnType);
+  ffi_type* returnType = nullptr;
+  if (spec.callbackReturnsStruct) {
+    std::string reason;
+    if (!buildStructLayout(spec.callbackReturnFields, callback->returnLayout, reason)) {
+      rt.fail(reason);
+    }
+    callback->returnsStruct = true;
+    returnType = libffiStructType(callback->returnLayout, callback->signature);
+  } else {
+    returnType =
+        callback->returnType == "void" ? &ffi_type_void : libffiTypeFor(callback->returnType);
+  }
   if (ffi_prep_cif(&callback->cif, FFI_DEFAULT_ABI,
                    static_cast<unsigned>(callback->argTypes.size()), returnType,
                    callback->argTypes.data()) != FFI_OK) {
@@ -517,36 +594,6 @@ Ref<CallbackObj> makeCallback(Runtime& rt, const std::string& name, const TypeSp
 }
 
 // ------------------------------------------------------------------ MEMORY structs
-
-// Owns every libffi object one signature needs, so a single call can keep them
-// alive for the whole `ffi_prep_cif` + `ffi_call`. A struct type needs its
-// element array to outlive it (libffi reads it during preparation), so both the
-// `ffi_type` and the element vector are owned here.
-struct LibffiSignature {
-  std::vector<std::unique_ptr<ffi_type>> types;
-  std::vector<std::unique_ptr<std::vector<ffi_type*>>> elementArrays;
-};
-
-// Builds the libffi type of a struct from its C layout, appending the owned
-// objects to `sig`. A field is always a scalar (a nested struct is rejected by
-// `buildStructLayout`), so the element list is one level deep.
-ffi_type* libffiStructType(const StructLayout& layout, LibffiSignature& sig) {
-  auto elements = std::make_unique<std::vector<ffi_type*>>();
-  elements->reserve(layout.fields.size() + 1);
-  for (const FfiField& field : layout.fields) {
-    elements->push_back(libffiTypeFor(field.type));
-  }
-  elements->push_back(nullptr);
-  auto type = std::make_unique<ffi_type>();
-  type->type = FFI_TYPE_STRUCT;
-  type->size = 0;
-  type->alignment = 0;
-  type->elements = elements->data();
-  ffi_type* raw = type.get();
-  sig.elementArrays.push_back(std::move(elements));
-  sig.types.push_back(std::move(type));
-  return raw;
-}
 
 // Eight-byte-aligned storage for one marshalled value, so libffi can read it
 // with the alignment the ABI assumes regardless of the exact width.

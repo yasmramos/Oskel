@@ -25,6 +25,16 @@ may change between minor versions.
   The AOT prologue accepts `numParams - 1` or more arguments and builds the
   packed array with the new runtime helper `oskel_pack_rest`, so a program
   using variadic parameters behaves the same on the VM and in an AOT binary.
+- FFI: a struct larger than 16 bytes (System V class MEMORY) now crosses the C
+  boundary by value. Such a struct travels on the stack and comes back through
+  a hidden `sret` pointer, a shape the register thunks cannot express, so the
+  call goes through `libffi` where the development engine links it on the
+  System V AMD64 ABI; elsewhere the declaration is rejected at compile time as
+  before.
+- FFI: a callback (`fn(P...): R`) may now return a struct by value. The
+  trampoline serialises the map the Oskel function returns into the C return
+  storage using the struct layout, so C reads the fields back through the
+  registers the ABI assigns.
 
 ### Changed
 

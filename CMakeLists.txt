@@ -324,6 +324,12 @@ if(BUILD_TESTING)
     if(name STREQUAL "ffi_memory_struct" AND NOT OSKEL_FFI_MEMORY_STRUCTS)
       continue()
     endif()
+    # A callback that returns a struct needs the by-value struct marshalling
+    # (and, for a struct over 16 bytes, the libffi path); elsewhere the same
+    # declaration is a compile error.
+    if(name STREQUAL "ffi_callback_struct_return" AND NOT OSKEL_FFI_STRUCT_BY_VALUE)
+      continue()
+    endif()
     set(expected 0)
     file(STRINGS "${script}" first_line LIMIT_COUNT 1)
     string(REGEX MATCH "expect-exit:[ \t]*([0-9]+)" declared_exit "${first_line}")

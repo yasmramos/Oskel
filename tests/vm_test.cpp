@@ -1812,6 +1812,11 @@ extern "C" int oskelTestApplyVoid(void (*f)(int), int x) {
 extern "C" int oskelTestApplyNarrow(signed char (*f)(int), int x) {
   return static_cast<int>(f(x));
 }
+// A callback that *returns* a struct (PHASE 6.6): C calls it and receives the
+// struct by value. Two shapes are covered, an INTEGER eightbyte (`PairInt`) and
+// a mixed IS pair (`Mixed`), so both return-class layouts are exercised.
+extern "C" OskelPairInt oskelTestApplyStruct(OskelPairInt (*f)(int), int x) { return f(x); }
+extern "C" OskelMixed oskelTestApplyMixedStruct(OskelMixed (*f)(int), int x) { return f(x); }
 
 // A host that resolves the symbols above. Everything else behaves like the
 // dev platform (writes go to captured strings, so a test can read them).
@@ -1859,6 +1864,10 @@ struct SymbolPlatform final : Platform {
     if (symbol == "oskelTestApplyVoid") return reinterpret_cast<void*>(&oskelTestApplyVoid);
     if (symbol == "oskelTestApplyNarrow")
       return reinterpret_cast<void*>(&oskelTestApplyNarrow);
+    if (symbol == "oskelTestApplyStruct")
+      return reinterpret_cast<void*>(&oskelTestApplyStruct);
+    if (symbol == "oskelTestApplyMixedStruct")
+      return reinterpret_cast<void*>(&oskelTestApplyMixedStruct);
     return nullptr;
   }
 };
@@ -2180,6 +2189,50 @@ void testExternCallbackNarrowReturnIsWrittenAtItsOwnWidth() {
       "print(r.error.message);\n");
   assert(raised == "false\nnarrow failed\n");
 }
+
+void testExternCallbackReturnsStruct() {
+  TEST_SCOPE();
+  // A callback returning a struct by value (PHASE 6.6). The trampoline
+  // serialises the map the Oskel function returns into the C return storage,
+  // so C reads the two INTEGER fields back from `rax`.
+  const std::string out = runWithSymbols(
+      "struct PairInt { a: int; b: int; }\n"
+      "extern \"C\" { fn oskelTestApplyStruct(f: fn(int): PairInt, x: int): PairInt; }\n"
+      "fn make(v: int): PairInt { return {a: v, b: v + 1}; }\n"
+      "let r = oskelTestApplyStruct(make, 41);\n"
+      "print(r.a);\n"
+      "print(r.b);\n");
+  assert(out == "41\n42\n");
+}
+
+void testExternCallbackReturnsMixedStruct() {
+  TEST_SCOPE();
+  // A mixed INTEGER/SSE struct return: the first eightbyte goes to a GPR and the
+  // second to an xmm register, so a wrong layout changes the observed values.
+  const std::string out = runWithSymbols(
+      "struct Mixed { a: int; b: double; }\n"
+      "extern \"C\" { fn oskelTestApplyMixedStruct(f: fn(int): Mixed, x: int): Mixed; }\n"
+      "fn make(v: int): Mixed { return {a: v, b: 2.5}; }\n"
+      "let r = oskelTestApplyMixedStruct(make, 7);\n"
+      "print(r.a);\n"
+      "print(r.b);\n");
+  assert(out == "7\n2.5\n");
+}
+
+void testExternCallbackStructReturnErrorIsReraised() {
+  TEST_SCOPE();
+  // A struct-returning callback that raises: the trampoline must record the
+  // error (not unwind through the C frame) and leave a zeroed buffer, and the
+  // extern call re-raises it once C returns.
+  const std::string out = runWithSymbols(
+      "struct PairInt { a: int; b: int; }\n"
+      "extern \"C\" { fn oskelTestApplyStruct(f: fn(int): PairInt, x: int): PairInt; }\n"
+      "fn boom(v: int): PairInt { panic(\"struct callback failed\"); }\n"
+      "let r = pcall(() => oskelTestApplyStruct(boom, 1));\n"
+      "print(r.ok);\n"
+      "print(r.error.message);\n");
+  assert(out == "false\nstruct callback failed\n");
+}
 #endif  // OSKEL_HAVE_LIBFFI
 
 void testExternRejectsLargeStructAtCompileTime() {
@@ -2411,6 +2464,9 @@ int main() {
   testExternCallbackInvokedRepeatedly();
   testExternCallbackErrorIsReraisedAfterCReturns();
   testExternCallbackNarrowReturnIsWrittenAtItsOwnWidth();
+  testExternCallbackReturnsStruct();
+  testExternCallbackReturnsMixedStruct();
+  testExternCallbackStructReturnErrorIsReraised();
 #endif
   testExternRejectsLargeStructAtCompileTime();
   testExternRejectsNonScalarStructFieldAtCompileTime();

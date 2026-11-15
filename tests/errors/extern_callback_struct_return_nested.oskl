@@ -1,0 +1,15 @@
+// expect-exit: 65
+// A callback return struct must have scalar fields: a nested struct is not a
+// scalar member, so it cannot cross the C boundary and the declaration is
+// rejected at compile time.
+struct Inner {
+  a: int;
+  b: int;
+}
+struct Outer {
+  p: Inner;
+  q: int;
+}
+extern "C" {
+  fn bad(f: fn(int): Outer, x: int): int;
+}

@@ -216,8 +216,18 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    declared. Provide a way (or a documented reason it is out of scope).
 2. **[P1]** `extern "C"` does not support structs larger than 16 bytes by value
    (System V passes them via a hidden pointer / `sret`).
-3. **[P1]** `extern "C"` does not support callbacks returning structs (scalars
-   only).
+3. ~~**[P1]** `extern "C"` does not support callbacks returning structs (scalars
+   only).~~ **Done**: a callback may return a struct by value. The compiler
+   resolves the struct name of the callback return to its fields
+   (`TypeSpec::callbackReturnsStruct`/`callbackReturnFields`), `makeCallback`
+   builds the struct `ffi_type` for the `ffi_cif`, and the trampoline serialises
+   the returned map into the C return storage using the layout (a shape that
+   does not match is a re-raised error, not a wild write). A struct over 16
+   bytes (class MEMORY) needs the `libffi` path, like a large struct argument;
+   elsewhere the declaration is rejected at compile time
+   (`tests/check/ffi_callback_struct_return.oskl`,
+   `tests/errors/extern_callback_struct_return_nested.oskl`,
+   `vm_test.cpp::testExternCallbackReturnsStruct`/`ReturnsMixedStruct`).
 4. **[P1]** `extern "C"` does not support nested callbacks (a callback that
    takes another callback).
 5. **[P1]** `extern "C"` does not support `long double`.
