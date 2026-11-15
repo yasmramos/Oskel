@@ -378,8 +378,10 @@ previous one.
   no opcode; a `Point { x: 1, y: 2 }` literal is checked against the
   declaration (unknown, missing, duplicate or mistyped field is a compile
   error) and then lowered to the same `NEWTABLE`/`SETTABLE` sequence as a map
-  literal, so a struct value is a plain map at runtime. A struct name is a
-  valid annotation and is visible to the whole file (like a hoisted `fn`). See
+  literal, so a struct value is a plain map at runtime. A field may use the
+  shorthand `Point { x, y }` (sugar for `Point { x: x, y: y }`, from the
+  variables in scope), a parser-only desugaring. A struct name is a valid
+  annotation and is visible to the whole file (like a hoisted `fn`). See
   `docs/language.md` §4.7 and `tests/18_structs.oskl`.
 - `switch` simple (literals and ranges) — **done**: no fallthrough, labels are
   literals or integer ranges, optional single `default`; compiles to the
@@ -497,13 +499,19 @@ previous one.
   `tests/31_ffi_struct.oskl`.
 - **Callbacks (done)** — a parameter typed `fn(P...): R` is a C function
   pointer. `fn` is a keyword, so `parseTypeAnnotation` reads the signature
-  before the ordinary type-name path; the parameters and return are scalar FFI
-  names (a nested callback or a struct by value is out of scope). A callback is
-  only meaningful as a parameter: a callback return type is rejected at compile
+  before the ordinary type-name path; the parameters are scalar FFI names and
+  the return is a scalar or a struct by value (a nested callback, a non-scalar
+  callback parameter and a struct *parameter* inside the callback are out of
+  scope). A callback is
+  only meaningful as a parameter: a `fn` type as the *return type of the
+  `extern "C"` function* is rejected at compile
   time, as is a non-scalar callback parameter. In the development engine the
   callback is a `libffi` closure (`ffi_closure_alloc`/`ffi_prep_closure_loc`):
   the trampoline re-enters the VM through `Runtime::call`, boxing the C
-  arguments as Oskel values and writing the result back in the declared C type.
+  arguments as Oskel values and writing the result back in the declared C type
+  (a struct return is serialised field by field into the return storage using
+  its layout, and needs the by-value struct marshalling, plus the `libffi` path
+  for a class-MEMORY struct).
   The closure lives in a reference-counted `CallbackObj` held for the whole
   extern call, so the trampoline address stays valid while C runs (a callback C
   stores for a later call is out of scope for this phase). An error raised
@@ -516,6 +524,21 @@ previous one.
   backend from including `ffi_marshal.h` or `libffi`, so the split cannot
   regress. See `docs/language.md` §4.6, `tests/32_ffi_callback.oskl` and
   `tests/vm_test.cpp`.
+- **C variadics (done)** — a trailing bare `...` declares a C variadic
+  (`extern "C" { fn printf(fmt: cstring, ...): int; }`): the named parameters
+  are the fixed prefix and every extra argument is passed through the default
+  argument promotions (`float` widens to `double`, `bool` to `int`, a string to
+  `const char *`). The spelling is a bare `...`, told apart from the Oskel
+  `rest...` parameter pack (which collects into an array and cannot cross the
+  boundary, so it is rejected in an `extern` declaration). A variadic
+  declaration is recorded on the `ExternSymbol` (`variadic`), and the compiler
+  checks only that the fixed prefix is present — the tail is not type-checked,
+  because C promotes and consumes it at run time. The call always goes through
+  `libffi` (`ffi_prep_cif_var`, prepared per call because the argument count
+  changes), so like a class-MEMORY struct it needs `kCVariadicSupported`
+  (libffi + System V AMD64); off that the declaration is rejected at compile
+  time (`OSKEL_FFI_VARIADIC` skips the script test). See `docs/language.md`
+  §4.6 and `tests/53_ffi_variadic.oskl`.
 
 ### PHASE 6.7 — Error handling 🔶 in progress
 
@@ -928,14 +951,24 @@ Slices, each independently shippable:
       detection inside the body (`"0x0x10"` is 16, `"0b0b101"` is 5) and its
       overflow rules (`-2^63` is accepted, `2^63` is not). The parser is pure
       integer code -- no libm, no libc -- so it links into the freestanding
-      binary. The `float(string)`/`double(string)` parse needs a correctly
-      rounded `strtod` (subnormals, `1e400`, inf/nan) and is deferred to
-      **7c.5b.2b**; a string operand of `float`/`double` still fails with a
-      clear message. Covered by `tests/freestanding_test.cpp` (the numeric
-      sources, the 2^24+1 binary32 rounding, the `int(string)` bases/bounds,
-      the error paths) and the `oskel build` fixture. The math block (`sqrt`,
-      `pow`, `sin`, ...) still needs an embedded libm because the freestanding
-      binary cannot call the host's.
+      binary. **7c.5b.2b** (done) adds the `float(string)`/`double(string)`
+      parse: a freestanding decimal/hex text to binary64 parser that is
+      correctly rounded, matching the hosted `strtod` bit for bit. It keeps the
+      exact value in a fixed bignum (32-bit limbs, the `dtoa` representation)
+      and rounds once, so subnormals, ties to even and the `1e400` overflow
+      edge all agree with the host; a silent overflow is a clean error, and
+      `inf`/`infinity`/`nan` (case-insensitive, optional sign) are accepted.
+      `float` parses to binary64 and narrows, exactly as the hosted `float`
+      does. It reuses the `bn_*` primitives `dtoa.cpp` already emits and needs
+      no libm or libc, so it links into the freestanding binary. The algorithm
+      was prototyped and validated against `strtod` over hundreds of thousands
+      of random inputs (binary64, subnormals, hex floats) before being emitted.
+      Covered by `tests/parse_float_test.cpp` (the emitted code called through
+      a function pointer against `strtod`, 500k random cases plus the edges)
+      and `tests/freestanding_test.cpp` (the builtin paths under the real
+      `_start`) and the `oskel build` fixture. The math block (`sqrt`, `pow`,
+      `sin`, ...) still needs an embedded libm because the freestanding binary
+      cannot call the host's.
     - **7c.6** (done) — variadic parameter packs. A function with a trailing
       `rest...` parameter was a lowering error ("variadic function",
       `PHASE 7c.3`); it now compiles. The child proto's prologue checks the
@@ -978,6 +1011,17 @@ Slices, each independently shippable:
     Windows with "Force ASLR" maps the non-PIE image instead of aborting it.
     Covered by `tests/pe_test.cpp` (structure and, on Windows, execution) and
     the `oskel.build_binary` CTest case on Windows (`tests/build_binary_pe.cmake`).
+  - **7f** (open) — FFI in the AOT backend. An `extern "C"` symbol (and a
+    `native fn`) is a host binding the AOT backend cannot resolve: the compiler
+    records the declaration in `bc.externs` as pure link metadata, but the
+    lowerer never reads it, so a read fails. The read now names the real
+    problem (`extern "C" symbol 'X' cannot be resolved by the AOT backend
+    (PHASE 7f)`) instead of the generic unassigned-global message
+    (`tests/build_error.cmake` pins it). Lowering the symbol is a design
+    decision still open, because the generated binary is freestanding today
+    (`ldd` reports "not a dynamic executable"): curated syscall stubs keep that
+    invariant; an object + external link or a dynamic ELF break it. No slice is
+    chosen yet.
 - Deferred: per-instruction type annotations for fast paths without dynamic
   dispatch (bridge toward the speculative work in
   `docs/ARCHITECTURE_ANALYSIS.md`); other targets (macOS via libc or stubs).
@@ -1087,7 +1131,7 @@ Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair through the hidden `$mapValue` helper, no new opcode) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e done)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e done; 7f — FFI in AOT — open, no slice chosen)
 Phase 8: 🔶 in progress (JIT for the development VM, slice 1 done: integer leaf protos)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)

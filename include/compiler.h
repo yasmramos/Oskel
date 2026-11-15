@@ -263,8 +263,19 @@ class Compiler {
     std::vector<Param> params;
     TypeRef returnType;
     bool mustUse = false;
+    // True for a C variadic (`extern "C" fn printf(fmt: cstring, ...): int`).
+    // `params` then holds the named prefix; a call may pass any number of extra
+    // arguments, which the call-site check does not type-check (C applies the
+    // default promotions at run time).
+    bool cVariadic = false;
   };
   std::unordered_map<std::string, NativeSig> nativeSigs_;
+
+  // Canonical signature of every `extern "C"` symbol declared so far in the
+  // chunk, keyed by the C symbol name (PHASE 6.6). Two declarations of one
+  // symbol must agree; a mismatch is a compile error instead of a silent
+  // last-wins (the marshalling thunk is built from the last declaration).
+  std::unordered_map<std::string, std::string> externSignatures_;
 
   // Names declared `@MustUse` that are not natives (plain `fn`, or a global
   // holding one). Kept parallel to the binding tables and part of the session
@@ -497,6 +508,7 @@ class Compiler {
     std::unordered_map<std::string, TypeRef> globalTypes;
     std::unordered_map<std::string, std::vector<StructField>> structDefs;
     std::unordered_map<std::string, NativeSig> nativeSigs;
+    std::unordered_map<std::string, std::string> externSignatures;
     std::unordered_set<std::string> mustUseGlobals;
     std::map<std::string, ImportedModule> loadedModules;
     std::set<std::string> materializedModules;

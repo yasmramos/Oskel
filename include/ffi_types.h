@@ -70,6 +70,43 @@ constexpr std::size_t kMaxExternArgs = 6;
 
 constexpr bool kStructByValueSupported = OSKEL_FFI_STRUCT_BY_VALUE != 0;
 
+// Whether an `extern "C"` declaration may be variadic (`fn printf(fmt: cstring,
+// ...): int`). A C variadic call needs `ffi_prep_cif_var`, so it needs libffi,
+// and the default-argument promotions it applies are the System V AMD64 ones
+// (the Microsoft x64 ABI passes a variadic floating-point argument in *both* an
+// xmm and a general-purpose register, a shape the register thunks cannot
+// express). Scalars stay portable, but variadics are a development-engine,
+// System V feature, exactly like a class-MEMORY struct. A macro, not only a
+// `constexpr`, for the same `#if` reason as `OSKEL_FFI_STRUCT_BY_VALUE`.
+#ifndef OSKEL_FFI_VARIADIC
+#if defined(OSKEL_HAVE_LIBFFI) && defined(__x86_64__) && !defined(_WIN32)
+#define OSKEL_FFI_VARIADIC 1
+#else
+#define OSKEL_FFI_VARIADIC 0
+#endif
+#endif
+
+constexpr bool kCVariadicSupported = OSKEL_FFI_VARIADIC != 0;
+
+// Whether a struct larger than 16 bytes (System V class MEMORY) may cross the
+// boundary. The register thunks express a struct only as up to two eightbytes,
+// so a MEMORY struct — passed on the stack, and returned through a hidden
+// `sret` pointer — cannot go through them; it goes through `libffi`, which
+// reproduces the stack layout at run time. That makes it available only where
+// the dev engine is built with libffi on the System V AMD64 ABI; elsewhere the
+// declaration is rejected at compile time with a clear message. The macro
+// derives from `OSKEL_HAVE_LIBFFI` so the compiler and the runtime agree
+// without the compiler pulling in any libffi header.
+#ifndef OSKEL_FFI_MEMORY_STRUCTS
+#if defined(OSKEL_HAVE_LIBFFI) && defined(__x86_64__) && !defined(_WIN32)
+#define OSKEL_FFI_MEMORY_STRUCTS 1
+#else
+#define OSKEL_FFI_MEMORY_STRUCTS 0
+#endif
+#endif
+
+constexpr bool kMemoryStructsSupported = OSKEL_FFI_MEMORY_STRUCTS != 0;
+
 // One field of a struct crossing the C boundary. `type` is an FFI scalar type
 // name (the same vocabulary as a parameter annotation); a nested struct is not
 // a scalar and is rejected by `buildStructLayout`.
@@ -91,7 +128,9 @@ struct StructLayout {
   std::size_t alignment = 1;
   // System V classification: at most two eightbytes, each `'I'` (INTEGER, a
   // general-purpose register) or `'S'` (SSE, an xmm register). A struct whose
-  // size exceeds 16 bytes is class MEMORY and never reaches here.
+  // size exceeds 16 bytes is class MEMORY: `isMemory` is set, the eightbytes are
+  // not classified, and the whole buffer crosses the boundary through libffi.
+  bool isMemory = false;
   char eightbyte[2] = {'I', 'I'};
   int eightbyteCount = 0;
 };
@@ -111,6 +150,12 @@ struct TypeSpec {
   bool isCallback = false;
   std::vector<std::string> callbackParams;
   std::string callbackReturn;  // "void" for a callback that returns nothing
+  // A callback may return a struct (PHASE 6.6): `callbackReturnsStruct` marks
+  // it and `callbackReturnFields` carries the resolved shape, exactly as a
+  // struct parameter carries `fields`. A struct field is a scalar (a nested
+  // struct is rejected by `buildStructLayout`), so one level suffices.
+  bool callbackReturnsStruct = false;
+  std::vector<FfiField> callbackReturnFields;
 };
 
 // A Oskel `string` and a `cstring` are both a NUL-terminated `const char *` at
@@ -150,9 +195,9 @@ inline bool scalarFieldLayout(const std::string& typeName, std::size_t& size,
 
 // Computes the C layout of a struct from its fields, following the natural
 // alignment of each scalar member. On failure it fills `reason` and returns
-// false: a nested/unsupported field type, an empty struct, or a struct larger
-// than 16 bytes (which System V passes in memory, a shape the register-based
-// marshalling does not support).
+// false: a nested/unsupported field type or an empty struct. A struct larger
+// than 16 bytes succeeds with `out.isMemory` set (System V class MEMORY); the
+// caller decides whether the target can express it.
 inline bool buildStructLayout(const std::vector<FfiField>& fields, StructLayout& out,
                               std::string& reason) {
   out = StructLayout{};
@@ -181,14 +226,16 @@ inline bool buildStructLayout(const std::vector<FfiField>& fields, StructLayout&
     return false;
   }
   const std::size_t total = (offset + maxAlignment - 1) / maxAlignment * maxAlignment;
-  if (total > 16) {
-    reason = "a struct of " + std::to_string(total) +
-             " bytes is returned/passed in memory (> 16), which the extern marshalling "
-             "does not support";
-    return false;
-  }
   out.size = total;
   out.alignment = maxAlignment;
+  if (total > 16) {
+    // Class MEMORY: passed on the stack and returned through a hidden pointer.
+    // The eightbyte classification below does not apply, so stop here; the
+    // caller decides whether the target can express it (see `validateTypeSpec`).
+    out.isMemory = true;
+    out.eightbyteCount = 0;
+    return true;
+  }
   out.eightbyteCount = static_cast<int>((total + 7) / 8);
   // An eightbyte is SSE only when every field touching it is floating point;
   // an integer/pointer field anywhere in it makes the whole eightbyte INTEGER.
@@ -308,6 +355,23 @@ inline std::string validateTypeSpec(const TypeSpec& spec, bool isReturn) {
                "' cannot cross the C boundary";
       }
     }
+    if (spec.callbackReturnsStruct) {
+      StructLayout layout;
+      std::string reason;
+      if (!buildStructLayout(spec.callbackReturnFields, layout, reason)) return reason;
+      if (layout.isMemory) {
+        if (!kMemoryStructsSupported) {
+          return "a callback returning a struct of " + std::to_string(layout.size) +
+                 " bytes is class MEMORY (> 16 bytes: passed on the stack, returned through a "
+                 "hidden pointer), which this build does not support: it needs the System V AMD64 "
+                 "ABI and libffi in the development engine";
+        }
+      } else if (!kStructByValueSupported) {
+        return "a callback cannot return a struct by value on this target: the marshalling "
+               "implements the System V AMD64 ABI only";
+      }
+      return "";
+    }
     if (!spec.callbackReturn.empty() && spec.callbackReturn != "void") {
       ReturnClass ignored;
       if (!classifyReturn(spec.callbackReturn, ignored)) {
@@ -333,6 +397,18 @@ inline std::string validateTypeSpec(const TypeSpec& spec, bool isReturn) {
   StructLayout layout;
   std::string reason;
   if (!buildStructLayout(spec.fields, layout, reason)) return reason;
+  if (layout.isMemory) {
+    // A struct larger than 16 bytes is class MEMORY (passed on the stack,
+    // returned through a hidden `sret` pointer). Only the libffi-backed
+    // marshalling expresses that; the register thunks cannot.
+    if (!kMemoryStructsSupported) {
+      return "a struct of " + std::to_string(layout.size) +
+             " bytes is class MEMORY (> 16 bytes: passed on the stack, returned through a hidden "
+             "pointer), which this build does not support: it needs the System V AMD64 ABI and "
+             "libffi in the development engine";
+    }
+    return "";
+  }
   if (!kStructByValueSupported) {
     return "a struct cannot cross the C boundary by value on this target: the register "
            "marshalling implements the System V AMD64 ABI only (the Microsoft x64 ABI passes "
@@ -341,29 +417,113 @@ inline std::string validateTypeSpec(const TypeSpec& spec, bool isReturn) {
   return "";
 }
 
+// A canonical, comparable spelling of one resolved type spec. Two declarations
+// of the same C symbol must resolve to the same spec; this string is the key
+// that makes the comparison exact (a scalar by name, a struct by its ordered
+// field names and types, a callback by its signature). It is deliberately a
+// pure function of the spec: no ABI detail leaks in, so the compiler can detect
+// a conflict without knowing the target.
+inline std::string canonicalTypeSpec(const TypeSpec& spec) {
+  if (spec.isCallback) {
+    std::string out = "fn(";
+    for (std::size_t i = 0; i < spec.callbackParams.size(); ++i) {
+      if (i != 0) out += ",";
+      out += spec.callbackParams[i].empty() ? "int" : spec.callbackParams[i];
+    }
+    out += "):";
+    if (spec.callbackReturnsStruct) {
+      out += "struct{";
+      for (std::size_t i = 0; i < spec.callbackReturnFields.size(); ++i) {
+        if (i != 0) out += ",";
+        out += spec.callbackReturnFields[i].name;
+        out += ":";
+        out += spec.callbackReturnFields[i].type.empty() ? "int" : spec.callbackReturnFields[i].type;
+      }
+      out += "}";
+    } else {
+      out += spec.callbackReturn.empty() ? "void" : spec.callbackReturn;
+    }
+    return out;
+  }
+  if (spec.isStruct) {
+    std::string out = "struct{";
+    for (std::size_t i = 0; i < spec.fields.size(); ++i) {
+      if (i != 0) out += ",";
+      out += spec.fields[i].name;
+      out += ":";
+      out += spec.fields[i].type.empty() ? "int" : spec.fields[i].type;
+    }
+    out += "}";
+    return out;
+  }
+  return spec.scalarType.empty() ? "int" : spec.scalarType;
+}
+
+// The canonical spelling of a whole signature, parameters then return. Two
+// `extern "C"` declarations of one symbol agree exactly when these strings are
+// equal; the compiler rejects a mismatch instead of letting one silently win.
+// The trailing `...` of a C variadic is part of the signature: `printf(a: int)`
+// and `printf(a: int, ...)` are different declarations.
+inline std::string canonicalSignature(const std::vector<TypeSpec>& params,
+                                      const TypeSpec& returnType, bool variadic = false) {
+  std::string out = "(";
+  for (std::size_t i = 0; i < params.size(); ++i) {
+    if (i != 0) out += ",";
+    out += canonicalTypeSpec(params[i]);
+  }
+  if (variadic) out += params.empty() ? "..." : ",...";
+  out += ")->";
+  out += canonicalTypeSpec(returnType);
+  return out;
+}
+
 // Checks one `extern "C"` signature against what the marshalling can honour.
 // Returns an empty string when the signature is fine, or a message naming the
 // first problem. The compiler calls this so an unsupported declaration fails
 // at compile time with a clear error instead of at the first call.
+//
+// `variadic` is true for a C variadic (`fn printf(fmt: cstring, ...): int`).
+// Such a declaration always goes through `libffi` (the register thunks cannot
+// express a variable argument list), so it needs `kCVariadicSupported` and is
+// not bound by the register budget below; its return must be a scalar.
 inline std::string validateSignature(const std::vector<TypeSpec>& params,
-                                     const TypeSpec& returnType) {
+                                     const TypeSpec& returnType, bool variadic = false) {
   // The bound is on flattened eightbytes, not parameters: a struct contributes
   // one per 8 bytes it spans. Keeping the total at or below the number of
   // general-purpose argument registers guarantees every eightbyte lands in a
   // register, so none spills to the stack (a partly-registered aggregate is
-  // passed wholly in memory, which the register thunks cannot express).
+  // passed wholly in memory, which the register thunks cannot express). A
+  // variadic call goes through libffi, which reproduces the stack layout, so
+  // the bound does not apply to it.
   std::size_t eightbytes = 0;
   for (const TypeSpec& spec : params) {
     if (spec.isStruct) {
       StructLayout layout;
       std::string reason;
       if (!buildStructLayout(spec.fields, layout, reason)) return reason;
-      eightbytes += static_cast<std::size_t>(layout.eightbyteCount);
+      // A MEMORY struct travels on the stack, not in a register, so it does not
+      // consume the register budget the bound below enforces.
+      if (!layout.isMemory) eightbytes += static_cast<std::size_t>(layout.eightbyteCount);
     } else {
       eightbytes += 1;
     }
     std::string problem = validateTypeSpec(spec, /*isReturn=*/false);
     if (!problem.empty()) return problem;
+  }
+  if (variadic) {
+    if (!kCVariadicSupported) {
+      return "a variadic 'extern \"C\"' declaration needs libffi and the System V AMD64 ABI, "
+             "which this build does not have";
+    }
+    for (const TypeSpec& spec : params) {
+      if (spec.isStruct || spec.isCallback) {
+        return "a variadic 'extern \"C\"' function takes only scalar parameters before the '...'";
+      }
+    }
+    if (returnType.isStruct) {
+      return "a variadic 'extern \"C\"' function must return a scalar";
+    }
+    return validateTypeSpec(returnType, /*isReturn=*/true);
   }
   if (eightbytes > kMaxExternArgs) {
     return "an 'extern' function may pass at most " + std::to_string(kMaxExternArgs) +

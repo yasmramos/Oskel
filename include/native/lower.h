@@ -31,6 +31,10 @@
 // A GETGLOBAL of a name the chunk never assigns and that is not a builtin is a
 // `LoweringError`. From 7c.2d the `print`, `write` and `eprint` builtins are
 // seeded as globals, so a program can print without a runtime to install them.
+// A name an `extern "C"` block declared gets its own message: the read is a C
+// symbol the host would provide, and the AOT backend has no host to resolve it
+// against (the FFI lowering is PHASE 7f), so reporting it as an unassigned
+// variable would hide the real problem.
 //
 // From 7c.2c.1 every proto is lowered to its own machine function with the
 // lowering's own convention `AotValue entry(AotValue* args, long argc,

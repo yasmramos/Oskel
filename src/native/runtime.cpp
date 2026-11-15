@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "native/dtoa.h"
+#include "native/parse_float.h"
 
 namespace {
 
@@ -964,11 +965,14 @@ void emitNot(CodeGen& cg, CodeGen::Label label) {
 
 // `AotValue oskel_compare(AotValue a, AotValue b, long op)`: equality for any
 // pair and ordering for int/int, float/double and bool/bool. Equality of two
-// numbers is numeric (`1 == 1.0` is true), matching `Value::equals`. The result
-// is always a bool. The op selector is the low nibble of the x86-64 condition
-// code of the matching comparison.
+// numbers is numeric (`1 == 1.0` is true), matching `Value::equals`; equality of
+// two arrays or maps is *structural* (same length and equal items/entries), the
+// way the hosted engine compares them, not pointer identity. The result is
+// always a bool. The op selector is the low nibble of the x86-64 condition code
+// of the matching comparison. `mapFind` is needed by the map branch of the
+// structural equality.
 void emitCompare(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
-                 const DataBlob& message) {
+                 const DataBlob& message, CodeGen::Label mapFind) {
   CodeGen::Label eqBranch = cg.newLabel();
   CodeGen::Label neBranch = cg.newLabel();
   CodeGen::Label order = cg.newLabel();
@@ -989,10 +993,24 @@ void emitCompare(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   CodeGen::Label abDoneBool = cg.newLabel();
   CodeGen::Label baDoneBool = cg.newLabel();
   CodeGen::Label eqHelper = cg.newLabel();
+  CodeGen::Label eqReturn = cg.newLabel();
+  CodeGen::Label eqRetTrue = cg.newLabel();
+  CodeGen::Label eqRetFalse = cg.newLabel();
+  CodeGen::Label eqNumFloat = cg.newLabel();
   CodeGen::Label eqNonNumeric = cg.newLabel();
   CodeGen::Label eqIdentity = cg.newLabel();
-  CodeGen::Label eqFloat = cg.newLabel();
-  CodeGen::Label eqReturn = cg.newLabel();
+  CodeGen::Label eqStrPair = cg.newLabel();
+  CodeGen::Label eqRange = cg.newLabel();
+  CodeGen::Label eqArray = cg.newLabel();
+  CodeGen::Label eqMap = cg.newLabel();
+  CodeGen::Label eqArrayLoop = cg.newLabel();
+  CodeGen::Label eqMapLoop = cg.newLabel();
+  CodeGen::Label eqArrayScan = cg.newLabel();
+  CodeGen::Label eqArrayScanNext = cg.newLabel();
+  CodeGen::Label eqArrayScanDone = cg.newLabel();
+  CodeGen::Label eqMapScan = cg.newLabel();
+  CodeGen::Label eqMapScanNext = cg.newLabel();
+  CodeGen::Label eqMapScanDone = cg.newLabel();
   CodeGen::Label strEquals = cg.newLabel();
   CodeGen::Label strEqualsLoop = cg.newLabel();
   CodeGen::Label strEqualsSame = cg.newLabel();
@@ -1012,9 +1030,11 @@ void emitCompare(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   cg.jmp(order);
 
   cg.bind(eqBranch);
+  cg.xorReg(R8, R8);  // depth 0
   cg.callLabel(eqHelper);
   cg.jmp(boolResult);
   cg.bind(neBranch);
+  cg.xorReg(R8, R8);  // depth 0
   cg.callLabel(eqHelper);
   cg.testReg(Rax);
   cg.setcc(Jcc::Eq, Rax);
@@ -1132,8 +1152,20 @@ void emitCompare(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
 
   // --- internal subroutine: rax = (a == b) ---
   // Not reached by fall-through: every branch above ends in `ret` or a call to
-  // `fail` that never returns. Called with the operands still in rdi:rsi/rdx:rcx.
+  // `fail` that never returns. Called with the operands in rdi:rsi/rdx:rcx and
+  // the visited-pair list head in r8 (0 from the top-level `==`). It is
+  // recursive: the array and map branches push `(a, b)` as a node on this
+  // frame's stack and call back with that node as the list, so a pair already
+  // under comparison is assumed equal -- the hosted `Value::equals` `visited`
+  // rule, which makes a cyclic structure compare equal to an isomorphic one and
+  // terminates instead of recursing forever.
   cg.bind(eqHelper);
+  cg.push(Rbp);
+  cg.movReg(Rbp, Rsp);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 80);       // locals at rbp-24..-96 (rbx/r12 at rbp-8/-16)
+  cg.movToMem(Rbp, -48, R8);     // incoming visited list
   emitIsNumberFlag(cg, Rdi);
   cg.testReg(Rax);
   cg.jcc(Jcc::Eq, eqNonNumeric);
@@ -1141,15 +1173,15 @@ void emitCompare(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   cg.testReg(Rax);
   cg.jcc(Jcc::Eq, eqNonNumeric);
   cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagInt));
-  cg.jcc(Jcc::Ne, eqFloat);
+  cg.jcc(Jcc::Ne, eqNumFloat);
   cg.cmpImm32(Rdx, static_cast<std::int32_t>(kTagInt));
-  cg.jcc(Jcc::Ne, eqFloat);
+  cg.jcc(Jcc::Ne, eqNumFloat);
   cg.xorReg(Rax, Rax);
   cg.cmpReg(Rsi, Rcx);
   cg.setcc(Jcc::Eq, Rax);
   cg.movzx(Rax, Rax);
   cg.jmp(eqReturn);
-  cg.bind(eqFloat);
+  cg.bind(eqNumFloat);
   emitToDouble(cg, Rdi, Rsi, Xmm0);
   emitToDouble(cg, Rdx, Rcx, Xmm1);
   cg.xorReg(Rax, Rax);
@@ -1158,23 +1190,188 @@ void emitCompare(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   cg.jcc(Jcc::Ne, eqReturn);  // ZF=0 -> not equal
   cg.movImm(Rax, 1);
   cg.jmp(eqReturn);
+
   cg.bind(eqNonNumeric);
-  // Two strings compare by content, not by pointer; every other non-numeric
-  // pair is identity (nil == nil, bool == bool, same object).
+  // Two values of different kinds are never equal (a number pair was handled
+  // above). Same kind: strings by content, ranges by their three fields, arrays
+  // and maps structurally; everything else (nil, bool, func, ptr) is identity.
+  cg.cmpReg(Rdi, Rdx);
+  cg.jcc(Jcc::Ne, eqRetFalse);
   cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagStr));
-  cg.jcc(Jcc::Ne, eqIdentity);
-  cg.cmpImm32(Rdx, static_cast<std::int32_t>(kTagStr));
-  cg.jcc(Jcc::Ne, eqIdentity);
+  cg.jcc(Jcc::Eq, eqStrPair);
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagRange));
+  cg.jcc(Jcc::Eq, eqRange);
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagArray));
+  cg.jcc(Jcc::Eq, eqArray);
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagMap));
+  cg.jcc(Jcc::Eq, eqMap);
+  cg.jmp(eqIdentity);
+
+  cg.bind(eqStrPair);
   cg.callLabel(strEquals);
   cg.jmp(eqReturn);
+
+  // A range is equal when start, end and the inclusive flag all match.
+  cg.bind(eqRange);
+  cg.movFromMem(R8, Rsi, kRangeStartOffset);
+  cg.movFromMem(R9, Rcx, kRangeStartOffset);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ne, eqRetFalse);
+  cg.movFromMem(R8, Rsi, kRangeEndOffset);
+  cg.movFromMem(R9, Rcx, kRangeEndOffset);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ne, eqRetFalse);
+  cg.movFromMem(R8, Rsi, kRangeInclusiveOffset);
+  cg.movFromMem(R9, Rcx, kRangeInclusiveOffset);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ne, eqRetFalse);
+  cg.jmp(eqRetTrue);
+
+  // --- arrays: equal length, then equal items, in order ---
+  cg.bind(eqArray);
+  cg.movFromMem(Rbx, Rsi, kTableLengthOffset);
+  cg.movFromMem(R9, Rcx, kTableLengthOffset);
+  cg.cmpReg(Rbx, R9);
+  cg.jcc(Jcc::Ne, eqRetFalse);
+  // A pair already under comparison is equal (the cycle case).
+  cg.movFromMem(R10, Rbp, -48);
+  cg.bind(eqArrayScan);
+  cg.testReg(R10);
+  cg.jcc(Jcc::Eq, eqArrayScanDone);
+  cg.movFromMem(R11, R10, 0);
+  cg.cmpReg(R11, Rsi);
+  cg.jcc(Jcc::Ne, eqArrayScanNext);
+  cg.movFromMem(R11, R10, 8);
+  cg.cmpReg(R11, Rcx);
+  cg.jcc(Jcc::Eq, eqRetTrue);
+  cg.bind(eqArrayScanNext);
+  cg.movFromMem(R10, R10, 16);
+  cg.jmp(eqArrayScan);
+  cg.bind(eqArrayScanDone);
+  // Push (A, B) as a node in this frame (A at +0, B at +8, prev at +16);
+  // children recurse with &node as the list head.
+  cg.movToMem(Rbp, -80, Rsi);
+  cg.movToMem(Rbp, -72, Rcx);
+  cg.movFromMem(R11, Rbp, -48);
+  cg.movToMem(Rbp, -64, R11);
+  cg.movToMem(Rbp, -24, Rsi);    // array A header
+  cg.movToMem(Rbp, -32, Rcx);    // array B header
+  cg.movImmToMem(Rbp, -40, 0);   // index
+  cg.bind(eqArrayLoop);
+  cg.movFromMem(R9, Rbp, -40);
+  cg.cmpReg(R9, Rbx);
+  cg.jcc(Jcc::Ae, eqRetTrue);
+  cg.movReg(R10, R9);
+  cg.shlImm8(R10, 4);
+  cg.movFromMem(R11, Rbp, -24);
+  cg.movFromMem(R11, R11, kTableBlockOffset);
+  cg.addReg(R10, R11);           // &A[i]
+  cg.movReg(R11, R9);
+  cg.shlImm8(R11, 4);
+  cg.movFromMem(R12, Rbp, -32);
+  cg.movFromMem(R12, R12, kTableBlockOffset);
+  cg.addReg(R11, R12);           // &B[i]
+  cg.movFromMem(Rdi, R10, 0);
+  cg.movFromMem(Rsi, R10, 8);
+  cg.movFromMem(Rdx, R11, 0);
+  cg.movFromMem(Rcx, R11, 8);
+  cg.leaMem(R8, Rbp, -80);       // visited = &node
+  cg.callLabel(eqHelper);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, eqRetFalse);
+  cg.movFromMem(R9, Rbp, -40);
+  cg.addImm32(R9, 1);
+  cg.movToMem(Rbp, -40, R9);
+  cg.jmp(eqArrayLoop);
+
+  // --- maps: equal length, then every key of A present in B with an equal
+  // value (the same rule as the hosted `Value::equals`, which looks up each of
+  // A's keys in B). ---
+  cg.bind(eqMap);
+  cg.movFromMem(Rbx, Rsi, kTableLengthOffset);
+  cg.movFromMem(R9, Rcx, kTableLengthOffset);
+  cg.cmpReg(Rbx, R9);
+  cg.jcc(Jcc::Ne, eqRetFalse);
+  cg.movFromMem(R10, Rbp, -48);
+  cg.bind(eqMapScan);
+  cg.testReg(R10);
+  cg.jcc(Jcc::Eq, eqMapScanDone);
+  cg.movFromMem(R11, R10, 0);
+  cg.cmpReg(R11, Rsi);
+  cg.jcc(Jcc::Ne, eqMapScanNext);
+  cg.movFromMem(R11, R10, 8);
+  cg.cmpReg(R11, Rcx);
+  cg.jcc(Jcc::Eq, eqRetTrue);
+  cg.bind(eqMapScanNext);
+  cg.movFromMem(R10, R10, 16);
+  cg.jmp(eqMapScan);
+  cg.bind(eqMapScanDone);
+  cg.movToMem(Rbp, -80, Rsi);
+  cg.movToMem(Rbp, -72, Rcx);
+  cg.movFromMem(R11, Rbp, -48);
+  cg.movToMem(Rbp, -64, R11);
+  cg.movToMem(Rbp, -24, Rsi);    // map A header
+  cg.movToMem(Rbp, -32, Rcx);    // map B header
+  cg.movImmToMem(Rbp, -40, 0);   // index
+  cg.bind(eqMapLoop);
+  cg.movFromMem(R9, Rbp, -40);
+  cg.cmpReg(R9, Rbx);
+  cg.jcc(Jcc::Ae, eqRetTrue);
+  cg.movReg(R10, R9);
+  cg.imulImm32(R10, R10, static_cast<std::int32_t>(kMapEntrySize));
+  cg.movFromMem(R11, Rbp, -24);
+  cg.movFromMem(R11, R11, kTableBlockOffset);
+  cg.addReg(R10, R11);           // entry A[i]
+  cg.movFromMem(R12, R10, kMapEntryKeyOffset);  // key A
+  // Find the key in B; a missing key means the maps differ.
+  cg.movFromMem(Rdi, Rbp, -32);
+  cg.movReg(Rsi, R12);
+  cg.callLabel(mapFind);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Lt, eqRetFalse);
+  // B's entry for the key: valueB = B.entries[index].value
+  cg.imulImm32(Rax, Rax, static_cast<std::int32_t>(kMapEntrySize));
+  cg.movFromMem(R11, Rbp, -32);
+  cg.movFromMem(R11, R11, kTableBlockOffset);
+  cg.addReg(Rax, R11);
+  // Reload A's entry (the mapFind call clobbered the scratch registers).
+  cg.movFromMem(R9, Rbp, -40);
+  cg.imulImm32(R9, R9, static_cast<std::int32_t>(kMapEntrySize));
+  cg.movFromMem(R11, Rbp, -24);
+  cg.movFromMem(R11, R11, kTableBlockOffset);
+  cg.addReg(R9, R11);            // entry A[i]
+  cg.movFromMem(Rdi, R9, kMapEntryValueOffset);
+  cg.movFromMem(Rsi, R9, kMapEntryValueOffset + 8);
+  cg.movFromMem(Rdx, Rax, kMapEntryValueOffset);
+  cg.movFromMem(Rcx, Rax, kMapEntryValueOffset + 8);
+  cg.leaMem(R8, Rbp, -80);       // visited = &node
+  cg.callLabel(eqHelper);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, eqRetFalse);
+  cg.movFromMem(R9, Rbp, -40);
+  cg.addImm32(R9, 1);
+  cg.movToMem(Rbp, -40, R9);
+  cg.jmp(eqMapLoop);
+
+  // Everything else of the same kind (nil, bool, func, ptr) is identity: the
+  // tags already matched, so equal payloads mean the same value.
   cg.bind(eqIdentity);
   cg.xorReg(Rax, Rax);
-  cg.cmpReg(Rdi, Rdx);
-  cg.jcc(Jcc::Ne, eqReturn);
   cg.cmpReg(Rsi, Rcx);
   cg.jcc(Jcc::Ne, eqReturn);
   cg.movImm(Rax, 1);
+  cg.jmp(eqReturn);
+
+  cg.bind(eqRetTrue);
+  cg.movImm(Rax, 1);
+  cg.jmp(eqReturn);
+  cg.bind(eqRetFalse);
+  cg.xorReg(Rax, Rax);
   cg.bind(eqReturn);
+  cg.addImm32(Rsp, 80);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  cg.pop(Rbp);
   cg.retInsn();
 
   // --- internal subroutine: rax = (a == b) for two strings ---
@@ -3891,6 +4088,7 @@ void emitIntTextParser(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
 void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
                                    CodeGen::Label floatLabel, CodeGen::Label doubleLabel,
                                    CodeGen::Label fail, CodeGen::Label intTextParser,
+                                   CodeGen::Label floatTextParser,
                                    const DataBlob& msgInt,
                                    const DataBlob& msgFloat, const DataBlob& msgDouble) {
   constexpr int Xmm3 = kXmmBase + 3;
@@ -3899,6 +4097,12 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
   // hosted `int` uses (`-2^63 <= x < 2^63`).
   constexpr std::int64_t kTwoPow63 = 0x43E0000000000000ULL;
   constexpr std::int64_t kNegTwoPow63 = 0xC3E0000000000000ULL;
+  // Stack frame for `oskel_parse_float_text`: the scratch block followed by the
+  // 8-byte output word, rounded up so rsp stays 16-byte aligned at the call.
+  constexpr std::int64_t kParseScratchBytes =
+      static_cast<std::int64_t>(parse_float::kParseScratchBytes);
+  constexpr std::int64_t kParseFrame =
+      (kParseScratchBytes + 8 + 15) & ~static_cast<std::int64_t>(15);
 
   // --- int ---
   {
@@ -3989,6 +4193,8 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     CodeGen::Label asBool = cg.newLabel();
     CodeGen::Label asFloat = cg.newLabel();
     CodeGen::Label asDouble = cg.newLabel();
+    CodeGen::Label asStr = cg.newLabel();
+    CodeGen::Label failStr = cg.newLabel();
     CodeGen::Label badArgc = cg.newLabel();
     CodeGen::Label finish = cg.newLabel();
     CodeGen::Label done = cg.newLabel();
@@ -4007,7 +4213,29 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     cg.jcc(Jcc::Eq, asFloat);
     cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
     cg.jcc(Jcc::Eq, asDouble);
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+    cg.jcc(Jcc::Eq, asStr);
     emitFailCall(cg, fail, msgDouble);
+
+    // A string: parse the text with the freestanding parser, which yields the
+    // binary64 pattern or a failure the hosted engine reports as an error.
+    cg.bind(asStr);
+    cg.movReg(Rdi, Rcx);                          // AotString*
+    cg.movFromMem(Rsi, Rcx, 0);                   // length
+    cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+    cg.subRegImm32(Rsp, static_cast<std::int32_t>(kParseFrame));
+    cg.movReg(Rcx, Rsp);                          // scratch
+    cg.movReg(Rdx, Rsp);
+    cg.addImm32(Rdx, static_cast<std::int32_t>(kParseScratchBytes));  // outBits
+    cg.callLabel(floatTextParser);
+    cg.testReg(Rax);
+    cg.jcc(Jcc::Ne, failStr);
+    cg.movFromMem(Rdx, Rsp, static_cast<std::int32_t>(kParseScratchBytes));
+    cg.movReg(R11, Rsp);
+    cg.addImm32(R11, static_cast<std::int32_t>(kParseFrame));
+    cg.movReg(Rsp, R11);
+    cg.movImm(Rax, kTagDouble);
+    cg.jmp(done);
 
     cg.bind(asInt);
     cg.cvtsi2sd(Xmm0, Rcx);
@@ -4036,6 +4264,8 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
 
     cg.bind(badArgc);
     emitFailCall(cg, fail, msgDouble);
+    cg.bind(failStr);
+    emitFailCall(cg, fail, msgDouble);
 
     cg.bind(done);
     epilogue(cg);
@@ -4047,6 +4277,8 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     CodeGen::Label asBool = cg.newLabel();
     CodeGen::Label asFloat = cg.newLabel();
     CodeGen::Label asDouble = cg.newLabel();
+    CodeGen::Label asStr = cg.newLabel();
+    CodeGen::Label failStr = cg.newLabel();
     CodeGen::Label badArgc = cg.newLabel();
     CodeGen::Label roundToFloat = cg.newLabel();
     CodeGen::Label done = cg.newLabel();
@@ -4065,7 +4297,29 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     cg.jcc(Jcc::Eq, asFloat);
     cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
     cg.jcc(Jcc::Eq, asDouble);
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+    cg.jcc(Jcc::Eq, asStr);
     emitFailCall(cg, fail, msgFloat);
+
+    // A string: parse to binary64, then narrow, matching the hosted `float`
+    // (which parses with `strtod` and casts the result to `float`).
+    cg.bind(asStr);
+    cg.movReg(Rdi, Rcx);                          // AotString*
+    cg.movFromMem(Rsi, Rcx, 0);                   // length
+    cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+    cg.subRegImm32(Rsp, static_cast<std::int32_t>(kParseFrame));
+    cg.movReg(Rcx, Rsp);
+    cg.movReg(Rdx, Rsp);
+    cg.addImm32(Rdx, static_cast<std::int32_t>(kParseScratchBytes));
+    cg.callLabel(floatTextParser);
+    cg.testReg(Rax);
+    cg.jcc(Jcc::Ne, failStr);
+    cg.movFromMem(Rax, Rsp, static_cast<std::int32_t>(kParseScratchBytes));
+    cg.movqToXmm(Xmm0, Rax);
+    cg.movReg(R11, Rsp);
+    cg.addImm32(R11, static_cast<std::int32_t>(kParseFrame));
+    cg.movReg(Rsp, R11);
+    cg.jmp(roundToFloat);
 
     cg.bind(asInt);
     cg.cvtsi2sd(Xmm0, Rcx);
@@ -4094,6 +4348,8 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     cg.jmp(done);
 
     cg.bind(badArgc);
+    emitFailCall(cg, fail, msgFloat);
+    cg.bind(failStr);
     emitFailCall(cg, fail, msgFloat);
 
     cg.bind(done);
@@ -5382,6 +5638,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   // The float/double formatter is part of the embedded runtime: bind its
   // handles and emit the whole dtoa routine so `oskel_print_value` can call it.
   dtoa::DtoaHandles dtoaHandles = dtoa::newDtoaHandles(cg);
+  parse_float::ParseFloatHandles parseFloatHandles = parse_float::newParseFloatHandles(cg);
 
   // Collection helpers reference one another and the printers, so the env is
   // built from the handles and the labels above before any of them is emitted.
@@ -5483,7 +5740,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitNegate(cg, handles.negateValue, fail, msgNeg);
   emitBitNot(cg, handles.bitNotValue, fail, msgBitNot);
   emitNot(cg, handles.notValue);
-  emitCompare(cg, handles.compareValues, fail, msgCompare);
+  emitCompare(cg, handles.compareValues, fail, msgCompare, env.mapFind);
   emitStrEq(cg, handles.strEq);
   emitMapFind(cg, env.mapFind, env);
   emitBlockEnsure(cg, env.blockEnsure, env);
@@ -5524,9 +5781,11 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitPanicBuiltin(cg, handles.panicBuiltin, fail, failDynamic, msgPanic);
   emitNumericConversionBuiltins(cg, handles.intBuiltin, handles.floatBuiltin,
                                 handles.doubleBuiltin, fail, handles.intTextParser,
-                                msgConvertInt, msgConvertFloat, msgConvertDouble);
+                                parseFloatHandles.parseDouble, msgConvertInt,
+                                msgConvertFloat, msgConvertDouble);
   emitIntTextParser(cg, handles.intTextParser, fail, msgConvertInt);
   dtoa::emitDtoa(cg, dtoaHandles);
+  parse_float::emitParseFloat(cg, parseFloatHandles, dtoaHandles);
 
   // The "length" member name is a raw `AotString` (8-byte length + bytes), laid
   // out with the other data islands so no code falls through into it.

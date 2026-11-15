@@ -258,6 +258,14 @@ struct GlobalSlots {
 GlobalSlots collectGlobals(const std::vector<const Bytecode*>& protos,
                            const std::unordered_map<std::string, CodeGen::Label>& builtins) {
   GlobalSlots globals;
+  // The names an `extern "C"` block declared, so a read of one is reported as
+  // the C symbol it is rather than as an unassigned variable (see the loop
+  // below). The declarations are pure link metadata the compiler records on the
+  // proto; the AOT backend is the only consumer that cannot satisfy them.
+  std::unordered_set<std::string> externNames;
+  for (const Bytecode* proto : protos) {
+    for (const ExternSymbol& symbol : proto->externs) externNames.insert(symbol.name);
+  }
   auto nameOf = [](const Bytecode& proto, int index) -> const std::string& {
     const Value& name = proto.constants.at(static_cast<std::size_t>(index));
     if (!name.isStr()) {
@@ -310,6 +318,15 @@ GlobalSlots collectGlobals(const std::vector<const Bytecode*>& protos,
       if (instr.op != OpCode::GETGLOBAL) continue;
       const std::string& name = nameOf(*proto, instr.b);
       if (globals.slotOfName.find(name) != globals.slotOfName.end()) continue;
+      // A name an `extern "C"` block declared is a C symbol the host provides,
+      // not a misspelled variable: the read is a `GETGLOBAL` of a host binding
+      // whose `SETGLOBAL` is a self-read the loop above skipped. The AOT backend
+      // has no host, so name the real problem instead of the generic
+      // unassigned-global message a typo produces.
+      if (externNames.find(name) != externNames.end()) {
+        throw LoweringError("lowering: extern \"C\" symbol '" + name +
+                            "' cannot be resolved by the AOT backend (PHASE 7f)");
+      }
       throw LoweringError("lowering: global '" + name + "' is read but never assigned");
     }
   }

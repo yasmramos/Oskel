@@ -11,6 +11,12 @@ may change between minor versions.
 
 ### Added
 
+- `struct` literals support field shorthand: `Point { x, y }` is sugar for
+  `Point { x: x, y: y }`, taking each value from the variable of the same name
+  in scope. The shorthand and the `name: value` form mix freely in one literal
+  (`Point { x, y: 5 }`). It is a parser-level desugaring — no new token, node,
+  opcode or runtime change — so the lowered bytecode is identical to the
+  explicit form and the VM and the AOT backend are unaffected.
 - **Windows AOT target** (PHASE 7e). `oskel build --target
   x86_64-windows-win64` emits a static Windows PE32+ executable; the default
   target follows the host, and a Windows output name gets the `.exe` suffix.
@@ -25,9 +31,36 @@ may change between minor versions.
   The AOT prologue accepts `numParams - 1` or more arguments and builds the
   packed array with the new runtime helper `oskel_pack_rest`, so a program
   using variadic parameters behaves the same on the VM and in an AOT binary.
+- FFI: a struct larger than 16 bytes (System V class MEMORY) now crosses the C
+  boundary by value. Such a struct travels on the stack and comes back through
+  a hidden `sret` pointer, a shape the register thunks cannot express, so the
+  call goes through `libffi` where the development engine links it on the
+  System V AMD64 ABI; elsewhere the declaration is rejected at compile time as
+  before.
+- FFI: a callback (`fn(P...): R`) may now return a struct by value. The
+  trampoline serialises the map the Oskel function returns into the C return
+  storage using the struct layout, so C reads the fields back through the
+  registers the ABI assigns.
+- AOT: `oskel build` reports an `extern "C"` symbol with a dedicated message
+  (`extern "C" symbol 'X' cannot be resolved by the AOT backend (PHASE 7f)`)
+  instead of the generic unassigned-global error a typo produces. The symbol
+  still cannot be lowered (PHASE 7f work), but the failure now names the real
+  problem. Pinned by `tests/build_error.cmake`.
+- FFI: `extern "C"` declarations support a C variadic. A trailing bare `...`
+  (`fn printf(fmt: cstring, ...): int`) declares one; the named parameters are
+  the fixed prefix and the extra arguments pass through the default argument
+  promotions. Like a class-MEMORY struct, the call goes through `libffi` and the
+  declaration needs the System V AMD64 ABI, so off that it is rejected at
+  compile time instead of mis-called.
 
 ### Changed
 
+- The AOT backend compares two arrays or maps by content, like the hosted
+  engine, instead of by pointer identity. `[1, 2] == [1, 2]` is now true in a
+  compiled binary, and `in` over an array of arrays matches the VM. The
+  equality helper tracks the pairs already under comparison on the stack, the
+  same `visited` rule as `Value::equals`, so a cyclic structure compares equal
+  to an isomorphic one and terminates instead of recursing forever.
 - `examples/tui_editor.oskl` now exercises every feature its header claims:
   the non-null assertion `!!`, safe access `?.` with `??`, a union return type
   (`configValue`), `byteLen`/`buffer`/`cstring` and a range, all checked by the
@@ -47,6 +80,28 @@ may change between minor versions.
 
 ### Fixed
 
+- The PE emitter padded the image only to the end of `.text`'s bytes, not to
+  the `SizeOfRawData` the section header declares, so the file could end up to
+  `FileAlignment` bytes short of the image it described. Windows rejected such
+  an `.exe` with `ERROR_BAD_EXE_FORMAT` (Wine tolerated it, which hid the bug);
+  the same short image made `pe_test` hang on Windows when it launched the
+  rejected binary and the loader's error dialog blocked. The emitter now pads
+  to the declared size and publishes the IAT data directory
+  (`DataDirectory[12]`), which was left zero. `pe_test` also measured its
+  `call [ExitProcess]` displacement from two bytes past the call site, so the
+  stub faulted once the image loaded; the offset is now exact. `pe_test`
+  asserts the image size and the IAT directory on every platform.
+- The PE import directory table held one descriptor per imported function
+  (four identical kernel32.dll descriptors) instead of one per DLL, which the
+  PE/COFF specification requires ("one entry for each DLL"). Windows tolerated
+  the duplicates, so it never surfaced at run time, but the table was
+  non-conformant and `objdump` interpreted it as four kernel32.dll imports.
+  The emitter now writes a single descriptor for kernel32.dll followed by the
+  null terminator, and `pe_test` pins the descriptor count.
+- FFI: two `extern "C"` declarations of the same C symbol with different
+  signatures are now a compile error instead of a silent last-wins. The check
+  spans the whole program, so a conflict between two imported modules is caught
+  as well.
 - Removed leftover debug `printf` output from the compiler, VM and PE test
   suites.
 

@@ -169,9 +169,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 1. **[P0]** VM/AOT divergence in collection methods: `arr.push`, `map.keys`,
    `str.upper`, ... work in the VM and fail in AOT with "no such member".
-2. **[P0]** VM/AOT divergence in structural equality: `[1,2] == [1,2]` is true
-   in the VM (content) and false in AOT (identity). A semantic change, not just
-   speed.
+2. **[P0] [done]** VM/AOT divergence in structural equality: `[1,2] == [1,2]`
+   is true in the VM (content) and false in AOT (identity). The equality helper
+   in `oskel_compare` now descends into arrays and maps (equal length, equal
+   items/entries), tracking the pairs already under comparison so a cyclic
+   structure compares equal to an isomorphic one, matching the hosted
+   `Value::equals`.
 3. **[P0]** VM/AOT divergence in `try`/`catch`: `$isError` in AOT always
    returns false, so `try`/`catch` never catches; a runtime error kills the
    process (exit 70) with no recovery.
@@ -183,8 +186,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    AOT uses a linear scan (O(n)), so a loop over a large map is O(n²).
 7. **[P1]** VM/AOT divergence in string iteration: AOT allocates one
    `AotString` per character; a 1M-char string means 1M arena allocations.
-8. **[P1]** `emitContains` for arrays uses `AotCompareOp::Eq`, which for
-   arrays/maps is identity, not content — inconsistent with the VM.
+8. **[P1] [done]** `emitContains` for arrays uses `AotCompareOp::Eq`, which
+   used to be identity for arrays/maps; now that equality is structural, `in`
+   over an array of arrays matches the VM (fixed with item 2).
 9. **[P1]** `emitMemberGet` for array/string supports only `.length`, no
    methods — same divergence as item 1.
 10. **[P1]** `emitIterNext` for `str` allocates a string per character — same
@@ -207,44 +211,106 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     the extra slot at the site.
 18. **[P3]** `emitArith` handles `INT64_MIN / -1` on the int path but not on the
     float path; consistent semantics, inconsistent code.
+19. **[P0]** The AOT backend has no FFI: an `extern "C"` symbol (or a `native
+    fn`) is a host binding with no host, so `oskel build` cannot lower it. The
+    read now fails with a dedicated message (`extern "C" symbol 'X' cannot be
+    resolved by the AOT backend (PHASE 7f)`) instead of the generic
+    unassigned-global one, but the lowering itself is PHASE 7f work: a design
+    decision (curated syscall stubs, an object + external link, or a dynamic
+    ELF) is still open, since the generated binary is freestanding today
+    (`ldd` reports "not a dynamic executable"). `tests/build_error.cmake` pins
+    the current behaviour.
 
 ---
 
 ## 7. FFI (`src/ffi.cpp`)
 
-1. **[P1]** `extern "C"` does not support variadics; `printf` cannot be
-   declared. Provide a way (or a documented reason it is out of scope).
-2. **[P1]** `extern "C"` does not support structs larger than 16 bytes by value
-   (System V passes them via a hidden pointer / `sret`).
-3. **[P1]** `extern "C"` does not support callbacks returning structs (scalars
-   only).
+1. ~~**[P1]** `extern "C"` does not support variadics; `printf` cannot be
+   declared. Provide a way (or a documented reason it is out of scope).~~ **Done**:
+   a trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...):
+   int`). The compiler records the flag on the `ExternSymbol` and checks only the
+   fixed prefix; the runtime prepares an `ffi_prep_cif_var` call per call and
+   applies the default argument promotions. Needs `libffi` plus the System V
+   AMD64 ABI (`kCVariadicSupported`), so off that the declaration is rejected at
+   compile time. See `tests/53_ffi_variadic.oskl`,
+   `vm_test.cpp::testExternVariadic*` and `docs/language.md` §4.6.
+2. ~~**[P1]** `extern "C"` does not support structs larger than 16 bytes by value
+   (System V passes them via a hidden pointer / `sret`).~~ **Done**: a struct
+   larger than 16 bytes (class MEMORY) is passed on the stack and returned through
+   the hidden `sret` pointer via the `libffi` path (`kMemoryStructsSupported`).
+   Off System V + `libffi` the declaration is rejected at compile time. See
+   `vm_test.cpp::testExternMarshalsMemoryStruct*` and `docs/language.md` §4.6.
+3. ~~**[P1]** `extern "C"` does not support callbacks returning structs (scalars
+   only).~~ **Done**: a callback may return a struct by value. The compiler
+   resolves the struct name of the callback return to its fields
+   (`TypeSpec::callbackReturnsStruct`/`callbackReturnFields`), `makeCallback`
+   builds the struct `ffi_type` for the `ffi_cif`, and the trampoline serialises
+   the returned map into the C return storage using the layout (a shape that
+   does not match is a re-raised error, not a wild write). A struct over 16
+   bytes (class MEMORY) needs the `libffi` path, like a large struct argument;
+   elsewhere the declaration is rejected at compile time
+   (`tests/check/ffi_callback_struct_return.oskl`,
+   `tests/errors/extern_callback_struct_return_nested.oskl`,
+   `vm_test.cpp::testExternCallbackReturnsStruct`/`ReturnsMixedStruct`).
 4. **[P1]** `extern "C"` does not support nested callbacks (a callback that
-   takes another callback).
-5. **[P1]** `extern "C"` does not support `long double`.
-6. **[P1]** `extern "C"` does not support `__int128`.
-7. **[P1]** `extern "C"` does not support arrays by value.
-8. **[P1]** `extern "C"` does not support C unions.
-9. **[P1]** `extern "C"` does not support bitfields.
-10. **[P1]** `extern "C"` does not support C enums (only `int`).
-11. **[P1]** `installExtern` does not detect two `extern "C"` declarations of
-    the same name in different modules; the last wins silently.
-12. **[P1]** `wrapPointerValue` for `cstring` calls `strlen`, which reads past
+   takes another callback). **Out of scope**: `TypeSpec` stores a callback's
+   signature as scalar type names, so supporting a callback parameter would need
+   a recursive `TypeSpec`, and the libffi closure path would have to build a
+   nested `ffi_cif`. A nested callback has no Oskel spelling either (the type
+   grammar reads a callback parameter as a scalar name), so the declaration is
+   rejected with a clear message rather than mis-parsed.
+5. **[P1]** `extern "C"` does not support `long double`. **Out of scope**: Oskel
+   has no 80-bit type, so there is no way to hold the value on either side of
+   the boundary. `double` (binary64) is the widest float Oskel exposes.
+6. **[P1]** `extern "C"` does not support `__int128`. **Out of scope**: Oskel's
+   integer is 64-bit; a 128-bit argument would need a type the language does not
+   have. Pass a pointer to the 128-bit value instead.
+7. **[P1]** `extern "C"` does not support arrays by value. **Out of scope**: a C
+   array parameter decays to a pointer at the ABI, so `ptr`/`cstring` already
+   spells it; a struct field that is an array is not expressible in Oskel's
+   `struct` (fields are scalars), which is the same rule as a nested struct.
+8. **[P1]** `extern "C"` does not support C unions. **Out of scope**: a C union
+   is a memory layout, not a type; Oskel's `struct` is a map and has no field
+   aliasing. A union crosses the boundary as a `ptr`/buffer the caller fills.
+9. **[P1]** `extern "C"` does not support bitfields. **Out of scope**: a bitfield
+   is an intra-struct packing detail; Oskel's `struct` fields are whole scalars
+   at natural alignment, and bit manipulation is done with `&`/`|`/shifts.
+10. **[P1]** `extern "C"` does not support C enums (only `int`). **Not a gap**: a
+    C enum is an `int` at the ABI, so `int` is the exact spelling; the enum's
+    named constants are a header concern the program supplies itself.
+11. ~~**[P1]** `installExtern` does not detect two `extern "C"` declarations of
+    the same name in different modules; the last wins silently.~~ **Done**: the
+    compiler now keeps a session-wide canonical signature per C symbol and
+    rejects a mismatch (`tests/errors/extern_conflicting_signature.oskl`,
+    `module_test.cpp::testConflictingExternAcrossModules`).
+12. ~~**[P1]** `wrapPointerValue` for `cstring` calls `strlen`, which reads past
     the buffer if the pointer is not NUL-terminated — UB from a host that
-    returns a non-terminated `char *`. Bound it or reject.
-13. **[P1]** `oskellCallbackTrampoline` catches `std::exception` with a generic
-    message; a non-`RuntimeError` type is lost.
-14. **[P1]** `CallbackObj::pendingError` is not reset between invocations; a
-    second call sees the first call's pending error. Reset it per call.
-15. **[P2]** `makeExternNative` does not validate `address != nullptr` (the
-    caller does).
-16. **[P2]** `makeCallback` does not validate that the value is a `Func` before
-    building the `CallbackObj` (the caller does).
-17. **[P2]** `dispatch` for callbacks is limited to `kMaxExternArgs = 6`; the
-    error message does not say so.
+    returns a non-terminated `char *`. Bound it or reject.~~ **Done**: the scan
+    is capped (`kMaxCStringBytes`) and a host that breaks the `const char *`
+    contract is a clear runtime error, not an out-of-bounds walk
+    (`vm_test.cpp::testExternUnterminatedCStringReturnIsBounded`).
+13. ~~**[P1]** `oskellCallbackTrampoline` catches `std::exception` with a generic
+    message; a non-`RuntimeError` type is lost.~~ **Done**: the trampoline now
+    catches `std::exception` and keeps `what()`.
+14. ~~**[P1]** `CallbackObj::pendingError` is not reset between invocations; a
+    second call sees the first call's pending error. Reset it per call.~~
+    **Not a bug**: the trampoline short-circuits while a pending error is set
+    and the extern call re-raises it before any second call can run.
+15. ~~**[P2]** `makeExternNative` does not validate `address != nullptr` (the
+    caller does).~~ **Done**: the factory rejects a null address itself.
+16. ~~**[P2]** `makeCallback` does not validate that the value is a `Func` before
+    building the `CallbackObj` (the caller does).~~ **Done**: `makeCallback`
+    checks `isFunc()` itself.
+17. ~~**[P2]** `dispatch` for callbacks is limited to `kMaxExternArgs = 6`; the
+    error message does not say so.~~ **Not a bug**: callbacks go through libffi,
+    not `dispatch`, so they are not bound by `kMaxExternArgs`; an 8-parameter
+    callback compiles and runs. The scalar path still rejects more than six
+    eightbytes at compile time with a message that names the limit.
 18. **[P2]** `pointerAddress` for a `str` uses `asStr().c_str()`; valid for the
     call, but a footgun if the host mutates it.
-19. **[P3]** `installExterns` recurses over children; make it iterative for
-    deep module trees.
+19. ~~**[P3]** `installExterns` recurses over children; make it iterative for
+    deep module trees.~~ **Done**: `VM::installExterns` now walks the module
+    tree with an explicit stack.
 
 ---
 

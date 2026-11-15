@@ -377,6 +377,12 @@ struct FnDeclStmt {
   // error, so inference never rejects a program that would have run. `_ = f();`
   // acknowledges the discard.
   bool mustUse = false;
+  // `extern "C" { fn printf(fmt: cstring, ...): int; }` (PHASE 6.6): a C
+  // variadic declaration. `params` holds the named parameters; the trailing
+  // `...` is this flag, so a variadic declaration is told apart from a fixed
+  // one with the same named prefix (`printf(a: int)` is not `printf(a: int,
+  // ...)`). Only a declaration inside an `extern "C"` block may set it.
+  bool cVariadic = false;
 };
 
 // `struct Point { x: int; y: int; }` (PHASE 6.5). A data-only type: no

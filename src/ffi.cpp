@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -120,11 +121,24 @@ Value wrapInteger(Runtime& rt, const std::string& typeName, std::int64_t raw) {
   rt.fail("unsupported C return type '" + typeName + "'");
 }
 
-Value wrapPointerValue(const std::string& typeName, std::int64_t raw) {
+// A `cstring` a C function returns is a `const char *`, and the C contract is
+// that it is NUL-terminated. A host that breaks that contract would make an
+// unbounded `strlen` walk off the end of the buffer, so the scan is capped: past
+// the cap the read stops with a clear runtime error instead of an unbounded
+// walk. The cap is generous (a C string that large is almost always a bug).
+constexpr std::size_t kMaxCStringBytes = 1u << 24;  // 16 MiB
+
+Value wrapPointerValue(Runtime& rt, const std::string& typeName, std::int64_t raw) {
   if (raw == 0) return Value();  // NULL
   if (typeName == "ptr") return makePtr(PtrKind::Void, {}, raw);
   const char* text = reinterpret_cast<const char*>(static_cast<std::uintptr_t>(raw));
-  std::vector<char> bytes(text, text + std::strlen(text));
+  std::size_t length = 0;
+  while (length < kMaxCStringBytes && text[length] != '\0') ++length;
+  if (length == kMaxCStringBytes) {
+    rt.fail("a C function returned a 'cstring' longer than " + std::to_string(kMaxCStringBytes) +
+            " bytes with no NUL terminator; the host broke the `const char *` contract");
+  }
+  std::vector<char> bytes(text, text + length);
   bytes.push_back('\0');
   return makePtr(PtrKind::CString, std::move(bytes));
 }
@@ -155,6 +169,25 @@ void writeStructField(std::vector<char>& bytes, std::size_t offset, const std::s
   std::memcpy(bytes.data() + offset, &raw, size);
 }
 
+// Serialises a Oskel struct value (a map) into the C bytes of its layout. The
+// buffer is sized to the layout and zero-filled, so the padding a C compiler
+// leaves between fields is deterministic.
+void writeStructBytes(Runtime& rt, const StructLayout& layout, const Value& value,
+                      const std::string& name, std::size_t argIndex, std::vector<char>& bytes) {
+  if (!value.isMap()) {
+    rt.fail("argument " + std::to_string(argIndex + 1) + " of '" + name + "' must be a struct value");
+  }
+  bytes.assign(layout.size, 0);
+  for (std::size_t k = 0; k < layout.fields.size(); ++k) {
+    const Value* field = value.map().get(layout.fields[k].name);
+    if (field == nullptr) {
+      rt.fail("argument " + std::to_string(argIndex + 1) + " of '" + name + "' is missing field '" +
+              layout.fields[k].name + "'");
+    }
+    writeStructField(bytes, layout.offsets[k], layout.fields[k].type, *field, rt);
+  }
+}
+
 // Reads one scalar field of a returned struct from `bytes` at `offset` and boxes
 // it as a Oskel value, reading only the field's declared width.
 Value readStructField(Runtime& rt, const char* bytes, std::size_t offset,
@@ -175,7 +208,7 @@ Value readStructField(Runtime& rt, const char* bytes, std::size_t offset,
   scalarFieldLayout(type, size, alignment, cls);
   std::int64_t raw = 0;
   std::memcpy(&raw, bytes + offset, size);
-  if (type == "ptr" || isFfiCStringTypeName(type)) return wrapPointerValue(type, raw);
+  if (type == "ptr" || isFfiCStringTypeName(type)) return wrapPointerValue(rt, type, raw);
   return wrapInteger(rt, type.empty() ? "int" : type, raw);
 }
 
@@ -227,7 +260,7 @@ Value invoke(void* address, ReturnClass rc, StructShape shape, const StructLayou
     case ReturnClass::Ptr:
     case ReturnClass::CString: {
       auto result = reinterpret_cast<std::int64_t (*)(Built...)>(address)(built...);
-      return wrapPointerValue(returnType, result);
+      return wrapPointerValue(rt, returnType, result);
     }
     case ReturnClass::Struct:
       switch (shape) {
@@ -308,6 +341,36 @@ ffi_type* libffiTypeFor(const std::string& typeName) {
   return &ffi_type_sint32;
 }
 
+// Owns every libffi object one signature needs, so a single `ffi_prep_cif` can
+// keep them alive for as long as the `cif` lives. A struct type needs its
+// element array to outlive it (libffi reads it during preparation), so both the
+// `ffi_type` and the element vector are owned here.
+struct LibffiSignature {
+  std::vector<std::unique_ptr<ffi_type>> types;
+  std::vector<std::unique_ptr<std::vector<ffi_type*>>> elementArrays;
+};
+
+// Builds the libffi type of a struct from its C layout, appending the owned
+// objects to `sig`. A field is always a scalar (a nested struct is rejected by
+// `buildStructLayout`), so the element list is one level deep.
+ffi_type* libffiStructType(const StructLayout& layout, LibffiSignature& sig) {
+  auto elements = std::make_unique<std::vector<ffi_type*>>();
+  elements->reserve(layout.fields.size() + 1);
+  for (const FfiField& field : layout.fields) {
+    elements->push_back(libffiTypeFor(field.type));
+  }
+  elements->push_back(nullptr);
+  auto type = std::make_unique<ffi_type>();
+  type->type = FFI_TYPE_STRUCT;
+  type->size = 0;
+  type->alignment = 0;
+  type->elements = elements->data();
+  ffi_type* raw = type.get();
+  sig.elementArrays.push_back(std::move(elements));
+  sig.types.push_back(std::move(type));
+  return raw;
+}
+
 // The state behind one Oskel function passed to C as a callback: the function
 // itself, its prepared `ffi_cif`, and the libffi closure C calls. The object is
 // kept alive for the whole extern call (the caller holds a `Ref`), so the
@@ -324,6 +387,13 @@ struct CallbackObj : RefCounted {
   std::vector<std::string> paramTypes;
   std::string returnType;  // "void" for no result
   std::vector<ffi_type*> argTypes;
+  // A callback that returns a struct (PHASE 6.6): the return `ffi_type` is built
+  // from these, and the trampoline serialises the resulting map into the return
+  // storage using this layout. `signature` owns the libffi objects so they
+  // outlive the `cif`.
+  bool returnsStruct = false;
+  StructLayout returnLayout;
+  LibffiSignature signature;
   ffi_cif cif{};
   ffi_closure* closure = nullptr;
   void* code = nullptr;
@@ -344,7 +414,7 @@ Value readCallbackArg(Runtime& rt, const std::string& typeName, void* slot) {
   if (typeName == "double") return Value(*static_cast<double*>(slot));
   if (typeName == "ptr" || isFfiCStringTypeName(typeName)) {
     auto raw = reinterpret_cast<std::int64_t>(*static_cast<void**>(slot));
-    return wrapPointerValue(typeName, raw);
+    return wrapPointerValue(rt, typeName, raw);
   }
   std::int64_t raw = 0;
   std::size_t size = 8;
@@ -357,8 +427,26 @@ Value readCallbackArg(Runtime& rt, const std::string& typeName, void* slot) {
 
 // Writes the Oskel callback's result into the storage libffi provides, in the
 // declared C type. `void` writes nothing; the error path writes zero of the
-// declared width so C never observes an uninitialised return.
-void writeCallbackResult(const std::string& typeName, const Value& value, void* ret) {
+// declared width so C never observes an uninitialised return. A struct return
+// is serialised field by field into the same storage using its layout.
+void writeCallbackResult(const CallbackObj& callback, const Value& value, void* ret) {
+  const std::string& typeName = callback.returnType;
+  if (callback.returnsStruct) {
+    // The error path passes an empty `Value`, which is not a map: zero the whole
+    // buffer so the caller never reads stale bytes.
+    std::vector<char> bytes(callback.returnLayout.size, 0);
+    if (value.isMap()) {
+      for (std::size_t k = 0; k < callback.returnLayout.fields.size(); ++k) {
+        const Value* field = value.map().get(callback.returnLayout.fields[k].name);
+        if (field != nullptr) {
+          writeStructField(bytes, callback.returnLayout.offsets[k],
+                           callback.returnLayout.fields[k].type, *field, *callback.runtime);
+        }
+      }
+    }
+    std::memcpy(ret, bytes.data(), callback.returnLayout.size);
+    return;
+  }
   if (typeName.empty() || typeName == "void") return;
   if (typeName == "float") {
     *static_cast<float*>(ret) = value.isNumber() ? static_cast<float>(value.number()) : 0.0f;
@@ -405,9 +493,11 @@ void oskelCallbackTrampoline(ffi_cif* cif, void* ret, void** args, void* userDat
   (void)cif;
   CallbackObj* callback = static_cast<CallbackObj*>(userData);
   if (callback->hasPendingError) {
-    // C may ignore the result, but never leave the return storage with a stale
-    // value. A `void` callback writes nothing.
-    if (callback->returnType != "void") std::memset(ret, 0, 8);
+    // The extern call already recorded a failure and will re-raise it once C
+    // returns. C may invoke the callback again before that, so short-circuit:
+    // re-entering the VM after an error is not meaningful. Leave a zero of the
+    // declared width, never a stale value, in the return storage.
+    writeCallbackResult(*callback, Value(), ret);
     return;
   }
   std::vector<Value> oskelArgs;
@@ -424,20 +514,43 @@ void oskelCallbackTrampoline(ffi_cif* cif, void* ret, void** args, void* userDat
     callback->pendingMessage = error.message;
     callback->pendingLine = error.line;
     callback->pendingCol = error.col;
-    if (callback->returnType != "void") std::memset(ret, 0, 8);
+    writeCallbackResult(*callback, Value(), ret);
+    return;
+  } catch (const std::exception& error) {
+    // A non-`RuntimeError` (a `std::bad_alloc`, a `std::logic_error`) would
+    // otherwise be flattened into a generic message; keep what it says.
+    callback->hasPendingError = true;
+    callback->pendingMessage = std::string("the callback raised: ") + error.what();
+    writeCallbackResult(*callback, Value(), ret);
     return;
   } catch (...) {
     callback->hasPendingError = true;
     callback->pendingMessage = "the callback raised an unknown error";
-    if (callback->returnType != "void") std::memset(ret, 0, 8);
+    writeCallbackResult(*callback, Value(), ret);
     return;
   }
-  writeCallbackResult(callback->returnType, result, ret);
+  try {
+    writeCallbackResult(*callback, result, ret);
+  } catch (const RuntimeError& error) {
+    // A struct return that does not match the declared shape (not a map, a
+    // missing field, a field of the wrong type) fails here. Record it exactly
+    // like an error raised inside the callback: it must not unwind through the
+    // C frame that called the trampoline.
+    callback->hasPendingError = true;
+    callback->pendingMessage = error.message;
+    callback->pendingLine = error.line;
+    callback->pendingCol = error.col;
+    writeCallbackResult(*callback, Value(), ret);
+  }
 }
 
 // Builds the closure for one Oskel function bound to a callback parameter.
 Ref<CallbackObj> makeCallback(Runtime& rt, const std::string& name, const TypeSpec& spec,
                               const Value& function) {
+  if (!function.isFunc()) {
+    rt.fail("a callback argument to '" + name + "' must be a function, got '" +
+            std::string(function.typeName()) + "'");
+  }
   auto callback = makeRef<CallbackObj>();
   callback->runtime = &rt;
   callback->function = function;
@@ -448,8 +561,18 @@ Ref<CallbackObj> makeCallback(Runtime& rt, const std::string& name, const TypeSp
   for (const std::string& type : callback->paramTypes) {
     callback->argTypes.push_back(libffiTypeFor(type));
   }
-  ffi_type* returnType =
-      callback->returnType == "void" ? &ffi_type_void : libffiTypeFor(callback->returnType);
+  ffi_type* returnType = nullptr;
+  if (spec.callbackReturnsStruct) {
+    std::string reason;
+    if (!buildStructLayout(spec.callbackReturnFields, callback->returnLayout, reason)) {
+      rt.fail(reason);
+    }
+    callback->returnsStruct = true;
+    returnType = libffiStructType(callback->returnLayout, callback->signature);
+  } else {
+    returnType =
+        callback->returnType == "void" ? &ffi_type_void : libffiTypeFor(callback->returnType);
+  }
   if (ffi_prep_cif(&callback->cif, FFI_DEFAULT_ABI,
                    static_cast<unsigned>(callback->argTypes.size()), returnType,
                    callback->argTypes.data()) != FFI_OK) {
@@ -469,13 +592,279 @@ Ref<CallbackObj> makeCallback(Runtime& rt, const std::string& name, const TypeSp
   callback->code = code;
   return callback;
 }
+
+// ------------------------------------------------------------------ MEMORY structs
+
+// Eight-byte-aligned storage for one marshalled value, so libffi can read it
+// with the alignment the ABI assumes regardless of the exact width.
+struct AlignedBytes {
+  std::vector<std::uint64_t> words;
+  explicit AlignedBytes(std::size_t bytes) : words((bytes + 7) / 8, 0) {}
+  void* data() { return words.data(); }
+};
+
+// Everything one libffi-backed call needs, prepared once and kept alive for the
+// native's lifetime (the `cif` and the struct `ffi_type`s must outlive every
+// call).
+struct PreparedLibffiCall {
+  ffi_cif cif{};
+  LibffiSignature signature;
+  // `ffi_prep_cif` keeps the pointer to the caller's argument-type array, so the
+  // array must outlive the `cif` exactly as the `ffi_type`s do.
+  std::vector<ffi_type*> argTypes;
+};
+
+// The libffi type of a trailing argument of a C variadic call, after the
+// default argument promotions: a `float` widens to `double`, a `bool` becomes
+// an `int`, and a string, pointer or nil is a `void*`. A Oskel `int` keeps its
+// natural 64-bit width (the register holds the whole value either way, and the
+// callee's length modifier decides how many bits to read), so `printf("%d", 5)`
+// and `printf("%ld", 5)` both work.
+ffi_type* variadicPromotedType(const Value& value) {
+  if (value.isFloat() || value.isDouble()) return &ffi_type_double;
+  if (value.isStr() || value.isPtr() || value.isNil()) return &ffi_type_pointer;
+  if (value.isBool()) return &ffi_type_sint32;
+  return &ffi_type_sint64;
+}
+
+// Writes one trailing variadic argument into `slot`, matching
+// `variadicPromotedType`. The caller has already rejected a value with no C
+// representation, so this only sees an int, bool, float, double, string,
+// pointer or nil.
+void writePromotedArg(Runtime& rt, const Value& value, AlignedBytes& slot) {
+  if (value.isFloat()) {
+    double d = static_cast<double>(value.number());
+    std::memcpy(slot.data(), &d, sizeof(d));
+    return;
+  }
+  if (value.isDouble()) {
+    double d = value.number();
+    std::memcpy(slot.data(), &d, sizeof(d));
+    return;
+  }
+  if (value.isStr() || value.isPtr() || value.isNil()) {
+    std::int64_t raw = pointerAddress(rt, value, "ptr");
+    std::memcpy(slot.data(), &raw, sizeof(raw));
+    return;
+  }
+  std::int64_t raw = value.isBool() ? (value.asBool() ? 1 : 0) : value.asInt();
+  std::memcpy(slot.data(), &raw, sizeof(raw));
+}
+
+// Calls `address` through libffi. Used when the signature carries a struct of
+// class MEMORY (> 16 bytes): such a struct travels on the stack and comes back
+// through a hidden `sret` pointer, a shape the register thunks cannot express,
+// and libffi reproduces the stack layout at run time.
+//
+// It also drives a C variadic call (`variadic` true): the `ffi_cif` is prepared
+// per call with `ffi_prep_cif_var`, because the number of trailing arguments
+// changes from one call to the next, and each trailing argument is marshalled
+// with the default promotions.
+Value callWithLibffi(Runtime& rt, const std::string& name, void* address,
+                     const std::vector<TypeSpec>& paramTypes, const TypeSpec& returnType,
+                     PreparedLibffiCall* prepared, bool variadic, std::vector<Value>& args) {
+  const std::size_t fixedCount = paramTypes.size();
+  // A variadic call prepares its own `cif`; a fixed call reuses the one built
+  // once in `prepareLibffiCall`. Both `cif` and `argTypes` stay alive for the
+  // whole call, which is what libffi requires.
+  std::vector<ffi_type*> variadicArgTypes;
+  ffi_cif variadicCif{};
+  ffi_cif* cif = nullptr;
+  if (variadic) {
+    variadicArgTypes.reserve(args.size());
+    for (std::size_t i = 0; i < fixedCount; ++i) {
+      variadicArgTypes.push_back(libffiTypeFor(paramTypes[i].scalarType));
+    }
+    for (std::size_t i = fixedCount; i < args.size(); ++i) {
+      variadicArgTypes.push_back(variadicPromotedType(args[i]));
+    }
+    ffi_type* returnTypeFfi = returnType.scalarType.empty() || returnType.scalarType == "void"
+                                  ? &ffi_type_void
+                                  : libffiTypeFor(returnType.scalarType);
+    if (ffi_prep_cif_var(&variadicCif, FFI_DEFAULT_ABI, static_cast<unsigned>(fixedCount),
+                         static_cast<unsigned>(variadicArgTypes.size()), returnTypeFfi,
+                         variadicArgTypes.data()) != FFI_OK) {
+      rt.fail("cannot prepare the variadic libffi call for extern \"C\" symbol '" + name + "'");
+    }
+    cif = &variadicCif;
+  } else {
+    cif = &prepared->cif;
+  }
+
+  std::vector<AlignedBytes> storage;
+  storage.reserve(args.size());
+  std::vector<void*> avalue;
+  avalue.reserve(args.size());
+  std::vector<Ref<CallbackObj>> callbacks;
+  for (std::size_t i = 0; i < args.size(); ++i) {
+    if (i >= fixedCount) {
+      // A trailing argument of a C variadic: promoted, so it is never a struct
+      // or a callback. A value with no C representation is rejected here.
+      if (!(args[i].isInt() || args[i].isBool() || args[i].isFloat() || args[i].isDouble() ||
+            args[i].isStr() || args[i].isPtr() || args[i].isNil())) {
+        rt.fail("argument " + std::to_string(i + 1) + " of '" + name + "' has type '" +
+                args[i].typeName() + "', which cannot cross the C variadic boundary");
+      }
+      storage.emplace_back(8);
+      writePromotedArg(rt, args[i], storage.back());
+      avalue.push_back(storage.back().data());
+      continue;
+    }
+    const TypeSpec& spec = paramTypes[i];
+    if (spec.isCallback) {
+      std::int64_t code = 0;
+      if (!args[i].isNil()) {
+        if (!args[i].isFunc()) {
+          rt.fail("argument " + std::to_string(i + 1) + " of '" + name +
+                  "' must be a function or nil, got '" + args[i].typeName() + "'");
+        }
+        auto callback = makeCallback(rt, name, spec, args[i]);
+        code = reinterpret_cast<std::int64_t>(callback->code);
+        callbacks.push_back(std::move(callback));
+      }
+      storage.emplace_back(sizeof(void*));
+      std::memcpy(storage.back().data(), &code, sizeof(void*));
+      avalue.push_back(storage.back().data());
+      continue;
+    }
+    if (spec.isStruct) {
+      StructLayout layout;
+      std::string reason;
+      if (!buildStructLayout(spec.fields, layout, reason)) rt.fail(reason);
+      std::vector<char> bytes;
+      writeStructBytes(rt, layout, args[i], name, i, bytes);
+      storage.emplace_back(layout.size);
+      std::memcpy(storage.back().data(), bytes.data(), layout.size);
+      avalue.push_back(storage.back().data());
+      continue;
+    }
+    // A scalar: write it at its declared width into an aligned slot.
+    std::size_t size = 8;
+    std::size_t alignment = 8;
+    ParamClass cls = ParamClass::Int;
+    scalarFieldLayout(spec.scalarType, size, alignment, cls);
+    std::vector<char> bytes(size, 0);
+    writeStructField(bytes, 0, spec.scalarType, args[i], rt);
+    storage.emplace_back(size);
+    std::memcpy(storage.back().data(), bytes.data(), size);
+    avalue.push_back(storage.back().data());
+  }
+
+  // The return storage. A MEMORY struct comes back through the hidden pointer
+  // libffi places; a scalar is read from the same slot at its declared width.
+  StructLayout retLayout;
+  if (returnType.isStruct) {
+    std::string reason;
+    if (!buildStructLayout(returnType.fields, retLayout, reason)) rt.fail(reason);
+  }
+  AlignedBytes ret(returnType.isStruct ? retLayout.size : 8);
+
+  ffi_call(cif, FFI_FN(address), ret.data(), avalue.data());
+
+  for (const Ref<CallbackObj>& callback : callbacks) {
+    if (callback->hasPendingError) {
+      rt.fail(callback->pendingMessage, callback->pendingLine, callback->pendingCol);
+    }
+  }
+
+  if (returnType.isStruct) {
+    return boxStructResult(rt, retLayout, static_cast<const char*>(ret.data()));
+  }
+  ReturnClass rc = ReturnClass::Int;
+  classifyReturn(returnType.scalarType, rc);
+  const char* raw = static_cast<const char*>(ret.data());
+  switch (rc) {
+    case ReturnClass::Void: return Value();
+    case ReturnClass::Float: {
+      float f = 0;
+      std::memcpy(&f, raw, sizeof(f));
+      return Value::fromFloat(f);
+    }
+    case ReturnClass::Double: {
+      double d = 0;
+      std::memcpy(&d, raw, sizeof(d));
+      return Value(d);
+    }
+    case ReturnClass::Ptr:
+    case ReturnClass::CString: {
+      std::int64_t addressValue = 0;
+      std::memcpy(&addressValue, raw, sizeof(addressValue));
+      return wrapPointerValue(rt, returnType.scalarType, addressValue);
+    }
+    default: {
+      std::int64_t value = 0;
+      std::memcpy(&value, raw, sizeof(value));
+      return wrapInteger(rt, returnType.scalarType, value);
+    }
+  }
+}
+
+// Prepares the libffi call for a signature that carries a struct of class
+// MEMORY (> 16 bytes). Returns null when no such struct is present, so the
+// caller keeps the register-thunk path for every other signature. `ok` is set
+// false when libffi cannot prepare the call (a malformed type), so the caller
+// can fail cleanly instead of making a wild call.
+std::shared_ptr<PreparedLibffiCall> prepareLibffiCall(const std::vector<TypeSpec>& paramTypes,
+                                                      const TypeSpec& returnType, bool& ok) {
+  ok = true;
+  bool usesMemory = false;
+  auto prepared = std::make_shared<PreparedLibffiCall>();
+  std::vector<ffi_type*>& argTypes = prepared->argTypes;
+  argTypes.reserve(paramTypes.size());
+  for (const TypeSpec& spec : paramTypes) {
+    if (spec.isCallback) {
+      argTypes.push_back(&ffi_type_pointer);
+      continue;
+    }
+    if (spec.isStruct) {
+      StructLayout layout;
+      std::string reason;
+      if (!buildStructLayout(spec.fields, layout, reason)) {
+        ok = false;
+        return nullptr;
+      }
+      if (layout.isMemory) usesMemory = true;
+      argTypes.push_back(libffiStructType(layout, prepared->signature));
+      continue;
+    }
+    argTypes.push_back(libffiTypeFor(spec.scalarType));
+  }
+  ffi_type* returnTypeFfi = nullptr;
+  if (returnType.isStruct) {
+    StructLayout layout;
+    std::string reason;
+    if (!buildStructLayout(returnType.fields, layout, reason)) {
+      ok = false;
+      return nullptr;
+    }
+    if (layout.isMemory) usesMemory = true;
+    returnTypeFfi = libffiStructType(layout, prepared->signature);
+  } else {
+    returnTypeFfi = returnType.scalarType.empty() || returnType.scalarType == "void"
+                        ? &ffi_type_void
+                        : libffiTypeFor(returnType.scalarType);
+  }
+  if (!usesMemory) return nullptr;
+  if (ffi_prep_cif(&prepared->cif, FFI_DEFAULT_ABI, static_cast<unsigned>(argTypes.size()),
+                   returnTypeFfi, argTypes.data()) != FFI_OK) {
+    ok = false;
+    return nullptr;
+  }
+  return prepared;
+}
 #endif  // OSKEL_HAVE_LIBFFI
 
 }  // namespace
 
 Value makeExternNative(Runtime& rt, const std::string& name, void* address,
-                       const std::vector<TypeSpec>& paramTypes, const TypeSpec& returnType) {
-  (void)rt;
+                       const std::vector<TypeSpec>& paramTypes, const TypeSpec& returnType,
+                       bool variadic) {
+  if (address == nullptr) {
+    // `VM::installExtern` already rejects an unresolved symbol; this guards the
+    // other callers (the AOT backend, tests) from binding a thunk to NULL, which
+    // would turn a bad declaration into a call to address zero.
+    rt.fail("extern \"C\" symbol '" + name + "' has no address to bind");
+  }
   // Precompute the return disposition once: its class, its shape (for a struct)
   // and its resolved layout, so the call site only marshals arguments.
   ReturnClass rc = ReturnClass::Int;
@@ -483,18 +872,77 @@ Value makeExternNative(Runtime& rt, const std::string& name, void* address,
   StructLayout layout;
   std::string returnScalar;
   if (returnType.isStruct) {
-    if (!kStructByValueSupported) {
-      rt.fail("a struct cannot cross the C boundary by value on this target");
-    }
     std::string reason;
     if (!buildStructLayout(returnType.fields, layout, reason)) {
       rt.fail("invalid extern return struct: " + reason);
     }
-    rc = ReturnClass::Struct;
-    shape = structShapeOf(layout);
+    if (layout.isMemory) {
+      // A MEMORY struct comes back through a hidden `sret` pointer: only the
+      // libffi path expresses it, handled below.
+      if (!kMemoryStructsSupported) {
+        rt.fail("a struct of class MEMORY cannot cross the C boundary on this target");
+      }
+      rc = ReturnClass::Struct;
+    } else {
+      if (!kStructByValueSupported) {
+        rt.fail("a struct cannot cross the C boundary by value on this target");
+      }
+      rc = ReturnClass::Struct;
+      shape = structShapeOf(layout);
+    }
   } else {
     returnScalar = returnType.scalarType;
     classifyReturn(returnScalar, rc);
+  }
+
+  // A struct of class MEMORY (> 16 bytes) is passed on the stack and returned
+  // through a hidden pointer, a shape the register thunks cannot express, so the
+  // whole call goes through libffi instead. `prepareLibffiCall` returns null for
+  // every other signature, which keeps the register path.
+#ifdef OSKEL_HAVE_LIBFFI
+  if (variadic) {
+    // A C variadic always goes through libffi: the number of trailing arguments
+    // changes per call, so the `cif` is prepared at the call site with
+    // `ffi_prep_cif_var`. `validateSignature` already rejected a variadic build
+    // without libffi, so reaching here without support is a programming error.
+    if (!kCVariadicSupported) {
+      rt.fail("a variadic 'extern \"C\"' declaration needs libffi and the System V AMD64 ABI");
+    }
+    return makeNative(name, [name, address, paramTypes, returnType](
+                                Runtime& in, std::vector<Value>& args) -> Value {
+      if (args.size() < paramTypes.size()) {
+        in.fail("'" + name + "' expects at least " + std::to_string(paramTypes.size()) +
+                " argument" + (paramTypes.size() == 1 ? "" : "s") + ", got " +
+                std::to_string(args.size()));
+      }
+      return callWithLibffi(in, name, address, paramTypes, returnType, /*prepared=*/nullptr,
+                            /*variadic=*/true, args);
+    });
+  }
+  bool libffiOk = true;
+  std::shared_ptr<PreparedLibffiCall> libffiCall = prepareLibffiCall(paramTypes, returnType, libffiOk);
+  if (!libffiOk) {
+    rt.fail("cannot prepare the libffi call for extern \"C\" symbol '" + name + "'");
+  }
+  if (libffiCall != nullptr) {
+    return makeNative(name, [name, address, paramTypes, returnType,
+                             libffiCall](Runtime& in, std::vector<Value>& args) -> Value {
+      if (args.size() != paramTypes.size()) {
+        in.fail("'" + name + "' expects " + std::to_string(paramTypes.size()) + " argument" +
+                (paramTypes.size() == 1 ? "" : "s") + ", got " + std::to_string(args.size()));
+      }
+      return callWithLibffi(in, name, address, paramTypes, returnType, libffiCall.get(),
+                            /*variadic=*/false, args);
+    });
+  }
+#endif
+
+  if (variadic) {
+    // Unreachable in practice: the compiler rejects a variadic declaration when
+    // the build cannot express it (`validateSignature`). The guard keeps a
+    // hand-built `ExternSymbol` from falling through to the fixed-arity path,
+    // where the trailing arguments would be reported as an arity error.
+    rt.fail("a variadic 'extern \"C\"' declaration needs libffi and the System V AMD64 ABI");
   }
 
   // The address, the signature and the (flattened) parameter classes are
@@ -555,6 +1003,12 @@ Value makeExternNative(Runtime& rt, const std::string& name, void* address,
         in.fail("a struct cannot cross the C boundary by value on this target");
       }
       if (!buildStructLayout(spec.fields, structLayout, reason)) in.fail(reason);
+      if (structLayout.isMemory) {
+        // A MEMORY struct goes through the libffi path; reaching here means a
+        // hand-built `ExternSymbol` skipped validation, so fail instead of
+        // dropping the argument.
+        in.fail("a struct of class MEMORY cannot cross the C boundary on this path");
+      }
       if (!args[i].isMap()) {
         in.fail("argument " + std::to_string(i + 1) + " of '" + name +
                 "' must be a struct value");
@@ -587,6 +1041,14 @@ Value makeExternNative(Runtime& rt, const std::string& name, void* address,
           values.push_back(Value(bits));
         }
       }
+    }
+    if (classes.size() > kMaxExternArgs) {
+      // `ffi::validateSignature` rejects this at compile time; the guard keeps a
+      // signature that skipped validation (a hand-built `ExternSymbol`) from
+      // silently dropping its trailing arguments in `dispatch`.
+      in.fail("'" + name + "' passes " + std::to_string(classes.size()) +
+              " register-sized values; at most " + std::to_string(kMaxExternArgs) +
+              " are supported");
     }
     Value result = dispatch<0>(address, rc, shape, layout, returnScalar, classes, types, values, in);
 #ifdef OSKEL_HAVE_LIBFFI

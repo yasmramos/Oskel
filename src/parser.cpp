@@ -867,15 +867,27 @@ StmtPtr Parser::parseExternDecl() {
 // so both accept exactly the same grammar and produce the same `FnDeclStmt`.
 FnDeclStmt Parser::parseExternFnDecl() {
   const Token& name = consume(Tok::Ident, "expected a function name");
-  auto params = parseParams();
+  bool cVariadic = false;
+  auto params = parseParams(/*allowBareEllipsis=*/true, &cVariadic);
   TypeRef returnType = parseTypeAnnotation(/*allowVoid=*/true);
   if (check(Tok::Arrow) || check(Tok::LBrace)) {
     throw CompileError{"an 'extern' declaration has no body; it declares a C function",
                        peek().line, peek().col};
   }
   consume(Tok::Semicolon, "expected ';' after the 'extern' declaration");
+  // A Oskel `rest...` collects the arguments into an array, which a C call has
+  // no way to pass; the C spelling is a bare `...`, already recorded in
+  // `cVariadic`. Rejecting it here keeps the two variadic notions apart.
+  for (const Param& param : params) {
+    if (param.variadic) {
+      throw CompileError{"'" + param.name + "...' collects arguments into an array; a C variadic "
+                         "is written as a trailing '...'",
+                         name.line, name.col};
+    }
+  }
   FnDeclStmt decl{name.lexeme, std::move(params), std::move(returnType), nullptr};
   decl.isNative = true;
+  decl.cVariadic = cVariadic;
   return decl;
 }
 
@@ -978,12 +990,26 @@ ExprPtr Parser::parseLambda() {
   return makeExpr(LambdaExpr{std::move(params), std::move(body)}, first.line, first.col);
 }
 
-std::vector<Param> Parser::parseParams() {
+std::vector<Param> Parser::parseParams(bool allowBareEllipsis, bool* outCVariadic) {
   consume(Tok::LParen, "expected '(' to start the parameter list");
   std::vector<Param> params;
+  if (outCVariadic != nullptr) *outCVariadic = false;
   if (!check(Tok::RParen)) {
     while (true) {
       if (check(Tok::RParen)) break;
+      // A bare `...` is the C variadic tail of an `extern "C"` declaration
+      // (`fn printf(fmt: cstring, ...): int`). It is only accepted where the
+      // caller allows it, and it must be last. A Oskel `rest...` names the
+      // collected array, so the two spellings never collide.
+      if (allowBareEllipsis && check(Tok::Ellipsis)) {
+        advance();
+        if (outCVariadic != nullptr) *outCVariadic = true;
+        match(Tok::Comma);
+        if (!check(Tok::RParen)) {
+          error(peek(), "'...' must be the last parameter of an 'extern' declaration");
+        }
+        break;
+      }
       const Token& param = consume(Tok::Ident, "expected a parameter name");
       Param parsed;
       parsed.name = param.lexeme;
@@ -1723,8 +1749,15 @@ ExprPtr Parser::parseStructLiteralBody(const std::string& typeName, int line, in
         throw CompileError{"duplicate field '" + field.lexeme + "' in the struct literal",
                            field.line, field.col};
       }
-      consume(Tok::Colon, "expected ':' after the field name");
-      entries.push_back(StructLitEntry{field.lexeme, parseExpression()});
+      // Field shorthand: `Point { x, y }` is sugar for `Point { x: x, y: y }`,
+      // so the field's value is the variable of the same name in scope. The
+      // colon form and the shorthand may mix freely (`Point { x, y: 2 }`).
+      if (match(Tok::Colon)) {
+        entries.push_back(StructLitEntry{field.lexeme, parseExpression()});
+      } else {
+        entries.push_back(StructLitEntry{
+            field.lexeme, makeExpr(VariableExpr{field.lexeme}, field.line, field.col)});
+      }
       if (!match(Tok::Comma)) break;
     }
   }

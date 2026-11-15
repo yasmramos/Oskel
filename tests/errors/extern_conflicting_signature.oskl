@@ -1,0 +1,8 @@
+// expect-exit: 65
+// Two `extern "C"` declarations of one C symbol must agree: the engine binds
+// the name to a single marshalling thunk, so a second declaration with a
+// different signature would silently make the first call go through the wrong
+// one. The compiler rejects the mismatch instead.
+extern "C" { fn abs(x: int): int; }
+extern "C" { fn abs(x: double): double; }
+print(abs(-7));

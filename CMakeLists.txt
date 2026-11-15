@@ -104,6 +104,28 @@ else()
   set(OSKEL_FFI_STRUCT_BY_VALUE FALSE)
 endif()
 
+# A struct larger than 16 bytes is class MEMORY (passed on the stack, returned
+# through a hidden pointer). Only the libffi-backed call path expresses that, so
+# it needs the System V AMD64 ABI *and* libffi in the dev engine; elsewhere the
+# declaration is rejected at compile time and the test that exercises the
+# rejection stays. This must mirror `OSKEL_FFI_MEMORY_STRUCTS` in
+# `include/ffi_types.h`, which derives from `OSKEL_HAVE_LIBFFI`.
+if(OSKEL_LIBFFI_FOUND AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
+  set(OSKEL_FFI_MEMORY_STRUCTS TRUE)
+else()
+  set(OSKEL_FFI_MEMORY_STRUCTS FALSE)
+endif()
+
+# A C variadic call needs `ffi_prep_cif_var` and the System V AMD64 default
+# argument promotions, so it needs libffi *and* that ABI; elsewhere the
+# declaration is rejected at compile time and the test that exercises it is
+# skipped. This mirrors `OSKEL_FFI_VARIADIC` in `include/ffi_types.h`.
+if(OSKEL_LIBFFI_FOUND AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
+  set(OSKEL_FFI_VARIADIC TRUE)
+else()
+  set(OSKEL_FFI_VARIADIC FALSE)
+endif()
+
 # --------------------------------------------------------------------------- main binary
 add_executable(oskel "${OSKEL_MAIN}")
 target_link_libraries(oskel PRIVATE oskel_lib)
@@ -161,6 +183,7 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(gc_test)
   oskel_add_cpp_test(codegen_test)
   oskel_add_cpp_test(dtoa_test)
+  oskel_add_cpp_test(parse_float_test)
   oskel_add_cpp_test(elf_test)
   oskel_add_cpp_test(pe_test)
   oskel_add_cpp_test(lower_test)
@@ -223,6 +246,15 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/examples/mandelbrot.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # An `extern "C"` symbol is a host binding the AOT backend cannot resolve
+    # (the FFI lowering is PHASE 7f), so `oskel build` must fail with the
+    # dedicated message and write no binary.
+    add_test(NAME oskel.build_extern_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
   elseif(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
     add_test(NAME oskel.build_binary
       COMMAND ${CMAKE_COMMAND}
@@ -244,6 +276,18 @@ if(BUILD_TESTING)
     endif()
     # Struct-by-value FFI needs the System V AMD64 ABI; see the capability above.
     if(name STREQUAL "31_ffi_struct" AND NOT OSKEL_FFI_STRUCT_BY_VALUE)
+      continue()
+    endif()
+    # `native_build_extern` is an input for `tests/build_error.cmake`. It also
+    # runs on the VM as an ordinary script, but only where the host resolves
+    # its `extern "C"` symbol (`getpid`): on Windows the VM cannot bind it, so
+    # the script is skipped there.
+    if(name STREQUAL "native_build_extern" AND WIN32)
+      continue()
+    endif()
+    # C variadics need libffi plus the System V AMD64 ABI; the declaration is
+    # rejected at compile time elsewhere, so the test is skipped.
+    if(name STREQUAL "53_ffi_variadic" AND NOT OSKEL_FFI_VARIADIC)
       continue()
     endif()
     oskel_add_script_test("oskel.${name}" "${script}")
@@ -290,6 +334,12 @@ if(BUILD_TESTING)
   )
   foreach(script IN LISTS oskel_error_tests)
     get_filename_component(name "${script}" NAME_WE)
+    # `extern_struct_too_large` asserts the *rejection* of a class-MEMORY struct,
+    # which only holds where the libffi-backed marshalling is unavailable; where
+    # it is available the declaration compiles and the rejection case is gone.
+    if(name STREQUAL "extern_struct_too_large" AND OSKEL_FFI_MEMORY_STRUCTS)
+      continue()
+    endif()
     oskel_add_script_test("oskel.errors.${name}" "${script}")
   endforeach()
 
@@ -301,6 +351,17 @@ if(BUILD_TESTING)
   )
   foreach(script IN LISTS oskel_check_tests)
     get_filename_component(name "${script}" NAME_WE)
+    # A class-MEMORY struct only compiles where the libffi-backed marshalling is
+    # available; elsewhere the same declaration is a compile error.
+    if(name STREQUAL "ffi_memory_struct" AND NOT OSKEL_FFI_MEMORY_STRUCTS)
+      continue()
+    endif()
+    # A callback that returns a struct needs the by-value struct marshalling
+    # (and, for a struct over 16 bytes, the libffi path); elsewhere the same
+    # declaration is a compile error.
+    if(name STREQUAL "ffi_callback_struct_return" AND NOT OSKEL_FFI_STRUCT_BY_VALUE)
+      continue()
+    endif()
     set(expected 0)
     file(STRINGS "${script}" first_line LIMIT_COUNT 1)
     string(REGEX MATCH "expect-exit:[ \t]*([0-9]+)" declared_exit "${first_line}")

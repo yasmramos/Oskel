@@ -64,7 +64,7 @@ static constexpr std::size_t kSh = kOh + 240;   // first section header offset
 // The delta is measured from the end of the 6-byte call, and the .idata section
 // sits at a fixed RVA, so it can be computed here exactly as the prelude does.
 static std::vector<std::uint8_t> exitProgram() {
-  const std::int64_t callSiteRva = static_cast<std::int64_t>(kPeTextRva) + 8;  // after the two prologue instructions
+  const std::int64_t callSiteRva = static_cast<std::int64_t>(kPeTextRva) + 6;  // the `call` follows 4 + 2 bytes of prologue
   const std::int64_t next = callSiteRva + 6;
   const std::int64_t delta =
       static_cast<std::int64_t>(importIatRva(PeImport::ExitProcess)) - next;
@@ -110,7 +110,14 @@ int main() {
 
   // DataDirectory[1] is the import table, inside .idata.
   check(read32(pe, kOh + 112 + 8) == 0x1000, "import directory RVA is 0x1000");
-  check(read32(pe, kOh + 112 + 12) == 5 * 20, "import directory size is 5 descriptors");
+  // The import directory table holds one descriptor per DLL, not one per
+  // imported function, so a single kernel32.dll descriptor plus the terminator.
+  check(read32(pe, kOh + 112 + 12) == 2 * 20,
+        "import directory size is one descriptor + terminator");
+  // DataDirectory[12] is the IAT; it must be published, not left zero.
+  check(read32(pe, kOh + 112 + 12 * 8) == importIatRva(PeImport::WriteFile),
+        "IAT directory points at the first slot");
+  check(read32(pe, kOh + 112 + 12 * 8 + 4) == 5 * 8, "IAT directory covers every slot");
 
   // --- Section headers ---
   // Section 1 is .idata (first, so its RVA is fixed regardless of the code size).
@@ -125,6 +132,16 @@ int main() {
   const std::uint32_t textVa = read32(pe, kSh + 40 + 12);
   check(textVa == kPeTextRva, ".text VirtualAddress is 0x2000");
   check((read32(pe, kSh + 40 + 36) & 0x20000000u) != 0, ".text is executable");
+
+  // Every section's raw data must fit inside the file: Windows rejects a PE
+  // whose file is shorter than SizeOfRawData (Wine is lenient, so this check
+  // catches a truncated image on every platform).
+  for (int i = 0; i < 2; ++i) {
+    const std::uint32_t rawSize = read32(pe, kSh + i * 40 + 16);
+    const std::uint32_t rawPtr = read32(pe, kSh + i * 40 + 20);
+    check(static_cast<std::size_t>(rawPtr) + rawSize <= pe.size(),
+          "section raw data fits inside the file");
+  }
 
   // --- Import table ---
   // The first import descriptor names kernel32.dll.
@@ -153,9 +170,10 @@ int main() {
     check(slotValue == entryRva, "IAT slot points at its hint/name entry");
   }
 
-  // The import list is terminated by a zero descriptor.
-  check(read32(pe, idataPtr + 4 * 20) == 0 &&
-            read32(pe, idataPtr + 4 * 20 + 4) == 0,
+  // The import list is terminated by a zero descriptor. There is exactly one
+  // real descriptor (kernel32.dll), so the terminator is at index 1.
+  check(read32(pe, idataPtr + 1 * 20) == 0 &&
+            read32(pe, idataPtr + 1 * 20 + 4) == 0,
         "import descriptors are zero-terminated");
 
 #if defined(_WIN32)
