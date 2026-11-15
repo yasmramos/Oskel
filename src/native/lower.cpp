@@ -258,13 +258,19 @@ struct GlobalSlots {
 GlobalSlots collectGlobals(const std::vector<const Bytecode*>& protos,
                            const std::unordered_map<std::string, CodeGen::Label>& builtins) {
   GlobalSlots globals;
-  // The names an `extern "C"` block declared, so a read of one is reported as
-  // the C symbol it is rather than as an unassigned variable (see the loop
-  // below). The declarations are pure link metadata the compiler records on the
-  // proto; the AOT backend is the only consumer that cannot satisfy them.
+  // The host bindings the chunk declares: `extern "C"` symbols and `native fn`
+  // names. Each declaration compiles to `GETGLOBAL N; SETGLOBAL N` (the read
+  // resolves the name the host registered). The AOT backend has no host, so it
+  // resolves a binding from a curated stub when one exists, and otherwise
+  // reports it only when the program actually uses it (see the last loop).
+  std::unordered_set<std::string> hostBindings;
   std::unordered_set<std::string> externNames;
   for (const Bytecode* proto : protos) {
-    for (const ExternSymbol& symbol : proto->externs) externNames.insert(symbol.name);
+    for (const ExternSymbol& symbol : proto->externs) {
+      hostBindings.insert(symbol.name);
+      externNames.insert(symbol.name);
+    }
+    for (const std::string& name : proto->nativeFns) hostBindings.insert(name);
   }
   auto nameOf = [](const Bytecode& proto, int index) -> const std::string& {
     const Value& name = proto.constants.at(static_cast<std::size_t>(index));
@@ -286,15 +292,22 @@ GlobalSlots collectGlobals(const std::vector<const Bytecode*>& protos,
       globals.slotOfName[name] = globals.count++;
     }
   }
+  // Every host binding gets a slot, so the `SETGLOBAL` its declaration emits has
+  // somewhere to land. A binding with a stub (a builtin the AOT runtime
+  // provides) is seeded by the caller, exactly like `print`; one without a stub
+  // stays nil, which only matters if the program uses it (reported below).
+  for (const std::string& name : hostBindings) {
+    if (globals.slotOfName.find(name) != globals.slotOfName.end()) continue;
+    globals.slotOfName[name] = globals.count++;
+  }
   // A `SETGLOBAL N` whose value is the read of the same `N` is not an
   // assignment: it is the compiler's shape for a host binding (`native fn` and
   // `extern "C"`, which read the name the host registered) and for a
-  // self-referential declaration (`var x = x;`). The hosted engine resolves
-  // such a name in its host registry; the AOT backend has no host, so the name
-  // stays unassigned and the read is reported by the loop below (the same error
-  // the hosted engine raises for `var x = x;`). Counting it as an assignment
-  // would emit a binary that calls a nil value at run time.
-  auto isHostBinding = [&](const Bytecode& proto, std::size_t index) {
+  // self-referential declaration (`var x = x;`). The hosted engine resolves a
+  // host binding in its registry; the AOT backend seeds a stub instead. A
+  // genuine self-assignment (`var x = x;`) is a run-time error on the hosted
+  // engine too, so it stays unassigned and the read is reported below.
+  auto isHostBindingShape = [&](const Bytecode& proto, std::size_t index) {
     if (index == 0) return false;
     const Instruction& set = proto.code[index];
     const Instruction& prev = proto.code[index - 1];
@@ -307,7 +320,7 @@ GlobalSlots collectGlobals(const std::vector<const Bytecode*>& protos,
     for (std::size_t i = 0; i < proto->code.size(); ++i) {
       const Instruction& instr = proto->code[i];
       if (instr.op != OpCode::SETGLOBAL) continue;
-      if (isHostBinding(*proto, i)) continue;
+      if (isHostBindingShape(*proto, i)) continue;
       const std::string& name = nameOf(*proto, instr.b);
       if (globals.slotOfName.find(name) != globals.slotOfName.end()) continue;
       globals.slotOfName[name] = globals.count++;
@@ -318,17 +331,45 @@ GlobalSlots collectGlobals(const std::vector<const Bytecode*>& protos,
       if (instr.op != OpCode::GETGLOBAL) continue;
       const std::string& name = nameOf(*proto, instr.b);
       if (globals.slotOfName.find(name) != globals.slotOfName.end()) continue;
-      // A name an `extern "C"` block declared is a C symbol the host provides,
-      // not a misspelled variable: the read is a `GETGLOBAL` of a host binding
-      // whose `SETGLOBAL` is a self-read the loop above skipped. The AOT backend
-      // has no host, so name the real problem instead of the generic
-      // unassigned-global message a typo produces.
-      if (externNames.find(name) != externNames.end()) {
-        throw LoweringError("lowering: extern \"C\" symbol '" + name +
-                            "' cannot be resolved by the AOT backend (PHASE 7f)");
-      }
       throw LoweringError("lowering: global '" + name + "' is read but never assigned");
     }
+  }
+  // A host binding the program uses but the AOT backend has no stub for is a
+  // real limitation, not a typo: name the symbol and the backend instead of
+  // leaving a nil that would fault at run time. A binding counts as used when
+  // it is read as a global (`GETGLOBAL`) more often than it is declared, because
+  // a declaration emits exactly one read of its own name — the compiler's shape
+  // for "bind this name to the host function the host registered". A binding
+  // that is only declared is harmless (the hosted engine installs it, the AOT
+  // backend nils it) and must not fail the build, so `import std.math` (which
+  // declares `pow`, `sin`, ... that only a libm-backed host can provide) still
+  // compiles when the program calls none of them.
+  //
+  // A call through a module namespace (`std.math.pow(...)`) reads the name with
+  // `GETTABLE` off the module table, not with `GETGLOBAL`, so it is not counted
+  // here; such a call reaches a nil at run time (the same failure a call to any
+  // non-function produces) instead of a build error. The direct and wildcard
+  // forms, which read the name as a global, are caught at build time.
+  std::unordered_map<std::string, int> declarations;
+  std::unordered_map<std::string, int> reads;
+  for (const Bytecode* proto : protos) {
+    std::unordered_set<std::string> declared;
+    for (const std::string& name : proto->nativeFns) declared.insert(name);
+    for (const ExternSymbol& symbol : proto->externs) declared.insert(symbol.name);
+    for (const std::string& name : declared) declarations[name]++;
+    for (const Instruction& instr : proto->code) {
+      if (instr.op == OpCode::GETGLOBAL) reads[nameOf(*proto, instr.b)]++;
+    }
+  }
+  for (const std::string& name : hostBindings) {
+    if (builtins.find(name) != builtins.end()) continue;  // has a stub
+    if (reads[name] <= declarations[name]) continue;      // declared but unused
+    if (externNames.find(name) != externNames.end()) {
+      throw LoweringError("lowering: extern \"C\" symbol '" + name +
+                          "' cannot be resolved by the AOT backend (PHASE 7f)");
+    }
+    throw LoweringError("lowering: native fn '" + name +
+                        "' cannot be resolved by the AOT backend (PHASE 7f)");
   }
   return globals;
 }
@@ -828,7 +869,10 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       {"double", rt.doubleBuiltin},
       // The exact math builtins (PHASE 7c.5b.3): `floor`, `ceil`, `round` and
       // `sqrt`. Correctly rounded, so they match the hosted engine bit for bit
-      // without an embedded libm.
+      // without an embedded libm. Seeding `sqrt` here also resolves the
+      // `native fn sqrt` binding `std.math` declares (PHASE 7f.1), and makes a
+      // bare `sqrt(x)` (the hosted builtin, no declaration) work like
+      // `len`/`type`.
       {"floor", rt.floorBuiltin},
       {"ceil", rt.ceilBuiltin},
       {"round", rt.roundBuiltin},

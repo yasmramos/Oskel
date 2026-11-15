@@ -247,6 +247,33 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/examples/mandelbrot.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `std.math` declares ten `native fn` host bindings. An unused declaration
+    # must not fail the build (PHASE 7f.1), and `sqrt` resolves from a curated
+    # stub that matches the VM bit for bit.
+    add_test(NAME oskel.build_binary_math
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_math.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The shape of the original gap: `import std.math` with only its pure Oskel
+    # members used. Before 7f.1 the declarations alone failed the build.
+    add_test(NAME oskel.build_binary_math_pure
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_math_pure.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The numeric conversions, checked against the VM here because the script
+    # tests that cover them (`tests/26_float_double.oskl`) only run on the
+    # hosted engine. A boxed `Float` is stored widened to binary64, so the
+    # `double`/`float`/`int` builtins must not widen it a second time.
+    add_test(NAME oskel.build_binary_conversions
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_conversions.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # An `extern "C"` symbol is a host binding the AOT backend cannot resolve
     # (the FFI lowering is PHASE 7f), so `oskel build` must fail with the
     # dedicated message and write no binary.
@@ -254,6 +281,15 @@ if(BUILD_TESTING)
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern.oskl"
+        "-DEXPECTED_MESSAGE=extern \"C\" symbol 'getpid' cannot be resolved by the AOT backend"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+    # A `native fn` the AOT backend has no stub for fails the same way, with a
+    # message that says `native fn` rather than `extern "C"` (PHASE 7f.1).
+    add_test(NAME oskel.build_native_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_math_native_error.oskl"
+        "-DEXPECTED_MESSAGE=native fn 'sin' cannot be resolved by the AOT backend"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
 
     # A runtime error in a generated binary must behave exactly like the VM:

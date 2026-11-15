@@ -1,0 +1,42 @@
+// Fixture for `oskel build` (tests/build_binary.cmake), PHASE 7f.1.
+//
+// `std.math` declares its libm primitives as `native fn` host bindings. The AOT
+// backend has no host, so before 7f.1 it rejected any program that imported the
+// module. Now an unused declaration is harmless and `sqrt` resolves from a
+// curated stub (`sqrtsd` is correctly rounded, so it matches the hosted
+// `std::sqrt` bit for bit). This program runs on the development VM and builds
+// to a native binary that must agree byte for byte.
+//
+// The transcendentals (`pow`, `sin`, ...) are not stubbed: a hand-written
+// implementation would not reproduce libm's last bit, so this fixture avoids
+// them and `tests/native_build_math_native_error.oskl` covers the rejection.
+
+// Both import forms, so the qualified `std.math.sqrt(...)` below and the bare
+// members both resolve.
+import std.math;
+import std.math.*;
+
+// Pure Oskel members of the module: they are ordinary functions, so importing
+// the module must not drag a host dependency in.
+print("abs =", abs(-7), abs(3.5), abs(0), abs(-0.0));
+print("min =", min(3, 1, 2), min(1.5, 2.5), min(4));
+print("max =", max(3, 1, 2), max(1.5, 2.5), max(4));
+print("clamp =", clamp(5, 0, 3), clamp(-1, 0, 3), clamp(2, 0, 3));
+print("PI =", PI);
+print("E =", E);
+
+// The `sqrt` stub: the operand may be an int, a float or a double, and the
+// result is always a double, matching the hosted builtin. A `float` operand
+// arrives already widened to binary64 (the boxed `Float` holds the widened
+// value), so the stub must not widen it again.
+print("sqrt int =", sqrt(9), type(sqrt(9)));
+print("sqrt =", sqrt(2.0), sqrt(2.25), sqrt(0.0), sqrt(1e300), sqrt(0.5));
+print("sqrt float =", sqrt(4.0f), type(sqrt(4.0f)));
+print("sqrt float =", sqrt(2.0f));
+
+// The qualified member form reads the binding through the module table, which
+// the module body filled from the same stub.
+print("sqrt qualified =", std.math.sqrt(144.0));
+
+// The bare builtin (no declaration) is seeded the same way, like `len`/`type`.
+print("sqrt bare =", sqrt(16.0));

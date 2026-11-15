@@ -225,7 +225,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     decision (curated syscall stubs, an object + external link, or a dynamic
     ELF) is still open, since the generated binary is freestanding today
     (`ldd` reports "not a dynamic executable"). `tests/build_error.cmake` pins
-    the current behaviour.
+    the current behaviour. **Partial (7f.1)**: an *unused* declaration no longer
+    fails the build (the lowerer counts reads against declarations), and `sqrt`
+    is provided by a curated stub that matches the VM bit for bit. The rest of
+    `std.math`'s libm surface (`pow`, `sin`, `cos`, `tan`, `log`, `exp`) and
+    general `extern "C"` symbols are still open.
 
 ---
 
