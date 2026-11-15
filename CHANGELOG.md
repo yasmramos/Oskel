@@ -64,8 +64,10 @@ may change between minor versions.
   the same short image made `pe_test` hang on Windows when it launched the
   rejected binary and the loader's error dialog blocked. The emitter now pads
   to the declared size and publishes the IAT data directory
-  (`DataDirectory[12]`), which was left zero. `pe_test` asserts both, on every
-  platform.
+  (`DataDirectory[12]`), which was left zero. `pe_test` also measured its
+  `call [ExitProcess]` displacement from two bytes past the call site, so the
+  stub faulted once the image loaded; the offset is now exact. `pe_test`
+  asserts the image size and the IAT directory on every platform.
 - FFI: two `extern "C"` declarations of the same C symbol with different
   signatures are now a compile error instead of a silent last-wins. The check
   spans the whole program, so a conflict between two imported modules is caught
