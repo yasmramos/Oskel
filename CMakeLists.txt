@@ -260,8 +260,22 @@ if(BUILD_TESTING)
   )
   foreach(script IN LISTS oskel_examples)
     get_filename_component(name "${script}" NAME_WE)
+    # `tui_editor` is a POSIX-only interactive program (it drives the terminal
+    # through `extern "C"` and reads from `/tmp`); it is registered separately
+    # for UNIX below, and skipped here so Windows stays green.
+    if(name STREQUAL "tui_editor")
+      continue()
+    endif()
     oskel_add_script_test("examples.${name}" "${script}")
   endforeach()
+
+  # --- examples/tui_editor.oskl (UNIX only) ---
+  # The terminal editor needs `stty`, `isatty` and `read`; on a non-tty stdin it
+  # runs its deterministic self-test, which is what CTest executes here.
+  if(UNIX)
+    oskel_add_script_test("examples.tui_editor"
+      "${CMAKE_CURRENT_SOURCE_DIR}/examples/tui_editor.oskl")
+  endif()
 
   # --- tests/errors/*.oskl (auto-detected) ---
   file(GLOB oskel_error_tests CONFIGURE_DEPENDS

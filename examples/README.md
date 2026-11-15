@@ -83,7 +83,8 @@ undo/redo, `defer` to restore the terminal, `switch`, optional types and unions,
 
 When stdin is not a terminal — a pipe, or CTest — it runs a deterministic
 self-test instead of the interactive loop, so `examples.tui_editor` verifies it
-without needing a tty.
+without needing a tty. The test is registered on UNIX only, because the editor
+drives the terminal through POSIX C functions.
 
 ## Feature demos
 
