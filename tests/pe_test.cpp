@@ -64,7 +64,7 @@ static constexpr std::size_t kSh = kOh + 240;   // first section header offset
 // The delta is measured from the end of the 6-byte call, and the .idata section
 // sits at a fixed RVA, so it can be computed here exactly as the prelude does.
 static std::vector<std::uint8_t> exitProgram() {
-  const std::int64_t callSiteRva = static_cast<std::int64_t>(kPeTextRva) + 8;  // after the two prologue instructions
+  const std::int64_t callSiteRva = static_cast<std::int64_t>(kPeTextRva) + 6;  // the `call` follows 4 + 2 bytes of prologue
   const std::int64_t next = callSiteRva + 6;
   const std::int64_t delta =
       static_cast<std::int64_t>(importIatRva(PeImport::ExitProcess)) - next;
@@ -111,6 +111,10 @@ int main() {
   // DataDirectory[1] is the import table, inside .idata.
   check(read32(pe, kOh + 112 + 8) == 0x1000, "import directory RVA is 0x1000");
   check(read32(pe, kOh + 112 + 12) == 5 * 20, "import directory size is 5 descriptors");
+  // DataDirectory[12] is the IAT; it must be published, not left zero.
+  check(read32(pe, kOh + 112 + 12 * 8) == importIatRva(PeImport::WriteFile),
+        "IAT directory points at the first slot");
+  check(read32(pe, kOh + 112 + 12 * 8 + 4) == 5 * 8, "IAT directory covers every slot");
 
   // --- Section headers ---
   // Section 1 is .idata (first, so its RVA is fixed regardless of the code size).
@@ -125,6 +129,16 @@ int main() {
   const std::uint32_t textVa = read32(pe, kSh + 40 + 12);
   check(textVa == kPeTextRva, ".text VirtualAddress is 0x2000");
   check((read32(pe, kSh + 40 + 36) & 0x20000000u) != 0, ".text is executable");
+
+  // Every section's raw data must fit inside the file: Windows rejects a PE
+  // whose file is shorter than SizeOfRawData (Wine is lenient, so this check
+  // catches a truncated image on every platform).
+  for (int i = 0; i < 2; ++i) {
+    const std::uint32_t rawSize = read32(pe, kSh + i * 40 + 16);
+    const std::uint32_t rawPtr = read32(pe, kSh + i * 40 + 20);
+    check(static_cast<std::size_t>(rawPtr) + rawSize <= pe.size(),
+          "section raw data fits inside the file");
+  }
 
   // --- Import table ---
   // The first import descriptor names kernel32.dll.

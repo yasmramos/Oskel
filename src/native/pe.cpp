@@ -256,6 +256,13 @@ std::vector<std::uint8_t> buildStaticPe(const Target& target,
   write32At(out, oh + 112 + 12,
             static_cast<std::uint32_t>((kImportCount + 1) * 20));
 
+  // DataDirectory[12] = Import Address Table. Windows reads it to find the
+  // bound thunks; a zero entry is tolerated by some loaders but not all, so
+  // publish the real range (every slot, including the null terminator).
+  write32At(out, oh + 112 + 12 * 8, layout.iat);
+  write32At(out, oh + 112 + 12 * 8 + 4,
+            static_cast<std::uint32_t>((kImportCount + 1) * 8));
+
   // --- Section headers (2 * 40 bytes) ---
   const std::size_t sh = oh + 240;
   out.resize(sh + 80, 0);
@@ -281,6 +288,11 @@ std::vector<std::uint8_t> buildStaticPe(const Target& target,
   out.insert(out.end(), idata.begin(), idata.end());
   padTo(out, textFileOffset);
   out.insert(out.end(), text.begin(), text.end());
+  // The file must hold the whole of .text's raw data. SizeOfRawData is the
+  // aligned size, and a loader that finds the file short of it rejects the
+  // image (Windows returns ERROR_BAD_EXE_FORMAT; Wine is lenient, so an
+  // unpadded image can look fine under Wine and still fail on Windows).
+  out.resize(static_cast<std::size_t>(textFileOffset) + textRawSize, 0);
 
   return out;
 }
