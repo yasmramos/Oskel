@@ -984,6 +984,17 @@ Slices, each independently shippable:
     Windows with "Force ASLR" maps the non-PIE image instead of aborting it.
     Covered by `tests/pe_test.cpp` (structure and, on Windows, execution) and
     the `oskel.build_binary` CTest case on Windows (`tests/build_binary_pe.cmake`).
+  - **7f** (open) — FFI in the AOT backend. An `extern "C"` symbol (and a
+    `native fn`) is a host binding the AOT backend cannot resolve: the compiler
+    records the declaration in `bc.externs` as pure link metadata, but the
+    lowerer never reads it, so a read fails. The read now names the real
+    problem (`extern "C" symbol 'X' cannot be resolved by the AOT backend
+    (PHASE 7f)`) instead of the generic unassigned-global message
+    (`tests/build_error.cmake` pins it). Lowering the symbol is a design
+    decision still open, because the generated binary is freestanding today
+    (`ldd` reports "not a dynamic executable"): curated syscall stubs keep that
+    invariant; an object + external link or a dynamic ELF break it. No slice is
+    chosen yet.
 - Deferred: per-instruction type annotations for fast paths without dynamic
   dispatch (bridge toward the speculative work in
   `docs/ARCHITECTURE_ANALYSIS.md`); other targets (macOS via libc or stubs).
@@ -1093,7 +1104,7 @@ Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair through the hidden `$mapValue` helper, no new opcode) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e done)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e done; 7f — FFI in AOT — open, no slice chosen)
 Phase 8: 🔶 in progress (JIT for the development VM, slice 1 done: integer leaf protos)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)

@@ -235,6 +235,15 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/examples/mandelbrot.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # An `extern "C"` symbol is a host binding the AOT backend cannot resolve
+    # (the FFI lowering is PHASE 7f), so `oskel build` must fail with the
+    # dedicated message and write no binary.
+    add_test(NAME oskel.build_extern_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
   elseif(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
     add_test(NAME oskel.build_binary
       COMMAND ${CMAKE_COMMAND}
@@ -256,6 +265,13 @@ if(BUILD_TESTING)
     endif()
     # Struct-by-value FFI needs the System V AMD64 ABI; see the capability above.
     if(name STREQUAL "31_ffi_struct" AND NOT OSKEL_FFI_STRUCT_BY_VALUE)
+      continue()
+    endif()
+    # `native_build_extern` is an input for `tests/build_error.cmake`. It also
+    # runs on the VM as an ordinary script, but only where the host resolves
+    # its `extern "C"` symbol (`getpid`): on Windows the VM cannot bind it, so
+    # the script is skipped there.
+    if(name STREQUAL "native_build_extern" AND WIN32)
       continue()
     endif()
     oskel_add_script_test("oskel.${name}" "${script}")
