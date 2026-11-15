@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "gc.h"
+#include "unicode_case.h"
 #include "value.h"
 
 namespace {
@@ -213,6 +214,32 @@ void testRepeatedChildInOneContainerIsFreedOnce() {
   assert(child.arr().items.size() == 1);
 }
 
+void testUnicodeCaseMapping() {
+  // ASCII fast path.
+  assert(toUpperCodePoint('a') == 'A');
+  assert(toLowerCodePoint('Z') == 'z');
+  assert(toUpperCodePoint('5') == '5');
+  assert(toLowerCodePoint('!') == '!');
+  // Latin-1 and Latin Extended.
+  assert(toUpperCodePoint(0x00E1) == 0x00C1);  // á -> Á
+  assert(toLowerCodePoint(0x00C1) == 0x00E1);  // Á -> á
+  assert(toUpperCodePoint(0x01C6) == 0x01C4);  // ǆ -> Ǆ
+  assert(toLowerCodePoint(0x01C4) == 0x01C6);  // Ǆ -> ǆ
+  // Greek and Cyrillic.
+  assert(toUpperCodePoint(0x03C3) == 0x03A3);  // σ -> Σ
+  assert(toLowerCodePoint(0x03A3) == 0x03C3);  // Σ -> σ
+  assert(toLowerCodePoint(0x0410) == 0x0430);  // А -> а
+  // A code point with no simple mapping (full mapping expands, or none at all)
+  // is returned unchanged.
+  assert(toUpperCodePoint(0x00DF) == 0x00DF);  // ß -> "SS", left as-is
+  assert(toLowerCodePoint(0x0130) == 0x0130);  // İ -> "i" + dot, left as-is
+  assert(toUpperCodePoint(0x65E5) == 0x65E5);  // 日, no mapping
+  // Round-trip over the ASCII letters.
+  for (uint32_t cp = 'a'; cp <= 'z'; ++cp) {
+    assert(toLowerCodePoint(toUpperCodePoint(cp)) == cp);
+  }
+}
+
 int main() {
   testCStringKindAndBytes();
   testVoidPointerReportsPtr();
@@ -227,6 +254,7 @@ int main() {
   testDeepClosureChainTeardownDoesNotRecurse();
   testSharedTailSurvivesChainTeardown();
   testRepeatedChildInOneContainerIsFreedOnce();
+  testUnicodeCaseMapping();
   std::puts("value tests passed");
   return 0;
 }

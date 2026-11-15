@@ -1,0 +1,37 @@
+// Unicode simple case mapping for `upper`/`lower` (BACKLOG section 12 item 1).
+
+// ASCII is unchanged.
+assertEq("abc".upper(), "ABC");
+assertEq("ABC".lower(), "abc");
+assertEq("Hello, World!".upper(), "HELLO, WORLD!");
+assertEq("Hello, World!".lower(), "hello, world!");
+
+// Latin-1 letters are mapped, and the mapping does not touch other bytes.
+assertEq("á".upper(), "Á");
+assertEq("Á".lower(), "á");
+assertEq("ÉÀÇÜ".lower(), "éàçü");
+assertEq("éàçü".upper(), "ÉÀÇÜ");
+
+// Non-ASCII, non-letter text is copied byte for byte.
+assertEq("日本語".upper(), "日本語");
+assertEq("日本語".lower(), "日本語");
+
+// Greek: capital to small maps every code point, including the final sigma
+// (U+03C2), which is a positional mapping and is mapped to U+03C3 here.
+assertEq("ΣΊΣΥΦΟΣ".lower(), "σίσυφοσ");
+
+// A title-case digraph maps like its upper/lower case.
+assertEq("ǅ".upper(), "Ǆ");
+assertEq("Ǆ".lower(), "ǆ");
+
+// A code point whose full mapping expands to several code points has no simple
+// mapping and is left unchanged: `ß` -> "SS", `İ` -> "i" + combining dot, and
+// the `ﬁ` ligature -> "FI" are all returned as-is.
+assertEq("straße".upper(), "STRAßE");
+assertEq("İ".lower(), "İ");
+assertEq("ﬁ".upper(), "ﬁ");
+
+// Round-trip: lowering an upper-cased ASCII word returns the original.
+assertEq("Oskel".upper().lower(), "oskel");
+
+print("unicode case ok");

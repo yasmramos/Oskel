@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "runtime.h"
+#include "unicode_case.h"
 #include "util.h"
 
 using Args = std::vector<Value>&;
@@ -166,21 +167,39 @@ int64_t clampIndex(int64_t index, int64_t length) {
   return index;
 }
 
-uint32_t decodeFirstCodePoint(const std::string& ch) {
-  unsigned char b0 = static_cast<unsigned char>(ch[0]);
-  auto byteAt = [&](size_t i) {
-    return i < ch.size() ? static_cast<unsigned char>(ch[i]) : static_cast<unsigned char>(0);
+// Decode the UTF-8 code point that starts at `index` and report the number of
+// bytes it uses through `length`. A truncated sequence is decoded as far as it
+// goes, matching the permissive handling used elsewhere.
+uint32_t decodeCodePointAt(const std::string& text, size_t index, size_t& length) {
+  unsigned char b0 = static_cast<unsigned char>(text[index]);
+  auto byteAt = [&](size_t k) {
+    return index + k < text.size() ? static_cast<unsigned char>(text[index + k])
+                                   : static_cast<unsigned char>(0);
   };
-  if (b0 < 0x80) return b0;
-  if ((b0 & 0xE0) == 0xC0) return ((b0 & 0x1F) << 6) | (byteAt(1) & 0x3F);
+  if (b0 < 0x80) {
+    length = 1;
+    return b0;
+  }
+  if ((b0 & 0xE0) == 0xC0) {
+    length = 2;
+    return ((b0 & 0x1F) << 6) | (byteAt(1) & 0x3F);
+  }
   if ((b0 & 0xF0) == 0xE0) {
+    length = 3;
     return ((b0 & 0x0F) << 12) | ((byteAt(1) & 0x3F) << 6) | (byteAt(2) & 0x3F);
   }
   if ((b0 & 0xF8) == 0xF0) {
+    length = 4;
     return ((b0 & 0x07) << 18) | ((byteAt(1) & 0x3F) << 12) | ((byteAt(2) & 0x3F) << 6) |
            (byteAt(3) & 0x3F);
   }
+  length = 1;
   return b0;
+}
+
+uint32_t decodeFirstCodePoint(const std::string& ch) {
+  size_t length = 0;
+  return decodeCodePointAt(ch, 0, length);
 }
 
 void sortItems(Runtime& in, std::vector<Value>& items, const Value* comparator,
@@ -524,14 +543,24 @@ bool bindArray(Runtime&, const ArrayPtr& strongArray, const std::string& name, V
 
 // -------------------------------------------------------------- string methods
 
-std::string asciiLower(std::string text) {
-  for (char& c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  return text;
-}
-
-std::string asciiUpper(std::string text) {
-  for (char& c : text) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-  return text;
+// Case mapping works on code points, so an accented letter or a Greek sigma
+// is mapped too; a code point with no simple mapping (including one whose full
+// mapping expands to several code points) is copied unchanged.
+std::string mapCase(const std::string& text, bool upper) {
+  std::string out;
+  out.reserve(text.size());
+  for (size_t i = 0; i < text.size();) {
+    size_t length = 0;
+    uint32_t codePoint = decodeCodePointAt(text, i, length);
+    uint32_t mapped = upper ? toUpperCodePoint(codePoint) : toLowerCodePoint(codePoint);
+    if (mapped == codePoint) {
+      out.append(text, i, length);
+    } else {
+      appendUtf8(out, mapped);
+    }
+    i += length;
+  }
+  return out;
 }
 
 bool bindString(Runtime& in, StringPtr receiver, const std::string& name, Value& out) {
@@ -542,14 +571,14 @@ bool bindString(Runtime& in, StringPtr receiver, const std::string& name, Value&
   if (name == "upper") {
     out = makeNative("string.upper", [text](Runtime& in, Args args) -> Value {
       need(in, "upper", args, 0);
-      return Value(asciiUpper(text));
+      return Value(mapCase(text, true));
     });
     return true;
   }
   if (name == "lower") {
     out = makeNative("string.lower", [text](Runtime& in, Args args) -> Value {
       need(in, "lower", args, 0);
-      return Value(asciiLower(text));
+      return Value(mapCase(text, false));
     });
     return true;
   }

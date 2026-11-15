@@ -1628,8 +1628,8 @@ assertEq(s[::-1], "olleh");
 
 | Method | Description |
 | --- | --- |
-| `upper()` | Converts ASCII letters to uppercase. |
-| `lower()` | Converts ASCII letters to lowercase. |
+| `upper()` | Applies the Unicode simple uppercase mapping. |
+| `lower()` | Applies the Unicode simple lowercase mapping. |
 | `trim()` | Removes ASCII whitespace at the start and end. |
 | `trimStart()` | Removes ASCII whitespace at the start. |
 | `trimEnd()` | Removes ASCII whitespace at the end. |
@@ -1650,7 +1650,11 @@ assertEq(s[::-1], "olleh");
 
 Details:
 
-- `upper` and `lower` only transform `A-Z` and `a-z`; the rest of Unicode is unchanged.
+- `upper` and `lower` apply the Unicode simple case mapping (one code point to
+  one code point), so `"á".upper()` is `"Á"`. A code point whose full mapping
+  expands to several code points (for example `ß` -> `SS`, `İ` -> `i` plus a
+  combining dot, the `ﬁ` ligature -> `FI`) has no simple mapping and is left
+  unchanged. Greek final sigma is mapped to the ordinary small sigma.
 - `trim*` considers ASCII whitespace (`std::isspace`), not every Unicode space.
 - `split` with no argument breaks on runs of that same ASCII whitespace and keeps no leading or trailing empty field (`"  a  b  ".split()` is `["a", "b"]`, `"   ".split()` is `[]`); with a separator it keeps empty fields (`"a,,b".split(",")` is `["a", "", "b"]`).
 - `lines` does not add an empty trailing line if the string ends with `\n`.
@@ -2257,7 +2261,7 @@ oskelc -pkg ... -o app.oskpkg  packages a .oskpkg
 - A body of `if`, `while`, `for` or `for-in` may be a block or a single statement without braces; a brace-less body is wrapped in a block, so its bytecode and scoping match the brace form. `switch` arms always require braces.
 - `for ... in` accepts the loop variable and the iterable with or without parentheses (`for x in xs` and `for (x in xs)`).
 - Slicing syntax `s[start:end:step]` works for strings and arrays, with an optional step (`s[::-1]` reverses); the methods `substr`/`slice` remain available.
-- `upper` and `lower` only work with ASCII.
+- `upper` and `lower` apply the Unicode simple case mapping (see §9).
 - Maximum call depth: 2000.
 - Source nesting is bounded: deeply nested expressions and statements (nested parentheses, arrays, blocks, string interpolation, or a very long operator chain) are rejected at compile time with `expression nesting is too deep` instead of overflowing the stack. The limit is far above any nesting a real program reaches.
 - Memory is managed with reference counting plus a cycle collector. Unreachable cycles (a function stored in the scope it closes over, an array that contains itself, **a bound method stored in its own receiver such as `a.f = a.push`**) are reclaimed. Destruction is deferred to an explicit work list, so a deeply nested structure — a container chain (`a = [a]` in a loop), a closure chain (each closure capturing the previous one) or any mix — is freed with a constant C++ stack depth instead of overflowing the stack.
