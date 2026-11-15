@@ -281,6 +281,12 @@ std::vector<std::uint8_t> buildStaticPe(const Target& target,
   out.insert(out.end(), idata.begin(), idata.end());
   padTo(out, textFileOffset);
   out.insert(out.end(), text.begin(), text.end());
+  // A section's raw data is SizeOfRawData bytes (a FileAlignment multiple), not
+  // VirtualSize, so the file must carry that many bytes for the last section
+  // too. Windows rejects an image whose raw data runs past EOF with
+  // ERROR_BAD_EXE_FORMAT; Wine happens to tolerate the short file, which is why
+  // this stayed invisible until the Windows CI job.
+  out.resize(textFileOffset + textRawSize, 0);
 
   return out;
 }

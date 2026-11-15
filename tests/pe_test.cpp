@@ -64,7 +64,10 @@ static constexpr std::size_t kSh = kOh + 240;   // first section header offset
 // The delta is measured from the end of the 6-byte call, and the .idata section
 // sits at a fixed RVA, so it can be computed here exactly as the prelude does.
 static std::vector<std::uint8_t> exitProgram() {
-  const std::int64_t callSiteRva = static_cast<std::int64_t>(kPeTextRva) + 8;  // after the two prologue instructions
+  // The call sits after the two prologue instructions (sub rsp,0x28 = 4 bytes,
+  // xor ecx,ecx = 2 bytes), so its offset is 6. The displacement is measured
+  // from the end of the 6-byte call, exactly as the prelude computes it.
+  const std::int64_t callSiteRva = static_cast<std::int64_t>(kPeTextRva) + 6;
   const std::int64_t next = callSiteRva + 6;
   const std::int64_t delta =
       static_cast<std::int64_t>(importIatRva(PeImport::ExitProcess)) - next;
@@ -125,6 +128,18 @@ int main() {
   const std::uint32_t textVa = read32(pe, kSh + 40 + 12);
   check(textVa == kPeTextRva, ".text VirtualAddress is 0x2000");
   check((read32(pe, kSh + 40 + 36) & 0x20000000u) != 0, ".text is executable");
+
+  // Every section's raw data must fit in the file: Windows rejects an image
+  // whose SizeOfRawData runs past EOF with ERROR_BAD_EXE_FORMAT, even though
+  // Wine maps the short file. The last section is the one that can be short.
+  const std::uint32_t textPtr = read32(pe, kSh + 40 + 20);
+  const std::uint32_t textRaw = read32(pe, kSh + 40 + 16);
+  check(textRaw % 0x200 == 0, ".text SizeOfRawData is FileAlignment-aligned");
+  check(static_cast<std::size_t>(textPtr) + textRaw <= pe.size(),
+        "the file carries the whole .text raw data (no truncation)");
+  const std::uint32_t idataRaw = read32(pe, kSh + 16);
+  check(static_cast<std::size_t>(idataPtr) + idataRaw <= pe.size(),
+        "the file carries the whole .idata raw data (no truncation)");
 
   // --- Import table ---
   // The first import descriptor names kernel32.dll.

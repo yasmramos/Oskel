@@ -57,6 +57,15 @@ may change between minor versions.
 
 ### Fixed
 
+- The PE emitter writes the whole raw data of the last section: it declared
+  `SizeOfRawData` (a `FileAlignment` multiple) but stopped the file at
+  `VirtualSize`, so `.text` ran past EOF by up to 511 bytes. Windows rejects
+  such an image with `ERROR_BAD_EXE_FORMAT`; Wine mapped it, which hid the bug
+  from the local run. The Windows CI job caught it, and `tests/pe_test.cpp` now
+  asserts that every section's raw data fits in the file.
+- `tests/pe_test.cpp` computed the `ExitProcess` IAT call displacement from the
+  wrong call-site offset (8 instead of 6), so the generated probe jumped through
+  a garbage pointer and faulted on Windows.
 - FFI: two `extern "C"` declarations of the same C symbol with different
   signatures are now a compile error instead of a silent last-wins. The check
   spans the whole program, so a conflict between two imported modules is caught
