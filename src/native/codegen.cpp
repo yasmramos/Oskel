@@ -616,6 +616,7 @@ void CodeGen::addsd(int dstXmm, int srcXmm) { sseRegOp(0xF2, 0x58, dstXmm, srcXm
 void CodeGen::subsd(int dstXmm, int srcXmm) { sseRegOp(0xF2, 0x5C, dstXmm, srcXmm); }
 void CodeGen::mulsd(int dstXmm, int srcXmm) { sseRegOp(0xF2, 0x59, dstXmm, srcXmm); }
 void CodeGen::divsd(int dstXmm, int srcXmm) { sseRegOp(0xF2, 0x5E, dstXmm, srcXmm); }
+void CodeGen::sqrtsd(int dstXmm, int srcXmm) { sseRegOp(0xF2, 0x51, dstXmm, srcXmm); }
 void CodeGen::movsdReg(int dstXmm, int srcXmm) { sseRegOp(0xF2, 0x10, dstXmm, srcXmm); }
 void CodeGen::cvtsd2ss(int dstXmm, int srcXmm) { sseRegOp(0xF2, 0x5A, dstXmm, srcXmm); }
 void CodeGen::cvtss2sd(int dstXmm, int srcXmm) { sseRegOp(0xF3, 0x5A, dstXmm, srcXmm); }

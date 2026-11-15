@@ -174,6 +174,11 @@ class CodeGen {
   void subsd(int dstXmm, int srcXmm);
   void mulsd(int dstXmm, int srcXmm);
   void divsd(int dstXmm, int srcXmm);
+  // `sqrtsd dst, src`: the IEEE-754 square root of a binary64 value. Correctly
+  // rounded for every input, so it reproduces `std::sqrt` bit for bit (a
+  // negative operand yields the canonical NaN). The freestanding `sqrt` builtin
+  // is the only user.
+  void sqrtsd(int dstXmm, int srcXmm);
   // Narrowing/widening conversions between the two binary floating-point
   // formats. `cvtsd2ss` rounds to binary32 using the current MXCSR mode
   // (round-to-nearest-even by default), which is exactly what a C++ `float`
