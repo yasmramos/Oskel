@@ -267,6 +267,13 @@ if(BUILD_TESTING)
     if(name STREQUAL "31_ffi_struct" AND NOT OSKEL_FFI_STRUCT_BY_VALUE)
       continue()
     endif()
+    # `native_build_extern` is an input for `tests/build_error.cmake`. It also
+    # runs on the VM as an ordinary script, but only where the host resolves
+    # its `extern "C"` symbol (`getpid`): on Windows the VM cannot bind it, so
+    # the script is skipped there.
+    if(name STREQUAL "native_build_extern" AND WIN32)
+      continue()
+    endif()
     oskel_add_script_test("oskel.${name}" "${script}")
   endforeach()
 
