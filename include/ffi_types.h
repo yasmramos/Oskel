@@ -70,6 +70,25 @@ constexpr std::size_t kMaxExternArgs = 6;
 
 constexpr bool kStructByValueSupported = OSKEL_FFI_STRUCT_BY_VALUE != 0;
 
+// Whether a struct larger than 16 bytes (System V class MEMORY) may cross the
+// boundary. The register thunks express a struct only as up to two eightbytes,
+// so a MEMORY struct — passed on the stack, and returned through a hidden
+// `sret` pointer — cannot go through them; it goes through `libffi`, which
+// reproduces the stack layout at run time. That makes it available only where
+// the dev engine is built with libffi on the System V AMD64 ABI; elsewhere the
+// declaration is rejected at compile time with a clear message. The macro
+// derives from `OSKEL_HAVE_LIBFFI` so the compiler and the runtime agree
+// without the compiler pulling in any libffi header.
+#ifndef OSKEL_FFI_MEMORY_STRUCTS
+#if defined(OSKEL_HAVE_LIBFFI) && defined(__x86_64__) && !defined(_WIN32)
+#define OSKEL_FFI_MEMORY_STRUCTS 1
+#else
+#define OSKEL_FFI_MEMORY_STRUCTS 0
+#endif
+#endif
+
+constexpr bool kMemoryStructsSupported = OSKEL_FFI_MEMORY_STRUCTS != 0;
+
 // One field of a struct crossing the C boundary. `type` is an FFI scalar type
 // name (the same vocabulary as a parameter annotation); a nested struct is not
 // a scalar and is rejected by `buildStructLayout`.
@@ -91,7 +110,9 @@ struct StructLayout {
   std::size_t alignment = 1;
   // System V classification: at most two eightbytes, each `'I'` (INTEGER, a
   // general-purpose register) or `'S'` (SSE, an xmm register). A struct whose
-  // size exceeds 16 bytes is class MEMORY and never reaches here.
+  // size exceeds 16 bytes is class MEMORY: `isMemory` is set, the eightbytes are
+  // not classified, and the whole buffer crosses the boundary through libffi.
+  bool isMemory = false;
   char eightbyte[2] = {'I', 'I'};
   int eightbyteCount = 0;
 };
@@ -150,9 +171,9 @@ inline bool scalarFieldLayout(const std::string& typeName, std::size_t& size,
 
 // Computes the C layout of a struct from its fields, following the natural
 // alignment of each scalar member. On failure it fills `reason` and returns
-// false: a nested/unsupported field type, an empty struct, or a struct larger
-// than 16 bytes (which System V passes in memory, a shape the register-based
-// marshalling does not support).
+// false: a nested/unsupported field type or an empty struct. A struct larger
+// than 16 bytes succeeds with `out.isMemory` set (System V class MEMORY); the
+// caller decides whether the target can express it.
 inline bool buildStructLayout(const std::vector<FfiField>& fields, StructLayout& out,
                               std::string& reason) {
   out = StructLayout{};
@@ -181,14 +202,16 @@ inline bool buildStructLayout(const std::vector<FfiField>& fields, StructLayout&
     return false;
   }
   const std::size_t total = (offset + maxAlignment - 1) / maxAlignment * maxAlignment;
-  if (total > 16) {
-    reason = "a struct of " + std::to_string(total) +
-             " bytes is returned/passed in memory (> 16), which the extern marshalling "
-             "does not support";
-    return false;
-  }
   out.size = total;
   out.alignment = maxAlignment;
+  if (total > 16) {
+    // Class MEMORY: passed on the stack and returned through a hidden pointer.
+    // The eightbyte classification below does not apply, so stop here; the
+    // caller decides whether the target can express it (see `validateTypeSpec`).
+    out.isMemory = true;
+    out.eightbyteCount = 0;
+    return true;
+  }
   out.eightbyteCount = static_cast<int>((total + 7) / 8);
   // An eightbyte is SSE only when every field touching it is floating point;
   // an integer/pointer field anywhere in it makes the whole eightbyte INTEGER.
@@ -333,6 +356,18 @@ inline std::string validateTypeSpec(const TypeSpec& spec, bool isReturn) {
   StructLayout layout;
   std::string reason;
   if (!buildStructLayout(spec.fields, layout, reason)) return reason;
+  if (layout.isMemory) {
+    // A struct larger than 16 bytes is class MEMORY (passed on the stack,
+    // returned through a hidden `sret` pointer). Only the libffi-backed
+    // marshalling expresses that; the register thunks cannot.
+    if (!kMemoryStructsSupported) {
+      return "a struct of " + std::to_string(layout.size) +
+             " bytes is class MEMORY (> 16 bytes: passed on the stack, returned through a hidden "
+             "pointer), which this build does not support: it needs the System V AMD64 ABI and "
+             "libffi in the development engine";
+    }
+    return "";
+  }
   if (!kStructByValueSupported) {
     return "a struct cannot cross the C boundary by value on this target: the register "
            "marshalling implements the System V AMD64 ABI only (the Microsoft x64 ABI passes "
@@ -404,7 +439,9 @@ inline std::string validateSignature(const std::vector<TypeSpec>& params,
       StructLayout layout;
       std::string reason;
       if (!buildStructLayout(spec.fields, layout, reason)) return reason;
-      eightbytes += static_cast<std::size_t>(layout.eightbyteCount);
+      // A MEMORY struct travels on the stack, not in a register, so it does not
+      // consume the register budget the bound below enforces.
+      if (!layout.isMemory) eightbytes += static_cast<std::size_t>(layout.eightbyteCount);
     } else {
       eightbytes += 1;
     }

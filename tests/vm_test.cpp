@@ -1778,6 +1778,26 @@ extern "C" double oskelTestMixMagnitude(OskelMixed m) { return m.a + m.b; }
 extern "C" struct OskelTwoBytes { char a; char b; };
 extern "C" OskelTwoBytes oskelTestMakeTwoBytes(char a, char b) { return OskelTwoBytes{a, b}; }
 
+// Structs larger than 16 bytes, class MEMORY (PHASE 6.6): passed on the stack
+// and returned through a hidden `sret` pointer. `{int; double; int; int64}` is
+// 32 bytes after alignment, so it exercises both directions of the libffi path.
+extern "C" struct OskelBig { int a; double b; int c; long long d; };
+extern "C" OskelBig oskelTestMakeBig(int a, double b, int c, long long d) {
+  return OskelBig{a, b, c, d};
+}
+extern "C" long long oskelTestSumBig(OskelBig x) {
+  return static_cast<long long>(x.a) + static_cast<long long>(x.b) + x.c + x.d;
+}
+// A MEMORY struct argument beside a scalar on each side, so the stack slot is
+// placed correctly among the register arguments.
+extern "C" long long oskelTestMixBig(int lead, OskelBig x, double tail) {
+  return lead + static_cast<long long>(x.a) + x.c + x.d + static_cast<long long>(tail);
+}
+// Two MEMORY structs at once, so the stack layout of both is exercised.
+extern "C" long long oskelTestSumTwoBig(OskelBig x, OskelBig y) {
+  return x.a + x.c + x.d + y.a + y.c + y.d;
+}
+
 // C functions that call a Oskel callback, one per ABI shape: a GPR argument and
 // return, an SSE argument and return, and a `void` callback.
 extern "C" int oskelTestApply(int (*f)(int), int x) { return f(x); }
@@ -1829,6 +1849,10 @@ struct SymbolPlatform final : Platform {
     if (symbol == "oskelTestScalePair") return reinterpret_cast<void*>(&oskelTestScalePair);
     if (symbol == "oskelTestMixMagnitude") return reinterpret_cast<void*>(&oskelTestMixMagnitude);
     if (symbol == "oskelTestMakeTwoBytes") return reinterpret_cast<void*>(&oskelTestMakeTwoBytes);
+    if (symbol == "oskelTestMakeBig") return reinterpret_cast<void*>(&oskelTestMakeBig);
+    if (symbol == "oskelTestSumBig") return reinterpret_cast<void*>(&oskelTestSumBig);
+    if (symbol == "oskelTestMixBig") return reinterpret_cast<void*>(&oskelTestMixBig);
+    if (symbol == "oskelTestSumTwoBig") return reinterpret_cast<void*>(&oskelTestSumTwoBig);
     if (symbol == "oskelTestApply") return reinterpret_cast<void*>(&oskelTestApply);
     if (symbol == "oskelTestApplyDouble") return reinterpret_cast<void*>(&oskelTestApplyDouble);
     if (symbol == "oskelTestApplyTwice") return reinterpret_cast<void*>(&oskelTestApplyTwice);
@@ -2021,6 +2045,59 @@ void testExternMarshalsSubEightbyteStruct() {
 }
 #endif  // OSKEL_FFI_STRUCT_BY_VALUE
 
+#if OSKEL_FFI_MEMORY_STRUCTS
+// A struct larger than 16 bytes is class MEMORY: it is passed on the stack and
+// returned through a hidden `sret` pointer, which only the libffi-backed call
+// path expresses. These tests prove both directions and the mixed cases.
+void testExternMarshalsMemoryStructReturn() {
+  TEST_SCOPE();
+  const std::string out = runWithSymbols(
+      "struct Big { a: int; b: double; c: int; d: int64; }\n"
+      "extern \"C\" { fn oskelTestMakeBig(a: int, b: double, c: int, d: int64): Big; }\n"
+      "let r = oskelTestMakeBig(7, 2.5, 9, 1000000000000);\n"
+      "print(r.a);\n"
+      "print(r.b);\n"
+      "print(r.c);\n"
+      "print(r.d);\n");
+  assert(out == "7\n2.5\n9\n1000000000000\n");
+}
+
+void testExternMarshalsMemoryStructArgument() {
+  TEST_SCOPE();
+  // The struct argument is placed on the stack; the callee reads its fields
+  // back and returns a scalar, so a wrong byte layout changes the result.
+  const std::string out = runWithSymbols(
+      "struct Big { a: int; b: double; c: int; d: int64; }\n"
+      "extern \"C\" { fn oskelTestSumBig(x: Big): int64; }\n"
+      "let s = oskelTestSumBig({a: 4, b: 0.0, c: 6, d: 10});\n"
+      "print(s);\n");
+  assert(out == "20\n");
+}
+
+void testExternMarshalsMemoryStructAmongScalars() {
+  TEST_SCOPE();
+  // A MEMORY struct between two register scalars: the stack slot must not
+  // disturb the register arguments.
+  const std::string out = runWithSymbols(
+      "struct Big { a: int; b: double; c: int; d: int64; }\n"
+      "extern \"C\" { fn oskelTestMixBig(lead: int, x: Big, tail: double): int64; }\n"
+      "let s = oskelTestMixBig(100, {a: 1, b: 0.0, c: 2, d: 3}, 4.0);\n"
+      "print(s);\n");
+  assert(out == "110\n");
+}
+
+void testExternMarshalsTwoMemoryStructs() {
+  TEST_SCOPE();
+  // Two MEMORY structs at once, so both stack slots are exercised.
+  const std::string out = runWithSymbols(
+      "struct Big { a: int; b: double; c: int; d: int64; }\n"
+      "extern \"C\" { fn oskelTestSumTwoBig(x: Big, y: Big): int64; }\n"
+      "let s = oskelTestSumTwoBig({a: 1, b: 0.0, c: 2, d: 3}, {a: 10, b: 0.0, c: 20, d: 30});\n"
+      "print(s);\n");
+  assert(out == "66\n");
+}
+#endif  // OSKEL_FFI_MEMORY_STRUCTS
+
 #ifdef OSKEL_HAVE_LIBFFI
 void testExternCallbackGprShape() {
   TEST_SCOPE();
@@ -2107,12 +2184,20 @@ void testExternCallbackNarrowReturnIsWrittenAtItsOwnWidth() {
 
 void testExternRejectsLargeStructAtCompileTime() {
   TEST_SCOPE();
-  // A struct larger than 16 bytes is passed in memory, a shape the register
-  // marshalling does not support, so the declaration is rejected up front.
-  const std::string message = compileErrorMessage(
+  // A struct larger than 16 bytes is class MEMORY: passed on the stack and
+  // returned through a hidden pointer. Where the libffi-backed marshalling can
+  // express that (System V + libffi) the declaration is accepted; elsewhere it
+  // is rejected up front with a message naming the reason.
+  const std::string source =
       "struct Big { a: int; b: int; c: int; d: int; e: int; }\n"
-      "extern \"C\" { fn f(x: Big): int; }\n");
-  assert(message.find("memory") != std::string::npos);
+      "extern \"C\" { fn f(x: Big): int; }\n";
+#if OSKEL_FFI_MEMORY_STRUCTS
+  // Accepted where the libffi-backed marshalling expresses class MEMORY.
+  compileSource(source);
+#else
+  const std::string message = compileErrorMessage(source);
+  assert(message.find("MEMORY") != std::string::npos);
+#endif
 }
 
 void testExternRejectsNonScalarStructFieldAtCompileTime() {
@@ -2312,6 +2397,12 @@ int main() {
   testExternMarshalsMixedStructArgument();
   testExternMarshalsStructArgumentAndReturnTogether();
   testExternMarshalsSubEightbyteStruct();
+#endif
+#if OSKEL_FFI_MEMORY_STRUCTS
+  testExternMarshalsMemoryStructReturn();
+  testExternMarshalsMemoryStructArgument();
+  testExternMarshalsMemoryStructAmongScalars();
+  testExternMarshalsTwoMemoryStructs();
 #endif
 #ifdef OSKEL_HAVE_LIBFFI
   testExternCallbackGprShape();

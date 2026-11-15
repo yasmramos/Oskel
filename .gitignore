@@ -47,6 +47,8 @@ oskel_path_nul_test.txt
 
 # Local cmake build directory
 cmake-build/
+build_cmake/
+build_nolibffi/
 build-stress/
 build-test/
 build-release/
