@@ -9,6 +9,19 @@ may change between minor versions.
 
 ## [Unreleased]
 
+### Added
+
+- **Windows AOT target** (PHASE 7e). `oskel build --target
+  x86_64-windows-win64` emits a static Windows PE32+ executable; the default
+  target follows the host, and a Windows output name gets the `.exe` suffix.
+  The lowering and the embedded runtime are shared with the Linux target
+  unchanged — only the entry prelude differs, reaching kernel32
+  (`GetStdHandle`/`WriteFile`, `ExitProcess`, `VirtualAlloc`) through the
+  Microsoft x64 ABI. The PE emitter now writes a real import table with a
+  `.idata` section pinned at a fixed RVA and declares
+  `IMAGE_FILE_RELOCS_STRIPPED`, so the non-PIE image is mapped by a Windows
+  with "Force ASLR" instead of aborting.
+
 ### Changed
 
 - The README documents the VM/AOT split explicitly (a "What runs where" section):
