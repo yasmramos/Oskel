@@ -44,6 +44,15 @@ has_capability() {
                 return 0
             fi
             ;;
+        win32)
+            # The Win32 base API (kernel32.dll) only exists on Windows. Probed
+            # from the executable's own format so the runner agrees with the
+            # CMake gating: a PE image means Windows, an ELF/Mach-O does not.
+            if head -c 2 "$exe" 2>/dev/null | grep -q '^MZ'; then
+                return 0
+            fi
+            return 1
+            ;;
         *)
             return 0
             ;;

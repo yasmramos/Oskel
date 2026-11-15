@@ -150,13 +150,25 @@ void* PlatformPosix::lookupSymbol(const char* name) {
   // program's own C symbols live. That is exactly the set an `extern "C"`
   // declaration can name, and it needs no `-rdynamic` on the host.
 #ifdef _WIN32
-  // Windows resolves through the module handle of the process image plus the
-  // C runtime; `GetProcAddress` needs a module, so the C runtime is the one
-  // that carries libc-style names. `GetModuleHandleA(nullptr)` covers a symbol
-  // the host itself exports.
+  // Windows resolves through a module handle; `GetProcAddress` needs one, so
+  // the search walks the modules a declared symbol can plausibly live in:
+  //   - the process image (`GetModuleHandleA(nullptr)`), for a symbol the host
+  //     itself exports,
+  //   - kernel32.dll, the Win32 base API (`GetTickCount`, `Sleep`,
+  //     `GetCurrentProcessId`, ...), which has no CRT equivalent,
+  //   - the C runtime, which carries the libc-style names (`strlen`, `abs`,
+  //     `sqrt`, ...) the POSIX path finds through `dlsym(RTLD_DEFAULT)`.
+  // Each module is tried in turn; the first hit wins. A symbol in none of them
+  // returns nullptr, which the caller turns into a clear "not found" error.
   HMODULE module = GetModuleHandleA(nullptr);
   if (module != nullptr) {
     if (FARPROC symbol = GetProcAddress(module, name)) {
+      return reinterpret_cast<void*>(symbol);
+    }
+  }
+  HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
+  if (kernel32 != nullptr) {
+    if (FARPROC symbol = GetProcAddress(kernel32, name)) {
       return reinterpret_cast<void*>(symbol);
     }
   }

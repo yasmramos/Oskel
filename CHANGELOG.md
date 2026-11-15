@@ -11,6 +11,12 @@ may change between minor versions.
 
 ### Added
 
+- A `switch` case label may be a `const` name (a top-level `const`, or a local
+  `const`/`let` in the same frame), not only a literal or a range, so a shared
+  constant reads as a label instead of a repeated magic number. The name is
+  checked to be an immutable binding; a `var`, an unknown name or a captured
+  binding is a compile error, so a label stays a fixed value. No new opcode:
+  the label lowers to the same `EQ` (or `IN` for a range) against the subject.
 - `struct` literals support field shorthand: `Point { x, y }` is sugar for
   `Point { x: x, y: y }`, taking each value from the variable of the same name
   in scope. The shorthand and the `name: value` form mix freely in one literal
@@ -80,6 +86,13 @@ may change between minor versions.
 
 ### Fixed
 
+- `extern "C"` declarations on Windows could not name the Win32 API. The
+  development engine's `lookupSymbol` searched only the process image and the
+  C runtime, so a declaration such as `GetTickCount` or `Sleep` — which live in
+  `kernel32.dll` and have no CRT equivalent — failed at run time with
+  `extern "C" symbol '...' was not found in the host`. The search now also
+  covers `kernel32.dll`, matching the set of modules `dlsym(RTLD_DEFAULT)`
+  reaches on POSIX; the CRT names still resolve.
 - The PE emitter padded the image only to the end of `.text`'s bytes, not to
   the `SizeOfRawData` the section header declares, so the file could end up to
   `FileAlignment` bytes short of the image it described. Windows rejected such

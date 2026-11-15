@@ -57,3 +57,4 @@ build-release/
 *.tar.gz
 *.tar.xz
 *.tar.bz2
+build-dev/

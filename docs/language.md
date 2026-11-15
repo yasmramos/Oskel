@@ -456,8 +456,12 @@ hoisted, so a function may call one declared later. Like `import`, `struct` and
 `native fn`, they are module-level metadata: nesting one is a compile error.
 
 Before a proto runs, the engine resolves each declared name through
-`Platform::lookupSymbol` and binds it to a marshalling native. The call passes
-its arguments and reads its result across the System V AMD64 ABI without
+`Platform::lookupSymbol` and binds it to a marshalling native. On POSIX the
+search is `dlsym(RTLD_DEFAULT)`, which reaches libc, libm and the host program;
+on Windows it walks the process image, `kernel32.dll` (the Win32 base API:
+`GetTickCount`, `Sleep`, ...) and the C runtime, so a declaration can name a CRT
+function or a Win32 one. The call passes its arguments and reads its result
+across the System V AMD64 ABI without
 `libffi`: integers, bools and pointers travel in general-purpose registers and
 `float`/`double` in SSE registers, and the result is read back at the exact
 width the declaration named (so a C `int` is not read as a 64-bit value). A
@@ -1275,7 +1279,7 @@ switch (value) {
 }
 ```
 
-A `switch` evaluates its subject **exactly once** and compares it against the case labels in order. A label is either a **literal** (`nil`, `true`, `false`, a number or a string, optionally signed as in `-1`), or an **integer range** (`10..20`, `10..=20`). A literal matches by equality; a range matches by membership, exactly like `value in 10..=20`.
+A `switch` evaluates its subject **exactly once** and compares it against the case labels in order. A label is a **literal** (`nil`, `true`, `false`, a number or a string, optionally signed as in `-1`), an **integer range** (`10..20`, `10..=20`), or a **`const` name** (a top-level `const`, or a local `const`/`let` in the same frame) whose value is used as the label. A literal matches by equality; a range matches by membership, exactly like `value in 10..=20`; a `const` name matches by equality against its value. A name that is not an immutable binding (a `var`, an unknown name, or a captured binding) is a compile error, so a label is always a fixed value.
 
 The first matching case runs and then control leaves the switch. **There is no fallthrough**: unlike C or Java, the body of the next case does not run after a match, so a forgotten `break` cannot cause a bug. Several labels may share one body (`case 2: case 3:`), and a `default` clause (at most one) runs only when nothing matched; it is optional, so a switch with no match simply does nothing.
 

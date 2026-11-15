@@ -48,6 +48,14 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   shape as "global 'N' is read but never assigned" (exit 65) rather than
   emitting a binary that calls nil. FFI in the AOT backend is still PHASE 7
   work; the lowerer only fails it cleanly.
+- Windows code paths can be exercised locally without a Windows host: build the
+  engine with `x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude -Isrc -static
+  -o /tmp/win/oskel.exe src/*.cpp src/native/*.cpp src/jit/*.cpp` and run it
+  under Wine (`WINEPREFIX=$HOME/.wine-oskel wine /tmp/win/oskel.exe ...`). The
+  `tests/*.oskl` suite runs there too. This is how `lookupSymbol` (kernel32) and
+  the PE image were checked before CI. CI still gates the merge, since Wine is
+  not Windows: a green Wine run is a signal, not a substitute for the
+  `windows-latest` job.
 
 ## Release and artifacts
 

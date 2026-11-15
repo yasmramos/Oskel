@@ -485,8 +485,12 @@ void testSwitchRangeUsesIn() {
 void testSwitchErrors() {
   expectCompileError("case 1: {}\n", "case outside switch");
   expectCompileError("default: {}\n", "default outside switch");
-  expectCompileError("switch (1) { case x: {} }\n", "case label must be a literal or a range");
-  expectCompileError("switch (1) { case f(): {} }\n", "case label must be a literal or a range");
+  expectCompileError("switch (1) { case f(): {} }\n",
+                     "case label must be a literal, a range or a 'const' name");
+  expectCompileError("switch (1) { case x: {} }\n",
+                     "case label name must be an immutable 'const' or 'let' binding");
+  expectCompileError("var x = 1;\nswitch (1) { case x: {} }\n",
+                     "case label name must be an immutable 'const' or 'let' binding");
   expectCompileError("switch (1) { default: {} default: {} }\n", "duplicate default");
   expectCompileError("switch (1) { case 1 }\n", "missing ':' after case label");
   expectCompileError("switch (1) { case 1: {} }\nswitch (2) { case 2: { break; } }\n",
