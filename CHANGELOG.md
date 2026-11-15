@@ -86,6 +86,12 @@ may change between minor versions.
 
 ### Fixed
 
+- A `\uXXXX` string escape whose value is a lone surrogate (U+D800..U+DFFF) is
+  now a compile error instead of producing a string with invalid UTF-8. The
+  lexer previously encoded the code point as CESU-8 (three bytes), so
+  `"\uD800"` yielded bytes the rest of the language (`len`, indexing, `==`)
+  treated as one character but that are not valid UTF-8. The check lives in the
+  lexer, so the VM and the AOT backend reject the same source identically.
 - `extern "C"` declarations on Windows could not name the Win32 API. The
   development engine's `lookupSymbol` searched only the process image and the
   C runtime, so a declaration such as `GetTickCount` or `Sleep` — which live in

@@ -387,8 +387,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    1 column). Make line/col refer to the original.
 2. **[P2]** `skipQuoted` for an interpolated string is fragile when a `${...}`
    contains another string with `${...}`.
-3. **[P2]** `readEscape` for `\uXXXX` does not handle surrogates (`\uD800`
-   becomes invalid UTF-8).
+3. ~~**[P2]** `readEscape` for `\uXXXX` does not handle surrogates (`\uD800`
+   becomes invalid UTF-8).~~ **Done**: the lexer rejects the surrogate range
+   `U+D800`..`U+DFFF` with `surrogate code point in '\u' escape is not valid
+   UTF-8`. The check lives in the lexer, so the VM and the AOT backend reject
+   the same source identically. Surrogate pairs stay unsupported.
 4. **[P2]** `readEscape` for `\xHH` does not validate the byte in UTF-8.
 5. **[P2]** `lex` does not validate that the source is UTF-8.
 6. **[P3]** `Token::intNeedsNegation` exists on every token; an
