@@ -151,6 +151,13 @@ struct AotRuntimeHandles {
   CodeGen::Label chrBuiltin;       // AotValue oskel_builtin_chr(AotValue* args, long argc, AotClosure* self)
   CodeGen::Label assertBuiltin;    // AotValue oskel_builtin_assert(AotValue* args, long argc, AotClosure* self)
   CodeGen::Label panicBuiltin;     // AotValue oskel_builtin_panic(AotValue* args, long argc, AotClosure* self)
+  // The numeric conversions (PHASE 7c.5b.1). Each is the public `int`/`float`/
+  // `double` for a numeric or boolean operand, matching the hosted conversion
+  // (SSE only -- no libm). A string operand still needs a parser and is
+  // deferred to 7c.5b.2, so it fails with the same "cannot convert" shape.
+  CodeGen::Label intBuiltin;       // AotValue oskel_builtin_int(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label floatBuiltin;     // AotValue oskel_builtin_float(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label doubleBuiltin;    // AotValue oskel_builtin_double(AotValue* args, long argc, AotClosure* self)
   // The string builder primitives, exposed so a test can drive them directly
   // (a capacity of zero and a capacity that overflows the doubling must both
   // terminate and produce the exact bytes).
@@ -173,7 +180,7 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
   };
 }
 

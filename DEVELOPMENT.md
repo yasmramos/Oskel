@@ -908,10 +908,21 @@ Slices, each independently shippable:
       so it links into the freestanding binary. Covered by
       `tests/freestanding_test.cpp` (each builtin and every failure path under
       the real `_start`) and the `oskel build` fixture.
-    - **7c.5b** (pending) — the remaining builtins: `int`/`float`/`double`
-      (string parsing and float conversion with overflow handling) and the math
-      block (`sqrt`, `pow`, `sin`, ...), which needs an embedded libm because
-      the freestanding binary cannot call the host's.
+    - **7c.5b** (in progress) — the remaining builtins. **7c.5b.1** (done) adds
+      the numeric conversions `int`/`float`/`double` for a numeric or boolean
+      operand: `int` truncates toward zero (returning an int unchanged, a bool
+      as 0/1, and a float/double after a finiteness and a `-2^63 <= x < 2^63`
+      range check that matches the hosted bound), `float` rounds to binary32
+      and stores the widened value (`cvtsd2ss` + `cvtss2sd`, as the hosted
+      `Float` holds), and `double` is the binary64 form. All three are pure SSE
+      -- no libm, no libc -- so they link into the freestanding binary; a
+      string operand is rejected with a clear message. A string parse
+      (`int("42")`, `float("3.14")`) needs a correctly rounded parser and is
+      deferred to **7c.5b.2**. Covered by `tests/freestanding_test.cpp` (the
+      numeric sources, the 2^24+1 binary32 rounding, the error paths) and the
+      `oskel build` fixture. The math block (`sqrt`, `pow`, `sin`, ...) still
+      needs an embedded libm because the freestanding binary cannot call the
+      host's.
     - **7c.1+** — boxed `Value` over the arena, `print`/`toString` (own dtoa),
       collections and functions. The AOT runtime has its own boxed value and
       its own arena-backed objects, sharing *semantics* with `ops.h` but not
