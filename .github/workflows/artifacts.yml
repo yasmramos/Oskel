@@ -231,14 +231,22 @@ jobs:
           sha256sum $(ls -1 | grep -v '^SHA256SUMS$' | sort) > SHA256SUMS
           cat SHA256SUMS
 
-      - name: Create the GitHub release
+      - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        # `--generate-notes` writes the changelog from the commits since the
-        # previous tag; `--repo` lets the command run without a checkout.
+        # `gh release create` fails with "a release with the same tag name
+        # already exists" when the release was created in the UI before the
+        # tag was pushed. Create it only when missing, then upload (or replace)
+        # the assets, so the step is idempotent either way. `--generate-notes`
+        # writes the changelog from the commits since the previous tag; `--repo`
+        # lets both commands run without a checkout.
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
+          gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 ||
+            gh release create "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes
+          gh release upload "${GITHUB_REF_NAME}" \
             --repo "${GITHUB_REPOSITORY}" \
-            --title "${GITHUB_REF_NAME}" \
-            --generate-notes \
+            --clobber \
             dist/*

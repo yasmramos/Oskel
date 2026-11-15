@@ -1644,7 +1644,7 @@ Details:
 - `indexOf` searches bytes but returns the index in code points.
 - `substr` counts code points; a negative `length` produces an empty string.
 - `padStart` and `padEnd` pad by code points and trim the fill to the exact width. The result has the same 64 MB limit as `repeat`.
-- `repeat` has a 64 MB limit on the result.
+- `repeat` has a 64 MB limit on the result. An empty text repeats to an empty text for any non-negative count (including a very large one), and a negative count is an error.
 
 ```oskel
 assertEq("  hello  ".trim(), "hello");
@@ -1799,7 +1799,7 @@ assertEq(len(5..0), 5);
 | `double(value)` | Converts to `double` (binary64). |
 | `bool(value)` | Applies Oskel's truthiness. |
 
-`int(string)` accepts the same bases the language spells for literals (see §2.3): an explicit `0x`/`0X`, `0b`/`0B` or `0o`/`0O` prefix, otherwise decimal. A bare leading zero stays decimal (`int("010")` is `10`, matching the literal `010`), and an optional `+`/`-` sign is allowed before the prefix (`int("-0x10")` is `-16`). Surrounding whitespace is trimmed. `float(string)` and `double(string)` use `strtod` (`float` then rounds to binary32). Converting an empty or badly formatted string is an error. `int(float)` and `int(double)` truncate toward zero and are an error when the value is outside the `int` range (a non-finite value is an error too).
+`int(string)` accepts the same bases the language spells for literals (see §2.3): an explicit `0x`/`0X`, `0b`/`0B` or `0o`/`0O` prefix, otherwise decimal. A bare leading zero stays decimal (`int("010")` is `10`, matching the literal `010`), and an optional `+`/`-` sign is allowed before the prefix (`int("-0x10")` is `-16`). Surrounding whitespace is trimmed. `float(string)` and `double(string)` parse the text with `strtod` (`float` then rounds to binary32). The non-finite values are accepted only when the text spells them out (`inf`, `infinity` or `nan`, case-insensitive, with an optional sign); a silent overflow such as `1e400` is an error, and a value outside the `float` range (`1e40`) is an error for `float`. Converting an empty or badly formatted string is an error. `int(float)` and `int(double)` truncate toward zero and are an error when the value is outside the `int` range (a non-finite value is an error too).
 
 A floating-point value prints with the shortest decimal text that round-trips through its type: parsing the printed form back yields exactly the same value. A `double` uses binary64 precision (`str(1.0 / 3.0)` is `"0.3333333333333333"`) and a `float` uses binary32 (`str(0.1f)` is `"0.1"`). Values that fit in fewer digits keep the shortest form (`str(1.5)` is `"1.5"`).
 

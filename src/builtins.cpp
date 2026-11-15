@@ -111,6 +111,35 @@ int64_t parseIntText(Runtime& in, const std::string& original, const std::string
   return static_cast<int64_t>(result);
 }
 
+// Parses the text of a `float(string)`/`double(string)` conversion. `strtod`
+// accepts `inf`/`nan` and also overflows silently (`1e400` becomes `inf`), so
+// after parsing we only keep a non-finite result when the text spells it out;
+// a silent overflow is a clean error. The accepted spellings are `inf`,
+// `infinity` and `nan`, case-insensitive, with an optional sign.
+double parseFloatText(Runtime& in, const std::string& original, const std::string& text,
+                      const std::string& target) {
+  if (text.empty()) in.fail("cannot convert an empty string to " + target);
+  errno = 0;
+  char* end = nullptr;
+  double result = std::strtod(text.c_str(), &end);
+  if (end == text.c_str() || *end != '\0') {
+    in.fail("cannot convert '" + original + "' to " + target);
+  }
+  if (std::isinf(result) || std::isnan(result)) {
+    std::string lower;
+    lower.reserve(text.size());
+    for (char c : text) {
+      lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    if (!lower.empty() && (lower[0] == '+' || lower[0] == '-')) lower.erase(0, 1);
+    if (lower != "inf" && lower != "infinity" && lower != "nan") {
+      in.fail("cannot convert '" + original + "' to " + target +
+              "' (use inf, -inf or nan)");
+    }
+  }
+  return result;
+}
+
 // Extracts a live pointer argument, rejecting a released handle so a
 // use-after-free is a clear error instead of undefined behaviour.
 PtrObj& wantPtr(Runtime& in, const std::string& fn, const Value& value,
@@ -702,8 +731,12 @@ bool bindString(Runtime& in, StringPtr receiver, const std::string& name, Value&
       need(in, "repeat", args, 1);
       int64_t count = wantInt(in, "repeat", args[0], "count");
       if (count < 0) in.fail("repeat() count cannot be negative");
-      if (count > 0 && text.size() > 0 &&
-          static_cast<uint64_t>(count) > (64ULL * 1024ULL * 1024ULL) / text.size()) {
+      // An empty text repeats to an empty text for any count, so answer it
+      // without entering the loop: `"".repeat(INT64_MAX)` would otherwise spin
+      // through the full count. The size guard below also skips an empty text
+      // (there are no bytes to bound), so this is the only place it is caught.
+      if (text.empty() || count == 0) return Value("");
+      if (static_cast<uint64_t>(count) > (64ULL * 1024ULL * 1024ULL) / text.size()) {
         in.fail("repeat() result is too large");
       }
       std::string result;
@@ -1048,13 +1081,12 @@ void registerBuiltins(Runtime& in) {
     if (value.isBool()) return Value::fromFloat(value.asBool() ? 1.0f : 0.0f);
     if (value.isStr()) {
       std::string text = trim(value.asStr());
-      if (text.empty()) in.fail("cannot convert an empty string to float");
-      char* end = nullptr;
-      double result = std::strtod(text.c_str(), &end);
-      if (end == nullptr || *end != '\0') {
-        in.fail("cannot convert '" + value.asStr() + "' to float");
+      double result = parseFloatText(in, value.asStr(), text, "float");
+      float narrowed = static_cast<float>(result);
+      if (std::isinf(narrowed) && !std::isinf(result)) {
+        in.fail("cannot convert '" + value.asStr() + "' to float (out of range)");
       }
-      return Value::fromFloat(static_cast<float>(result));
+      return Value::fromFloat(narrowed);
     }
     in.fail("cannot convert '" + std::string(value.typeName()) + "' to float");
   });
@@ -1067,12 +1099,7 @@ void registerBuiltins(Runtime& in) {
     if (value.isBool()) return Value(value.asBool() ? 1.0 : 0.0);
     if (value.isStr()) {
       std::string text = trim(value.asStr());
-      if (text.empty()) in.fail("cannot convert an empty string to double");
-      char* end = nullptr;
-      double result = std::strtod(text.c_str(), &end);
-      if (end == nullptr || *end != '\0') {
-        in.fail("cannot convert '" + value.asStr() + "' to double");
-      }
+      double result = parseFloatText(in, value.asStr(), text, "double");
       return Value(result);
     }
     in.fail("cannot convert '" + std::string(value.typeName()) + "' to double");
