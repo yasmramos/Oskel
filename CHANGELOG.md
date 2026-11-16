@@ -120,6 +120,17 @@ may change between minor versions.
 
 ### Fixed
 
+- The `oskel build` end-to-end tests (`tests/build_binary.cmake`,
+  `tests/build_error.cmake`, `tests/aot_runtime_error.cmake`) wrote their
+  generated binary to a fixed name under `CMAKE_CURRENT_BINARY_DIR`. That
+  variable is the same in every `cmake -P` run, so under `ctest -j` the eight
+  tests (each a separate process) clobbered one another's output: one test
+  removed the file another had just built, or ran a binary produced from a
+  different fixture, and the suite failed intermittently with "oskel build did
+  not create ..." or "the generated binary disagrees with the VM". Each test
+  now passes its unique CTest name (`-DOSKEL_TEST_NAME`) and writes to
+  `${OSKEL_TEST_NAME}${exe_suffix}`, so the output paths never collide. A
+  parallel run is now deterministic.
 - A `struct` name and an import binding the same name no longer coexist
   silently. `struct Point { ... }` plus `import std.math as Point;` used to
   leave both alive: `Point { ... }` stayed a struct literal while

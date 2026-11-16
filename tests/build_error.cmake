@@ -5,6 +5,7 @@
 # Registered by CMakeLists.txt on every host the AOT backend targets. Expects:
 #   -DOSKEL_EXE=<path to the oskel executable>
 #   -DOSKEL_SCRIPT=<the .oskl file to build>
+#   -DOSKEL_TEST_NAME=<the CTest name, used for a unique output path>
 #   -DEXPECTED_MESSAGE=<regex the stderr must match>
 #
 # It asserts:
@@ -13,8 +14,8 @@
 #      backend, not a typo),
 #   3. no output binary is written.
 
-if(NOT DEFINED OSKEL_EXE OR NOT DEFINED OSKEL_SCRIPT OR NOT DEFINED EXPECTED_MESSAGE)
-  message(FATAL_ERROR "build_error.cmake requires OSKEL_EXE, OSKEL_SCRIPT and EXPECTED_MESSAGE")
+if(NOT DEFINED OSKEL_EXE OR NOT DEFINED OSKEL_SCRIPT OR NOT DEFINED OSKEL_TEST_NAME OR NOT DEFINED EXPECTED_MESSAGE)
+  message(FATAL_ERROR "build_error.cmake requires OSKEL_EXE, OSKEL_SCRIPT, OSKEL_TEST_NAME and EXPECTED_MESSAGE")
 endif()
 
 # Match the host's executable suffix, so the "no binary was written" check looks
@@ -24,7 +25,9 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
 else()
   set(exe_suffix "")
 endif()
-set(out "${CMAKE_CURRENT_BINARY_DIR}/oskel_build_error_output${exe_suffix}")
+# The output path embeds the test name (see build_binary.cmake): parallel tests
+# share `CMAKE_CURRENT_BINARY_DIR`, so a fixed name would collide.
+set(out "${CMAKE_CURRENT_BINARY_DIR}/${OSKEL_TEST_NAME}${exe_suffix}")
 file(REMOVE "${out}")
 
 execute_process(
