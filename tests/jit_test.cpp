@@ -348,6 +348,30 @@ int main() {
   differential(unaryConst, "unary", {Value(3)}, "constant unary operands match the VM");
   differential(unaryConst, "unary", {Value(-8)}, "constant unary operands (negative) match the VM");
 
+  // --- Compare-branch fusion ------------------------------------------------
+  // A condition whose boolean result only feeds the branch right after it must
+  // compile to `cmp; jcc`, and the result must be identical to the VM. The
+  // shapes below cover a `while`, an `if`/`else`, a `JMP_IF_TRUE` (an `||`),
+  // and a comparison whose result *is* reused afterwards (the last one must
+  // stay unfused, and still be correct).
+  const char* branchFusion =
+      "fn loops(n) {\n"
+      "  var s = 0;\n"
+      "  var i = 0;\n"
+      "  while (i <= n) { s = s + i; i = i + 1; }\n"
+      "  if (s > 100) { s = s - 1; } else { s = s + 1; }\n"
+      "  return s;\n"
+      "}\n"
+      "fn orTest(a, b) { if (a > 0 || b > 0) { return a + b; } return a - b; }\n"
+      "fn reuse(a, b) { var t = a < b; if (t) { return a; } return b + (t ? 1 : 0); }\n";
+  differential(branchFusion, "loops", {Value(0)}, "while + if/else fusion matches the VM (n=0)");
+  differential(branchFusion, "loops", {Value(10)}, "while + if/else fusion matches the VM (n=10)");
+  differential(branchFusion, "loops", {Value(30)}, "while + if/else fusion matches the VM (n=30)");
+  differential(branchFusion, "orTest", {Value(3), Value(-1)}, "JMP_IF_TRUE fusion matches the VM (a)");
+  differential(branchFusion, "orTest", {Value(-3), Value(-1)}, "JMP_IF_TRUE fusion matches the VM (b)");
+  differential(branchFusion, "reuse", {Value(1), Value(9)}, "a reused comparison result stays correct");
+  differential(branchFusion, "reuse", {Value(9), Value(1)}, "a reused comparison result stays correct (b)");
+
   // --- Rejections: everything outside the integer-leaf subset ----------------
   expectRejected("fn greet(n) { return \"hi\"; }\n", "greet", "a string return is rejected");
   expectRejected("fn useGlobal(n) { return n + 1.5; }\n", "useGlobal",
