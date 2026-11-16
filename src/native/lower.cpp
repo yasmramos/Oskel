@@ -877,6 +877,12 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       {"ceil", rt.ceilBuiltin},
       {"round", rt.roundBuiltin},
       {"sqrt", rt.sqrtBuiltin},
+      // The transcendental builtins (PHASE 7c.5b.4a): `exp`, `log` and `pow`.
+      // They need libm in the hosted engine; the freestanding runtime embeds the
+      // ported musl routines and reproduces the hosted results to 1 ulp.
+      {"exp", rt.expBuiltin},
+      {"log", rt.logBuiltin},
+      {"pow", rt.powBuiltin},
   };
 
   const GlobalSlots globals = collectGlobals(protos, builtins);

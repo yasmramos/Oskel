@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "native/dtoa.h"
+#include "native/mathlib.h"
 #include "native/parse_float.h"
 
 namespace {
@@ -4977,6 +4978,99 @@ void emitRoundingBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   epilogue(cg);
 }
 
+// Load the `AotValue` argument at `byteOffset` in the window in rdi and convert
+// it to binary64 in `xmm`. The window grows down, so `args[0]` is at offset 0
+// and `args[1]` at -16. An int is converted, a float/double is reinterpreted,
+// anything else fails with `message`. Only rax/rcx and `xmm` are touched, so rdi
+// survives and a second argument can be loaded afterwards.
+void emitNumberArg(CodeGen& cg, int byteOffset, int xmm, CodeGen::Label fail,
+                   const DataBlob& message) {
+  CodeGen::Label asInt = cg.newLabel();
+  CodeGen::Label asNumber = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+  cg.movFromMem(Rax, Rdi, byteOffset);      // tag
+  cg.movFromMem(Rcx, Rdi, byteOffset + 8);  // payload
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Eq, asInt);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagFloat));
+  cg.jcc(Jcc::Eq, asNumber);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
+  cg.jcc(Jcc::Eq, asNumber);
+  emitFailCall(cg, fail, message);
+  cg.bind(asInt);
+  cg.cvtsi2sd(xmm, Rcx);
+  cg.jmp(done);
+  cg.bind(asNumber);
+  cg.movqToXmm(xmm, Rcx);
+  cg.bind(done);
+}
+
+// `oskel_builtin_exp` / `oskel_builtin_log`: one numeric argument converted to
+// binary64 and handed to the embedded routine (`mathCore`), the result tagged
+// Double. `log` additionally rejects a non-positive operand, matching the hosted
+// `if (value <= 0) fail`; a NaN is not "<= 0" and passes through.
+void emitTranscendentalBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+                               CodeGen::Label mathCore, const DataBlob& message,
+                               bool positiveOnly, const DataBlob& msgNonPositive) {
+  constexpr int Xmm0 = kXmmBase + 0;
+  constexpr int Xmm1 = kXmmBase + 1;
+
+  CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label check = cg.newLabel();
+  CodeGen::Label nonPositive = cg.newLabel();
+  CodeGen::Label compute = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
+  emitNumberArg(cg, 0, Xmm0, fail, message);
+  cg.jmp(check);
+
+  cg.bind(badArgc);
+  emitFailCall(cg, fail, message);
+
+  cg.bind(check);
+  if (positiveOnly) {
+    cg.xorps(Xmm1, Xmm1);
+    cg.ucomisd(Xmm0, Xmm1);
+    cg.jcc(Jcc::P, compute);         // NaN: not <= 0
+    cg.jcc(Jcc::Be, nonPositive);    // value <= 0
+  }
+  cg.jmp(compute);
+
+  cg.bind(nonPositive);
+  emitFailCall(cg, fail, msgNonPositive);
+
+  cg.bind(compute);
+  cg.callLabel(mathCore);
+  emitMathReturn(cg);
+  epilogue(cg);
+}
+
+// `oskel_builtin_pow`: two numeric arguments, both converted to binary64 in
+// xmm0/xmm1, then the embedded `pow`. A non-number operand fails.
+void emitPowBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+                    CodeGen::Label mathCore, const DataBlob& message) {
+  constexpr int Xmm0 = kXmmBase + 0;
+  constexpr int Xmm1 = kXmmBase + 1;
+
+  CodeGen::Label badArgc = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.cmpImm32(Rsi, 2);
+  cg.jcc(Jcc::Ne, badArgc);
+  emitNumberArg(cg, 0, Xmm0, fail, message);
+  emitNumberArg(cg, -16, Xmm1, fail, message);
+  cg.callLabel(mathCore);
+  emitMathReturn(cg);
+  epilogue(cg);
+
+  cg.bind(badArgc);
+  emitFailCall(cg, fail, message);
+}
+
 // `void oskel_sb_init(AotStringBuilder* sb, char* data, long capacity)`: start a
 // builder over a caller-owned buffer (`data`/`capacity`) with `length` zero. A
 // caller that renders a `print` value passes a stack buffer, so a small render
@@ -5883,6 +5977,10 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgSqrtArgc = addText("oskel: sqrt() expects 1 argument\n");
   DataBlob msgSqrtType = addText("oskel: sqrt() expects a number argument\n");
   DataBlob msgSqrtNegative = addText("oskel: sqrt() of a negative number\n");
+  DataBlob msgExpType = addText("oskel: exp() expects a number argument\n");
+  DataBlob msgLogType = addText("oskel: log() expects a number argument\n");
+  DataBlob msgLogNonPositive = addText("oskel: log() of a non-positive number\n");
+  DataBlob msgPowType = addText("oskel: pow() expects a number argument\n");
 
   CodeGen::Label fail = cg.newLabel();
   CodeGen::Label failDynamic = cg.newLabel();
@@ -6051,6 +6149,15 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitRoundingBuiltin(cg, handles.roundBuiltin, fail, msgRoundType, AotRoundMode::Round);
   emitSqrtBuiltin(cg, handles.sqrtBuiltin, fail, msgSqrtArgc, msgSqrtType,
                   msgSqrtNegative);
+  // The transcendental builtins (PHASE 7c.5b.4a). The three routines share one
+  // set of tables; `mathlib::emitMathLib` emits them plus the wrappers' targets.
+  mathlib::MathHandles math = mathlib::newMathHandles(cg);
+  mathlib::emitMathLib(cg, math);
+  emitTranscendentalBuiltin(cg, handles.expBuiltin, fail, math.exp, msgExpType, false,
+                            msgLogNonPositive);
+  emitTranscendentalBuiltin(cg, handles.logBuiltin, fail, math.log, msgLogType, true,
+                            msgLogNonPositive);
+  emitPowBuiltin(cg, handles.powBuiltin, fail, math.pow, msgPowType);
   emitIntTextParser(cg, handles.intTextParser, fail, msgConvertInt);
   dtoa::emitDtoa(cg, dtoaHandles);
   parse_float::emitParseFloat(cg, parseFloatHandles, dtoaHandles);

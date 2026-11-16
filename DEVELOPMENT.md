@@ -978,14 +978,31 @@ Slices, each independently shippable:
       `sqrt` is the SSE `sqrtsd`, correctly rounded for every input. Every
       result matches the hosted engine (glibc) bit for bit, including the sign
       of a zero result (`floor(-0.3)` is `-0`) and the `|x| >= 2^63`, inf and
-      NaN passthrough; a negative `sqrt` fails like the hosted one. The
-      transcendental block (`pow`, `sin`, `cos`, `tan`, `log`, `exp`) is the
-      next slice and is where the embedded-libm decision lives, because glibc
-      is not correctly rounded there and an exact libm would diverge from the
-      hosted engine. Covered by `tests/codegen_test.cpp` (the `sqrtsd` encoding
-      and its execution) and `tests/freestanding_test.cpp` (the builtins and
-      the failure paths under the real `_start`), plus a 11k-case differential
-      run against the hosted engine.
+      NaN passthrough; a negative `sqrt` fails like the hosted one. Covered by
+      `tests/codegen_test.cpp` (the `sqrtsd` encoding and its execution) and
+      `tests/freestanding_test.cpp` (the builtins and the failure paths under
+      the real `_start`), plus a 11k-case differential run against the hosted
+      engine.
+      **7c.5b.4a** (done) adds the transcendental builtins `exp`, `log` and
+      `pow`. Unlike the exact builtins above, these need libm in the hosted
+      engine and glibc is not correctly rounded there, so no independent
+      implementation can match it on every input. The freestanding runtime
+      embeds its own copy of the musl routines (`native/mathlib.*`), emitted as
+      x86-64 by `CodeGen` the same way `dtoa` and `parse_float` are: `exp` and
+      `log` are the musl kernels with their 256-entry tables, and `pow` is
+      `exp(y * log(x))` built from the same `log_inline` plus the `exp_inline`
+      core (special cases included: `pow(1, y)`, `pow(x, 0)`, the negative-base
+      integer-exponent path, `0^0`, inf/NaN). The result agrees with glibc on
+      ~99.9% of inputs and every disagreement is a single ulp, so the contract
+      is "correctly rounded to 1 ulp" -- validated against a bit-exact musl
+      reference, not "byte-identical to glibc". The wrappers do the arity and
+      type checks (an int operand is converted to binary64; `log` rejects a
+      non-positive operand) and are seeded into their global slots like the
+      other builtins. Covered by `tests/mathlib_test.cpp` (the emitted routines
+      called through function pointers against libm over 175k/100k/200k random
+      inputs) and the `oskel build` fixture. The trigonometric family
+      (`sin`, `cos`, `tan`, which needs the Payne-Hanek argument reduction) is
+      the next slice, **7c.5b.4b**.
     - **7c.6** (done) — variadic parameter packs. A function with a trailing
       `rest...` parameter was a lowering error ("variadic function",
       `PHASE 7c.3`); it now compiles. The child proto's prologue checks the

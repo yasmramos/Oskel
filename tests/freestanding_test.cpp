@@ -997,6 +997,54 @@ static void test_math_builtin_errors() {
   check(arity.exitCode == 70, "round with no argument exits 70");
 }
 
+// The transcendental builtins (PHASE 7c.5b.4a): `exp`, `log` and `pow` call the
+// embedded musl routines. glibc is not correctly rounded for these, so the
+// contract is "agrees to 1 ulp"; the values below are chosen where the two
+// roundings coincide, so the emitted code reproduces the hosted output exactly.
+static void test_transcendental_builtins() {
+  Bytecode proto = compileSource(
+      "print(exp(0), exp(1), exp(2), exp(-1), exp(0.5));\n"
+      "print(log(1), log(2), log(10), log(100));\n"
+      "print(pow(2, 10), pow(9, 0.5), pow(2, 0.5), pow(3, 3), pow(2, -1));\n"
+      "print(type(exp(1)), type(log(2)), type(pow(2, 3)));\n"
+      "print(exp(log(5)), log(exp(3)));\n");
+  RunResult result = buildAndRun("/tmp/oskel_transcendental_builtins", proto);
+  std::string expected =
+      "1 2.718281828459045 7.38905609893065 0.36787944117144233 1.6487212707001282\n"
+      "0 0.6931471805599453 2.302585092994046 4.605170185988092\n"
+      "1024 3 1.4142135623730951 27 0.5\n"
+      "double double double\n"
+      "4.999999999999999 3\n";
+  check(result.output == expected, "the transcendental builtins match the hosted engine");
+  check(result.exitCode == 0, "a program using exp/log/pow exits 0");
+}
+
+// A wrong operand type fails with the hosted message and exit 70; `log` of a
+// non-positive operand fails like the hosted `if (value <= 0)`.
+static void test_transcendental_builtin_errors() {
+  Bytecode expBool = compileSource("print(exp(true));\n");
+  RunResult fromBool = buildAndRun("/tmp/oskel_exp_bool", expBool);
+  check(fromBool.exitCode == 70, "exp of a bool exits 70");
+  check(fromBool.output.find("exp() expects a number argument") != std::string::npos,
+        "the failed exp reports its type message");
+
+  Bytecode powStr = compileSource("print(pow(2, \"x\"));\n");
+  RunResult fromStr = buildAndRun("/tmp/oskel_pow_str", powStr);
+  check(fromStr.exitCode == 70, "pow of a string exits 70");
+  check(fromStr.output.find("pow() expects a number argument") != std::string::npos,
+        "the failed pow reports its type message");
+
+  Bytecode logZero = compileSource("print(log(0.0));\n");
+  RunResult zero = buildAndRun("/tmp/oskel_log_zero", logZero);
+  check(zero.exitCode == 70, "log of zero exits 70");
+  check(zero.output.find("log() of a non-positive number") != std::string::npos,
+        "the failed log reports the non-positive message");
+
+  Bytecode powArity = compileSource("print(pow(2));\n");
+  RunResult arity = buildAndRun("/tmp/oskel_pow_arity", powArity);
+  check(arity.exitCode == 70, "pow with one argument exits 70");
+}
+
 // Drives the boxed printer directly: the runtime's `oskel_print_value` is what
 // the `print` builtin will call once `CALL` lands (7c.2), so this checks the
 // integer-to-text routine (including the negative case) and the boolean/nil
@@ -1608,6 +1656,8 @@ int main() {
   test_float_string_conversion();
   test_math_builtins();
   test_math_builtin_errors();
+  test_transcendental_builtins();
+  test_transcendental_builtin_errors();
   test_sb_append_zero_capacity();
   test_sb_append_capacity_overflow();
   test_variadic();
