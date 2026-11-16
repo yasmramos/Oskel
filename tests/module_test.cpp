@@ -440,6 +440,47 @@ void testConflictingExternAcrossModules() {
         "the cross-module conflict names the symbol and the problem");
 }
 
+// A `struct` name is compile-time metadata, not a value binding, so it is not
+// tracked by `userGlobals_`: an import that takes the same name used to coexist
+// with it silently, `Name { ... }` staying a struct literal and `Name.member`
+// failing only at run time. The collision is now a compile error, in both source
+// orders and for every import form (docs/language.md §18.3, backlog §3.5).
+void testStructImportNameConflict() {
+  struct Case {
+    const char* source;
+    const char* what;
+  };
+  const Case cases[] = {
+      {"struct Point { x: int; }\nimport modules.util as Point;\n",
+       "a struct name colliding with a later alias is a compile error"},
+      {"import modules.util as Point;\nstruct Point { x: int; }\n",
+       "a struct name colliding with an earlier alias is a compile error"},
+      {"struct square { x: int; }\nimport modules.util.*;\n",
+       "a struct name colliding with a wildcard name is a compile error"},
+      {"struct square { x: int; }\nimport { square } from modules.util;\n",
+       "a struct name colliding with a selective import is a compile error"},
+  };
+  for (const Case& c : cases) {
+    ModuleResolver resolver = fixtureResolver();
+    Compiler compiler;
+    compiler.setImportLoader(loaderFor(resolver));
+    bool threw = false;
+    try {
+      compiler.compile(parseSource(c.source));
+    } catch (const CompileError&) {
+      threw = true;
+    }
+    check(threw, c.what);
+  }
+
+  // A struct and an import that do not share a name keep working side by side.
+  VM vm;
+  compileAndRun("struct Point { x: int; }\nimport modules.util as u;\n"
+                "let got = Point { x: 5 }.x + u.square(3);\n",
+                fixtureResolver(), vm);
+  check(globalInt(vm, "got") == 14, "a struct and a differently named import coexist");
+}
+
 }  // namespace
 
 int main() {
@@ -467,6 +508,7 @@ int main() {
   testImportConflictAcrossForms();
   testNonConflictingImportCombinations();
   testConflictingExternAcrossModules();
+  testStructImportNameConflict();
 
   if (g_failures != 0) {
     std::printf("%d check(s) failed\n", g_failures);

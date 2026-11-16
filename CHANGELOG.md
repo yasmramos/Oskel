@@ -98,6 +98,15 @@ may change between minor versions.
 
 ### Fixed
 
+- A `struct` name and an import binding the same name no longer coexist
+  silently. `struct Point { ... }` plus `import std.math as Point;` used to
+  leave both alive: `Point { ... }` stayed a struct literal while
+  `Point.sqrt(9.0)` resolved to the alias, so the winner was undefined. The
+  collision is now a compile error in both source orders and for every import
+  form (alias, wildcard, selective), reported by `recordImportBinding` within a
+  chunk and by `compileStructDecl` across REPL entries. A struct is
+  compile-time metadata, not a value binding, so it is not covered by the
+  "a local `let`/`var`/`fn` wins over an import" rule.
 - A Windows AOT binary was killed with no message when a program recursed a few
   thousand frames with a non-trivial frame. The PE emitter reserved only 1 MiB
   of stack (the Windows default) while the AOT runtime has no call-depth guard,
