@@ -76,6 +76,112 @@ std::uint8_t tagOf(Ty t) {
   }
 }
 
+// True when `value` fits in the 32-bit immediate the emitter's `imm32` forms
+// take (sign-extended to 64 bits). A value outside this range must go through a
+// register, so the caller materializes it first.
+bool fitsImm32(std::int64_t value) {
+  return value >= -2147483648LL && value <= 2147483647LL;
+}
+
+// `n > 0` and a power of two; `log2Pow2` then holds its exponent. Used to turn a
+// multiply into a shift.
+bool isPow2(std::int64_t n, int& log2Pow2) {
+  if (n <= 0) return false;
+  const std::uint64_t u = static_cast<std::uint64_t>(n);
+  if (u & (u - 1)) return false;
+  log2Pow2 = 0;
+  while ((u >> log2Pow2) > 1) ++log2Pow2;
+  return true;
+}
+
+// Folds `a OP b` for two int64 operands, wrapping exactly like the interpreter
+// (`ops.cpp::binary`). Only the operators the JIT subset accepts reach here.
+bool foldBinaryInt(OpCode op, std::int64_t a, std::int64_t b, std::int64_t& out) {
+  const std::uint64_t ua = static_cast<std::uint64_t>(a);
+  const std::uint64_t ub = static_cast<std::uint64_t>(b);
+  switch (op) {
+    case OpCode::ADD: out = static_cast<std::int64_t>(ua + ub); return true;
+    case OpCode::SUB: out = static_cast<std::int64_t>(ua - ub); return true;
+    case OpCode::MUL: out = static_cast<std::int64_t>(ua * ub); return true;
+    case OpCode::BAND: out = a & b; return true;
+    case OpCode::BOR: out = a | b; return true;
+    case OpCode::BXOR: out = a ^ b; return true;
+    default: return false;
+  }
+}
+
+// Folds an integer comparison. The interpreter compares signed int64 for
+// `LT`/`LTE`/`GT`/`GTE` and value equality for `EQ`/`NEQ`; both agree with the
+// signed machine compare for the int/bool operands the subset admits.
+bool foldCompareInt(OpCode op, std::int64_t a, std::int64_t b, bool& out) {
+  switch (op) {
+    case OpCode::EQ: out = a == b; return true;
+    case OpCode::NEQ: out = a != b; return true;
+    case OpCode::LT: out = a < b; return true;
+    case OpCode::LTE: out = a <= b; return true;
+    case OpCode::GT: out = a > b; return true;
+    case OpCode::GTE: out = a >= b; return true;
+    default: return false;
+  }
+}
+
+// Folds `-x` and `~x` (both preserve `Int`). `!x` is handled with the truthiness
+// rule, not here.
+bool foldUnaryInt(UnaryOp op, std::int64_t a, std::int64_t& out) {
+  switch (op) {
+    case UnaryOp::Negate:
+      out = static_cast<std::int64_t>(0ULL - static_cast<std::uint64_t>(a));
+      return true;
+    case UnaryOp::BitNot: out = ~a; return true;
+    default: return false;
+  }
+}
+
+// Oskel truthiness for a scalar constant: only `nil` and `false` are falsy.
+bool truthyConst(Ty kind, std::int64_t value) {
+  if (kind == Ty::Nil) return false;
+  if (kind == Ty::Bool) return value != 0;
+  return true;
+}
+
+// The condition code a comparison opcode tests for, and its mirror (`LT` becomes
+// `GT`, and so on) so a constant left operand can be compared from the right.
+Jcc compareCc(OpCode op) {
+  switch (op) {
+    case OpCode::EQ: return Jcc::Eq;
+    case OpCode::NEQ: return Jcc::Ne;
+    case OpCode::LT: return Jcc::Lt;
+    case OpCode::LTE: return Jcc::Le;
+    case OpCode::GT: return Jcc::Gt;
+    default: return Jcc::Ge;
+  }
+}
+
+Jcc mirrorCc(Jcc cc) {
+  switch (cc) {
+    case Jcc::Lt: return Jcc::Gt;
+    case Jcc::Le: return Jcc::Ge;
+    case Jcc::Gt: return Jcc::Lt;
+    case Jcc::Ge: return Jcc::Le;
+    default: return cc;  // Eq / Ne are symmetric
+  }
+}
+
+// True for the operators where `a OP b == b OP a`, so a constant on the left can
+// be applied as an immediate on the right.
+bool isCommutative(OpCode op) {
+  switch (op) {
+    case OpCode::ADD:
+    case OpCode::MUL:
+    case OpCode::BAND:
+    case OpCode::BOR:
+    case OpCode::BXOR:
+      return true;
+    default:
+      return false;
+  }
+}
+
 struct Analysis {
   bool supported = false;
   int numRegs = 0;
@@ -94,6 +200,34 @@ struct Analysis {
   // 0 for nil); the exact kind at each use is recovered from the dataflow
   // state, so a slot may legitimately change scalar kind across the body.
   std::vector<bool> regResident;
+
+  // Compile-time constant of a slot at the entry of each instruction, or a
+  // sentinel `hasConst == false` when the slot is not a known constant there.
+  // A slot is constant when every reachable path into the instruction assigns
+  // it the same `LOADK` value and nothing else writes it in between; the
+  // emitter uses this to fold an operation whose operands are both constant,
+  // and to pick an immediate form for one that is. `constVal` holds the
+  // payload (int64, or 0/1 for a bool, 0 for nil) and `constKind` its scalar
+  // kind, so a folded result keeps the same tag the interpreter would produce.
+  std::vector<std::vector<bool>> hasConst;
+  std::vector<std::vector<std::int64_t>> constVal;
+  std::vector<std::vector<Ty>> constKind;
+
+  // Per instruction, whether the *result* it defines in `a` is a known constant
+  // (a pure definition whose value the propagation pinned down). When set, the
+  // emitter writes the constant directly and skips the opcode entirely: a
+  // `2 * 3` folds to `6`, and a chain folds as far as the constants reach.
+  std::vector<bool> defConst;
+  std::vector<std::int64_t> defVal;
+  std::vector<Ty> defKind;
+
+  // Per slot, true when some reachable instruction reads the slot's *value* at
+  // run time (the emitter materializes it in a register or stack slot). A slot
+  // that is only ever read through a folded constant -- an operand the emitter
+  // replaces by an immediate, or a `defConst` result -- never needs its value,
+  // so a `LOADK` that defines such a slot emits nothing. This removes the
+  // constants a folded expression leaves behind.
+  std::vector<bool> materialized;
 };
 
 // Forward dataflow to a fixpoint, then a verification pass. The fixpoint is a
@@ -420,6 +554,324 @@ Analysis analyze(const Bytecode& proto) {
     }
   }
 
+  // Constant propagation (see `Analysis::hasConst`). A slot is constant on entry
+  // to an instruction when *every* reachable predecessor agrees on the same
+  // `LOADK` value and no other instruction wrote the slot on the way in. The
+  // lattice is `Undef` (no path yet), `Const(kind, value)`, and `Top` (not
+  // constant): two paths with different values meet at `Top`. Only `LOADK` seeds
+  // a constant; a write of anything else makes the slot `Top`. The emitter then
+  // folds an operation whose operands are both constant and picks an immediate
+  // form when one of them is.
+  result.hasConst.assign(n, std::vector<bool>(total, false));
+  result.constVal.assign(n, std::vector<std::int64_t>(total, 0));
+  result.constKind.assign(n, std::vector<Ty>(total, Ty::Undef));
+  {
+    // -1 = Undef (unseen), 0 = Top (not constant), 1 = constant.
+    std::vector<std::vector<std::int8_t>> state(n, std::vector<std::int8_t>(total, -1));
+    std::vector<std::vector<std::int64_t>> value(n, std::vector<std::int64_t>(total, 0));
+    std::vector<std::vector<Ty>> kind(n, std::vector<Ty>(total, Ty::Undef));
+    // Out-state of each instruction (its result), kept for the final pass so a
+    // definition's own value can be read back once the fixpoint has settled.
+    std::vector<std::vector<std::int8_t>> outStateArr(n, std::vector<std::int8_t>(total, -1));
+    std::vector<std::vector<std::int64_t>> outValArr(n, std::vector<std::int64_t>(total, 0));
+    std::vector<std::vector<Ty>> outKindArr(n, std::vector<Ty>(total, Ty::Undef));
+    // Entry: the parameters are not constants.
+    for (int i = 0; i < proto.numParams && i < result.numRegs; ++i) state[0][i] = 0;
+
+    bool changed = true;
+    int guard = 0;
+    while (changed && guard++ < 100000) {
+      changed = false;
+      for (int i = 0; i < n; ++i) {
+        if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+        const Instruction& in = proto.code[static_cast<std::size_t>(i)];
+        std::vector<std::int8_t> outState = state[i];
+        std::vector<std::int64_t> outValue = value[i];
+        std::vector<Ty> outKind = kind[i];
+        // Apply the instruction's effect to the out-state (in place). A write
+        // overwrites whatever the slot held on entry: a constant write makes it
+        // `Const`, any other write makes it `Top`.
+        auto writeConst = [&](int slot, bool isConst, std::int64_t v, Ty k) {
+          if (!indexOk(slot)) return;
+          if (isConst) {
+            outState[slot] = 1;
+            outValue[slot] = v;
+            outKind[slot] = k;
+          } else {
+            outState[slot] = 0;
+          }
+        };
+        // Read a slot as a constant, or `false` when it is not.
+        auto readConst = [&](int slot, std::int64_t& v, Ty& k) {
+          if (!indexOk(slot) || outState[slot] != 1) return false;
+          v = outValue[slot];
+          k = outKind[slot];
+          return true;
+        };
+        // An arithmetic/comparison result is constant only when both operands
+        // are; fold it exactly like the interpreter, else mark it Top.
+        auto foldInto = [&](int dst, bool isIntOp) {
+          std::int64_t av = 0, bv = 0;
+          Ty ak = Ty::Undef, bk = Ty::Undef;
+          const bool aConst = readConst(in.b, av, ak);
+          const bool bConst = readConst(in.c, bv, bk);
+          if (!aConst || !bConst) {
+            writeConst(dst, false, 0, Ty::Undef);
+            return;
+          }
+          std::int64_t res = 0;
+          bool ok = false;
+          if (isIntOp) {
+            ok = foldBinaryInt(in.op, av, bv, res);
+          } else {
+            bool b = false;
+            ok = foldCompareInt(in.op, av, bv, b);
+            res = b ? 1 : 0;
+          }
+          if (ok) {
+            writeConst(dst, true, res, isIntOp ? Ty::Int : Ty::Bool);
+          } else {
+            writeConst(dst, false, 0, Ty::Undef);
+          }
+        };
+        switch (in.op) {
+          case OpCode::LOADK: {
+            const Value& k = proto.constants[static_cast<std::size_t>(in.b)];
+            const Ty t = constTy(k);
+            const std::int64_t payload =
+                (t == Ty::Int) ? k.asInt() : (t == Ty::Bool ? (k.asBool() ? 1 : 0) : 0);
+            writeConst(in.a, t != Ty::Top, payload, t);
+            break;
+          }
+          case OpCode::MOVE:
+            if (outState[in.b] == 1) writeConst(in.a, true, outValue[in.b], outKind[in.b]);
+            else writeConst(in.a, false, 0, Ty::Undef);
+            break;
+          case OpCode::ADD:
+          case OpCode::SUB:
+          case OpCode::MUL:
+          case OpCode::BAND:
+          case OpCode::BOR:
+          case OpCode::BXOR:
+            foldInto(in.a, true);
+            break;
+          case OpCode::EQ:
+          case OpCode::NEQ:
+          case OpCode::LT:
+          case OpCode::LTE:
+          case OpCode::GT:
+          case OpCode::GTE:
+            foldInto(in.a, false);
+            break;
+          case OpCode::UNOP: {
+            const UnaryOp op = static_cast<UnaryOp>(in.c);
+            std::int64_t bv = 0;
+            Ty bk = Ty::Undef;
+            if (op == UnaryOp::Not) {
+              if (readConst(in.b, bv, bk)) writeConst(in.a, true, truthyConst(bk, bv) ? 0 : 1, Ty::Bool);
+              else writeConst(in.a, false, 0, Ty::Undef);
+            } else {
+              std::int64_t res = 0;
+              if (readConst(in.b, bv, bk) && foldUnaryInt(op, bv, res)) {
+                writeConst(in.a, true, res, Ty::Int);
+              } else {
+                writeConst(in.a, false, 0, Ty::Undef);
+              }
+            }
+            break;
+          }
+          case OpCode::DECLLOCAL:
+          case OpCode::SETLOCAL:
+            if (outState[in.a] == 1) {
+              writeConst(result.numRegs + in.b, true, outValue[in.a], outKind[in.a]);
+            } else {
+              writeConst(result.numRegs + in.b, false, 0, Ty::Undef);
+            }
+            break;
+          case OpCode::GETLOCAL: {
+            const int slot = result.numRegs + in.b;
+            if (indexOk(slot) && outState[slot] == 1) {
+              writeConst(in.a, true, outValue[slot], outKind[slot]);
+            } else {
+              writeConst(in.a, false, 0, Ty::Undef);
+            }
+            break;
+          }
+          default:
+            break;
+        }
+        // Remember this instruction's out-state; the final (no-change) sweep
+        // leaves the settled values here for the definition check below.
+        outStateArr[i] = outState;
+        outValArr[i] = outValue;
+        outKindArr[i] = outKind;
+        // Propagate to the successors, meeting each slot.
+        std::vector<int> succ;
+        successors(i, succ);
+        for (int s : succ) {
+          if (s < 0 || s >= n) continue;
+          for (int k = 0; k < total; ++k) {
+            const std::int8_t cur = state[s][k];
+            const std::int8_t inc = outState[k];
+            if (inc == -1) continue;  // nothing known from this path
+            if (cur == -1) {
+              state[s][k] = inc;
+              value[s][k] = outValue[k];
+              kind[s][k] = outKind[k];
+              changed = true;
+            } else if (cur == 1) {
+              if (inc == 0 || value[s][k] != outValue[k] || kind[s][k] != outKind[k]) {
+                state[s][k] = 0;
+                changed = true;
+              }
+            }
+            // cur == 0 stays Top.
+          }
+        }
+      }
+    }
+    for (int i = 0; i < n; ++i) {
+      for (int s = 0; s < total; ++s) {
+        if (state[i][s] == 1) {
+          result.hasConst[i][s] = true;
+          result.constVal[i][s] = value[i][s];
+          result.constKind[i][s] = kind[i][s];
+        }
+      }
+    }
+    // A definition whose *result* is a pinned constant can skip its opcode. Only
+    // a pure opcode qualifies; a `MOVE`/`GETLOCAL` still needs the copy because
+    // the destination may not be constant elsewhere, and a `LOADK` already just
+    // materializes a constant.
+    result.defConst.assign(n, false);
+    result.defVal.assign(n, 0);
+    result.defKind.assign(n, Ty::Undef);
+    for (int i = 0; i < n; ++i) {
+      if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+      const Instruction& in = proto.code[static_cast<std::size_t>(i)];
+      bool pure = false;
+      switch (in.op) {
+        case OpCode::ADD:
+        case OpCode::SUB:
+        case OpCode::MUL:
+        case OpCode::BAND:
+        case OpCode::BOR:
+        case OpCode::BXOR:
+        case OpCode::EQ:
+        case OpCode::NEQ:
+        case OpCode::LT:
+        case OpCode::LTE:
+        case OpCode::GT:
+        case OpCode::GTE:
+        case OpCode::UNOP:
+          pure = true;
+          break;
+        default:
+          break;
+      }
+      if (pure && indexOk(in.a) && outStateArr[i][in.a] == 1) {
+        result.defConst[i] = true;
+        result.defVal[i] = outValArr[i][in.a];
+        result.defKind[i] = outKindArr[i][in.a];
+      }
+    }
+  }
+
+  // Dead-constant analysis (see `Analysis::materialized`). Mirror the emitter's
+  // fold decisions: an operand the emitter replaces by an immediate, or a whole
+  // instruction `defConst` folds, never needs the operand's value. Every other
+  // read materializes it. A `LOADK` whose slot is never materialized then emits
+  // nothing -- the constants a folded expression leaves behind disappear.
+  result.materialized.assign(total, false);
+  {
+    auto constAt = [&](int i, int slot, std::int64_t& v) {
+      if (slot < 0 || slot >= total) return false;
+      const std::size_t ii = static_cast<std::size_t>(i);
+      if (ii >= result.hasConst.size() ||
+          static_cast<std::size_t>(slot) >= result.hasConst[ii].size()) {
+        return false;
+      }
+      if (!result.hasConst[ii][static_cast<std::size_t>(slot)]) return false;
+      v = result.constVal[ii][static_cast<std::size_t>(slot)];
+      return true;
+    };
+    auto tyAt = [&](int i, int slot) -> Ty {
+      const std::size_t ii = static_cast<std::size_t>(i);
+      if (ii >= result.stateIn.size() || slot < 0 ||
+          static_cast<std::size_t>(slot) >= result.stateIn[ii].size()) {
+        return Ty::Top;
+      }
+      return result.stateIn[ii][static_cast<std::size_t>(slot)];
+    };
+    for (int i = 0; i < n; ++i) {
+      if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+      const Instruction& in = proto.code[static_cast<std::size_t>(i)];
+      const std::size_t ii = static_cast<std::size_t>(i);
+      std::int64_t bv = 0, dv = 0;
+      switch (in.op) {
+        case OpCode::MOVE:
+          if (indexOk(in.b)) result.materialized[static_cast<std::size_t>(in.b)] = true;
+          break;
+        case OpCode::ADD:
+        case OpCode::SUB:
+        case OpCode::MUL:
+        case OpCode::BAND:
+        case OpCode::BOR:
+        case OpCode::BXOR:
+        case OpCode::EQ:
+        case OpCode::NEQ:
+        case OpCode::LT:
+        case OpCode::LTE:
+        case OpCode::GT:
+        case OpCode::GTE: {
+          if (result.defConst[ii]) break;  // fully folded, no operand read
+          const bool bc = constAt(i, in.b, bv);
+          const bool cc = constAt(i, in.c, dv);
+          const bool bUsable = bc && fitsImm32(bv);
+          const bool cUsable = cc && fitsImm32(dv);
+          if (bUsable && !cc) {
+            if (indexOk(in.c)) result.materialized[static_cast<std::size_t>(in.c)] = true;
+          } else if (cUsable && !bc) {
+            if (indexOk(in.b)) result.materialized[static_cast<std::size_t>(in.b)] = true;
+          } else {
+            if (indexOk(in.b)) result.materialized[static_cast<std::size_t>(in.b)] = true;
+            if (indexOk(in.c)) result.materialized[static_cast<std::size_t>(in.c)] = true;
+          }
+          break;
+        }
+        case OpCode::UNOP:
+          if (result.defConst[ii]) break;
+          if (indexOk(in.b)) result.materialized[static_cast<std::size_t>(in.b)] = true;
+          break;
+        case OpCode::JMP_IF_FALSE:
+        case OpCode::JMP_IF_TRUE: {
+          if (constAt(i, in.a, bv)) break;
+          const Ty t = tyAt(i, in.a);
+          if (t == Ty::Nil || t == Ty::Int) break;  // branch decided by the type
+          if (indexOk(in.a)) result.materialized[static_cast<std::size_t>(in.a)] = true;
+          break;
+        }
+        case OpCode::DECLLOCAL:
+        case OpCode::SETLOCAL:
+          if (constAt(i, in.a, bv)) break;
+          if (indexOk(in.a)) result.materialized[static_cast<std::size_t>(in.a)] = true;
+          break;
+        case OpCode::GETLOCAL:
+          if (constAt(i, result.numRegs + in.b, bv)) break;
+          if (indexOk(result.numRegs + in.b)) {
+            result.materialized[static_cast<std::size_t>(result.numRegs + in.b)] = true;
+          }
+          break;
+        case OpCode::RETURN:
+          if (indexOk(in.a)) result.materialized[static_cast<std::size_t>(in.a)] = true;
+          break;
+        default:
+          break;
+      }
+    }
+  }
+
+
   result.supported = true;
   return result;
 }
@@ -562,6 +1014,140 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
     if (isReg(i)) cg.movFromMem(physOf(i), X64Reg::Rbp, slotDisp(i) + 8);
   }
 
+  // The compile-time constant of `slot` on entry to instruction `i`, if the
+  // propagation pinned one down. Operands are read before the instruction
+  // writes, so the entry state is exactly the value an operand holds.
+  auto constIn = [&](int i, int slot, std::int64_t& value, Ty& kind) {
+    if (slot < 0 || slot >= total) return false;
+    const std::size_t ii = static_cast<std::size_t>(i);
+    if (ii >= analysis.hasConst.size() ||
+        static_cast<std::size_t>(slot) >= analysis.hasConst[ii].size()) {
+      return false;
+    }
+    if (!analysis.hasConst[ii][static_cast<std::size_t>(slot)]) return false;
+    value = analysis.constVal[ii][static_cast<std::size_t>(slot)];
+    kind = analysis.constKind[ii][static_cast<std::size_t>(slot)];
+    return true;
+  };
+  // Writes a scalar constant to a slot: its register, or its stack slot with
+  // the kind's tag.
+  auto emitConst = [&](int slot, Ty kind, std::int64_t value) {
+    if (isReg(slot)) {
+      cg.movImm(physOf(slot), value);
+    } else {
+      storeSlot(slotDisp(slot), tagOf(kind), value);
+    }
+  };
+  auto applyReg = [&](OpCode op, X64Reg dst, X64Reg src) {
+    switch (op) {
+      case OpCode::ADD: cg.addReg(dst, src); break;
+      case OpCode::SUB: cg.subReg(dst, src); break;
+      case OpCode::MUL: cg.imulReg(dst, src); break;
+      case OpCode::BAND: cg.andReg(dst, src); break;
+      case OpCode::BOR: cg.orReg(dst, src); break;
+      default: cg.xorReg(dst, src); break;  // BXOR
+    }
+  };
+  // `dst = lhs OP rhs` with both operands in slots. The destination's register
+  // is spent in place when it already holds an operand; otherwise the result is
+  // computed in scratch and stored. A register operand is used directly, so no
+  // copy stands between the operands and the ALU.
+  auto emitBinReg = [&](OpCode op, int dst, int lhs, int rhs) {
+    if (isReg(dst)) {
+      const X64Reg d = physOf(dst);
+      if (dst == lhs) {
+        if (isReg(rhs)) applyReg(op, d, physOf(rhs));
+        else { loadScalar(X64Reg::R10, rhs); applyReg(op, d, X64Reg::R10); }
+        return;
+      }
+      if (dst == rhs && isCommutative(op)) {
+        if (isReg(lhs)) applyReg(op, d, physOf(lhs));
+        else { loadScalar(X64Reg::R10, lhs); applyReg(op, d, X64Reg::R10); }
+        return;
+      }
+      if (dst != rhs) {
+        // `dst` is a distinct register, free until here: compute into it
+        // directly, without a scratch copy.
+        loadScalar(d, lhs);
+        if (isReg(rhs)) applyReg(op, d, physOf(rhs));
+        else { loadScalar(X64Reg::R10, rhs); applyReg(op, d, X64Reg::R10); }
+        return;
+      }
+      // `dst == rhs` with a non-commutative op (only `SUB`): the old right
+      // operand lives in `dst`, so the scratch path below reads it before the
+      // destination is overwritten.
+    }
+    loadScalar(X64Reg::R10, lhs);
+    loadScalar(X64Reg::R11, rhs);
+    applyReg(op, X64Reg::R10, X64Reg::R11);
+    storeScalar(dst, Ty::Int, X64Reg::R10);
+  };
+  // `dst = var OP imm` for an integer immediate: identity and absorbing cases
+  // first (no instruction), then the immediate form, a shift for a power of two,
+  // or a materialized register when the constant is out of imm32 range. The
+  // arithmetic runs in the destination's register when it has one, so `i * 2`
+  // becomes a single `shl`.
+  auto emitBinImm = [&](OpCode op, int dst, int varSlot, std::int64_t imm) {
+    if ((op == OpCode::ADD || op == OpCode::SUB || op == OpCode::BOR ||
+         op == OpCode::BXOR) && imm == 0) {
+      copySlotValue(dst, Ty::Int, varSlot);
+      return;
+    }
+    if (op == OpCode::MUL && imm == 1) {
+      copySlotValue(dst, Ty::Int, varSlot);
+      return;
+    }
+    if ((op == OpCode::MUL || op == OpCode::BAND) && imm == 0) {
+      emitConst(dst, Ty::Int, 0);
+      return;
+    }
+    if (op == OpCode::BAND && imm == -1) {
+      copySlotValue(dst, Ty::Int, varSlot);
+      return;
+    }
+    // Compute in the destination register when it has one: `dst` is dead until
+    // this instruction, so it is free scratch, and the final store becomes a
+    // no-op. Otherwise fall back to r10.
+    const X64Reg work = isReg(dst) ? physOf(dst) : X64Reg::R10;
+    loadScalar(work, varSlot);
+    const bool immOk = fitsImm32(imm);
+    switch (op) {
+      case OpCode::ADD:
+        if (immOk) cg.addImm32(work, static_cast<std::int32_t>(imm));
+        else { cg.movImm(X64Reg::R11, imm); cg.addReg(work, X64Reg::R11); }
+        break;
+      case OpCode::SUB:
+        if (immOk) cg.subRegImm32(work, static_cast<std::int32_t>(imm));
+        else { cg.movImm(X64Reg::R11, imm); cg.subReg(work, X64Reg::R11); }
+        break;
+      case OpCode::MUL: {
+        int log2 = 0;
+        if (isPow2(imm, log2) && log2 >= 1 && log2 <= 63) {
+          cg.shlImm8(work, static_cast<std::uint8_t>(log2));
+        } else if (immOk) {
+          cg.imulImm32(work, work, static_cast<std::int32_t>(imm));
+        } else {
+          cg.movImm(X64Reg::R11, imm);
+          cg.imulReg(work, X64Reg::R11);
+        }
+        break;
+      }
+      case OpCode::BAND:
+        if (immOk) cg.andImm32(work, static_cast<std::int32_t>(imm));
+        else { cg.movImm(X64Reg::R11, imm); cg.andReg(work, X64Reg::R11); }
+        break;
+      case OpCode::BOR:
+        cg.movImm(X64Reg::R11, imm);
+        cg.orReg(work, X64Reg::R11);
+        break;
+      default:
+        cg.movImm(X64Reg::R11, imm);
+        cg.xorReg(work, X64Reg::R11);
+        break;
+    }
+    storeScalar(dst, Ty::Int, work);
+  };
+
   for (int i = 0; i < n; ++i) {
     if (!analysis.reachable[static_cast<std::size_t>(i)]) continue;
     cg.bind(labels[static_cast<std::size_t>(i)]);
@@ -572,15 +1158,16 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
 
     switch (in.op) {
       case OpCode::LOADK: {
+        // A constant no reachable read ever materializes is dead: a folded
+        // expression consumed it as an immediate, so the slot is never loaded.
+        if (in.a >= 0 && in.a < total && !analysis.materialized[static_cast<std::size_t>(in.a)]) {
+          break;
+        }
         const Value& k = proto.constants[static_cast<std::size_t>(in.b)];
         const Ty t = constTy(k);
         const std::int64_t payload =
             (t == Ty::Int) ? k.asInt() : (t == Ty::Bool ? (k.asBool() ? 1 : 0) : 0);
-        if (isReg(in.a)) {
-          cg.movImm(physOf(in.a), payload);
-        } else {
-          storeSlot(slotDisp(in.a), tagOf(t), payload);
-        }
+        emitConst(in.a, t, payload);
         break;
       }
       case OpCode::MOVE:
@@ -592,20 +1179,42 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
       case OpCode::BAND:
       case OpCode::BOR:
       case OpCode::BXOR: {
-        loadScalar(X64Reg::R10, in.b);
-        loadScalar(X64Reg::R11, in.c);
-        switch (in.op) {
-          case OpCode::ADD: cg.addReg(X64Reg::R10, X64Reg::R11); break;
-          case OpCode::SUB: cg.subReg(X64Reg::R10, X64Reg::R11); break;
-          case OpCode::MUL: cg.imulReg(X64Reg::R10, X64Reg::R11); break;
-          case OpCode::BAND: cg.andReg(X64Reg::R10, X64Reg::R11); break;
-          case OpCode::BOR: cg.orReg(X64Reg::R10, X64Reg::R11); break;
-          default: cg.xorReg(X64Reg::R10, X64Reg::R11); break;
+        // A definition the propagation pinned to a constant skips its opcode:
+        // `2 * 3` is just `6`, and the emitter writes the folded value.
+        if (analysis.defConst[static_cast<std::size_t>(i)]) {
+          emitConst(in.a, analysis.defKind[static_cast<std::size_t>(i)],
+                    analysis.defVal[static_cast<std::size_t>(i)]);
+          break;
         }
-        storeScalar(in.a, Ty::Int, X64Reg::R10);
+        std::int64_t cv = 0;
+        Ty ck = Ty::Undef;
+        const bool bConst = constIn(i, in.b, cv, ck);
+        std::int64_t dv = 0;
+        Ty dk = Ty::Undef;
+        const bool cConst = constIn(i, in.c, dv, dk);
+        if (bConst && !cConst) {
+          if (isCommutative(in.op)) {
+            emitBinImm(in.op, in.a, in.c, cv);
+          } else {
+            // `const - var`: compute `const` in scratch, load `var`, subtract.
+            cg.movImm(X64Reg::R11, cv);
+            loadScalar(X64Reg::R10, in.c);
+            cg.subReg(X64Reg::R11, X64Reg::R10);
+            storeScalar(in.a, Ty::Int, X64Reg::R11);
+          }
+        } else if (cConst && !bConst) {
+          emitBinImm(in.op, in.a, in.b, dv);
+        } else {
+          emitBinReg(in.op, in.a, in.b, in.c);
+        }
         break;
       }
       case OpCode::UNOP: {
+        if (analysis.defConst[static_cast<std::size_t>(i)]) {
+          emitConst(in.a, analysis.defKind[static_cast<std::size_t>(i)],
+                    analysis.defVal[static_cast<std::size_t>(i)]);
+          break;
+        }
         const UnaryOp op = static_cast<UnaryOp>(in.c);
         if (op == UnaryOp::Not) {
           // Oskel truthiness: only `nil` and `false` are falsy, so `!int` is
@@ -637,17 +1246,35 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
       case OpCode::LTE:
       case OpCode::GT:
       case OpCode::GTE: {
-        loadScalar(X64Reg::R10, in.b);
-        loadScalar(X64Reg::R11, in.c);
-        cg.cmpReg(X64Reg::R10, X64Reg::R11);
-        Jcc cc = Jcc::Eq;
-        switch (in.op) {
-          case OpCode::EQ: cc = Jcc::Eq; break;
-          case OpCode::NEQ: cc = Jcc::Ne; break;
-          case OpCode::LT: cc = Jcc::Lt; break;
-          case OpCode::LTE: cc = Jcc::Le; break;
-          case OpCode::GT: cc = Jcc::Gt; break;
-          default: cc = Jcc::Ge; break;
+        if (analysis.defConst[static_cast<std::size_t>(i)]) {
+          emitConst(in.a, Ty::Bool, analysis.defVal[static_cast<std::size_t>(i)]);
+          break;
+        }
+        std::int64_t cv = 0;
+        Ty ck = Ty::Undef;
+        const bool bConst = constIn(i, in.b, cv, ck);
+        std::int64_t dv = 0;
+        Ty dk = Ty::Undef;
+        const bool cConst = constIn(i, in.c, dv, dk);
+        Jcc cc = compareCc(in.op);
+        if (bConst && !cConst && fitsImm32(cv)) {
+          // const OP var  ==  var OP' const (mirror the condition).
+          loadScalar(X64Reg::R10, in.c);
+          cg.cmpImm32(X64Reg::R10, static_cast<std::int32_t>(cv));
+          cc = mirrorCc(cc);
+        } else if (cConst && !bConst && fitsImm32(dv)) {
+          loadScalar(X64Reg::R10, in.b);
+          cg.cmpImm32(X64Reg::R10, static_cast<std::int32_t>(dv));
+        } else {
+          // Both operands are variables: compare the registers directly when
+          // both have one, so no scratch copy stands before the compare.
+          if (isReg(in.b) && isReg(in.c)) {
+            cg.cmpReg(physOf(in.b), physOf(in.c));
+          } else {
+            loadScalar(X64Reg::R10, in.b);
+            loadScalar(X64Reg::R11, in.c);
+            cg.cmpReg(X64Reg::R10, X64Reg::R11);
+          }
         }
         cg.setcc(cc, X64Reg::R10);
         cg.movzx(X64Reg::R10, X64Reg::R10);
@@ -658,10 +1285,24 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
         cg.jmp(labels[static_cast<std::size_t>(in.jump)]);
         break;
       case OpCode::JMP_IF_FALSE:
+      case OpCode::JMP_IF_TRUE: {
+        const bool jumpWhenTrue = in.op == OpCode::JMP_IF_TRUE;
+        std::int64_t cv = 0;
+        Ty ck = Ty::Undef;
+        if (constIn(i, in.a, cv, ck)) {
+          // The condition is a compile-time constant: the branch is decided
+          // here, so a taken edge becomes an unconditional jump and a
+          // not-taken edge emits nothing.
+          const bool taken = truthyConst(ck, cv) == jumpWhenTrue;
+          if (taken) cg.jmp(labels[static_cast<std::size_t>(in.jump)]);
+          break;
+        }
         // `nil` is always falsy, a non-nil int is always truthy, and only a
         // bool needs the payload test.
         if (tyOf(in.a) == Ty::Nil) {
-          cg.jmp(labels[static_cast<std::size_t>(in.jump)]);
+          if (!jumpWhenTrue) cg.jmp(labels[static_cast<std::size_t>(in.jump)]);
+        } else if (tyOf(in.a) == Ty::Int) {
+          if (jumpWhenTrue) cg.jmp(labels[static_cast<std::size_t>(in.jump)]);
         } else if (tyOf(in.a) == Ty::Bool) {
           if (isReg(in.a)) {
             cg.testReg(physOf(in.a));
@@ -669,29 +1310,26 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
             cg.movFromMem(X64Reg::R10, X64Reg::Rbp, slotDisp(in.a) + 8);
             cg.testReg(X64Reg::R10);
           }
-          cg.jcc(Jcc::Eq, labels[static_cast<std::size_t>(in.jump)]);
+          cg.jcc(jumpWhenTrue ? Jcc::Ne : Jcc::Eq, labels[static_cast<std::size_t>(in.jump)]);
         }
         break;
-      case OpCode::JMP_IF_TRUE:
-        if (tyOf(in.a) == Ty::Int) {
-          cg.jmp(labels[static_cast<std::size_t>(in.jump)]);
-        } else if (tyOf(in.a) == Ty::Bool) {
-          if (isReg(in.a)) {
-            cg.testReg(physOf(in.a));
-          } else {
-            cg.movFromMem(X64Reg::R10, X64Reg::Rbp, slotDisp(in.a) + 8);
-            cg.testReg(X64Reg::R10);
-          }
-          cg.jcc(Jcc::Ne, labels[static_cast<std::size_t>(in.jump)]);
-        }
-        break;
+      }
       case OpCode::DECLLOCAL:
-      case OpCode::SETLOCAL:
-        copySlotValue(numRegs + in.b, tyOf(in.a), in.a);
+      case OpCode::SETLOCAL: {
+        const int dst = numRegs + in.b;
+        std::int64_t cv = 0;
+        Ty ck = Ty::Undef;
+        if (constIn(i, in.a, cv, ck)) emitConst(dst, ck, cv);
+        else copySlotValue(dst, tyOf(in.a), in.a);
         break;
-      case OpCode::GETLOCAL:
-        copySlotValue(in.a, ltyOf(in.b), numRegs + in.b);
+      }
+      case OpCode::GETLOCAL: {
+        std::int64_t cv = 0;
+        Ty ck = Ty::Undef;
+        if (constIn(i, numRegs + in.b, cv, ck)) emitConst(in.a, ck, cv);
+        else copySlotValue(in.a, ltyOf(in.b), numRegs + in.b);
         break;
+      }
       case OpCode::RETURN:
         returnValue(in.a, tyOf(in.a));
         break;

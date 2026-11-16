@@ -51,7 +51,7 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `module_resolver.cpp` | dotted module path | source file path | ✅ |
 | `vm.cpp` | `Bytecode*` | execution | ✅ |
 | `main.cpp` | CLI | full pipeline | ✅ (VM as dev engine, PHASE 4) |
-| `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slice 1 |
+| `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slices 1-2 |
 | `value.cpp` | `Value`, tagged union | shared runtime | ✅ |
 | `env.cpp` | `Env`, lexical scope chain | **unused** (see note) | ⚠️ |
 | `builtins.cpp` / `ops.cpp` | native builtins, shared operators | runtime library | ✅ |
@@ -1209,8 +1209,21 @@ body reads integer slots only. The compiled body also keeps every scalar slot
 in a physical CPU register instead of its 16-byte stack slot whenever the
 dataflow proves the slot only ever holds `nil`/`bool`/`int`: the register holds
 the raw payload and the tag is materialized only at the frame boundary, so a
-tight integer loop does almost no memory traffic. A tight integer loop is about
-130x faster than the interpreter.
+tight integer loop does almost no memory traffic.
+
+Slice 2 (done) adds a **compile-time optimizer** in front of the same emitter:
+a constant propagation over the proto folds any subtree whose operands are
+constants (`2 * 3` becomes `6`), and the emitter then applies a constant operand
+as a machine immediate (`n + 7` is one `add`, `i * 2` is one `shl` via the
+strength reduction, `x & -1` and `x * 1` disappear as identities), computes into
+the destination register rather than copying operands through scratch, and turns
+a branch on a constant condition into a taken or not-taken edge. A slot no
+reachable read materializes loses its `LOADK`, so the constants a folded
+expression leaves behind emit nothing. This is still 1:1 with the bytecode — the
+optimizer rewrites *how* an opcode is emitted, never *how many* opcodes run, and
+no new opcode, superinstruction or runtime specialization appears. A tight
+integer loop is about 260x faster than the interpreter, within about 1.7x of a
+hand-written `-O2` C++ loop.
 
 Later slices widen the subset (floats, then strings, then the boxed value
 runtime, then calls and guards) and add the tiering policy (compile after a
@@ -1254,7 +1267,7 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — open, no slice chosen)
-Phase 8: 🔶 in progress (JIT for the development VM, slice 1 done: integer leaf protos with CPU-register allocation)
+Phase 8: 🔶 in progress (JIT for the development VM, slices 1-2 done: integer leaf protos with CPU-register allocation, constant folding and strength reduction)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)
 

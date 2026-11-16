@@ -9,6 +9,20 @@ may change between minor versions.
 
 ## [Unreleased]
 
+### Changed
+
+- **JIT (slice 2): constant folding, strength reduction and register-direct
+  codegen.** The development engine's JIT now folds an expression whose operands
+  are compile-time constants (`2 * 3` becomes `6`), applies a constant operand as
+  a machine immediate (`n + 7` is one `add`, `i * 2` is one `shl`), and computes
+  in the destination register instead of copying operands through scratch, so a
+  tight integer loop is another ~2x faster than slice 1 (about 260x the
+  interpreter, within ~1.7x of a hand-written `-O2` C++ loop). Everything stays
+  1:1 with the bytecode — a constant propagation over the proto feeds the same
+  emitter, and no opcode, superinstruction or runtime specialization is added.
+  The differential suite (including the fuzz corpus) still proves the compiled
+  body identical to the interpreter.
+
 ### Added
 
 - **Bare-metal AOT target** (PHASE 7g). `oskel build --target
