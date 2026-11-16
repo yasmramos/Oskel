@@ -28,7 +28,11 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
 else()
   set(exe_suffix "")
 endif()
-set(out "${CMAKE_CURRENT_BINARY_DIR}/oskel_build_output${exe_suffix}")
+# Every case registered from this runner would otherwise share one output name
+# and overwrite each other under a parallel `ctest`, so the fixture's stem is
+# part of the name.
+get_filename_component(script_stem "${OSKEL_SCRIPT}" NAME_WE)
+set(out "${CMAKE_CURRENT_BINARY_DIR}/oskel_build_output_${script_stem}${exe_suffix}")
 file(REMOVE "${out}")
 
 execute_process(

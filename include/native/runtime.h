@@ -122,13 +122,9 @@ struct AotRuntimeHandles {
   // highest address) and item `i` sits at `first - 16 * i`. The result is an
   // ordinary `Array` value, exactly like the VM's packed `rest` binding.
   CodeGen::Label packRest;   // AotValue oskel_pack_rest(AotValue* first, long count)
-  // The hidden `$mapValue` helper (`for k, v in map`), with the proto
-  // convention. It returns the value paired with a key, so the key/value loop
-  // form lowers to an ordinary call.
-  CodeGen::Label mapValueBuiltin;  // AotValue oskel_builtin_map_value(AotValue* args, long argc, AotClosure* self)
-  // The remaining hidden helpers the compiler emits for PHASE 6.5 features.
-  // They use the proto convention too and are seeded into their global slots
-  // like `print` and `$mapValue`, so each one is an ordinary call.
+  // The hidden helpers the compiler emits for PHASE 6.5 features. They use the
+  // proto convention and are seeded into their global slots like `print`, so
+  // each one is an ordinary call.
   // `$isError` (try/catch) reports whether a value is an error; the AOT runtime
   // has no error values yet, so it is always false and the success path of
   // `try`/`x catch y` runs (a real failure still exits 70).
@@ -221,8 +217,7 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel()
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel()
   };
 }
 

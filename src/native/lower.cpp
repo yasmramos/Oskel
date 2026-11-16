@@ -786,17 +786,23 @@ void lowerInstruction(const Instruction& instr, const Bytecode& proto, CodeGen& 
       break;
     }
     case OpCode::ITER: {
-      // R[a] = the next item; `instr.jump` holds the register that receives the
-      // done flag (the compiler's private convention, see `compileForIn`). The
-      // iterable is R[b], the cursor R[c]; `oskel_iter_next` takes the cursor's
-      // address (rdi) and the iterable by value (rsi:rdx, the second
-      // `AotValue`), returns the item in rax:rdx and the flag in r8.
+      // R[a] = the next item; R[d] (when d >= 0) receives the paired value of a
+      // map entry and R[e] the done flag. The iterable is R[b], the cursor R[c].
+      // `oskel_iter_next` takes the cursor's address (rdi), the iterable by
+      // value (rsi:rdx, the second `AotValue`) and the value slot's address
+      // (rcx, or null when the loop has no value variable); it returns the item
+      // in rax:rdx, the flag in r8 and writes the value straight into the slot.
       loadValue(cg, instr.b, X64Reg::Rsi, X64Reg::Rdx);
       cg.leaMem(X64Reg::Rdi, kFileBase, slotOffset(instr.c));
+      if (instr.d >= 0) {
+        cg.leaMem(X64Reg::Rcx, kFileBase, slotOffset(instr.d));
+      } else {
+        cg.xorReg(X64Reg::Rcx, X64Reg::Rcx);
+      }
       cg.callLabel(rt.iterNext);
       storeValue(cg, instr.a, X64Reg::Rax, X64Reg::Rdx);
-      cg.movImmToMem(kFileBase, slotOffset(instr.jump), static_cast<std::int64_t>(AotTag::Bool));
-      cg.movToMem(kFileBase, slotOffset(instr.jump) + 8, X64Reg::R8);
+      cg.movImmToMem(kFileBase, slotOffset(instr.e), static_cast<std::int64_t>(AotTag::Bool));
+      cg.movToMem(kFileBase, slotOffset(instr.e) + 8, X64Reg::R8);
       break;
     }
   }
@@ -847,10 +853,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       {"print", rt.printBuiltin},
       {"write", rt.writeBuiltin},
       {"eprint", rt.eprintBuiltin},
-      // The hidden `$mapValue` helper the compiler emits for `for k, v in map`.
-      // Its name contains `$`, so user code cannot shadow it.
-      {"$mapValue", rt.mapValueBuiltin},
-      // The remaining hidden helpers the compiler emits for PHASE 6.5 features.
+      // The hidden helpers the compiler emits for PHASE 6.5 features.
       // `$isError` (try/catch) and `$nonNull` (`a!!`) are seeded the same way,
       // so those constructs lower to ordinary calls. `$str`, `$range` and
       // `$slice` are seeded too.

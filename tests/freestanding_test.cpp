@@ -383,7 +383,10 @@ static void test_collections() {
       "var pairKeys = \"\";\n"
       "var pairTotal = 0;\n"
       "for k, v in m { pairKeys = pairKeys + k; pairTotal = pairTotal + v; }\n"
-      "print(pairKeys, pairTotal);\n");
+      "print(pairKeys, pairTotal);\n"
+      "var chars = \"\";\n"
+      "for c in \"abc\" { chars = chars + c; }\n"
+      "print(chars);\n");
   RunResult result = buildAndRun("/tmp/oskel_collections", proto);
   std::string expected =
       "[1, 20, 3, 4]\n"
@@ -397,7 +400,8 @@ static void test_collections() {
       "true false true false\n"
       "33\n"
       "xyznew\n"
-      "xyznew 17\n";
+      "xyznew 17\n"
+      "abc\n";
   check(result.output == expected, "a compiled program runs collections and prints them");
   check(result.exitCode == 0, "a program using collections exits 0 through _start");
 }

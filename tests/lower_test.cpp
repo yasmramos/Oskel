@@ -102,6 +102,25 @@ static void testCollectionsLower() {
   check(!chunk.code.empty(), "NEWTABLE lowers to an image");
 }
 
+static void testIterOperandsLower() {
+  // `ITER` writes the item (a), the paired value (d, -1 for a key-only loop)
+  // and the done flag (e). Both shapes must lower: the value form reads a
+  // real slot, the key-only form passes a null value slot.
+  Instruction keyValue = instr(OpCode::ITER, 0, 1, 2);
+  keyValue.d = 3;
+  keyValue.e = 4;
+  LoweredChunk valueForm = lower(makeProto({keyValue, instr(OpCode::HALT)},
+                                           {Value()}, 5));
+  check(!valueForm.code.empty(), "ITER with a value register lowers");
+
+  Instruction keyOnly = instr(OpCode::ITER, 0, 1, 2);
+  keyOnly.d = -1;
+  keyOnly.e = 4;
+  LoweredChunk keyForm = lower(makeProto({keyOnly, instr(OpCode::HALT)},
+                                         {Value()}, 5));
+  check(!keyForm.code.empty(), "ITER without a value register lowers");
+}
+
 static void testBadJumpTargetThrows() {
   auto proto = makeProto({instr(OpCode::JMP, 0, 0, 0, 99), instr(OpCode::HALT)}, {}, 1);
   check(loweringThrows(proto, "outside the code"), "an out-of-range jump target throws");
@@ -982,6 +1001,7 @@ static void testExecCompiledCapture() {
 int main() {
   testImageIsSelfContained();
   testCollectionsLower();
+  testIterOperandsLower();
   testBadJumpTargetThrows();
   testUnassignedGlobalThrows();
   testHostBindingThrows();

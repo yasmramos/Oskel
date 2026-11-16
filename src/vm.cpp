@@ -774,10 +774,25 @@ Value VM::runFrames(std::size_t stopDepth) {
         // first ITER can initialize it from the iterable's own shape.
         const Value iterable = getReg(instruction.b);
         Value cursor = getReg(instruction.c);
+        // `d >= 0` means the loop has a value variable (`for k, v in map`), so
+        // ITER yields the paired value too; `-1` means the loop only wants the
+        // item. Only a map has a paired value, so any other iterable is an
+        // error rather than a silent nil.
+        const bool wantValue = instruction.d >= 0;
+        // Only a map has a paired value, so a `for k, v` over any other
+        // iterable is the same runtime error the retired `$mapValue` helper
+        // raised, worded from the iterable's own type name.
+        auto rejectKeyValue = [&]() {
+          fail(std::string("key/value iteration ('for k, v in ...') requires a map, got '") +
+                   iterable.typeName() + "'",
+               line, col);
+        };
+        Value value;
         Value item;
         bool done = false;
 
         if (iterable.isArray()) {
+          if (wantValue) rejectKeyValue();
           if (!cursor.isNil() && !cursor.isInt()) {
             fail("invalid array iteration state", line, col);
           }
@@ -789,6 +804,7 @@ Value VM::runFrames(std::size_t stopDepth) {
             cursor = Value(static_cast<int64_t>(index + 1));
           }
         } else if (iterable.isStr()) {
+          if (wantValue) rejectKeyValue();
           if (!cursor.isNil() && !cursor.isInt()) {
             fail("invalid string iteration state", line, col);
           }
@@ -808,10 +824,13 @@ Value VM::runFrames(std::size_t stopDepth) {
           if (index < 0 || static_cast<std::size_t>(index) >= iterable.map().entries.size()) {
             done = true;
           } else {
-            item = Value(iterable.map().entries[static_cast<std::size_t>(index)].first);
+            const auto& entry = iterable.map().entries[static_cast<std::size_t>(index)];
+            item = Value(entry.first);
+            if (wantValue) value = entry.second;
             cursor = Value(static_cast<int64_t>(index + 1));
           }
         } else if (iterable.isRange()) {
+          if (wantValue) rejectKeyValue();
           const Range& range = iterable.range();
           if (cursor.isNil()) cursor = Value(range.start);
           if (!cursor.isInt()) fail("invalid range iteration state", line, col);
@@ -837,8 +856,9 @@ Value VM::runFrames(std::size_t stopDepth) {
         }
         // Persist the advanced cursor; without this the loop would restart
         setReg(instruction.c, std::move(cursor));
+        if (wantValue) setReg(instruction.d, done ? Value() : std::move(value));
         setReg(instruction.a, done ? Value() : std::move(item));
-        setReg(instruction.jump, Value(done));
+        setReg(instruction.e, Value(done));
         break;
       }
 
