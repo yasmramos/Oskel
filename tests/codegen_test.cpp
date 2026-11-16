@@ -111,6 +111,26 @@ static void test_bare_metal_instructions() {
     g.testAlImm8(0x20);
     checkBytes("test al, 0x20", g, "A820");
   }
+  {
+    // `lidt [rip + label]`: 0F 01 /3 with a RIP-relative operand. With the
+    // descriptor emitted right after the instruction, the displacement is 0
+    // (next RIP == the descriptor), so the encoding is exact.
+    CodeGen g;
+    CodeGen::Label desc = g.newLabel();
+    g.lidtRipLabel(desc);
+    g.bind(desc);
+    checkBytes("lidt [rip + label]", g, "0F011D00000000");
+  }
+  {
+    CodeGen g;
+    g.cld();
+    checkBytes("cld", g, "FC");
+  }
+  {
+    CodeGen g;
+    g.pushImm8(6);
+    checkBytes("push 6", g, "6A06");
+  }
 }
 
 static void test_mov_imm() {
