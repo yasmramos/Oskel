@@ -69,6 +69,19 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   hosted: Linux x86-64 only, for now) and an unsupported pair is reported, never
   emitted. A change to the freestanding path must keep the emitted binary byte
   for byte identical; `oskel build --mode freestanding` is the explicit form.
+- A standard-library module that must work on both engines stays on the
+  **portable primitive surface**: indexing and slicing (`s[i]`, `s[a:b]`),
+  `len`, `ord`/`chr`, `int`/`double`/`str`/`type`, `panic`, `for ... in`,
+  closures, variadic `rest...` and the operators. The AOT backend implements no
+  collection or string *method* (`.split`, `.map`, `.join`, `.push`, `.get`,
+  `.has`, `.substr`, `.length` on a string, ...) — those build (exit 0) but
+  fault at run time with "value has no such member" / "cannot call a
+  non-function value" — and it does not seed `pcall`/`error`/`readFile` at all,
+  so a module function that calls one fails `oskel build` with "global 'pcall'
+  is read but never assigned" (exit 65) even when the function is unused. A
+  module written over the portable surface behaves identically on the VM and
+  under `oskel build`; `std/json.oskl` and `tests/native_build_json.oskl` are
+  the reference.
 - Windows code paths can be exercised locally without a Windows host: build the
   engine with `x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude -Isrc -static
   -o /tmp/win/oskel.exe src/*.cpp src/native/*.cpp src/jit/*.cpp` and run it
