@@ -73,6 +73,18 @@ may change between minor versions.
 
 ### Changed
 
+- The development-engine JIT keeps each scalar slot in a physical CPU register
+  instead of its 16-byte stack slot. The bytecode contract is untouched (no new
+  opcode, no superinstruction, no runtime specialization): the JIT still lowers
+  each opcode 1:1, but a slot the dataflow proves only ever holds
+  `nil`/`bool`/`int` now lives in `rax`/`rcx`/`rdx`/`rsi`/`rdi`/`r8`/`r9` with
+  the raw payload, and the tag is materialized only at the frame boundary. A
+  slot that changes scalar kind (a `bool` comparison feeding an `int` slot and
+  back) stays in its register, because the kind at each use is read from the
+  dataflow state rather than fixed per slot. A tight integer loop is now about
+  130x faster than the interpreter (about 5x faster than the previous
+  stack-slot JIT), and the differential suite still proves the compiled body
+  identical to the interpreter for every accepted proto.
 - The `oskel build` CTest cases now run the same fixture list on Windows as on
   Linux. Windows registered only two cases (`build_binary` and
   `build_binary_deep_recursion`) against Linux's ten, so the Windows PE path was

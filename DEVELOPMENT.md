@@ -1151,7 +1151,12 @@ representation and the differential test is exact. The VM runs it through
 `VM::jitFor` at `CALL` and at `Runtime::call`, only when the JIT is enabled
 (the CLI turns it on; `--no-jit` turns it off; `oskelc` never sees it) and only
 when every argument is an integer and the arity matches, because the compiled
-body reads integer slots only. A tight integer loop is about 25x faster.
+body reads integer slots only. The compiled body also keeps every scalar slot
+in a physical CPU register instead of its 16-byte stack slot whenever the
+dataflow proves the slot only ever holds `nil`/`bool`/`int`: the register holds
+the raw payload and the tag is materialized only at the frame boundary, so a
+tight integer loop does almost no memory traffic. A tight integer loop is about
+130x faster than the interpreter.
 
 Later slices widen the subset (floats, then strings, then the boxed value
 runtime, then calls and guards) and add the tiering policy (compile after a
@@ -1195,7 +1200,7 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e done; 7f — FFI in AOT — open, no slice chosen)
-Phase 8: 🔶 in progress (JIT for the development VM, slice 1 done: integer leaf protos)
+Phase 8: 🔶 in progress (JIT for the development VM, slice 1 done: integer leaf protos with CPU-register allocation)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)
 
