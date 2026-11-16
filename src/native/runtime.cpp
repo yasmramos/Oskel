@@ -5981,6 +5981,9 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgLogType = addText("oskel: log() expects a number argument\n");
   DataBlob msgLogNonPositive = addText("oskel: log() of a non-positive number\n");
   DataBlob msgPowType = addText("oskel: pow() expects a number argument\n");
+  DataBlob msgSinType = addText("oskel: sin() expects a number argument\n");
+  DataBlob msgCosType = addText("oskel: cos() expects a number argument\n");
+  DataBlob msgTanType = addText("oskel: tan() expects a number argument\n");
 
   CodeGen::Label fail = cg.newLabel();
   CodeGen::Label failDynamic = cg.newLabel();
@@ -6158,6 +6161,15 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitTranscendentalBuiltin(cg, handles.logBuiltin, fail, math.log, msgLogType, true,
                             msgLogNonPositive);
   emitPowBuiltin(cg, handles.powBuiltin, fail, math.pow, msgPowType);
+  // The trigonometric builtins (PHASE 7c.5b.4b). `sin`/`cos`/`tan` share the
+  // `__rem_pio2` reduction and the `__sin`/`__cos` kernels; `emitMathLib` already
+  // emitted them above.
+  emitTranscendentalBuiltin(cg, handles.sinBuiltin, fail, math.sin, msgSinType, false,
+                            msgLogNonPositive);
+  emitTranscendentalBuiltin(cg, handles.cosBuiltin, fail, math.cos, msgCosType, false,
+                            msgLogNonPositive);
+  emitTranscendentalBuiltin(cg, handles.tanBuiltin, fail, math.tan, msgTanType, false,
+                            msgLogNonPositive);
   emitIntTextParser(cg, handles.intTextParser, fail, msgConvertInt);
   dtoa::emitDtoa(cg, dtoaHandles);
   parse_float::emitParseFloat(cg, parseFloatHandles, dtoaHandles);

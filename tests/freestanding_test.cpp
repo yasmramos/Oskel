@@ -1045,6 +1045,52 @@ static void test_transcendental_builtin_errors() {
   check(arity.exitCode == 70, "pow with one argument exits 70");
 }
 
+// The trigonometric builtins (PHASE 7c.5b.4b): `sin`, `cos` and `tan` call the
+// embedded musl routines, which reduce the argument with `__rem_pio2`. glibc is
+// not correctly rounded, so the contract is "agrees to 1 ulp"; the values below
+// are chosen where the two roundings coincide, so the emitted code reproduces
+// the hosted output exactly. The last two lines drive the large-argument branch
+// of the reduction (>= 2^20 * pi/2), which a small input never reaches.
+static void test_trigonometric_builtins() {
+  Bytecode proto = compileSource(
+      "print(sin(0), cos(0), tan(0));\n"
+      "print(sin(0.5), cos(0.5), tan(0.5));\n"
+      "print(sin(-0.5), cos(-0.5), tan(-0.5));\n"
+      "print(type(sin(1)), type(cos(1)), type(tan(1)));\n"
+      "print(sin(-2.0203875408674627e+175), cos(-2.0203875408674627e+175));\n"
+      "print(tan(-2.0203875408674627e+175), sin(1.2857398720274479e+182));\n");
+  RunResult result = buildAndRun("/tmp/oskel_trigonometric_builtins", proto);
+  std::string expected =
+      "0 1 0\n"
+      "0.479425538604203 0.8775825618903728 0.5463024898437905\n"
+      "-0.479425538604203 0.8775825618903728 -0.5463024898437905\n"
+      "double double double\n"
+      "-0.6788283655659167 0.7342969767764989\n"
+      "-0.9244602484214429 0.989033555430505\n";
+  check(result.output == expected, "the trigonometric builtins match the hosted engine");
+  check(result.exitCode == 0, "a program using sin/cos/tan exits 0");
+}
+
+// A wrong operand type and a wrong arity both fail with the hosted message and
+// exit 70.
+static void test_trigonometric_builtin_errors() {
+  Bytecode sinStr = compileSource("print(sin(\"x\"));\n");
+  RunResult fromStr = buildAndRun("/tmp/oskel_sin_str", sinStr);
+  check(fromStr.exitCode == 70, "sin of a string exits 70");
+  check(fromStr.output.find("sin() expects a number argument") != std::string::npos,
+        "the failed sin reports its type message");
+
+  Bytecode cosArity = compileSource("print(cos());\n");
+  RunResult arity = buildAndRun("/tmp/oskel_cos_arity", cosArity);
+  check(arity.exitCode == 70, "cos with no argument exits 70");
+
+  Bytecode tanBool = compileSource("print(tan(true));\n");
+  RunResult fromBool = buildAndRun("/tmp/oskel_tan_bool", tanBool);
+  check(fromBool.exitCode == 70, "tan of a bool exits 70");
+  check(fromBool.output.find("tan() expects a number argument") != std::string::npos,
+        "the failed tan reports its type message");
+}
+
 // Drives the boxed printer directly: the runtime's `oskel_print_value` is what
 // the `print` builtin will call once `CALL` lands (7c.2), so this checks the
 // integer-to-text routine (including the negative case) and the boolean/nil
@@ -1658,6 +1704,8 @@ int main() {
   test_math_builtin_errors();
   test_transcendental_builtins();
   test_transcendental_builtin_errors();
+  test_trigonometric_builtins();
+  test_trigonometric_builtin_errors();
   test_sb_append_zero_capacity();
   test_sb_append_capacity_overflow();
   test_variadic();

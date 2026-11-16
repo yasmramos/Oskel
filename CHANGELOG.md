@@ -26,9 +26,22 @@ may change between minor versions.
   declaration without a stub fails with a dedicated message
   (`native fn 'X' cannot be resolved by the AOT backend (PHASE 7f)`) instead of
   the generic unassigned-global error a typo produces. `sqrt` is seeded from the
-  exact `sqrtsd` stub, so `native fn sqrt` resolves without a host. The
-  transcendentals (`pow`, `sin`, `cos`, `tan`, `log`, `exp`) stay rejected: a
-  hand-written implementation would not reproduce libm's last bit.
+  exact `sqrtsd` stub, so `native fn sqrt` resolves without a host; the libm
+  primitives (`exp`, `log`, `pow`, `sin`, `cos`, `tan`) resolve from the embedded
+  musl ports (PHASE 7c.5b.4).
+- AOT: the transcendental builtins `exp`, `log` and `pow` (PHASE 7c.5b.4a) and
+  the trigonometric builtins `sin`, `cos` and `tan` (PHASE 7c.5b.4b) are now
+  available in a freestanding binary. The development engine resolves them
+  through the host's libm, which a freestanding AOT binary cannot link, so the
+  musl routines (MIT, Arm Limited) are emitted directly as x86-64 through
+  `CodeGen` (the approach already used for `dtoa` and `parse_float`) and the
+  runtime stays libc-free. `exp`/`log`/`pow` port the musl kernels and the
+  `pow` special cases; the trigonometric family ports `__rem_pio2` (with its
+  large-argument helper), the `__sin`/`__cos`/`__tan` kernels and the public
+  entry points. The wrappers do the arity/type checks and the `log`
+  non-positive check, and are seeded into their global slots like the other
+  builtins, so neither the compiler nor the bytecode changes. glibc is not
+  correctly rounded for these functions, so the contract is "agrees to 1 ulp".
 - `struct` literals support field shorthand: `Point { x, y }` is sugar for
   `Point { x: x, y: y }`, taking each value from the variable of the same name
   in scope. The shorthand and the `name: value` form mix freely in one literal

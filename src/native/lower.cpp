@@ -883,6 +883,10 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       {"exp", rt.expBuiltin},
       {"log", rt.logBuiltin},
       {"pow", rt.powBuiltin},
+      // The trigonometric builtins (PHASE 7c.5b.4b): `sin`, `cos` and `tan`.
+      {"sin", rt.sinBuiltin},
+      {"cos", rt.cosBuiltin},
+      {"tan", rt.tanBuiltin},
   };
 
   const GlobalSlots globals = collectGlobals(protos, builtins);

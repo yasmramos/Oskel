@@ -1,12 +1,12 @@
-// Behavioral tests for the freestanding math library (PHASE 7c.5b.4a).
+// Behavioral tests for the freestanding math library (PHASE 7c.5b.4).
 //
 // The emitted machine code is mapped as executable memory and called through a
-// function pointer. `exp`/`log`/`pow` are ports of musl libm; the reference is
-// the *host* `std::exp`/`std::log`/`std::pow` (glibc), which is what the hosted
-// engine uses. glibc is not correctly rounded, so the two disagree on a small
-// fraction of inputs, always by a single ulp; the test therefore requires every
-// disagreement to be within 1 ulp rather than an exact match, and prints the
-// rate so a regression in accuracy is visible.
+// function pointer. `exp`/`log`/`pow`/`sin`/`cos`/`tan` are ports of musl libm;
+// the reference is the *host* `std::exp`/`std::log`/`std::pow`/`std::sin`/...
+// (glibc), which is what the hosted engine uses. glibc is not correctly rounded,
+// so the two disagree on a small fraction of inputs, always by a single ulp; the
+// test therefore requires every disagreement to be within 1 ulp rather than an
+// exact match, and prints the rate so a regression in accuracy is visible.
 //
 // On any platform other than Linux x86-64 the execution section is skipped.
 
@@ -149,6 +149,42 @@ static void testPowSpecialCases(BinaryFn fn) {
   check(true, "pow special cases checked");
 }
 
+// `sin`/`cos`/`tan` share the `__rem_pio2` argument reduction, whose large-input
+// branch (>= 2^20 * pi/2) is never reached by `testUnary`'s small random range.
+// These exact values drive that branch; a broken reduction lands far outside
+// glibc's 1-ulp disagreement band, so the 1-ulp check pins it down.
+static void testTrigLargeArguments(UnaryFn fn, double (*ref)(double), const char* name) {
+  const double cases[] = {
+      6.8388583735593044e+64,   1.6208841856988926e+83,   -2.9598076146291605e+51,
+      3.7413368261593626e+248,  -1.1691600465261631e+246, 1.0730581983089675e+22,
+      4.3023234459847984e+166,  1e300,                    -1e300,
+  };
+  for (double x : cases) {
+    double got = fn(x);
+    double want = ref(x);
+    if (ulpDiff(got, want) > 1) {
+      std::printf("FAIL: %s(%.17g): got %.17g want %.17g\n", name, x, got, want);
+      ++g_failures;
+    }
+  }
+  check(true, std::string(name) + " large arguments checked");
+}
+
+// The zero, tiny, subnormal and non-finite edges. sin/tan are odd (sin(-0) is
+// -0), cos is even, and an infinite argument is NaN.
+static void testTrigSpecialCases(UnaryFn sinF, UnaryFn cosF, UnaryFn tanF) {
+  check(bitsOf(sinF(0.0)) == 0, "sin(0) == +0");
+  check(bitsOf(sinF(-0.0)) == 0x8000000000000000ULL, "sin(-0) == -0");
+  check(cosF(0.0) == 1.0, "cos(0) == 1");
+  check(bitsOf(tanF(0.0)) == 0, "tan(0) == +0");
+  check(bitsOf(tanF(-0.0)) == 0x8000000000000000ULL, "tan(-0) == -0");
+  check(std::isnan(sinF(INFINITY)), "sin(inf) is NaN");
+  check(std::isnan(cosF(INFINITY)), "cos(inf) is NaN");
+  check(std::isnan(tanF(INFINITY)), "tan(inf) is NaN");
+  check(sinF(1e-30) == 1e-30, "sin(1e-30) == 1e-30");
+  check(cosF(1e-30) == 1.0, "cos(1e-30) == 1");
+}
+
 int main() {
   CodeGen gen;
   mathlib::MathHandles h = mathlib::newMathHandles(gen);
@@ -171,6 +207,9 @@ int main() {
   auto expF = reinterpret_cast<UnaryFn>(base + gen.labelOffset(h.exp));
   auto logF = reinterpret_cast<UnaryFn>(base + gen.labelOffset(h.log));
   auto powF = reinterpret_cast<BinaryFn>(base + gen.labelOffset(h.pow));
+  auto sinF = reinterpret_cast<UnaryFn>(base + gen.labelOffset(h.sin));
+  auto cosF = reinterpret_cast<UnaryFn>(base + gen.labelOffset(h.cos));
+  auto tanF = reinterpret_cast<UnaryFn>(base + gen.labelOffset(h.tan));
 
   // Spot checks first, so an obvious breakage is loud.
   check(std::fabs(expF(1.0) - 2.718281828459045) < 1e-15, "exp(1)");
@@ -179,12 +218,22 @@ int main() {
   check(std::fabs(logF(2.718281828459045) - 1.0) < 1e-15, "log(e)");
   check(powF(2.0, 10.0) == 1024.0, "pow(2,10)");
   check(powF(9.0, 0.5) == 3.0, "pow(9,0.5)");
+  check(std::fabs(sinF(0.5) - std::sin(0.5)) < 1e-15, "sin(0.5)");
+  check(std::fabs(cosF(0.5) - std::cos(0.5)) < 1e-15, "cos(0.5)");
+  check(std::fabs(tanF(0.5) - std::tan(0.5)) < 1e-15, "tan(0.5)");
 
   std::mt19937_64 rng(12345);
   testUnary(expF, std::exp, "exp", rng);
   testUnary(logF, std::log, "log", rng);
   testPow(powF, rng);
   testPowSpecialCases(powF);
+  testUnary(sinF, std::sin, "sin", rng);
+  testUnary(cosF, std::cos, "cos", rng);
+  testUnary(tanF, std::tan, "tan", rng);
+  testTrigLargeArguments(sinF, std::sin, "sin");
+  testTrigLargeArguments(cosF, std::cos, "cos");
+  testTrigLargeArguments(tanF, std::tan, "tan");
+  testTrigSpecialCases(sinF, cosF, tanF);
 
   if (g_failures == 0) {
     std::printf("all mathlib tests passed\n");

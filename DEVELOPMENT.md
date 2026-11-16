@@ -1000,9 +1000,17 @@ Slices, each independently shippable:
       non-positive operand) and are seeded into their global slots like the
       other builtins. Covered by `tests/mathlib_test.cpp` (the emitted routines
       called through function pointers against libm over 175k/100k/200k random
-      inputs) and the `oskel build` fixture. The trigonometric family
-      (`sin`, `cos`, `tan`, which needs the Payne-Hanek argument reduction) is
-      the next slice, **7c.5b.4b**.
+      inputs) and the `oskel build` fixture.
+      **7c.5b.4b** (done) adds the trigonometric builtins `sin`, `cos` and
+      `tan`, which need the Payne-Hanek argument reduction (`__rem_pio2` and its
+      large-argument helper `__rem_pio2_large` over the two `ipio2`/`pio2`
+      tables) plus the `__sin`/`__cos`/`__tan` kernels, all ported from musl and
+      emitted by `CodeGen`. The large-argument branch is exercised by the tests
+      with inputs above `2^20 * pi/2` (a small random input never reaches it),
+      and the diff against a bit-exact musl reference is zero. Like the other
+      transcendentals the contract is "agrees to 1 ulp"; `sin`/`cos`/`tan`
+      resolve from these ports in a freestanding binary, so `std.math`'s libm
+      surface is now complete.
     - **7c.6** (done) — variadic parameter packs. A function with a trailing
       `rest...` parameter was a lowering error ("variadic function",
       `PHASE 7c.3`); it now compiles. The child proto's prologue checks the
@@ -1078,12 +1086,13 @@ Slices, each independently shippable:
       `round`): `sqrtsd` is correctly rounded, so the hardware result and the
       hosted `std::sqrt` agree bit for bit. This slice tightens that stub to the
       hosted semantics (a NaN operand is not "negative", and the arity message
-      matches `sqrt() expects 1 argument, got N`). The transcendentals (`pow`,
-      `sin`, `cos`, `tan`, `log`, `exp`) are *not* stubbed: a hand-written
-      implementation would not reproduce libm's last bit, so a program that uses
-      one is rejected instead of compiling to a binary that disagrees with the
-      VM. `tests/native_build_math.oskl` and `tests/native_build_math_pure.oskl`
-      build and agree with the VM; `tests/native_build_math_native_error.oskl`
+      matches `sqrt() expects 1 argument, got N`). The libm primitives
+      (`exp`, `log`, `pow`, `sin`, `cos`, `tan`) resolve from the embedded musl
+      ports PHASE 7c.5b.4 adds, so a program that calls them now builds; a
+      `native fn` still without a stub (for example `clock`) is rejected instead
+      of compiling to a binary that disagrees with the VM.
+      `tests/native_build_math.oskl` and `tests/native_build_math_pure.oskl`
+      build and agree with the VM; `tests/native_build_native_error.oskl`
       pins the rejection.
 - Deferred: per-instruction type annotations for fast paths without dynamic
   dispatch (bridge toward the speculative work in

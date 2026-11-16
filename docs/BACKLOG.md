@@ -231,9 +231,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     (`ldd` reports "not a dynamic executable"). `tests/build_error.cmake` pins
     the current behaviour. **Partial (7f.1)**: an *unused* declaration no longer
     fails the build (the lowerer counts reads against declarations), and `sqrt`
-    is provided by a curated stub that matches the VM bit for bit. The rest of
-    `std.math`'s libm surface (`pow`, `sin`, `cos`, `tan`, `log`, `exp`) and
-    general `extern "C"` symbols are still open.
+    is provided by a curated stub that matches the VM bit for bit. **Partial
+    (7c.5b.4)**: `std.math`'s libm surface (`exp`, `log`, `pow`, `sin`, `cos`,
+    `tan`) now resolves from the embedded musl ports, so a program that calls
+    them builds. General `extern "C"` symbols are still open.
 
 ---
 
