@@ -17,6 +17,18 @@ may change between minor versions.
   checked to be an immutable binding; a `var`, an unknown name or a captured
   binding is a compile error, so a label stays a fixed value. No new opcode:
   the label lowers to the same `EQ` (or `IN` for a range) against the subject.
+- AOT: `oskel build` no longer fails on an unused host declaration (PHASE 7f.1).
+  A `native fn`/`extern "C"` declaration binds a name to a host function; the
+  lowerer now counts reads against declarations, so a program that imports a
+  module declaring host functions (`std.math` declares ten) builds even when it
+  calls none of them — the original gap, where `import std.math` broke the build
+  for a program that used only the pure Oskel `abs`/`min`/`max`/`clamp`. A *used*
+  declaration without a stub fails with a dedicated message
+  (`native fn 'X' cannot be resolved by the AOT backend (PHASE 7f)`) instead of
+  the generic unassigned-global error a typo produces. `sqrt` is seeded from the
+  exact `sqrtsd` stub, so `native fn sqrt` resolves without a host. The
+  transcendentals (`pow`, `sin`, `cos`, `tan`, `log`, `exp`) stay rejected: a
+  hand-written implementation would not reproduce libm's last bit.
 - `struct` literals support field shorthand: `Point { x, y }` is sugar for
   `Point { x: x, y: y }`, taking each value from the variable of the same name
   in scope. The shorthand and the `name: value` form mix freely in one literal
@@ -86,6 +98,21 @@ may change between minor versions.
 
 ### Fixed
 
+- A Windows AOT binary was killed with no message when a program recursed a few
+  thousand frames with a non-trivial frame. The PE emitter reserved only 1 MiB
+  of stack (the Windows default) while the AOT runtime has no call-depth guard,
+  so the recursion a native binary reaches is bounded only by the OS stack;
+  Linux hands a process 8 MiB (`ulimit -s`), so the same program ran there and
+  was torn down silently on Windows (exit code 1, no output). The emitter now
+  reserves 8 MiB, matching Linux, and `pe_test` pins the value. Covered by
+  `tests/native_build_deep_recursion.oskl` (`oskel.build_binary_deep_recursion`
+  on Linux and Windows).
+- `chr(code)` now rejects a lone surrogate (U+D800..U+DFFF) instead of
+  encoding it as CESU-8 (three bytes, invalid UTF-8), matching the `\uXXXX`
+  escape. The check lives in the builtin, so the VM and the AOT backend reject
+  the same value with the same message (`chr() code point is a surrogate`) and
+  the same exit code. The scalar values on either side of the range
+  (U+D7FF, U+E000) still encode.
 - A `\uXXXX` string escape whose value is a lone surrogate (U+D800..U+DFFF) is
   now a compile error instead of producing a string with invalid UTF-8. The
   lexer previously encoded the code point as CESU-8 (three bytes), so
@@ -99,6 +126,12 @@ may change between minor versions.
   `extern "C" symbol '...' was not found in the host`. The search now also
   covers `kernel32.dll`, matching the set of modules `dlsym(RTLD_DEFAULT)`
   reaches on POSIX; the CRT names still resolve.
+- AOT: `double(f)` on a `float` operand returned `0` instead of the widened
+  value. A boxed `Float` already holds its value widened to binary64, but the
+  `double` builtin widened the payload a second time, reading the binary32 bits
+  as binary64. The `sqrt` stub had the same shape, so both are fixed together.
+  `tests/native_build_conversions.oskl` pins the conversions against the VM
+  (the script tests that cover them only run on the hosted engine).
 - The PE emitter padded the image only to the end of `.text`'s bytes, not to
   the `SizeOfRawData` the section header declares, so the file could end up to
   `FileAlignment` bytes short of the image it described. Windows rejected such

@@ -44,10 +44,13 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   opcodes) and exits 65 without writing a binary; it never emits a
   mis-compiled one.
 - A host binding (`native fn`, `extern "C"`) and `var x = x;` both compile to
-  `GETGLOBAL N; SETGLOBAL N`. The AOT backend has no host, so it rejects that
-  shape as "global 'N' is read but never assigned" (exit 65) rather than
-  emitting a binary that calls nil. FFI in the AOT backend is still PHASE 7
-  work; the lowerer only fails it cleanly.
+  `GETGLOBAL N; SETGLOBAL N` at the top level (or `GETGLOBAL N; SETLOCAL` inside
+  a function). The AOT backend has no host. An *unused* declaration is harmless
+  (PHASE 7f.1) and builds; a *used* one the backend has no stub for fails with a
+  dedicated message (exit 65); a genuine self-read (`var x = x;`) keeps the
+  generic "global 'N' is read but never assigned". FFI in the AOT backend is
+  still PHASE 7 work; the lowerer only fails it cleanly. `sqrt`, `floor`, `ceil`
+  and `round` are the curated stubs (`sqrtsd` and the SSE rounding are exact).
 - Windows code paths can be exercised locally without a Windows host: build the
   engine with `x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude -Isrc -static
   -o /tmp/win/oskel.exe src/*.cpp src/native/*.cpp src/jit/*.cpp` and run it

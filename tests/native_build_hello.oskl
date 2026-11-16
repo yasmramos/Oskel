@@ -86,6 +86,9 @@ print("repr =", repr("hi"), repr([1, "two"]), repr(7));
 print("bool =", bool(0), bool(1), bool(nil), bool(""), bool(squares));
 print("ord =", ord("A"), ord("é"), ord("😀"));
 print("chr =", chr(65), chr(233), chr(128512));
+// The scalar values on either side of the surrogate range encode in both
+// engines; the range itself is a runtime error (tests/aot_runtime_error.oskl).
+print("chr bounds =", ord(chr(0xD7FF)), ord(chr(0xE000)), ord(chr(0x10FFFF)));
 assert(true);
 assert(len(squares) == 3, "squares has three entries");
 print("isError =", isError(5), isError("x"));
@@ -110,6 +113,15 @@ print("int str =", int("42"), int("-7"), int("0x10"), int("0b101"), int("0o17"))
 print("int str big =", int("9223372036854775807"), int("-0x8000000000000000"));
 print("int str edge =", int("0x0b1"), int(" 42 "), int("42 "), int("007"));
 print("int str sum =", int("42") + int("8"));
+
+// The transcendental builtins (PHASE 7c.5b.4a): `exp`, `log` and `pow`. The
+// hosted engine calls libm; the freestanding runtime embeds the ported musl
+// routines, so both sides agree to 1 ulp. Only inputs where the two roundings
+// coincide are asserted here, since the fixture must also run on the VM.
+print("exp =", exp(0), exp(1), exp(2), exp(-1), exp(10), exp(0.5));
+print("log =", log(1), log(2), log(10), log(100), log(2.718281828459045));
+print("pow =", pow(2, 10), pow(9, 0.5), pow(2, 0.5), pow(3, 3), pow(10, 2), pow(2, -1));
+print("exp/log =", exp(log(5)), log(exp(3)));
 
 // Variadic parameters (PHASE 7c.6): a trailing `rest...` parameter binds an
 // array of the extras. The AOT prologue binds the fixed parameters and calls

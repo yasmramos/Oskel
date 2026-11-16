@@ -51,6 +51,18 @@ constexpr std::uint32_t kPeTextRva = 0x2000;
 // Fixed image base of the generated (non-PIE) executable.
 constexpr std::uint64_t kPeImageBase = 0x140000000;
 
+// The stack the loader reserves for the generated process. Windows' own
+// default is 1 MiB, but the AOT runtime has no call-depth guard -- the VM's
+// 2000-frame limit is the interpreter's, not the native code's -- so the
+// recursion a program reaches is bounded only by the OS stack. Linux hands a
+// process 8 MiB by default (`ulimit -s`), so reserving the same here keeps a
+// program that runs as a Linux AOT binary from being killed on Windows: a few
+// thousand frames with a non-trivial local set overflow 1 MiB, and Windows
+// tears the process down with no message. Only the reserve is set; the loader
+// commits `kPeStackCommit` up front and grows the stack on demand up to it.
+constexpr std::uint64_t kPeStackReserve = 8ull * 1024 * 1024;
+constexpr std::uint64_t kPeStackCommit = 0x1000;
+
 std::vector<std::uint8_t> buildStaticPe(const Target& target,
                                         const std::vector<std::uint8_t>& text,
                                         const std::vector<std::uint8_t>& rdata,

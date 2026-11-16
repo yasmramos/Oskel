@@ -8,10 +8,13 @@ assertEq("nested ${"inner ${name}"}", "nested inner Oskel");
 assertEq("map ${ {a: 1}.a }", "map 1");
 assertEq("\u00e9", "é");
 assertEq("\x41", "A");
-// The scalar values on either side of the surrogate range stay valid, so the
-// lexer only rejects U+D800..U+DFFF (see tests/errors/surrogate_escape.oskl).
+// The scalar values on either side of the surrogate range stay valid, so both
+// the lexer and `chr` reject only U+D800..U+DFFF (see
+// tests/errors/surrogate_escape.oskl and tests/errors/chr_surrogate.oskl).
 assertEq("\uD7FF", chr(0xD7FF));
 assertEq("\uE000", chr(0xE000));
+assertEq(ord(chr(0xD7FF)), 0xD7FF);
+assertEq(ord(chr(0xE000)), 0xE000);
 assertEq("a\tb", "a" + chr(9) + "b");
 assertEq("\$5", "$5");
 

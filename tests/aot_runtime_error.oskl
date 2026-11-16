@@ -1,0 +1,9 @@
+// expect-exit: 70
+// The AOT backend must fail a runtime error exactly like the VM: the same exit
+// code (70), with no recovery. `chr` of a surrogate is the fixture because it
+// is a pure check with no host dependency, so the binary reaches the failure
+// through the ordinary builtin path. `tests/aot_runtime_error.cmake` builds it
+// and checks the generated binary; this file also runs on the VM directly.
+print("before");
+print(chr(0xD800));
+print("after");

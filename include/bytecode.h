@@ -196,6 +196,17 @@ struct Bytecode {
   // development engine resolves each one before the proto runs; the AOT backend
   // reads them to emit the binary's relocations.
   std::vector<ExternSymbol> externs;
+  // Names declared `native fn` in this proto (PHASE 6.5), in declaration order.
+  // A `native fn` and an `extern "C"` entry both compile to a host binding: a
+  // read of the name (the read resolves the function the host registered),
+  // stored to the global or the module-local slot. The development engine
+  // resolves the read through its host registry; the AOT backend has no host, so
+  // it reads this list to tell a host binding apart from a genuine
+  // self-assignment (`var x = x;`), which reads and stores the same name but is
+  // always a run-time error. `externs` already carries the C symbols, so this
+  // list names the non-`extern` natives (and any `extern` entry as well, which
+  // is harmless because the lowerer unions the two sets).
+  std::vector<std::string> nativeFns;
   // No per-proto capture storage: upvalue cells live in the `Function` value
   // produced by `CLOSURE` (`Function::upvalues`), so closures created from the
   // same proto in different frames never overwrite each other's captures.
