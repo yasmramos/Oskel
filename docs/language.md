@@ -1938,6 +1938,14 @@ Host builtins:
 
 `floor`, `ceil` and `round` return the same `int` if they receive an `int`, and a `double` for a `float` or `double` argument (like Java's `Math.floor`, which takes and returns `double`).
 
+Under `oskel build` (the AOT backend), `sqrt`, `floor`, `ceil` and `round` have
+an exact stub (correctly-rounded SSE, so they match the VM bit for bit). The
+transcendentals (`pow`, `sin`, `cos`, `tan`, `log`, `exp`) and the other
+`std.math` host bindings have no stub yet — a program that *calls* one is
+rejected at build time with a message naming the symbol (an unused declaration
+is harmless), since a hand-written implementation would not reproduce libm's
+last bit. See `DEVELOPMENT.md` PHASE 7f.
+
 ```oskel
 import std.math.*;
 
@@ -2314,8 +2322,10 @@ A compiled binary carries the standard-library builtins that need no libm:
 (including the string forms) and the exact math builtins `floor`, `ceil`,
 `round` and `sqrt` (correctly rounded from SSE alone, so they match the hosted
 engine bit for bit). The remaining math builtins (`pow`, `sin`, `cos`, `tan`,
-`log`, `exp`) are not lowered yet: they need an embedded libm because the
-freestanding binary cannot call the host's, and they land in a later slice.
+`log`, `exp`) embed the musl routines ported in `native/mathlib.*`, emitted as
+x86-64 through the same `CodeGen` path as `dtoa` and `parse_float`, so the
+freestanding binary stays libc-free. glibc is not correctly rounded for these,
+so the contract is "agrees to 1 ulp".
 
 A compiled binary supports variadic functions (§7.1): a trailing `rest...`
 parameter binds an ordinary array of the extras, built by the runtime's
@@ -2446,6 +2456,8 @@ Wildcard imports are safe because conflicts are caught at compile time. If two i
 ```
 
 Conflict detection covers every pair of forms, not only two `.*` imports: a wildcard name that collides with an alias or with a namespace root is reported too, and so is an alias that collides with a namespace root. When both sides are unqualified names the error suggests the qualified form; otherwise it asks you to rename one of the imports.
+
+A `struct` name is compile-time metadata, not a value binding, so it is not covered by the "a local binding wins" rule below: an import that binds the same name is a conflict and is reported. Otherwise `Name { ... }` would stay a struct literal (that form always wins) and hide the import, so `Name.member` would fail only at run time.
 
 Two cases are *not* conflicts:
 

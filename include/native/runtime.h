@@ -184,6 +184,19 @@ struct AotRuntimeHandles {
   CodeGen::Label sbInit;    // void oskel_sb_init(AotStringBuilder* sb, char* data, long capacity)
   CodeGen::Label sbAppend;  // void oskel_sb_append(AotStringBuilder* sb, const char* ptr, long len)
   CodeGen::Label sbNew;     // AotStringBuilder* oskel_sb_new(void)
+  // The transcendental builtins (PHASE 7c.5b.4a): `exp`, `log` and `pow`. They
+  // need libm in the hosted engine; a freestanding binary embeds the ported
+  // musl routines (`native/mathlib.h`) and these wrappers do the argument
+  // checks, the int-to-double conversion and the error messages.
+  CodeGen::Label expBuiltin;  // AotValue oskel_builtin_exp(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label logBuiltin;  // AotValue oskel_builtin_log(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label powBuiltin;  // AotValue oskel_builtin_pow(AotValue* args, long argc, AotClosure* self)
+  // The trigonometric builtins (PHASE 7c.5b.4b): `sin`, `cos` and `tan`. Same
+  // shape as the exp/log/pow wrappers; the embedded routines reduce the
+  // argument with `__rem_pio2` and match the hosted engine to 1 ulp.
+  CodeGen::Label sinBuiltin;  // AotValue oskel_builtin_sin(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label cosBuiltin;  // AotValue oskel_builtin_cos(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label tanBuiltin;  // AotValue oskel_builtin_tan(AotValue* args, long argc, AotClosure* self)
 };
 
 inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
@@ -202,7 +215,8 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel()
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel()
   };
 }
 

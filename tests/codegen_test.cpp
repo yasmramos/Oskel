@@ -565,6 +565,28 @@ static void test_push_pop_all_registers() {
   }
 }
 
+static void test_sqrtsd_bytes() {
+  // sqrtsd is `F2 0F 51 /r` (SSE2 scalar double square root, no REX for
+  // xmm0-7): the destination is the ModRM reg field, the source the rm field.
+  CodeGen g;
+  g.sqrtsd(0, 0);
+  checkBytes("sqrtsd xmm0, xmm0", g, "F20F51C0");
+
+  CodeGen g2;
+  g2.sqrtsd(1, 2);
+  checkBytes("sqrtsd xmm1, xmm2", g2, "F20F51CA");
+
+  // xmm8-15 are selected through REX.R (destination) / REX.B (source), so the
+  // REX byte appears after the mandatory 0xF2 prefix.
+  CodeGen g3;
+  g3.sqrtsd(8, 1);
+  checkBytes("sqrtsd xmm8, xmm1", g3, "F2440F51C1");
+
+  CodeGen g4;
+  g4.sqrtsd(0, 9);
+  checkBytes("sqrtsd xmm0, xmm9", g4, "F2410F51C1");
+}
+
 static void test_callrel_bytes() {
   // call rel32 is `E8 id` with a caller-supplied displacement (no label).
   CodeGen g;
@@ -1194,6 +1216,7 @@ int main() {
   test_backward_jmp_bytes();
   test_sse();
   test_ucomisd_bytes();
+  test_sqrtsd_bytes();
   test_push_pop_all_registers();
   test_callrel_bytes();
   test_emitbytes_bytes();

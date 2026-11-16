@@ -184,6 +184,7 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(codegen_test)
   oskel_add_cpp_test(dtoa_test)
   oskel_add_cpp_test(parse_float_test)
+  oskel_add_cpp_test(mathlib_test)
   oskel_add_cpp_test(elf_test)
   oskel_add_cpp_test(pe_test)
   oskel_add_cpp_test(lower_test)
@@ -219,10 +220,12 @@ if(BUILD_TESTING)
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_stdlib.cmake")
 
   # --- `oskel build`: compile to a native binary and run it (PHASE 7d/7e) ---
-  # The AOT backend has a Linux and a Windows target; each test runs on the
-  # host whose target the generated image can execute. A cross-built image
-  # would not run on the other OS, so the two are separate.
-  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+  # The AOT backend has a Linux and a Windows target. One fixture list drives
+  # both: every case builds for the host's target and runs the image, and the
+  # runner (`tests/build_binary.cmake`) is portable. Keeping a single list is the
+  # point -- the Windows side used to register two cases against Linux's ten, and
+  # a Windows-only stack overflow slipped through that gap.
+  if((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32) AND
      CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
     add_test(NAME oskel.build_binary
       COMMAND ${CMAKE_COMMAND}
@@ -248,6 +251,45 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/examples/mandelbrot.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `std.math` declares ten `native fn` host bindings. An unused declaration
+    # must not fail the build (PHASE 7f.1), and `sqrt` resolves from a curated
+    # stub that matches the VM bit for bit.
+    add_test(NAME oskel.build_binary_math
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_math.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The shape of the original gap: `import std.math` with only its pure Oskel
+    # members used. Before 7f.1 the declarations alone failed the build.
+    add_test(NAME oskel.build_binary_math_pure
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_math_pure.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The numeric conversions, checked against the VM here because the script
+    # tests that cover them (`tests/26_float_double.oskl`) only run on the
+    # hosted engine. A boxed `Float` is stored widened to binary64, so the
+    # `double`/`float`/`int` builtins must not widen it a second time.
+    add_test(NAME oskel.build_binary_conversions
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_conversions.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # A recursive program with a non-trivial frame checks the process stack the
+    # loader hands the binary: the AOT runtime has no call-depth guard, so the
+    # reserve must be large enough for the recursion the VM accepts. The
+    # fixture is sized to overflow a 1 MiB reserve (the Windows default) and
+    # pass with the 8 MiB the emitter sets, so this is the regression guard for
+    # `kPeStackReserve` -- on Windows, where the two platforms used to differ.
+    add_test(NAME oskel.build_binary_deep_recursion
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_deep_recursion.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # An `extern "C"` symbol is a host binding the AOT backend cannot resolve
     # (the FFI lowering is PHASE 7f), so `oskel build` must fail with the
     # dedicated message and write no binary.
@@ -255,6 +297,15 @@ if(BUILD_TESTING)
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern.oskl"
+        "-DEXPECTED_MESSAGE=extern \"C\" symbol 'getpid' cannot be resolved by the AOT backend"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+    # A `native fn` the AOT backend has no stub for fails the same way, with a
+    # message that says `native fn` rather than `extern "C"` (PHASE 7f.1).
+    add_test(NAME oskel.build_native_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_native_error.oskl"
+        "-DEXPECTED_MESSAGE=native fn 'clock' cannot be resolved by the AOT backend"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
 
     # A runtime error in a generated binary must behave exactly like the VM:
@@ -267,12 +318,6 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.oskl"
         "-DOSKEL_EXPECTED_EXIT=70"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.cmake")
-  elseif(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
-    add_test(NAME oskel.build_binary
-      COMMAND ${CMAKE_COMMAND}
-        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary_pe.cmake")
   endif()
 
   # --- .oskl script tests (auto-detected) ---

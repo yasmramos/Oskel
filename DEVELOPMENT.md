@@ -982,14 +982,39 @@ Slices, each independently shippable:
       `sqrt` is the SSE `sqrtsd`, correctly rounded for every input. Every
       result matches the hosted engine (glibc) bit for bit, including the sign
       of a zero result (`floor(-0.3)` is `-0`) and the `|x| >= 2^63`, inf and
-      NaN passthrough; a negative `sqrt` fails like the hosted one. The
-      transcendental block (`pow`, `sin`, `cos`, `tan`, `log`, `exp`) is the
-      next slice and is where the embedded-libm decision lives, because glibc
-      is not correctly rounded there and an exact libm would diverge from the
-      hosted engine. Covered by `tests/codegen_test.cpp` (the `sqrtsd` encoding
-      and its execution) and `tests/freestanding_test.cpp` (the builtins and
-      the failure paths under the real `_start`), plus a 11k-case differential
-      run against the hosted engine.
+      NaN passthrough; a negative `sqrt` fails like the hosted one. Covered by
+      `tests/codegen_test.cpp` (the `sqrtsd` encoding and its execution) and
+      `tests/freestanding_test.cpp` (the builtins and the failure paths under
+      the real `_start`), plus a 11k-case differential run against the hosted
+      engine.
+      **7c.5b.4a** (done) adds the transcendental builtins `exp`, `log` and
+      `pow`. Unlike the exact builtins above, these need libm in the hosted
+      engine and glibc is not correctly rounded there, so no independent
+      implementation can match it on every input. The freestanding runtime
+      embeds its own copy of the musl routines (`native/mathlib.*`), emitted as
+      x86-64 by `CodeGen` the same way `dtoa` and `parse_float` are: `exp` and
+      `log` are the musl kernels with their 256-entry tables, and `pow` is
+      `exp(y * log(x))` built from the same `log_inline` plus the `exp_inline`
+      core (special cases included: `pow(1, y)`, `pow(x, 0)`, the negative-base
+      integer-exponent path, `0^0`, inf/NaN). The result agrees with glibc on
+      ~99.9% of inputs and every disagreement is a single ulp, so the contract
+      is "correctly rounded to 1 ulp" -- validated against a bit-exact musl
+      reference, not "byte-identical to glibc". The wrappers do the arity and
+      type checks (an int operand is converted to binary64; `log` rejects a
+      non-positive operand) and are seeded into their global slots like the
+      other builtins. Covered by `tests/mathlib_test.cpp` (the emitted routines
+      called through function pointers against libm over 175k/100k/200k random
+      inputs) and the `oskel build` fixture.
+      **7c.5b.4b** (done) adds the trigonometric builtins `sin`, `cos` and
+      `tan`, which need the Payne-Hanek argument reduction (`__rem_pio2` and its
+      large-argument helper `__rem_pio2_large` over the two `ipio2`/`pio2`
+      tables) plus the `__sin`/`__cos`/`__tan` kernels, all ported from musl and
+      emitted by `CodeGen`. The large-argument branch is exercised by the tests
+      with inputs above `2^20 * pi/2` (a small random input never reaches it),
+      and the diff against a bit-exact musl reference is zero. Like the other
+      transcendentals the contract is "agrees to 1 ulp"; `sin`/`cos`/`tan`
+      resolve from these ports in a freestanding binary, so `std.math`'s libm
+      surface is now complete.
     - **7c.6** (done) — variadic parameter packs. A function with a trailing
       `rest...` parameter was a lowering error ("variadic function",
       `PHASE 7c.3`); it now compiles. The child proto's prologue checks the
@@ -1030,8 +1055,15 @@ Slices, each independently shippable:
     section pinned at RVA 0x1000 so the IAT slots are constant and the prelude
     calls through them RIP-relative, and `IMAGE_FILE_RELOCS_STRIPPED` so a
     Windows with "Force ASLR" maps the non-PIE image instead of aborting it.
-    Covered by `tests/pe_test.cpp` (structure and, on Windows, execution) and
-    the `oskel.build_binary` CTest case on Windows (`tests/build_binary_pe.cmake`).
+    The image reserves 8 MiB of stack (`kPeStackReserve`), matching the Linux
+    default: the AOT runtime has no call-depth guard, so the recursion a native
+    binary reaches is bounded only by the OS stack, and the 1 MiB Windows
+    default killed a program Linux ran. Covered by `tests/pe_test.cpp`
+    (structure and, on Windows, execution) and the same `oskel.build_binary*`
+    CTest cases Linux runs (`tests/build_binary.cmake` builds the host's target,
+    so the whole fixture list exercises the PE on Windows too); the stack
+    reserve is guarded by `tests/native_build_deep_recursion.oskl`
+    (`oskel.build_binary_deep_recursion`).
   - **7f** (open) — FFI in the AOT backend. An `extern "C"` symbol (and a
     `native fn`) is a host binding the AOT backend cannot resolve: the compiler
     records the declaration in `bc.externs` as pure link metadata, but the
@@ -1043,6 +1075,29 @@ Slices, each independently shippable:
     (`ldd` reports "not a dynamic executable"): curated syscall stubs keep that
     invariant; an object + external link or a dynamic ELF break it. No slice is
     chosen yet.
+    - **7f.1** (done) — tolerance of an unused host declaration plus the first
+      curated stub. A `native fn`/`extern "C"` declaration binds a name to the
+      host function the host registered; the compiler emits one read of the name
+      for the declaration itself, so the lowerer counts reads against
+      declarations and treats only a *used* binding as a failure. This fixes the
+      original gap: `import std.math` declares ten `native fn` (`pow`, `sin`,
+      ...), and the build no longer fails when the program calls none of them
+      (only the pure Oskel `abs`/`min`/`max`/`clamp`). A used declaration
+      without a stub is a real limitation, so it fails with a dedicated message
+      (`native fn 'X' cannot be resolved by the AOT backend (PHASE 7f)`), while
+      `var x = x;` keeps the generic unassigned-global error. `sqrt` joins the
+      exact math builtins PHASE 7c.5b.3 already provides (`floor`, `ceil`,
+      `round`): `sqrtsd` is correctly rounded, so the hardware result and the
+      hosted `std::sqrt` agree bit for bit. This slice tightens that stub to the
+      hosted semantics (a NaN operand is not "negative", and the arity message
+      matches `sqrt() expects 1 argument, got N`). The libm primitives
+      (`exp`, `log`, `pow`, `sin`, `cos`, `tan`) resolve from the embedded musl
+      ports PHASE 7c.5b.4 adds, so a program that calls them now builds; a
+      `native fn` still without a stub (for example `clock`) is rejected instead
+      of compiling to a binary that disagrees with the VM.
+      `tests/native_build_math.oskl` and `tests/native_build_math_pure.oskl`
+      build and agree with the VM; `tests/native_build_native_error.oskl`
+      pins the rejection.
   - **7g** (done) — bare-metal x86-64 (multiboot). A third target,
     `x86_64-freestanding-sysv` (`oskel build --target
     x86_64-freestanding-sysv`), emits a multiboot 1 kernel that a boot loader
@@ -1137,7 +1192,12 @@ representation and the differential test is exact. The VM runs it through
 `VM::jitFor` at `CALL` and at `Runtime::call`, only when the JIT is enabled
 (the CLI turns it on; `--no-jit` turns it off; `oskelc` never sees it) and only
 when every argument is an integer and the arity matches, because the compiled
-body reads integer slots only. A tight integer loop is about 25x faster.
+body reads integer slots only. The compiled body also keeps every scalar slot
+in a physical CPU register instead of its 16-byte stack slot whenever the
+dataflow proves the slot only ever holds `nil`/`bool`/`int`: the register holds
+the raw payload and the tag is materialized only at the frame boundary, so a
+tight integer loop does almost no memory traffic. A tight integer loop is about
+130x faster than the interpreter.
 
 Later slices widen the subset (floats, then strings, then the boxed value
 runtime, then calls and guards) and add the tiering policy (compile after a
@@ -1181,7 +1241,7 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — open, no slice chosen)
-Phase 8: 🔶 in progress (JIT for the development VM, slice 1 done: integer leaf protos)
+Phase 8: 🔶 in progress (JIT for the development VM, slice 1 done: integer leaf protos with CPU-register allocation)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)
 

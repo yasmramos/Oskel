@@ -3,8 +3,7 @@
 # instruction, report the same message the VM reports and exit with the same
 # code (70), never reaching the instruction after it.
 #
-# Registered by CMakeLists.txt on Linux x86-64 only (the AOT backend targets
-# x86_64-linux-sysv). Expects:
+# Registered by CMakeLists.txt on every host the AOT backend targets. Expects:
 #   -DOSKEL_EXE=<path to the oskel executable>
 #   -DOSKEL_SCRIPT=<the .oskl file to build>
 #   -DOSKEL_EXPECTED_EXIT=<the runtime-error code the VM also uses>
@@ -13,7 +12,14 @@ if(NOT DEFINED OSKEL_EXE OR NOT DEFINED OSKEL_SCRIPT OR NOT DEFINED OSKEL_EXPECT
   message(FATAL_ERROR "aot_runtime_error.cmake requires OSKEL_EXE, OSKEL_SCRIPT and OSKEL_EXPECTED_EXIT")
 endif()
 
-set(out "${CMAKE_CURRENT_BINARY_DIR}/oskel_aot_runtime_error_output")
+# Match the host's executable suffix, so the binary is written and launched
+# under the name the platform expects (see build_binary.cmake).
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+  set(exe_suffix ".exe")
+else()
+  set(exe_suffix "")
+endif()
+set(out "${CMAKE_CURRENT_BINARY_DIR}/oskel_aot_runtime_error_output${exe_suffix}")
 file(REMOVE "${out}")
 
 execute_process(

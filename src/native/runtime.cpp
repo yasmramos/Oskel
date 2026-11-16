@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "native/dtoa.h"
+#include "native/mathlib.h"
 #include "native/parse_float.h"
 
 namespace {
@@ -4250,8 +4251,7 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     cg.jmp(finish);
 
     cg.bind(asFloat);
-    cg.movqToXmm(Xmm0, Rcx);
-    cg.cvtss2sd(Xmm0, Xmm0);
+    cg.movqToXmm(Xmm0, Rcx);      // a float payload is already widened binary64
     cg.jmp(finish);
 
     cg.bind(asDouble);
@@ -4382,6 +4382,78 @@ void emitBoolBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label truthy) {
   cg.movReg(Rdx, Rax);
   cg.movImm(Rax, kTagBool);
   epilogue(cg);
+}
+
+// `AotValue oskel_builtin_sqrt(AotValue* args, long argc, AotClosure* self)`:
+// the standard library's `sqrt` (PHASE 7c.5b.3), which the AOT backend provides
+// from `sqrtsd` instead of a host binding. `sqrtsd` is defined to be the
+// correctly-rounded square root, so the hardware result and the hosted
+// `std::sqrt` agree bit for bit (transcendentals like `pow`/`sin` do not, which
+// is why they are not stubbed and a program that uses one is rejected instead).
+//
+// The stub follows the hosted semantics: the operand must be a number (int,
+// float or double), a negative argument is a run-time error, and the result is
+// always a `double` (`sqrt(9)` is `3.0`, like the hosted `Value(std::sqrt(...))`).
+// A float operand arrives already widened to binary64 (the boxed `Float` holds
+// the widened value), so the payload loads directly; widening it again would
+// read the binary32 bits as binary64 (PHASE 7f.1).
+void emitSqrtBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+                     const DataBlob& msgArgc, const DataBlob& msgType,
+                     const DataBlob& msgNegative) {
+  CodeGen::Label asInt = cg.newLabel();
+  CodeGen::Label asFloat = cg.newLabel();
+  CodeGen::Label asDouble = cg.newLabel();
+  CodeGen::Label compute = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label negative = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
+  cg.movFromMem(Rax, Rdi, 0);   // tag
+  cg.movFromMem(Rcx, Rdi, 8);   // payload
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Eq, asInt);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagFloat));
+  cg.jcc(Jcc::Eq, asFloat);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
+  cg.jcc(Jcc::Eq, asDouble);
+  emitFailCall(cg, fail, msgType);
+
+  cg.bind(asInt);
+  cg.cvtsi2sd(Xmm0, Rcx);
+  cg.jmp(compute);
+
+  cg.bind(asFloat);
+  cg.movqToXmm(Xmm0, Rcx);      // a float payload is already widened binary64
+  cg.jmp(compute);
+
+  cg.bind(asDouble);
+  cg.movqToXmm(Xmm0, Rcx);      // a double payload is already binary64
+
+  cg.bind(compute);
+  // Reject `value < 0`, the hosted check. `ucomisd` sets CF for "below", but a
+  // NaN (unordered) also sets CF (with PF=1), so the parity branch comes first:
+  // a NaN is not below zero and reaches `sqrtsd`, which returns NaN, exactly
+  // like `std::sqrt(NaN)`.
+  CodeGen::Label sqrtNow = cg.newLabel();
+  cg.xorps(Xmm1, Xmm1);
+  cg.ucomisd(Xmm0, Xmm1);
+  cg.jcc(Jcc::P, sqrtNow);      // unordered (NaN): not negative
+  cg.jcc(Jcc::B, negative);     // CF=1 and ordered: value < 0
+
+  cg.bind(sqrtNow);
+  cg.sqrtsd(Xmm0, Xmm0);
+  cg.movqFromXmm(Rdx, Xmm0);
+  cg.movImm(Rax, kTagDouble);
+  epilogue(cg);
+
+  cg.bind(badArgc);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(negative);
+  emitFailCall(cg, fail, msgNegative);
 }
 
 // `AotValue oskel_builtin_ord(AotValue* args, long argc, AotClosure* self)`: the
@@ -4906,65 +4978,97 @@ void emitRoundingBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   epilogue(cg);
 }
 
-// `AotValue oskel_builtin_sqrt(AotValue* args, long argc, AotClosure* self)`: the
-// public `sqrt`. `sqrtsd` is correctly rounded for every input, so it matches
-// `std::sqrt` bit for bit. An int operand is converted to binary64 first (the
-// hosted `wantNumber` accepts it); a negative operand fails with the hosted
-// message. `sqrt(-0.0)` is -0.0 and `sqrt(NaN)` is NaN, neither of which is a
-// negative value.
-void emitSqrtBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
-                     const DataBlob& msgType, const DataBlob& msgNegative) {
-  constexpr int Xmm0 = kXmmBase + 0;
-  constexpr int Xmm1 = kXmmBase + 1;
-
+// Load the `AotValue` argument at `byteOffset` in the window in rdi and convert
+// it to binary64 in `xmm`. The window grows down, so `args[0]` is at offset 0
+// and `args[1]` at -16. An int is converted, a float/double is reinterpreted,
+// anything else fails with `message`. Only rax/rcx and `xmm` are touched, so rdi
+// survives and a second argument can be loaded afterwards.
+void emitNumberArg(CodeGen& cg, int byteOffset, int xmm, CodeGen::Label fail,
+                   const DataBlob& message) {
   CodeGen::Label asInt = cg.newLabel();
   CodeGen::Label asNumber = cg.newLabel();
-  CodeGen::Label badArgc = cg.newLabel();
-  CodeGen::Label check = cg.newLabel();
-  CodeGen::Label negative = cg.newLabel();
-  CodeGen::Label compute = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
-
-  cg.bind(label);
-  prologue(cg);
-  cg.cmpImm32(Rsi, 1);
-  cg.jcc(Jcc::Ne, badArgc);
-  cg.movFromMem(Rax, Rdi, 0);   // tag
-  cg.movFromMem(Rcx, Rdi, 8);   // payload
+  cg.movFromMem(Rax, Rdi, byteOffset);      // tag
+  cg.movFromMem(Rcx, Rdi, byteOffset + 8);  // payload
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
   cg.jcc(Jcc::Eq, asInt);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagFloat));
   cg.jcc(Jcc::Eq, asNumber);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
   cg.jcc(Jcc::Eq, asNumber);
-  emitFailCall(cg, fail, msgType);
+  emitFailCall(cg, fail, message);
+  cg.bind(asInt);
+  cg.cvtsi2sd(xmm, Rcx);
+  cg.jmp(done);
+  cg.bind(asNumber);
+  cg.movqToXmm(xmm, Rcx);
+  cg.bind(done);
+}
+
+// `oskel_builtin_exp` / `oskel_builtin_log`: one numeric argument converted to
+// binary64 and handed to the embedded routine (`mathCore`), the result tagged
+// Double. `log` additionally rejects a non-positive operand, matching the hosted
+// `if (value <= 0) fail`; a NaN is not "<= 0" and passes through.
+void emitTranscendentalBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+                               CodeGen::Label mathCore, const DataBlob& message,
+                               bool positiveOnly, const DataBlob& msgNonPositive) {
+  constexpr int Xmm0 = kXmmBase + 0;
+  constexpr int Xmm1 = kXmmBase + 1;
+
+  CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label check = cg.newLabel();
+  CodeGen::Label nonPositive = cg.newLabel();
+  CodeGen::Label compute = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
+  emitNumberArg(cg, 0, Xmm0, fail, message);
+  cg.jmp(check);
 
   cg.bind(badArgc);
-  emitFailCall(cg, fail, msgType);
-
-  cg.bind(asInt);
-  cg.cvtsi2sd(Xmm0, Rcx);
-  cg.jmp(check);
-  cg.bind(asNumber);
-  cg.movqToXmm(Xmm0, Rcx);
+  emitFailCall(cg, fail, message);
 
   cg.bind(check);
-  // A negative operand fails; NaN is unordered (PF=1) and -0.0 compares equal to
-  // +0.0, so neither is a negative value.
-  cg.xorps(Xmm1, Xmm1);
-  cg.ucomisd(Xmm0, Xmm1);
-  cg.jcc(Jcc::B, negative);     // x < 0
+  if (positiveOnly) {
+    cg.xorps(Xmm1, Xmm1);
+    cg.ucomisd(Xmm0, Xmm1);
+    cg.jcc(Jcc::P, compute);         // NaN: not <= 0
+    cg.jcc(Jcc::Be, nonPositive);    // value <= 0
+  }
   cg.jmp(compute);
 
-  cg.bind(negative);
-  emitFailCall(cg, fail, msgNegative);
+  cg.bind(nonPositive);
+  emitFailCall(cg, fail, msgNonPositive);
 
   cg.bind(compute);
-  cg.sqrtsd(Xmm0, Xmm0);
-
-  cg.bind(done);
+  cg.callLabel(mathCore);
   emitMathReturn(cg);
   epilogue(cg);
+}
+
+// `oskel_builtin_pow`: two numeric arguments, both converted to binary64 in
+// xmm0/xmm1, then the embedded `pow`. A non-number operand fails.
+void emitPowBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+                    CodeGen::Label mathCore, const DataBlob& message) {
+  constexpr int Xmm0 = kXmmBase + 0;
+  constexpr int Xmm1 = kXmmBase + 1;
+
+  CodeGen::Label badArgc = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.cmpImm32(Rsi, 2);
+  cg.jcc(Jcc::Ne, badArgc);
+  emitNumberArg(cg, 0, Xmm0, fail, message);
+  emitNumberArg(cg, -16, Xmm1, fail, message);
+  cg.callLabel(mathCore);
+  emitMathReturn(cg);
+  epilogue(cg);
+
+  cg.bind(badArgc);
+  emitFailCall(cg, fail, message);
 }
 
 // `void oskel_sb_init(AotStringBuilder* sb, char* data, long capacity)`: start a
@@ -5868,8 +5972,18 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgFloorType = addText("oskel: floor() expects a number argument\n");
   DataBlob msgCeilType = addText("oskel: ceil() expects a number argument\n");
   DataBlob msgRoundType = addText("oskel: round() expects a number argument\n");
+  // The curated `sqrt` stub (PHASE 7f.1). The messages mirror the hosted
+  // builtin's, which the CLI prefixes with `file:line:col: runtime error: `.
+  DataBlob msgSqrtArgc = addText("oskel: sqrt() expects 1 argument\n");
   DataBlob msgSqrtType = addText("oskel: sqrt() expects a number argument\n");
   DataBlob msgSqrtNegative = addText("oskel: sqrt() of a negative number\n");
+  DataBlob msgExpType = addText("oskel: exp() expects a number argument\n");
+  DataBlob msgLogType = addText("oskel: log() expects a number argument\n");
+  DataBlob msgLogNonPositive = addText("oskel: log() of a non-positive number\n");
+  DataBlob msgPowType = addText("oskel: pow() expects a number argument\n");
+  DataBlob msgSinType = addText("oskel: sin() expects a number argument\n");
+  DataBlob msgCosType = addText("oskel: cos() expects a number argument\n");
+  DataBlob msgTanType = addText("oskel: tan() expects a number argument\n");
 
   CodeGen::Label fail = cg.newLabel();
   CodeGen::Label failDynamic = cg.newLabel();
@@ -6036,7 +6150,26 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitRoundingBuiltin(cg, handles.floorBuiltin, fail, msgFloorType, AotRoundMode::Floor);
   emitRoundingBuiltin(cg, handles.ceilBuiltin, fail, msgCeilType, AotRoundMode::Ceil);
   emitRoundingBuiltin(cg, handles.roundBuiltin, fail, msgRoundType, AotRoundMode::Round);
-  emitSqrtBuiltin(cg, handles.sqrtBuiltin, fail, msgSqrtType, msgSqrtNegative);
+  emitSqrtBuiltin(cg, handles.sqrtBuiltin, fail, msgSqrtArgc, msgSqrtType,
+                  msgSqrtNegative);
+  // The transcendental builtins (PHASE 7c.5b.4a). The three routines share one
+  // set of tables; `mathlib::emitMathLib` emits them plus the wrappers' targets.
+  mathlib::MathHandles math = mathlib::newMathHandles(cg);
+  mathlib::emitMathLib(cg, math);
+  emitTranscendentalBuiltin(cg, handles.expBuiltin, fail, math.exp, msgExpType, false,
+                            msgLogNonPositive);
+  emitTranscendentalBuiltin(cg, handles.logBuiltin, fail, math.log, msgLogType, true,
+                            msgLogNonPositive);
+  emitPowBuiltin(cg, handles.powBuiltin, fail, math.pow, msgPowType);
+  // The trigonometric builtins (PHASE 7c.5b.4b). `sin`/`cos`/`tan` share the
+  // `__rem_pio2` reduction and the `__sin`/`__cos` kernels; `emitMathLib` already
+  // emitted them above.
+  emitTranscendentalBuiltin(cg, handles.sinBuiltin, fail, math.sin, msgSinType, false,
+                            msgLogNonPositive);
+  emitTranscendentalBuiltin(cg, handles.cosBuiltin, fail, math.cos, msgCosType, false,
+                            msgLogNonPositive);
+  emitTranscendentalBuiltin(cg, handles.tanBuiltin, fail, math.tan, msgTanType, false,
+                            msgLogNonPositive);
   emitIntTextParser(cg, handles.intTextParser, fail, msgConvertInt);
   dtoa::emitDtoa(cg, dtoaHandles);
   parse_float::emitParseFloat(cg, parseFloatHandles, dtoaHandles);

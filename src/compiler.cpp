@@ -1571,6 +1571,19 @@ bool Compiler::recordImportBinding(const std::string& visible, ImportBinding::Ki
   // §18.3).
   if (userGlobals_.find(visible) != userGlobals_.end()) return false;
 
+  // A declared `struct` is compile-time metadata, not a value binding, so
+  // `userGlobals_` does not track it. An import must not silently take the name
+  // either: `Name { ... }` would stay a struct literal (that form wins), hiding
+  // the import and leaving `Name.member` to fail with "undefined variable". The
+  // winner would be undefined, so report the collision. `registerStructDecls`
+  // records every struct of the block before any statement compiles, so this
+  // catches both source orders (docs/language.md §18.3).
+  if (structDefs_.find(visible) != structDefs_.end()) {
+    fail("'" + visible + "' is ambiguous between struct '" + visible + "' and module '" +
+             module + "'; rename one of them to disambiguate",
+         line, col);
+  }
+
   auto existing = importedNames_.find(visible);
   if (existing == importedNames_.end()) {
     importedNames_[visible] = ImportBinding{kind, module};
@@ -1633,6 +1646,12 @@ void Compiler::compileFnDecl(const FnDeclStmt& fn, int line, int col) {
       rejectUnionForFfi(param.type, "parameter of native function '" + fn.name + "'", line, col);
     }
     rejectUnionForFfi(fn.returnType, "return type of native function '" + fn.name + "'", line, col);
+    // Record the name on the proto. The declaration reads the name and stores
+    // it, the same shape as a self-assignment (`var x = x;`), so the AOT backend
+    // needs this list to tell a host binding (which it resolves from a stub, or
+    // reports only when read) from a genuine self-read (always a run-time
+    // error).
+    bc_.nativeFns.push_back(fn.name);
     emit(OpCode::GETGLOBAL, reg, addString(fn.name));
   } else {
     int child = compileFunctionProto(fn.name, fn.params, fn.body, line, col, fn.returnType);
@@ -1704,6 +1723,15 @@ void Compiler::compileStructDecl(const StructDeclStmt& decl, int line, int col) 
                describeType(field.type) + "': a struct can cross the C boundary",
            line, col);
     }
+  }
+  // An import binding must not share the struct's name. Within one chunk
+  // `recordImportBinding` already reports this (every struct is pre-registered
+  // before the imports compile); this check covers the REPL, where the import
+  // and the struct arrive in different entries (docs/language.md §18.3).
+  if (importedNames_.find(decl.name) != importedNames_.end()) {
+    fail("'" + decl.name + "' is ambiguous between struct '" + decl.name + "' and module '" +
+             importedNames_[decl.name].module + "'; rename one of them to disambiguate",
+         line, col);
   }
   structDefs_[decl.name] = decl.fields;
 }

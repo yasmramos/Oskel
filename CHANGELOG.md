@@ -28,6 +28,31 @@ may change between minor versions.
   checked to be an immutable binding; a `var`, an unknown name or a captured
   binding is a compile error, so a label stays a fixed value. No new opcode:
   the label lowers to the same `EQ` (or `IN` for a range) against the subject.
+- AOT: `oskel build` no longer fails on an unused host declaration (PHASE 7f.1).
+  A `native fn`/`extern "C"` declaration binds a name to a host function; the
+  lowerer now counts reads against declarations, so a program that imports a
+  module declaring host functions (`std.math` declares ten) builds even when it
+  calls none of them — the original gap, where `import std.math` broke the build
+  for a program that used only the pure Oskel `abs`/`min`/`max`/`clamp`. A *used*
+  declaration without a stub fails with a dedicated message
+  (`native fn 'X' cannot be resolved by the AOT backend (PHASE 7f)`) instead of
+  the generic unassigned-global error a typo produces. `sqrt` is seeded from the
+  exact `sqrtsd` stub, so `native fn sqrt` resolves without a host; the libm
+  primitives (`exp`, `log`, `pow`, `sin`, `cos`, `tan`) resolve from the embedded
+  musl ports (PHASE 7c.5b.4).
+- AOT: the transcendental builtins `exp`, `log` and `pow` (PHASE 7c.5b.4a) and
+  the trigonometric builtins `sin`, `cos` and `tan` (PHASE 7c.5b.4b) are now
+  available in a freestanding binary. The development engine resolves them
+  through the host's libm, which a freestanding AOT binary cannot link, so the
+  musl routines (MIT, Arm Limited) are emitted directly as x86-64 through
+  `CodeGen` (the approach already used for `dtoa` and `parse_float`) and the
+  runtime stays libc-free. `exp`/`log`/`pow` port the musl kernels and the
+  `pow` special cases; the trigonometric family ports `__rem_pio2` (with its
+  large-argument helper), the `__sin`/`__cos`/`__tan` kernels and the public
+  entry points. The wrappers do the arity/type checks and the `log`
+  non-positive check, and are seeded into their global slots like the other
+  builtins, so neither the compiler nor the bytecode changes. glibc is not
+  correctly rounded for these functions, so the contract is "agrees to 1 ulp".
 - `struct` literals support field shorthand: `Point { x, y }` is sugar for
   `Point { x: x, y: y }`, taking each value from the variable of the same name
   in scope. The shorthand and the `name: value` form mix freely in one literal
@@ -72,6 +97,28 @@ may change between minor versions.
 
 ### Changed
 
+- The development-engine JIT keeps each scalar slot in a physical CPU register
+  instead of its 16-byte stack slot. The bytecode contract is untouched (no new
+  opcode, no superinstruction, no runtime specialization): the JIT still lowers
+  each opcode 1:1, but a slot the dataflow proves only ever holds
+  `nil`/`bool`/`int` now lives in `rax`/`rcx`/`rdx`/`rsi`/`rdi`/`r8`/`r9` with
+  the raw payload, and the tag is materialized only at the frame boundary. A
+  slot that changes scalar kind (a `bool` comparison feeding an `int` slot and
+  back) stays in its register, because the kind at each use is read from the
+  dataflow state rather than fixed per slot. A tight integer loop is now about
+  130x faster than the interpreter (about 5x faster than the previous
+  stack-slot JIT), and the differential suite still proves the compiled body
+  identical to the interpreter for every accepted proto.
+- The `oskel build` CTest cases now run the same fixture list on Windows as on
+  Linux. Windows registered only two cases (`build_binary` and
+  `build_binary_deep_recursion`) against Linux's ten, so the Windows PE path was
+  exercised by two programs while the shared AOT backend was covered by ten —
+  the gap the 1 MiB stack reserve slipped through. The runners
+  (`tests/build_binary.cmake`, `tests/build_error.cmake`,
+  `tests/aot_runtime_error.cmake`) are now portable: the Windows output keeps
+  its `.exe` suffix and the static-link `ldd` check is Linux-only. The
+  Windows-only `tests/build_binary_pe.cmake` is gone, and one list registers
+  every case on both hosts.
 - The AOT backend compares two arrays or maps by content, like the hosted
   engine, instead of by pointer identity. `[1, 2] == [1, 2]` is now true in a
   compiled binary, and `in` over an array of arrays matches the VM. The
@@ -97,6 +144,24 @@ may change between minor versions.
 
 ### Fixed
 
+- A `struct` name and an import binding the same name no longer coexist
+  silently. `struct Point { ... }` plus `import std.math as Point;` used to
+  leave both alive: `Point { ... }` stayed a struct literal while
+  `Point.sqrt(9.0)` resolved to the alias, so the winner was undefined. The
+  collision is now a compile error in both source orders and for every import
+  form (alias, wildcard, selective), reported by `recordImportBinding` within a
+  chunk and by `compileStructDecl` across REPL entries. A struct is
+  compile-time metadata, not a value binding, so it is not covered by the
+  "a local `let`/`var`/`fn` wins over an import" rule.
+- A Windows AOT binary was killed with no message when a program recursed a few
+  thousand frames with a non-trivial frame. The PE emitter reserved only 1 MiB
+  of stack (the Windows default) while the AOT runtime has no call-depth guard,
+  so the recursion a native binary reaches is bounded only by the OS stack;
+  Linux hands a process 8 MiB (`ulimit -s`), so the same program ran there and
+  was torn down silently on Windows (exit code 1, no output). The emitter now
+  reserves 8 MiB, matching Linux, and `pe_test` pins the value. Covered by
+  `tests/native_build_deep_recursion.oskl` (`oskel.build_binary_deep_recursion`
+  on Linux and Windows).
 - `chr(code)` now rejects a lone surrogate (U+D800..U+DFFF) instead of
   encoding it as CESU-8 (three bytes, invalid UTF-8), matching the `\uXXXX`
   escape. The check lives in the builtin, so the VM and the AOT backend reject
@@ -116,6 +181,12 @@ may change between minor versions.
   `extern "C" symbol '...' was not found in the host`. The search now also
   covers `kernel32.dll`, matching the set of modules `dlsym(RTLD_DEFAULT)`
   reaches on POSIX; the CRT names still resolve.
+- AOT: `double(f)` on a `float` operand returned `0` instead of the widened
+  value. A boxed `Float` already holds its value widened to binary64, but the
+  `double` builtin widened the payload a second time, reading the binary32 bits
+  as binary64. The `sqrt` stub had the same shape, so both are fixed together.
+  `tests/native_build_conversions.oskl` pins the conversions against the VM
+  (the script tests that cover them only run on the hosted engine).
 - The PE emitter padded the image only to the end of `.text`'s bytes, not to
   the `SizeOfRawData` the section header declares, so the file could end up to
   `FileAlignment` bytes short of the image it described. Windows rejected such

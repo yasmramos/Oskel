@@ -119,14 +119,14 @@ static void testUnassignedGlobalThrows() {
 
 static void testHostBindingThrows() {
   // `native fn` and `extern "C"` compile to `GETGLOBAL N; SETGLOBAL N` (the
-  // host registered N; the read resolves it). The AOT backend has no host, so
-  // the name is unassigned and must be reported, not lowered to a binary that
-  // calls nil at run time.
+  // host registered N; the read resolves it). With no metadata on the proto the
+  // shape is indistinguishable from a self-read, so it is reported as an
+  // unassigned global, the same message a typo produces.
   auto proto = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::SETGLOBAL, 0, 0),
                           instr(OpCode::HALT)},
                          {Value(std::string("hostFn"))}, 1);
   check(loweringThrows(proto, "global 'hostFn' is read but never assigned"),
-        "a native/extern host binding throws");
+        "an undeclared host-binding shape throws");
 
   // A genuine self-assignment (`var x = x;`) has the same shape and the same
   // hosted behaviour (an undefined-variable error), so it throws too.
@@ -145,25 +145,69 @@ static void testHostBindingThrows() {
   check(!chunk.code.empty(), "an ordinary global assignment still lowers");
 }
 
-static void testExternSymbolGetsDedicatedMessage() {
-  // When the proto carries an `extern "C"` declaration for the name, the read
-  // is a C symbol the host would provide, not a typo: the lowerer names the
-  // real problem (the AOT backend has no host) instead of the generic
-  // unassigned-global message. `proto.externs` is the compiler's link metadata.
+static void testUnusedHostBindingLowers() {
+  // A `native fn` the program never uses is a declaration and nothing more: the
+  // hosted engine installs the host function, and the AOT backend binds the
+  // name to nil (a slot with no seed). It must not fail the build, so a module
+  // that declares host functions (`std.math` declares `pow`, `sin`, ...) can be
+  // imported by a program that calls none of them. The metadata on the proto is
+  // what tells the declaration apart from a self-read.
   auto proto = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::SETGLOBAL, 0, 0),
                           instr(OpCode::HALT)},
-                         {Value(std::string("getpid"))}, 1);
+                         {Value(std::string("sqrt"))}, 1);
+  proto.nativeFns.push_back("sqrt");
+  LoweredChunk chunk = lower(proto);
+  check(!chunk.code.empty(), "an unused native declaration lowers");
+
+  // The same for an `extern "C"` declaration the program never calls.
+  auto ext = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::SETGLOBAL, 0, 0),
+                        instr(OpCode::HALT)},
+                       {Value(std::string("getpid"))}, 1);
+  ext.externs.push_back(ExternSymbol{"getpid", {}, ffi::TypeSpec{}});
+  LoweredChunk extChunk = lower(ext);
+  check(!extChunk.code.empty(), "an unused extern declaration lowers");
+}
+
+static void testExternSymbolGetsDedicatedMessage() {
+  // When the proto carries an `extern "C"` declaration for the name *and* the
+  // program reads it beyond the declaration's own self-read, the read is a C
+  // symbol the host would provide, not a typo: the lowerer names the real
+  // problem (the AOT backend has no host) instead of the generic
+  // unassigned-global message. `proto.externs` is the compiler's link metadata,
+  // and the extra `GETGLOBAL` is the use.
+  auto proto = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::SETGLOBAL, 0, 0),
+                          instr(OpCode::GETGLOBAL, 1, 0), instr(OpCode::HALT)},
+                         {Value(std::string("getpid"))}, 2);
   proto.externs.push_back(ExternSymbol{"getpid", {}, ffi::TypeSpec{}});
   check(loweringThrows(proto, "extern \"C\" symbol 'getpid' cannot be resolved"),
         "an extern symbol read names the AOT limitation, not a typo");
 
+  // A `native fn` that is used (read beyond its declaration) is named too, with
+  // a message that says `native fn` rather than `extern "C"`. `clock` is a host
+  // binding with no curated stub (the libm ports cover `sqrt`/`pow`/`sin`/...).
+  auto native = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::SETGLOBAL, 0, 0),
+                           instr(OpCode::GETGLOBAL, 1, 0), instr(OpCode::HALT)},
+                          {Value(std::string("clock"))}, 2);
+  native.nativeFns.push_back("clock");
+  check(loweringThrows(native, "native fn 'clock' cannot be resolved"),
+        "a used native fn names the AOT limitation");
+
   // The dedicated message is only for a declared symbol: an undeclared read of
   // the same shape still gets the generic message.
   auto typo = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::SETGLOBAL, 0, 0),
-                         instr(OpCode::HALT)},
-                        {Value(std::string("getpid"))}, 1);
+                         instr(OpCode::GETGLOBAL, 1, 0), instr(OpCode::HALT)},
+                        {Value(std::string("getpid"))}, 2);
   check(loweringThrows(typo, "global 'getpid' is read but never assigned"),
         "an undeclared read keeps the generic message");
+
+  // A binding with a curated stub is resolved, not reported: `sqrt` is seeded
+  // by the AOT runtime, so even a used declaration lowers.
+  auto stubbed = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::SETGLOBAL, 0, 0),
+                            instr(OpCode::GETGLOBAL, 1, 0), instr(OpCode::HALT)},
+                           {Value(std::string("sqrt"))}, 2);
+  stubbed.nativeFns.push_back("sqrt");
+  LoweredChunk stubbedChunk = lower(stubbed);
+  check(!stubbedChunk.code.empty(), "a used stub-backed binding lowers");
 }
 
 static void testInvalidUnopSelectorThrows() {
@@ -879,6 +923,7 @@ int main() {
   testBadJumpTargetThrows();
   testUnassignedGlobalThrows();
   testHostBindingThrows();
+  testUnusedHostBindingLowers();
   testExternSymbolGetsDedicatedMessage();
   testInvalidUnopSelectorThrows();
   testHaltInChildThrows();
