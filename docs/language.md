@@ -2028,6 +2028,65 @@ are never a machine address the program can dereference.
 | `ptrToInt(p)` | Reads the opaque integer token back. |
 | `free(p)` | Releases the handle's storage. |
 
+### 12.9 JSON
+
+`std.json` (import it first, see §18) parses and serializes JSON. It maps JSON
+onto Oskel's own values, so no new runtime type is introduced:
+
+| JSON | Oskel |
+| --- | --- |
+| `null` | `nil` |
+| `true` / `false` | `bool` |
+| number | `int` when it is an integer literal in the 64-bit range, `double` otherwise |
+| string | `string` |
+| array | `array` |
+| object | `map` |
+
+| Function | Description |
+| --- | --- |
+| `parse(text)` | Parses `text`; a malformed document is a runtime error naming the position. |
+| `isValid(text)` | `true` when `text` is a complete, well-formed JSON document. |
+| `tryParse(text)` | Parses without aborting: `{ok, value, error}` (see below). |
+| `stringify(value)` | Serializes `value` to compact JSON. |
+| `stringify(value, indent)` | Pretty-prints with `indent` spaces per level (`0` is compact). |
+
+Details:
+
+- A JSON number becomes an `int` when the literal is an integer that fits the
+  signed 64-bit range, and a `double` otherwise (a fraction, an exponent, or a
+  value outside the range). `1e3` and `1.0` are `double`s; `42` and
+  `-9223372036854775808` are `int`s.
+- Strings are UTF-8. The parser decodes the `\uXXXX` escapes, combining a
+  surrogate pair into one supplementary code point; a lone surrogate is a parse
+  error (matching `chr`, which refuses to encode one as invalid UTF-8).
+  `stringify` escapes the control characters and `"`/`\` and passes every other
+  code point through unescaped.
+- A duplicate object key keeps the last value, matching an Oskel map literal.
+- `stringify` refuses the values JSON cannot spell: a non-finite number
+  (`inf`/`nan`) and a value that is not one of the six above (a function, a
+  range, an error) are a runtime error.
+- The nesting depth is bounded at 256 levels; a deeper document is a parse
+  error rather than a stack overflow.
+- `tryParse` mirrors `pcall`'s shape: `{ok, value, error}` where `ok` is a
+  `bool`, `value` is the parsed value on success, and `error` is a message on
+  failure (or `nil`). `parse`, `isValid`, `tryParse` and `stringify` are
+  `@MustUse` (see §7.7).
+
+```oskel
+import std.json.*;
+
+let doc = {"name": "Ada", "age": 36, "tags": ["a", "b"]};
+let text = stringify(doc);
+print(text);                       // {"name":"Ada","age":36,"tags":["a","b"]}
+print(parse(text).age);            // 36
+print(stringify([1, 2], 2));       // [\n  1,\n  2\n]
+print(isValid("{bad}"));           // false
+```
+
+`std.json` is written in plain Oskel over the portable primitive surface, so it
+behaves identically on the development VM and under `oskel build` (the AOT
+backend).
+
 ---
 
 ## 13. Errors and diagnostics
@@ -2519,6 +2578,16 @@ import { sqrt } from std.math;
 
 print(std.math.sqrt(16));   // 4
 print(sqrt(25));            // 5
+```
+
+The standard library ships `std.math` (§12.3) and `std.json` (§12.9). Both are
+ordinary modules, so the same four import forms apply:
+
+```oskel
+import std.json;             // std.json.parse, std.json.stringify, ...
+import std.json.*;           // parse, stringify, ...
+import std.json as json;     // json.parse, json.stringify, ...
+import { parse, stringify } from std.json;
 ```
 
 ---

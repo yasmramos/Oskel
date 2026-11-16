@@ -1,0 +1,582 @@
+// Standard library: JSON.
+//
+// Imported as `import std.json;` (qualified: `std.json.parse`),
+// `import std.json.*;` (unqualified: `parse`), or
+// `import { parse, stringify } from std.json;` (selective).
+//
+// JSON maps onto Oskel's own values, so no new runtime type is added:
+//
+//   JSON null    -> nil          Oskel nil     -> null
+//   JSON boolean -> bool         Oskel bool    -> boolean
+//   JSON number  -> int|double   Oskel int     -> integer
+//   JSON string  -> string       Oskel double  -> number
+//   JSON array   -> array        Oskel array   -> array
+//   JSON object  -> map          Oskel map     -> object
+//
+// A JSON number becomes an `int` when it is an integer literal that fits the
+// 64-bit range, and a `double` otherwise (a fraction, an exponent, or a value
+// outside the range). `stringify` refuses the values JSON cannot spell: a
+// non-finite number (inf/nan) and a value that is not one of the six above (a
+// function, a range, an error).
+//
+// The module is written in plain Oskel over the portable primitive surface
+// (indexing, slicing, `len`, `ord`/`chr`, `int`/`double`/`str`/`type`, `panic`,
+// `for ... in`, closures), so it behaves identically on the development VM and
+// under `oskel build` (the AOT backend). It deliberately avoids the collection
+// and string methods (`.split`, `.map`, `.join`, ...) and the `pcall`/`error`
+// builtins, which the AOT backend does not implement yet (DEVELOPMENT.md PHASE
+// 7f and the backlog), so importing it never breaks a native build.
+
+// --- scanning state ---------------------------------------------------------
+//
+// A parse walks `text` with a mutable cursor. The state is a map (passed by
+// reference) so the recursive descent shares one cursor: `pos` is the
+// code-point index of the next character and `error` is nil until a failure
+// sets it to a message. A failed parse leaves `error` set and returns nil; the
+// caller checks `error` rather than the return value, because `nil` is also a
+// valid JSON value (null).
+
+fn _peek(state) {
+  if (state.pos >= len(state.text)) {
+    return nil;
+  }
+  return state.text[state.pos];
+}
+
+fn _advance(state) {
+  let c = _peek(state);
+  state.pos = state.pos + 1;
+  return c;
+}
+
+fn _fail(state, message) {
+  if (state.error == nil) {
+    state.error = message;
+  }
+  return nil;
+}
+
+fn _isDigit(c) {
+  if (c == nil) {
+    return false;
+  }
+  let n = ord(c);
+  return n >= 48 && n <= 57;
+}
+
+fn _isSpace(c) {
+  return c == " " || c == "\t" || c == "\n" || c == "\r";
+}
+
+fn _skipSpace(state) {
+  while (_isSpace(_peek(state))) {
+    state.pos = state.pos + 1;
+  }
+}
+
+fn _hexValue(c) {
+  if (c == nil) {
+    return -1;
+  }
+  let n = ord(c);
+  if (n >= 48 && n <= 57) {
+    return n - 48;
+  }
+  if (n >= 97 && n <= 102) {
+    return n - 97 + 10;
+  }
+  if (n >= 65 && n <= 70) {
+    return n - 65 + 10;
+  }
+  return -1;
+}
+
+// --- strings ----------------------------------------------------------------
+
+fn _readHex4(state) {
+  var value = 0;
+  var i = 0;
+  while (i < 4) {
+    let h = _hexValue(_advance(state));
+    if (h < 0) {
+      _fail(state, "invalid \\u escape");
+      return 0;
+    }
+    value = value * 16 + h;
+    i = i + 1;
+  }
+  return value;
+}
+
+// Decodes the body of a `\uXXXX` escape (the `\u` is already consumed). A high
+// surrogate must be followed by its low surrogate and the pair is combined into
+// one supplementary code point; a lone surrogate is rejected, matching `chr`,
+// which refuses to encode a surrogate as invalid UTF-8.
+fn _readUnicode(state) {
+  let high = _readHex4(state);
+  if (state.error != nil) {
+    return "";
+  }
+  if (high >= 0xD800 && high <= 0xDBFF) {
+    if (_peek(state) == "\\") {
+      _advance(state);
+      if (_advance(state) != "u") {
+        _fail(state, "invalid surrogate pair in \\u escape");
+        return "";
+      }
+      let low = _readHex4(state);
+      if (state.error != nil) {
+        return "";
+      }
+      if (low < 0xDC00 || low > 0xDFFF) {
+        _fail(state, "invalid surrogate pair in \\u escape");
+        return "";
+      }
+      let code = 0x10000 + (high - 0xD800) * 0x400 + (low - 0xDC00);
+      return chr(code);
+    }
+    _fail(state, "lone surrogate in \\u escape");
+    return "";
+  }
+  if (high >= 0xDC00 && high <= 0xDFFF) {
+    _fail(state, "lone surrogate in \\u escape");
+    return "";
+  }
+  return chr(high);
+}
+
+fn _parseString(state) {
+  _advance(state);  // opening quote
+  var out = "";
+  while (true) {
+    let c = _peek(state);
+    if (c == nil) {
+      _fail(state, "unterminated string");
+      return nil;
+    }
+    if (c == "\"") {
+      _advance(state);
+      return out;
+    }
+    if (c == "\\") {
+      _advance(state);
+      let e = _advance(state);
+      if (e == "\"") {
+        out = out + "\"";
+      } else if (e == "\\") {
+        out = out + "\\";
+      } else if (e == "/") {
+        out = out + "/";
+      } else if (e == "b") {
+        out = out + chr(8);
+      } else if (e == "f") {
+        out = out + chr(12);
+      } else if (e == "n") {
+        out = out + "\n";
+      } else if (e == "r") {
+        out = out + "\r";
+      } else if (e == "t") {
+        out = out + "\t";
+      } else if (e == "u") {
+        out = out + _readUnicode(state);
+      } else {
+        _fail(state, "invalid escape sequence");
+        return nil;
+      }
+      if (state.error != nil) {
+        return nil;
+      }
+    } else {
+      if (ord(c) < 32) {
+        _fail(state, "unescaped control character in string");
+        return nil;
+      }
+      out = out + c;
+      _advance(state);
+    }
+  }
+}
+
+// --- numbers ----------------------------------------------------------------
+
+// True when a decimal digit string (no sign, no leading zeros beyond "0")
+// fits a signed 64-bit integer. The negative bound is one larger in magnitude,
+// so it is compared against 9223372036854775808.
+fn _fitsInt(digits, negative) {
+  if (len(digits) < 19) {
+    return true;
+  }
+  if (len(digits) > 19) {
+    return false;
+  }
+  let limit = negative ? "9223372036854775808" : "9223372036854775807";
+  return digits <= limit;
+}
+
+fn _parseNumber(state) {
+  let start = state.pos;
+  if (_peek(state) == "-") {
+    _advance(state);
+  }
+  if (_peek(state) == "0") {
+    _advance(state);
+  } else if (_isDigit(_peek(state))) {
+    while (_isDigit(_peek(state))) {
+      _advance(state);
+    }
+  } else {
+    _fail(state, "invalid number");
+    return nil;
+  }
+  var isFloat = false;
+  if (_peek(state) == ".") {
+    isFloat = true;
+    _advance(state);
+    if (!_isDigit(_peek(state))) {
+      _fail(state, "invalid number");
+      return nil;
+    }
+    while (_isDigit(_peek(state))) {
+      _advance(state);
+    }
+  }
+  let mark = _peek(state);
+  if (mark == "e" || mark == "E") {
+    isFloat = true;
+    _advance(state);
+    let sign = _peek(state);
+    if (sign == "+" || sign == "-") {
+      _advance(state);
+    }
+    if (!_isDigit(_peek(state))) {
+      _fail(state, "invalid number");
+      return nil;
+    }
+    while (_isDigit(_peek(state))) {
+      _advance(state);
+    }
+  }
+  let span = state.text[start:state.pos];
+  if (isFloat) {
+    return double(span);
+  }
+  let negative = span[0] == "-";
+  let digits = negative ? span[1:len(span)] : span;
+  if (_fitsInt(digits, negative)) {
+    return int(span);
+  }
+  return double(span);
+}
+
+// --- values -----------------------------------------------------------------
+
+const _MAX_DEPTH = 256;
+
+fn _parseValue(state, depth) {
+  _skipSpace(state);
+  let c = _peek(state);
+  if (c == nil) {
+    _fail(state, "unexpected end of input");
+    return nil;
+  }
+  if (c == "{") {
+    return _parseObject(state, depth);
+  }
+  if (c == "[") {
+    return _parseArray(state, depth);
+  }
+  if (c == "\"") {
+    return _parseString(state);
+  }
+  if (c == "t") {
+    return _parseWord(state, "true", true);
+  }
+  if (c == "f") {
+    return _parseWord(state, "false", false);
+  }
+  if (c == "n") {
+    return _parseWord(state, "null", nil);
+  }
+  return _parseNumber(state);
+}
+
+fn _parseWord(state, word, value) {
+  var i = 0;
+  while (i < len(word)) {
+    if (_peek(state) != word[i]) {
+      _fail(state, "invalid literal");
+      return nil;
+    }
+    _advance(state);
+    i = i + 1;
+  }
+  return value;
+}
+
+fn _parseArray(state, depth) {
+  if (depth >= _MAX_DEPTH) {
+    _fail(state, "maximum nesting depth exceeded");
+    return nil;
+  }
+  _advance(state);  // [
+  let items = [];
+  _skipSpace(state);
+  if (_peek(state) == "]") {
+    _advance(state);
+    return items;
+  }
+  while (true) {
+    let value = _parseValue(state, depth + 1);
+    if (state.error != nil) {
+      return nil;
+    }
+    items[len(items)] = value;
+    _skipSpace(state);
+    let c = _peek(state);
+    if (c == ",") {
+      _advance(state);
+      continue;
+    }
+    if (c == "]") {
+      _advance(state);
+      return items;
+    }
+    _fail(state, "expected ',' or ']'");
+    return nil;
+  }
+}
+
+fn _parseObject(state, depth) {
+  if (depth >= _MAX_DEPTH) {
+    _fail(state, "maximum nesting depth exceeded");
+    return nil;
+  }
+  _advance(state);  // {
+  let obj = {};
+  _skipSpace(state);
+  if (_peek(state) == "}") {
+    _advance(state);
+    return obj;
+  }
+  while (true) {
+    _skipSpace(state);
+    if (_peek(state) != "\"") {
+      _fail(state, "expected a string key");
+      return nil;
+    }
+    let key = _parseString(state);
+    if (state.error != nil) {
+      return nil;
+    }
+    _skipSpace(state);
+    if (_peek(state) != ":") {
+      _fail(state, "expected ':'");
+      return nil;
+    }
+    _advance(state);
+    let value = _parseValue(state, depth + 1);
+    if (state.error != nil) {
+      return nil;
+    }
+    obj[key] = value;
+    _skipSpace(state);
+    let c = _peek(state);
+    if (c == ",") {
+      _advance(state);
+      continue;
+    }
+    if (c == "}") {
+      _advance(state);
+      return obj;
+    }
+    _fail(state, "expected ',' or '}'");
+    return nil;
+  }
+}
+
+// --- public: parse ----------------------------------------------------------
+
+// Parses `text` and returns the Oskel value it describes. Malformed input is a
+// runtime error naming the position; use `isValid` or `tryParse` to test a
+// string without aborting.
+@MustUse
+fn parse(text) {
+  let state = {text: text, pos: 0, error: nil};
+  let value = _parseValue(state, 0);
+  if (state.error != nil) {
+    panic("json.parse: " + state.error + " (at position " + str(state.pos) + ")");
+  }
+  _skipSpace(state);
+  if (state.pos < len(text)) {
+    panic("json.parse: unexpected trailing characters (at position " + str(state.pos) + ")");
+  }
+  return value;
+}
+
+// True when `text` is a complete, well-formed JSON document.
+@MustUse
+fn isValid(text) {
+  let state = {text: text, pos: 0, error: nil};
+  _parseValue(state, 0);
+  if (state.error != nil) {
+    return false;
+  }
+  _skipSpace(state);
+  return state.pos >= len(text);
+}
+
+// Parses `text` without aborting: the result is `{ok, value, error}` where
+// `ok` is a bool, `value` is the parsed value on success, and `error` is a
+// message on failure (or nil). Mirrors `pcall`'s shape, but for a parse.
+@MustUse
+fn tryParse(text) {
+  let state = {text: text, pos: 0, error: nil};
+  let value = _parseValue(state, 0);
+  if (state.error == nil) {
+    _skipSpace(state);
+    if (state.pos < len(text)) {
+      state.error = "unexpected trailing characters";
+    }
+  }
+  if (state.error != nil) {
+    return {ok: false, value: nil, error: state.error};
+  }
+  return {ok: true, value: value, error: nil};
+}
+
+// --- public: stringify ------------------------------------------------------
+
+fn _hex4(n) {
+  let hex = "0123456789abcdef";
+  return hex[(n >> 12) & 15] + hex[(n >> 8) & 15] + hex[(n >> 4) & 15] + hex[n & 15];
+}
+
+fn _quote(text) {
+  var out = "\"";
+  var i = 0;
+  while (i < len(text)) {
+    let c = text[i];
+    let n = ord(c);
+    if (c == "\"") {
+      out = out + "\\\"";
+    } else if (c == "\\") {
+      out = out + "\\\\";
+    } else if (n == 8) {
+      out = out + "\\b";
+    } else if (n == 12) {
+      out = out + "\\f";
+    } else if (n == 10) {
+      out = out + "\\n";
+    } else if (n == 13) {
+      out = out + "\\r";
+    } else if (n == 9) {
+      out = out + "\\t";
+    } else if (n < 32) {
+      out = out + "\\u" + _hex4(n);
+    } else {
+      out = out + c;
+    }
+    i = i + 1;
+  }
+  return out + "\"";
+}
+
+fn _pad(width) {
+  var out = "";
+  var i = 0;
+  while (i < width) {
+    out = out + " ";
+    i = i + 1;
+  }
+  return out;
+}
+
+fn _encodeArray(items, indent, depth) {
+  if (len(items) == 0) {
+    return "[]";
+  }
+  let gap = indent > 0 ? ",\n" + _pad(indent * (depth + 1)) : ",";
+  var out = indent > 0 ? "[\n" + _pad(indent * (depth + 1)) : "[";
+  var i = 0;
+  while (i < len(items)) {
+    if (i > 0) {
+      out = out + gap;
+    }
+    out = out + _encode(items[i], indent, depth + 1);
+    i = i + 1;
+  }
+  return out + (indent > 0 ? "\n" + _pad(indent * depth) + "]" : "]");
+}
+
+fn _encodeObject(map, indent, depth) {
+  let keys = [];
+  for key in map {
+    keys[len(keys)] = key;
+  }
+  if (len(keys) == 0) {
+    return "{}";
+  }
+  let gap = indent > 0 ? ",\n" + _pad(indent * (depth + 1)) : ",";
+  let colon = indent > 0 ? ": " : ":";
+  var out = indent > 0 ? "{\n" + _pad(indent * (depth + 1)) : "{";
+  var i = 0;
+  while (i < len(keys)) {
+    if (i > 0) {
+      out = out + gap;
+    }
+    let key = keys[i];
+    out = out + _quote(key) + colon + _encode(map[key], indent, depth + 1);
+    i = i + 1;
+  }
+  return out + (indent > 0 ? "\n" + _pad(indent * depth) + "}" : "}");
+}
+
+fn _encode(value, indent, depth) {
+  if (value == nil) {
+    return "null";
+  }
+  let kind = type(value);
+  if (kind == "bool") {
+    return value ? "true" : "false";
+  }
+  if (kind == "int") {
+    return str(value);
+  }
+  if (kind == "double" || kind == "float") {
+    if (value != value) {
+      panic("json.stringify: cannot encode NaN");
+    }
+    if (value > 1.7976931348623157e308 || value < -1.7976931348623157e308) {
+      panic("json.stringify: cannot encode a non-finite number");
+    }
+    return str(value);
+  }
+  if (kind == "string") {
+    return _quote(value);
+  }
+  if (kind == "array") {
+    return _encodeArray(value, indent, depth);
+  }
+  if (kind == "map") {
+    return _encodeObject(value, indent, depth);
+  }
+  panic("json.stringify: cannot encode a value of type '" + kind + "'");
+}
+
+// Serializes `value` to JSON. With one argument the output is compact; with a
+// second argument `indent` (spaces per level, `0` for compact) it is pretty
+// printed. The order of an object's keys is the map's insertion order.
+@MustUse
+fn stringify(value, rest...) {
+  var indent = 0;
+  if (len(rest) > 0) {
+    if (type(rest[0]) != "int") {
+      panic("json.stringify: indent must be an int");
+    }
+    indent = rest[0];
+    if (indent < 0) {
+      panic("json.stringify: indent must be non-negative");
+    }
+  }
+  return _encode(value, indent, 0);
+}

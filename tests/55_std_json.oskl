@@ -1,0 +1,148 @@
+// std.json: parsing, serializing and the JSON/Oskel value mapping.
+//
+// JSON maps onto Oskel's own values (null -> nil, number -> int|double, object
+// -> map, array -> array), so a round trip through `stringify`/`parse` returns
+// an equal value and no new runtime type is introduced.
+
+import std.json;
+import std.json.*;
+
+// --- scalars ----------------------------------------------------------------
+assertEq(std.json.parse("42"), 42);
+assertEq(type(std.json.parse("42")), "int");
+assertEq(std.json.parse("-7"), -7);
+assertEq(std.json.parse("3.5"), 3.5);
+assertEq(type(std.json.parse("3.5")), "double");
+assertEq(std.json.parse("1e3"), 1000.0);
+assertEq(std.json.parse("1.0e2"), 100.0);
+assertEq(std.json.parse("0.5"), 0.5);
+assertEq(std.json.parse("\"hi\""), "hi");
+assertEq(std.json.parse("true"), true);
+assertEq(std.json.parse("false"), false);
+assertEq(std.json.parse("null"), nil);
+assertEq(std.json.parse(" 42 "), 42);
+
+// Integer literals become `int` while they fit the 64-bit range, and a `double`
+// beyond it (the value is preserved as a binary64 approximation).
+assertEq(std.json.parse("9223372036854775807"), 9223372036854775807);
+assertEq(type(std.json.parse("9223372036854775807")), "int");
+assertEq(std.json.parse("-9223372036854775808"), -9223372036854775808);
+assertEq(type(std.json.parse("-9223372036854775808")), "int");
+assertEq(type(std.json.parse("9223372036854775808")), "double");
+assertEq(type(std.json.parse("-9223372036854775809")), "double");
+assertEq(type(std.json.parse("100000000000000000000")), "double");
+
+// --- strings and escapes ----------------------------------------------------
+assertEq(std.json.parse("\"a\\nb\""), "a\nb");
+assertEq(std.json.parse("\"a\\tb\""), "a\tb");
+assertEq(std.json.parse("\"a\\rb\""), "a\rb");
+assertEq(std.json.parse("\"a\\\"b\""), "a\"b");
+assertEq(std.json.parse("\"a\\\\b\""), "a\\b");
+assertEq(std.json.parse("\"a\\/b\""), "a/b");
+assertEq(std.json.parse("\"\\b\\f\""), chr(8) + chr(12));
+assertEq(std.json.parse("\"\\u0041\""), "A");
+assertEq(std.json.parse("\"\\u00e9\\u00E9\""), "éé");
+assertEq(std.json.parse("\"\\ud83d\\ude00\""), "😀");
+assertEq(len(std.json.parse("\"\\ud83d\\ude00\"")), 1);
+
+// --- arrays and objects -----------------------------------------------------
+assertEq(std.json.parse("[]"), []);
+assertEq(std.json.parse("{}"), {});
+assertEq(std.json.parse("[1, 2, 3]"), [1, 2, 3]);
+assertEq(std.json.parse("[1, [2, [3]]]"), [1, [2, [3]]]);
+assertEq(std.json.parse("{\"a\": 1, \"b\": 2}"), {a: 1, b: 2});
+assertEq(std.json.parse("{\"a\": [true, null, \"x\"]}"), {a: [true, nil, "x"]});
+assertEq(std.json.parse("  {  \"a\" : 1  }  ").a, 1);
+
+// A duplicate key keeps the last value, matching Oskel map literals.
+assertEq(std.json.parse("{\"a\": 1, \"a\": 2}"), {a: 2});
+
+// --- stringify: compact and indented ----------------------------------------
+assertEq(std.json.stringify(nil), "null");
+assertEq(std.json.stringify(true), "true");
+assertEq(std.json.stringify(false), "false");
+assertEq(std.json.stringify(42), "42");
+assertEq(std.json.stringify(3.5), "3.5");
+assertEq(std.json.stringify("hi"), "\"hi\"");
+assertEq(std.json.stringify([1, 2, 3]), "[1,2,3]");
+assertEq(std.json.stringify([]), "[]");
+assertEq(std.json.stringify({}), "{}");
+assertEq(std.json.stringify({a: 1, b: [true, nil, "x"]}), "{\"a\":1,\"b\":[true,null,\"x\"]}");
+
+// The string escapes are the inverse of the parser's.
+assertEq(std.json.stringify("a\"b\\c"), "\"a\\\"b\\\\c\"");
+assertEq(std.json.stringify("a\nb"), "\"a\\nb\"");
+assertEq(std.json.stringify("tab\there"), "\"tab\\there\"");
+assertEq(std.json.stringify(chr(8) + chr(12)), "\"\\b\\f\"");
+assertEq(std.json.stringify(chr(1) + chr(31)), "\"\\u0001\\u001f\"");
+
+// An indent (spaces per level) pretty-prints; zero is compact.
+assertEq(std.json.stringify([1, 2, 3], 2), "[\n  1,\n  2,\n  3\n]");
+assertEq(std.json.stringify({a: 1}, 2), "{\n  \"a\": 1\n}");
+assertEq(
+  std.json.stringify({"a": [1, {"b": 2}]}, 2),
+  "{\n  \"a\": [\n    1,\n    {\n      \"b\": 2\n    }\n  ]\n}"
+);
+assertEq(std.json.stringify([1], 0), "[1]");
+
+// --- round trips ------------------------------------------------------------
+let doc = {"name": "Ada", "age": 36, "tags": ["a", "b"], "meta": {"ok": true, "score": 1.5}};
+let text = std.json.stringify(doc);
+assertEq(std.json.parse(text), doc);
+assertEq(std.json.stringify(std.json.parse(text)), text);
+
+let nested = [1, [2, [3, [4]]], {"x": [5, 6]}];
+assertEq(std.json.parse(std.json.stringify(nested)), nested);
+
+// A non-ASCII string survives the round trip unchanged (UTF-8 is passed through
+// unescaped).
+assertEq(std.json.parse(std.json.stringify("café ☕")), "café ☕");
+assertEq(std.json.stringify("café"), "\"café\"");
+
+// --- isValid / tryParse -----------------------------------------------------
+assertEq(std.json.isValid("42"), true);
+assertEq(std.json.isValid("{\"a\": 1}"), true);
+assertEq(std.json.isValid("  [1, 2]  "), true);
+assertEq(std.json.isValid(""), false);
+assertEq(std.json.isValid("01"), false);
+assertEq(std.json.isValid("[1, 2"), false);
+assertEq(std.json.isValid("1 2"), false);
+assertEq(std.json.isValid("{bad}"), false);
+assertEq(std.json.isValid("nul"), false);
+// A raw control character inside a string is rejected (RFC 8259); it must be
+// escaped, and the escaped form parses.
+assertEq(std.json.isValid("\"a" + chr(1) + "b\""), false);
+assertEq(std.json.isValid("\"a\\tb\""), true);
+assertEq(std.json.parse("\"a\\tb\""), "a\tb");
+
+let ok = std.json.tryParse("{\"a\": 1}");
+assertEq(ok.ok, true);
+assertEq(ok.value, {a: 1});
+assertEq(ok.error, nil);
+
+let bad = std.json.tryParse("{bad}");
+assertEq(bad.ok, false);
+assertEq(bad.value, nil);
+assertEq(type(bad.error), "string");
+
+// --- the depth guard --------------------------------------------------------
+fn nest(n) {
+  var text = "";
+  var i = 0;
+  while (i < n) {
+    text = text + "[";
+    i = i + 1;
+  }
+  i = 0;
+  while (i < n) {
+    text = text + "]";
+    i = i + 1;
+  }
+  return text;
+}
+
+assertEq(std.json.isValid(nest(50)), true);
+assertEq(std.json.isValid(nest(300)), false);
+assertEq(std.json.tryParse(nest(300)).ok, false);
+
+print("std.json ok");
