@@ -275,6 +275,18 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_conversions.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # A recursive program with a non-trivial frame checks the process stack the
+    # loader hands the binary: the AOT runtime has no call-depth guard, so the
+    # reserve must be large enough for the recursion the VM accepts. The
+    # fixture is sized to overflow a 1 MiB reserve (the Windows default) and
+    # pass with the 8 MiB the emitter sets, so this is the regression guard for
+    # `kPeStackReserve` -- on Windows, where the two platforms used to differ.
+    add_test(NAME oskel.build_binary_deep_recursion
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_deep_recursion.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # An `extern "C"` symbol is a host binding the AOT backend cannot resolve
     # (the FFI lowering is PHASE 7f), so `oskel build` must fail with the
     # dedicated message and write no binary.
@@ -308,6 +320,15 @@ if(BUILD_TESTING)
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary_pe.cmake")
+
+    # The stack-reserve regression guard (see the Linux sibling above): a
+    # recursive program with a non-trivial frame must survive on the 8 MiB
+    # reserve the PE declares, not die silently on a 1 MiB one.
+    add_test(NAME oskel.build_binary_deep_recursion
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_deep_recursion.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary_pe.cmake")
   endif()
 

@@ -1043,8 +1043,14 @@ Slices, each independently shippable:
     section pinned at RVA 0x1000 so the IAT slots are constant and the prelude
     calls through them RIP-relative, and `IMAGE_FILE_RELOCS_STRIPPED` so a
     Windows with "Force ASLR" maps the non-PIE image instead of aborting it.
-    Covered by `tests/pe_test.cpp` (structure and, on Windows, execution) and
-    the `oskel.build_binary` CTest case on Windows (`tests/build_binary_pe.cmake`).
+    The image reserves 8 MiB of stack (`kPeStackReserve`), matching the Linux
+    default: the AOT runtime has no call-depth guard, so the recursion a native
+    binary reaches is bounded only by the OS stack, and the 1 MiB Windows
+    default killed a program Linux ran. Covered by `tests/pe_test.cpp`
+    (structure and, on Windows, execution) and the `oskel.build_binary` CTest
+    case on Windows (`tests/build_binary_pe.cmake`); the stack reserve is
+    guarded by `tests/native_build_deep_recursion.oskl`
+    (`oskel.build_binary_deep_recursion`).
   - **7f** (open) — FFI in the AOT backend. An `extern "C"` symbol (and a
     `native fn`) is a host binding the AOT backend cannot resolve: the compiler
     records the declaration in `bc.externs` as pure link metadata, but the

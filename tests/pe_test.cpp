@@ -107,6 +107,13 @@ int main() {
   check(read32(pe, kOh + 32) == 0x1000, "SectionAlignment is 0x1000");
   check(read32(pe, kOh + 36) == 0x200, "FileAlignment is 0x200");
   check(read16(pe, kOh + 68) == 3, "Subsystem is console");
+  // The stack reserve must match the Linux default (8 MiB): the AOT runtime has
+  // no call-depth guard, so a program that recurses a few thousand frames with a
+  // non-trivial local set overflows a 1 MiB stack and Windows kills the process
+  // with no message. See `kPeStackReserve`.
+  check(read64(pe, kOh + 72) == kPeStackReserve,
+        "SizeOfStackReserve matches the runtime's stack budget");
+  check(read64(pe, kOh + 80) == kPeStackCommit, "SizeOfStackCommit is committed up front");
 
   // DataDirectory[1] is the import table, inside .idata.
   check(read32(pe, kOh + 112 + 8) == 0x1000, "import directory RVA is 0x1000");
