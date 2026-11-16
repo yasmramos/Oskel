@@ -437,7 +437,8 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    decide and test.
 6. **[P2]** `memberGet` for a map with a missing non-method member returns
    `nil`; verify the AOT path matches.
-7. **[P2]** `binary` `Plus` on two arrays concatenates; decide and document.
+7. **[P2]** `binary` `Plus` on two arrays concatenates; done in PHASE 7c.3b
+   (`oskel_array_concat`); the VM is the reference and the AOT path matches it.
 8. **[P3]** `lessThan` for bool (`!left && right`) is correct but subtle; add a
    test.
 

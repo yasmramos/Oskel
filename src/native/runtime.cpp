@@ -560,11 +560,15 @@ void emitWriteInt(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeLabel) 
 // 64-bit wrapping arithmetic; anything with a float promotes to double, and a
 // float/float result rounds back to binary32 so `0.1f + 0.2f == 0.3f` holds,
 // exactly like the hosted engine. `Add` on two strings concatenates (7c.1c);
-// `%` on floats uses x87 `fprem` (7c.1d.1).
+// `Add` on two arrays concatenates (7c.3b); `%` on floats uses x87 `fprem`
+// (7c.1d.1).
 void emitArith(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
                const DataBlob& msgTypes, const DataBlob& msgDivZero,
-               CodeGen::Label concatLabel) {
+               CodeGen::Label concatLabel, CodeGen::Label arrayConcatLabel) {
   CodeGen::Label bad = cg.newLabel();
+  CodeGen::Label strConcat = cg.newLabel();
+  CodeGen::Label arrConcat = cg.newLabel();
+  CodeGen::Label concatEnd = cg.newLabel();
   CodeGen::Label intPath = cg.newLabel();
   CodeGen::Label floatPath = cg.newLabel();
   CodeGen::Label arithNumbers = cg.newLabel();
@@ -596,17 +600,30 @@ void emitArith(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   prologue(cg);
 
   // Both operands numbers -> numeric arithmetic (below). Both strings with `+`
-  // -> concatenation. Anything else is an unsupported operand pair.
+  // -> string concatenation; both arrays with `+` -> array concatenation.
+  // Anything else is an unsupported operand pair.
   emitIsNumberFlag(cg, Rdi);
   cg.testReg(Rax);
   cg.jcc(Jcc::Ne, arithNumbers);
-  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagStr));
-  cg.jcc(Jcc::Ne, bad);
-  cg.cmpImm32(Rdx, static_cast<std::int32_t>(kTagStr));
-  cg.jcc(Jcc::Ne, bad);
   cg.cmpImm32(R8, static_cast<std::int32_t>(AotArithOp::Add));
   cg.jcc(Jcc::Ne, bad);
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, strConcat);
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagArray));
+  cg.jcc(Jcc::Eq, arrConcat);
+  cg.jmp(bad);
+
+  cg.bind(strConcat);
+  cg.cmpImm32(Rdx, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Ne, bad);
   cg.callLabel(concatLabel);  // returns an AotValue in rax:rdx
+  cg.jmp(concatEnd);
+
+  cg.bind(arrConcat);
+  cg.cmpImm32(Rdx, static_cast<std::int32_t>(kTagArray));
+  cg.jcc(Jcc::Ne, bad);
+  cg.callLabel(arrayConcatLabel);  // returns an AotValue in rax:rdx
+  cg.bind(concatEnd);
   epilogue(cg);
 
   cg.bind(arithNumbers);
@@ -1522,6 +1539,110 @@ void emitConcat(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
   cg.pop(Rbp);
   cg.retInsn();
 
+  cg.bind(oom);
+  emitFailCall(cg, fail, msgOom);
+}
+
+// `AotValue oskel_array_concat(AotValue a, AotValue b)`: the array twin of
+// `oskel_concat`. Both operands are arrays (the caller, `oskel_arith`, checks
+// the tags), so this allocates a fresh `AotArray` of `lenA + lenB` items,
+// copies A's items then B's items into it and returns it as an `Array` value.
+// The operands are read only, so `a + b` leaves both unchanged, matching the
+// hosted `ops::binary` (which builds a new vector). `a` is rdi:rsi, `b` is
+// rdx:rcx. rbx, r12 and r13 are callee-saved (r13 holds the arena cursor, so
+// the `blockEnsure` call preserves it), and the items block is grown once to
+// the exact item count.
+void emitArrayConcat(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
+                     CodeGen::Label blockEnsure, CodeGen::Label fail,
+                     const DataBlob& msgOom) {
+  CodeGen::Label copyALoop = cg.newLabel();
+  CodeGen::Label copyADone = cg.newLabel();
+  CodeGen::Label copyBLoop = cg.newLabel();
+  CodeGen::Label copyBDone = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 16);
+  cg.movToMem(Rbp, -24, Rcx);  // b's AotArray
+  cg.movToMem(Rbp, -32, Rsi);  // a's AotArray
+
+  // The new header, zeroed (length/capacity/items all 0).
+  cg.movImm(Rdi, static_cast<std::int64_t>(kAotArrayHeaderSize));
+  cg.callLabel(allocLabel);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movReg(Rbx, Rax);  // header
+  cg.movImmToMem(Rbx, kTableLengthOffset, 0);
+  cg.movImmToMem(Rbx, kTableCapacityOffset, 0);
+  cg.movImmToMem(Rbx, kTableBlockOffset, 0);
+
+  // r12 = lenA + lenB, the item count. Both operands were saved to the frame
+  // before the call, so read them back rather than relying on the allocator
+  // leaving rsi/rcx intact.
+  cg.movFromMem(R12, Rbp, -32);               // a's AotArray
+  cg.movFromMem(R12, R12, kTableLengthOffset);  // lenA
+  cg.movFromMem(Rax, Rbp, -24);               // b's AotArray
+  cg.movFromMem(Rax, Rax, kTableLengthOffset);  // lenB
+  cg.addReg(R12, Rax);
+
+  // Grow the items block to the exact count (no-op for two empty arrays).
+  cg.testReg(R12);
+  cg.jcc(Jcc::Eq, copyBDone);
+  cg.movReg(Rdi, Rbx);
+  cg.movReg(Rsi, R12);
+  cg.movImm(Rdx, kArrayItemSize);
+  cg.callLabel(blockEnsure);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+
+  // Copy A's items: block[i] = a.items[i], for i in 0..lenA.
+  cg.movFromMem(R8, Rbp, -32);   // a's AotArray
+  cg.movFromMem(R9, R8, kTableBlockOffset);   // src = a.items
+  cg.movReg(R10, Rax);                        // dst = block
+  cg.movFromMem(R11, R8, kTableLengthOffset); // lenA
+  cg.xorReg(Rcx, Rcx);                        // i
+  cg.bind(copyALoop);
+  cg.cmpReg(Rcx, R11);
+  cg.jcc(Jcc::Ae, copyADone);
+  cg.movFromMem(Rdx, R9, 0);
+  cg.movToMem(R10, 0, Rdx);
+  cg.movFromMem(Rdx, R9, 8);
+  cg.movToMem(R10, 8, Rdx);
+  cg.addImm32(R9, static_cast<std::int32_t>(kArrayItemSize));
+  cg.addImm32(R10, static_cast<std::int32_t>(kArrayItemSize));
+  cg.addImm32(Rcx, 1);
+  cg.jmp(copyALoop);
+  cg.bind(copyADone);
+
+  // Copy B's items, continuing at dst and i.
+  cg.movFromMem(R8, Rbp, -24);   // b's AotArray
+  cg.movFromMem(R9, R8, kTableBlockOffset);   // src = b.items
+  cg.movFromMem(R11, R8, kTableLengthOffset); // lenB
+  cg.xorReg(Rcx, Rcx);                        // i
+  cg.bind(copyBLoop);
+  cg.cmpReg(Rcx, R11);
+  cg.jcc(Jcc::Ae, copyBDone);
+  cg.movFromMem(Rdx, R9, 0);
+  cg.movToMem(R10, 0, Rdx);
+  cg.movFromMem(Rdx, R9, 8);
+  cg.movToMem(R10, 8, Rdx);
+  cg.addImm32(R9, static_cast<std::int32_t>(kArrayItemSize));
+  cg.addImm32(R10, static_cast<std::int32_t>(kArrayItemSize));
+  cg.addImm32(Rcx, 1);
+  cg.jmp(copyBLoop);
+
+  cg.bind(copyBDone);
+  cg.movToMem(Rbx, kTableLengthOffset, R12);  // length = lenA + lenB
+  cg.movReg(Rdx, Rbx);
+  cg.movImm(Rax, kTagArray);
+
+  cg.addImm32(Rsp, 16);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
   cg.bind(oom);
   emitFailCall(cg, fail, msgOom);
 }
@@ -6056,6 +6177,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitWriteInt(cg, writeInt, entry.write);
   emitAlloc(cg, handles.alloc);
   emitConcat(cg, handles.concat, handles.alloc, fail, msgOom);
+  emitArrayConcat(cg, handles.arrayConcat, handles.alloc, env.blockEnsure, fail, msgOom);
   emitInitGlobals(cg, handles.initGlobals, handles.alloc, fail, msgOom);
   emitGlobalSet(cg, handles.globalSet);
   emitGlobalGet(cg, handles.globalGet);
@@ -6097,7 +6219,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitPrintBuiltin(cg, handles.eprintBuiltin, handles.printValueErrRaw, entry.write,
                    textSpace, textNewline, /*fd=*/2, /*newline=*/true);
   emitTruthy(cg, handles.truthy);
-  emitArith(cg, handles.arithValues, fail, msgTypes, msgDivZero, handles.concat);
+  emitArith(cg, handles.arithValues, fail, msgTypes, msgDivZero, handles.concat,
+            handles.arrayConcat);
   emitPow(cg, handles.powValues, fail, msgPow);
   emitShift(cg, handles.shiftValues, fail, msgShift);
   emitBitwise(cg, handles.bitwiseValues, fail, msgBit);

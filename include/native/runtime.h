@@ -197,6 +197,11 @@ struct AotRuntimeHandles {
   CodeGen::Label sinBuiltin;  // AotValue oskel_builtin_sin(AotValue* args, long argc, AotClosure* self)
   CodeGen::Label cosBuiltin;  // AotValue oskel_builtin_cos(AotValue* args, long argc, AotClosure* self)
   CodeGen::Label tanBuiltin;  // AotValue oskel_builtin_tan(AotValue* args, long argc, AotClosure* self)
+  // Array concatenation (`a + b` on two arrays), the array twin of `concat`:
+  // allocates a fresh array of `lenA + lenB` items and copies both runs in,
+  // leaving the operands unchanged. It is the hosted `ops::binary` `Tok::Plus`
+  // case for two arrays, used by `oskel_arith` for `Add`.
+  CodeGen::Label arrayConcat;  // AotValue oskel_array_concat(AotValue a, AotValue b)
 };
 
 inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
@@ -216,7 +221,8 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel()
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel()
   };
 }
 

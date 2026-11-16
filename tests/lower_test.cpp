@@ -651,6 +651,35 @@ static void checkStr(const Bytecode& proto, const std::string& expected, const c
   }
 }
 
+// Reads back the int payloads of the `AotArray` an Array result points at. The
+// chunk's image is mapped in this process, so the header and its items block
+// are directly dereferenceable (see `AotArray` in `native/value.h`).
+static std::vector<std::int64_t> arrIntItems(const AotValue& value) {
+  std::vector<std::int64_t> items;
+  if (value.tag != static_cast<std::uint64_t>(AotTag::Array)) return items;
+  const auto* header = reinterpret_cast<const std::uint64_t*>(
+      static_cast<std::uintptr_t>(value.payload));
+  const std::uint64_t length = header[0];
+  const auto* base = reinterpret_cast<const AotValue*>(
+      static_cast<std::uintptr_t>(header[2]));
+  for (std::uint64_t i = 0; i < length; ++i) {
+    items.push_back(static_cast<std::int64_t>(base[i].payload));
+  }
+  return items;
+}
+
+static void checkArray(const AotValue& value, const std::vector<std::int64_t>& expected,
+                       const char* what) {
+  bool isArray = value.tag == static_cast<std::uint64_t>(AotTag::Array);
+  std::vector<std::int64_t> actual = arrIntItems(value);
+  bool ok = isArray && actual == expected;
+  check(ok, what);
+  if (!ok) {
+    std::printf("      got tag=%llu length=%zu, expected an array of %zu\n",
+                static_cast<unsigned long long>(value.tag), actual.size(), expected.size());
+  }
+}
+
 static void testExecStringLoad() {
   checkStr(makeProto({instr(OpCode::LOADK, 0, 0), instr(OpCode::HALT)},
                      {Value(std::string("hello"))}, 1),
@@ -673,6 +702,39 @@ static void testExecStringConcat() {
   checkStr(mk("foo", "bar"), "foobar", "exec: \"foo\" + \"bar\" == \"foobar\"");
   checkStr(mk("", "x"), "x", "exec: \"\" + \"x\" == \"x\"");
   checkStr(mk("x", ""), "x", "exec: \"x\" + \"\" == \"x\"");
+}
+
+static void testExecArrayConcat() {
+  checkArray(compileAndRun("var r = [1, 2] + [3, 4];"), {1, 2, 3, 4},
+             "compiled: [1, 2] + [3, 4] == [1, 2, 3, 4]");
+  checkArray(compileAndRun("var r = [] + [];"), {},
+             "compiled: [] + [] == []");
+  checkArray(compileAndRun("var r = [] + [9];"), {9},
+             "compiled: [] + [9] == [9]");
+  checkArray(compileAndRun("var r = [9] + [];"), {9},
+             "compiled: [9] + [] == [9]");
+  checkArray(compileAndRun("var a = [1, 2]; var b = [3]; var r = a + b;"), {1, 2, 3},
+             "compiled: a + b concatenates two arrays");
+  // The operands are read only: `+` builds a fresh array, so both are intact.
+  checkArray(compileAndRun("var a = [1, 2]; var b = [3]; var c = a + b; var r = b;"),
+             {3}, "compiled: array concatenation leaves the right operand unchanged");
+  checkArray(compileAndRun("var a = [1, 2]; var b = [3]; var c = a + b; var r = a;"),
+             {1, 2}, "compiled: array concatenation leaves the left operand unchanged");
+  // Growing an accumulator one element at a time, as a loop does.
+  checkArray(compileAndRun("var acc = []; var i = 0;"
+                           " while (i < 3) { acc = acc + [i]; i = i + 1; }"
+                           " var r = acc;"),
+             {0, 1, 2}, "compiled: an accumulator grows by concatenation in a loop");
+  // Nested arrays concatenate element-wise; each item is itself an array, so
+  // the result has three items (checked by length, not by int payloads).
+  AotValue nested = compileAndRun("var r = [[1], [2]] + [[3]];");
+  bool nestedOk = false;
+  if (nested.tag == static_cast<std::uint64_t>(AotTag::Array)) {
+    const auto* header = reinterpret_cast<const std::uint64_t*>(
+        static_cast<std::uintptr_t>(nested.payload));
+    nestedOk = header[0] == 3;
+  }
+  check(nestedOk, "compiled: nested arrays concatenate to three items");
 }
 
 static void testExecStringCompare() {
@@ -949,6 +1011,7 @@ int main() {
   testExecFloatNegate();
   testExecStringLoad();
   testExecStringConcat();
+  testExecArrayConcat();
   testExecStringCompare();
   testExecGlobals();
   testExecLocals();
