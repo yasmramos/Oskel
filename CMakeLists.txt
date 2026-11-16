@@ -311,6 +311,17 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_builtins.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # The link mode is a deployment choice, not language syntax (PHASE 7f.3).
+    # `--mode freestanding` must behave exactly like the default (self-contained,
+    # agrees with the VM), `--mode hosted` must fail cleanly until the object
+    # emitter lands (7f.4), and an unknown mode must be a usage error that names
+    # the valid ones.
+    add_test(NAME oskel.build_mode
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_mode.cmake")
+
     # An `extern "C"` symbol is a host binding the AOT backend cannot resolve
     # (the FFI lowering is PHASE 7f), so `oskel build` must fail with the
     # dedicated message and write no binary.

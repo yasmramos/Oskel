@@ -2321,9 +2321,30 @@ oskel build app.oskl -o app   # writes ./app
 ./app
 ```
 
+`oskel build` has two **link modes**, chosen on the command line with `--mode`
+(the mode is a deployment choice, never syntax in the source — the same program
+compiles either way):
+
+- `--mode freestanding` (the default) is the self-contained image described
+  above: it carries its own runtime, speaks to the kernel directly and has no
+  dynamic dependencies.
+- `--mode hosted` links the compiled program against the host C library, so an
+  `extern "C"` symbol resolves to the real C function at link time. This is the
+  mode that makes FFI work, and the one `oskelc` is documented to be. It needs a
+  C toolchain at build time and produces a binary that *does* depend on libc, so
+  it is not freestanding. (The hosted image itself is PHASE 7f.4; until it
+  lands, `--mode hosted` fails cleanly instead of writing a binary.)
+
+```sh
+oskel build app.oskl                       # freestanding (default)
+oskel build app.oskl --mode freestanding   # the same, stated explicitly
+oskel build app.oskl --mode hosted         # links libc (FFI; PHASE 7f.4)
+```
+
 The backend targets x86_64-linux-sysv today; on any other target `oskel build`
 reports the unsupported target instead of emitting bytes for an ABI it cannot
-produce.
+produce. The hosted mode is Linux x86-64 only for now; an unsupported
+(target, mode) pair is reported, never emitted.
 
 A compiled binary carries the standard-library builtins that need no libm:
 `print`/`write`/`eprint`, `len`, `type`, `str`, `repr`, `bool`, `ord`, `chr`,
