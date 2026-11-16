@@ -26,10 +26,10 @@ constexpr std::uint64_t kBMArenaOffset = 0x7000;     // arena sits right above
 // trampoline addresses by absolute address. They are a property of the
 // instruction sequence below (its length), not of where the preamble lands, so
 // they hold for any `entryOffset`.
-constexpr std::uint64_t kTrampolineLength = 112;    // cli .. ljmp, inclusive
-constexpr std::uint64_t kTrampolineGdtRel = 0x70;   // GDT, right after the ljmp
-constexpr std::uint64_t kTrampolineGdtPtrRel = 0x88;  // GDT descriptor record
-constexpr std::uint64_t kTrampolineLongModeRel = 0x8E;
+constexpr std::uint64_t kTrampolineLength = 120;    // cli .. ljmp + padding
+constexpr std::uint64_t kTrampolineGdtRel = 0x78;   // GDT, right after the ljmp
+constexpr std::uint64_t kTrampolineGdtPtrRel = 0x90;  // GDT descriptor record
+constexpr std::uint64_t kTrampolineLongModeRel = 0x96;
 constexpr std::uint64_t kTrampolineGdtBytes = 24;   // null + code64 + data
 constexpr std::uint64_t kTrampolineGdtPtrBytes = 6;  // limit(2) + base(4)
 
@@ -51,7 +51,7 @@ constexpr std::uint64_t kTrampolineGdtPtrBytes = 6;  // limit(2) + base(4)
 //         mov dword [edi+4], 0
 //         add edx, 0x200000; add edi, 8; loop loop
 //   mov eax, PML4; mov cr3, eax           ; point the TLB at the PML4
-//   mov eax, cr4; or eax, 0x20; mov cr4, eax   ; PAE
+//   mov eax, cr4; or eax, 0x620; mov cr4, eax  ; PAE | OSFXSR | OSXMMEXCPT
 //   mov ecx, 0xC0000080; rdmsr; or eax, 0x100; wrmsr  ; EFER.LME
 //   mov eax, cr0; or eax, 0x80000001; mov cr0, eax    ; PG | PE
 //   lgdt [gdt_ptr]                        ; our own GDT (see below)
@@ -69,17 +69,21 @@ constexpr std::uint8_t kTrampoline[] = {
     0xE2, 0xEC,
     0xB8, 0x00, 0x00, 0x20, 0x00,
     0x0F, 0x22, 0xD8,
-    0x0F, 0x20, 0xE0, 0x83, 0xC8, 0x20, 0x0F, 0x22, 0xE0,
+    0x0F, 0x20, 0xE0, 0x0D, 0x20, 0x06, 0x00, 0x00, 0x0F, 0x22, 0xE0,
     0xB9, 0x80, 0x00, 0x00, 0xC0,
     0x0F, 0x32, 0x0D, 0x00, 0x01, 0x00, 0x00, 0x0F, 0x30,
     0x0F, 0x20, 0xC0, 0x0D, 0x01, 0x00, 0x00, 0x80, 0x0F, 0x22, 0xC0,
     0x0F, 0x01, 0x15, 0x00, 0x00, 0x00, 0x00,  // lgdt [gdt_ptr] (patched)
     0xEA, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00,  // ljmp 0x08:long_mode (patched)
+    // Padding so the trampoline ends on an 8-byte boundary and the GDT lands
+    // at `kTrampolineGdtRel` with no gap. Never executed: the `ljmp` above
+    // leaves 32-bit mode.
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
 // Byte offsets of the two patched dwords inside `kTrampoline`.
-constexpr std::size_t kTrampolineLgdtDisp = 0x65;   // lgdt's absolute operand
-constexpr std::size_t kTrampolineLjmpTarget = 0x6A;  // ljmp's 32-bit offset
+constexpr std::size_t kTrampolineLgdtDisp = 0x67;   // lgdt's absolute operand
+constexpr std::size_t kTrampolineLjmpTarget = 0x6C;  // ljmp's 32-bit offset
 
 void write32At(std::vector<std::uint8_t>& out, std::size_t off, std::uint32_t v) {
   for (int i = 0; i < 4; ++i) {
@@ -176,6 +180,27 @@ std::uint64_t emitBareMetalPreamble(CodeGen& code, const RuntimeHandles& handles
                                     static_cast<std::uint8_t>(stackTop >> 24)};
     code.emitBytes(movEsp, sizeof movEsp);
   }
+
+  // Bring COM1 up before anything prints. QEMU's emulated 16550 works without
+  // this, but a real chip powers up with interrupts masked, the divisor latch
+  // in an unknown state and the FIFO off, so `oskel_write` would poll a
+  // line-status register that never reports the transmitter ready. The
+  // sequence is the standard 16550 setup: mask interrupts, raise DLAB to load
+  // a divisor of 1 (115200 baud), drop DLAB with an 8N1 frame, then enable and
+  // clear the FIFO. Interrupts stay masked -- the runtime polls, it does not
+  // take interrupts.
+  auto outSerial = [&code](std::int64_t port, std::uint8_t value) {
+    code.movImm(X64Reg::Rdx, port);
+    code.movImm(X64Reg::Rax, value);
+    code.outDxAl();
+  };
+  outSerial(kSerialIer, 0x00);   // interrupt enable: none
+  outSerial(kSerialLcr, 0x80);   // line control: DLAB on
+  outSerial(kSerialData, 0x01);  // divisor latch low = 1 (115200 baud)
+  outSerial(kSerialIer, 0x00);   // divisor latch high = 0
+  outSerial(kSerialLcr, 0x03);   // line control: 8N1, DLAB off
+  outSerial(kSerialFcr, 0xC7);   // FIFO: enable, clear, 14-byte threshold
+
   code.callLabel(programEntry);
   code.movReg(X64Reg::Rdi, X64Reg::Rax);  // exit code = main's result
   code.callLabel(handles.exit);

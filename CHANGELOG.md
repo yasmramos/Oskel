@@ -171,6 +171,17 @@ may change between minor versions.
 
 ### Fixed
 
+- AOT bare metal: the trampoline now sets `CR4.OSFXSR` and `CR4.OSXMMEXCPT`
+  (bits 9 and 10) in addition to PAE, so the SSE instructions the float path
+  emits execute instead of raising `#UD`. With no IDT installed that fault was
+  a triple fault, so any program doing float *arithmetic* (`1.0 / 3.0`, a
+  `float` comparison) hung the machine silently, while printing a float
+  *literal* worked because it only exercises the integer `dtoa`. The 64-bit
+  entry point also brings COM1 up (mask interrupts, divisor 1 for 115200 baud,
+  8N1, enable the FIFO) before the program runs, so a real 16550 transmits
+  rather than only QEMU's emulated one. `tests/bare_metal_test.cpp` pins both:
+  a structural check for the CR4 sequence and an end-to-end float-arithmetic
+  boot under QEMU.
 - AOT: `+` on two arrays now concatenates in a compiled binary. The hosted
   engine builds a fresh array with the left items followed by the right items
   and leaves both operands unchanged (`docs/language.md`: "concatenation of
