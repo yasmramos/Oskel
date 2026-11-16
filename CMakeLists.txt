@@ -303,8 +303,8 @@ if(BUILD_TESTING)
     add_test(NAME oskel.build_native_error
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_math_native_error.oskl"
-        "-DEXPECTED_MESSAGE=native fn 'sin' cannot be resolved by the AOT backend"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_native_error.oskl"
+        "-DEXPECTED_MESSAGE=native fn 'clock' cannot be resolved by the AOT backend"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
 
     # A runtime error in a generated binary must behave exactly like the VM:

@@ -2322,8 +2322,10 @@ A compiled binary carries the standard-library builtins that need no libm:
 (including the string forms) and the exact math builtins `floor`, `ceil`,
 `round` and `sqrt` (correctly rounded from SSE alone, so they match the hosted
 engine bit for bit). The remaining math builtins (`pow`, `sin`, `cos`, `tan`,
-`log`, `exp`) are not lowered yet: they need an embedded libm because the
-freestanding binary cannot call the host's, and they land in a later slice.
+`log`, `exp`) embed the musl routines ported in `native/mathlib.*`, emitted as
+x86-64 through the same `CodeGen` path as `dtoa` and `parse_float`, so the
+freestanding binary stays libc-free. glibc is not correctly rounded for these,
+so the contract is "agrees to 1 ulp".
 
 A compiled binary supports variadic functions (§7.1): a trailing `rest...`
 parameter binds an ordinary array of the extras, built by the runtime's

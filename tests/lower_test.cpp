@@ -183,12 +183,13 @@ static void testExternSymbolGetsDedicatedMessage() {
         "an extern symbol read names the AOT limitation, not a typo");
 
   // A `native fn` that is used (read beyond its declaration) is named too, with
-  // a message that says `native fn` rather than `extern "C"`.
+  // a message that says `native fn` rather than `extern "C"`. `clock` is a host
+  // binding with no curated stub (the libm ports cover `sqrt`/`pow`/`sin`/...).
   auto native = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::SETGLOBAL, 0, 0),
                            instr(OpCode::GETGLOBAL, 1, 0), instr(OpCode::HALT)},
-                          {Value(std::string("sin"))}, 2);
-  native.nativeFns.push_back("sin");
-  check(loweringThrows(native, "native fn 'sin' cannot be resolved"),
+                          {Value(std::string("clock"))}, 2);
+  native.nativeFns.push_back("clock");
+  check(loweringThrows(native, "native fn 'clock' cannot be resolved"),
         "a used native fn names the AOT limitation");
 
   // The dedicated message is only for a declared symbol: an undeclared read of

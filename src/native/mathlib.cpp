@@ -2,14 +2,17 @@
 
 #include <cstdint>
 
-// Emitter for the freestanding double-precision math library (PHASE 7c.5b.4a).
+// Emitter for the freestanding double-precision math library (PHASE 7c.5b.4).
 //
-// The routines are x86-64 ports of musl libm's `exp`, `log` and `pow`, which
-// share a log/exp core:
+// The routines are x86-64 ports of musl libm. `exp`, `log` and `pow` share a
+// log/exp core:
 //
 //   exp(x)     -> exp_inline(x, 0, 0)
 //   log(x)     -> log_inline(bits(x), &tail)
 //   pow(x, y)  -> exp_inline(y*log(x), tail, sign_bias)
+//
+// `sin`, `cos` and `tan` share the `__rem_pio2` argument reduction and the
+// `__sin`/`__cos`/`__tan` kernels (PHASE 7c.5b.4b).
 //
 // Register conventions match the rest of the runtime: arguments arrive in the
 // SSE registers (xmm0, and xmm1 for the second `pow` operand) and the result
@@ -25,12 +28,19 @@ using Jcc = ::Jcc;
 constexpr X64Reg Rax = X64Reg::Rax;
 constexpr X64Reg Rcx = X64Reg::Rcx;
 constexpr X64Reg Rdx = X64Reg::Rdx;
+constexpr X64Reg Rbx = X64Reg::Rbx;
+constexpr X64Reg Rsp = X64Reg::Rsp;
+constexpr X64Reg Rbp = X64Reg::Rbp;
 constexpr X64Reg Rsi = X64Reg::Rsi;
 constexpr X64Reg Rdi = X64Reg::Rdi;
 constexpr X64Reg R8 = X64Reg::R8;
 constexpr X64Reg R9 = X64Reg::R9;
 constexpr X64Reg R10 = X64Reg::R10;
 constexpr X64Reg R11 = X64Reg::R11;
+constexpr X64Reg R12 = X64Reg::R12;
+constexpr X64Reg R13 = X64Reg::R13;
+constexpr X64Reg R14 = X64Reg::R14;
+constexpr X64Reg R15 = X64Reg::R15;
 
 // xmm scratch names, kept short so the ported arithmetic reads like the C.
 constexpr int X0 = kXmmBase + 0;
@@ -120,6 +130,75 @@ constexpr std::int64_t kN = 1 << kExpTabBits;
 constexpr std::int32_t kSignBias = 0x800 << kExpTabBits;
 
 // ---------------------------------------------------------------------------
+// Trigonometric constants (musl `__sin.c`, `__cos.c`, `__tan.c`,
+// `__rem_pio2.c`). PHASE 7c.5b.4b.
+// ---------------------------------------------------------------------------
+
+// __sin polynomial (k_sin.c).
+constexpr std::uint64_t kTrigSinS1 = 0xbfc5555555555549ULL;
+constexpr std::uint64_t kTrigSinS2 = 0x3f8111111110f8a6ULL;
+constexpr std::uint64_t kTrigSinS3 = 0xbf2a01a019c161d5ULL;
+constexpr std::uint64_t kTrigSinS4 = 0x3ec71de357b1fe7dULL;
+constexpr std::uint64_t kTrigSinS5 = 0xbe5ae5e68a2b9cebULL;
+constexpr std::uint64_t kTrigSinS6 = 0x3de5d93a5acfd57cULL;
+
+// __cos polynomial (k_cos.c).
+constexpr std::uint64_t kTrigCosC1 = 0x3fa555555555554cULL;
+constexpr std::uint64_t kTrigCosC2 = 0xbf56c16c16c15177ULL;
+constexpr std::uint64_t kTrigCosC3 = 0x3efa01a019cb1590ULL;
+constexpr std::uint64_t kTrigCosC4 = 0xbe927e4f809c52adULL;
+constexpr std::uint64_t kTrigCosC5 = 0x3e21ee9ebdb4b1c4ULL;
+constexpr std::uint64_t kTrigCosC6 = 0xbda8fae9be8838d4ULL;
+
+// __tan polynomial and pi/4 (k_tan.c).
+constexpr std::uint64_t kTrigTanT0 = 0x3fd5555555555563ULL;
+constexpr std::uint64_t kTrigTanT1 = 0x3fc111111110fe7aULL;
+constexpr std::uint64_t kTrigTanT2 = 0x3faba1ba1bb341feULL;
+constexpr std::uint64_t kTrigTanT3 = 0x3f9664f48406d637ULL;
+constexpr std::uint64_t kTrigTanT4 = 0x3f8226e3e96e8493ULL;
+constexpr std::uint64_t kTrigTanT5 = 0x3f6d6d22c9560328ULL;
+constexpr std::uint64_t kTrigTanT6 = 0x3f57dbc8fee08315ULL;
+constexpr std::uint64_t kTrigTanT7 = 0x3f4344d8f2f26501ULL;
+constexpr std::uint64_t kTrigTanT8 = 0x3f3026f71a8d1068ULL;
+constexpr std::uint64_t kTrigTanT9 = 0x3f147e88a03792a6ULL;
+constexpr std::uint64_t kTrigTanT10 = 0x3f12b80f32f0a7e9ULL;
+constexpr std::uint64_t kTrigTanT11 = 0xbef375cbdb605373ULL;
+constexpr std::uint64_t kTrigTanT12 = 0x3efb2a7074bf7ad4ULL;
+constexpr std::uint64_t kTrigPio4 = 0x3fe921fb54442d18ULL;
+constexpr std::uint64_t kTrigPio4lo = 0x3c81a62633145c07ULL;
+constexpr std::uint64_t kTrigNegPio4 = 0xbfe921fb54442d18ULL;
+
+// __rem_pio2 constants (e_rem_pio2.c).
+constexpr std::uint64_t kTrigInvpio2 = 0x3fe45f306dc9c883ULL;
+constexpr std::uint64_t kTrigToInt = 0x4338000000000000ULL;
+constexpr std::uint64_t kTrigPio2_1 = 0x3ff921fb54400000ULL;
+constexpr std::uint64_t kTrigPio2_1t = 0x3dd0b4611a626331ULL;
+constexpr std::uint64_t kTrigPio2_2 = 0x3dd0b4611a600000ULL;
+constexpr std::uint64_t kTrigPio2_2t = 0x3ba3198a2e037073ULL;
+constexpr std::uint64_t kTrigPio2_3 = 0x3ba3198a2e000000ULL;
+constexpr std::uint64_t kTrigPio2_3t = 0x397b839a252049c1ULL;
+constexpr std::uint64_t kTrigPio2_1x2 = 0x400921fb54400000ULL;
+constexpr std::uint64_t kTrigPio2_1x3 = 0x4012d97c7f300000ULL;
+constexpr std::uint64_t kTrigPio2_1x4 = 0x401921fb54400000ULL;
+constexpr std::uint64_t kTrigPio2_1tx2 = 0x3de0b4611a626331ULL;
+constexpr std::uint64_t kTrigPio2_1tx3 = 0x3de90e91a79394caULL;
+constexpr std::uint64_t kTrigPio2_1tx4 = 0x3df0b4611a626331ULL;
+
+// scalbn/floor and small shared scalars.
+constexpr std::uint64_t kTrigOne = 0x3ff0000000000000ULL;
+constexpr std::uint64_t kTrigHalf = 0x3fe0000000000000ULL;
+constexpr std::uint64_t kTrigTwo = 0x4000000000000000ULL;
+constexpr std::uint64_t kTrigPm1 = 0xbff0000000000000ULL;
+constexpr std::uint64_t kTrigP8 = 0x4020000000000000ULL;
+constexpr std::uint64_t kTrigPm8 = 0xc020000000000000ULL;
+constexpr std::uint64_t kTrigP125 = 0x3fc0000000000000ULL;
+constexpr std::uint64_t kTrigP24 = 0x4170000000000000ULL;
+constexpr std::uint64_t kTrigPm24 = 0x3e70000000000000ULL;
+constexpr std::uint64_t kTrigP1023 = 0x7fe0000000000000ULL;
+constexpr std::uint64_t kTrigM1022P53 = 0x0360000000000000ULL;
+constexpr std::uint64_t kTrigFloorToInt = 0x4330000000000000ULL;  // 1/DBL_EPSILON
+
+// ---------------------------------------------------------------------------
 // Small emit helpers.
 // ---------------------------------------------------------------------------
 
@@ -130,6 +209,8 @@ struct ConstRefs {
   CodeGen::Label logTab;  // uint64_t[256]: {invc, logc} pairs
   CodeGen::Label logTab2; // uint64_t[256]: {chi, clo} pairs
   CodeGen::Label powTab;  // uint64_t[512]: {invc, pad, logc, logctail} quads
+  CodeGen::Label ipio2;   // uint64_t[690]: 2/pi in 24-bit chunks (trig)
+  CodeGen::Label pio2;    // uint64_t[8]: pi/2 in 24-bit chunks (trig)
 };
 
 void ret(CodeGen& cg) { cg.retInsn(); }
@@ -1099,6 +1180,1562 @@ void emitPow(CodeGen& cg, CodeGen::Label label, CodeGen::Label expCore,
   ret(cg);
 }
 
+// ---------------------------------------------------------------------------
+// Trigonometric kernels (PHASE 7c.5b.4b)
+// ---------------------------------------------------------------------------
+
+// double scalbn(double x, int n): x in xmm0, n in edi; result in xmm0. A port
+// of musl's `scalbn`, used by `__rem_pio2_large`. Leaf; clobbers rax, rdi and
+// xmm0-xmm2 only (rdi is the caller's `n` and is consumed).
+void emitScalbn(CodeGen& cg, CodeGen::Label label) {
+  CodeGen::Label big = cg.newLabel();
+  CodeGen::Label small = cg.newLabel();
+  CodeGen::Label build = cg.newLabel();
+  cg.bind(label);
+  cg.movsdReg(X1, X0);               // y = x
+  cg.cmpImm32(Rdi, 1023);
+  cg.jcc(Jcc::Gt, big);
+  cg.cmpImm32(Rdi, -1022);
+  cg.jcc(Jcc::Lt, small);
+  cg.jmp(build);
+  cg.bind(big);
+  loadConst(cg, X2, kTrigP1023);
+  cg.mulsd(X1, X2);
+  cg.subRegImm32(Rdi, 1023);
+  cg.cmpImm32(Rdi, 1023);
+  cg.jcc(Jcc::Le, build);
+  cg.mulsd(X1, X2);
+  cg.subRegImm32(Rdi, 1023);
+  cg.cmpImm32(Rdi, 1023);
+  cg.jcc(Jcc::Le, build);
+  cg.movImm(Rdi, 1023);
+  cg.jmp(build);
+  cg.bind(small);
+  loadConst(cg, X2, kTrigM1022P53);
+  cg.mulsd(X1, X2);
+  cg.addImm32(Rdi, 1022 - 53);
+  cg.cmpImm32(Rdi, -1022);
+  cg.jcc(Jcc::Ge, build);
+  cg.mulsd(X1, X2);
+  cg.addImm32(Rdi, 1022 - 53);
+  cg.cmpImm32(Rdi, -1022);
+  cg.jcc(Jcc::Ge, build);
+  cg.movImm(Rdi, -1022);
+  cg.bind(build);
+  cg.addImm32(Rdi, 0x3ff);
+  cg.shlImm8(Rdi, 52);
+  cg.movqToXmm(X2, Rdi);             // u.f = 2^(0x3ff+n-0x3ff)
+  cg.movsdReg(X0, X1);
+  cg.mulsd(X0, X2);
+  ret(cg);
+}
+
+// double floor(double x): x in xmm0; result in xmm0. A port of musl's `floor`,
+// used by `__rem_pio2_large`. Leaf; clobbers rax, r8, r9 and xmm0-xmm3.
+void emitFloorHelper(CodeGen& cg, CodeGen::Label label) {
+  CodeGen::Label negY = cg.newLabel();
+  CodeGen::Label afterY = cg.newLabel();
+  CodeGen::Label general = cg.newLabel();
+  CodeGen::Label retM1 = cg.newLabel();
+  CodeGen::Label retX = cg.newLabel();
+  CodeGen::Label noAdjust = cg.newLabel();
+  cg.bind(label);
+  cg.movqFromXmm(R8, X0);            // u.i
+  cg.movReg(R9, R8);
+  cg.shrImm8(R9, 52);
+  cg.andImm32(R9, 0x7ff);            // e
+  cg.cmpImm32(R9, 0x3ff + 52);
+  cg.jcc(Jcc::Ae, retX);
+  cg.movReg(Rax, R8);
+  cg.shlImm8(Rax, 1);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, retX);             // x == 0
+  loadConst(cg, X1, kTrigFloorToInt);
+  cg.testReg(R8);
+  cg.jcc(Jcc::S, negY);
+  cg.movsdReg(X2, X0);
+  cg.addsd(X2, X1);
+  cg.subsd(X2, X1);
+  cg.subsd(X2, X0);
+  cg.jmp(afterY);
+  cg.bind(negY);
+  cg.movsdReg(X2, X0);
+  cg.subsd(X2, X1);
+  cg.addsd(X2, X1);
+  cg.subsd(X2, X0);
+  cg.bind(afterY);
+  cg.cmpImm32(R9, 0x3ff - 1);
+  cg.jcc(Jcc::A, general);
+  cg.testReg(R8);
+  cg.jcc(Jcc::S, retM1);
+  cg.xorps(X0, X0);                  // +0.0
+  ret(cg);
+  cg.bind(retM1);
+  loadConst(cg, X0, kTrigPm1);
+  ret(cg);
+  cg.bind(general);
+  cg.xorps(X3, X3);
+  cg.ucomisd(X2, X3);
+  cg.jcc(Jcc::Be, noAdjust);
+  cg.addsd(X0, X2);
+  loadConst(cg, X3, kTrigOne);
+  cg.subsd(X0, X3);
+  ret(cg);
+  cg.bind(noAdjust);
+  cg.addsd(X0, X2);
+  ret(cg);
+  cg.bind(retX);
+  ret(cg);
+}
+
+// double __sin(double x, double y, int iy): x in xmm0, y in xmm1, iy in edi;
+// result in xmm0. Leaf; clobbers xmm0-xmm7 only.
+void emitSinKernel(CodeGen& cg, CodeGen::Label label) {
+  CodeGen::Label iySet = cg.newLabel();
+  cg.bind(label);
+  cg.movsdReg(X2, X0);
+  cg.mulsd(X2, X2);                  // z = x*x
+  cg.movsdReg(X3, X2);
+  cg.mulsd(X3, X3);                  // w = z*z
+  loadConst(cg, X4, kTrigSinS4);
+  cg.mulsd(X4, X2);
+  loadConst(cg, X5, kTrigSinS3);
+  cg.addsd(X4, X5);
+  cg.mulsd(X4, X2);                  // z*(S3 + z*S4)
+  loadConst(cg, X5, kTrigSinS2);
+  cg.addsd(X4, X5);                  // S2 + z*(S3 + z*S4)
+  loadConst(cg, X5, kTrigSinS6);
+  cg.mulsd(X5, X2);
+  loadConst(cg, X6, kTrigSinS5);
+  cg.addsd(X5, X6);
+  cg.mulsd(X5, X2);
+  cg.mulsd(X5, X3);                  // z*w*(S5 + z*S6)
+  cg.addsd(X4, X5);                  // r (musl's left-to-right association)
+  cg.movsdReg(X5, X2);
+  cg.mulsd(X5, X0);                  // v = z*x
+  cg.testReg(Rdi);
+  cg.jcc(Jcc::Ne, iySet);
+  cg.movsdReg(X6, X4);
+  cg.mulsd(X6, X2);                  // z*r
+  loadConst(cg, X7, kTrigSinS1);
+  cg.addsd(X6, X7);                  // S1 + z*r
+  cg.mulsd(X6, X5);                  // v*(S1 + z*r)
+  cg.addsd(X6, X0);                  // x + v*(S1 + z*r)
+  cg.movsdReg(X0, X6);
+  ret(cg);
+  cg.bind(iySet);
+  cg.movsdReg(X6, X5);
+  cg.mulsd(X6, X4);                  // v*r
+  loadConst(cg, X7, kTrigHalf);
+  cg.mulsd(X7, X1);                  // 0.5*y
+  cg.subsd(X7, X6);                  // 0.5*y - v*r
+  cg.mulsd(X7, X2);                  // z*(...)
+  cg.subsd(X7, X1);                  // ... - y
+  loadConst(cg, X6, kTrigSinS1);
+  cg.mulsd(X6, X5);                  // v*S1
+  cg.subsd(X7, X6);                  // ((...)-v*S1)
+  cg.subsd(X0, X7);                  // x - (...)
+  ret(cg);
+}
+
+// double __cos(double x, double y): x in xmm0, y in xmm1; result in xmm0. Leaf;
+// clobbers xmm0-xmm8 only.
+void emitCosKernel(CodeGen& cg, CodeGen::Label label) {
+  cg.bind(label);
+  cg.movsdReg(X2, X0);
+  cg.mulsd(X2, X2);                  // z = x*x
+  cg.movsdReg(X3, X2);
+  cg.mulsd(X3, X3);                  // w = z*z
+  loadConst(cg, X4, kTrigCosC3);
+  cg.mulsd(X4, X2);
+  loadConst(cg, X5, kTrigCosC2);
+  cg.addsd(X4, X5);
+  cg.mulsd(X4, X2);
+  loadConst(cg, X5, kTrigCosC1);
+  cg.addsd(X4, X5);
+  cg.mulsd(X4, X2);                  // z*(C1+z*(C2+z*C3))
+  loadConst(cg, X6, kTrigCosC6);
+  cg.mulsd(X6, X2);
+  loadConst(cg, X5, kTrigCosC5);
+  cg.addsd(X6, X5);
+  cg.mulsd(X6, X2);
+  loadConst(cg, X5, kTrigCosC4);
+  cg.addsd(X6, X5);
+  cg.mulsd(X6, X3);
+  cg.mulsd(X6, X3);                  // w*w*(C4+z*(C5+z*C6))
+  cg.addsd(X4, X6);                  // r
+  loadConst(cg, X5, kTrigHalf);
+  cg.mulsd(X5, X2);                  // hz = 0.5*z
+  loadConst(cg, X3, kTrigOne);
+  cg.subsd(X3, X5);                  // w = 1.0 - hz
+  loadConst(cg, X6, kTrigOne);
+  cg.subsd(X6, X3);                  // 1.0 - w
+  cg.movsdReg(X7, X4);
+  cg.mulsd(X7, X2);                  // z*r
+  cg.movsdReg(X8, X0);
+  cg.mulsd(X8, X1);                  // x*y
+  cg.subsd(X7, X8);                  // z*r - x*y
+  cg.subsd(X6, X5);                  // (1.0-w) - hz
+  cg.addsd(X6, X7);                  // + (z*r - x*y)
+  cg.addsd(X3, X6);                  // w + (...)
+  cg.movsdReg(X0, X3);
+  ret(cg);
+}
+
+// double __tan(double x, double y, int odd): x in xmm0, y in xmm1, odd in edi;
+// result in xmm0. Leaf. `big` lives in rsi and `sign` in r10 because `loadConst`
+// clobbers r11 on every call. Clobbers xmm0-xmm11.
+void emitTanKernel(CodeGen& cg, CodeGen::Label label) {
+  CodeGen::Label big = cg.newLabel();
+  CodeGen::Label bigNoSign = cg.newLabel();
+  CodeGen::Label compute = cg.newLabel();
+  CodeGen::Label bigReturn = cg.newLabel();
+  CodeGen::Label sReady = cg.newLabel();
+  CodeGen::Label tanDone = cg.newLabel();
+  CodeGen::Label oddPath = cg.newLabel();
+  cg.bind(label);
+  cg.movqFromXmm(R8, X0);            // u.i
+  cg.movReg(R9, R8);
+  cg.shrImm8(R9, 32);                // hx
+  cg.movReg(R10, R9);
+  cg.shrImm8(R10, 31);               // sign
+  cg.movReg(Rsi, R9);
+  cg.andImm32(Rsi, 0x7fffffff);
+  cg.cmpImm32(Rsi, 0x3FE59428);
+  cg.setcc(Jcc::Ae, Rsi);
+  cg.movzx(Rsi, Rsi);                // big
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Ne, big);
+  cg.jmp(compute);
+  cg.bind(big);
+  cg.testReg(R10);
+  cg.jcc(Jcc::Eq, bigNoSign);
+  loadConst(cg, X2, kTrigPm1);
+  cg.mulsd(X0, X2);                  // x = -x
+  cg.mulsd(X1, X2);                  // y = -y
+  cg.bind(bigNoSign);
+  loadConst(cg, X2, kTrigPio4);
+  cg.subsd(X2, X0);                  // pio4 - x
+  loadConst(cg, X3, kTrigPio4lo);
+  cg.subsd(X3, X1);                  // pio4lo - y
+  cg.addsd(X2, X3);
+  cg.movsdReg(X0, X2);               // x = (pio4-x) + (pio4lo-y)
+  cg.xorps(X1, X1);                  // y = 0
+  cg.bind(compute);
+  cg.movsdReg(X2, X0);
+  cg.mulsd(X2, X2);                  // z = x*x
+  cg.movsdReg(X3, X2);
+  cg.mulsd(X3, X3);                  // w = z*z
+  loadConst(cg, X4, kTrigTanT11);
+  cg.mulsd(X4, X3);
+  loadConst(cg, X5, kTrigTanT9);
+  cg.addsd(X4, X5);
+  cg.mulsd(X4, X3);
+  loadConst(cg, X5, kTrigTanT7);
+  cg.addsd(X4, X5);
+  cg.mulsd(X4, X3);
+  loadConst(cg, X5, kTrigTanT5);
+  cg.addsd(X4, X5);
+  cg.mulsd(X4, X3);
+  loadConst(cg, X5, kTrigTanT3);
+  cg.addsd(X4, X5);
+  cg.mulsd(X4, X3);
+  loadConst(cg, X5, kTrigTanT1);
+  cg.addsd(X4, X5);                  // poly r
+  loadConst(cg, X5, kTrigTanT12);
+  cg.mulsd(X5, X3);
+  loadConst(cg, X6, kTrigTanT10);
+  cg.addsd(X5, X6);
+  cg.mulsd(X5, X3);
+  loadConst(cg, X6, kTrigTanT8);
+  cg.addsd(X5, X6);
+  cg.mulsd(X5, X3);
+  loadConst(cg, X6, kTrigTanT6);
+  cg.addsd(X5, X6);
+  cg.mulsd(X5, X3);
+  loadConst(cg, X6, kTrigTanT4);
+  cg.addsd(X5, X6);
+  cg.mulsd(X5, X3);
+  loadConst(cg, X6, kTrigTanT2);
+  cg.addsd(X5, X6);
+  cg.mulsd(X5, X2);                  // poly v
+  cg.movsdReg(X6, X2);
+  cg.mulsd(X6, X0);                  // s = z*x
+  cg.addsd(X4, X5);                  // r + v
+  cg.mulsd(X4, X6);                  // s*(r+v)
+  cg.addsd(X4, X1);                  // + y
+  cg.mulsd(X4, X2);                  // z*(...)
+  cg.addsd(X4, X1);                  // + y
+  loadConst(cg, X7, kTrigTanT0);
+  cg.mulsd(X7, X6);                  // s*T0
+  cg.addsd(X4, X7);                  // r
+  cg.movsdReg(X8, X0);
+  cg.addsd(X8, X4);                  // w = x + r
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Ne, bigReturn);
+  cg.testReg(Rdi);
+  cg.jcc(Jcc::Ne, oddPath);
+  cg.movsdReg(X0, X8);               // return w
+  ret(cg);
+  cg.bind(oddPath);
+  cg.movsdReg(X9, X8);
+  cg.movqFromXmm(Rax, X9);
+  cg.movImm(Rcx, static_cast<std::int64_t>(0xffffffff00000000ULL));
+  cg.andReg(Rax, Rcx);
+  cg.movqToXmm(X9, Rax);             // w0 = w with low word zeroed
+  cg.movsdReg(X10, X9);
+  cg.subsd(X10, X0);                 // w0 - x
+  cg.movsdReg(X11, X4);
+  cg.subsd(X11, X10);                // v = r - (w0 - x)
+  loadConst(cg, X5, kTrigPm1);
+  cg.divsd(X5, X8);                  // a = -1.0/w
+  cg.movsdReg(X6, X5);
+  cg.movqFromXmm(Rax, X6);
+  cg.movImm(Rcx, static_cast<std::int64_t>(0xffffffff00000000ULL));
+  cg.andReg(Rax, Rcx);
+  cg.movqToXmm(X6, Rax);             // a0
+  cg.movsdReg(X7, X6);
+  cg.mulsd(X7, X9);                  // a0*w0
+  loadConst(cg, X10, kTrigOne);
+  cg.addsd(X7, X10);                 // + 1.0
+  cg.movsdReg(X10, X6);
+  cg.mulsd(X10, X11);                // a0*v
+  cg.addsd(X7, X10);
+  cg.mulsd(X7, X5);                  // * a
+  cg.addsd(X7, X6);                  // + a0
+  cg.movsdReg(X0, X7);
+  ret(cg);
+  cg.bind(bigReturn);
+  loadConst(cg, X9, kTrigOne);
+  cg.testReg(Rdi);
+  cg.jcc(Jcc::Eq, sReady);
+  loadConst(cg, X9, kTrigPm1);       // s = 1 - 2*odd
+  cg.bind(sReady);
+  cg.movsdReg(X10, X8);
+  cg.mulsd(X10, X8);                 // w*w
+  cg.movsdReg(X11, X8);
+  cg.addsd(X11, X9);                 // w + s
+  cg.divsd(X10, X11);                // w*w/(w+s)
+  cg.subsd(X4, X10);                 // r - ...
+  cg.addsd(X4, X0);                  // x + (...)
+  loadConst(cg, X10, kTrigTwo);
+  cg.mulsd(X4, X10);                 // 2.0*(...)
+  cg.movsdReg(X0, X9);
+  cg.subsd(X0, X4);                  // v = s - 2.0*(...)
+  cg.testReg(R10);
+  cg.jcc(Jcc::Eq, tanDone);
+  loadConst(cg, X2, kTrigPm1);
+  cg.mulsd(X0, X2);                  // -v
+  cg.bind(tanDone);
+  ret(cg);
+}
+
+// int __rem_pio2_large(double* x, double* y, int e0, int nx, int prec): a port
+// of musl's Payne-Hanek reduction (`k_rem_pio2.c`). rdi = x (nx doubles), rsi =
+// y (two doubles), edx = e0, ecx = nx, r8d = prec; the return value (in eax) is
+// the reduced quadrant count and `y[0] + y[1]` is the remainder. It calls
+// `scalbn` and `floor`, so it owns a frame; the `q`/`iq`/`f`/`fq` arrays and
+// every scratch scalar live there, and `ipio2`/`PIo2` are addressed through
+// `refs`. `prec` is always 1 (binary64) from `__rem_pio2`, so `jk = jp = 4` and
+// the double-precision `y` compression are hardcoded.
+//
+// The reductions only ever carry `nx <= 3` limbs and `e0 <= 1064`, so `jz`
+// stays well under the C arrays' 20 elements; the frame still reserves the full
+// 20 slots so a stray index cannot walk into another array.
+void emitRemPio2Large(CodeGen& cg, CodeGen::Label label, const ConstRefs& refs,
+                      CodeGen::Label scalbn, CodeGen::Label floorFn) {
+  // Scratch scalars, in the frame's first 96 bytes.
+  constexpr std::int64_t S_JZ = -320, S_JX = -328, S_JV = -336, S_Q0 = -344,
+                         S_N = -352, S_IH = -360, S_CARRY = -368, S_I = -376,
+                         S_J = -384, S_K = -392, S_Z = -400, S_FW = -408;
+  // Arrays: 20 doubles each, 8-byte stride, 8-aligned.
+  constexpr std::int64_t kIq = -640, kF = -800, kFq = -960, kQ = -1120;
+  constexpr std::int64_t kFrame = 1128;
+
+  auto S = [&](std::int64_t o, X64Reg r) { cg.movToMem(Rbp, o, r); };
+  auto L = [&](X64Reg r, std::int64_t o) { cg.movFromMem(r, Rbp, o); };
+  auto SD = [&](std::int64_t o, int x) { cg.movsdFromXmm(Rbp, o, x); };
+  auto LD = [&](int x, std::int64_t o) { cg.movsdToXmm(x, Rbp, o); };
+  // d = rbp + i*8: the address of element `i` of the array at byte offset 0.
+  auto idx = [&](X64Reg d, X64Reg i) {
+    cg.movReg(d, i);
+    cg.shlImm8(d, 3);
+    cg.addReg(d, Rbp);
+  };
+
+  CodeGen::Label jvOk = cg.newLabel();
+  CodeGen::Label setupLoop = cg.newLabel();
+  CodeGen::Label setupZero = cg.newLabel();
+  CodeGen::Label setupStore = cg.newLabel();
+  CodeGen::Label setupDone = cg.newLabel();
+  CodeGen::Label qLoop = cg.newLabel();
+  CodeGen::Label qInner = cg.newLabel();
+  CodeGen::Label qInnerDone = cg.newLabel();
+  CodeGen::Label qDone = cg.newLabel();
+  CodeGen::Label recompute = cg.newLabel();
+  CodeGen::Label distLoop = cg.newLabel();
+  CodeGen::Label distDone = cg.newLabel();
+  CodeGen::Label q0Pos = cg.newLabel();
+  CodeGen::Label q0Zero = cg.newLabel();
+  CodeGen::Label ihCheck = cg.newLabel();
+  CodeGen::Label carryLoop = cg.newLabel();
+  CodeGen::Label carrySet = cg.newLabel();
+  CodeGen::Label carryStore = cg.newLabel();
+  CodeGen::Label carryDone = cg.newLabel();
+  CodeGen::Label q0Switch = cg.newLabel();
+  CodeGen::Label ihNot2 = cg.newLabel();
+  CodeGen::Label ihFinish = cg.newLabel();
+  CodeGen::Label zCheck = cg.newLabel();
+  CodeGen::Label zInner = cg.newLabel();
+  CodeGen::Label zInnerDone = cg.newLabel();
+  CodeGen::Label kLoop = cg.newLabel();
+  CodeGen::Label kLoopDone = cg.newLabel();
+  CodeGen::Label addLoop = cg.newLabel();
+  CodeGen::Label addInner = cg.newLabel();
+  CodeGen::Label addInnerDone = cg.newLabel();
+  CodeGen::Label addDone = cg.newLabel();
+  CodeGen::Label chopCheck = cg.newLabel();
+  CodeGen::Label chopZeroLoop = cg.newLabel();
+  CodeGen::Label chopNonZero = cg.newLabel();
+  CodeGen::Label chopSmall = cg.newLabel();
+  CodeGen::Label convDone = cg.newLabel();
+  CodeGen::Label convLoop = cg.newLabel();
+  CodeGen::Label prodOuter = cg.newLabel();
+  CodeGen::Label prodInner = cg.newLabel();
+  CodeGen::Label prodInnerDone = cg.newLabel();
+  CodeGen::Label prodDone = cg.newLabel();
+  CodeGen::Label fqStore = cg.newLabel();
+  CodeGen::Label yc1 = cg.newLabel();
+  CodeGen::Label yc1Done = cg.newLabel();
+  CodeGen::Label yc2 = cg.newLabel();
+  CodeGen::Label yc2Done = cg.newLabel();
+  CodeGen::Label yc2Store = cg.newLabel();
+  CodeGen::Label yStore = cg.newLabel();
+
+  cg.bind(label);
+  cg.push(Rbp);
+  cg.movReg(Rbp, Rsp);
+  cg.subRegImm32(Rsp, static_cast<std::int32_t>(kFrame));
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.push(R13);
+  cg.push(R14);
+  cg.push(R15);
+  cg.movReg(R12, Rdi);               // x
+  cg.movReg(R13, Rsi);               // y
+  cg.movReg(R14, Rcx);               // nx
+  cg.movReg(R15, R8);                // prec (unused: prec == 1)
+  cg.movReg(Rbx, Rdx);               // e0
+  cg.movImm(Rax, 4);                 // jk = jp = jz = 4
+  S(S_JZ, Rax);
+
+  // jx = nx - 1
+  cg.movReg(Rax, R14);
+  cg.subRegImm32(Rax, 1);
+  S(S_JX, Rax);
+
+  // jv = max(0, (e0 - 3) / 24); q0 = e0 - 24 * (jv + 1)
+  cg.movReg(Rax, Rbx);
+  cg.subRegImm32(Rax, 3);
+  cg.movImm(Rcx, 24);
+  cg.cdq();
+  cg.idiv(Rcx);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ge, jvOk);
+  cg.xorReg(Rax, Rax);
+  cg.bind(jvOk);
+  S(S_JV, Rax);
+  cg.movReg(Rcx, Rax);
+  cg.addImm32(Rcx, 1);
+  cg.imulImm32(Rcx, Rcx, 24);
+  cg.movReg(Rdx, Rbx);
+  cg.subReg(Rdx, Rcx);
+  S(S_Q0, Rdx);
+
+  // f[i] = (j < 0) ? 0 : (double)ipio2[j], for i in 0..jx+4, j = jv-jx+i
+  L(Rax, S_JV);
+  L(Rcx, S_JX);
+  cg.subReg(Rax, Rcx);
+  S(S_J, Rax);
+  L(Rax, S_JX);
+  cg.addImm32(Rax, 4);
+  S(S_K, Rax);
+  cg.movImm(Rax, 0);
+  S(S_I, Rax);
+  cg.bind(setupLoop);
+  L(Rax, S_I);
+  L(Rcx, S_K);
+  cg.cmpReg(Rax, Rcx);
+  cg.jcc(Jcc::Gt, setupDone);
+  L(Rcx, S_J);
+  cg.testReg(Rcx);
+  cg.jcc(Jcc::S, setupZero);
+  cg.leaRipLabel(R8, refs.ipio2);
+  cg.movReg(Rdx, Rcx);
+  cg.shlImm8(Rdx, 3);
+  cg.addReg(Rdx, R8);
+  cg.movFromMem(Rdx, Rdx, 0);
+  cg.cvtsi2sd(X0, Rdx);
+  cg.jmp(setupStore);
+  cg.bind(setupZero);
+  cg.xorps(X0, X0);
+  cg.bind(setupStore);
+  L(Rax, S_I);
+  idx(Rdx, Rax);
+  cg.movsdFromXmm(Rdx, static_cast<std::int32_t>(kF), X0);
+  L(Rax, S_I);
+  cg.addImm32(Rax, 1);
+  S(S_I, Rax);
+  L(Rax, S_J);
+  cg.addImm32(Rax, 1);
+  S(S_J, Rax);
+  cg.jmp(setupLoop);
+  cg.bind(setupDone);
+
+  // q[i] = sum_{j=0..jx} x[j] * f[jx+i-j], for i in 0..4
+  cg.movImm(Rax, 0);
+  S(S_I, Rax);
+  cg.bind(qLoop);
+  L(Rax, S_I);
+  cg.cmpImm32(Rax, 4);
+  cg.jcc(Jcc::Gt, qDone);
+  cg.xorps(X0, X0);
+  cg.movImm(Rax, 0);
+  S(S_J, Rax);
+  cg.bind(qInner);
+  L(Rcx, S_J);
+  L(Rdx, S_JX);
+  cg.cmpReg(Rcx, Rdx);
+  cg.jcc(Jcc::Gt, qInnerDone);
+  cg.movReg(Rsi, Rcx);
+  cg.shlImm8(Rsi, 3);
+  cg.addReg(Rsi, R12);
+  cg.movsdToXmm(X1, Rsi, 0);
+  L(Rax, S_JX);
+  L(Rdx, S_I);
+  cg.addReg(Rax, Rdx);
+  cg.subReg(Rax, Rcx);
+  idx(Rdx, Rax);
+  cg.movsdToXmm(X2, Rdx, static_cast<std::int32_t>(kF));
+  cg.mulsd(X1, X2);
+  cg.addsd(X0, X1);
+  L(Rcx, S_J);
+  cg.addImm32(Rcx, 1);
+  S(S_J, Rcx);
+  cg.jmp(qInner);
+  cg.bind(qInnerDone);
+  L(Rax, S_I);
+  idx(Rdx, Rax);
+  cg.movsdFromXmm(Rdx, static_cast<std::int32_t>(kQ), X0);
+  L(Rax, S_I);
+  cg.addImm32(Rax, 1);
+  S(S_I, Rax);
+  cg.jmp(qLoop);
+  cg.bind(qDone);
+
+  // ---- recompute: distill q[] into iq[] ----
+  cg.bind(recompute);
+  cg.movImm(Rax, 0);
+  S(S_I, Rax);
+  L(Rax, S_JZ);
+  S(S_J, Rax);
+  L(Rax, S_JZ);
+  idx(Rdx, Rax);
+  cg.movsdToXmm(X0, Rdx, static_cast<std::int32_t>(kQ));
+  SD(S_Z, X0);
+  cg.bind(distLoop);
+  L(Rax, S_J);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Le, distDone);
+  LD(X0, S_Z);
+  loadConst(cg, X1, kTrigPm24);
+  cg.mulsd(X0, X1);
+  cg.cvttsd2si(Rax, X0);
+  cg.cvtsi2sd(X1, Rax);
+  SD(S_FW, X1);                      // fw
+  loadConst(cg, X2, kTrigP24);
+  cg.mulsd(X1, X2);
+  LD(X0, S_Z);
+  cg.subsd(X0, X1);
+  cg.cvttsd2si(Rax, X0);
+  L(Rcx, S_I);
+  idx(Rdx, Rcx);
+  cg.movToMem32(Rdx, static_cast<std::int32_t>(kIq), Rax);
+  L(Rcx, S_J);
+  cg.subRegImm32(Rcx, 1);
+  idx(Rdx, Rcx);
+  cg.movsdToXmm(X0, Rdx, static_cast<std::int32_t>(kQ));
+  LD(X1, S_FW);
+  cg.addsd(X0, X1);
+  SD(S_Z, X0);
+  L(Rax, S_I);
+  cg.addImm32(Rax, 1);
+  S(S_I, Rax);
+  L(Rax, S_J);
+  cg.subRegImm32(Rax, 1);
+  S(S_J, Rax);
+  cg.jmp(distLoop);
+  cg.bind(distDone);
+
+  // z = scalbn(z, q0); z -= 8 * floor(z * 0.125); n = (int)z; z -= n
+  LD(X0, S_Z);
+  L(Rdi, S_Q0);
+  cg.callLabel(scalbn);
+  SD(S_Z, X0);
+  LD(X1, S_Z);
+  loadConst(cg, X2, kTrigP125);
+  cg.mulsd(X1, X2);
+  cg.movsdReg(X0, X1);
+  cg.callLabel(floorFn);
+  loadConst(cg, X2, kTrigP8);
+  cg.mulsd(X0, X2);
+  LD(X1, S_Z);
+  cg.subsd(X1, X0);
+  SD(S_Z, X1);
+  LD(X0, S_Z);
+  cg.cvttsd2si(Rax, X0);
+  S(S_N, Rax);
+  cg.cvtsi2sd(X1, Rax);
+  LD(X0, S_Z);
+  cg.subsd(X0, X1);
+  SD(S_Z, X0);
+  cg.movImm(Rax, 0);
+  S(S_IH, Rax);
+
+  // ih = q0 > 0 ? (iq[jz-1] >> (23-q0)) : q0 == 0 ? (iq[jz-1] >> 23)
+  //                                              : (z >= 0.5 ? 2 : 0)
+  L(Rax, S_Q0);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Gt, q0Pos);
+  cg.jcc(Jcc::Eq, q0Zero);
+  LD(X0, S_Z);
+  loadConst(cg, X1, kTrigHalf);
+  cg.ucomisd(X0, X1);
+  cg.jcc(Jcc::B, ihCheck);
+  cg.movImm(Rax, 2);
+  S(S_IH, Rax);
+  cg.jmp(ihCheck);
+
+  cg.bind(q0Zero);
+  L(Rcx, S_JZ);
+  cg.subRegImm32(Rcx, 1);
+  idx(Rdx, Rcx);
+  cg.movFromMem32(Rax, Rdx, static_cast<std::int32_t>(kIq));
+  cg.shrImm8(Rax, 23);
+  S(S_IH, Rax);
+  cg.jmp(ihCheck);
+
+  cg.bind(q0Pos);
+  L(Rcx, S_JZ);
+  cg.subRegImm32(Rcx, 1);
+  idx(Rdx, Rcx);
+  cg.movFromMem32(Rsi, Rdx, static_cast<std::int32_t>(kIq));
+  L(Rax, S_Q0);
+  cg.movImm(Rcx, 24);
+  cg.subReg(Rcx, Rax);
+  cg.movReg(Rax, Rsi);
+  cg.shrCl(Rax);
+  L(Rdx, S_N);
+  cg.addReg(Rdx, Rax);
+  S(S_N, Rdx);
+  cg.movReg(Rdx, Rax);
+  cg.shlCl(Rdx);
+  cg.subReg(Rsi, Rdx);
+  L(Rcx, S_JZ);
+  cg.subRegImm32(Rcx, 1);
+  idx(Rdx, Rcx);
+  cg.movToMem32(Rdx, static_cast<std::int32_t>(kIq), Rsi);
+  L(Rax, S_Q0);
+  cg.movImm(Rcx, 23);
+  cg.subReg(Rcx, Rax);
+  cg.movReg(Rax, Rsi);
+  cg.shrCl(Rax);
+  S(S_IH, Rax);
+
+  cg.bind(ihCheck);
+  L(Rax, S_IH);
+  cg.testReg(Rax);
+  // The `z == 0` recomputation check runs whatever `ih` is, so `ih <= 0`
+  // falls into it (zCheck), not straight to the chop block.
+  cg.jcc(Jcc::Le, zCheck);
+  L(Rax, S_N);
+  cg.addImm32(Rax, 1);
+  S(S_N, Rax);
+  cg.movImm(Rax, 0);
+  S(S_CARRY, Rax);
+  cg.movImm(Rax, 0);
+  S(S_I, Rax);
+  cg.bind(carryLoop);
+  L(Rax, S_I);
+  L(Rcx, S_JZ);
+  cg.cmpReg(Rax, Rcx);
+  cg.jcc(Jcc::Ge, carryDone);
+  idx(Rdx, Rax);
+  cg.movFromMem32(Rsi, Rdx, static_cast<std::int32_t>(kIq));
+  L(Rcx, S_CARRY);
+  cg.testReg(Rcx);
+  cg.jcc(Jcc::Ne, carrySet);
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Eq, carryStore);
+  cg.movImm(Rcx, 1);
+  S(S_CARRY, Rcx);
+  cg.movImm(Rdx, 0x1000000);
+  cg.subReg(Rdx, Rsi);
+  cg.movReg(Rsi, Rdx);
+  cg.jmp(carryStore);
+  cg.bind(carrySet);
+  cg.movImm(Rdx, 0xffffff);
+  cg.subReg(Rdx, Rsi);
+  cg.movReg(Rsi, Rdx);
+  cg.bind(carryStore);
+  L(Rax, S_I);
+  idx(Rdx, Rax);
+  cg.movToMem32(Rdx, static_cast<std::int32_t>(kIq), Rsi);
+  L(Rax, S_I);
+  cg.addImm32(Rax, 1);
+  S(S_I, Rax);
+  cg.jmp(carryLoop);
+  cg.bind(carryDone);
+  // q0 in {1,2}: mask iq[jz-1] (1 -> 0x7fffff, 2 -> 0x3fffff)
+  L(Rax, S_Q0);
+  cg.cmpImm32(Rax, 1);
+  cg.jcc(Jcc::Lt, ihFinish);
+  cg.cmpImm32(Rax, 3);
+  cg.jcc(Jcc::Ge, ihFinish);
+  L(Rcx, S_JZ);
+  cg.subRegImm32(Rcx, 1);
+  idx(Rdx, Rcx);
+  cg.movFromMem32(Rsi, Rdx, static_cast<std::int32_t>(kIq));
+  cg.movImm(R8, 0x7fffff);          // q0 == 1
+  cg.cmpImm32(Rax, 2);
+  cg.jcc(Jcc::Ne, q0Switch);
+  cg.movImm(R8, 0x3fffff);          // q0 == 2
+  cg.bind(q0Switch);
+  cg.andReg(Rsi, R8);
+  cg.movToMem32(Rdx, static_cast<std::int32_t>(kIq), Rsi);
+  cg.bind(ihFinish);
+  // ih == 2: z = 1.0 - z; if (carry) z -= scalbn(1.0, q0)
+  L(Rax, S_IH);
+  cg.cmpImm32(Rax, 2);
+  cg.jcc(Jcc::Ne, ihNot2);
+  loadConst(cg, X0, kTrigOne);
+  LD(X1, S_Z);
+  cg.subsd(X0, X1);
+  SD(S_Z, X0);
+  L(Rax, S_CARRY);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, ihNot2);
+  loadConst(cg, X0, kTrigOne);
+  L(Rdi, S_Q0);
+  cg.callLabel(scalbn);
+  LD(X1, S_Z);
+  cg.subsd(X1, X0);
+  SD(S_Z, X1);
+  cg.bind(ihNot2);
+
+  // if (z == 0) { j = or of iq[jz-1..4]; if (j == 0) recompute }
+  cg.bind(zCheck);
+  LD(X0, S_Z);
+  cg.xorps(X1, X1);
+  cg.ucomisd(X0, X1);
+  cg.jcc(Jcc::Ne, chopCheck);
+  cg.xorReg(R8, R8);
+  L(Rax, S_JZ);
+  cg.subRegImm32(Rax, 1);
+  S(S_I, Rax);
+  cg.bind(zInner);
+  L(Rax, S_I);
+  cg.cmpImm32(Rax, 4);
+  cg.jcc(Jcc::Lt, zInnerDone);
+  idx(Rdx, Rax);
+  cg.movFromMem32(Rsi, Rdx, static_cast<std::int32_t>(kIq));
+  cg.orReg(R8, Rsi);
+  L(Rax, S_I);
+  cg.subRegImm32(Rax, 1);
+  S(S_I, Rax);
+  cg.jmp(zInner);
+  cg.bind(zInnerDone);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Ne, chopCheck);
+  cg.movImm(Rax, 1);
+  S(S_K, Rax);
+  cg.bind(kLoop);
+  cg.movImm(Rax, 4);
+  L(Rcx, S_K);
+  cg.subReg(Rax, Rcx);
+  idx(Rdx, Rax);
+  cg.movFromMem32(Rsi, Rdx, static_cast<std::int32_t>(kIq));
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Ne, kLoopDone);
+  L(Rax, S_K);
+  cg.addImm32(Rax, 1);
+  S(S_K, Rax);
+  cg.jmp(kLoop);
+  cg.bind(kLoopDone);
+  // for (i = jz+1; i <= jz+k; i++) { f[jx+i] = ipio2[jv+i]; q[i] = sum ... }
+  L(Rax, S_JZ);
+  cg.addImm32(Rax, 1);
+  S(S_I, Rax);
+  cg.bind(addLoop);
+  L(Rax, S_I);
+  L(Rcx, S_JZ);
+  L(Rdx, S_K);
+  cg.addReg(Rcx, Rdx);
+  cg.cmpReg(Rax, Rcx);
+  cg.jcc(Jcc::Gt, addDone);
+  L(Rcx, S_JX);
+  cg.addReg(Rcx, Rax);
+  L(Rdx, S_JV);
+  cg.addReg(Rdx, Rax);
+  cg.leaRipLabel(R8, refs.ipio2);
+  cg.movReg(R9, Rdx);
+  cg.shlImm8(R9, 3);
+  cg.addReg(R9, R8);
+  cg.movFromMem(Rsi, R9, 0);
+  cg.cvtsi2sd(X0, Rsi);
+  idx(Rdx, Rcx);
+  cg.movsdFromXmm(Rdx, static_cast<std::int32_t>(kF), X0);
+  cg.xorps(X0, X0);
+  cg.movImm(Rax, 0);
+  S(S_J, Rax);
+  cg.bind(addInner);
+  L(Rcx, S_J);
+  L(Rdx, S_JX);
+  cg.cmpReg(Rcx, Rdx);
+  cg.jcc(Jcc::Gt, addInnerDone);
+  cg.movReg(Rsi, Rcx);
+  cg.shlImm8(Rsi, 3);
+  cg.addReg(Rsi, R12);
+  cg.movsdToXmm(X1, Rsi, 0);
+  L(Rax, S_JX);
+  L(Rdx, S_I);
+  cg.addReg(Rax, Rdx);
+  cg.subReg(Rax, Rcx);
+  idx(Rdx, Rax);
+  cg.movsdToXmm(X2, Rdx, static_cast<std::int32_t>(kF));
+  cg.mulsd(X1, X2);
+  cg.addsd(X0, X1);
+  L(Rcx, S_J);
+  cg.addImm32(Rcx, 1);
+  S(S_J, Rcx);
+  cg.jmp(addInner);
+  cg.bind(addInnerDone);
+  L(Rax, S_I);
+  idx(Rdx, Rax);
+  cg.movsdFromXmm(Rdx, static_cast<std::int32_t>(kQ), X0);
+  L(Rax, S_I);
+  cg.addImm32(Rax, 1);
+  S(S_I, Rax);
+  cg.jmp(addLoop);
+  cg.bind(addDone);
+  L(Rax, S_JZ);
+  L(Rcx, S_K);
+  cg.addReg(Rax, Rcx);
+  S(S_JZ, Rax);
+  cg.jmp(recompute);
+
+  // ---- chop off zero terms / break z into 24-bit chunks ----
+  cg.bind(chopCheck);
+  LD(X0, S_Z);
+  cg.xorps(X1, X1);
+  cg.ucomisd(X0, X1);
+  cg.jcc(Jcc::Ne, chopNonZero);
+  L(Rax, S_JZ);
+  cg.subRegImm32(Rax, 1);
+  S(S_JZ, Rax);
+  L(Rax, S_Q0);
+  cg.subRegImm32(Rax, 24);
+  S(S_Q0, Rax);
+  cg.bind(chopZeroLoop);
+  L(Rax, S_JZ);
+  idx(Rdx, Rax);
+  cg.movFromMem32(Rsi, Rdx, static_cast<std::int32_t>(kIq));
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Ne, convDone);         // nonzero term: the z==0 branch ends here
+  L(Rax, S_JZ);
+  cg.subRegImm32(Rax, 1);
+  S(S_JZ, Rax);
+  L(Rax, S_Q0);
+  cg.subRegImm32(Rax, 24);
+  S(S_Q0, Rax);
+  cg.jmp(chopZeroLoop);
+  cg.bind(chopNonZero);
+  LD(X0, S_Z);
+  L(Rdi, S_Q0);
+  cg.negReg(Rdi);
+  cg.callLabel(scalbn);
+  SD(S_Z, X0);
+  loadConst(cg, X1, kTrigP24);
+  cg.ucomisd(X0, X1);
+  cg.jcc(Jcc::B, chopSmall);
+  cg.movsdReg(X2, X0);
+  loadConst(cg, X3, kTrigPm24);
+  cg.mulsd(X2, X3);
+  cg.cvttsd2si(Rax, X2);
+  cg.cvtsi2sd(X2, Rax);
+  loadConst(cg, X3, kTrigP24);
+  cg.mulsd(X2, X3);
+  cg.subsd(X0, X2);
+  cg.cvttsd2si(Rcx, X0);
+  L(Rdx, S_JZ);
+  idx(Rdx, Rdx);
+  cg.movToMem32(Rdx, static_cast<std::int32_t>(kIq), Rcx);
+  L(Rdx, S_JZ);
+  cg.addImm32(Rdx, 1);
+  S(S_JZ, Rdx);
+  L(Rdx, S_Q0);
+  cg.addImm32(Rdx, 24);
+  S(S_Q0, Rdx);
+  L(Rdx, S_JZ);
+  idx(Rdx, Rdx);
+  cg.movToMem32(Rdx, static_cast<std::int32_t>(kIq), Rax);
+  cg.jmp(convDone);
+  cg.bind(chopSmall);
+  cg.cvttsd2si(Rax, X0);
+  L(Rdx, S_JZ);
+  idx(Rdx, Rdx);
+  cg.movToMem32(Rdx, static_cast<std::int32_t>(kIq), Rax);
+
+  // ---- q[i] = scalbn(1, q0) * iq[i], halving the scale each step ----
+  cg.bind(convDone);
+  loadConst(cg, X0, kTrigOne);
+  L(Rdi, S_Q0);
+  cg.callLabel(scalbn);
+  SD(S_FW, X0);
+  L(Rax, S_JZ);
+  S(S_I, Rax);
+  cg.bind(convLoop);
+  L(Rax, S_I);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::S, prodOuter);
+  idx(Rdx, Rax);
+  cg.movFromMem32(Rcx, Rdx, static_cast<std::int32_t>(kIq));
+  cg.cvtsi2sd(X1, Rcx);
+  LD(X0, S_FW);
+  cg.mulsd(X0, X1);
+  L(Rax, S_I);
+  idx(Rdx, Rax);
+  cg.movsdFromXmm(Rdx, static_cast<std::int32_t>(kQ), X0);
+  LD(X0, S_FW);
+  loadConst(cg, X1, kTrigPm24);
+  cg.mulsd(X0, X1);
+  SD(S_FW, X0);
+  L(Rax, S_I);
+  cg.subRegImm32(Rax, 1);
+  S(S_I, Rax);
+  cg.jmp(convLoop);
+
+  // ---- fq[jz-i] = sum_{k=0..min(4, jz-i)} PIo2[k] * q[i+k] ----
+  cg.bind(prodOuter);
+  L(Rax, S_JZ);
+  S(S_I, Rax);
+  cg.bind(prodInner);
+  L(Rax, S_I);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::S, prodDone);
+  cg.xorps(X0, X0);
+  cg.movImm(Rax, 0);
+  S(S_K, Rax);
+  cg.bind(prodInnerDone);
+  L(Rcx, S_K);
+  cg.cmpImm32(Rcx, 4);
+  cg.jcc(Jcc::Gt, fqStore);
+  L(Rdx, S_JZ);
+  L(Rax, S_I);
+  cg.subReg(Rdx, Rax);
+  cg.cmpReg(Rcx, Rdx);
+  cg.jcc(Jcc::Gt, fqStore);
+  L(Rax, S_I);
+  cg.addReg(Rax, Rcx);
+  idx(Rdx, Rax);
+  cg.movsdToXmm(X1, Rdx, static_cast<std::int32_t>(kQ));
+  cg.leaRipLabel(R8, refs.pio2);
+  cg.movReg(R9, Rcx);
+  cg.shlImm8(R9, 3);
+  cg.addReg(R9, R8);
+  cg.movsdToXmm(X2, R9, 0);
+  cg.mulsd(X1, X2);
+  cg.addsd(X0, X1);
+  L(Rcx, S_K);
+  cg.addImm32(Rcx, 1);
+  S(S_K, Rcx);
+  cg.jmp(prodInnerDone);
+  cg.bind(fqStore);
+  L(Rdx, S_JZ);
+  L(Rax, S_I);
+  cg.subReg(Rdx, Rax);
+  idx(Rdx, Rdx);
+  cg.movsdFromXmm(Rdx, static_cast<std::int32_t>(kFq), X0);
+  L(Rax, S_I);
+  cg.subRegImm32(Rax, 1);
+  S(S_I, Rax);
+  cg.jmp(prodInner);
+  cg.bind(prodDone);
+
+  // ---- compress fq into y (prec 1) ----
+  cg.xorps(X0, X0);
+  L(Rax, S_JZ);
+  S(S_I, Rax);
+  cg.bind(yc1);
+  L(Rax, S_I);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::S, yc1Done);
+  idx(Rdx, Rax);
+  cg.movsdToXmm(X1, Rdx, static_cast<std::int32_t>(kFq));
+  cg.addsd(X0, X1);
+  L(Rax, S_I);
+  cg.subRegImm32(Rax, 1);
+  S(S_I, Rax);
+  cg.jmp(yc1);
+  cg.bind(yc1Done);
+  // y[0] = ih==0 ? fw : -fw, but the second compress needs the *positive* fw.
+  cg.movsdReg(X4, X0);
+  L(Rax, S_IH);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, yStore);
+  loadConst(cg, X1, kTrigPm1);
+  cg.mulsd(X4, X1);
+  cg.bind(yStore);
+  cg.movsdFromXmm(R13, 0, X4);       // y[0] = (+/-)fw
+  // fw2 = fq[0] - fw; for (i=1;i<=jz;i++) fw2 += fq[i]; y[1] = (+/-)fw2
+  cg.movsdToXmm(X2, Rbp, static_cast<std::int32_t>(kFq));
+  cg.subsd(X2, X0);                  // fq[0] - fw
+  cg.movImm(Rax, 1);
+  S(S_I, Rax);
+  cg.bind(yc2);
+  L(Rax, S_I);
+  L(Rcx, S_JZ);
+  cg.cmpReg(Rax, Rcx);
+  cg.jcc(Jcc::Gt, yc2Done);
+  idx(Rdx, Rax);
+  cg.movsdToXmm(X1, Rdx, static_cast<std::int32_t>(kFq));
+  cg.addsd(X2, X1);
+  L(Rax, S_I);
+  cg.addImm32(Rax, 1);
+  S(S_I, Rax);
+  cg.jmp(yc2);
+  cg.bind(yc2Done);
+  L(Rax, S_IH);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, yc2Store);
+  loadConst(cg, X1, kTrigPm1);
+  cg.mulsd(X2, X1);
+  cg.bind(yc2Store);
+  cg.movsdFromXmm(R13, 8, X2);
+
+  L(Rax, S_N);
+  cg.andImm32(Rax, 7);
+  cg.pop(R15);
+  cg.pop(R14);
+  cg.pop(R13);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  cg.movReg(Rsp, Rbp);
+  cg.pop(Rbp);
+  ret(cg);
+}
+
+
+
+// int __rem_pio2(double x, double* y): x in xmm0, y in rdi; returns n in eax
+// and writes y[0], y[1]. A port of musl's `e_rem_pio2.c`: the small and medium
+// cases are inline, the large case calls `__rem_pio2_large`. `y` lives in r12,
+// `sign` in rbx and `ix` in r13 across the one call. Frame: 128 bytes for the
+// `tx`/`ty` scratch arrays.
+void emitRemPio2(CodeGen& cg, CodeGen::Label label, CodeGen::Label large) {
+  constexpr std::int64_t S_TX = -64;   // tx[3]
+  constexpr std::int64_t S_TY = -88;   // ty[2]
+
+  CodeGen::Label medium = cg.newLabel();
+  CodeGen::Label big = cg.newLabel();
+  CodeGen::Label largePath = cg.newLabel();
+  CodeGen::Label infNaN = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+  CodeGen::Label notCase1 = cg.newLabel();
+  CodeGen::Label notCase34 = cg.newLabel();
+  CodeGen::Label case3 = cg.newLabel();
+  CodeGen::Label case4 = cg.newLabel();
+  CodeGen::Label afterAdjust = cg.newLabel();
+  CodeGen::Label adjustDown = cg.newLabel();
+  CodeGen::Label adjustUp = cg.newLabel();
+  CodeGen::Label round2 = cg.newLabel();
+  CodeGen::Label round3Final = cg.newLabel();
+  CodeGen::Label haveI = cg.newLabel();
+  CodeGen::Label noNegate = cg.newLabel();
+
+  // The four small cases share one shape: z = x -/+ k*pio2_1, then the
+  // two-step tail. `k` selects the multiples and the returned quadrant count.
+  auto emitSmall = [&](int k, std::uint64_t c1, std::uint64_t c1t) {
+    CodeGen::Label neg = cg.newLabel();
+    CodeGen::Label ret = cg.newLabel();
+    cg.testReg(Rbx);                 // sign
+    cg.jcc(Jcc::Ne, neg);
+    loadConst(cg, X1, c1);
+    cg.movsdReg(X2, X0);
+    cg.subsd(X2, X1);                // z = x - k*pio2_1
+    loadConst(cg, X1, c1t);
+    cg.movsdReg(X3, X2);
+    cg.subsd(X3, X1);                // y[0] = z - k*pio2_1t
+    cg.movsdFromXmm(R12, 0, X3);
+    cg.movsdReg(X4, X2);
+    cg.subsd(X4, X3);
+    cg.subsd(X4, X1);                // y[1] = (z - y[0]) - k*pio2_1t
+    cg.movsdFromXmm(R12, 8, X4);
+    cg.movImm(Rax, k);
+    cg.jmp(ret);
+    cg.bind(neg);
+    loadConst(cg, X1, c1);
+    cg.movsdReg(X2, X0);
+    cg.addsd(X2, X1);
+    loadConst(cg, X1, c1t);
+    cg.movsdReg(X3, X2);
+    cg.addsd(X3, X1);
+    cg.movsdFromXmm(R12, 0, X3);
+    cg.movsdReg(X4, X2);
+    cg.subsd(X4, X3);
+    cg.addsd(X4, X1);
+    cg.movsdFromXmm(R12, 8, X4);
+    cg.movImm(Rax, -k);
+    cg.bind(ret);
+  };
+
+  cg.bind(label);
+  cg.push(Rbp);
+  cg.movReg(Rbp, Rsp);
+  cg.subRegImm32(Rsp, 128);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.push(R13);
+  cg.movReg(R12, Rdi);               // y
+  cg.movqFromXmm(R13, X0);           // u.i
+  cg.movReg(Rbx, R13);
+  cg.shrImm8(Rbx, 63);               // sign
+  cg.movReg(R13, R13);
+  cg.shrImm8(R13, 32);
+  cg.andImm32(R13, 0x7fffffff);      // ix
+
+  // if (ix <= 0x400f6a7a) { ... }
+  cg.cmpImm32(R13, 0x400f6a7a);
+  cg.jcc(Jcc::A, big);
+  // if ((ix & 0xfffff) == 0x921fb) goto medium
+  cg.movReg(Rax, R13);
+  cg.andImm32(Rax, 0xfffff);
+  cg.cmpImm32(Rax, 0x921fb);
+  cg.jcc(Jcc::Eq, medium);
+  cg.cmpImm32(R13, 0x4002d97c);
+  cg.jcc(Jcc::A, notCase1);
+  emitSmall(1, kTrigPio2_1, kTrigPio2_1t);
+  cg.jmp(done);
+  cg.bind(notCase1);
+  emitSmall(2, kTrigPio2_1x2, kTrigPio2_1tx2);
+  cg.jmp(done);
+
+  cg.bind(big);
+  // if (ix <= 0x401c463b) { ... }
+  cg.cmpImm32(R13, 0x401c463b);
+  cg.jcc(Jcc::A, notCase34);
+  cg.cmpImm32(R13, 0x4015fdbc);
+  cg.jcc(Jcc::A, case4);
+  cg.bind(case3);
+  cg.cmpImm32(R13, 0x4012d97c);
+  cg.jcc(Jcc::Eq, medium);
+  emitSmall(3, kTrigPio2_1x3, kTrigPio2_1tx3);
+  cg.jmp(done);
+  cg.bind(case4);
+  cg.cmpImm32(R13, 0x401921fb);
+  cg.jcc(Jcc::Eq, medium);
+  emitSmall(4, kTrigPio2_1x4, kTrigPio2_1tx4);
+  cg.jmp(done);
+
+  cg.bind(notCase34);
+  // if (ix < 0x413921fb) medium else large
+  cg.cmpImm32(R13, 0x413921fb);
+  cg.jcc(Jcc::Lt, medium);
+  cg.jmp(largePath);
+
+  cg.bind(medium);
+  // fn = (double)x*invpio2 + toint - toint; n = (int)fn
+  loadConst(cg, X1, kTrigInvpio2);
+  cg.mulsd(X1, X0);
+  loadConst(cg, X2, kTrigToInt);
+  cg.addsd(X1, X2);
+  cg.subsd(X1, X2);                  // fn
+  cg.cvttsd2si(Rax, X1);
+  cg.movToMem(Rbp, -24, Rax);        // n (spare slot)
+  // r = x - fn*pio2_1; w = fn*pio2_1t
+  loadConst(cg, X2, kTrigPio2_1);
+  cg.mulsd(X2, X1);
+  cg.movsdReg(X4, X0);
+  cg.subsd(X4, X2);                  // r
+  loadConst(cg, X2, kTrigPio2_1t);
+  cg.mulsd(X2, X1);
+  cg.movsdReg(X5, X2);               // w
+  // if (r - w < -pio4) down else if (r - w > pio4) up
+  cg.movsdReg(X6, X4);
+  cg.subsd(X6, X5);                  // r - w
+  loadConst(cg, X7, kTrigNegPio4);
+  cg.ucomisd(X6, X7);
+  cg.jcc(Jcc::B, adjustDown);
+  loadConst(cg, X7, kTrigPio4);
+  cg.ucomisd(X6, X7);
+  cg.jcc(Jcc::A, adjustUp);
+  cg.jmp(afterAdjust);
+  cg.bind(adjustDown);
+  cg.movFromMem(Rax, Rbp, -24);
+  cg.subRegImm32(Rax, 1);
+  cg.movToMem(Rbp, -24, Rax);
+  loadConst(cg, X7, kTrigOne);
+  cg.subsd(X1, X7);                  // fn -= 1
+  loadConst(cg, X2, kTrigPio2_1);
+  cg.mulsd(X2, X1);
+  cg.movsdReg(X4, X0);
+  cg.subsd(X4, X2);
+  loadConst(cg, X2, kTrigPio2_1t);
+  cg.mulsd(X2, X1);
+  cg.movsdReg(X5, X2);
+  cg.jmp(afterAdjust);
+  cg.bind(adjustUp);
+  cg.movFromMem(Rax, Rbp, -24);
+  cg.addImm32(Rax, 1);
+  cg.movToMem(Rbp, -24, Rax);
+  loadConst(cg, X7, kTrigOne);
+  cg.addsd(X1, X7);
+  loadConst(cg, X2, kTrigPio2_1);
+  cg.mulsd(X2, X1);
+  cg.movsdReg(X4, X0);
+  cg.subsd(X4, X2);
+  loadConst(cg, X2, kTrigPio2_1t);
+  cg.mulsd(X2, X1);
+  cg.movsdReg(X5, X2);
+  cg.bind(afterAdjust);
+  // y[0] = r - w; ey = (bits(y[0])>>52)&0x7ff; ex = ix>>20
+  cg.movsdReg(X3, X4);
+  cg.subsd(X3, X5);                  // y[0]
+  cg.movqFromXmm(Rax, X3);
+  cg.shrImm8(Rax, 52);
+  cg.andImm32(Rax, 0x7ff);           // ey
+  cg.movReg(Rcx, R13);
+  cg.shrImm8(Rcx, 20);               // ex
+  cg.subReg(Rcx, Rax);
+  cg.cmpImm32(Rcx, 16);
+  cg.jcc(Jcc::Gt, round2);
+  cg.jmp(round3Final);
+  cg.bind(round2);
+  // t = r; w = fn*pio2_2; r = t - w; w = fn*pio2_2t - ((t-r)-w); y[0] = r - w
+  cg.movsdReg(X6, X4);               // t
+  loadConst(cg, X2, kTrigPio2_2);
+  cg.mulsd(X2, X1);                  // fn*pio2_2
+  cg.movsdReg(X4, X6);
+  cg.subsd(X4, X2);                  // r = t - w
+  loadConst(cg, X7, kTrigPio2_2t);
+  cg.mulsd(X7, X1);                  // fn*pio2_2t
+  cg.movsdReg(X8, X6);
+  cg.subsd(X8, X4);                  // t - r
+  cg.subsd(X8, X2);                  // (t-r) - w
+  cg.subsd(X7, X8);                  // w = fn*pio2_2t - ((t-r)-w)
+  cg.movsdReg(X5, X7);
+  cg.movsdReg(X3, X4);
+  cg.subsd(X3, X5);                  // y[0]
+  cg.movqFromXmm(Rax, X3);
+  cg.shrImm8(Rax, 52);
+  cg.andImm32(Rax, 0x7ff);
+  cg.movReg(Rcx, R13);
+  cg.shrImm8(Rcx, 20);
+  cg.subReg(Rcx, Rax);
+  cg.cmpImm32(Rcx, 49);
+  cg.jcc(Jcc::Le, round3Final);
+  // third round: t = r; w = fn*pio2_3; r = t - w; w = fn*pio2_3t - ((t-r)-w)
+  cg.movsdReg(X6, X4);
+  loadConst(cg, X2, kTrigPio2_3);
+  cg.mulsd(X2, X1);
+  cg.movsdReg(X4, X6);
+  cg.subsd(X4, X2);
+  loadConst(cg, X7, kTrigPio2_3t);
+  cg.mulsd(X7, X1);
+  cg.movsdReg(X8, X6);
+  cg.subsd(X8, X4);
+  cg.subsd(X8, X2);
+  cg.subsd(X7, X8);
+  cg.movsdReg(X5, X7);
+  cg.movsdReg(X3, X4);
+  cg.subsd(X3, X5);                  // y[0]
+  cg.bind(round3Final);
+  cg.movsdFromXmm(R12, 0, X3);
+  cg.movsdReg(X6, X4);
+  cg.subsd(X6, X3);                  // r - y[0]
+  cg.subsd(X6, X5);                  // (r - y[0]) - w
+  cg.movsdFromXmm(R12, 8, X6);
+  cg.movFromMem(Rax, Rbp, -24);
+  cg.jmp(done);
+
+  cg.bind(infNaN);
+  cg.movsdReg(X1, X0);
+  cg.subsd(X1, X0);
+  cg.movsdFromXmm(R12, 0, X1);
+  cg.movsdFromXmm(R12, 8, X1);
+  cg.xorReg(Rax, Rax);
+  cg.jmp(done);
+
+  cg.bind(largePath);
+  cg.cmpImm32(R13, 0x7ff00000);
+  cg.jcc(Jcc::Ae, infNaN);
+  // u.f = x; u.i &= -1>>12; u.i |= (0x3ff+23)<<52; z = u.f
+  cg.movqFromXmm(Rax, X0);
+  cg.movImm(Rcx, static_cast<std::int64_t>(0x000fffffffffffffULL));
+  cg.andReg(Rax, Rcx);
+  cg.movImm(Rcx, static_cast<std::int64_t>(0x4160000000000000ULL));
+  cg.orReg(Rax, Rcx);
+  cg.movqToXmm(X1, Rax);             // z
+  // tx[0] = (double)(int32)z; z = (z - tx[0]) * 0x1p24; tx[1]; tx[2]
+  cg.cvttsd2si(Rax, X1);
+  cg.cvtsi2sd(X2, Rax);
+  cg.movsdFromXmm(Rbp, static_cast<std::int32_t>(S_TX), X2);
+  cg.movsdReg(X3, X1);
+  cg.subsd(X3, X2);
+  loadConst(cg, X4, kTrigP24);
+  cg.mulsd(X3, X4);
+  cg.cvttsd2si(Rax, X3);
+  cg.cvtsi2sd(X2, Rax);
+  cg.movsdFromXmm(Rbp, static_cast<std::int32_t>(S_TX + 8), X2);
+  cg.movsdReg(X1, X3);
+  cg.subsd(X1, X2);
+  cg.mulsd(X1, X4);
+  cg.movsdFromXmm(Rbp, static_cast<std::int32_t>(S_TX + 16), X1);
+  // i = 2; while (tx[i] == 0.0) i--;
+  cg.movImm(R10, 2);
+  cg.xorps(X5, X5);
+  cg.movsdToXmm(X2, Rbp, static_cast<std::int32_t>(S_TX + 16));
+  cg.ucomisd(X2, X5);
+  cg.jcc(Jcc::Ne, haveI);
+  cg.movImm(R10, 1);
+  cg.movsdToXmm(X2, Rbp, static_cast<std::int32_t>(S_TX + 8));
+  cg.ucomisd(X2, X5);
+  cg.jcc(Jcc::Ne, haveI);
+  cg.xorReg(R10, R10);
+  cg.bind(haveI);
+  // n = __rem_pio2_large(tx, ty, ex-(0x3ff+23), i+1, 1)
+  cg.leaMem(Rdi, Rbp, S_TX);
+  cg.leaMem(Rsi, Rbp, S_TY);
+  cg.movReg(Rdx, R13);
+  cg.shrImm8(Rdx, 20);
+  cg.subRegImm32(Rdx, 0x3ff + 23);
+  cg.movReg(Rcx, R10);
+  cg.addImm32(Rcx, 1);
+  cg.movImm(R8, 1);
+  cg.callLabel(large);
+  cg.testReg(Rbx);                   // sign
+  cg.jcc(Jcc::Eq, noNegate);
+  cg.negReg(Rax);
+  cg.movsdToXmm(X1, Rbp, static_cast<std::int32_t>(S_TY));
+  cg.movsdToXmm(X2, Rbp, static_cast<std::int32_t>(S_TY + 8));
+  loadConst(cg, X3, kTrigPm1);
+  cg.mulsd(X1, X3);
+  cg.mulsd(X2, X3);
+  cg.movsdFromXmm(R12, 0, X1);
+  cg.movsdFromXmm(R12, 8, X2);
+  cg.jmp(done);
+  cg.bind(noNegate);
+  cg.movsdToXmm(X1, Rbp, static_cast<std::int32_t>(S_TY));
+  cg.movsdToXmm(X2, Rbp, static_cast<std::int32_t>(S_TY + 8));
+  cg.movsdFromXmm(R12, 0, X1);
+  cg.movsdFromXmm(R12, 8, X2);
+
+  cg.bind(done);
+  cg.pop(R13);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  cg.movReg(Rsp, Rbp);
+  cg.pop(Rbp);
+  ret(cg);
+}
+
+// The three public entry points. Each follows musl's `s_sin.c` / `s_cos.c` /
+// `s_tan.c`: a fast path for |x| <= pi/4, an inf/NaN guard, then `__rem_pio2`
+// and a dispatch over the quadrant count. `x` arrives in xmm0 and the result
+// leaves in xmm0. They own a 32-byte frame for the `y[2]` reduction buffer.
+
+void emitSinPublic(CodeGen& cg, CodeGen::Label label, CodeGen::Label sinK,
+                   CodeGen::Label cosK, CodeGen::Label remPio2) {
+  constexpr std::int64_t S_Y = -16;
+  CodeGen::Label tiny = cg.newLabel();
+  CodeGen::Label infnan = cg.newLabel();
+  CodeGen::Label nanPath = cg.newLabel();
+  CodeGen::Label c0 = cg.newLabel();
+  CodeGen::Label c1 = cg.newLabel();
+  CodeGen::Label c2 = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  cg.push(Rbp);
+  cg.movReg(Rbp, Rsp);
+  cg.subRegImm32(Rsp, 32);
+  cg.movqFromXmm(R8, X0);
+  cg.shrImm8(R8, 32);
+  cg.andImm32(R8, 0x7fffffff);       // ix
+  cg.cmpImm32(R8, 0x3fe921fb);
+  cg.jcc(Jcc::A, infnan);
+  cg.cmpImm32(R8, 0x3e500000);       // |x| < 2**-26
+  cg.jcc(Jcc::B, tiny);
+  cg.xorps(X1, X1);
+  cg.xorReg(Rdi, Rdi);
+  cg.callLabel(sinK);
+  cg.jmp(done);
+  cg.bind(tiny);
+  cg.jmp(done);                      // sin(x) ~ x
+  cg.bind(infnan);
+  cg.cmpImm32(R8, 0x7ff00000);
+  cg.jcc(Jcc::Ae, nanPath);
+  cg.leaMem(Rdi, Rbp, S_Y);
+  cg.callLabel(remPio2);
+  cg.movReg(R10, Rax);               // n
+  cg.movsdToXmm(X0, Rbp, static_cast<std::int32_t>(S_Y));
+  cg.movsdToXmm(X1, Rbp, static_cast<std::int32_t>(S_Y + 8));
+  cg.andImm32(R10, 3);
+  cg.cmpImm32(R10, 0);
+  cg.jcc(Jcc::Eq, c0);
+  cg.cmpImm32(R10, 1);
+  cg.jcc(Jcc::Eq, c1);
+  cg.cmpImm32(R10, 2);
+  cg.jcc(Jcc::Eq, c2);
+  // default (n == 3): -__cos(y0, y1)
+  cg.callLabel(cosK);
+  loadConst(cg, X1, kTrigPm1);
+  cg.mulsd(X0, X1);
+  cg.jmp(done);
+  cg.bind(c0);
+  cg.movImm(Rdi, 1);
+  cg.callLabel(sinK);
+  cg.jmp(done);
+  cg.bind(c1);
+  cg.callLabel(cosK);
+  cg.jmp(done);
+  cg.bind(c2);
+  cg.movImm(Rdi, 1);
+  cg.callLabel(sinK);
+  loadConst(cg, X1, kTrigPm1);
+  cg.mulsd(X0, X1);
+  cg.jmp(done);
+  cg.bind(nanPath);
+  cg.subsd(X0, X0);
+  cg.bind(done);
+  cg.movReg(Rsp, Rbp);
+  cg.pop(Rbp);
+  ret(cg);
+}
+
+void emitCosPublic(CodeGen& cg, CodeGen::Label label, CodeGen::Label sinK,
+                   CodeGen::Label cosK, CodeGen::Label remPio2) {
+  constexpr std::int64_t S_Y = -16;
+  CodeGen::Label tiny = cg.newLabel();
+  CodeGen::Label infnan = cg.newLabel();
+  CodeGen::Label nanPath = cg.newLabel();
+  CodeGen::Label c0 = cg.newLabel();
+  CodeGen::Label c1 = cg.newLabel();
+  CodeGen::Label c2 = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  cg.push(Rbp);
+  cg.movReg(Rbp, Rsp);
+  cg.subRegImm32(Rsp, 32);
+  cg.movqFromXmm(R8, X0);
+  cg.shrImm8(R8, 32);
+  cg.andImm32(R8, 0x7fffffff);
+  cg.cmpImm32(R8, 0x3fe921fb);
+  cg.jcc(Jcc::A, infnan);
+  cg.cmpImm32(R8, 0x3e46a09e);       // |x| < 2**-27 * sqrt(2)
+  cg.jcc(Jcc::B, tiny);
+  cg.xorps(X1, X1);
+  cg.callLabel(cosK);
+  cg.jmp(done);
+  cg.bind(tiny);
+  loadConst(cg, X0, kTrigOne);
+  cg.jmp(done);
+  cg.bind(infnan);
+  cg.cmpImm32(R8, 0x7ff00000);
+  cg.jcc(Jcc::Ae, nanPath);
+  cg.leaMem(Rdi, Rbp, S_Y);
+  cg.callLabel(remPio2);
+  cg.movReg(R10, Rax);
+  cg.movsdToXmm(X0, Rbp, static_cast<std::int32_t>(S_Y));
+  cg.movsdToXmm(X1, Rbp, static_cast<std::int32_t>(S_Y + 8));
+  cg.andImm32(R10, 3);
+  cg.cmpImm32(R10, 0);
+  cg.jcc(Jcc::Eq, c0);
+  cg.cmpImm32(R10, 1);
+  cg.jcc(Jcc::Eq, c1);
+  cg.cmpImm32(R10, 2);
+  cg.jcc(Jcc::Eq, c2);
+  // default (n == 3): __sin(y0, y1, 1)
+  cg.movImm(Rdi, 1);
+  cg.callLabel(sinK);
+  cg.jmp(done);
+  cg.bind(c0);
+  cg.callLabel(cosK);
+  cg.jmp(done);
+  cg.bind(c1);
+  cg.movImm(Rdi, 1);
+  cg.callLabel(sinK);
+  loadConst(cg, X1, kTrigPm1);
+  cg.mulsd(X0, X1);
+  cg.jmp(done);
+  cg.bind(c2);
+  cg.callLabel(cosK);
+  loadConst(cg, X1, kTrigPm1);
+  cg.mulsd(X0, X1);
+  cg.jmp(done);
+  cg.bind(nanPath);
+  cg.subsd(X0, X0);
+  cg.bind(done);
+  cg.movReg(Rsp, Rbp);
+  cg.pop(Rbp);
+  ret(cg);
+}
+
+void emitTanPublic(CodeGen& cg, CodeGen::Label label, CodeGen::Label tanK,
+                   CodeGen::Label remPio2) {
+  constexpr std::int64_t S_Y = -16;
+  CodeGen::Label tiny = cg.newLabel();
+  CodeGen::Label infnan = cg.newLabel();
+  CodeGen::Label nanPath = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  cg.push(Rbp);
+  cg.movReg(Rbp, Rsp);
+  cg.subRegImm32(Rsp, 32);
+  cg.movqFromXmm(R8, X0);
+  cg.shrImm8(R8, 32);
+  cg.andImm32(R8, 0x7fffffff);
+  cg.cmpImm32(R8, 0x3fe921fb);
+  cg.jcc(Jcc::A, infnan);
+  cg.cmpImm32(R8, 0x3e400000);       // |x| < 2**-27
+  cg.jcc(Jcc::B, tiny);
+  cg.xorps(X1, X1);
+  cg.xorReg(Rdi, Rdi);
+  cg.callLabel(tanK);
+  cg.jmp(done);
+  cg.bind(tiny);
+  cg.jmp(done);                      // tan(x) ~ x
+  cg.bind(infnan);
+  cg.cmpImm32(R8, 0x7ff00000);
+  cg.jcc(Jcc::Ae, nanPath);
+  cg.leaMem(Rdi, Rbp, S_Y);
+  cg.callLabel(remPio2);
+  cg.movReg(R10, Rax);
+  cg.movsdToXmm(X0, Rbp, static_cast<std::int32_t>(S_Y));
+  cg.movsdToXmm(X1, Rbp, static_cast<std::int32_t>(S_Y + 8));
+  cg.movReg(Rdi, R10);
+  cg.andImm32(Rdi, 1);
+  cg.callLabel(tanK);
+  cg.jmp(done);
+  cg.bind(nanPath);
+  cg.subsd(X0, X0);
+  cg.bind(done);
+  cg.movReg(Rsp, Rbp);
+  cg.pop(Rbp);
+  ret(cg);
+}
 
 }  // namespace
 
@@ -1582,6 +3219,142 @@ void emitTables(CodeGen& cg, const ConstRefs& refs) {
   };
   cg.bind(refs.powTab);
   emitU64Table(cg, kPowTab, 4 * kPowN);
+
+  // 2/pi to 24-bit chunks, 690 entries (musl `ipio2`).
+  static const std::uint64_t kTrigIpio2[690] = {
+    0xA2F983,0x6E4E44,0x1529FC,0x2757D1,0xF534DD,0xC0DB62,
+    0x95993C,0x439041,0xFE5163,0xABDEBB,0xC561B7,0x246E3A,
+    0x424DD2,0xE00649,0x2EEA09,0xD1921C,0xFE1DEB,0x1CB129,
+    0xA73EE8,0x8235F5,0x2EBB44,0x84E99C,0x7026B4,0x5F7E41,
+    0x3991D6,0x398353,0x39F49C,0x845F8B,0xBDF928,0x3B1FF8,
+    0x97FFDE,0x05980F,0xEF2F11,0x8B5A0A,0x6D1F6D,0x367ECF,
+    0x27CB09,0xB74F46,0x3F669E,0x5FEA2D,0x7527BA,0xC7EBE5,
+    0xF17B3D,0x0739F7,0x8A5292,0xEA6BFB,0x5FB11F,0x8D5D08,
+    0x560330,0x46FC7B,0x6BABF0,0xCFBC20,0x9AF436,0x1DA9E3,
+    0x91615E,0xE61B08,0x659985,0x5F14A0,0x68408D,0xFFD880,
+    0x4D7327,0x310606,0x1556CA,0x73A8C9,0x60E27B,0xC08C6B,
+    0x47C419,0xC367CD,0xDCE809,0x2A8359,0xC4768B,0x961CA6,
+    0xDDAF44,0xD15719,0x053EA5,0xFF0705,0x3F7E33,0xE832C2,
+    0xDE4F98,0x327DBB,0xC33D26,0xEF6B1E,0x5EF89F,0x3A1F35,
+    0xCAF27F,0x1D87F1,0x21907C,0x7C246A,0xFA6ED5,0x772D30,
+    0x433B15,0xC614B5,0x9D19C3,0xC2C4AD,0x414D2C,0x5D000C,
+    0x467D86,0x2D71E3,0x9AC69B,0x006233,0x7CD2B4,0x97A7B4,
+    0xD55537,0xF63ED7,0x1810A3,0xFC764D,0x2A9D64,0xABD770,
+    0xF87C63,0x57B07A,0xE71517,0x5649C0,0xD9D63B,0x3884A7,
+    0xCB2324,0x778AD6,0x23545A,0xB91F00,0x1B0AF1,0xDFCE19,
+    0xFF319F,0x6A1E66,0x615799,0x47FBAC,0xD87F7E,0xB76522,
+    0x89E832,0x60BFE6,0xCDC4EF,0x09366C,0xD43F5D,0xD7DE16,
+    0xDE3B58,0x929BDE,0x2822D2,0xE88628,0x4D58E2,0x32CAC6,
+    0x16E308,0xCB7DE0,0x50C017,0xA71DF3,0x5BE018,0x34132E,
+    0x621283,0x014883,0x5B8EF5,0x7FB0AD,0xF2E91E,0x434A48,
+    0xD36710,0xD8DDAA,0x425FAE,0xCE616A,0xA4280A,0xB499D3,
+    0xF2A606,0x7F775C,0x83C2A3,0x883C61,0x78738A,0x5A8CAF,
+    0xBDD76F,0x63A62D,0xCBBFF4,0xEF818D,0x67C126,0x45CA55,
+    0x36D9CA,0xD2A828,0x8D61C2,0x77C912,0x142604,0x9B4612,
+    0xC459C4,0x44C5C8,0x91B24D,0xF31700,0xAD43D4,0xE54929,
+    0x10D5FD,0xFCBE00,0xCC941E,0xEECE70,0xF53E13,0x80F1EC,
+    0xC3E7B3,0x28F8C7,0x940593,0x3E71C1,0xB3092E,0xF3450B,
+    0x9C1288,0x7B20AB,0x9FB52E,0xC29247,0x2F327B,0x6D550C,
+    0x90A772,0x1FE76B,0x96CB31,0x4A1679,0xE27941,0x89DFF4,
+    0x9794E8,0x84E6E2,0x973199,0x6BED88,0x365F5F,0x0EFDBB,
+    0xB49A48,0x6CA467,0x427271,0x325D8D,0xB8159F,0x09E5BC,
+    0x25318D,0x3974F7,0x1C0530,0x010C0D,0x68084B,0x58EE2C,
+    0x90AA47,0x02E774,0x24D6BD,0xA67DF7,0x72486E,0xEF169F,
+    0xA6948E,0xF691B4,0x5153D1,0xF20ACF,0x339820,0x7E4BF5,
+    0x6863B2,0x5F3EDD,0x035D40,0x7F8985,0x295255,0xC06437,
+    0x10D86D,0x324832,0x754C5B,0xD4714E,0x6E5445,0xC1090B,
+    0x69F52A,0xD56614,0x9D0727,0x50045D,0xDB3BB4,0xC576EA,
+    0x17F987,0x7D6B49,0xBA271D,0x296996,0xACCCC6,0x5414AD,
+    0x6AE290,0x89D988,0x50722C,0xBEA404,0x940777,0x7030F3,
+    0x27FC00,0xA871EA,0x49C266,0x3DE064,0x83DD97,0x973FA3,
+    0xFD9443,0x8C860D,0xDE4131,0x9D3992,0x8C70DD,0xE7B717,
+    0x3BDF08,0x2B3715,0xA0805C,0x93805A,0x921110,0xD8E80F,
+    0xAF806C,0x4BFFDB,0x0F9038,0x761859,0x15A562,0xBBCB61,
+    0xB989C7,0xBD4010,0x04F2D2,0x277549,0xF6B6EB,0xBB22DB,
+    0xAA140A,0x2F2689,0x768364,0x333B09,0x1A940E,0xAA3A51,
+    0xC2A31D,0xAEEDAF,0x12265C,0x4DC26D,0x9C7A2D,0x9756C0,
+    0x833F03,0xF6F009,0x8C402B,0x99316D,0x07B439,0x15200C,
+    0x5BC3D8,0xC492F5,0x4BADC6,0xA5CA4E,0xCD37A7,0x36A9E6,
+    0x9492AB,0x6842DD,0xDE6319,0xEF8C76,0x528B68,0x37DBFC,
+    0xABA1AE,0x3115DF,0xA1AE00,0xDAFB0C,0x664D64,0xB705ED,
+    0x306529,0xBF5657,0x3AFF47,0xB9F96A,0xF3BE75,0xDF9328,
+    0x3080AB,0xF68C66,0x15CB04,0x0622FA,0x1DE4D9,0xA4B33D,
+    0x8F1B57,0x09CD36,0xE9424E,0xA4BE13,0xB52333,0x1AAAF0,
+    0xA8654F,0xA5C1D2,0x0F3F0B,0xCD785B,0x76F923,0x048B7B,
+    0x721789,0x53A6C6,0xE26E6F,0x00EBEF,0x584A9B,0xB7DAC4,
+    0xBA66AA,0xCFCF76,0x1D02D1,0x2DF1B1,0xC1998C,0x77ADC3,
+    0xDA4886,0xA05DF7,0xF480C6,0x2FF0AC,0x9AECDD,0xBC5C3F,
+    0x6DDED0,0x1FC790,0xB6DB2A,0x3A25A3,0x9AAF00,0x9353AD,
+    0x0457B6,0xB42D29,0x7E804B,0xA707DA,0x0EAA76,0xA1597B,
+    0x2A1216,0x2DB7DC,0xFDE5FA,0xFEDB89,0xFDBE89,0x6C76E4,
+    0xFCA906,0x70803E,0x156E85,0xFF87FD,0x073E28,0x336761,
+    0x86182A,0xEABD4D,0xAFE7B3,0x6E6D8F,0x396795,0x5BBF31,
+    0x48D784,0x16DF30,0x432DC7,0x356125,0xCE70C9,0xB8CB30,
+    0xFD6CBF,0xA200A4,0xE46C05,0xA0DD5A,0x476F21,0xD21262,
+    0x845CB9,0x496170,0xE0566B,0x015299,0x375550,0xB7D51E,
+    0xC4F133,0x5F6E13,0xE4305D,0xA92E85,0xC3B21D,0x3632A1,
+    0xA4B708,0xD4B1EA,0x21F716,0xE4698F,0x77FF27,0x80030C,
+    0x2D408D,0xA0CD4F,0x99A520,0xD3A2B3,0x0A5D2F,0x42F9B4,
+    0xCBDA11,0xD0BE7D,0xC1DB9B,0xBD17AB,0x81A2CA,0x5C6A08,
+    0x17552E,0x550027,0xF0147F,0x8607E1,0x640B14,0x8D4196,
+    0xDEBE87,0x2AFDDA,0xB6256B,0x34897B,0xFEF305,0x9EBFB9,
+    0x4F6A68,0xA82A4A,0x5AC44F,0xBCF82D,0x985AD7,0x95C7F4,
+    0x8D4D0D,0xA63A20,0x5F57A4,0xB13F14,0x953880,0x0120CC,
+    0x86DD71,0xB6DEC9,0xF560BF,0x11654D,0x6B0701,0xACB08C,
+    0xD0C0B2,0x485551,0x0EFB1E,0xC37295,0x3B06A3,0x3540C0,
+    0x7BDC06,0xCC45E0,0xFA294E,0xC8CAD6,0x41F3E8,0xDE647C,
+    0xD8649B,0x31BED9,0xC397A4,0xD45877,0xC5E369,0x13DAF0,
+    0x3C3ABA,0x461846,0x5F7555,0xF5BDD2,0xC6926E,0x5D2EAC,
+    0xED440E,0x423E1C,0x87C461,0xE9FD29,0xF3D6E7,0xCA7C22,
+    0x35916F,0xC5E008,0x8DD7FF,0xE26A6E,0xC6FDB0,0xC10893,
+    0x745D7C,0xB2AD6B,0x9D6ECD,0x7B723E,0x6A11C6,0xA9CFF7,
+    0xDF7329,0xBAC9B5,0x5100B7,0x0DB2E2,0x24BA74,0x607DE5,
+    0x8AD874,0x2C150D,0x0C1881,0x94667E,0x162901,0x767A9F,
+    0xBEFDFD,0xEF4556,0x367ED9,0x13D9EC,0xB9BA8B,0xFC97C4,
+    0x27A831,0xC36EF1,0x36C594,0x56A8D8,0xB5A8B4,0x0ECCCF,
+    0x2D8912,0x34576F,0x89562C,0xE3CE99,0xB920D6,0xAA5E6B,
+    0x9C2A3E,0xCC5F11,0x4A0BFD,0xFBF4E1,0x6D3B8E,0x2C86E2,
+    0x84D4E9,0xA9B4FC,0xD1EEEF,0xC9352E,0x61392F,0x442138,
+    0xC8D91B,0x0AFC81,0x6A4AFB,0xD81C2F,0x84B453,0x8C994E,
+    0xCC2254,0xDC552A,0xD6C6C0,0x96190B,0xB8701A,0x649569,
+    0x605A26,0xEE523F,0x0F117F,0x11B5F4,0xF5CBFC,0x2DBC34,
+    0xEEBC34,0xCC5DE8,0x605EDD,0x9B8E67,0xEF3392,0xB817C9,
+    0x9B5861,0xBC57E1,0xC68351,0x103ED8,0x4871DD,0xDD1C2D,
+    0xA118AF,0x462C21,0xD7F359,0x987AD9,0xC0549E,0xFA864F,
+    0xFC0656,0xAE79E5,0x362289,0x22AD38,0xDC9367,0xAAE855,
+    0x382682,0x9BE7CA,0xA40D51,0xB13399,0x0ED7A9,0x480569,
+    0xF0B265,0xA7887F,0x974C88,0x36D1F9,0xB39221,0x4A827B,
+    0x21CF98,0xDC9F40,0x5547DC,0x3A74E1,0x42EB67,0xDF9DFE,
+    0x5FD45E,0xA4677B,0x7AACBA,0xA2F655,0x23882B,0x55BA41,
+    0x086E59,0x862A21,0x834739,0xE6E389,0xD49EE5,0x40FB49,
+    0xE956FF,0xCA0F1C,0x8A59C5,0x2BFA94,0xC5C1D3,0xCFC50F,
+    0xAE5ADB,0x86C547,0x624385,0x3B8621,0x94792C,0x876110,
+    0x7B4C2A,0x1A2C80,0x12BF43,0x902688,0x893C78,0xE4C4A8,
+    0x7BDBE5,0xC23AC4,0xEAF426,0x8A67F7,0xBF920D,0x2BA365,
+    0xB1933D,0x0B7CBD,0xDC51A4,0x63DD27,0xDDE169,0x19949A,
+    0x9529A8,0x28CE68,0xB4ED09,0x209F44,0xCA984E,0x638270,
+    0x237C7E,0x32B90F,0x8EF5A7,0xE75614,0x08F121,0x2A9DB5,
+    0x4D7E6F,0x5119A5,0xABF9B5,0xD6DF82,0x61DD96,0x023616,
+    0x9F3AC4,0xA1A283,0x6DED72,0x7A8D39,0xA9B882,0x5C326B,
+    0x5B2746,0xED3400,0x7700D2,0x55F4FC,0x4D5901,0x8071E0,
+  };
+  // pi/2 to 24-bit chunks, 8 entries (musl `PIo2`).
+  static const std::uint64_t kTrigPIo2[8] = {
+    0x3ff921fb40000000ULL,
+    0x3e74442d00000000ULL,
+    0x3cf8469880000000ULL,
+    0x3b78cc5160000000ULL,
+    0x39f01b8380000000ULL,
+    0x387a252040000000ULL,
+    0x36e3822280000000ULL,
+    0x3569f31d00000000ULL,
+  };
+
+  // Trigonometric reduction tables (musl `k_rem_pio2.c`).
+  cg.bind(refs.ipio2);
+  emitU64Table(cg, kTrigIpio2, 690);
+  cg.bind(refs.pio2);
+  emitU64Table(cg, kTrigPIo2, 8);
 }
 
 void emitMathLib(CodeGen& cg, const MathHandles& handles) {
@@ -1590,6 +3363,8 @@ void emitMathLib(CodeGen& cg, const MathHandles& handles) {
   refs.logTab = cg.newLabel();
   refs.logTab2 = cg.newLabel();
   refs.powTab = cg.newLabel();
+  refs.ipio2 = cg.newLabel();
+  refs.pio2 = cg.newLabel();
 
   // `exp` and `pow` each carry their own copy of the exp core, because their
   // `specialcase` differs (musl keeps them separate for the same reason).
@@ -1603,6 +3378,25 @@ void emitMathLib(CodeGen& cg, const MathHandles& handles) {
   CodeGen::Label logInline = cg.newLabel();
   emitLogInline(cg, logInline, refs);
   emitPow(cg, handles.pow, powExpCore, logInline);
+
+  // Trigonometric family: the kernels are leaves; `__rem_pio2` and its large
+  // helper form the argument reduction; the public entry points dispatch.
+  CodeGen::Label sinK = cg.newLabel();
+  CodeGen::Label cosK = cg.newLabel();
+  CodeGen::Label tanK = cg.newLabel();
+  emitSinKernel(cg, sinK);
+  emitCosKernel(cg, cosK);
+  emitTanKernel(cg, tanK);
+  CodeGen::Label scalbn = handles.scalbn;
+  CodeGen::Label floorFn = handles.floorFn;
+  emitScalbn(cg, scalbn);
+  emitFloorHelper(cg, floorFn);
+  CodeGen::Label remLarge = handles.remPio2Large;
+  emitRemPio2Large(cg, remLarge, refs, scalbn, floorFn);
+  emitRemPio2(cg, handles.remPio2, remLarge);
+  emitSinPublic(cg, handles.sin, sinK, cosK, handles.remPio2);
+  emitCosPublic(cg, handles.cos, sinK, cosK, handles.remPio2);
+  emitTanPublic(cg, handles.tan, tanK, handles.remPio2);
 
   emitTables(cg, refs);
 }
