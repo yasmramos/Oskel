@@ -2,8 +2,7 @@
 # backend cannot resolve (PHASE 7f): the backend has no host, so the build must
 # fail with the dedicated message and exit 65, never emit a binary.
 #
-# Registered by CMakeLists.txt on Linux x86-64 only (the AOT backend targets
-# x86_64-linux-sysv). Expects:
+# Registered by CMakeLists.txt on every host the AOT backend targets. Expects:
 #   -DOSKEL_EXE=<path to the oskel executable>
 #   -DOSKEL_SCRIPT=<the .oskl file to build>
 #   -DEXPECTED_MESSAGE=<regex the stderr must match>
@@ -18,7 +17,14 @@ if(NOT DEFINED OSKEL_EXE OR NOT DEFINED OSKEL_SCRIPT OR NOT DEFINED EXPECTED_MES
   message(FATAL_ERROR "build_error.cmake requires OSKEL_EXE, OSKEL_SCRIPT and EXPECTED_MESSAGE")
 endif()
 
-set(out "${CMAKE_CURRENT_BINARY_DIR}/oskel_build_error_output")
+# Match the host's executable suffix, so the "no binary was written" check looks
+# for the name `oskel build` would actually produce (see build_binary.cmake).
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+  set(exe_suffix ".exe")
+else()
+  set(exe_suffix "")
+endif()
+set(out "${CMAKE_CURRENT_BINARY_DIR}/oskel_build_error_output${exe_suffix}")
 file(REMOVE "${out}")
 
 execute_process(

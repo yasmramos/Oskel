@@ -219,10 +219,12 @@ if(BUILD_TESTING)
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_stdlib.cmake")
 
   # --- `oskel build`: compile to a native binary and run it (PHASE 7d/7e) ---
-  # The AOT backend has a Linux and a Windows target; each test runs on the
-  # host whose target the generated image can execute. A cross-built image
-  # would not run on the other OS, so the two are separate.
-  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+  # The AOT backend has a Linux and a Windows target. One fixture list drives
+  # both: every case builds for the host's target and runs the image, and the
+  # runner (`tests/build_binary.cmake`) is portable. Keeping a single list is the
+  # point -- the Windows side used to register two cases against Linux's ten, and
+  # a Windows-only stack overflow slipped through that gap.
+  if((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32) AND
      CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
     add_test(NAME oskel.build_binary
       COMMAND ${CMAKE_COMMAND}
@@ -315,21 +317,6 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.oskl"
         "-DOSKEL_EXPECTED_EXIT=70"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.cmake")
-  elseif(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
-    add_test(NAME oskel.build_binary
-      COMMAND ${CMAKE_COMMAND}
-        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary_pe.cmake")
-
-    # The stack-reserve regression guard (see the Linux sibling above): a
-    # recursive program with a non-trivial frame must survive on the 8 MiB
-    # reserve the PE declares, not die silently on a 1 MiB one.
-    add_test(NAME oskel.build_binary_deep_recursion
-      COMMAND ${CMAKE_COMMAND}
-        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_deep_recursion.oskl"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary_pe.cmake")
   endif()
 
   # --- .oskl script tests (auto-detected) ---

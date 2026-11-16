@@ -73,6 +73,16 @@ may change between minor versions.
 
 ### Changed
 
+- The `oskel build` CTest cases now run the same fixture list on Windows as on
+  Linux. Windows registered only two cases (`build_binary` and
+  `build_binary_deep_recursion`) against Linux's ten, so the Windows PE path was
+  exercised by two programs while the shared AOT backend was covered by ten —
+  the gap the 1 MiB stack reserve slipped through. The runners
+  (`tests/build_binary.cmake`, `tests/build_error.cmake`,
+  `tests/aot_runtime_error.cmake`) are now portable: the Windows output keeps
+  its `.exe` suffix and the static-link `ldd` check is Linux-only. The
+  Windows-only `tests/build_binary_pe.cmake` is gone, and one list registers
+  every case on both hosts.
 - The AOT backend compares two arrays or maps by content, like the hosted
   engine, instead of by pointer identity. `[1, 2] == [1, 2]` is now true in a
   compiled binary, and `in` over an array of arrays matches the VM. The
