@@ -257,6 +257,35 @@ int main() {
                "large ints add like the VM");
   differential(arith, "negate", {Value(-1)}, "negate(-1) matches the VM");
 
+  // --- Register allocation: pool overflow and mixed scalar kinds -------------
+  // `wide` has ten live parameters, more than the physical-register pool, so
+  // the extra slots stay on the stack; the two representations must agree.
+  const char* wide =
+      "fn wide(a, b, c, d, e, f, g, h, i, j) {\n"
+      "  var s = a + b + c + d + e + f + g + h + i + j;\n"
+      "  var t = s;\n"
+      "  while (t > 100) { t = t - 3; }\n"
+      "  return t;\n"
+      "}\n";
+  differential(wide, "wide", {Value(1), Value(2), Value(3), Value(4), Value(5), Value(6),
+                              Value(7), Value(8), Value(9), Value(10)},
+               "ten-parameter function (register pool overflow) matches the VM");
+
+  // `mixed` reuses one register for both a `bool` (the `==`) and an `int` (the
+  // `!` of that bool and the loop counter), which a single-kind-per-slot rule
+  // would have kept on the stack; the register path must still be exact.
+  const char* mixed =
+      "fn mixed(n) {\n"
+      "  var acc = 0;\n"
+      "  var i = 0;\n"
+      "  while (i < n) { acc = acc + i; i = i + 1; }\n"
+      "  var odd = (acc & 1) == 1;\n"
+      "  return odd;\n"
+      "}\n";
+  differential(mixed, "mixed", {Value(0)}, "mixed(0) matches the VM");
+  differential(mixed, "mixed", {Value(7)}, "mixed(7) matches the VM");
+  differential(mixed, "mixed", {Value(8)}, "mixed(8) matches the VM");
+
   // --- Rejections: everything outside the integer-leaf subset ----------------
   expectRejected("fn greet(n) { return \"hi\"; }\n", "greet", "a string return is rejected");
   expectRejected("fn useGlobal(n) { return n + 1.5; }\n", "useGlobal",
