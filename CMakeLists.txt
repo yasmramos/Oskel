@@ -319,6 +319,18 @@ if(BUILD_TESTING)
         "-DEXPECTED_MESSAGE=native fn 'clock' cannot be resolved by the AOT backend"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
 
+    # A qualified access to a module's native export (`modules.hostclock.clock()`)
+    # reads the module table with `GETTABLE`, so before PHASE 7f.2 the lowerer
+    # could not see the use and emitted a binary that faulted at run time. The
+    # compiler now records the use, so the build must fail with the same
+    # dedicated message.
+    add_test(NAME oskel.build_native_qualified_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_qualified_error.oskl"
+        "-DEXPECTED_MESSAGE=native fn 'clock' cannot be resolved by the AOT backend"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+
     # A runtime error in a generated binary must behave exactly like the VM:
     # the same stderr text and the same exit code (70), with no recovery. The
     # fixture also runs on the VM as an ordinary script (oskel.aot_runtime_error

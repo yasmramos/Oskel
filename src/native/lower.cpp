@@ -338,19 +338,24 @@ GlobalSlots collectGlobals(const std::vector<const Bytecode*>& protos,
   // A host binding the program uses but the AOT backend has no stub for is a
   // real limitation, not a typo: name the symbol and the backend instead of
   // leaving a nil that would fault at run time. A binding counts as used when
-  // it is read as a global (`GETGLOBAL`) more often than it is declared, because
-  // a declaration emits exactly one read of its own name — the compiler's shape
-  // for "bind this name to the host function the host registered". A binding
-  // that is only declared is harmless (the hosted engine installs it, the AOT
-  // backend nils it) and must not fail the build, so `import std.math` (which
-  // declares `pow`, `sin`, ... that only a libm-backed host can provide) still
-  // compiles when the program calls none of them.
+  // the compiler recorded a use for it (`nativeUses`), or — for a proto built
+  // before the metadata existed — when it is read as a global (`GETGLOBAL`) more
+  // often than it is declared, because a declaration emits exactly one read of
+  // its own name. A binding that is only declared is harmless (the hosted engine
+  // installs it, the AOT backend nils it) and must not fail the build, so
+  // `import std.math` (which declares `pow`, `sin`, ... that only a libm-backed
+  // host can provide) still compiles when the program calls none of them.
   //
-  // A call through a module namespace (`std.math.pow(...)`) reads the name with
-  // `GETTABLE` off the module table, not with `GETGLOBAL`, so it is not counted
-  // here; such a call reaches a nil at run time (the same failure a call to any
-  // non-function produces) instead of a build error. The direct and wildcard
-  // forms, which read the name as a global, are caught at build time.
+  // `nativeUses` is what makes a call through a module namespace
+  // (`std.math.pow(...)`, which reads the name with `GETTABLE` off the module
+  // table) and a capture (`GETUPVAL`) fail the build too: neither leaves a
+  // `GETGLOBAL` behind, so the read count alone cannot see them. The compiler
+  // records every such use on the proto that performs it (PHASE 7f.2), so the
+  // lowerer reads the use instead of reconstructing it from the code.
+  std::unordered_set<std::string> usedNatives;
+  for (const Bytecode* proto : protos) {
+    for (const std::string& name : proto->nativeUses) usedNatives.insert(name);
+  }
   std::unordered_map<std::string, int> declarations;
   std::unordered_map<std::string, int> reads;
   for (const Bytecode* proto : protos) {
@@ -364,7 +369,8 @@ GlobalSlots collectGlobals(const std::vector<const Bytecode*>& protos,
   }
   for (const std::string& name : hostBindings) {
     if (builtins.find(name) != builtins.end()) continue;  // has a stub
-    if (reads[name] <= declarations[name]) continue;      // declared but unused
+    const bool used = usedNatives.find(name) != usedNatives.end();
+    if (!used && reads[name] <= declarations[name]) continue;  // declared but unused
     if (externNames.find(name) != externNames.end()) {
       throw LoweringError("lowering: extern \"C\" symbol '" + name +
                           "' cannot be resolved by the AOT backend (PHASE 7f)");

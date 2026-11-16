@@ -238,7 +238,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     is provided by a curated stub that matches the VM bit for bit. **Partial
     (7c.5b.4)**: `std.math`'s libm surface (`exp`, `log`, `pow`, `sin`, `cos`,
     `tan`) now resolves from the embedded musl ports, so a program that calls
-    them builds. General `extern "C"` symbols are still open.
+    them builds. **Partial (7f.2)**: a qualified access to a module's native
+    export (`std.math.pow`) is recorded on the proto and rejected the same way
+    (the member read is a `GETTABLE`, so the read count alone could not see it),
+    and a qualified call is checked against the export's signature like the
+    direct form. General `extern "C"` symbols are still open.
 20. **[P0] [done]** VM/AOT divergence in string iteration: `emitIterNext`'s
     `str` branch built the character but fell through into the `range` block,
     which overwrote `rax:rdx` with the cursor index, so `for c in "abc"`

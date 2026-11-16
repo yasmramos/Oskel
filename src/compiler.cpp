@@ -56,6 +56,27 @@ std::vector<std::string> splitDotted(const std::string& path) {
   return segments;
 }
 
+// Flattens a member chain `a.b.c` into its root name (`a`) and the member names
+// that follow it ({"b","c"}). Returns false when the base of the chain is not a
+// plain variable — `f().x` or `a[0].x` cannot name an imported module, so the
+// caller has nothing to resolve. Used to recognise a qualified access to a
+// module export (`std.math.pow`).
+bool flattenMemberPath(const MemberExpr& member, std::string& root,
+                       std::vector<std::string>& members) {
+  const Expr* object = member.object.get();
+  if (object == nullptr) return false;
+  if (const auto* inner = std::get_if<MemberExpr>(&object->node)) {
+    if (!flattenMemberPath(*inner, root, members)) return false;
+    members.push_back(member.name);
+    return true;
+  }
+  const auto* variable = std::get_if<VariableExpr>(&object->node);
+  if (variable == nullptr) return false;
+  root = variable->name;
+  members.push_back(member.name);
+  return true;
+}
+
 // Human-readable operator name, used only for diagnostics.
 std::string opName(Tok op) {
   switch (op) {
@@ -556,7 +577,7 @@ std::string Compiler::assignError(const TypeRef& from, const TypeRef& to,
 // expects. The check is best-effort: an unannotated parameter means the
 // argument is not checked, so a native with a loose signature still compiles.
 void Compiler::checkNativeCall(const std::string& name, const NativeSig& sig,
-                               const CallExpr& call, int line, int col) {
+                               const NativeCallArgs& args, int line, int col) {
   const bool variadic = !sig.params.empty() && sig.params.back().variadic;
   // A C variadic (`extern "C" fn printf(fmt: cstring, ...): int`) takes its
   // named parameters and then any number of extra arguments, which C promotes
@@ -566,30 +587,46 @@ void Compiler::checkNativeCall(const std::string& name, const NativeSig& sig,
   // A variadic native accepts `params.size() - 1` or more arguments; the extras
   // are checked against the variadic parameter's element type.
   const size_t required = sig.params.size() - (variadic ? 1 : 0);
-  const bool arityOk = variadic   ? call.args.size() >= required
-                       : cVariadic ? call.args.size() >= sig.params.size()
-                                   : call.args.size() == required;
+  const bool arityOk = variadic   ? args.types.size() >= required
+                       : cVariadic ? args.types.size() >= sig.params.size()
+                                   : args.types.size() == required;
   if (!arityOk) {
     fail("'" + name + "' expects " + std::to_string(required) + " argument" +
              (required == 1 ? "" : "s") + (variadic || cVariadic ? " or more" : "") + ", got " +
-             std::to_string(call.args.size()),
+             std::to_string(args.types.size()),
          line, col);
   }
-  const size_t checked = cVariadic ? std::min(call.args.size(), sig.params.size())
-                                   : call.args.size();
+  const size_t checked = cVariadic ? std::min(args.types.size(), sig.params.size())
+                                   : args.types.size();
   for (size_t i = 0; i < checked; ++i) {
     // Arguments past the fixed parameters all bind the variadic element type.
     const size_t slot = i < required ? i : sig.params.size() - 1;
     const TypeRef& param = sig.params[slot].type;
     if (!param.isPresent()) continue;
-    const TypeRef argument = inferExprType(*call.args[i]);
+    const TypeRef& argument = args.types[i];
     // A Oskel `string` is NUL-terminated and stays alive for the whole call, so
     // it is a valid `const char *` *argument* even though it is not assignable
     // to an owned `cstring` binding (see `checkAssignable`).
     if (param.name == "cstring" && argument.name == "string" && !argument.nullable) continue;
     checkAssignable(argument, param, "argument " + std::to_string(i + 1) + " of '" + name + "'",
-                    call.args[i]->line, call.args[i]->col);
+                    args.lines[i], args.cols[i]);
   }
+}
+
+// Infers the type of every argument of `call` and records its position. The
+// types must be captured while the call site's scopes are open, because a
+// qualified call to a module's native export is checked later, at flush time.
+NativeCallArgs Compiler::captureCallArgs(const CallExpr& call) const {
+  NativeCallArgs captured;
+  captured.types.reserve(call.args.size());
+  captured.lines.reserve(call.args.size());
+  captured.cols.reserve(call.args.size());
+  for (const ExprPtr& arg : call.args) {
+    captured.types.push_back(inferExprType(*arg));
+    captured.lines.push_back(arg->line);
+    captured.cols.push_back(arg->col);
+  }
+  return captured;
 }
 
 // Resolves `name` the way a variable read does and returns its native
@@ -598,7 +635,7 @@ void Compiler::checkNativeCall(const std::string& name, const NativeSig& sig,
 // first binding wins, so a local or an upvalue that shadows a native name is a
 // different function and yields null. A name with no local binding is a
 // global, which is a native when it was declared as one.
-const Compiler::NativeSig* Compiler::nativeSigFor(const std::string& name) const {
+const NativeSig* Compiler::nativeSigFor(const std::string& name) const {
   auto declared = nativeSigs_.find(name);
   const NativeSig* sig = declared == nativeSigs_.end() ? nullptr : &declared->second;
 
@@ -608,6 +645,101 @@ const Compiler::NativeSig* Compiler::nativeSigFor(const std::string& name) const
     if (resolveLocalIn(frame->scopes, name, local)) return local.isNative ? sig : nullptr;
   }
   return sig;
+}
+
+// Records that the current proto uses the host binding `name` (PHASE 7f.2). The
+// AOT backend reads the list to reject a use it has no stub for; the hosted
+// engine ignores it. Idempotent per proto.
+void Compiler::recordNativeUse(const std::string& name) {
+  for (const std::string& seen : bc_.nativeUses) {
+    if (seen == name) return;
+  }
+  bc_.nativeUses.push_back(name);
+}
+
+// Records a qualified access to a module's native export (`std.math.pow`),
+// which reads the module table with `GETTABLE` and so leaves no `GETGLOBAL` for
+// the lowerer to notice. The access is queued and resolved by
+// `flushModuleNativeUses` once the whole chunk is compiled, so a hoisted
+// function that reads the export before its `import` statement is compiled is
+// still caught. Recording here (rather than loading the module now) keeps the
+// module bodies compiling in source order. When the access is the callee of a
+// call, `callArgs` carries the argument types captured at the call site, so the
+// resolved signature is checked there.
+void Compiler::recordModuleNativeUse(const MemberExpr& member, const NativeCallArgs* callArgs,
+                                     int line, int col) {
+  std::string root;
+  std::vector<std::string> members;
+  if (!flattenMemberPath(member, root, members)) return;
+  PendingModuleUse use;
+  use.root = std::move(root);
+  use.members = std::move(members);
+  use.line = line;
+  use.col = col;
+  if (callArgs != nullptr) {
+    use.isCall = true;
+    use.callArgs = *callArgs;
+  }
+  pendingModuleUses_.push_back(std::move(use));
+}
+
+// Splits a member chain (`root` plus `members`) into the imported module it
+// names and the export member. The binding path is the longest prefix of
+// {root} + members that names an imported module, and exactly one member must
+// follow it: `std.math.pow` (root "std", members {"math","pow"}) yields
+// ("std.math", "pow"); an alias (`m.pow`, root "m") yields ("std.math", "pow").
+bool Compiler::moduleExportOf(const std::string& root, const std::vector<std::string>& members,
+                              std::string& modulePath, std::string& member) const {
+  if (moduleByBindingPath_.empty()) return false;
+  std::string path = root;
+  std::string foundModule;
+  std::size_t foundConsumed = 0;
+  bool found = false;
+  auto it = moduleByBindingPath_.find(path);
+  if (it != moduleByBindingPath_.end()) {
+    found = true;
+    foundModule = it->second;
+  }
+  for (std::size_t i = 0; i < members.size(); ++i) {
+    path += ".";
+    path += members[i];
+    it = moduleByBindingPath_.find(path);
+    if (it != moduleByBindingPath_.end()) {
+      found = true;
+      foundModule = it->second;
+      foundConsumed = i + 1;
+    }
+  }
+  // The export is the single member right after the module's binding path.
+  if (!found || members.size() - foundConsumed != 1) return false;
+  modulePath = foundModule;
+  member = members.back();
+  return true;
+}
+
+// Resolves every queued module-export access against the loaded modules and
+// records the ones that name a native export as a use on the current proto,
+// checking a call site against the propagated signature (PHASE 7f.2). Runs once
+// the whole chunk is compiled, when every import has been loaded.
+void Compiler::flushModuleNativeUses() {
+  for (const PendingModuleUse& use : pendingModuleUses_) {
+    std::string path;
+    std::string member;
+    if (!moduleExportOf(use.root, use.members, path, member)) continue;
+    auto module = loadedModules_.find(path);
+    if (module == loadedModules_.end()) continue;
+    auto sig = module->second.nativeSigs.find(member);
+    if (sig == module->second.nativeSigs.end()) continue;
+    // The export is a `native fn`: it is a use of a host binding, and a call to
+    // it is checked against the module's recorded signature, so a qualified call
+    // fails at compile time exactly like the direct form (arity and argument
+    // types), instead of reaching a nil at run time.
+    recordNativeUse(member);
+    if (use.isCall) {
+      checkNativeCall(path + "." + member, sig->second, use.callArgs, use.line, use.col);
+    }
+  }
+  pendingModuleUses_.clear();
 }
 
 // Records a non-fatal diagnostic (PHASE 6.7.5).
@@ -733,6 +865,7 @@ void Compiler::resetChunk(const std::string& name) {
   modulePath_.clear();
   moduleImportNames_.clear();
   loadingStack_.clear();
+  pendingModuleUses_.clear();
   warnings_.clear();
 }
 
@@ -748,6 +881,7 @@ void Compiler::clearSession() {
   materializedModules_.clear();
   namespaces_.clear();
   importedNames_.clear();
+  moduleByBindingPath_.clear();
 }
 
 Bytecode Compiler::compile(const StmtPtr& program) {
@@ -779,6 +913,10 @@ Bytecode Compiler::compileTopLevelBody(const StmtPtr& program) {
     // Register `@MustUse` flags as well, for the same reason: a hoisted
     // function is compiled before the declarations that follow it.
     registerMustUseDecls(*block);
+    // Register the module binding paths, so a hoisted function that reads a
+    // module's native export (`std.math.pow`) is recognised before the `import`
+    // statement is compiled (PHASE 7f.2).
+    registerImportBindings(*block);
     // Top-level function declarations are hoisted, like `execBlock` does in
     // the interpreter, so a call can appear before the declaration. An
     // `extern "C"` block is hoisted too: its declarations are natives, and a
@@ -801,6 +939,11 @@ Bytecode Compiler::compileTopLevelBody(const StmtPtr& program) {
   } else {
     compileStmt(*program);
   }
+
+  // Every import has now been loaded, so resolve the queued qualified accesses
+  // to module native exports and record the ones that name a `native fn` on the
+  // chunk's proto (PHASE 7f.2).
+  flushModuleNativeUses();
 
   emit(OpCode::HALT);
 
@@ -852,6 +995,7 @@ Compiler::SessionSnapshot Compiler::snapshotSession() const {
   snapshot.materializedModules = materializedModules_;
   snapshot.namespaces = namespaces_;
   snapshot.importedNames = importedNames_;
+  snapshot.moduleByBindingPath = moduleByBindingPath_;
   return snapshot;
 }
 
@@ -867,6 +1011,7 @@ void Compiler::restoreSession(SessionSnapshot snapshot) {
   materializedModules_ = std::move(snapshot.materializedModules);
   namespaces_ = std::move(snapshot.namespaces);
   importedNames_ = std::move(snapshot.importedNames);
+  moduleByBindingPath_ = std::move(snapshot.moduleByBindingPath);
 }
 
 Bytecode Compiler::compileLoaded(const StmtPtr& program, ImportLoader loader,
@@ -906,6 +1051,7 @@ Bytecode Compiler::compileReplEntry(const StmtPtr& program) {
     registerStructDecls(*block);
     registerNativeDecls(*block);
     registerMustUseDecls(*block);
+    registerImportBindings(*block);
     for (const auto& child : block->stmts) {
       if (!child) continue;
       if (const auto* fn = std::get_if<FnDeclStmt>(&child->node)) {
@@ -924,6 +1070,7 @@ Bytecode Compiler::compileReplEntry(const StmtPtr& program) {
         if (const auto* expression = std::get_if<ExprStmt>(&child->node)) {
           int result = compileExpr(*expression->expr);
           emit(OpCode::RETURN, result);
+          flushModuleNativeUses();
           bc_.numRegisters = maxReg_;
           bc_.numLocals = maxLocal_;
           return std::move(bc_);
@@ -934,6 +1081,7 @@ Bytecode Compiler::compileReplEntry(const StmtPtr& program) {
     emit(OpCode::HALT);
   }
 
+  flushModuleNativeUses();
   bc_.numRegisters = maxReg_;
   bc_.numLocals = maxLocal_;
   return std::move(bc_);
@@ -950,6 +1098,12 @@ void Compiler::compileBlockBody(const BlockStmt& block) {
   registerStructDecls(block);
   registerNativeDecls(block);
   registerMustUseDecls(block);
+  // Register the module binding paths before hoisting, so a hoisted function
+  // that reads a module's native export (`std.math.pow`) is recognised. A module
+  // body is compiled here, so this is where a module's own qualified imports are
+  // recorded (PHASE 7f.2). Imports are top-level only, so a nested block has
+  // none and the call is a no-op.
+  registerImportBindings(block);
   // Function declarations are hoisted within their block, so a call can appear
   // before the declaration and mutually recursive local functions can resolve
   // each other. Block-local `let`/`var` declarations also need their slots
@@ -1242,6 +1396,8 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   // imports bind to (see `importBindingName`).
   auto savedNamespaces = std::move(namespaces_);
   auto savedImportedNames = std::move(importedNames_);
+  auto savedModuleByBindingPath = std::move(moduleByBindingPath_);
+  auto savedPendingModuleUses = std::move(pendingModuleUses_);
   std::string savedModulePath = std::move(modulePath_);
   auto savedModuleImportNames = std::move(moduleImportNames_);
 
@@ -1297,10 +1453,24 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   compileModuleBody(program);
   moduleBody_ = false;
 
+  // Resolve the module's own qualified accesses to native exports now that its
+  // imports are loaded, so a module that reads `std.math.pow` internally records
+  // the use on its proto (PHASE 7f.2).
+  flushModuleNativeUses();
+
   ImportedModule module;
   module.path = path;
   module.code = std::make_shared<Bytecode>(std::move(bc_));
   module.symbols = std::move(symbols);
+  // Propagate the signature of every public native export, so a qualified call
+  // to one (`std.math.pow(2.0)`) is checked at compile time against the module's
+  // declaration (PHASE 7f.2). `nativeFns`/`externs` are the module proto's own
+  // declarations; only the public ones matter, and `symbols` already excludes
+  // the private names (a leading `_`).
+  for (const std::string& name : module.symbols) {
+    auto sig = nativeSigs_.find(name);
+    if (sig != nativeSigs_.end()) module.nativeSigs.emplace(name, sig->second);
+  }
 
   bc_ = std::move(savedChunk);
   currentUpvalueNames_ = std::move(savedUpvalueNames);
@@ -1325,6 +1495,8 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   funcStack_ = std::move(savedFuncStack);
   namespaces_ = std::move(savedNamespaces);
   importedNames_ = std::move(savedImportedNames);
+  moduleByBindingPath_ = std::move(savedModuleByBindingPath);
+  pendingModuleUses_ = std::move(savedPendingModuleUses);
   modulePath_ = std::move(savedModulePath);
   moduleImportNames_ = std::move(savedModuleImportNames);
   return module;
@@ -1484,6 +1656,44 @@ void Compiler::predeclareModuleImports(const BlockStmt& block) {
     } else {
       for (const std::string& name : import->names) moduleImportNames_.insert(name);
     }
+  }
+}
+
+void Compiler::registerImportBindings(const BlockStmt& block) {
+  // Runs before the block's functions are hoisted: a hoisted function compiled
+  // first must already know which visible binding paths name a module, so a
+  // qualified read of a module's native export (`std.math.pow`) resolves its
+  // binding path even though the `import` statement is compiled later. Only the
+  // qualified (dotted) and alias forms name a module table; a wildcard/selective
+  // import binds its names to globals, which `compileVariable` records directly.
+  //
+  // A name the block declares itself (`let`/`var`/`fn`) wins over an import
+  // (recordImportBinding), so a chain rooted at such a name is not a module
+  // access. `userGlobals_` is not filled yet at this point, so collect the
+  // block's own top-level names here.
+  //
+  // The module is deliberately *not* loaded here: loading it now would compile
+  // its body out of source order and disturb the order in which module bodies
+  // are materialized (a module must run when its `import` statement is reached).
+  // `flushModuleNativeUses` resolves the recorded accesses after the whole chunk
+  // is compiled, when every import has been loaded.
+  std::unordered_set<std::string> declaredHere;
+  for (const auto& child : block.stmts) {
+    if (!child) continue;
+    if (const auto* let = std::get_if<LetStmt>(&child->node)) {
+      declaredHere.insert(let->name);
+    } else if (const auto* fn = std::get_if<FnDeclStmt>(&child->node)) {
+      declaredHere.insert(fn->name);
+    }
+  }
+  for (const auto& child : block.stmts) {
+    if (!child) continue;
+    const auto* import = std::get_if<ImportStmt>(&child->node);
+    if (!import || import->mode != ImportStmt::Mode::Qualified) continue;
+    const std::string& bindingPath = import->alias.empty() ? import->module : import->alias;
+    const std::string shadowRoot = bindingPath.substr(0, bindingPath.find('.'));
+    if (declaredHere.find(shadowRoot) != declaredHere.end()) continue;
+    moduleByBindingPath_[bindingPath] = import->module;
   }
 }
 
@@ -2377,6 +2587,14 @@ void Compiler::emitDeferredBlocks(size_t minDepth) {
 int Compiler::compileVariable(const std::string& name) {
   LocalVar local;
   int reg = allocReg();
+  // A read of a `native fn`/`extern "C"` binding is a use of a host function.
+  // Record it whether it is a global, a local or a captured upvalue: the AOT
+  // backend has no host, so it must reject a use it cannot resolve from a stub
+  // rather than emit a binary that calls nil (PHASE 7f.2). A captured native
+  // (`fn square(x) { return pow(x, 2.0); }` where `pow` is a module-level
+  // `native fn`) reaches the body as a `GETUPVAL`, which leaves no `GETGLOBAL`
+  // for the lowerer to count.
+  if (nativeSigFor(name) != nullptr) recordNativeUse(name);
   if (resolveLocal(name, local)) {
     emit(OpCode::GETLOCAL, reg, local.slot);
   } else if (int upvalue = resolveUpvalue(name); upvalue >= 0) {
@@ -2395,14 +2613,26 @@ int Compiler::compileCall(const CallExpr& call, int line, int col) {
   // Types are metadata only, so the emitted code is the same either way.
   if (const auto* callee = std::get_if<VariableExpr>(&call.callee->node)) {
     if (const NativeSig* sig = nativeSigFor(callee->name)) {
-      checkNativeCall(callee->name, *sig, call, line, col);
+      checkNativeCall(callee->name, *sig, captureCallArgs(call), line, col);
     }
   }
 
   // `CALL` reads a contiguous window, so the callee and every argument must be
   // in consecutive registers. The counter discipline of `compileExpr` already
   // guarantees it; the check turns a future regression into a clear error.
+  // A member callee (`std.math.pow(...)`) records the call site so a qualified
+  // call to a module's native export is checked against its signature
+  // (PHASE 7f.2). The argument types are captured here, while the scopes are
+  // open, because the check itself runs later, at flush time.
+  const MemberExpr* savedCalleeMember = callCalleeMember_;
+  NativeCallArgs savedCalleeArgs = std::move(callCalleeArgs_);
+  if (const auto* member = std::get_if<MemberExpr>(&call.callee->node)) {
+    callCalleeMember_ = member;
+    callCalleeArgs_ = captureCallArgs(call);
+  }
   int callee = compileExpr(*call.callee);
+  callCalleeMember_ = savedCalleeMember;
+  callCalleeArgs_ = std::move(savedCalleeArgs);
   for (const auto& arg : call.args) {
     int expected = nextReg_;
     int reg = compileExpr(*arg);
@@ -2934,6 +3164,14 @@ int Compiler::compileExpr(const Expr& expr) {
             return compileSlice(slice, expr.line, expr.col);
           },
           [&](const MemberExpr& member) -> int {
+            // A qualified access to a module's native export (`std.math.pow`)
+            // is a use of a host binding the AOT backend must resolve; record
+            // it before emitting the member read (PHASE 7f.2). When the member
+            // is the callee of the call being compiled, pass the call so a
+            // qualified call is checked against the export's signature.
+            const bool isCallCallee = callCalleeMember_ == &member;
+            recordModuleNativeUse(member, isCallCallee ? &callCalleeArgs_ : nullptr, expr.line,
+                                  expr.col);
             int object = compileExpr(*member.object);
             if (!member.safe) {
               int key = -addString(member.name) - 1;

@@ -217,6 +217,18 @@ struct Bytecode {
   // list names the non-`extern` natives (and any `extern` entry as well, which
   // is harmless because the lowerer unions the two sets).
   std::vector<std::string> nativeFns;
+  // Host bindings this proto *uses*: a read of a `native fn`/`extern "C"` name
+  // (a direct call, a first-class reference, or a capture by an enclosing
+  // function), or a qualified member access to a module's native export
+  // (`std.math.pow(...)`). The compiler records every use site here (PHASE
+  // 7f.2), because a use does not always leave a `GETGLOBAL` behind — a member
+  // access reads the module table with `GETTABLE`, and a capture reads the cell
+  // with `GETUPVAL`, so the lowerer cannot recover the use from the code alone.
+  // A name in this list with no stub is a real limitation of the AOT backend
+  // (it has no host), so the build fails cleanly instead of emitting a binary
+  // that calls nil. A declaration that is never used is absent here and stays
+  // harmless.
+  std::vector<std::string> nativeUses;
   // No per-proto capture storage: upvalue cells live in the `Function` value
   // produced by `CLOSURE` (`Function::upvalues`), so closures created from the
   // same proto in different frames never overwrite each other's captures.

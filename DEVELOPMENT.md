@@ -1112,6 +1112,31 @@ Slices, each independently shippable:
       `tests/native_build_math.oskl` and `tests/native_build_math_pure.oskl`
       build and agree with the VM; `tests/native_build_native_error.oskl`
       pins the rejection.
+    - **7f.2** (done) — a qualified access to a module's native export is a use
+      too, and a qualified *call* is checked at compile time. `std.math.pow(...)`
+      reads the module table with `GETTABLE`, not `GETGLOBAL`, so the lowerer
+      never saw the use: a program that called a host binding through its
+      namespace compiled to a binary that faulted at run time (`cannot call a
+      non-function value`) instead of failing the build. The compiler now
+      propagates each public native export's *signature* on the `ImportedModule`
+      (`nativeSigs`), records the qualified access when it emits the member read,
+      and resolves it once the chunk is compiled — deferred, because a hoisted
+      function is compiled before the `import` statement that loads the module.
+      Resolution both records the use for the AOT backend (so the rejection
+      matches the direct form) and checks a call site against the export's
+      signature, so `std.math.pow(2.0)` fails at compile time with `'std.math.pow'
+      expects 2 arguments, got 1`, exactly like `pow(2.0)`. Propagating the
+      signature (not just the name) is what makes the qualified and direct forms
+      agree; before, `tests/modules/hostmath.oskl` declared `sqrt` as `float` and
+      was called with a `double`, a mismatch the qualified form silently
+      accepted. The argument types are captured at the call site, not at flush
+      time: a local that shadows a global is gone by then, and inferring late
+      resolved it to the global. Covered by
+      `tests/native_build_qualified_error.oskl` (the build rejection; the
+      `std.math` libm surface resolves from the embedded musl ports, so the
+      rejection is exercised with `modules.hostclock.clock`, which has no stub),
+      `tests/errors/native_qualified_arity.oskl` and
+      `tests/errors/native_qualified_arg_type.oskl` (the compile-time checks).
   - **7g** (done) — bare-metal x86-64 (multiboot). A third target,
     `x86_64-freestanding-sysv` (`oskel build --target
     x86_64-freestanding-sysv`), emits a multiboot 1 kernel that a boot loader
