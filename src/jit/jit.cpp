@@ -167,6 +167,21 @@ Jcc mirrorCc(Jcc cc) {
   }
 }
 
+// The complementary condition code, so a branch on a comparison's negation
+// still tests the flags the comparison left (`JMP_IF_FALSE` jumps when the
+// comparison is false, i.e. on `negateCc` of the comparison's own code).
+Jcc negateCc(Jcc cc) {
+  switch (cc) {
+    case Jcc::Eq: return Jcc::Ne;
+    case Jcc::Ne: return Jcc::Eq;
+    case Jcc::Lt: return Jcc::Ge;
+    case Jcc::Le: return Jcc::Gt;
+    case Jcc::Gt: return Jcc::Le;
+    case Jcc::Ge: return Jcc::Lt;
+    default: return cc;
+  }
+}
+
 // True for the operators where `a OP b == b OP a`, so a constant on the left can
 // be applied as an immediate on the right.
 bool isCommutative(OpCode op) {
@@ -228,6 +243,13 @@ struct Analysis {
   // so a `LOADK` that defines such a slot emits nothing. This removes the
   // constants a folded expression leaves behind.
   std::vector<bool> materialized;
+
+  // Compare-branch fusion. For a comparison whose boolean result is dead right
+  // after a conditional branch on it, the emitter skips materializing the bool
+  // and turns the pair into `cmp; jcc`. `fusedBranch[i]` is the branch index a
+  // comparison at `i` jumps for, or -1 when the comparison emits normally; a
+  // branch listed here emits nothing (the comparison already jumped).
+  std::vector<int> fusedBranch;
 };
 
 // Forward dataflow to a fixpoint, then a verification pass. The fixpoint is a
@@ -872,6 +894,155 @@ Analysis analyze(const Bytecode& proto) {
   }
 
 
+  // Compare-branch fusion (see `Analysis::fusedBranch`). Backward liveness over
+  // the reachable instructions; a comparison's boolean result may be dropped
+  // only when it is dead once the branch that consumes it has run, and only when
+  // that branch is reached by fall-through alone (never a jump target), so
+  // skipping it cannot lose a re-test of the condition.
+  result.fusedBranch.assign(n, -1);
+  {
+    auto reads = [&](const Instruction& in, std::vector<int>& out) {
+      switch (in.op) {
+        case OpCode::MOVE:
+          if (indexOk(in.b)) out.push_back(in.b);
+          break;
+        case OpCode::ADD:
+        case OpCode::SUB:
+        case OpCode::MUL:
+        case OpCode::BAND:
+        case OpCode::BOR:
+        case OpCode::BXOR:
+        case OpCode::EQ:
+        case OpCode::NEQ:
+        case OpCode::LT:
+        case OpCode::LTE:
+        case OpCode::GT:
+        case OpCode::GTE:
+          if (indexOk(in.b)) out.push_back(in.b);
+          if (indexOk(in.c)) out.push_back(in.c);
+          break;
+        case OpCode::UNOP:
+          if (indexOk(in.b)) out.push_back(in.b);
+          break;
+        case OpCode::JMP_IF_FALSE:
+        case OpCode::JMP_IF_TRUE:
+          if (indexOk(in.a)) out.push_back(in.a);
+          break;
+        case OpCode::DECLLOCAL:
+        case OpCode::SETLOCAL:
+          if (indexOk(in.a)) out.push_back(in.a);
+          break;
+        case OpCode::GETLOCAL:
+          if (indexOk(result.numRegs + in.b)) out.push_back(result.numRegs + in.b);
+          break;
+        case OpCode::RETURN:
+          if (indexOk(in.a)) out.push_back(in.a);
+          break;
+        default:
+          break;
+      }
+    };
+    auto writes = [&](const Instruction& in, std::vector<int>& out) {
+      switch (in.op) {
+        case OpCode::LOADK:
+        case OpCode::MOVE:
+        case OpCode::ADD:
+        case OpCode::SUB:
+        case OpCode::MUL:
+        case OpCode::BAND:
+        case OpCode::BOR:
+        case OpCode::BXOR:
+        case OpCode::UNOP:
+        case OpCode::EQ:
+        case OpCode::NEQ:
+        case OpCode::LT:
+        case OpCode::LTE:
+        case OpCode::GT:
+        case OpCode::GTE:
+        case OpCode::GETLOCAL:
+          if (indexOk(in.a)) out.push_back(in.a);
+          break;
+        case OpCode::DECLLOCAL:
+        case OpCode::SETLOCAL:
+          if (indexOk(result.numRegs + in.b)) out.push_back(result.numRegs + in.b);
+          break;
+        default:
+          break;
+      }
+    };
+
+    std::vector<std::vector<bool>> liveIn(n, std::vector<bool>(total, false));
+    std::vector<std::vector<bool>> liveOut(n, std::vector<bool>(total, false));
+    bool lchanged = true;
+    int lguard = 0;
+    while (lchanged && lguard++ < 100000) {
+      lchanged = false;
+      for (int i = n - 1; i >= 0; --i) {
+        if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+        std::vector<bool> out(total, false);
+        std::vector<int> succ;
+        successors(i, succ);
+        for (int s : succ) {
+          if (s < 0 || s >= n || !result.reachable[static_cast<std::size_t>(s)]) continue;
+          for (int k = 0; k < total; ++k) {
+            if (liveIn[static_cast<std::size_t>(s)][static_cast<std::size_t>(k)]) {
+              out[static_cast<std::size_t>(k)] = true;
+            }
+          }
+        }
+        std::vector<bool> in = out;
+        std::vector<int> wr;
+        writes(proto.code[static_cast<std::size_t>(i)], wr);
+        for (int w : wr) in[static_cast<std::size_t>(w)] = false;
+        std::vector<int> rd;
+        reads(proto.code[static_cast<std::size_t>(i)], rd);
+        for (int r : rd) in[static_cast<std::size_t>(r)] = true;
+        const std::size_t ii = static_cast<std::size_t>(i);
+        if (out != liveOut[ii] || in != liveIn[ii]) {
+          liveOut[ii] = out;
+          liveIn[ii] = in;
+          lchanged = true;
+        }
+      }
+    }
+
+    std::vector<bool> isJumpTarget(n, false);
+    for (int i = 0; i < n; ++i) {
+      if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+      const Instruction& in = proto.code[static_cast<std::size_t>(i)];
+      if ((in.op == OpCode::JMP || in.op == OpCode::JMP_IF_FALSE ||
+           in.op == OpCode::JMP_IF_TRUE) &&
+          in.jump >= 0 && in.jump < n) {
+        isJumpTarget[static_cast<std::size_t>(in.jump)] = true;
+      }
+    }
+
+    for (int i = 0; i + 1 < n; ++i) {
+      if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+      const Instruction& in = proto.code[static_cast<std::size_t>(i)];
+      switch (in.op) {
+        case OpCode::EQ:
+        case OpCode::NEQ:
+        case OpCode::LT:
+        case OpCode::LTE:
+        case OpCode::GT:
+        case OpCode::GTE:
+          break;
+        default:
+          continue;
+      }
+      if (result.defConst[static_cast<std::size_t>(i)]) continue;  // the branch sees a constant
+      const int j = i + 1;
+      if (!result.reachable[static_cast<std::size_t>(j)]) continue;
+      const Instruction& br = proto.code[static_cast<std::size_t>(j)];
+      if (br.op != OpCode::JMP_IF_FALSE && br.op != OpCode::JMP_IF_TRUE) continue;
+      if (br.a != in.a || !indexOk(in.a)) continue;
+      if (isJumpTarget[static_cast<std::size_t>(j)]) continue;
+      if (liveOut[static_cast<std::size_t>(j)][static_cast<std::size_t>(in.a)]) continue;
+      result.fusedBranch[static_cast<std::size_t>(i)] = j;
+    }
+  }
+
   result.supported = true;
   return result;
 }
@@ -1148,6 +1319,39 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
     storeScalar(dst, Ty::Int, work);
   };
 
+  // Emits the `cmp` (or `test`) that leaves the flags for a comparison at `i`,
+  // and returns the condition code those flags encode. The caller either
+  // materializes a bool (`setcc`) or, when the comparison is fused with the
+  // branch that follows, jumps on the code directly. A constant operand becomes
+  // an immediate, and a `const OP var` mirrors the condition.
+  auto emitCompareFlags = [&](OpCode op, int b, int c, int i) -> Jcc {
+    std::int64_t cv = 0;
+    Ty ck = Ty::Undef;
+    const bool bConst = constIn(i, b, cv, ck);
+    std::int64_t dv = 0;
+    Ty dk = Ty::Undef;
+    const bool cConst = constIn(i, c, dv, dk);
+    Jcc cc = compareCc(op);
+    if (bConst && !cConst && fitsImm32(cv)) {
+      // const OP var  ==  var OP' const (mirror the condition).
+      loadScalar(X64Reg::R10, c);
+      cg.cmpImm32(X64Reg::R10, static_cast<std::int32_t>(cv));
+      cc = mirrorCc(cc);
+    } else if (cConst && !bConst && fitsImm32(dv)) {
+      loadScalar(X64Reg::R10, b);
+      cg.cmpImm32(X64Reg::R10, static_cast<std::int32_t>(dv));
+    } else if (isReg(b) && isReg(c)) {
+      // Both operands live in registers: compare them directly, so no scratch
+      // copy stands before the compare.
+      cg.cmpReg(physOf(b), physOf(c));
+    } else {
+      loadScalar(X64Reg::R10, b);
+      loadScalar(X64Reg::R11, c);
+      cg.cmpReg(X64Reg::R10, X64Reg::R11);
+    }
+    return cc;
+  };
+
   for (int i = 0; i < n; ++i) {
     if (!analysis.reachable[static_cast<std::size_t>(i)]) continue;
     cg.bind(labels[static_cast<std::size_t>(i)]);
@@ -1250,31 +1454,16 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
           emitConst(in.a, Ty::Bool, analysis.defVal[static_cast<std::size_t>(i)]);
           break;
         }
-        std::int64_t cv = 0;
-        Ty ck = Ty::Undef;
-        const bool bConst = constIn(i, in.b, cv, ck);
-        std::int64_t dv = 0;
-        Ty dk = Ty::Undef;
-        const bool cConst = constIn(i, in.c, dv, dk);
-        Jcc cc = compareCc(in.op);
-        if (bConst && !cConst && fitsImm32(cv)) {
-          // const OP var  ==  var OP' const (mirror the condition).
-          loadScalar(X64Reg::R10, in.c);
-          cg.cmpImm32(X64Reg::R10, static_cast<std::int32_t>(cv));
-          cc = mirrorCc(cc);
-        } else if (cConst && !bConst && fitsImm32(dv)) {
-          loadScalar(X64Reg::R10, in.b);
-          cg.cmpImm32(X64Reg::R10, static_cast<std::int32_t>(dv));
-        } else {
-          // Both operands are variables: compare the registers directly when
-          // both have one, so no scratch copy stands before the compare.
-          if (isReg(in.b) && isReg(in.c)) {
-            cg.cmpReg(physOf(in.b), physOf(in.c));
-          } else {
-            loadScalar(X64Reg::R10, in.b);
-            loadScalar(X64Reg::R11, in.c);
-            cg.cmpReg(X64Reg::R10, X64Reg::R11);
-          }
+        // A fused comparison leaves its condition in the flags for the branch
+        // that follows (see below), so it emits only the `cmp` and no bool.
+        const int fused = analysis.fusedBranch[static_cast<std::size_t>(i)];
+        const Jcc cc = emitCompareFlags(in.op, in.b, in.c, i);
+        if (fused >= 0) {
+          const Instruction& br = proto.code[static_cast<std::size_t>(fused)];
+          const bool jumpWhenTrue = br.op == OpCode::JMP_IF_TRUE;
+          cg.jcc(jumpWhenTrue ? cc : negateCc(cc),
+                 labels[static_cast<std::size_t>(br.jump)]);
+          break;
         }
         cg.setcc(cc, X64Reg::R10);
         cg.movzx(X64Reg::R10, X64Reg::R10);
@@ -1286,6 +1475,10 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
         break;
       case OpCode::JMP_IF_FALSE:
       case OpCode::JMP_IF_TRUE: {
+        // A branch fused into the comparison before it already jumped.
+        if (i > 0 && analysis.fusedBranch[static_cast<std::size_t>(i - 1)] == i) {
+          break;
+        }
         const bool jumpWhenTrue = in.op == OpCode::JMP_IF_TRUE;
         std::int64_t cv = 0;
         Ty ck = Ty::Undef;

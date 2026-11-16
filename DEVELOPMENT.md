@@ -51,7 +51,7 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `module_resolver.cpp` | dotted module path | source file path | ✅ |
 | `vm.cpp` | `Bytecode*` | execution | ✅ |
 | `main.cpp` | CLI | full pipeline | ✅ (VM as dev engine, PHASE 4) |
-| `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slices 1-2 |
+| `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slices 1-3 |
 | `value.cpp` | `Value`, tagged union | shared runtime | ✅ |
 | `env.cpp` | `Env`, lexical scope chain | **unused** (see note) | ⚠️ |
 | `builtins.cpp` / `ops.cpp` | native builtins, shared operators | runtime library | ✅ |
@@ -1226,6 +1226,16 @@ no new opcode, superinstruction or runtime specialization appears. A tight
 integer loop is about 260x faster than the interpreter, within about 1.7x of a
 hand-written `-O2` C++ loop.
 
+Slice 3 (done) adds **compare-branch fusion**. A comparison whose boolean result
+only feeds the conditional branch right after it no longer materializes the bool
+(`cmp; setcc; movzx; mov; test; jcc`) and jumps straight off the flags
+(`cmp; jcc`). A backward liveness pass proves the result dead past the branch and
+that the branch is reached by fall-through alone, so the re-test the VM would
+perform is never lost; a comparison whose result is reused afterwards stays
+unfused and correct. The same loop drops to about 320x the interpreter, within
+about 1.4x of the hand-written loop. The fusion rewrites *how* one opcode and its
+branch are emitted, so it is still 1:1 with the bytecode.
+
 Later slices widen the subset (floats, then strings, then the boxed value
 runtime, then calls and guards) and add the tiering policy (compile after a
 call threshold instead of on the first call), following LuaJIT as the
@@ -1268,7 +1278,7 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — open, no slice chosen)
-Phase 8: 🔶 in progress (JIT for the development VM, slices 1-2 done: integer leaf protos with CPU-register allocation, constant folding and strength reduction)
+Phase 8: 🔶 in progress (JIT for the development VM, slices 1-3 done: integer leaf protos with CPU-register allocation, constant folding, strength reduction and compare-branch fusion)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)
 

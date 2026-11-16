@@ -11,6 +11,19 @@ may change between minor versions.
 
 ### Changed
 
+- **JIT (slice 3): compare-branch fusion.** When a comparison's boolean result
+  only feeds the conditional branch right after it, the JIT no longer builds the
+  bool (`cmp; setcc; movzx; mov; test; jcc`) and jumps straight off the flags
+  (`cmp; jcc`). A backward liveness pass proves the result dead past the branch
+  and that the branch is reached by fall-through alone (never a jump target), so
+  the re-test the VM would perform is never lost; a result that is reused
+  afterwards stays unfused and correct. The integer loop drops from 0.062s to
+  0.051s (about 320x the interpreter, within ~1.4x of a hand-written `-O2` C++
+  loop). Still 1:1 with the bytecode — the fusion rewrites how one opcode and its
+  branch are emitted, and no opcode, superinstruction or runtime specialization
+  is added. The differential suite (including the fuzz corpus) still proves the
+  compiled body identical to the interpreter.
+
 - **JIT (slice 2): constant folding, strength reduction and register-direct
   codegen.** The development engine's JIT now folds an expression whose operands
   are compile-time constants (`2 * 3` becomes `6`), applies a constant operand as
