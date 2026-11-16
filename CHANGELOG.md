@@ -144,6 +144,16 @@ may change between minor versions.
 
 ### Fixed
 
+- AOT: `+` on two arrays now concatenates in a compiled binary. The hosted
+  engine builds a fresh array with the left items followed by the right items
+  and leaves both operands unchanged (`docs/language.md`: "concatenation of
+  strings or arrays"; `tests/06_operators.oskl` asserts `[1] + [2] == [1, 2]`),
+  but the AOT `oskel_arith` rejected the pair as "unsupported operand types", so
+  a program that ran on the VM exited 70 as an AOT binary — a mis-compiled
+  image, which the backend must never emit. `oskel_arith` now dispatches `+` on
+  two arrays to the new `oskel_array_concat` helper (one `ADD` path, no new
+  opcode), and a `tests/build_binary` fixture pins the binary against the VM on
+  Linux and Windows.
 - A `struct` name and an import binding the same name no longer coexist
   silently. `struct Point { ... }` plus `import std.math as Point;` used to
   leave both alive: `Point { ... }` stayed a struct literal while

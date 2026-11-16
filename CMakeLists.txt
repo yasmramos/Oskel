@@ -278,6 +278,17 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_conversions.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `+` on two arrays concatenates them; the hosted engine builds a fresh
+    # array and leaves both operands unchanged. Checked against the VM here
+    # because the script test that covers array concatenation
+    # (`tests/06_operators.oskl`) only runs on the hosted engine, so the AOT
+    # backend used to reject the pair at runtime.
+    add_test(NAME oskel.build_binary_array_concat
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_concat.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # A recursive program with a non-trivial frame checks the process stack the
     # loader hands the binary: the AOT runtime has no call-depth guard, so the
     # reserve must be large enough for the recursion the VM accepts. The

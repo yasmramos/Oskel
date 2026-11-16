@@ -865,6 +865,19 @@ Slices, each independently shippable:
       `for-in` and container printing under the real `_start`) and
       `tests/lower_test.cpp` (the collection opcodes now lower instead of
       raising).
+    - **7c.3b** (done) — array concatenation (`a + b`). The hosted `binary`
+      `Plus` on two arrays builds a fresh array with A's items followed by B's
+      items and leaves both operands unchanged; `oskel_arith` rejected the pair
+      as "unsupported operand types", so a compiled binary disagreed with the
+      VM (the VM concatenated, the AOT binary exited 70). `oskel_arith` now
+      dispatches `+` on two arrays to the new helper `oskel_array_concat`,
+      which allocates an `AotArray` of `lenA + lenB` items, grows its block
+      once through `oskel_block_ensure` and copies both runs in with two
+      element loops (the operands are read only). No new opcode: it is the
+      `ADD` path the string concatenation already uses, extended to the array
+      tag. Covered by `tests/lower_test.cpp` (empty and non-empty operands,
+      operand immutability, a growing accumulator) and the `oskel build`
+      fixture.
     - **7c.4a** (done) — the hidden `$nonNull` and `$isError` helpers. The
       compiler emits `$nonNull` for the non-null assertion `a!!` and `$isError`
       for `try` / `x catch y` (PHASE 6.5/6.7); the AOT backend had no binding
@@ -1240,7 +1253,7 @@ Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair through the hidden `$mapValue` helper, no new opcode) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — open, no slice chosen)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — open, no slice chosen)
 Phase 8: 🔶 in progress (JIT for the development VM, slice 1 done: integer leaf protos with CPU-register allocation)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)
