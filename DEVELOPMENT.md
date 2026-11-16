@@ -1119,12 +1119,17 @@ Slices, each independently shippable:
     multiboot leaves a *32-bit* code descriptor in the GDT, the image begins
     with a small hand-assembled 32-bit trampoline (`src/native/bare_metal.cpp`,
     `include/native/bare_metal.h`): it builds an identity page table with 2 MiB
-    huge pages, turns on PAE and long mode, installs its own GDT with a 64-bit
-    code segment and far-jumps into the shared 64-bit runtime. From there the
-    program is byte-for-byte the same machine code the Linux target emits; only
-    the prelude differs, because a kernel has no system calls. `oskel_write`
-    drives the 16550 UART at COM1 directly (polling the line-status register,
-    `out dx, al`); `oskel_exit` masks interrupts, publishes the exit code on
+    huge pages, turns on PAE and long mode (and, in CR4, `OSFXSR` and
+    `OSXMMEXCPT`, without which the first SSE instruction the float path emits
+    is a `#UD` -- a triple fault, since no IDT is installed), installs its own
+    GDT with a 64-bit code segment and far-jumps into the shared 64-bit
+    runtime. From there the program is byte-for-byte the same machine code the
+    Linux target emits; only the prelude differs, because a kernel has no
+    system calls. `oskel_write` drives the 16550 UART at COM1 directly (the
+    entry point first brings the chip up -- mask interrupts, load divisor 1,
+    8N1, enable the FIFO -- so a real UART transmits, not just QEMU's; then
+    polling the line-status register, `out dx, al`); `oskel_exit` masks
+    interrupts, publishes the exit code on
     QEMU's `isa-debug-exit` port and spins in `hlt` (on real hardware the port
     write is ignored and the `hlt` loop is the end of the program); and
     `oskel_init_arena` points the bump allocator at a `.bss` region the loader

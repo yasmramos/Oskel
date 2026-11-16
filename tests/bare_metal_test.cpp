@@ -132,6 +132,22 @@ static void test_elf_structure() {
             image.entry < kBMCodeBase + read32(elf, ph + 16),
         "e_entry points inside the code segment");
 
+  // The trampoline enables SSE (CR4.OSFXSR | CR4.OSXMMEXCPT, bits 9 and 10)
+  // alongside PAE before it enters the runtime. Without them the first SSE
+  // instruction the float path emits faults, and with no IDT installed that is
+  // a triple fault (a silent hang). Look for the `mov eax, cr4; or eax,
+  // 0x620; mov cr4, eax` sequence the trampoline uses.
+  bool enablesSse = false;
+  const std::uint8_t cr4Seq[] = {0x0F, 0x20, 0xE0, 0x0D, 0x20, 0x06, 0x00, 0x00,
+                                 0x0F, 0x22, 0xE0};
+  for (std::size_t i = 0; i + sizeof cr4Seq <= elf.size(); ++i) {
+    if (std::memcmp(&elf[i], cr4Seq, sizeof cr4Seq) == 0) {
+      enablesSse = true;
+      break;
+    }
+  }
+  check(enablesSse, "the trampoline sets CR4.PAE | OSFXSR | OSXMMEXCPT");
+
   // The multiboot magic must be within the first 8192 bytes (multiboot spec).
   bool magicInFirst8K = false;
   for (std::size_t i = 0; i + 4 <= elf.size() && i < 8192; ++i) {
@@ -249,6 +265,33 @@ static void test_qemu_boot() {
   check(result.exitCode == 0, "the booted program exits with code 0");
 }
 
+static void test_qemu_float_arithmetic() {
+  // The trampoline must set CR4.OSFXSR and CR4.OSXMMEXCPT before the runtime
+  // runs, or the first SSE instruction is a #UD: with no IDT that is a double
+  // fault and then a triple fault (a silent hang). Printing a float literal
+  // only exercises the integer `dtoa`, so the float *arithmetic* path is what
+  // pins the fix. `1.0 / 3.0` reproduces the original hang exactly.
+  const std::string source =
+      "print(\"add\", 1.0 + 1.0);\n"
+      "print(\"div\", 1.0 / 3.0);\n"
+      "print(\"mul\", 2.0 * 3.5);\n"
+      "print(\"cmp\", 1.5 < 2.5, 3.0 >= 3.0);\n";
+
+  Image image = buildImage(source);
+  const std::string path = "/tmp/oskel_bare_metal_float.elf";
+  writeFile(path, image.elf);
+
+  BootResult result = boot(path);
+  check(result.booted, "the float program boots and reaches the exit port");
+
+  const std::string expected =
+      "add 2\ndiv 0.3333333333333333\nmul 7\ncmp true true\n";
+  check(result.output == expected,
+        ("the booted float program prints the expected bytes [" + result.output + "]")
+            .c_str());
+  check(result.exitCode == 0, "the booted float program exits with code 0");
+}
+
 #endif  // BARE_METAL_QEMU_TESTS
 
 int main() {
@@ -258,6 +301,7 @@ int main() {
 #ifdef BARE_METAL_QEMU_TESTS
   if (haveQemu()) {
     test_qemu_boot();
+    test_qemu_float_arithmetic();
   } else {
     std::printf("skip: qemu-system-x86_64 not found, boot test skipped\n");
   }
