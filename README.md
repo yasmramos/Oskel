@@ -251,18 +251,20 @@ behave differently — under AOT. This is the exact split in 0.1.0.
 - Arithmetic, comparisons, logical and bitwise operators, control flow
   (`if`/`while`/`for`/`for-in`/`switch`), functions, closures, `defer`,
   `struct`, ranges, slicing, string interpolation.
-- Arrays and maps (literals, indexing, `in`, `for-in`, printing).
+- Arrays and maps (literals, indexing, `in`, `for-in`, printing, and `+` to
+  concatenate two arrays).
 - These builtins: `print`, `write`, `eprint`, `len`, `type`, `str`, `repr`,
   `bool`, `ord`, `chr`, `assert`, `panic`, `isError`.
+- The numeric conversions `int`, `float`, `double`, and the math builtins
+  `floor`, `ceil`, `round`, `sqrt`, `pow`, `exp`, `log`, `sin`, `cos`, `tan`.
 
 **VM only — not yet available in `oskel build` (a build error names the global):**
 
 - Collection methods such as `arr.push`, `map.keys`, `str.upper`. They compile
   but fail at runtime with `value has no such member`.
-- `pcall`, and the remaining standard-library builtins: `int`, `float`,
-  `double`, the math block (`sqrt`, `pow`, `sin`, ...), `readFile`,
-  `writeFile`, `fileExists`, `args`, `exit`, `random`, `seed`, `clock`. A
-  program using any of them does not build.
+- `pcall`, and the I/O and process builtins `readFile`, `writeFile`,
+  `fileExists`, `args`, `exit`, `random`, `seed`, `clock`. A program using any
+  of them does not build.
 
 **Available in both, but with different semantics:**
 
@@ -270,9 +272,6 @@ behave differently — under AOT. This is the exact split in 0.1.0.
   yet, so `$isError` always reports "not an error": the success path of `try`
   and `catch` runs, and a real failure still exits 70 instead of being
   recovered. `try`/`catch` only behaves as documented on the VM.
-- **Structural equality is identity in AOT.** `[1, 2] == [1, 2]` is `true` on
-  the VM (compared by content) and `false` in an AOT binary (compared by
-  identity).
 - **`map.get` is O(n) in AOT** (linear scan) instead of O(1) (hash lookup), so
   a loop that looks up every key of a large map is O(n²) in a compiled binary.
 
