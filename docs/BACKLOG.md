@@ -83,9 +83,13 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 4. **[P1]** `compileWhile`/`compileFor`/`compileDoWhile` repeat the same
    `loops_.push_back` / `deferMinDepth` / `compileScopedBlock` / `pop` pattern
    five times. Extract one helper.
-5. **[P1]** `compileImport` does not reject an alias that collides with a
+5. **[P1] [done]** `compileImport` does not reject an alias that collides with a
    declared struct (an alias `Point` and a `struct Point` coexist; the winner
-   is undefined).
+   is undefined). `recordImportBinding` now reports the collision, and
+   `compileStructDecl` reports the reverse order for the REPL (where the import
+   and the struct arrive in different entries). Covered by
+   `testStructImportNameConflict` in `tests/module_test.cpp` and
+   `tests/errors/struct_import_conflict.oskl`.
 6. **[P1]** `compileTry`/`compileReturn` emit `emitDeferredBlocks(1)` before
    `RETURN`; the interaction of `try` inside a block with a `defer` that
    returns is subtle and untested. Define and test it.

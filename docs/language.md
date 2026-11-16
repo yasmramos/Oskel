@@ -2455,6 +2455,8 @@ Wildcard imports are safe because conflicts are caught at compile time. If two i
 
 Conflict detection covers every pair of forms, not only two `.*` imports: a wildcard name that collides with an alias or with a namespace root is reported too, and so is an alias that collides with a namespace root. When both sides are unqualified names the error suggests the qualified form; otherwise it asks you to rename one of the imports.
 
+A `struct` name is compile-time metadata, not a value binding, so it is not covered by the "a local binding wins" rule below: an import that binds the same name is a conflict and is reported. Otherwise `Name { ... }` would stay a struct literal (that form always wins) and hide the import, so `Name.member` would fail only at run time.
+
 Two cases are *not* conflicts:
 
 - Importing the same module twice (the same binding, whatever the form).
