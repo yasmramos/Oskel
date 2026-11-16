@@ -14,6 +14,34 @@
 #include "bytecode.h"
 #include "errors.h"
 
+// Signature of a `native fn`/`extern "C"` declaration (PHASE 6.5), keyed by
+// name. A native declaration emits no call to the compiler: it only records the
+// signature so a call can be checked (arity and argument types) and so the
+// return type can be inferred.
+struct NativeSig {
+  std::vector<Param> params;
+  TypeRef returnType;
+  bool mustUse = false;
+  // True for a C variadic (`extern "C" fn printf(fmt: cstring, ...): int`).
+  // `params` then holds the named prefix; a call may pass any number of extra
+  // arguments, which the call-site check does not type-check (C applies the
+  // default promotions at run time).
+  bool cVariadic = false;
+};
+
+// The argument types and positions of one native call, captured while the call
+// site's scopes are still open. `checkNativeCall` needs them for the arity and
+// argument-type check, but a qualified call to a module's native export
+// (`std.math.pow(...)`) can only be checked once the module is loaded, by which
+// time the scopes are gone. Capturing the inferred types up front keeps the
+// check identical to the direct form: inferring at flush time would resolve a
+// local that shadows a global to the global (PHASE 7f.2).
+struct NativeCallArgs {
+  std::vector<TypeRef> types;
+  std::vector<int> lines;
+  std::vector<int> cols;
+};
+
 // One resolved import: a module's compiled body plus the names it exports.
 //
 // `code` is a proto that, when run, evaluates the module's top-level bindings
@@ -24,6 +52,14 @@ struct ImportedModule {
   std::string path;                    // dotted module path, e.g. "std.math"
   std::shared_ptr<Bytecode> code;      // module body, run once per program
   std::vector<std::string> symbols;    // public names, in declaration order
+  // Signature of every public native export, keyed by export name (PHASE 7f.2).
+  // The public names that are host bindings (`native fn` or `extern "C"`) are
+  // exactly the keys: the AOT backend has no host to resolve one against, so a
+  // qualified access to one (`std.math.pow(...)`) is a use of a binding that may
+  // have no stub. Propagating the signature (not just the name) is what lets a
+  // qualified call be checked at compile time — arity and argument types —
+  // exactly like the direct form (`pow(2.0)`), instead of failing at run time.
+  std::unordered_map<std::string, NativeSig> nativeSigs;
 };
 
 // AST to bytecode compiler (PHASE 2-5).
@@ -258,17 +294,9 @@ class Compiler {
   // Signature of every `native fn` declared so far (PHASE 6.5), keyed by name.
   // A native declaration emits no call to the compiler: it only records the
   // signature so a call can be checked (arity and argument types) and so the
-  // return type can be inferred. Reset per chunk.
-  struct NativeSig {
-    std::vector<Param> params;
-    TypeRef returnType;
-    bool mustUse = false;
-    // True for a C variadic (`extern "C" fn printf(fmt: cstring, ...): int`).
-    // `params` then holds the named prefix; a call may pass any number of extra
-    // arguments, which the call-site check does not type-check (C applies the
-    // default promotions at run time).
-    bool cVariadic = false;
-  };
+  // return type can be inferred. Reset per chunk. `NativeSig` is defined at file
+  // scope because `ImportedModule` carries the same signature across the module
+  // boundary (PHASE 7f.2).
   std::unordered_map<std::string, NativeSig> nativeSigs_;
 
   // Canonical signature of every `extern "C"` symbol declared so far in the
@@ -402,9 +430,17 @@ class Compiler {
   // Checks a call to a declared `native fn` against its recorded signature
   // (PHASE 6.5): the arity must match and every argument must be assignable to
   // its parameter type. An unannotated parameter (or `any`) skips the type
-  // check for that argument.
-  void checkNativeCall(const std::string& name, const NativeSig& sig, const CallExpr& call,
+  // check for that argument. The argument types arrive pre-inferred
+  // (`NativeCallArgs`), so the same routine serves the direct form (checked at
+  // the call site) and a qualified call to a module's native export (checked at
+  // flush time, once the module is loaded).
+  void checkNativeCall(const std::string& name, const NativeSig& sig, const NativeCallArgs& args,
                        int line, int col);
+
+  // Infers the type of every argument of `call` and records its position. The
+  // types must be captured while the call site's scopes are open, because a
+  // qualified call is checked later, when the scopes are gone.
+  NativeCallArgs captureCallArgs(const CallExpr& call) const;
 
   // Returns the signature of the `native fn` that `name` refers to, or null
   // when it is not a native binding. The name is resolved like a variable
@@ -412,6 +448,53 @@ class Compiler {
   // function and yields null. A name that resolves to nothing is a global, so
   // it matches when it is a declared native. Types are metadata only.
   const NativeSig* nativeSigFor(const std::string& name) const;
+
+  // Records that the current proto uses the host binding `name` (PHASE 7f.2).
+  // Called wherever a `native fn`/`extern "C"` binding is read: a direct read
+  // (a call or a first-class reference) and a capture by an enclosing function.
+  // The AOT backend reads the resulting list to reject a use it cannot resolve
+  // from a stub, instead of emitting a binary that calls nil. Idempotent per
+  // proto, so the same name is listed once.
+  void recordNativeUse(const std::string& name);
+
+  // Records a qualified access to a module's native export (`std.math.pow`).
+  // The member read goes through the module table with `GETTABLE`, so it leaves
+  // no `GETGLOBAL` behind; recording the export name here is what lets the AOT
+  // backend reject the use when the module declared it `native fn`. The access
+  // is queued and resolved by `flushModuleNativeUses` once the whole chunk is
+  // compiled, so a hoisted function that reads the export before the `import`
+  // statement is compiled is still caught. `callArgs` is non-null when the
+  // access is the callee of a call: the argument types were captured at the call
+  // site, and the resolved signature is checked against them (arity and argument
+  // types), exactly like the direct form.
+  void recordModuleNativeUse(const MemberExpr& member, const NativeCallArgs* callArgs, int line,
+                             int col);
+
+  // Pre-scans `block`'s import statements and records, for every qualified or
+  // aliased import, the visible binding path that names the module (for
+  // example "std.math" or an alias "m") mapped to the module's path in
+  // `moduleByBindingPath_`. It runs before the block's functions are hoisted,
+  // so a hoisted function that reads a module's native export
+  // (`std.math.pow(...)`) resolves the binding path even though the `import`
+  // statement is compiled later. It does not load the module: loading here
+  // would compile it out of source order and disturb the order in which module
+  // bodies are materialized.
+  void registerImportBindings(const BlockStmt& block);
+
+  // Splits a member chain (`root` plus `members`, as `flattenMemberPath`
+  // produces) into the imported module it names and the export member, when the
+  // chain is rooted at a module binding path: `std.math.pow` (root "std",
+  // members {"math","pow"}) yields ("std.math", "pow") and an alias (`m.pow`,
+  // root "m") yields ("std.math", "pow") too. Returns false when the chain does
+  // not name a module export.
+  bool moduleExportOf(const std::string& root, const std::vector<std::string>& members,
+                      std::string& modulePath, std::string& member) const;
+
+  // Resolves every recorded module-export access (`pendingModuleUses_`) against
+  // the loaded modules and records the ones that name a native export as a use
+  // on the current proto. Called once the whole chunk is compiled, when every
+  // import has been loaded.
+  void flushModuleNativeUses();
 
   // Upvalue resolution (PHASE 6b). Returns the index of `name` in the current
   // proto's capture list, adding the entry (and, transitively, the re-export
@@ -524,6 +607,7 @@ class Compiler {
     std::set<std::string> materializedModules;
     std::set<std::string> namespaces;
     std::unordered_map<std::string, ImportBinding> importedNames;
+    std::unordered_map<std::string, std::string> moduleByBindingPath;
   };
 
   SessionSnapshot snapshotSession() const;
@@ -628,6 +712,43 @@ class Compiler {
   // alias vs wildcard, ...) is caught, not only wildcard-vs-wildcard
   // (docs/language.md §18.3).
   std::unordered_map<std::string, ImportBinding> importedNames_;
+
+  // Visible binding path of every qualified/aliased import in the current
+  // scope ("std.math" for `import std.math;`, "m" for `import std.math as m;`),
+  // mapped to the module's path. `recordModuleNativeUse` walks a member chain
+  // against it to tell a qualified access to a module's native export
+  // (`std.math.pow`) from an ordinary member access, so the AOT backend can
+  // reject the use when the export has no stub (PHASE 7f.2).
+  std::unordered_map<std::string, std::string> moduleByBindingPath_;
+
+  // Qualified accesses to a module export recorded while a chunk is compiled
+  // (`std.math.pow` -> root "std", members {"math","pow"}), resolved against the
+  // loaded modules by `flushModuleNativeUses` once the whole chunk is compiled.
+  // Resolution is deferred because a hoisted function is compiled before the
+  // `import` statement that loads the module, so the module's native exports are
+  // not known yet when the access is seen. `callArgs` is set when the access is
+  // the callee of a call: the argument types are captured at the call site
+  // (while the scopes are open) so `flushModuleNativeUses` can check the call
+  // against the resolved signature.
+  struct PendingModuleUse {
+    std::string root;
+    std::vector<std::string> members;
+    bool isCall = false;         // true when this is a call callee
+    NativeCallArgs callArgs;     // valid only when `isCall`
+    int line = 0;
+    int col = 0;
+  };
+  std::vector<PendingModuleUse> pendingModuleUses_;
+
+  // The `MemberExpr` node currently being compiled as the callee of a call, and
+  // that call's argument types, captured while the scopes are open. Set by
+  // `compileCall` around `compileExpr(*call.callee)` so the `MemberExpr` case
+  // knows the member read is a call site: the recorded module-export use then
+  // carries the captured arguments, and `flushModuleNativeUses` checks it
+  // against the propagated signature (PHASE 7f.2). Null for an ordinary member
+  // read.
+  const MemberExpr* callCalleeMember_ = nullptr;
+  NativeCallArgs callCalleeArgs_;
 
   // Path of the module body currently being compiled. Empty at the top level.
   // Used to build the hidden global names a module's own imports bind to.

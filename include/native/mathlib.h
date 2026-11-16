@@ -38,6 +38,19 @@ struct MathHandles {
   CodeGen::Label exp;  // double oskel_math_exp(double)
   CodeGen::Label log;  // double oskel_math_log(double)
   CodeGen::Label pow;  // double oskel_math_pow(double, double)
+  CodeGen::Label sin;  // double oskel_math_sin(double)
+  CodeGen::Label cos;  // double oskel_math_cos(double)
+  CodeGen::Label tan;  // double oskel_math_tan(double)
+  // Internal, exposed for the tests: int __rem_pio2(double x, double* y) with x
+  // in xmm0 and y in rdi. Not a builtin; nothing seeds it into a global.
+  CodeGen::Label remPio2;
+  // Internal, exposed for the tests: int __rem_pio2_large(double* x, double* y,
+  // int e0, int nx, int prec) with the arguments in rdi/rsi/edx/ecx/r8d.
+  CodeGen::Label remPio2Large;
+  // Internal, exposed for the tests: double scalbn(double,int) (xmm0/edi) and
+  // double floor(double) (xmm0).
+  CodeGen::Label scalbn;
+  CodeGen::Label floorFn;
 };
 
 inline MathHandles newMathHandles(CodeGen& code) {
@@ -45,6 +58,13 @@ inline MathHandles newMathHandles(CodeGen& code) {
   h.exp = code.newLabel();
   h.log = code.newLabel();
   h.pow = code.newLabel();
+  h.sin = code.newLabel();
+  h.cos = code.newLabel();
+  h.tan = code.newLabel();
+  h.remPio2 = code.newLabel();
+  h.remPio2Large = code.newLabel();
+  h.scalbn = code.newLabel();
+  h.floorFn = code.newLabel();
   return h;
 }
 

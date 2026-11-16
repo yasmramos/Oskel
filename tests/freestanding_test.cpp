@@ -383,7 +383,10 @@ static void test_collections() {
       "var pairKeys = \"\";\n"
       "var pairTotal = 0;\n"
       "for k, v in m { pairKeys = pairKeys + k; pairTotal = pairTotal + v; }\n"
-      "print(pairKeys, pairTotal);\n");
+      "print(pairKeys, pairTotal);\n"
+      "var chars = \"\";\n"
+      "for c in \"abc\" { chars = chars + c; }\n"
+      "print(chars);\n");
   RunResult result = buildAndRun("/tmp/oskel_collections", proto);
   std::string expected =
       "[1, 20, 3, 4]\n"
@@ -397,7 +400,8 @@ static void test_collections() {
       "true false true false\n"
       "33\n"
       "xyznew\n"
-      "xyznew 17\n";
+      "xyznew 17\n"
+      "abc\n";
   check(result.output == expected, "a compiled program runs collections and prints them");
   check(result.exitCode == 0, "a program using collections exits 0 through _start");
 }
@@ -1045,6 +1049,145 @@ static void test_transcendental_builtin_errors() {
   check(arity.exitCode == 70, "pow with one argument exits 70");
 }
 
+// The trigonometric builtins (PHASE 7c.5b.4b): `sin`, `cos` and `tan` call the
+// embedded musl routines, which reduce the argument with `__rem_pio2`. glibc is
+// not correctly rounded, so the contract is "agrees to 1 ulp"; the values below
+// are chosen where the two roundings coincide, so the emitted code reproduces
+// the hosted output exactly. The last two lines drive the large-argument branch
+// of the reduction (>= 2^20 * pi/2), which a small input never reaches.
+static void test_trigonometric_builtins() {
+  Bytecode proto = compileSource(
+      "print(sin(0), cos(0), tan(0));\n"
+      "print(sin(0.5), cos(0.5), tan(0.5));\n"
+      "print(sin(-0.5), cos(-0.5), tan(-0.5));\n"
+      "print(type(sin(1)), type(cos(1)), type(tan(1)));\n"
+      "print(sin(-2.0203875408674627e+175), cos(-2.0203875408674627e+175));\n"
+      "print(tan(-2.0203875408674627e+175), sin(1.2857398720274479e+182));\n");
+  RunResult result = buildAndRun("/tmp/oskel_trigonometric_builtins", proto);
+  std::string expected =
+      "0 1 0\n"
+      "0.479425538604203 0.8775825618903728 0.5463024898437905\n"
+      "-0.479425538604203 0.8775825618903728 -0.5463024898437905\n"
+      "double double double\n"
+      "-0.6788283655659167 0.7342969767764989\n"
+      "-0.9244602484214429 0.989033555430505\n";
+  check(result.output == expected, "the trigonometric builtins match the hosted engine");
+  check(result.exitCode == 0, "a program using sin/cos/tan exits 0");
+}
+
+// A wrong operand type and a wrong arity both fail with the hosted message and
+// exit 70.
+static void test_trigonometric_builtin_errors() {
+  Bytecode sinStr = compileSource("print(sin(\"x\"));\n");
+  RunResult fromStr = buildAndRun("/tmp/oskel_sin_str", sinStr);
+  check(fromStr.exitCode == 70, "sin of a string exits 70");
+  check(fromStr.output.find("sin() expects a number argument") != std::string::npos,
+        "the failed sin reports its type message");
+
+  Bytecode cosArity = compileSource("print(cos());\n");
+  RunResult arity = buildAndRun("/tmp/oskel_cos_arity", cosArity);
+  check(arity.exitCode == 70, "cos with no argument exits 70");
+
+  Bytecode tanBool = compileSource("print(tan(true));\n");
+  RunResult fromBool = buildAndRun("/tmp/oskel_tan_bool", tanBool);
+  check(fromBool.exitCode == 70, "tan of a bool exits 70");
+  check(fromBool.output.find("tan() expects a number argument") != std::string::npos,
+        "the failed tan reports its type message");
+}
+
+// The remaining public builtins (PHASE 7c.5b.5): `range`, `assertEq` and
+// `exit`. `range` must match the hosted builtin (one bound means `0..end`),
+// `assertEq` must return on a match and fail with the hosted message on a
+// mismatch, and `exit` must leave the process with the given code.
+static void test_remaining_public_builtins() {
+  Bytecode range = compileSource(
+      "print(range(3));\n"
+      "print(range(1, 5));\n"
+      "print(range(2, 2));\n"
+      "print(range(-2, 2));\n"
+      "print(range(0, 4).length);\n");
+  RunResult ranges = buildAndRun("/tmp/oskel_range_fn", range);
+  check(ranges.output == "0..3\n1..5\n2..2\n-2..2\n4\n",
+        "range matches the hosted builtin");
+  check(ranges.exitCode == 0, "range exits 0");
+
+  Bytecode assertOk = compileSource(
+      "assertEq(1 + 2, 3);\n"
+      "assertEq([1, 2], [1, 2]);\n"
+      "assertEq(\"a\", \"a\");\n"
+      "assertEq(nil, nil);\n"
+      "print(\"ok\");\n");
+  RunResult passed = buildAndRun("/tmp/oskel_assert_eq_ok", assertOk);
+  check(passed.output == "ok\n", "assertEq returns nil when the values match");
+  check(passed.exitCode == 0, "a passing assertEq exits 0");
+
+  Bytecode assertFail = compileSource("assertEq(1, 2);\n");
+  RunResult failed = buildAndRun("/tmp/oskel_assert_eq_fail", assertFail);
+  check(failed.exitCode == 70, "a failing assertEq exits 70");
+  check(failed.output.find("oskel: assertion failed: expected 1, got 2") !=
+            std::string::npos,
+        "a failing assertEq reports the default message and both operands");
+
+  Bytecode assertFailMsg = compileSource("assertEq(\"a\", \"b\", \"my check\");\n");
+  RunResult custom = buildAndRun("/tmp/oskel_assert_eq_msg", assertFailMsg);
+  check(custom.exitCode == 70, "a failing assertEq with a message exits 70");
+  check(custom.output.find("oskel: my check: expected \"a\", got \"b\"") !=
+            std::string::npos,
+        "a failing assertEq reports the caller's message and the reprs");
+
+  Bytecode assertArity = compileSource("assertEq(1);\n");
+  RunResult arity = buildAndRun("/tmp/oskel_assert_eq_arity", assertArity);
+  check(arity.exitCode == 70, "assertEq with one argument exits 70");
+  check(arity.output.find("assertEq() expects between 2 and 3 arguments") !=
+            std::string::npos,
+        "the failed assertEq reports its arity message");
+
+  Bytecode exitCode = compileSource("print(\"before\");\nexit(3);\nprint(\"after\");\n");
+  RunResult stopped = buildAndRun("/tmp/oskel_exit_code", exitCode);
+  check(stopped.output == "before\n", "exit stops before the next statement");
+  check(stopped.exitCode == 3, "exit uses the given code");
+
+  Bytecode exitZero = compileSource("exit();\n");
+  RunResult zero = buildAndRun("/tmp/oskel_exit_zero", exitZero);
+  check(zero.exitCode == 0, "exit without an argument exits 0");
+}
+
+// A wrong argument count or a non-integer bound fails with the hosted message
+// and exit code 70, matching the hosted engine.
+static void test_remaining_public_builtin_errors() {
+  Bytecode rangeArgc = compileSource("print(range());\n");
+  RunResult rangeArity = buildAndRun("/tmp/oskel_range_fn_arity", rangeArgc);
+  check(rangeArity.exitCode == 70, "range with no argument exits 70");
+  check(rangeArity.output.find("range() expects between 1 and 2 arguments") !=
+            std::string::npos,
+        "the failed range reports its arity message");
+
+  Bytecode rangeEnd = compileSource("print(range(\"x\"));\n");
+  RunResult end = buildAndRun("/tmp/oskel_range_fn_end", rangeEnd);
+  check(end.exitCode == 70, "range of a non-integer end exits 70");
+  check(end.output.find("range() expects an integer end") != std::string::npos,
+        "the failed range names the end bound");
+
+  Bytecode rangeStart = compileSource("print(range(\"x\", 3));\n");
+  RunResult start = buildAndRun("/tmp/oskel_range_fn_start", rangeStart);
+  check(start.exitCode == 70, "range of a non-integer start exits 70");
+  check(start.output.find("range() expects an integer start") != std::string::npos,
+        "the failed range names the start bound");
+
+  Bytecode exitType = compileSource("exit(\"x\");\n");
+  RunResult type = buildAndRun("/tmp/oskel_exit_type", exitType);
+  check(type.exitCode == 70, "exit of a non-integer code exits 70");
+  check(type.output.find("exit() expects an integer argument") != std::string::npos,
+        "the failed exit reports its type message");
+
+  Bytecode exitArity = compileSource("exit(1, 2);\n");
+  RunResult arity = buildAndRun("/tmp/oskel_exit_arity", exitArity);
+  check(arity.exitCode == 70, "exit with two arguments exits 70");
+  check(arity.output.find("exit() expects between 0 and 1 arguments") !=
+            std::string::npos,
+        "the failed exit reports its arity message");
+}
+
 // Drives the boxed printer directly: the runtime's `oskel_print_value` is what
 // the `print` builtin will call once `CALL` lands (7c.2), so this checks the
 // integer-to-text routine (including the negative case) and the boolean/nil
@@ -1658,6 +1801,10 @@ int main() {
   test_math_builtin_errors();
   test_transcendental_builtins();
   test_transcendental_builtin_errors();
+  test_trigonometric_builtins();
+  test_trigonometric_builtin_errors();
+  test_remaining_public_builtins();
+  test_remaining_public_builtin_errors();
   test_sb_append_zero_capacity();
   test_sb_append_capacity_overflow();
   test_variadic();

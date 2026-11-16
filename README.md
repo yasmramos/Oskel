@@ -37,6 +37,11 @@ for language in languages {
   core, not the whole runtime; see
   [What runs where](#what-runs-where-vm-vs-aot) for the exact split and the
   [CLI tutorial](docs/tutorial-cli.md).
+- **Bare-metal target (experimental)**: `oskel build --target
+  x86_64-freestanding-sysv` emits a multiboot kernel that boots with no
+  operating system underneath, printing to a serial port. It runs under
+  `qemu-system-x86_64 -kernel`, GRUB or Limine; see
+  [Bare metal](#bare-metal-experimental).
 - Diagnostics with file, line, column, code snippet and stack trace.
 
 ## Status
@@ -246,18 +251,20 @@ behave differently — under AOT. This is the exact split in 0.1.0.
 - Arithmetic, comparisons, logical and bitwise operators, control flow
   (`if`/`while`/`for`/`for-in`/`switch`), functions, closures, `defer`,
   `struct`, ranges, slicing, string interpolation.
-- Arrays and maps (literals, indexing, `in`, `for-in`, printing).
+- Arrays and maps (literals, indexing, `in`, `for-in`, printing, and `+` to
+  concatenate two arrays).
 - These builtins: `print`, `write`, `eprint`, `len`, `type`, `str`, `repr`,
   `bool`, `ord`, `chr`, `assert`, `panic`, `isError`.
+- The numeric conversions `int`, `float`, `double`, and the math builtins
+  `floor`, `ceil`, `round`, `sqrt`, `pow`, `exp`, `log`, `sin`, `cos`, `tan`.
 
 **VM only — not yet available in `oskel build` (a build error names the global):**
 
 - Collection methods such as `arr.push`, `map.keys`, `str.upper`. They compile
   but fail at runtime with `value has no such member`.
-- `pcall`, and the remaining standard-library builtins: `int`, `float`,
-  `double`, the math block (`sqrt`, `pow`, `sin`, ...), `readFile`,
-  `writeFile`, `fileExists`, `args`, `exit`, `random`, `seed`, `clock`. A
-  program using any of them does not build.
+- `pcall`, and the I/O and process builtins `readFile`, `writeFile`,
+  `fileExists`, `args`, `exit`, `random`, `seed`, `clock`. A program using any
+  of them does not build.
 
 **Available in both, but with different semantics:**
 
@@ -265,14 +272,45 @@ behave differently — under AOT. This is the exact split in 0.1.0.
   yet, so `$isError` always reports "not an error": the success path of `try`
   and `catch` runs, and a real failure still exits 70 instead of being
   recovered. `try`/`catch` only behaves as documented on the VM.
-- **Structural equality is identity in AOT.** `[1, 2] == [1, 2]` is `true` on
-  the VM (compared by content) and `false` in an AOT binary (compared by
-  identity).
 - **`map.get` is O(n) in AOT** (linear scan) instead of O(1) (hash lookup), so
   a loop that looks up every key of a large map is O(n²) in a compiled binary.
 
 The divergences are tracked internally in `docs/BACKLOG.md`; closing them (and
 a VM/AOT parity test) is the goal of the remaining AOT work.
+
+## Bare metal (experimental)
+
+`oskel build --target x86_64-freestanding-sysv file.oskl -o kernel.elf` emits a
+**multiboot 1 kernel**: a 32-bit ELF image that a boot loader loads at 1 MiB
+and enters directly, with no operating system underneath. The image opens with
+a small 32-bit trampoline that builds an identity page table, turns on long
+mode and installs its own 64-bit GDT, then jumps into the same 64-bit runtime
+the Linux target uses — so the compiled program is byte-for-byte identical; only
+the prelude differs, because a kernel has no system calls.
+
+The bare-metal prelude reaches the outside world through the hardware:
+
+- `oskel_write` drives the 16550 UART at COM1 directly (polling the
+  line-status register), so `print` shows up on the serial line.
+- `oskel_exit` masks interrupts and halts the CPU in a loop (`cli`; `hlt`).
+  Under QEMU it also publishes the exit code on the `isa-debug-exit` port so a
+  test can observe it; on real hardware that port write is ignored.
+- `oskel_init_arena` points the bump allocator at a `.bss` region the loader
+  zeroes, instead of calling `mmap`.
+
+Run it under QEMU:
+
+```sh
+oskel build --target x86_64-freestanding-sysv hello.oskl -o hello.elf
+qemu-system-x86_64 -kernel hello.elf -serial stdio -display none
+```
+
+The same image boots from GRUB or Limine with a multiboot entry. The whole
+language core that builds for Linux builds here too — the two share the
+lowering and the embedded runtime; the divergences in
+[What runs where](#what-runs-where-vm-vs-aot) apply unchanged. The end-to-end
+boot is exercised by `tests/bare_metal_test.cpp` when `qemu-system-x86_64` is on
+`PATH`.
 
 ## Tests
 
@@ -314,7 +352,7 @@ The positive tests use `assert` and `assertEq`; a script exits with a non-zero c
 Current limitations:
 
 - Dynamic typing. The product model is Lua's: source code is always compiled to bytecode and run on the VM. The CLI and the REPL both compile to bytecode and run on the register-based VM; the AST is never executed.
-- The development engine (`oskel`) also ships an **experimental JIT** for a narrow integer subset: a *leaf* function whose body only manipulates `nil`/`bool`/`int` is compiled to native x86-64 the first time it is called. Each scalar slot stays in a physical CPU register instead of a stack slot, so a tight integer loop runs about 130x faster than the interpreter. Everything else keeps running on the interpreter, so results never change. It is a development-engine feature only: `oskel build` and the generated binary never contain it (`oskel --no-jit` disables it).
+- The development engine (`oskel`) also ships an **experimental JIT** for a narrow integer subset: a *leaf* function whose body only manipulates `nil`/`bool`/`int` is compiled to native x86-64 the first time it is called. Each scalar slot stays in a physical CPU register instead of a stack slot, and a compile-time optimizer folds constants, applies them as machine immediates (`i * 2` becomes one `shl`), computes in the destination register and turns a comparison that only feeds the branch after it into `cmp; jcc`, so a tight integer loop runs about 320x faster than the interpreter and within ~1.4x of a hand-written `-O2` C++ loop. Everything else keeps running on the interpreter, so results never change. It is a development-engine feature only: `oskel build` and the generated binary never contain it (`oskel --no-jit` disables it).
 - There are no classes, interfaces or inheritance; maps and closures replace them. A `struct` (data only, no methods) is a named map shape checked at compile time, not a class.
 - There is no `try`/`catch` *statement* or catchable exceptions. Errors are values: `error(message, code?)` builds a first-class error value and `isError(value)` detects it. `pcall(fn, ...)` turns a raised runtime error into a `{ok, value, error}` map instead of aborting. Two operators work on error values: `try expr` propagates one to the caller (Rust's `?`) and `expr catch default` recovers locally (Zig's `catch`). `panic()` is for unrecoverable errors.
 - Modules use Java-style `import` (`import std.math;`, `import std.math.*;`, `import std.math as m;`, `import { sqrt } from std.math;`) with compile-time conflict detection for `.*` and a reserved `std.` prefix. There is no `require`; modules are loaded eagerly and a cyclic import is a compile error.

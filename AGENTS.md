@@ -51,6 +51,24 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   generic "global 'N' is read but never assigned". FFI in the AOT backend is
   still PHASE 7 work; the lowerer only fails it cleanly. `sqrt`, `floor`, `ceil`
   and `round` are the curated stubs (`sqrtsd` and the SSE rounding are exact).
+- A qualified access to a module's native export (`std.math.pow`) is a use too,
+  but it reads the module table with `GETTABLE`, not with `GETGLOBAL`, so the
+  lowerer cannot see it by counting reads. The compiler records such a use on
+  the proto (`Bytecode::nativeUses`) and resolves it once the chunk is compiled
+  — deferred, because a hoisted function is compiled before the `import` that
+  loads the module (PHASE 7f.2). The same record lets a qualified call be checked
+  against the export's signature (arity and argument types), exactly like the
+  direct form. The argument types are captured at the call site, not at flush
+  time: a local that shadows a global is gone by then.
+- The AOT backend has two link modes (`LinkMode`, PHASE 7f.3), chosen on the
+  command line and never in the source: `freestanding` (the default) is the
+  self-contained image every target emits today (no libc, no linker, `ldd` says
+  "not a dynamic executable"); `hosted` links against the host C library so an
+  `extern "C"` symbol resolves to the real C function — the mode that makes FFI
+  work. `isSupportedLinkMode` pins the matrix (freestanding: all targets;
+  hosted: Linux x86-64 only, for now) and an unsupported pair is reported, never
+  emitted. A change to the freestanding path must keep the emitted binary byte
+  for byte identical; `oskel build --mode freestanding` is the explicit form.
 - Windows code paths can be exercised locally without a Windows host: build the
   engine with `x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude -Isrc -static
   -o /tmp/win/oskel.exe src/*.cpp src/native/*.cpp src/jit/*.cpp` and run it

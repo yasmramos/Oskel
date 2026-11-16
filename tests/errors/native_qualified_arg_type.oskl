@@ -1,0 +1,5 @@
+// expect-exit: 65
+// A qualified call to a module's native export is type-checked against the
+// declaration exactly like the direct form (PHASE 7f.2). `pow` wants doubles.
+import std.math;
+print(std.math.pow("no", 2.0));

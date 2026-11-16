@@ -1212,9 +1212,9 @@ A **map** also accepts a second loop variable after a comma: `for k, v in map`
 binds the key to the first variable and its value to the second, so a map is
 walked as entries without going through `entries()`. The parenthesized form
 `for (k, v in map)` is the same. Key/value iteration is only valid for maps;
-any other iterable raises a runtime error. The first variable is the key that
-the loop already produces, so the value form does not change the iteration
-order or the live-mutation rules below.
+any other iterable raises a runtime error. `ITER` yields the paired value
+directly, so the value form costs no extra lookup and does not change the
+iteration order or the live-mutation rules below.
 
 ```oskel
 for key, value in {a: 1, b: 2} {
@@ -1501,6 +1501,15 @@ native fn free(p: any): void;     // no return value (maps to C's void)
 assertEq(str(42), "42");
 assertEq(len([1, 2, 3]), 3);
 ```
+
+The same check applies to a **qualified** call through a module namespace. A
+`native fn` a module exports keeps its signature on the imported module, so
+`std.math.sqrt(16.0)` is checked exactly like `sqrt(16.0)` — the arity and the
+argument types are enforced, and the message names the qualified form
+(`'std.math.pow' expects 2 arguments, got 1`). The check is deferred to the end
+of the chunk, because a function declared before the `import` that loads the
+module is compiled first, but it runs before the program executes, so a
+mismatch is always a compile error rather than a run-time failure.
 
 Like `struct`, a `native fn` is **module-level metadata**: it may only be
 declared at the top level of a file. Its parameter and return types must be
@@ -2312,9 +2321,30 @@ oskel build app.oskl -o app   # writes ./app
 ./app
 ```
 
+`oskel build` has two **link modes**, chosen on the command line with `--mode`
+(the mode is a deployment choice, never syntax in the source — the same program
+compiles either way):
+
+- `--mode freestanding` (the default) is the self-contained image described
+  above: it carries its own runtime, speaks to the kernel directly and has no
+  dynamic dependencies.
+- `--mode hosted` links the compiled program against the host C library, so an
+  `extern "C"` symbol resolves to the real C function at link time. This is the
+  mode that makes FFI work, and the one `oskelc` is documented to be. It needs a
+  C toolchain at build time and produces a binary that *does* depend on libc, so
+  it is not freestanding. (The hosted image itself is PHASE 7f.4; until it
+  lands, `--mode hosted` fails cleanly instead of writing a binary.)
+
+```sh
+oskel build app.oskl                       # freestanding (default)
+oskel build app.oskl --mode freestanding   # the same, stated explicitly
+oskel build app.oskl --mode hosted         # links libc (FFI; PHASE 7f.4)
+```
+
 The backend targets x86_64-linux-sysv today; on any other target `oskel build`
 reports the unsupported target instead of emitting bytes for an ABI it cannot
-produce.
+produce. The hosted mode is Linux x86-64 only for now; an unsupported
+(target, mode) pair is reported, never emitted.
 
 A compiled binary carries the standard-library builtins that need no libm:
 `print`/`write`/`eprint`, `len`, `type`, `str`, `repr`, `bool`, `ord`, `chr`,
@@ -2322,8 +2352,10 @@ A compiled binary carries the standard-library builtins that need no libm:
 (including the string forms) and the exact math builtins `floor`, `ceil`,
 `round` and `sqrt` (correctly rounded from SSE alone, so they match the hosted
 engine bit for bit). The remaining math builtins (`pow`, `sin`, `cos`, `tan`,
-`log`, `exp`) are not lowered yet: they need an embedded libm because the
-freestanding binary cannot call the host's, and they land in a later slice.
+`log`, `exp`) embed the musl routines ported in `native/mathlib.*`, emitted as
+x86-64 through the same `CodeGen` path as `dtoa` and `parse_float`, so the
+freestanding binary stays libc-free. glibc is not correctly rounded for these,
+so the contract is "agrees to 1 ulp".
 
 A compiled binary supports variadic functions (§7.1): a trailing `rest...`
 parameter binds an ordinary array of the extras, built by the runtime's

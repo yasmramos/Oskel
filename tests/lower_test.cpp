@@ -102,6 +102,25 @@ static void testCollectionsLower() {
   check(!chunk.code.empty(), "NEWTABLE lowers to an image");
 }
 
+static void testIterOperandsLower() {
+  // `ITER` writes the item (a), the paired value (d, -1 for a key-only loop)
+  // and the done flag (e). Both shapes must lower: the value form reads a
+  // real slot, the key-only form passes a null value slot.
+  Instruction keyValue = instr(OpCode::ITER, 0, 1, 2);
+  keyValue.d = 3;
+  keyValue.e = 4;
+  LoweredChunk valueForm = lower(makeProto({keyValue, instr(OpCode::HALT)},
+                                           {Value()}, 5));
+  check(!valueForm.code.empty(), "ITER with a value register lowers");
+
+  Instruction keyOnly = instr(OpCode::ITER, 0, 1, 2);
+  keyOnly.d = -1;
+  keyOnly.e = 4;
+  LoweredChunk keyForm = lower(makeProto({keyOnly, instr(OpCode::HALT)},
+                                         {Value()}, 5));
+  check(!keyForm.code.empty(), "ITER without a value register lowers");
+}
+
 static void testBadJumpTargetThrows() {
   auto proto = makeProto({instr(OpCode::JMP, 0, 0, 0, 99), instr(OpCode::HALT)}, {}, 1);
   check(loweringThrows(proto, "outside the code"), "an out-of-range jump target throws");
@@ -183,12 +202,13 @@ static void testExternSymbolGetsDedicatedMessage() {
         "an extern symbol read names the AOT limitation, not a typo");
 
   // A `native fn` that is used (read beyond its declaration) is named too, with
-  // a message that says `native fn` rather than `extern "C"`.
+  // a message that says `native fn` rather than `extern "C"`. `clock` is a host
+  // binding with no curated stub (the libm ports cover `sqrt`/`pow`/`sin`/...).
   auto native = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::SETGLOBAL, 0, 0),
                            instr(OpCode::GETGLOBAL, 1, 0), instr(OpCode::HALT)},
-                          {Value(std::string("sin"))}, 2);
-  native.nativeFns.push_back("sin");
-  check(loweringThrows(native, "native fn 'sin' cannot be resolved"),
+                          {Value(std::string("clock"))}, 2);
+  native.nativeFns.push_back("clock");
+  check(loweringThrows(native, "native fn 'clock' cannot be resolved"),
         "a used native fn names the AOT limitation");
 
   // The dedicated message is only for a declared symbol: an undeclared read of
@@ -650,6 +670,35 @@ static void checkStr(const Bytecode& proto, const std::string& expected, const c
   }
 }
 
+// Reads back the int payloads of the `AotArray` an Array result points at. The
+// chunk's image is mapped in this process, so the header and its items block
+// are directly dereferenceable (see `AotArray` in `native/value.h`).
+static std::vector<std::int64_t> arrIntItems(const AotValue& value) {
+  std::vector<std::int64_t> items;
+  if (value.tag != static_cast<std::uint64_t>(AotTag::Array)) return items;
+  const auto* header = reinterpret_cast<const std::uint64_t*>(
+      static_cast<std::uintptr_t>(value.payload));
+  const std::uint64_t length = header[0];
+  const auto* base = reinterpret_cast<const AotValue*>(
+      static_cast<std::uintptr_t>(header[2]));
+  for (std::uint64_t i = 0; i < length; ++i) {
+    items.push_back(static_cast<std::int64_t>(base[i].payload));
+  }
+  return items;
+}
+
+static void checkArray(const AotValue& value, const std::vector<std::int64_t>& expected,
+                       const char* what) {
+  bool isArray = value.tag == static_cast<std::uint64_t>(AotTag::Array);
+  std::vector<std::int64_t> actual = arrIntItems(value);
+  bool ok = isArray && actual == expected;
+  check(ok, what);
+  if (!ok) {
+    std::printf("      got tag=%llu length=%zu, expected an array of %zu\n",
+                static_cast<unsigned long long>(value.tag), actual.size(), expected.size());
+  }
+}
+
 static void testExecStringLoad() {
   checkStr(makeProto({instr(OpCode::LOADK, 0, 0), instr(OpCode::HALT)},
                      {Value(std::string("hello"))}, 1),
@@ -672,6 +721,39 @@ static void testExecStringConcat() {
   checkStr(mk("foo", "bar"), "foobar", "exec: \"foo\" + \"bar\" == \"foobar\"");
   checkStr(mk("", "x"), "x", "exec: \"\" + \"x\" == \"x\"");
   checkStr(mk("x", ""), "x", "exec: \"x\" + \"\" == \"x\"");
+}
+
+static void testExecArrayConcat() {
+  checkArray(compileAndRun("var r = [1, 2] + [3, 4];"), {1, 2, 3, 4},
+             "compiled: [1, 2] + [3, 4] == [1, 2, 3, 4]");
+  checkArray(compileAndRun("var r = [] + [];"), {},
+             "compiled: [] + [] == []");
+  checkArray(compileAndRun("var r = [] + [9];"), {9},
+             "compiled: [] + [9] == [9]");
+  checkArray(compileAndRun("var r = [9] + [];"), {9},
+             "compiled: [9] + [] == [9]");
+  checkArray(compileAndRun("var a = [1, 2]; var b = [3]; var r = a + b;"), {1, 2, 3},
+             "compiled: a + b concatenates two arrays");
+  // The operands are read only: `+` builds a fresh array, so both are intact.
+  checkArray(compileAndRun("var a = [1, 2]; var b = [3]; var c = a + b; var r = b;"),
+             {3}, "compiled: array concatenation leaves the right operand unchanged");
+  checkArray(compileAndRun("var a = [1, 2]; var b = [3]; var c = a + b; var r = a;"),
+             {1, 2}, "compiled: array concatenation leaves the left operand unchanged");
+  // Growing an accumulator one element at a time, as a loop does.
+  checkArray(compileAndRun("var acc = []; var i = 0;"
+                           " while (i < 3) { acc = acc + [i]; i = i + 1; }"
+                           " var r = acc;"),
+             {0, 1, 2}, "compiled: an accumulator grows by concatenation in a loop");
+  // Nested arrays concatenate element-wise; each item is itself an array, so
+  // the result has three items (checked by length, not by int payloads).
+  AotValue nested = compileAndRun("var r = [[1], [2]] + [[3]];");
+  bool nestedOk = false;
+  if (nested.tag == static_cast<std::uint64_t>(AotTag::Array)) {
+    const auto* header = reinterpret_cast<const std::uint64_t*>(
+        static_cast<std::uintptr_t>(nested.payload));
+    nestedOk = header[0] == 3;
+  }
+  check(nestedOk, "compiled: nested arrays concatenate to three items");
 }
 
 static void testExecStringCompare() {
@@ -919,6 +1001,7 @@ static void testExecCompiledCapture() {
 int main() {
   testImageIsSelfContained();
   testCollectionsLower();
+  testIterOperandsLower();
   testBadJumpTargetThrows();
   testUnassignedGlobalThrows();
   testHostBindingThrows();
@@ -948,6 +1031,7 @@ int main() {
   testExecFloatNegate();
   testExecStringLoad();
   testExecStringConcat();
+  testExecArrayConcat();
   testExecStringCompare();
   testExecGlobals();
   testExecLocals();

@@ -12,11 +12,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 1. VM (`src/vm.cpp`)
 
-1. **[P1]** `ITER` over a map yields only the key; `for k, v` then does a
-   `$mapValue` lookup per iteration. Yield the value directly.
-2. **[P1]** `ITER` (and `compileForIn`) uses `instruction.jump` as the output
-   register. Replace the private convention with a real operand or a distinct
-   opcode.
+1. **[P1] [done]** `ITER` over a map yielded only the key; `for k, v` then did
+   a `$mapValue` lookup per iteration. `ITER` now takes two extra operands
+   (`Instruction::d` for the paired value, `-1` when the loop has no value
+   variable, and `Instruction::e` for the done flag) and yields the value
+   directly, so the loop body holds no helper call. The retired `$mapValue`
+   builtin is gone from the hosted engine and the AOT runtime.
+2. **[P1] [done]** `ITER` (and `compileForIn`) used `instruction.jump` as the
+   output register. The done flag now lives in the real operand `e` (and the
+   value in `d`), so `jump` is a jump target only.
 3. **[P2]** `namespaceHint` walks every global on each failed `GETGLOBAL`;
    a repeated typo in a large REPL is slow. Index the global names.
 4. **[P2]** `callNative` always copies the arguments for reentrancy safety,
@@ -231,9 +235,26 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     (`ldd` reports "not a dynamic executable"). `tests/build_error.cmake` pins
     the current behaviour. **Partial (7f.1)**: an *unused* declaration no longer
     fails the build (the lowerer counts reads against declarations), and `sqrt`
-    is provided by a curated stub that matches the VM bit for bit. The rest of
-    `std.math`'s libm surface (`pow`, `sin`, `cos`, `tan`, `log`, `exp`) and
-    general `extern "C"` symbols are still open.
+    is provided by a curated stub that matches the VM bit for bit. **Partial
+    (7c.5b.4)**: `std.math`'s libm surface (`exp`, `log`, `pow`, `sin`, `cos`,
+    `tan`) now resolves from the embedded musl ports, so a program that calls
+    them builds. **Partial (7f.2)**: a qualified access to a module's native
+    export (`std.math.pow`) is recorded on the proto and rejected the same way
+    (the member read is a `GETTABLE`, so the read count alone could not see it),
+    and a qualified call is checked against the export's signature like the
+    direct form. **Partial (7f.3)**: the two link modes are now a CLI concept
+    (`LinkMode`, `oskel build --mode freestanding|hosted`, default
+    `freestanding`); `hosted` is the mode that links libc so an `extern "C"`
+    symbol resolves at link time, with the (target, mode) matrix validated. The
+    hosted *image* (object + link) is 7f.4, so `--mode hosted` fails cleanly
+    until then. General `extern "C"` symbols are still open.
+20. **[P0] [done]** VM/AOT divergence in string iteration: `emitIterNext`'s
+    `str` branch built the character but fell through into the `range` block,
+    which overwrote `rax:rdx` with the cursor index, so `for c in "abc"`
+    printed `0 1 2` instead of `a b c` on the AOT backend (the VM was
+    correct). A missing `jmp storeCursor` after the string was built. Fixed
+    with the `ITER` redesign (items 1-2 of §1) and pinned by
+    `tests/freestanding_test.cpp`.
 
 ---
 
@@ -436,7 +457,8 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    decide and test.
 6. **[P2]** `memberGet` for a map with a missing non-method member returns
    `nil`; verify the AOT path matches.
-7. **[P2]** `binary` `Plus` on two arrays concatenates; decide and document.
+7. **[P2]** `binary` `Plus` on two arrays concatenates; done in PHASE 7c.3b
+   (`oskel_array_concat`); the VM is the reference and the AOT path matches it.
 8. **[P3]** `lessThan` for bool (`!left && right`) is correct but subtle; add a
    test.
 
@@ -525,7 +547,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    recovers, `error()` works and structural equality matches the VM.
 3. **[P1]** Add an AOT wrong-arity test.
 4. **[P1]** Add `map`/`filter`/`reduce` tests with a VM closure callback.
-5. **[P1]** Add an `ITER`-over-a-non-iterable test.
+5. **[P1] [done]** Add an `ITER`-over-a-non-iterable test.
+   `tests/errors/for_in_not_iterable.oskl` pins that `for x in 5` is a runtime
+   error naming the type (`cannot iterate over a value of type 'int'`), and
+   `testIterValueFormRejectsNonMap` in `tests/vm_test.cpp` covers the key/value
+   form over an array, a string and a range.
 6. **[P1]** Add dtoa NaN/Inf, explicit subnormal and cross-invocation stability
    tests.
 7. **[P1]** Add an `OSKEL_GC_STRESS` test run.

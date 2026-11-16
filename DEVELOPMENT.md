@@ -51,7 +51,7 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `module_resolver.cpp` | dotted module path | source file path | ✅ |
 | `vm.cpp` | `Bytecode*` | execution | ✅ |
 | `main.cpp` | CLI | full pipeline | ✅ (VM as dev engine, PHASE 4) |
-| `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slice 1 |
+| `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slices 1-3 |
 | `value.cpp` | `Value`, tagged union | shared runtime | ✅ |
 | `env.cpp` | `Env`, lexical scope chain | **unused** (see note) | ⚠️ |
 | `builtins.cpp` / `ops.cpp` | native builtins, shared operators | runtime library | ✅ |
@@ -68,6 +68,7 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `native/arena.cpp` | block + size | aligned allocations | ✅ PHASE 7c.0 |
 | `native/platform_freestanding.cpp` | `Platform` ops | direct Linux syscalls | ✅ PHASE 7c.0 |
 | `native/entry.cpp` | program entry label | `_start`/entry + prelude (Linux syscalls, Windows kernel32) | ✅ PHASE 7c.0/7e |
+| `native/bare_metal.cpp` | code + entry | multiboot ELF32/i386 kernel (bare-metal prelude + trampoline) | ✅ PHASE 7g |
 
 **Note on `env.cpp`.** It is the lexical scope chain of the retired AST
 interpreter. The VM keeps locals in reference-counted `Cell`s and never
@@ -220,7 +221,7 @@ budget, not a promise that every opcode is one instruction.
 | `GETTABLE R0, R1, R2` | call: `oskel_table_get` (bounds/hash/type checks) |
 | `SETTABLE R1, R2, R0` | call: `oskel_table_set` (grow + write barrier) |
 | `IN R0, R1, R2` | call: `oskel_contains` |
-| `ITER R0, R1` | call: `oskel_iter_next` |
+| `ITER R0, R1` | call: `oskel_iter_next` (writes the map value and the done flag) |
 | `PRINT R3` | call: `oskel_print` → `Platform::write` (temporary, §3.6) |
 | `HALT` | sequence: frame epilogue + `ret` |
 
@@ -296,8 +297,9 @@ previous one.
 - `oskel -c file.oskl` compiles without running.
 - `oskel build file.oskl` → PHASE 7 AOT backend: freestanding static native
   binary (no libc), no Oskel installation needed by end users.
-  `--target x86_64-windows-win64` emits a Windows PE32+ (PHASE 7e); the default
-  target follows the host.
+  `--target x86_64-windows-win64` emits a Windows PE32+ (PHASE 7e) and
+  `--target x86_64-freestanding-sysv` a bare-metal multiboot kernel (PHASE 7g);
+  the default target follows the host.
 
 ### PHASE 5 — Control flow and locals ✅
 - Opcodes: `JMP`, `JMP_IF_FALSE`, `JMP_IF_TRUE`
@@ -624,13 +626,15 @@ Slices, each independently shippable:
   6a.0 (PHASE 6) must be built on this interface from the start.
 - **Target descriptor from day one**: `include/native/target.h` defines
   `Target { arch, os, abi }` and every backend entry point takes one.
-  `CodeGen` validates it and accepts `x86_64-linux-sysv` and
-  `x86_64-windows-win64`, so adding macOS or WebAssembly is a new backend
-  behind the same descriptor instead of a driver rewrite.
-- Initial targets: Linux x86-64 (direct syscalls) and Windows x86-64
-  (kernel32 through the Microsoft x64 ABI). Both share the x86-64 lowering and
-  the embedded runtime byte for byte; only the entry prelude differs, because
-  the two systems reach the outside world differently.
+  `CodeGen` validates it and accepts `x86_64-linux-sysv`,
+  `x86_64-windows-win64` and `x86_64-freestanding-sysv`, so adding macOS or
+  WebAssembly is a new backend behind the same descriptor instead of a driver
+  rewrite.
+- Initial targets: Linux x86-64 (direct syscalls), Windows x86-64
+  (kernel32 through the Microsoft x64 ABI) and bare metal x86-64 (multiboot,
+  no operating system). All three share the x86-64 lowering and the embedded
+  runtime byte for byte; only the entry prelude differs, because each reaches
+  the outside world differently.
 - Subslices:
   - **7a** — "hello world" spike: hand-written `_start` + `write` syscall →
     static freestanding ELF → `./hello` runs, no libc.
@@ -849,9 +853,10 @@ Slices, each independently shippable:
       `IN` lowers to `oskel_contains` (array value equality through
       `oskel_compare`, map keys, string substrings) and `ITER` to
       `oskel_iter_next`, which advances a `for-in` cursor over an array, a map's
-      keys or a string's UTF-8 code points; the key/value form (`for k, v in
-      map`) lowers to a call to the hidden `$mapValue` builtin, which the chunk
-      seeds like `print`. Growth goes through a shared
+      keys or a string's UTF-8 code points; for a map it also writes the paired
+      value straight into the loop variable's slot (the `valueOut` argument), so
+      the key/value form (`for k, v in map`) needs no helper call. Growth goes
+      through a shared
       `oskel_block_ensure` (next power-of-two capacity, arena copy). Printing a
       container uses a recursive `oskel_print_repr` (`[1, 2]`, `{"k": 1}`,
       quoted strings, `<fn>`), depth-capped at 8 so a self-referential
@@ -861,12 +866,25 @@ Slices, each independently shippable:
       `for-in` and container printing under the real `_start`) and
       `tests/lower_test.cpp` (the collection opcodes now lower instead of
       raising).
+    - **7c.3b** (done) — array concatenation (`a + b`). The hosted `binary`
+      `Plus` on two arrays builds a fresh array with A's items followed by B's
+      items and leaves both operands unchanged; `oskel_arith` rejected the pair
+      as "unsupported operand types", so a compiled binary disagreed with the
+      VM (the VM concatenated, the AOT binary exited 70). `oskel_arith` now
+      dispatches `+` on two arrays to the new helper `oskel_array_concat`,
+      which allocates an `AotArray` of `lenA + lenB` items, grows its block
+      once through `oskel_block_ensure` and copies both runs in with two
+      element loops (the operands are read only). No new opcode: it is the
+      `ADD` path the string concatenation already uses, extended to the array
+      tag. Covered by `tests/lower_test.cpp` (empty and non-empty operands,
+      operand immutability, a growing accumulator) and the `oskel build`
+      fixture.
     - **7c.4a** (done) — the hidden `$nonNull` and `$isError` helpers. The
       compiler emits `$nonNull` for the non-null assertion `a!!` and `$isError`
       for `try` / `x catch y` (PHASE 6.5/6.7); the AOT backend had no binding
       for them, so a program using either failed to build with
       `lowering: global '$nonNull'/'$isError' is read but never assigned`. They
-      are now seeded builtins like `print` and `$mapValue`:
+      are now seeded builtins like `print`:
       `oskel_builtin_non_null` returns its operand or calls `fail` with the
       hosted helper's message, and `oskel_builtin_is_error` returns `false`
       (the AOT runtime has no error values yet, so the success path of `try`/
@@ -1000,9 +1018,32 @@ Slices, each independently shippable:
       non-positive operand) and are seeded into their global slots like the
       other builtins. Covered by `tests/mathlib_test.cpp` (the emitted routines
       called through function pointers against libm over 175k/100k/200k random
-      inputs) and the `oskel build` fixture. The trigonometric family
-      (`sin`, `cos`, `tan`, which needs the Payne-Hanek argument reduction) is
-      the next slice, **7c.5b.4b**.
+      inputs) and the `oskel build` fixture.
+      **7c.5b.4b** (done) adds the trigonometric builtins `sin`, `cos` and
+      `tan`, which need the Payne-Hanek argument reduction (`__rem_pio2` and its
+      large-argument helper `__rem_pio2_large` over the two `ipio2`/`pio2`
+      tables) plus the `__sin`/`__cos`/`__tan` kernels, all ported from musl and
+      emitted by `CodeGen`. The large-argument branch is exercised by the tests
+      with inputs above `2^20 * pi/2` (a small random input never reaches it),
+      and the diff against a bit-exact musl reference is zero. Like the other
+      transcendentals the contract is "agrees to 1 ulp"; `sin`/`cos`/`tan`
+      resolve from these ports in a freestanding binary, so `std.math`'s libm
+      surface is now complete.
+      **7c.5b.5** (done) adds the last three public builtins: `range`, `assertEq`
+      and `exit`. `range` builds the same exclusive `Range` value as the hidden
+      `$range` helper, with one bound meaning `0..end` and both bounds checked to
+      be integers (the failure names `start` or `end`, matching the hosted
+      message). `assertEq` compares with the shared `oskel_compare` (the same
+      structural equality `==` lowers to) and returns nil on a match; on a
+      mismatch it renders the hosted `"<msg>: expected A, got B"` text -- the
+      optional third argument, `assertion failed` by default, then the two
+      operands through the recursive `repr` -- into a string builder and fails
+      through `oskel_fail_dynamic`, so the message and the exit code (70) match
+      the VM. `exit` leaves through the entry prelude's `oskel_exit` with the
+      integer code (`0` when omitted), so it never returns to the caller. All
+      three are seeded into their global slots like the other builtins and are
+      covered by `tests/freestanding_test.cpp` (the values and every failure
+      path) and `tests/native_build_builtins.oskl` (the `oskel build` fixture).
     - **7c.6** (done) — variadic parameter packs. A function with a trailing
       `rest...` parameter was a lowering error ("variadic function",
       `PHASE 7c.3`); it now compiles. The child proto's prologue checks the
@@ -1078,16 +1119,89 @@ Slices, each independently shippable:
       `round`): `sqrtsd` is correctly rounded, so the hardware result and the
       hosted `std::sqrt` agree bit for bit. This slice tightens that stub to the
       hosted semantics (a NaN operand is not "negative", and the arity message
-      matches `sqrt() expects 1 argument, got N`). The transcendentals (`pow`,
-      `sin`, `cos`, `tan`, `log`, `exp`) are *not* stubbed: a hand-written
-      implementation would not reproduce libm's last bit, so a program that uses
-      one is rejected instead of compiling to a binary that disagrees with the
-      VM. `tests/native_build_math.oskl` and `tests/native_build_math_pure.oskl`
-      build and agree with the VM; `tests/native_build_math_native_error.oskl`
+      matches `sqrt() expects 1 argument, got N`). The libm primitives
+      (`exp`, `log`, `pow`, `sin`, `cos`, `tan`) resolve from the embedded musl
+      ports PHASE 7c.5b.4 adds, so a program that calls them now builds; a
+      `native fn` still without a stub (for example `clock`) is rejected instead
+      of compiling to a binary that disagrees with the VM.
+      `tests/native_build_math.oskl` and `tests/native_build_math_pure.oskl`
+      build and agree with the VM; `tests/native_build_native_error.oskl`
       pins the rejection.
+    - **7f.2** (done) — a qualified access to a module's native export is a use
+      too, and a qualified *call* is checked at compile time. `std.math.pow(...)`
+      reads the module table with `GETTABLE`, not `GETGLOBAL`, so the lowerer
+      never saw the use: a program that called a host binding through its
+      namespace compiled to a binary that faulted at run time (`cannot call a
+      non-function value`) instead of failing the build. The compiler now
+      propagates each public native export's *signature* on the `ImportedModule`
+      (`nativeSigs`), records the qualified access when it emits the member read,
+      and resolves it once the chunk is compiled — deferred, because a hoisted
+      function is compiled before the `import` statement that loads the module.
+      Resolution both records the use for the AOT backend (so the rejection
+      matches the direct form) and checks a call site against the export's
+      signature, so `std.math.pow(2.0)` fails at compile time with `'std.math.pow'
+      expects 2 arguments, got 1`, exactly like `pow(2.0)`. Propagating the
+      signature (not just the name) is what makes the qualified and direct forms
+      agree; before, `tests/modules/hostmath.oskl` declared `sqrt` as `float` and
+      was called with a `double`, a mismatch the qualified form silently
+      accepted. The argument types are captured at the call site, not at flush
+      time: a local that shadows a global is gone by then, and inferring late
+      resolved it to the global. Covered by
+      `tests/native_build_qualified_error.oskl` (the build rejection; the
+      `std.math` libm surface resolves from the embedded musl ports, so the
+      rejection is exercised with `modules.hostclock.clock`, which has no stub),
+      `tests/errors/native_qualified_arity.oskl` and
+      `tests/errors/native_qualified_arg_type.oskl` (the compile-time checks).
+    - **7f.3** (done) — the two link modes as a CLI concept. The AOT backend
+      gains `LinkMode` (`include/native/target.h`): `Freestanding`, the default,
+      is the self-contained image every target already emits; `Hosted` is the
+      mode that will link against the host C library so an `extern "C"` symbol
+      resolves to the real C function. The mode is a deployment choice, never
+      language syntax: the same source compiles in either mode and the choice
+      lives on the command line (`oskel build --mode freestanding|hosted`,
+      default `freestanding`). `isSupportedLinkMode`/`requireSupportedLinkMode`
+      pin the (target, mode) matrix — freestanding for all three targets, hosted
+      for Linux x86-64 only for now — so an unsupported pair is reported instead
+      of emitting bytes. The hosted image itself (object + link) is 7f.4, so
+      `--mode hosted` fails cleanly (exit 65, no binary) until then. This slice
+      changes no code path for freestanding: the emitted binary is byte for byte
+      identical to before. Covered by `tests/build_mode.cmake`.
+  - **7g** (done) — bare-metal x86-64 (multiboot). A third target,
+    `x86_64-freestanding-sysv` (`oskel build --target
+    x86_64-freestanding-sysv`), emits a multiboot 1 kernel that a boot loader
+    (QEMU `-kernel`, GRUB, Limine) loads at 1 MiB and enters in 32-bit
+    protected mode. Because the CPU starts in 32-bit mode with paging off and
+    multiboot leaves a *32-bit* code descriptor in the GDT, the image begins
+    with a small hand-assembled 32-bit trampoline (`src/native/bare_metal.cpp`,
+    `include/native/bare_metal.h`): it builds an identity page table with 2 MiB
+    huge pages, turns on PAE and long mode (and, in CR4, `OSFXSR` and
+    `OSXMMEXCPT`, without which the first SSE instruction the float path emits
+    is a `#UD` -- a triple fault, since no IDT is installed), installs its own
+    GDT with a 64-bit code segment and far-jumps into the shared 64-bit
+    runtime. From there the program is byte-for-byte the same machine code the
+    Linux target emits; only the prelude differs, because a kernel has no
+    system calls. `oskel_write` drives the 16550 UART at COM1 directly (the
+    entry point first brings the chip up -- mask interrupts, load divisor 1,
+    8N1, enable the FIFO -- so a real UART transmits, not just QEMU's; then
+    polling the line-status register, `out dx, al`); `oskel_exit` masks
+    interrupts, publishes the exit code on
+    QEMU's `isa-debug-exit` port and spins in `hlt` (on real hardware the port
+    write is ignored and the `hlt` loop is the end of the program); and
+    `oskel_init_arena` points the bump allocator at a `.bss` region the loader
+    zeroes instead of `mmap`. The ELF emitter produces an ELF32/i386 image with
+    two `PT_LOAD` segments: the code at 1 MiB (R+X) and the `.bss` at 2 MiB
+    (R+W, `p_filesz = 0`, `p_memsz` = page tables + stack + arena). The
+    lowering and the embedded runtime are shared with Linux unchanged. Verified
+    in `tests/bare_metal_test.cpp`: the structural checks always run, and the
+    end-to-end boot (real serial stdout and exit code under
+    `qemu-system-x86_64 -kernel`) runs when QEMU is on `PATH`. The `CodeGen`
+    gained four single-opcode primitives (`cli`, `hlt`, `out dx, al`,
+    `in al, dx`) plus `test al, imm8`, each byte-checked in
+    `tests/codegen_test.cpp`.
 - Deferred: per-instruction type annotations for fast paths without dynamic
   dispatch (bridge toward the speculative work in
-  `docs/ARCHITECTURE_ANALYSIS.md`); other targets (macOS via libc or stubs).
+  `docs/ARCHITECTURE_ANALYSIS.md`); other targets (macOS via libc or stubs;
+  ARM64 bare metal).
 - Afterwards, LuaJIT's JIT as a reference (see PHASE 8 below).
 - **In the tree now**: the `Target` descriptor (`include/native/target.h`) and
   the x86-64 instruction emitter (`include/native/codegen.h`,
@@ -1155,8 +1269,31 @@ body reads integer slots only. The compiled body also keeps every scalar slot
 in a physical CPU register instead of its 16-byte stack slot whenever the
 dataflow proves the slot only ever holds `nil`/`bool`/`int`: the register holds
 the raw payload and the tag is materialized only at the frame boundary, so a
-tight integer loop does almost no memory traffic. A tight integer loop is about
-130x faster than the interpreter.
+tight integer loop does almost no memory traffic.
+
+Slice 2 (done) adds a **compile-time optimizer** in front of the same emitter:
+a constant propagation over the proto folds any subtree whose operands are
+constants (`2 * 3` becomes `6`), and the emitter then applies a constant operand
+as a machine immediate (`n + 7` is one `add`, `i * 2` is one `shl` via the
+strength reduction, `x & -1` and `x * 1` disappear as identities), computes into
+the destination register rather than copying operands through scratch, and turns
+a branch on a constant condition into a taken or not-taken edge. A slot no
+reachable read materializes loses its `LOADK`, so the constants a folded
+expression leaves behind emit nothing. This is still 1:1 with the bytecode — the
+optimizer rewrites *how* an opcode is emitted, never *how many* opcodes run, and
+no new opcode, superinstruction or runtime specialization appears. A tight
+integer loop is about 260x faster than the interpreter, within about 1.7x of a
+hand-written `-O2` C++ loop.
+
+Slice 3 (done) adds **compare-branch fusion**. A comparison whose boolean result
+only feeds the conditional branch right after it no longer materializes the bool
+(`cmp; setcc; movzx; mov; test; jcc`) and jumps straight off the flags
+(`cmp; jcc`). A backward liveness pass proves the result dead past the branch and
+that the branch is reached by fall-through alone, so the re-test the VM would
+perform is never lost; a comparison whose result is reused afterwards stays
+unfused and correct. The same loop drops to about 320x the interpreter, within
+about 1.4x of the hand-written loop. The fusion rewrites *how* one opcode and its
+branch are emitted, so it is still 1:1 with the bytecode.
 
 Later slices widen the subset (floats, then strings, then the boxed value
 runtime, then calls and guards) and add the tiering policy (compile after a
@@ -1196,11 +1333,11 @@ Phase 3: ✅ completed
 Phase 4: ✅ completed (VM as the dev engine: `oskel`, `oskel -e` and the REPL compile to bytecode and run on the VM; the AST interpreter and its `--ast` flag are gone)
 Phase 5: ✅ completed and tested
 Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
-Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair through the hidden `$mapValue` helper, no new opcode) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
+Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair, which `ITER` now yields directly, no new opcode and no helper call) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e done; 7f — FFI in AOT — open, no slice chosen)
-Phase 8: 🔶 in progress (JIT for the development VM, slice 1 done: integer leaf protos with CPU-register allocation)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — open, no slice chosen)
+Phase 8: 🔶 in progress (JIT for the development VM, slices 1-3 done: integer leaf protos with CPU-register allocation, constant folding, strength reduction and compare-branch fusion)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)
 

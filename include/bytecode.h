@@ -94,13 +94,16 @@ enum class OpCode : std::uint8_t {
   // ITER reads the iterable from R[b] and keeps its cursor in R[c]. The
   // compiler initializes R[c] to nil; ITER starts the iteration on the first
   // call. R[a] receives the next item, or nil when the sequence is exhausted.
-  // `instruction.jump` holds a destination register index for the done flag
-  // (0 while items remain, 1 when exhausted), so a nil item is not mistaken
-  // for the end.
+  // `e` is the register that receives the done flag (0 while items remain, 1
+  // when exhausted), so a nil item is not mistaken for the end. `d` is the
+  // register that receives the paired value of a map entry, or -1 when the
+  // loop has no value variable (every other iterable ignores it). Yielding the
+  // value here keeps `for k, v in map` to one instruction per turn instead of a
+  // per-iteration `$mapValue` call.
   NEWTABLE,   // R[a] = new table (array if c == 0, map if c == 1)
   GETTABLE,   // R[a] = R[b][R[c]] or R[b].<constants[-c-1]>
   SETTABLE,   // R[b][R[c]] = R[a] or R[b].<constants[-c-1]> = R[a]
-  ITER,       // R[a] = next item of R[b]; R[jump] = done flag
+  ITER,       // R[a] = next item of R[b]; R[d] = paired value (map, or -1); R[e] = done flag
   IN,         // R[a] = R[b] in R[c]
 
   HALT,       // stop execution
@@ -140,6 +143,13 @@ struct Instruction {
   int b = 0;
   int c = 0;
   int jump = 0;
+  // Two extra register operands, used only by `ITER`: `d` is the register that
+  // receives the paired value of a map entry (-1 when the loop has no value
+  // variable) and `e` is the register that receives the done flag. Every other
+  // opcode leaves them at 0. `jump` stays a real jump target, so `ITER` no
+  // longer overloads it as an output register.
+  int d = 0;
+  int e = 0;
   // Source position, used only for runtime diagnostics. Native codegen in
   // PHASE 7 ignores these fields.
   int line = 0;
@@ -207,6 +217,18 @@ struct Bytecode {
   // list names the non-`extern` natives (and any `extern` entry as well, which
   // is harmless because the lowerer unions the two sets).
   std::vector<std::string> nativeFns;
+  // Host bindings this proto *uses*: a read of a `native fn`/`extern "C"` name
+  // (a direct call, a first-class reference, or a capture by an enclosing
+  // function), or a qualified member access to a module's native export
+  // (`std.math.pow(...)`). The compiler records every use site here (PHASE
+  // 7f.2), because a use does not always leave a `GETGLOBAL` behind — a member
+  // access reads the module table with `GETTABLE`, and a capture reads the cell
+  // with `GETUPVAL`, so the lowerer cannot recover the use from the code alone.
+  // A name in this list with no stub is a real limitation of the AOT backend
+  // (it has no host), so the build fails cleanly instead of emitting a binary
+  // that calls nil. A declaration that is never used is absent here and stays
+  // harmless.
+  std::vector<std::string> nativeUses;
   // No per-proto capture storage: upvalue cells live in the `Function` value
   // produced by `CLOSURE` (`Function::upvalues`), so closures created from the
   // same proto in different frames never overwrite each other's captures.

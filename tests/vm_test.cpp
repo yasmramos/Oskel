@@ -1004,36 +1004,46 @@ void testArgsExcludeTheScriptName() {
   assert(empty.isArray() && empty.arrayPtr()->items.empty());
 }
 
-void testMapValueRejectsNonStringKey() {
+void testIterYieldsMapValue() {
   TEST_SCOPE();
+  // `ITER` now writes the paired value straight into the loop variable's
+  // register (operand `d`), so `for k, v in map` is one instruction per turn.
+  Bytecode bytecode = compileSource(
+      "let m = {a: 1, b: 2, c: 3};\n"
+      "let seen = [];\n"
+      "for k, v in m { seen.push(\"${k}=${v}\"); }\n");
   VM vm;
-  registerBuiltins(vm);
+  runOrFail(vm, bytecode);
+  const Value seen = requireGlobal(vm, "seen");
+  assert(seen.isArray() && seen.arr().items.size() == 3);
+  assert(seen.arr().items[0].asStr() == "a=1");
+  assert(seen.arr().items[1].asStr() == "b=2");
+  assert(seen.arr().items[2].asStr() == "c=3");
 
-  const Value* mapValue = vm.findGlobal("$mapValue");
-  assert(mapValue != nullptr && mapValue->isFunc());
+  // A key-only loop over a map still yields the keys (operand `d` is -1, so no
+  // value slot is written).
+  Bytecode keysOnly = compileSource(
+      "let keys = [];\n"
+      "for k in {x: 1, y: 2} { keys.push(k); }\n");
+  VM vm2;
+  runOrFail(vm2, keysOnly);
+  const Value keys = requireGlobal(vm2, "keys");
+  assert(keys.isArray() && keys.arr().items.size() == 2);
+  assert(keys.arr().items[0].asStr() == "x");
+  assert(keys.arr().items[1].asStr() == "y");
+}
 
-  // The good path: a map and a string key return the paired value.
-  MapPtr map = makeMap();
-  map->set("a", Value(1));
-  Value found = vm.call(*mapValue, {Value(map), Value("a")}, 1, 1);
-  assert(found.isInt() && found.asInt() == 1);
-
-  // A hand-built bytecode could pass a non-string key. Before the guard this
-  // read the string payload out of a non-string union (undefined behaviour);
-  // it must be a clean runtime error instead of a crash.
-  bool threw = false;
-  try {
-    vm.call(*mapValue, {Value(map), Value(7)}, 3, 4);
-  } catch (const RuntimeError& error) {
-    threw = true;
-    assert(error.message.find("string") != std::string::npos);
-    assert(error.line == 3 && error.col == 4);
-  }
-  assert(threw);
-
-  // A non-map first argument still reports the map requirement.
-  assert(runtimeError("for k, v in [1, 2] { print(k, v); }").find("requires a map") !=
+void testIterValueFormRejectsNonMap() {
+  TEST_SCOPE();
+  // The value form is only meaningful for a map; every other iterable is the
+  // runtime error the retired `$mapValue` helper raised, now from `ITER`.
+  assert(runtimeError("for k, v in [1, 2] { print(k, v); }")
+             .find("key/value iteration ('for k, v in ...') requires a map, got 'array'") !=
          std::string::npos);
+  assert(runtimeError("for k, v in \"ab\" { print(k, v); }")
+             .find("requires a map, got 'string'") != std::string::npos);
+  assert(runtimeError("for k, v in 1..3 { print(k, v); }")
+             .find("requires a map, got 'range'") != std::string::npos);
 }
 
 void testPcallCatchesHostExceptions() {
@@ -2578,7 +2588,8 @@ int main() {
   testLogicalEvaluatesRightWhenNeeded();
   testVmCallsNatives();
   testArgsExcludeTheScriptName();
-  testMapValueRejectsNonStringKey();
+  testIterYieldsMapValue();
+  testIterValueFormRejectsNonMap();
   testPcallCatchesHostExceptions();
   testVmCallsBoundMethods();
   testArrayCallbackReentersTheVm();

@@ -1,5 +1,6 @@
 #include "native/lower.h"
 
+#include "native/bare_metal.h"
 #include "native/codegen.h"
 #include "native/entry.h"
 #include "native/runtime.h"
@@ -337,19 +338,24 @@ GlobalSlots collectGlobals(const std::vector<const Bytecode*>& protos,
   // A host binding the program uses but the AOT backend has no stub for is a
   // real limitation, not a typo: name the symbol and the backend instead of
   // leaving a nil that would fault at run time. A binding counts as used when
-  // it is read as a global (`GETGLOBAL`) more often than it is declared, because
-  // a declaration emits exactly one read of its own name — the compiler's shape
-  // for "bind this name to the host function the host registered". A binding
-  // that is only declared is harmless (the hosted engine installs it, the AOT
-  // backend nils it) and must not fail the build, so `import std.math` (which
-  // declares `pow`, `sin`, ... that only a libm-backed host can provide) still
-  // compiles when the program calls none of them.
+  // the compiler recorded a use for it (`nativeUses`), or — for a proto built
+  // before the metadata existed — when it is read as a global (`GETGLOBAL`) more
+  // often than it is declared, because a declaration emits exactly one read of
+  // its own name. A binding that is only declared is harmless (the hosted engine
+  // installs it, the AOT backend nils it) and must not fail the build, so
+  // `import std.math` (which declares `pow`, `sin`, ... that only a libm-backed
+  // host can provide) still compiles when the program calls none of them.
   //
-  // A call through a module namespace (`std.math.pow(...)`) reads the name with
-  // `GETTABLE` off the module table, not with `GETGLOBAL`, so it is not counted
-  // here; such a call reaches a nil at run time (the same failure a call to any
-  // non-function produces) instead of a build error. The direct and wildcard
-  // forms, which read the name as a global, are caught at build time.
+  // `nativeUses` is what makes a call through a module namespace
+  // (`std.math.pow(...)`, which reads the name with `GETTABLE` off the module
+  // table) and a capture (`GETUPVAL`) fail the build too: neither leaves a
+  // `GETGLOBAL` behind, so the read count alone cannot see them. The compiler
+  // records every such use on the proto that performs it (PHASE 7f.2), so the
+  // lowerer reads the use instead of reconstructing it from the code.
+  std::unordered_set<std::string> usedNatives;
+  for (const Bytecode* proto : protos) {
+    for (const std::string& name : proto->nativeUses) usedNatives.insert(name);
+  }
   std::unordered_map<std::string, int> declarations;
   std::unordered_map<std::string, int> reads;
   for (const Bytecode* proto : protos) {
@@ -363,7 +369,8 @@ GlobalSlots collectGlobals(const std::vector<const Bytecode*>& protos,
   }
   for (const std::string& name : hostBindings) {
     if (builtins.find(name) != builtins.end()) continue;  // has a stub
-    if (reads[name] <= declarations[name]) continue;      // declared but unused
+    const bool used = usedNatives.find(name) != usedNatives.end();
+    if (!used && reads[name] <= declarations[name]) continue;  // declared but unused
     if (externNames.find(name) != externNames.end()) {
       throw LoweringError("lowering: extern \"C\" symbol '" + name +
                           "' cannot be resolved by the AOT backend (PHASE 7f)");
@@ -785,17 +792,23 @@ void lowerInstruction(const Instruction& instr, const Bytecode& proto, CodeGen& 
       break;
     }
     case OpCode::ITER: {
-      // R[a] = the next item; `instr.jump` holds the register that receives the
-      // done flag (the compiler's private convention, see `compileForIn`). The
-      // iterable is R[b], the cursor R[c]; `oskel_iter_next` takes the cursor's
-      // address (rdi) and the iterable by value (rsi:rdx, the second
-      // `AotValue`), returns the item in rax:rdx and the flag in r8.
+      // R[a] = the next item; R[d] (when d >= 0) receives the paired value of a
+      // map entry and R[e] the done flag. The iterable is R[b], the cursor R[c].
+      // `oskel_iter_next` takes the cursor's address (rdi), the iterable by
+      // value (rsi:rdx, the second `AotValue`) and the value slot's address
+      // (rcx, or null when the loop has no value variable); it returns the item
+      // in rax:rdx, the flag in r8 and writes the value straight into the slot.
       loadValue(cg, instr.b, X64Reg::Rsi, X64Reg::Rdx);
       cg.leaMem(X64Reg::Rdi, kFileBase, slotOffset(instr.c));
+      if (instr.d >= 0) {
+        cg.leaMem(X64Reg::Rcx, kFileBase, slotOffset(instr.d));
+      } else {
+        cg.xorReg(X64Reg::Rcx, X64Reg::Rcx);
+      }
       cg.callLabel(rt.iterNext);
       storeValue(cg, instr.a, X64Reg::Rax, X64Reg::Rdx);
-      cg.movImmToMem(kFileBase, slotOffset(instr.jump), static_cast<std::int64_t>(AotTag::Bool));
-      cg.movToMem(kFileBase, slotOffset(instr.jump) + 8, X64Reg::R8);
+      cg.movImmToMem(kFileBase, slotOffset(instr.e), static_cast<std::int64_t>(AotTag::Bool));
+      cg.movToMem(kFileBase, slotOffset(instr.e) + 8, X64Reg::R8);
       break;
     }
   }
@@ -818,6 +831,17 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   CodeGen::Label mainEntry = cg.newLabel();
   std::vector<StringConstant> stringConstants;
 
+  // The bare-metal prelude is a multiboot kernel header followed by a 32-bit
+  // long-mode trampoline, and multiboot requires the header in the first 8 KiB
+  // of the file, so it must be the very first thing in the code buffer. Emit it
+  // now, before the chunk; its `call`s to `mainEntry` and the exit thunk are
+  // forward references the emitter patches at `finalize()`. The other targets
+  // append their prelude at the end, after the program.
+  std::uint64_t bareMetalEntry = 0;
+  if (target.os == Os::Freestanding) {
+    bareMetalEntry = emitBareMetalPreamble(cg, entry, mainEntry);
+  }
+
   // Every proto in the tree, root first. Each becomes its own machine function;
   // `protoEntry` maps a proto to its entry label so a `CLOSURE` can address a
   // child's code before that child's body is emitted.
@@ -835,10 +859,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       {"print", rt.printBuiltin},
       {"write", rt.writeBuiltin},
       {"eprint", rt.eprintBuiltin},
-      // The hidden `$mapValue` helper the compiler emits for `for k, v in map`.
-      // Its name contains `$`, so user code cannot shadow it.
-      {"$mapValue", rt.mapValueBuiltin},
-      // The remaining hidden helpers the compiler emits for PHASE 6.5 features.
+      // The hidden helpers the compiler emits for PHASE 6.5 features.
       // `$isError` (try/catch) and `$nonNull` (`a!!`) are seeded the same way,
       // so those constructs lower to ordinary calls. `$str`, `$range` and
       // `$slice` are seeded too.
@@ -883,6 +904,16 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       {"exp", rt.expBuiltin},
       {"log", rt.logBuiltin},
       {"pow", rt.powBuiltin},
+      // The trigonometric builtins (PHASE 7c.5b.4b): `sin`, `cos` and `tan`.
+      {"sin", rt.sinBuiltin},
+      {"cos", rt.cosBuiltin},
+      {"tan", rt.tanBuiltin},
+      // The remaining public builtins (PHASE 7c.5b.5): `range`, `assertEq` and
+      // `exit`. `range` matches the hosted `range`; `assertEq` reproduces the
+      // hosted comparison message; `exit` leaves through the entry prelude.
+      {"range", rt.rangeFnBuiltin},
+      {"assertEq", rt.assertEqBuiltin},
+      {"exit", rt.exitBuiltin},
   };
 
   const GlobalSlots globals = collectGlobals(protos, builtins);
@@ -1024,14 +1055,20 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   cg.pop(X64Reg::Rbp);
   cg.retInsn();
 
-  // The entry prelude reaches the system, and that is the one place the two
+  // The entry prelude reaches the system, and that is the one place the
   // targets differ: Linux goes through syscalls, Windows through kernel32 with
-  // the Microsoft x64 ABI. Everything else -- the lowering and the embedded
-  // runtime -- is the same machine code for both. The prelude binds the
-  // `entry` handles the runtime already references (write/exit/init_arena).
-  std::uint64_t startOffset =
-      target.os == Os::Windows ? emitWindowsRuntime(cg, entry, mainEntry)
-                               : emitFreestandingRuntime(cg, entry, mainEntry);
+  // the Microsoft x64 ABI, and bare metal through the serial port and `hlt`.
+  // Everything else -- the lowering and the embedded runtime -- is the same
+  // machine code for all three. The prelude binds the `entry` handles the
+  // runtime already references (write/exit/init_arena).
+  std::uint64_t startOffset = bareMetalEntry;
+  if (target.os == Os::Windows) {
+    startOffset = emitWindowsRuntime(cg, entry, mainEntry);
+  } else if (target.os == Os::Freestanding) {
+    emitBareMetalRuntime(cg, entry);
+  } else {
+    startOffset = emitFreestandingRuntime(cg, entry, mainEntry);
+  }
   emitAotRuntime(cg, rt, entry);
   // String constants last: their bytes are addressed by `lea` from the code
   // above, and no path falls through into them.

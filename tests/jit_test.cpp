@@ -286,6 +286,92 @@ int main() {
   differential(mixed, "mixed", {Value(7)}, "mixed(7) matches the VM");
   differential(mixed, "mixed", {Value(8)}, "mixed(8) matches the VM");
 
+  // --- Constant folding and strength reduction -------------------------------
+  // Every one of these exercises a slice-2 rewrite: an all-constant subtree
+  // that folds away, a constant operand applied as an immediate, a `const - var`
+  // that must not be commuted, a power-of-two multiply turned into a shift, an
+  // algebraic identity (`x + 0`, `x * 1`, `x & -1`), and a constant branch. The
+  // differential check proves each rewrite keeps the interpreter's result.
+  const char* folds =
+      "fn folds(a, b) {\n"
+      "  var c = (2 * 3) + (10 - 4);\n"        // all-constant subtree
+      "  var d = a + 7 - 3;\n"                 // immediate add/sub
+      "  var e = 100 - b;\n"                   // const - var (non-commutative)
+      "  var f = b * 8;\n"                     // power-of-two -> shift
+      "  var g = b * 3;\n"                     // small immediate multiply
+      "  var h = (a & 255) | (b ^ 5);\n"       // immediate and/or/xor
+      "  var i = a + 0 + b * 1 + (a & -1);\n"  // identities
+      "  if (2 < 3) { i = i + 1; } else { i = i - 100; }\n"  // constant branch
+      "  while (false) { i = i + 999; }\n"     // never-taken loop
+      "  return c + d + e + f + g + h + i - -a - ~b;\n"
+      "}\n";
+  differential(folds, "folds", {Value(0), Value(0)}, "folds(0,0) matches the VM");
+  differential(folds, "folds", {Value(12), Value(5)}, "folds(12,5) matches the VM");
+  differential(folds, "folds", {Value(-7), Value(100)}, "folds(-7,100) matches the VM");
+
+  // A big immediate (outside imm32) and a constant that must be materialized.
+  const char* bigImm =
+      "fn big(n) {\n"
+      "  var x = n + 5000000000;\n"    // > 2^32, forces a register
+      "  var y = n * 1000000007;\n"
+      "  var z = n - 4294967296;\n"
+      "  return x + y + z;\n"
+      "}\n";
+  differential(bigImm, "big", {Value(3)}, "large immediates match the VM");
+  differential(bigImm, "big", {Value(-9)}, "large immediates with a negative arg match the VM");
+
+  // Comparisons with a constant operand on either side.
+  const char* cmpConst =
+      "fn cmp(n) {\n"
+      "  var r = 0;\n"
+      "  if (n < 10) { r = r + 1; }\n"
+      "  if (10 <= n) { r = r + 2; }\n"
+      "  if (n == 5) { r = r + 4; }\n"
+      "  if (5 != n) { r = r + 8; }\n"
+      "  if (n > -3) { r = r + 16; }\n"
+      "  return r;\n"
+      "}\n";
+  differential(cmpConst, "cmp", {Value(5)}, "const comparisons (n == 5) match the VM");
+  differential(cmpConst, "cmp", {Value(20)}, "const comparisons (n == 20) match the VM");
+  differential(cmpConst, "cmp", {Value(-9)}, "const comparisons (n == -9) match the VM");
+
+  // A constant unary operand must fold too (`-` and `~`), not just a binary one.
+  const char* unaryConst =
+      "fn unary(n) {\n"
+      "  var a = -5 + n;\n"
+      "  var b = ~(2 + 3) + n;\n"
+      "  var c = -(-n);\n"
+      "  var d = !(1 + 1);\n"
+      "  var e = n + (1 < 2 ? 1 : 1);\n"
+      "  return a + b + c + (d ? 100 : 0) + e;\n"
+      "}\n";
+  differential(unaryConst, "unary", {Value(3)}, "constant unary operands match the VM");
+  differential(unaryConst, "unary", {Value(-8)}, "constant unary operands (negative) match the VM");
+
+  // --- Compare-branch fusion ------------------------------------------------
+  // A condition whose boolean result only feeds the branch right after it must
+  // compile to `cmp; jcc`, and the result must be identical to the VM. The
+  // shapes below cover a `while`, an `if`/`else`, a `JMP_IF_TRUE` (an `||`),
+  // and a comparison whose result *is* reused afterwards (the last one must
+  // stay unfused, and still be correct).
+  const char* branchFusion =
+      "fn loops(n) {\n"
+      "  var s = 0;\n"
+      "  var i = 0;\n"
+      "  while (i <= n) { s = s + i; i = i + 1; }\n"
+      "  if (s > 100) { s = s - 1; } else { s = s + 1; }\n"
+      "  return s;\n"
+      "}\n"
+      "fn orTest(a, b) { if (a > 0 || b > 0) { return a + b; } return a - b; }\n"
+      "fn reuse(a, b) { var t = a < b; if (t) { return a; } return b + (t ? 1 : 0); }\n";
+  differential(branchFusion, "loops", {Value(0)}, "while + if/else fusion matches the VM (n=0)");
+  differential(branchFusion, "loops", {Value(10)}, "while + if/else fusion matches the VM (n=10)");
+  differential(branchFusion, "loops", {Value(30)}, "while + if/else fusion matches the VM (n=30)");
+  differential(branchFusion, "orTest", {Value(3), Value(-1)}, "JMP_IF_TRUE fusion matches the VM (a)");
+  differential(branchFusion, "orTest", {Value(-3), Value(-1)}, "JMP_IF_TRUE fusion matches the VM (b)");
+  differential(branchFusion, "reuse", {Value(1), Value(9)}, "a reused comparison result stays correct");
+  differential(branchFusion, "reuse", {Value(9), Value(1)}, "a reused comparison result stays correct (b)");
+
   // --- Rejections: everything outside the integer-leaf subset ----------------
   expectRejected("fn greet(n) { return \"hi\"; }\n", "greet", "a string return is rejected");
   expectRejected("fn useGlobal(n) { return n + 1.5; }\n", "useGlobal",
