@@ -87,6 +87,14 @@ void write32At(std::vector<std::uint8_t>& out, std::size_t off, std::uint32_t v)
   }
 }
 
+// The ELF32 header's 16-bit fields (`e_ehsize`..`e_shstrndx`) must be written
+// as two bytes: `write32At` would spill into the next field, and past the end
+// of the header for the last one.
+void write16At(std::vector<std::uint8_t>& out, std::size_t off, std::uint16_t v) {
+  out[off] = static_cast<std::uint8_t>(v & 0xFF);
+  out[off + 1] = static_cast<std::uint8_t>((v >> 8) & 0xFF);
+}
+
 }  // namespace
 
 std::uint64_t emitBareMetalPreamble(CodeGen& code, const RuntimeHandles& handles,
@@ -278,19 +286,19 @@ std::vector<std::uint8_t> buildBareMetalElf(const Target& target,
   out[6] = 1;  // EV_CURRENT
   out[7] = 0;  // ELFOSABI_SYSV
 
-  write32At(out, 16, 2);                                     // e_type = ET_EXEC
-  write32At(out, 18, 3);                                     // e_machine = EM_386
+  write16At(out, 16, 2);                                     // e_type = ET_EXEC
+  write16At(out, 18, 3);                                     // e_machine = EM_386
   write32At(out, 20, 1);                                     // e_version
   write32At(out, 24, static_cast<std::uint32_t>(kBMCodeBase + entryOffset));  // e_entry
   write32At(out, 28, kEhdrSize);                             // e_phoff
   write32At(out, 32, 0);                                     // e_shoff (no section table)
   write32At(out, 36, 0);                                     // e_flags
-  write32At(out, 40, kEhdrSize);                             // e_ehsize
-  write32At(out, 42, kPhdrSize);                             // e_phentsize
-  write32At(out, 44, kPhnum);                                // e_phnum
-  write32At(out, 46, 40);                                    // e_shentsize
-  write32At(out, 48, 0);                                     // e_shnum
-  write32At(out, 50, 0);                                     // e_shstrndx
+  write16At(out, 40, kEhdrSize);                             // e_ehsize
+  write16At(out, 42, kPhdrSize);                             // e_phentsize
+  write16At(out, 44, kPhnum);                                // e_phnum
+  write16At(out, 46, 40);                                    // e_shentsize
+  write16At(out, 48, 0);                                     // e_shnum
+  write16At(out, 50, 0);                                     // e_shstrndx
 
   // --- Program headers (2 * 32 bytes) ---
   out.resize(kEhdrSize + kPhnum * kPhdrSize, 0);

@@ -87,6 +87,14 @@ static void test_elf_structure() {
   check(read16(elf, 16) == 2, "e_type is ET_EXEC");
   check(read16(elf, 18) == 3, "e_machine is EM_386");
   check(read16(elf, 44) == 2, "e_phnum is 2");
+  // The header is exactly 52 bytes and its 16-bit tail (e_ehsize .. e_shstrndx)
+  // must not have been written with the 32-bit helper, which would spill into
+  // the program headers. `_GLIBCXX_ASSERTIONS` (Ubuntu's default build flags)
+  // catches the out-of-range write; these reads catch the wrong field width.
+  check(read16(elf, 40) == 52, "e_ehsize is the 52-byte ELF32 header");
+  check(read16(elf, 46) == 40, "e_shentsize is the ELF32 section header size");
+  check(read16(elf, 48) == 0, "e_shnum is zero (no section table)");
+  check(read16(elf, 50) == 0, "e_shstrndx is zero (no section table)");
 
   // The multiboot header is the first thing in the *code* buffer, which lands
   // at file offset 0x1000 (after the ELF header and the program headers), and
