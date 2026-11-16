@@ -21,6 +21,7 @@
 #include "diagnostic.h"
 #include "lexer.h"
 #include "module_resolver.h"
+#include "native/bare_metal.h"
 #include "native/codegen.h"
 #include "native/elf.h"
 #include "native/lower.h"
@@ -253,6 +254,10 @@ bool parseTargetName(const std::string &name, Target &out) {
     out = Target::winX64();
     return true;
   }
+  if (name == targetName(Target::bareMetalX64())) {
+    out = Target::bareMetalX64();
+    return true;
+  }
   return false;
 }
 
@@ -316,9 +321,13 @@ int buildBinary(const std::string &source, const std::string &name,
   std::vector<std::uint8_t> image;
   try {
     LoweredChunk chunk = lowerToX64(target, bytecode, CodeGen{});
-    image = target.os == Os::Windows
-                ? buildStaticPe(target, chunk.code, {}, chunk.processEntry)
-                : buildStaticElf(target, chunk.code, {}, chunk.processEntry);
+    if (target.os == Os::Windows) {
+      image = buildStaticPe(target, chunk.code, {}, chunk.processEntry);
+    } else if (target.os == Os::Freestanding) {
+      image = buildBareMetalElf(target, chunk.code, chunk.processEntry);
+    } else {
+      image = buildStaticElf(target, chunk.code, {}, chunk.processEntry);
+    }
   } catch (const LoweringError &error) {
     std::string message = error.what();
     message += '\n';

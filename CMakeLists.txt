@@ -189,6 +189,7 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(pe_test)
   oskel_add_cpp_test(lower_test)
   oskel_add_cpp_test(freestanding_test)
+  oskel_add_cpp_test(bare_metal_test)
 
   # --- REPL scripted test (clear) ---
   add_test(NAME repl.clear

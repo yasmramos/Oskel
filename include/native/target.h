@@ -40,13 +40,21 @@ struct Target {
   Os os = Os::Linux;
   Abi abi = Abi::SysV;
 
-  // The targets with a backend today: Linux x86-64 (direct syscalls) and
-  // Windows x86-64 (kernel32 through the Microsoft x64 ABI). Both share the
-  // x86-64 lowering; only the entry prelude differs, because the two systems
-  // reach the outside world differently.
+  // The targets with a backend today: Linux x86-64 (direct syscalls), Windows
+  // x86-64 (kernel32 through the Microsoft x64 ABI) and bare metal x86-64
+  // (multiboot, no operating system). All three share the x86-64 lowering and
+  // the embedded runtime; only the entry prelude differs, because each reaches
+  // the outside world differently.
   static constexpr Target linuxX64() { return Target{}; }
   static constexpr Target winX64() {
     return Target{Arch::X86_64, Os::Windows, Abi::Win64};
+  }
+  // Freestanding bare metal: the generated image is a multiboot kernel the
+  // boot loader (QEMU `-kernel`, GRUB, Limine) loads and enters directly. It
+  // shares the System V x86-64 lowering with Linux; the prelude speaks to the
+  // serial port instead of the kernel.
+  static constexpr Target bareMetalX64() {
+    return Target{Arch::X86_64, Os::Freestanding, Abi::SysV};
   }
 };
 
@@ -101,6 +109,7 @@ inline bool isSupportedTarget(const Target& target) {
   if (target.arch != Arch::X86_64) return false;
   if (target.os == Os::Linux && target.abi == Abi::SysV) return true;
   if (target.os == Os::Windows && target.abi == Abi::Win64) return true;
+  if (target.os == Os::Freestanding && target.abi == Abi::SysV) return true;
   return false;
 }
 
@@ -111,6 +120,7 @@ inline void requireSupportedTarget(const Target& target) {
   if (!isSupportedTarget(target)) {
     throw std::invalid_argument("native: no backend for target " + targetName(target) +
                                 " (supported: " + targetName(Target::linuxX64()) + ", " +
-                                targetName(Target::winX64()) + ")");
+                                targetName(Target::winX64()) + ", " +
+                                targetName(Target::bareMetalX64()) + ")");
   }
 }
