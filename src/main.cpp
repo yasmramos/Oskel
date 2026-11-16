@@ -52,7 +52,9 @@ const char *kUsage =
     "  --no-jit                  disable the JIT (development engine only)\n"
     "  -o, --output <file>       output path for `build` (default: the script's base name)\n"
     "  --target <name>           build target for `build` (default: the host);\n"
-    "                            x86_64-linux-sysv or x86_64-windows-win64\n";
+    "                            x86_64-linux-sysv or x86_64-windows-win64\n"
+    "  --mode <name>             link mode for `build` (default: freestanding);\n"
+    "                            freestanding (self-contained) or hosted (links libc)\n";
 
 // Joins a directory and a relative path without doubling the separator.
 std::string joinPath(const std::string &dir, const std::string &relative) {
@@ -269,20 +271,42 @@ Target hostTarget() {
 #endif
 }
 
-// Compiles `source` (resolving imports) and writes a freestanding native
-// binary to `output`. The whole pipeline is the dev engine's: lex, parse,
-// compile to bytecode, then lower the bytecode to machine code and wrap it in
-// a static executable. The emitted binary embeds only the AOT runtime, never
-// the compiler, so it cannot `eval` (DEVELOPMENT.md §3, the GraalVM pitfall).
+// The link modes `--mode` accepts, keyed by the name `linkModeName()` prints.
+// The default is `freestanding`, the mode every target supports and the one
+// that keeps the "not a dynamic executable" invariant, so an existing command
+// line keeps producing the same binary.
+bool parseLinkModeName(const std::string &name, LinkMode &out) {
+  if (name == linkModeName(LinkMode::Freestanding)) {
+    out = LinkMode::Freestanding;
+    return true;
+  }
+  if (name == linkModeName(LinkMode::Hosted)) {
+    out = LinkMode::Hosted;
+    return true;
+  }
+  return false;
+}
+
+// Compiles `source` (resolving imports) and writes a native binary to `output`.
+// The whole pipeline is the dev engine's: lex, parse, compile to bytecode, then
+// lower the bytecode to machine code and wrap it in a static executable. The
+// emitted binary embeds only the AOT runtime, never the compiler, so it cannot
+// `eval` (DEVELOPMENT.md §3, the GraalVM pitfall).
 //
 // `target` selects the executable format: Linux gets a static ELF, Windows a
 // static PE32+ (PHASE 7e). Both share the lowering and the runtime; only the
 // entry prelude and the container differ.
 //
-// Returns 0 on success, 65 for compile errors and 74 for a write failure.
+// `mode` selects how the image is closed (PHASE 7f.3). `Freestanding` (the
+// default) is the self-contained image described above. `Hosted` links against
+// the host C library so an `extern "C"` symbol resolves to the real C function;
+// it needs a C toolchain at build time and is the mode that makes FFI work.
+//
+// Returns 0 on success, 64 for a usage error, 65 for compile errors and 74 for
+// a write failure.
 int buildBinary(const std::string &source, const std::string &name,
                 const std::string &output, const std::string &argv0,
-                const Target &target) {
+                const Target &target, LinkMode mode) {
   std::vector<Token> tokens;
   try {
     tokens = lex(source);
@@ -320,6 +344,17 @@ int buildBinary(const std::string &source, const std::string &name,
 
   std::vector<std::uint8_t> image;
   try {
+    requireSupportedLinkMode(target, mode);
+    if (mode == LinkMode::Hosted) {
+      // The hosted image (object + link against libc) lands in PHASE 7f.4. The
+      // mode is accepted and validated now so the CLI surface and the (target,
+      // mode) matrix are in place; until the emitter exists, fail cleanly
+      // instead of writing bytes.
+      std::string message =
+          "oskel: hosted mode is not implemented yet (PHASE 7f.4)\n";
+      platformPosix().writeErr(message.data(), message.size());
+      return 65;
+    }
     LoweredChunk chunk = lowerToX64(target, bytecode, CodeGen{});
     if (target.os == Os::Windows) {
       image = buildStaticPe(target, chunk.code, {}, chunk.processEntry);
@@ -627,6 +662,7 @@ int main(int argc, char **argv) {
     std::string buildFile;
     std::string buildOutput;
     Target buildTarget = hostTarget();
+    LinkMode buildMode = LinkMode::Freestanding;
     for (size_t i = 1; i < arguments.size(); ++i) {
       const std::string &arg = arguments[i];
       if (arg == "-o" || arg == "--output") {
@@ -647,6 +683,20 @@ int main(int argc, char **argv) {
           std::cerr << "oskel: unknown target '" << name << "' (supported: "
                     << targetName(Target::linuxX64()) << ", "
                     << targetName(Target::winX64()) << ")\n";
+          return 64;
+        }
+        continue;
+      }
+      if (arg == "--mode") {
+        if (i + 1 >= arguments.size()) {
+          std::cerr << "oskel: option '" << arg << "' needs an argument\n";
+          return 64;
+        }
+        const std::string name = arguments[++i];
+        if (!parseLinkModeName(name, buildMode)) {
+          std::cerr << "oskel: unknown mode '" << name << "' (supported: "
+                    << linkModeName(LinkMode::Freestanding) << ", "
+                    << linkModeName(LinkMode::Hosted) << ")\n";
           return 64;
         }
         continue;
@@ -679,7 +729,8 @@ int main(int argc, char **argv) {
       std::cerr << "oskel: cannot read file '" << buildFile << "'\n";
       return 66;
     }
-    return buildBinary(buildSource, buildFile, buildOutput, argv[0], buildTarget);
+    return buildBinary(buildSource, buildFile, buildOutput, argv[0], buildTarget,
+                       buildMode);
   }
 
   std::string file;

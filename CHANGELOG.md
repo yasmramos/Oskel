@@ -25,6 +25,16 @@ may change between minor versions.
 
 ### Added
 
+- **Two AOT link modes** (PHASE 7f.3). `oskel build --mode
+  freestanding|hosted` (default `freestanding`) selects how the image is closed.
+  `freestanding` is the self-contained binary every target already emits;
+  `hosted` links against the host C library so an `extern "C"` symbol resolves
+  to the real C function — the mode that makes FFI work. The mode is a
+  deployment choice, never language syntax, and the (target, mode) matrix is
+  validated (freestanding: all targets; hosted: Linux x86-64 only, for now) so
+  an unsupported pair is reported instead of emitted. The freestanding binary is
+  unchanged, byte for byte. The hosted image itself is PHASE 7f.4; until it
+  lands, `--mode hosted` fails cleanly.
 - **Bare-metal AOT target** (PHASE 7g). `oskel build --target
   x86_64-freestanding-sysv` emits a multiboot 1 kernel that a boot loader
   (QEMU `-kernel`, GRUB, Limine) loads at 1 MiB and enters directly, with no

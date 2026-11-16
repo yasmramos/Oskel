@@ -1152,6 +1152,20 @@ Slices, each independently shippable:
       rejection is exercised with `modules.hostclock.clock`, which has no stub),
       `tests/errors/native_qualified_arity.oskl` and
       `tests/errors/native_qualified_arg_type.oskl` (the compile-time checks).
+    - **7f.3** (done) — the two link modes as a CLI concept. The AOT backend
+      gains `LinkMode` (`include/native/target.h`): `Freestanding`, the default,
+      is the self-contained image every target already emits; `Hosted` is the
+      mode that will link against the host C library so an `extern "C"` symbol
+      resolves to the real C function. The mode is a deployment choice, never
+      language syntax: the same source compiles in either mode and the choice
+      lives on the command line (`oskel build --mode freestanding|hosted`,
+      default `freestanding`). `isSupportedLinkMode`/`requireSupportedLinkMode`
+      pin the (target, mode) matrix — freestanding for all three targets, hosted
+      for Linux x86-64 only for now — so an unsupported pair is reported instead
+      of emitting bytes. The hosted image itself (object + link) is 7f.4, so
+      `--mode hosted` fails cleanly (exit 65, no binary) until then. This slice
+      changes no code path for freestanding: the emitted binary is byte for byte
+      identical to before. Covered by `tests/build_mode.cmake`.
   - **7g** (done) — bare-metal x86-64 (multiboot). A third target,
     `x86_64-freestanding-sysv` (`oskel build --target
     x86_64-freestanding-sysv`), emits a multiboot 1 kernel that a boot loader

@@ -242,7 +242,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     export (`std.math.pow`) is recorded on the proto and rejected the same way
     (the member read is a `GETTABLE`, so the read count alone could not see it),
     and a qualified call is checked against the export's signature like the
-    direct form. General `extern "C"` symbols are still open.
+    direct form. **Partial (7f.3)**: the two link modes are now a CLI concept
+    (`LinkMode`, `oskel build --mode freestanding|hosted`, default
+    `freestanding`); `hosted` is the mode that links libc so an `extern "C"`
+    symbol resolves at link time, with the (target, mode) matrix validated. The
+    hosted *image* (object + link) is 7f.4, so `--mode hosted` fails cleanly
+    until then. General `extern "C"` symbols are still open.
 20. **[P0] [done]** VM/AOT divergence in string iteration: `emitIterNext`'s
     `str` branch built the character but fell through into the `range` block,
     which overwrote `rax:rdx` with the cursor index, so `for c in "abc"`
