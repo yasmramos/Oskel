@@ -36,6 +36,16 @@ may change between minor versions.
   `hlt` loop (`oskel_exit`) and takes its bump-allocator arena from a `.bss`
   region the loader zeroes (`oskel_init_arena`). Verified end to end under
   `qemu-system-x86_64 -kernel` in `tests/bare_metal_test.cpp`.
+- AOT: the public builtins `range`, `assertEq` and `exit` compile into the
+  freestanding binary (PHASE 7c.5b.5), so a program that uses them builds with
+  `oskel build` instead of failing on an unassigned global. `range` builds the
+  same `Range` value as the hidden `$range` helper (one bound means `0..end`);
+  `assertEq` compares with the shared structural `==` and, on a mismatch,
+  renders the hosted `"<msg>: expected A, got B"` text through the embedded
+  `repr` and string builder before exiting 70; `exit` leaves through the entry
+  prelude's `oskel_exit`, so it stops the program with the given code. All three
+  match the development VM byte for byte and are covered by
+  `tests/native_build_builtins.oskl` and the `freestanding_test` suite.
 - A `switch` case label may be a `const` name (a top-level `const`, or a local
   `const`/`let` in the same frame), not only a literal or a range, so a shared
   constant reads as a label instead of a repeated magic number. The name is

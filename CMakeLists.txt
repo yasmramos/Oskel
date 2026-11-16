@@ -301,6 +301,16 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_deep_recursion.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # The remaining public builtins (PHASE 7c.5b.5) -- `range`, `assertEq` and
+    # `exit` -- build and agree with the VM. `assertEq` exercises the shared
+    # comparison and the recursive repr; `exit` ends the program before the
+    # statement after it, which the fixture asserts by leaving it unreachable.
+    add_test(NAME oskel.build_binary_builtins
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_builtins.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # An `extern "C"` symbol is a host binding the AOT backend cannot resolve
     # (the FFI lowering is PHASE 7f), so `oskel build` must fail with the
     # dedicated message and write no binary.

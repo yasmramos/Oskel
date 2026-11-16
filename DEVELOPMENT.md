@@ -1029,6 +1029,21 @@ Slices, each independently shippable:
       transcendentals the contract is "agrees to 1 ulp"; `sin`/`cos`/`tan`
       resolve from these ports in a freestanding binary, so `std.math`'s libm
       surface is now complete.
+      **7c.5b.5** (done) adds the last three public builtins: `range`, `assertEq`
+      and `exit`. `range` builds the same exclusive `Range` value as the hidden
+      `$range` helper, with one bound meaning `0..end` and both bounds checked to
+      be integers (the failure names `start` or `end`, matching the hosted
+      message). `assertEq` compares with the shared `oskel_compare` (the same
+      structural equality `==` lowers to) and returns nil on a match; on a
+      mismatch it renders the hosted `"<msg>: expected A, got B"` text -- the
+      optional third argument, `assertion failed` by default, then the two
+      operands through the recursive `repr` -- into a string builder and fails
+      through `oskel_fail_dynamic`, so the message and the exit code (70) match
+      the VM. `exit` leaves through the entry prelude's `oskel_exit` with the
+      integer code (`0` when omitted), so it never returns to the caller. All
+      three are seeded into their global slots like the other builtins and are
+      covered by `tests/freestanding_test.cpp` (the values and every failure
+      path) and `tests/native_build_builtins.oskl` (the `oskel build` fixture).
     - **7c.6** (done) — variadic parameter packs. A function with a trailing
       `rest...` parameter was a lowering error ("variadic function",
       `PHASE 7c.3`); it now compiles. The child proto's prologue checks the
