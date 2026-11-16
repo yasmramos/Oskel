@@ -54,6 +54,19 @@ may change between minor versions.
   exact `sqrtsd` stub, so `native fn sqrt` resolves without a host; the libm
   primitives (`exp`, `log`, `pow`, `sin`, `cos`, `tan`) resolve from the embedded
   musl ports (PHASE 7c.5b.4).
+- A qualified call to a module's native export is now checked at compile time
+  and rejected by `oskel build` (PHASE 7f.2). `std.math.pow(...)` reads the
+  module table with `GETTABLE`, not with `GETGLOBAL`, so the AOT lowerer never
+  saw the use: a program that called a host binding through its namespace
+  compiled to a binary that faulted at run time (`cannot call a non-function
+  value`) instead of failing the build. The compiler propagates each public
+  native export's signature on the imported module, records the qualified access
+  when it emits the member read, and resolves it once the chunk is compiled
+  (deferred, because a hoisted function is compiled before the `import` that
+  loads the module). The build now rejects the use with the same message as the
+  direct form, and a qualified call is checked against the export's signature
+  (arity and argument types) exactly like `pow(2.0)`, so `std.math.pow(2.0)`
+  fails with `'std.math.pow' expects 2 arguments, got 1`.
 - AOT: the transcendental builtins `exp`, `log` and `pow` (PHASE 7c.5b.4a) and
   the trigonometric builtins `sin`, `cos` and `tan` (PHASE 7c.5b.4b) are now
   available in a freestanding binary. The development engine resolves them

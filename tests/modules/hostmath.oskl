@@ -2,8 +2,8 @@
 // and re-exports it. `import modules.hostmath;` makes it available as
 // `modules.hostmath.sqrt`.
 
-native fn sqrt(x: float): float;
+native fn sqrt(x: double): double;
 
-fn hypotenuse(a: float, b: float): float {
+fn hypotenuse(a: double, b: double): double {
   return sqrt(a * a + b * b);
 }

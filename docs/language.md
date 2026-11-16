@@ -1502,6 +1502,15 @@ assertEq(str(42), "42");
 assertEq(len([1, 2, 3]), 3);
 ```
 
+The same check applies to a **qualified** call through a module namespace. A
+`native fn` a module exports keeps its signature on the imported module, so
+`std.math.sqrt(16.0)` is checked exactly like `sqrt(16.0)` — the arity and the
+argument types are enforced, and the message names the qualified form
+(`'std.math.pow' expects 2 arguments, got 1`). The check is deferred to the end
+of the chunk, because a function declared before the `import` that loads the
+module is compiled first, but it runs before the program executes, so a
+mismatch is always a compile error rather than a run-time failure.
+
 Like `struct`, a `native fn` is **module-level metadata**: it may only be
 declared at the top level of a file. Its parameter and return types must be
 type names the compiler knows (or `any`). A `void` return type is allowed and
