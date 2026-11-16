@@ -37,6 +37,11 @@ for language in languages {
   core, not the whole runtime; see
   [What runs where](#what-runs-where-vm-vs-aot) for the exact split and the
   [CLI tutorial](docs/tutorial-cli.md).
+- **Bare-metal target (experimental)**: `oskel build --target
+  x86_64-freestanding-sysv` emits a multiboot kernel that boots with no
+  operating system underneath, printing to a serial port. It runs under
+  `qemu-system-x86_64 -kernel`, GRUB or Limine; see
+  [Bare metal](#bare-metal-experimental).
 - Diagnostics with file, line, column, code snippet and stack trace.
 
 ## Status
@@ -273,6 +278,40 @@ behave differently — under AOT. This is the exact split in 0.1.0.
 
 The divergences are tracked internally in `docs/BACKLOG.md`; closing them (and
 a VM/AOT parity test) is the goal of the remaining AOT work.
+
+## Bare metal (experimental)
+
+`oskel build --target x86_64-freestanding-sysv file.oskl -o kernel.elf` emits a
+**multiboot 1 kernel**: a 32-bit ELF image that a boot loader loads at 1 MiB
+and enters directly, with no operating system underneath. The image opens with
+a small 32-bit trampoline that builds an identity page table, turns on long
+mode and installs its own 64-bit GDT, then jumps into the same 64-bit runtime
+the Linux target uses — so the compiled program is byte-for-byte identical; only
+the prelude differs, because a kernel has no system calls.
+
+The bare-metal prelude reaches the outside world through the hardware:
+
+- `oskel_write` drives the 16550 UART at COM1 directly (polling the
+  line-status register), so `print` shows up on the serial line.
+- `oskel_exit` masks interrupts and halts the CPU in a loop (`cli`; `hlt`).
+  Under QEMU it also publishes the exit code on the `isa-debug-exit` port so a
+  test can observe it; on real hardware that port write is ignored.
+- `oskel_init_arena` points the bump allocator at a `.bss` region the loader
+  zeroes, instead of calling `mmap`.
+
+Run it under QEMU:
+
+```sh
+oskel build --target x86_64-freestanding-sysv hello.oskl -o hello.elf
+qemu-system-x86_64 -kernel hello.elf -serial stdio -display none
+```
+
+The same image boots from GRUB or Limine with a multiboot entry. The whole
+language core that builds for Linux builds here too — the two share the
+lowering and the embedded runtime; the divergences in
+[What runs where](#what-runs-where-vm-vs-aot) apply unchanged. The end-to-end
+boot is exercised by `tests/bare_metal_test.cpp` when `qemu-system-x86_64` is on
+`PATH`.
 
 ## Tests
 

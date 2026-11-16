@@ -68,6 +68,7 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `native/arena.cpp` | block + size | aligned allocations | ✅ PHASE 7c.0 |
 | `native/platform_freestanding.cpp` | `Platform` ops | direct Linux syscalls | ✅ PHASE 7c.0 |
 | `native/entry.cpp` | program entry label | `_start`/entry + prelude (Linux syscalls, Windows kernel32) | ✅ PHASE 7c.0/7e |
+| `native/bare_metal.cpp` | code + entry | multiboot ELF32/i386 kernel (bare-metal prelude + trampoline) | ✅ PHASE 7g |
 
 **Note on `env.cpp`.** It is the lexical scope chain of the retired AST
 interpreter. The VM keeps locals in reference-counted `Cell`s and never
@@ -296,8 +297,9 @@ previous one.
 - `oskel -c file.oskl` compiles without running.
 - `oskel build file.oskl` → PHASE 7 AOT backend: freestanding static native
   binary (no libc), no Oskel installation needed by end users.
-  `--target x86_64-windows-win64` emits a Windows PE32+ (PHASE 7e); the default
-  target follows the host.
+  `--target x86_64-windows-win64` emits a Windows PE32+ (PHASE 7e) and
+  `--target x86_64-freestanding-sysv` a bare-metal multiboot kernel (PHASE 7g);
+  the default target follows the host.
 
 ### PHASE 5 — Control flow and locals ✅
 - Opcodes: `JMP`, `JMP_IF_FALSE`, `JMP_IF_TRUE`
@@ -624,13 +626,15 @@ Slices, each independently shippable:
   6a.0 (PHASE 6) must be built on this interface from the start.
 - **Target descriptor from day one**: `include/native/target.h` defines
   `Target { arch, os, abi }` and every backend entry point takes one.
-  `CodeGen` validates it and accepts `x86_64-linux-sysv` and
-  `x86_64-windows-win64`, so adding macOS or WebAssembly is a new backend
-  behind the same descriptor instead of a driver rewrite.
-- Initial targets: Linux x86-64 (direct syscalls) and Windows x86-64
-  (kernel32 through the Microsoft x64 ABI). Both share the x86-64 lowering and
-  the embedded runtime byte for byte; only the entry prelude differs, because
-  the two systems reach the outside world differently.
+  `CodeGen` validates it and accepts `x86_64-linux-sysv`,
+  `x86_64-windows-win64` and `x86_64-freestanding-sysv`, so adding macOS or
+  WebAssembly is a new backend behind the same descriptor instead of a driver
+  rewrite.
+- Initial targets: Linux x86-64 (direct syscalls), Windows x86-64
+  (kernel32 through the Microsoft x64 ABI) and bare metal x86-64 (multiboot,
+  no operating system). All three share the x86-64 lowering and the embedded
+  runtime byte for byte; only the entry prelude differs, because each reaches
+  the outside world differently.
 - Subslices:
   - **7a** — "hello world" spike: hand-written `_start` + `write` syscall →
     static freestanding ELF → `./hello` runs, no libc.
@@ -1039,9 +1043,37 @@ Slices, each independently shippable:
     (`ldd` reports "not a dynamic executable"): curated syscall stubs keep that
     invariant; an object + external link or a dynamic ELF break it. No slice is
     chosen yet.
+  - **7g** (done) — bare-metal x86-64 (multiboot). A third target,
+    `x86_64-freestanding-sysv` (`oskel build --target
+    x86_64-freestanding-sysv`), emits a multiboot 1 kernel that a boot loader
+    (QEMU `-kernel`, GRUB, Limine) loads at 1 MiB and enters in 32-bit
+    protected mode. Because the CPU starts in 32-bit mode with paging off and
+    multiboot leaves a *32-bit* code descriptor in the GDT, the image begins
+    with a small hand-assembled 32-bit trampoline (`src/native/bare_metal.cpp`,
+    `include/native/bare_metal.h`): it builds an identity page table with 2 MiB
+    huge pages, turns on PAE and long mode, installs its own GDT with a 64-bit
+    code segment and far-jumps into the shared 64-bit runtime. From there the
+    program is byte-for-byte the same machine code the Linux target emits; only
+    the prelude differs, because a kernel has no system calls. `oskel_write`
+    drives the 16550 UART at COM1 directly (polling the line-status register,
+    `out dx, al`); `oskel_exit` masks interrupts, publishes the exit code on
+    QEMU's `isa-debug-exit` port and spins in `hlt` (on real hardware the port
+    write is ignored and the `hlt` loop is the end of the program); and
+    `oskel_init_arena` points the bump allocator at a `.bss` region the loader
+    zeroes instead of `mmap`. The ELF emitter produces an ELF32/i386 image with
+    two `PT_LOAD` segments: the code at 1 MiB (R+X) and the `.bss` at 2 MiB
+    (R+W, `p_filesz = 0`, `p_memsz` = page tables + stack + arena). The
+    lowering and the embedded runtime are shared with Linux unchanged. Verified
+    in `tests/bare_metal_test.cpp`: the structural checks always run, and the
+    end-to-end boot (real serial stdout and exit code under
+    `qemu-system-x86_64 -kernel`) runs when QEMU is on `PATH`. The `CodeGen`
+    gained four single-opcode primitives (`cli`, `hlt`, `out dx, al`,
+    `in al, dx`) plus `test al, imm8`, each byte-checked in
+    `tests/codegen_test.cpp`.
 - Deferred: per-instruction type annotations for fast paths without dynamic
   dispatch (bridge toward the speculative work in
-  `docs/ARCHITECTURE_ANALYSIS.md`); other targets (macOS via libc or stubs).
+  `docs/ARCHITECTURE_ANALYSIS.md`); other targets (macOS via libc or stubs;
+  ARM64 bare metal).
 - Afterwards, LuaJIT's JIT as a reference (see PHASE 8 below).
 - **In the tree now**: the `Target` descriptor (`include/native/target.h`) and
   the x86-64 instruction emitter (`include/native/codegen.h`,
@@ -1148,7 +1180,7 @@ Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair through the hidden `$mapValue` helper, no new opcode) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e done; 7f — FFI in AOT — open, no slice chosen)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — open, no slice chosen)
 Phase 8: 🔶 in progress (JIT for the development VM, slice 1 done: integer leaf protos)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)

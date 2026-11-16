@@ -11,6 +11,17 @@ may change between minor versions.
 
 ### Added
 
+- **Bare-metal AOT target** (PHASE 7g). `oskel build --target
+  x86_64-freestanding-sysv` emits a multiboot 1 kernel that a boot loader
+  (QEMU `-kernel`, GRUB, Limine) loads at 1 MiB and enters directly, with no
+  operating system underneath. The image is an ELF32/i386 whose 32-bit
+  trampoline builds an identity page table, turns on long mode and installs its
+  own 64-bit GDT before jumping into the shared 64-bit runtime, so the program
+  itself is the same machine code the Linux target emits. The runtime talks to
+  a 16550 serial port at COM1 (`oskel_write`), ends the program with a `cli`/
+  `hlt` loop (`oskel_exit`) and takes its bump-allocator arena from a `.bss`
+  region the loader zeroes (`oskel_init_arena`). Verified end to end under
+  `qemu-system-x86_64 -kernel` in `tests/bare_metal_test.cpp`.
 - A `switch` case label may be a `const` name (a top-level `const`, or a local
   `const`/`let` in the same frame), not only a literal or a range, so a shared
   constant reads as a label instead of a repeated magic number. The name is

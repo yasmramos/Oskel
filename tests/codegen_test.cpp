@@ -76,6 +76,41 @@ static void test_target_descriptor() {
     rejected = true;
   }
   check(rejected, "codegen rejects a target with no backend");
+
+  check(targetName(Target::bareMetalX64()) == "x86_64-freestanding-sysv",
+        "bare-metal target name is stable");
+  check(isSupportedTarget(Target::bareMetalX64()),
+        "bare-metal x86-64 has a backend");
+}
+
+// The privileged and port-I/O instructions the bare-metal prelude relies on.
+// Each is one opcode, so the encodings are the whole test.
+static void test_bare_metal_instructions() {
+  {
+    CodeGen g;
+    g.cli();
+    checkBytes("cli", g, "FA");
+  }
+  {
+    CodeGen g;
+    g.hlt();
+    checkBytes("hlt", g, "F4");
+  }
+  {
+    CodeGen g;
+    g.outDxAl();
+    checkBytes("out dx, al", g, "EE");
+  }
+  {
+    CodeGen g;
+    g.inDxAl();
+    checkBytes("in al, dx", g, "EC");
+  }
+  {
+    CodeGen g;
+    g.testAlImm8(0x20);
+    checkBytes("test al, 0x20", g, "A820");
+  }
 }
 
 static void test_mov_imm() {
@@ -1149,6 +1184,7 @@ static void test_x87() {
 
 int main() {
   test_target_descriptor();
+  test_bare_metal_instructions();
   test_mov_imm();
   test_mov_reg_and_stack();
   test_memory_operands();

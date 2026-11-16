@@ -1,5 +1,6 @@
 #include "native/lower.h"
 
+#include "native/bare_metal.h"
 #include "native/codegen.h"
 #include "native/entry.h"
 #include "native/runtime.h"
@@ -777,6 +778,17 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   CodeGen::Label mainEntry = cg.newLabel();
   std::vector<StringConstant> stringConstants;
 
+  // The bare-metal prelude is a multiboot kernel header followed by a 32-bit
+  // long-mode trampoline, and multiboot requires the header in the first 8 KiB
+  // of the file, so it must be the very first thing in the code buffer. Emit it
+  // now, before the chunk; its `call`s to `mainEntry` and the exit thunk are
+  // forward references the emitter patches at `finalize()`. The other targets
+  // append their prelude at the end, after the program.
+  std::uint64_t bareMetalEntry = 0;
+  if (target.os == Os::Freestanding) {
+    bareMetalEntry = emitBareMetalPreamble(cg, entry, mainEntry);
+  }
+
   // Every proto in the tree, root first. Each becomes its own machine function;
   // `protoEntry` maps a proto to its entry label so a `CLOSURE` can address a
   // child's code before that child's body is emitted.
@@ -974,14 +986,20 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   cg.pop(X64Reg::Rbp);
   cg.retInsn();
 
-  // The entry prelude reaches the system, and that is the one place the two
+  // The entry prelude reaches the system, and that is the one place the
   // targets differ: Linux goes through syscalls, Windows through kernel32 with
-  // the Microsoft x64 ABI. Everything else -- the lowering and the embedded
-  // runtime -- is the same machine code for both. The prelude binds the
-  // `entry` handles the runtime already references (write/exit/init_arena).
-  std::uint64_t startOffset =
-      target.os == Os::Windows ? emitWindowsRuntime(cg, entry, mainEntry)
-                               : emitFreestandingRuntime(cg, entry, mainEntry);
+  // the Microsoft x64 ABI, and bare metal through the serial port and `hlt`.
+  // Everything else -- the lowering and the embedded runtime -- is the same
+  // machine code for all three. The prelude binds the `entry` handles the
+  // runtime already references (write/exit/init_arena).
+  std::uint64_t startOffset = bareMetalEntry;
+  if (target.os == Os::Windows) {
+    startOffset = emitWindowsRuntime(cg, entry, mainEntry);
+  } else if (target.os == Os::Freestanding) {
+    emitBareMetalRuntime(cg, entry);
+  } else {
+    startOffset = emitFreestandingRuntime(cg, entry, mainEntry);
+  }
   emitAotRuntime(cg, rt, entry);
   // String constants last: their bytes are addressed by `lea` from the code
   // above, and no path falls through into them.
