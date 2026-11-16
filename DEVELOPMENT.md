@@ -1047,9 +1047,10 @@ Slices, each independently shippable:
     default: the AOT runtime has no call-depth guard, so the recursion a native
     binary reaches is bounded only by the OS stack, and the 1 MiB Windows
     default killed a program Linux ran. Covered by `tests/pe_test.cpp`
-    (structure and, on Windows, execution) and the `oskel.build_binary` CTest
-    case on Windows (`tests/build_binary_pe.cmake`); the stack reserve is
-    guarded by `tests/native_build_deep_recursion.oskl`
+    (structure and, on Windows, execution) and the same `oskel.build_binary*`
+    CTest cases Linux runs (`tests/build_binary.cmake` builds the host's target,
+    so the whole fixture list exercises the PE on Windows too); the stack
+    reserve is guarded by `tests/native_build_deep_recursion.oskl`
     (`oskel.build_binary_deep_recursion`).
   - **7f** (open) — FFI in the AOT backend. An `extern "C"` symbol (and a
     `native fn`) is a host binding the AOT backend cannot resolve: the compiler
