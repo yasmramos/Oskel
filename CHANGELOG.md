@@ -109,6 +109,19 @@ may change between minor versions.
   130x faster than the interpreter (about 5x faster than the previous
   stack-slot JIT), and the differential suite still proves the compiled body
   identical to the interpreter for every accepted proto.
+- The `oskel build` CTest runners (`tests/build_binary.cmake`,
+  `tests/build_error.cmake`) name their output after the fixture's stem. Every
+  case wrote the same `oskel_build_output` file, so under a parallel `ctest`
+  two cases could overwrite each other's binary and a spurious
+  "the generated binary disagrees with the VM" failure appeared (the
+  `mandelbrot` case was the usual victim). The names are now unique per case.
+- `ITER` now yields a map's paired value directly. The opcode took two new
+  operands: `Instruction::d` is the register that receives the value (`-1` when
+  the loop has no value variable) and `Instruction::e` is the done flag, which
+  used to overload `Instruction::jump` (backlog §1.2). `jump` is now a jump
+  target only. `for k, v in map` no longer calls the hidden `$mapValue` helper
+  (retired from the hosted engine and the AOT runtime), so the value form is one
+  `ITER` per turn instead of an `ITER` plus a call.
 - The `oskel build` CTest cases now run the same fixture list on Windows as on
   Linux. Windows registered only two cases (`build_binary` and
   `build_binary_deep_recursion`) against Linux's ten, so the Windows PE path was
@@ -154,6 +167,11 @@ may change between minor versions.
   two arrays to the new `oskel_array_concat` helper (one `ADD` path, no new
   opcode), and a `tests/build_binary` fixture pins the binary against the VM on
   Linux and Windows.
+- A compiled binary printed `0 1 2` for `for c in "abc"` instead of `a b c`.
+  The `str` branch of `oskel_iter_next` built the character but fell through
+  into the `range` block, which overwrote `rax:rdx` with the cursor index; a
+  missing `jmp` after the string was built. The VM was correct, so this was an
+  AOT-only divergence, now pinned by `tests/freestanding_test.cpp`.
 - A `struct` name and an import binding the same name no longer coexist
   silently. `struct Point { ... }` plus `import std.math as Point;` used to
   leave both alive: `Point { ... }` stayed a struct literal while

@@ -221,7 +221,7 @@ budget, not a promise that every opcode is one instruction.
 | `GETTABLE R0, R1, R2` | call: `oskel_table_get` (bounds/hash/type checks) |
 | `SETTABLE R1, R2, R0` | call: `oskel_table_set` (grow + write barrier) |
 | `IN R0, R1, R2` | call: `oskel_contains` |
-| `ITER R0, R1` | call: `oskel_iter_next` |
+| `ITER R0, R1` | call: `oskel_iter_next` (writes the map value and the done flag) |
 | `PRINT R3` | call: `oskel_print` → `Platform::write` (temporary, §3.6) |
 | `HALT` | sequence: frame epilogue + `ret` |
 
@@ -853,9 +853,10 @@ Slices, each independently shippable:
       `IN` lowers to `oskel_contains` (array value equality through
       `oskel_compare`, map keys, string substrings) and `ITER` to
       `oskel_iter_next`, which advances a `for-in` cursor over an array, a map's
-      keys or a string's UTF-8 code points; the key/value form (`for k, v in
-      map`) lowers to a call to the hidden `$mapValue` builtin, which the chunk
-      seeds like `print`. Growth goes through a shared
+      keys or a string's UTF-8 code points; for a map it also writes the paired
+      value straight into the loop variable's slot (the `valueOut` argument), so
+      the key/value form (`for k, v in map`) needs no helper call. Growth goes
+      through a shared
       `oskel_block_ensure` (next power-of-two capacity, arena copy). Printing a
       container uses a recursive `oskel_print_repr` (`[1, 2]`, `{"k": 1}`,
       quoted strings, `<fn>`), depth-capped at 8 so a self-referential
@@ -883,7 +884,7 @@ Slices, each independently shippable:
       for `try` / `x catch y` (PHASE 6.5/6.7); the AOT backend had no binding
       for them, so a program using either failed to build with
       `lowering: global '$nonNull'/'$isError' is read but never assigned`. They
-      are now seeded builtins like `print` and `$mapValue`:
+      are now seeded builtins like `print`:
       `oskel_builtin_non_null` returns its operand or calls `fail` with the
       hosted helper's message, and `oskel_builtin_is_error` returns `false`
       (the AOT runtime has no error values yet, so the success path of `try`/
@@ -1250,7 +1251,7 @@ Phase 3: ✅ completed
 Phase 4: ✅ completed (VM as the dev engine: `oskel`, `oskel -e` and the REPL compile to bytecode and run on the VM; the AST interpreter and its `--ast` flag are gone)
 Phase 5: ✅ completed and tested
 Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
-Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair through the hidden `$mapValue` helper, no new opcode) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
+Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair, which `ITER` now yields directly, no new opcode and no helper call) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — open, no slice chosen)

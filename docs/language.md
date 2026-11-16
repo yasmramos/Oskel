@@ -1212,9 +1212,9 @@ A **map** also accepts a second loop variable after a comma: `for k, v in map`
 binds the key to the first variable and its value to the second, so a map is
 walked as entries without going through `entries()`. The parenthesized form
 `for (k, v in map)` is the same. Key/value iteration is only valid for maps;
-any other iterable raises a runtime error. The first variable is the key that
-the loop already produces, so the value form does not change the iteration
-order or the live-mutation rules below.
+any other iterable raises a runtime error. `ITER` yields the paired value
+directly, so the value form costs no extra lookup and does not change the
+iteration order or the live-mutation rules below.
 
 ```oskel
 for key, value in {a: 1, b: 2} {

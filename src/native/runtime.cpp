@@ -2868,22 +2868,27 @@ void emitContains(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   emitFailCall(cg, env.fail, *env.msgBadIn);
 }
 
-// `AotValue oskel_iter_next(AotValue* cursor, AotValue iterable)`: advance a
-// `for-in` cursor and return the item (rax:rdx) with the done flag in r8. The
+// `AotValue oskel_iter_next(AotValue* cursor, AotValue iterable, AotValue* valueOut)`:
+// advance the `for-in` cursor and return the item (rax:rdx) with the done flag
+// in r8. `valueOut` (rcx) is the slot that receives the paired value of a map
+// entry, or null when the loop has no value variable (`for x in ...`). The
 // cursor starts nil; it holds an int index afterwards. Arrays yield items, maps
-// yield keys and strings yield one code point, mirroring the VM's `ITER`.
+// yield keys (and write the paired value to `*valueOut`), strings yield one
+// code point, mirroring the VM's `ITER`.
 void emitIterNextRange(CodeGen& cg, CodeGen::Label range, CodeGen::Label rangeAsc,
                        CodeGen::Label rangeAscIncl, CodeGen::Label rangeDescIncl,
                        CodeGen::Label rangeEmit, CodeGen::Label rangeDescNext,
                        CodeGen::Label rangeStoreCursor, CodeGen::Label doneTrue,
                        CodeGen::Label done);
 
-// `AotValue oskel_iter_next(AotValue* cursor, long tag, long payload)`: advance
-// the `for-in` cursor and return the item (rax:rdx) with the done flag in r8.
+// `AotValue oskel_iter_next(AotValue* cursor, long tag, long payload, AotValue* valueOut)`:
+// advance the `for-in` cursor and return the item (rax:rdx) with the done flag
+// in r8, writing a map entry's value to `*valueOut` (when non-null).
 void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   CodeGen::Label zero = cg.newLabel();
   CodeGen::Label arr = cg.newLabel();
   CodeGen::Label map = cg.newLabel();
+  CodeGen::Label mapNoValue = cg.newLabel();
   CodeGen::Label str = cg.newLabel();
   CodeGen::Label range = cg.newLabel();
   CodeGen::Label rangeAsc = cg.newLabel();
@@ -2899,15 +2904,29 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   CodeGen::Label done = cg.newLabel();
   CodeGen::Label failType = cg.newLabel();
   CodeGen::Label failState = cg.newLabel();
+  CodeGen::Label failKeyValue = cg.newLabel();
+  CodeGen::Label noValueCheck = cg.newLabel();
 
   cg.bind(label);
   prologue(cg);
   cg.push(Rbx);
   cg.push(R12);
-  cg.subRegImm32(Rsp, 32);
+  cg.subRegImm32(Rsp, 48);
   cg.movReg(Rbx, Rdi);              // cursor pointer
   cg.movReg(R12, Rdx);              // iterable payload
   cg.movToMem(Rbp, -24, Rsi);       // iterable tag
+  cg.movToMem(Rbp, -56, Rcx);       // value-out slot (null when no value variable)
+  // A `for k, v` over anything but a map is a fatal error, the same one the VM
+  // raises; the AOT message is the fixed `msgMapValue` blob (it does not carry
+  // the offending type name, which the freestanding runtime has no formatter
+  // for on this path).
+  cg.movFromMem(R8, Rbp, -56);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Eq, noValueCheck);
+  cg.movFromMem(R8, Rbp, -24);
+  cg.cmpImm32(R8, static_cast<std::int32_t>(kTagMap));
+  cg.jcc(Jcc::Ne, failKeyValue);
+  cg.bind(noValueCheck);
   cg.movFromMem(R8, Rbx, 0);        // cursor tag
   cg.movFromMem(R9, Rbx, 8);        // cursor payload
   cg.cmpImm32(R8, static_cast<std::int32_t>(kTagNil));
@@ -2956,6 +2975,16 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.imulImm32(R9, R9, static_cast<std::int32_t>(kMapEntrySize));
   cg.movFromMem(R10, R12, kTableBlockOffset);
   cg.addReg(R9, R10);
+  // Write the paired value straight into the loop variable's slot when the
+  // loop has one (`for k, v in map`); `valueOut` is null otherwise.
+  cg.movFromMem(R10, Rbp, -56);
+  cg.testReg(R10);
+  cg.jcc(Jcc::Eq, mapNoValue);
+  cg.movFromMem(R11, R9, kMapEntryValueOffset);
+  cg.movToMem(R10, 0, R11);
+  cg.movFromMem(R11, R9, kMapEntryValueOffset + 8);
+  cg.movToMem(R10, 8, R11);
+  cg.bind(mapNoValue);
   cg.movImm(Rax, kTagStr);
   cg.movFromMem(Rdx, R9, kMapEntryKeyOffset);
   cg.jmp(storeCursor);
@@ -2982,6 +3011,9 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.repMovsb();
   cg.movReg(Rdx, Rax);
   cg.movImm(Rax, kTagStr);
+  // Without this jump the char just built would fall through into the range
+  // code below, which overwrites rax:rdx with the cursor index.
+  cg.jmp(storeCursor);
 
   emitIterNextRange(cg, range, rangeAsc, rangeAscIncl, rangeDescIncl, rangeEmit,
                     rangeDescNext, rangeStoreCursor, doneTrue, done);
@@ -3000,10 +3032,12 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.movImm(R8, 1);
 
   cg.bind(done);
-  cg.addImm32(Rsp, 32);
+  cg.addImm32(Rsp, 48);
   cg.pop(R12);
   cg.pop(Rbx);
   epilogue(cg);
+  cg.bind(failKeyValue);
+  emitFailCall(cg, env.fail, *env.msgMapValue);
   cg.bind(failType);
   emitFailCall(cg, env.fail, *env.msgBadIn);
   cg.bind(failState);
@@ -3069,53 +3103,6 @@ void emitIterNextRange(CodeGen& cg, CodeGen::Label range, CodeGen::Label rangeAs
   cg.movToMem(Rbx, 8, R9);
   cg.xorReg(R8, R8);                    // done = false
   cg.jmp(done);
-}
-
-// `AotValue oskel_builtin_map_value(AotValue* args, long argc, AotClosure* self)`:
-// the hidden `$mapValue` helper the compiler calls for `for k, v in map`. It
-// returns the value paired with the key `args[0]`, so the key/value loop form
-// is an ordinary call. A non-map iterable is rejected, matching the hosted
-// `$mapValue` (`for k, v in [1, 2, 3]` is a runtime error).
-void emitMapValueBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label mapFind,
-                         const CollectionEnv& env) {
-  CodeGen::Label map = cg.newLabel();
-  CodeGen::Label missing = cg.newLabel();
-  CodeGen::Label done = cg.newLabel();
-
-  cg.bind(label);
-  prologue(cg);
-  cg.push(Rbx);
-  cg.push(R12);
-  cg.movReg(Rbx, Rdi);          // args
-  // args[0] is the map, args[1] the key. The argument window grows *down* from
-  // `args`, so args[1] sits 16 bytes below args[0].
-  cg.movFromMem(R8, Rbx, 0);    // map tag
-  cg.movFromMem(R12, Rbx, 8);   // map payload
-  cg.cmpImm32(R8, static_cast<std::int32_t>(kTagMap));
-  cg.jcc(Jcc::Eq, map);
-  emitFailCall(cg, env.fail, *env.msgMapValue);
-
-  cg.bind(map);
-  cg.movReg(Rdi, R12);
-  cg.movFromMem(Rsi, Rbx, -8);  // args[1] payload (the key)
-  cg.callLabel(mapFind);
-  cg.testReg(Rax);
-  cg.jcc(Jcc::Lt, missing);
-  cg.imulImm32(Rax, Rax, static_cast<std::int32_t>(kMapEntrySize));
-  cg.movFromMem(R10, R12, kTableBlockOffset);
-  cg.addReg(R10, Rax);
-  cg.movFromMem(Rax, R10, kMapEntryValueOffset);
-  cg.movFromMem(Rdx, R10, kMapEntryValueOffset + 8);
-  cg.jmp(done);
-
-  cg.bind(missing);
-  cg.xorReg(Rax, Rax);
-  cg.xorReg(Rdx, Rdx);
-
-  cg.bind(done);
-  cg.pop(R12);
-  cg.pop(Rbx);
-  epilogue(cg);
 }
 
 // `AotValue oskel_builtin_is_error(AotValue* args, long argc, AotClosure* self)`:
@@ -6241,7 +6228,6 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitMemberSet(cg, handles.memberSet, env);
   emitContains(cg, handles.contains, env);
   emitIterNext(cg, handles.iterNext, env);
-  emitMapValueBuiltin(cg, handles.mapValueBuiltin, env.mapFind, env);
   emitIsErrorBuiltin(cg, handles.isErrorBuiltin);
   emitNonNullBuiltin(cg, handles.nonNullBuiltin, fail, msgNonNull);
   emitStrBuiltin(cg, handles.strBuiltin, handles.alloc, fail,

@@ -1446,26 +1446,6 @@ void registerBuiltins(Runtime& in) {
     return Value(makeRange(args[0].asInt(), args[1].asInt(), args[2].truthy()));
   });
 
-  // Private helper for the key/value form of `for-in` (`for k, v in map`). The
-  // loop variable `k` is the key ITER produced; this returns the matching
-  // value. A non-map iterable is rejected with a message that points at the
-  // loop rather than at an index operation.
-  in.addNative("$mapValue", [](Runtime& in, Args args) -> Value {
-    need(in, "$mapValue", args, 2);
-    if (!args[0].isMap()) {
-      in.fail(std::string("key/value iteration ('for k, v in ...') requires a map, got '") +
-              args[0].typeName() + "'");
-    }
-    // The key comes from `ITER`, which yields a string for a map, but a
-    // hand-built `.jolc` could pass anything: check before dereferencing the
-    // string payload instead of reading it out of a non-string union.
-    if (!args[1].isStr()) {
-      in.fail(std::string("map keys are strings, got '") + args[1].typeName() + "'");
-    }
-    const Value* found = args[0].map().get(args[1].asStr());
-    return found ? *found : Value();
-  });
-
   // Private helper for `a!!` (PHASE 6.5). Raises when the operand is nil and
   // returns it unchanged otherwise, so a non-null assertion is one call.
   in.addNative("$nonNull", [](Runtime& in, Args args) -> Value {

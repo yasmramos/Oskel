@@ -12,11 +12,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 1. VM (`src/vm.cpp`)
 
-1. **[P1]** `ITER` over a map yields only the key; `for k, v` then does a
-   `$mapValue` lookup per iteration. Yield the value directly.
-2. **[P1]** `ITER` (and `compileForIn`) uses `instruction.jump` as the output
-   register. Replace the private convention with a real operand or a distinct
-   opcode.
+1. **[P1] [done]** `ITER` over a map yielded only the key; `for k, v` then did
+   a `$mapValue` lookup per iteration. `ITER` now takes two extra operands
+   (`Instruction::d` for the paired value, `-1` when the loop has no value
+   variable, and `Instruction::e` for the done flag) and yields the value
+   directly, so the loop body holds no helper call. The retired `$mapValue`
+   builtin is gone from the hosted engine and the AOT runtime.
+2. **[P1] [done]** `ITER` (and `compileForIn`) used `instruction.jump` as the
+   output register. The done flag now lives in the real operand `e` (and the
+   value in `d`), so `jump` is a jump target only.
 3. **[P2]** `namespaceHint` walks every global on each failed `GETGLOBAL`;
    a repeated typo in a large REPL is slow. Index the global names.
 4. **[P2]** `callNative` always copies the arguments for reentrancy safety,
@@ -235,6 +239,13 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     (7c.5b.4)**: `std.math`'s libm surface (`exp`, `log`, `pow`, `sin`, `cos`,
     `tan`) now resolves from the embedded musl ports, so a program that calls
     them builds. General `extern "C"` symbols are still open.
+20. **[P0] [done]** VM/AOT divergence in string iteration: `emitIterNext`'s
+    `str` branch built the character but fell through into the `range` block,
+    which overwrote `rax:rdx` with the cursor index, so `for c in "abc"`
+    printed `0 1 2` instead of `a b c` on the AOT backend (the VM was
+    correct). A missing `jmp storeCursor` after the string was built. Fixed
+    with the `ITER` redesign (items 1-2 of §1) and pinned by
+    `tests/freestanding_test.cpp`.
 
 ---
 
@@ -527,7 +538,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    recovers, `error()` works and structural equality matches the VM.
 3. **[P1]** Add an AOT wrong-arity test.
 4. **[P1]** Add `map`/`filter`/`reduce` tests with a VM closure callback.
-5. **[P1]** Add an `ITER`-over-a-non-iterable test.
+5. **[P1] [done]** Add an `ITER`-over-a-non-iterable test.
+   `tests/errors/for_in_not_iterable.oskl` pins that `for x in 5` is a runtime
+   error naming the type (`cannot iterate over a value of type 'int'`), and
+   `testIterValueFormRejectsNonMap` in `tests/vm_test.cpp` covers the key/value
+   form over an array, a string and a range.
 6. **[P1]** Add dtoa NaN/Inf, explicit subnormal and cross-invocation stability
    tests.
 7. **[P1]** Add an `OSKEL_GC_STRESS` test run.

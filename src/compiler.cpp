@@ -2203,14 +2203,18 @@ void Compiler::compileForIn(const ForInStmt& s) {
   emit(OpCode::LOADK, cursor, addConstant(Value()));
   int item = allocReg();
   int done = allocReg();
+  // The value variable of `for k, v in map` reads the paired value straight
+  // from `ITER` (operand `d`), so the loop body holds no per-iteration call.
+  // The register is only reserved when the loop has a value variable.
+  int value = s.valueVar.empty() ? -1 : allocReg();
 
   int loopStart = currentOffset();
   int iterIndex = emit(OpCode::ITER, item, iterable, cursor);
-  // ITER has three operands (item, iterable, cursor). The `done` flag needs
-  // a fourth output, so the compiler stores its register in `instruction.jump`
-  // and the VM reads it from there. That is a private convention, not a real
-  // jump target: ITER is not a jump instruction.
-  bc_.code[static_cast<size_t>(iterIndex)].jump = done;
+  // ITER takes four register operands: the item (a), the iterable (b), the
+  // cursor (c), the paired value (d, -1 when the loop has no value variable)
+  // and the done flag (e). `jump` is not used: ITER is not a jump instruction.
+  bc_.code[static_cast<size_t>(iterIndex)].d = value;
+  bc_.code[static_cast<size_t>(iterIndex)].e = done;
 
   int exitJump = emitJump(OpCode::JMP_IF_TRUE, done);
   // Each turn gets a fresh cell for the loop variable, so closures created in
@@ -2219,15 +2223,12 @@ void Compiler::compileForIn(const ForInStmt& s) {
   int slot = declareLocal(s.var, false);
   emit(OpCode::DECLLOCAL, item, slot);
 
-  // `for k, v in map`: the first variable holds the key that ITER produced and
-  // the second holds the paired value, read through the `$mapValue` helper
-  // (which also rejects a non-map iterable with a clear message). No new
-  // opcode: the helper is an ordinary host native.
+  // `for k, v in map`: the second variable holds the value that ITER produced
+  // alongside the key (a non-map iterable makes ITER raise with a message that
+  // points at the loop).
   if (!s.valueVar.empty()) {
-    int value = compileHelperCall("$mapValue", {iterable, item}, s.iterable->line, s.iterable->col);
     int valueSlot = declareLocal(s.valueVar, false);
     emit(OpCode::DECLLOCAL, value, valueSlot);
-    freeReg();
   }
 
   loops_.push_back(Loop{});
