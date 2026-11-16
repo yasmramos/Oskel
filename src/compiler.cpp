@@ -1633,6 +1633,12 @@ void Compiler::compileFnDecl(const FnDeclStmt& fn, int line, int col) {
       rejectUnionForFfi(param.type, "parameter of native function '" + fn.name + "'", line, col);
     }
     rejectUnionForFfi(fn.returnType, "return type of native function '" + fn.name + "'", line, col);
+    // Record the name on the proto. The declaration reads the name and stores
+    // it, the same shape as a self-assignment (`var x = x;`), so the AOT backend
+    // needs this list to tell a host binding (which it resolves from a stub, or
+    // reports only when read) from a genuine self-read (always a run-time
+    // error).
+    bc_.nativeFns.push_back(fn.name);
     emit(OpCode::GETGLOBAL, reg, addString(fn.name));
   } else {
     int child = compileFunctionProto(fn.name, fn.params, fn.body, line, col, fn.returnType);

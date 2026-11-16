@@ -1,0 +1,16 @@
+// Fixture for `oskel build` (tests/build_binary.cmake).
+//
+// The numeric conversions are checked against the VM here because the script
+// tests (`tests/26_float_double.oskl`) only run on the hosted engine. A boxed
+// `Float` already holds its value widened to binary64, so `double(f)` must not
+// widen it a second time (which used to read the binary32 bits as binary64 and
+// return 0).
+
+print("double of float =", double(1.5f), double(4.0f), double(2.5f), double(-0.5f));
+print("double of int =", double(3), double(-7), double(0));
+print("double of bool =", double(true), double(false));
+print("float of int =", float(3), float(-7));
+print("float of float =", float(1.5f), float(4.0f));
+print("int of float =", int(1.5f), int(4.9f), int(-1.5f));
+print("int of double =", int(1.5), int(4.9), int(-1.5));
+print("type =", type(double(1.5f)), type(float(1)), type(int(1.5f)));

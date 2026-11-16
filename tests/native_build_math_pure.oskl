@@ -1,0 +1,16 @@
+// Fixture for `oskel build` (tests/build_binary.cmake), PHASE 7f.1.
+//
+// This is the shape of the original gap: `import std.math` declares ten
+// `native fn` host bindings, and the AOT backend used to reject the build even
+// when the program called none of them (only the pure Oskel members below).
+// An unused declaration is now harmless, so the program builds and the binary
+// agrees with the VM byte for byte. No stub is exercised here: the point is
+// that the declarations do not have to resolve.
+
+import std.math.*;
+
+print("abs =", abs(-7), abs(3.5));
+print("min =", min(3, 1, 2));
+print("max =", max(3, 1, 2));
+print("clamp =", clamp(5, 0, 3));
+print("PI =", PI, "E =", E);

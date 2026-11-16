@@ -1,0 +1,9 @@
+// Fixture for the `oskel build` native-fn error test (tests/build_error.cmake).
+//
+// `sin` is a `native fn` the development VM resolves through its host registry
+// (libm), so this program runs on the VM. The AOT backend has no host, and `sin`
+// has no curated stub (a hand-written implementation would not reproduce libm's
+// last bit), so `oskel build` must fail with the dedicated message instead of
+// the generic unassigned-global one a typo produces.
+native fn sin(x: double): double;
+print(sin(0.0));

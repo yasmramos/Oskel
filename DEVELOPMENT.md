@@ -1039,6 +1039,28 @@ Slices, each independently shippable:
     (`ldd` reports "not a dynamic executable"): curated syscall stubs keep that
     invariant; an object + external link or a dynamic ELF break it. No slice is
     chosen yet.
+    - **7f.1** (done) — tolerance of an unused host declaration plus the first
+      curated stub. A `native fn`/`extern "C"` declaration binds a name to the
+      host function the host registered; the compiler emits one read of the name
+      for the declaration itself, so the lowerer counts reads against
+      declarations and treats only a *used* binding as a failure. This fixes the
+      original gap: `import std.math` declares ten `native fn` (`pow`, `sin`,
+      ...), and the build no longer fails when the program calls none of them
+      (only the pure Oskel `abs`/`min`/`max`/`clamp`). A used declaration
+      without a stub is a real limitation, so it fails with a dedicated message
+      (`native fn 'X' cannot be resolved by the AOT backend (PHASE 7f)`), while
+      `var x = x;` keeps the generic unassigned-global error. `sqrt` joins the
+      exact math builtins PHASE 7c.5b.3 already provides (`floor`, `ceil`,
+      `round`): `sqrtsd` is correctly rounded, so the hardware result and the
+      hosted `std::sqrt` agree bit for bit. This slice tightens that stub to the
+      hosted semantics (a NaN operand is not "negative", and the arity message
+      matches `sqrt() expects 1 argument, got N`). The transcendentals (`pow`,
+      `sin`, `cos`, `tan`, `log`, `exp`) are *not* stubbed: a hand-written
+      implementation would not reproduce libm's last bit, so a program that uses
+      one is rejected instead of compiling to a binary that disagrees with the
+      VM. `tests/native_build_math.oskl` and `tests/native_build_math_pure.oskl`
+      build and agree with the VM; `tests/native_build_math_native_error.oskl`
+      pins the rejection.
 - Deferred: per-instruction type annotations for fast paths without dynamic
   dispatch (bridge toward the speculative work in
   `docs/ARCHITECTURE_ANALYSIS.md`); other targets (macOS via libc or stubs).

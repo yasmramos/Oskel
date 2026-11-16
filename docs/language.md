@@ -1938,6 +1938,14 @@ Host builtins:
 
 `floor`, `ceil` and `round` return the same `int` if they receive an `int`, and a `double` for a `float` or `double` argument (like Java's `Math.floor`, which takes and returns `double`).
 
+Under `oskel build` (the AOT backend), `sqrt`, `floor`, `ceil` and `round` have
+an exact stub (correctly-rounded SSE, so they match the VM bit for bit). The
+transcendentals (`pow`, `sin`, `cos`, `tan`, `log`, `exp`) and the other
+`std.math` host bindings have no stub yet — a program that *calls* one is
+rejected at build time with a message naming the symbol (an unused declaration
+is harmless), since a hand-written implementation would not reproduce libm's
+last bit. See `DEVELOPMENT.md` PHASE 7f.
+
 ```oskel
 import std.math.*;
 

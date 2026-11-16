@@ -10,6 +10,7 @@ void bytecodeInit(Bytecode& bc) {
   bc.children.clear();
   bc.upvalues.clear();
   bc.externs.clear();
+  bc.nativeFns.clear();
   bc.numRegisters = 0;
   bc.numLocals = 0;
 }
