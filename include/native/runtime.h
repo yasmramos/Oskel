@@ -198,6 +198,15 @@ struct AotRuntimeHandles {
   // leaving the operands unchanged. It is the hosted `ops::binary` `Tok::Plus`
   // case for two arrays, used by `oskel_arith` for `Add`.
   CodeGen::Label arrayConcat;  // AotValue oskel_array_concat(AotValue a, AotValue b)
+  // The remaining public builtins (PHASE 7c.5b.5): `range`, `assertEq` and
+  // `exit`. `range` builds the same `Range` value as the hidden `$range` helper
+  // (one bound defaults the start to 0); `assertEq` compares two values with the
+  // shared `oskel_compare` and, on a mismatch, renders the same
+  // "<msg>: expected A, got B" text the hosted builtin produces; `exit` leaves
+  // through the entry prelude's `oskel_exit`, so it never returns.
+  CodeGen::Label rangeFnBuiltin;   // AotValue oskel_builtin_range_fn(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label assertEqBuiltin;  // AotValue oskel_builtin_assert_eq(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label exitBuiltin;      // AotValue oskel_builtin_exit(AotValue* args, long argc, AotClosure* self)
 };
 
 inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
@@ -217,7 +226,8 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel()
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel()
   };
 }
 

@@ -908,6 +908,12 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       {"sin", rt.sinBuiltin},
       {"cos", rt.cosBuiltin},
       {"tan", rt.tanBuiltin},
+      // The remaining public builtins (PHASE 7c.5b.5): `range`, `assertEq` and
+      // `exit`. `range` matches the hosted `range`; `assertEq` reproduces the
+      // hosted comparison message; `exit` leaves through the entry prelude.
+      {"range", rt.rangeFnBuiltin},
+      {"assertEq", rt.assertEqBuiltin},
+      {"exit", rt.exitBuiltin},
   };
 
   const GlobalSlots globals = collectGlobals(protos, builtins);
