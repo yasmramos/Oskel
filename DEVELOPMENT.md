@@ -53,7 +53,6 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `main.cpp` | CLI | full pipeline | ✅ (VM as dev engine, PHASE 4) |
 | `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slices 1-3 |
 | `value.cpp` | `Value`, tagged union | shared runtime | ✅ |
-| `env.cpp` | `Env`, lexical scope chain | **unused** (see note) | ⚠️ |
 | `builtins.cpp` / `ops.cpp` | native builtins, shared operators | runtime library | ✅ |
 | `ffi.cpp` | `extern "C"` declarations | marshalling natives | ✅ PHASE 6.6 |
 | `diagnostic.cpp` | `CompileError`, `Warning`, `RuntimeError` | stderr output | ✅ |
@@ -69,15 +68,6 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `native/platform_freestanding.cpp` | `Platform` ops | direct Linux syscalls | ✅ PHASE 7c.0 |
 | `native/entry.cpp` | program entry label | `_start`/entry + prelude (Linux syscalls, Windows kernel32) | ✅ PHASE 7c.0/7e |
 | `native/bare_metal.cpp` | code + entry | multiboot ELF32/i386 kernel (bare-metal prelude + trampoline) | ✅ PHASE 7g |
-
-**Note on `env.cpp`.** It is the lexical scope chain of the retired AST
-interpreter. The VM keeps locals in reference-counted `Cell`s and never
-constructs an `Env`, and `Function::closure` (the only `Env` owner left in
-`value.h`) is never assigned, so `env.cpp` is dead code kept only by
-`tests/gc_test.cpp`. It is not part of the AST interpreter path (which is
-gone) nor of the VM; it can be deleted once `gc_test.cpp` drops it. The
-`functionGcOps` visitor in `value.cpp` still walks `closure`, so removing it
-is a small, self-contained cleanup.
 
 ### Toolchain binaries and the compiler boundary
 
@@ -343,7 +333,7 @@ previous one.
 - `in` for arrays, maps, strings and ranges
 - Retire the temporary `PRINT` opcode: from 6c/6e every `print` arity compiles
   to `CALL`, and the opcode is deleted at the 6f gate (§3.6)
-- Already in the tree: the shared `Value` and lexical `Env` (`value.cpp`, `env.cpp`) plus the cycle collector in `gc.cpp`. Slice 6a is done: top-level `fn` declarations, parameters, `return`, recursion and general calls compile and run on the VM. Slice 6b is done: `GETUPVAL`/`SETUPVAL`, upvalue descriptors, lambdas and closures that escape their defining scope (verified by `examples/closures.oskl` and `tests/09_lambdas.oskl`). The compiler still rejects collections and `for-in` with a `(Phase 6)` message; those land in 6c.
+- Already in the tree: the shared `Value` (`value.cpp`) plus the cycle collector in `gc.cpp`. Slice 6a is done: top-level `fn` declarations, parameters, `return`, recursion and general calls compile and run on the VM. Slice 6b is done: `GETUPVAL`/`SETUPVAL`, upvalue descriptors, lambdas and closures that escape their defining scope (verified by `examples/closures.oskl` and `tests/09_lambdas.oskl`). The compiler still rejects collections and `for-in` with a `(Phase 6)` message; those land in 6c.
 - Memory in the VM: closures that capture each other's variables, and tables that contain themselves (directly or through a closure stored in them), form cycles that reference counting cannot free. A `Cell` registers with the cycle collector when a closure captures it, and `Function` must report its `upvalues` (the captured cells) as well as `capturedGcNodes` from `visit`; a missing edge makes every cycle through a cell immortal. The VM runs `gcCollectIfNeeded()` at `CLOSURE` and `NEWTABLE`, the instructions that create the objects cycles are made of, so a program that never creates a closure is still collected. Regression tests: `testCapturedCellsAreNotRetainedByTheVM`, `testClosureCyclesAreCollected`, `testTableCyclesAreCollectedWithoutClosures` and `testClosureStoredInTheTableItCapturesIsCollected` in `tests/vm_test.cpp`; build it with `-DOSKEL_GC_STRESS` to collect at every safe point.
 - **6f done**: `PRINT` retired. Every `print` arity compiles to `CALL`. The
   opcode count is now 39/40.

@@ -12,7 +12,6 @@
 #include <cstdio>
 #include <memory>
 
-#include "env.h"
 #include "gc.h"
 #include "value.h"
 
@@ -117,59 +116,70 @@ void testGarbageNextToLiveObjects() {
   assert(live->items.size() == 1);
 }
 
-// The shape behind every leak this collector exists for: a function bound in
-// the scope it closes over.
-void testFunctionAndScopeCycle() {
+// The shape behind every leak this collector exists for: a function stored in
+// the cell it captures (a recursive closure).
+void testFunctionAndCellCycle() {
   const std::size_t base = settledCount();
   {
-    auto scope = std::make_shared<Env>();
+    CellPtr cell = makeRef<Cell>();
     FuncPtr function = makeRef<Function>();
     function->name = "f";
-    function->closure = scope;
-    scope->define("f", Value(function));
+    cell->value = Value(function);
+    function->upvalues.push_back(cell);
+    cell->track();
   }
   assert(gcTrackedCount() == base + 2);
   gcCollect();
   assert(gcTrackedCount() == base);
 }
 
-void testScopeChainStaysAliveThroughAClosure() {
+void testCellStaysAliveThroughAClosure() {
   const std::size_t base = settledCount();
   FuncPtr escaped;
   {
-    auto outer = std::make_shared<Env>();
-    outer->define("x", Value(int64_t{42}));
-    auto inner = std::make_shared<Env>(outer);
+    CellPtr cell = makeRef<Cell>();
+    cell->track();
+    ArrayPtr captured = makeArray();
+    captured->items.push_back(Value(int64_t{42}));
+    cell->value = Value(captured);
+    // The closure stores itself in the cell it captures, so cell and function
+    // form a cycle that only the collector can break.
     escaped = makeRef<Function>();
-    escaped->closure = inner;
-    // A second function bound in the inner scope makes a cycle there too.
-    FuncPtr sibling = makeRef<Function>();
-    sibling->closure = inner;
-    inner->define("sibling", Value(sibling));
+    escaped->upvalues.push_back(cell);
+    captured->items.push_back(Value(escaped));
   }
   gcCollect();
-  // Env x2, escaped and sibling are all still reachable through `escaped`.
-  assert(gcTrackedCount() == base + 4);
-  Binding* binding = escaped->closure->find("x");
-  assert(binding != nullptr && binding->value.asInt() == 42);
+  // The outside handle keeps the function, its cell and the captured array
+  // alive: three tracked objects reachable from `escaped`.
+  assert(gcTrackedCount() == base + 3);
+  assert(escaped->upvalues.size() == 1);
+  assert(escaped->upvalues[0]->value.isArray());
+  assert(escaped->upvalues[0]->value.arr().items[0].asInt() == 42);
 
   escaped = FuncPtr();
   gcCollect();
   assert(gcTrackedCount() == base);
 }
 
-void testRecursiveFunctionBoundInAScopeIsCollected() {
+void testRecursiveFunctionsSharingACellIsCollected() {
   const std::size_t base = settledCount();
   for (int i = 0; i < 100; ++i) {
-    auto scope = std::make_shared<Env>();
-    for (const char* name : {"even", "odd"}) {
-      FuncPtr function = makeRef<Function>();
-      function->name = name;
-      function->closure = scope;
-      scope->define(name, Value(function));
-    }
+    CellPtr cell = makeRef<Cell>();
+    cell->track();
+    FuncPtr even = makeRef<Function>();
+    FuncPtr odd = makeRef<Function>();
+    even->name = "even";
+    odd->name = "odd";
+    even->upvalues.push_back(cell);
+    odd->upvalues.push_back(cell);
+    // The cell holds a scope binding both functions, so the two functions and
+    // the cell reference each other.
+    MapPtr scope = makeMap();
+    scope->set("even", Value(even));
+    scope->set("odd", Value(odd));
+    cell->value = Value(scope);
   }
-  assert(gcTrackedCount() == base + 300);
+  assert(gcTrackedCount() == base + 400);
   gcCollect();
   assert(gcTrackedCount() == base);
 }
@@ -223,9 +233,9 @@ int main() {
   testReferencedCycleSurvives();
   testEverythingReachableFromAnOutsideReferenceSurvives();
   testGarbageNextToLiveObjects();
-  testFunctionAndScopeCycle();
-  testScopeChainStaysAliveThroughAClosure();
-  testRecursiveFunctionBoundInAScopeIsCollected();
+  testFunctionAndCellCycle();
+  testCellStaysAliveThroughAClosure();
+  testRecursiveFunctionsSharingACellIsCollected();
   testReferencesHiddenInNativesAreNeverFreed();
 #ifndef OSKEL_GC_STRESS
   testCollectionRunsAutomaticallyAfterEnoughAllocations();

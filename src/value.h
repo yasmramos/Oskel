@@ -14,7 +14,6 @@
 
 class Runtime;
 struct Bytecode;
-struct Env;
 struct Stmt;
 
 template <typename T>
@@ -566,12 +565,6 @@ struct Function : RefCounted, GcNode {
   std::string name;
   std::vector<std::string> params;
   std::shared_ptr<Stmt> body;
-  // Lexical scope captured at definition time. `Env` (declared in
-  // interpreter.h) is only ever used through `std::shared_ptr`, which supports
-  // incomplete pointed-to types here, so value.h stays free of interpreter
-  // dependencies. The destructor instantiated in translation units that do
-  // see the full `Env` type destroys the chain correctly.
-  std::shared_ptr<Env> closure;
   NativeFn native;
   // Bytecode function (PHASE 6). A VM function has a proto and no native; an
   // AST function has neither. `upvalues` keeps the captured cells alive and
