@@ -53,6 +53,23 @@ may change between minor versions.
 
 ### Added
 
+- **`bindgen`, the C binding generator.** A standalone executable (built next to
+  `oskel`, shipped in `bin/`, and *not* linked into the engine) that reads a C
+  header and writes an Oskel `extern "C"` module, so a C library can be called
+  from Oskel without spelling every signature by hand:
+  `bindgen mylib.h -o mylib.oskl`. It translates the PHASE 6.6 FFI scalar
+  vocabulary (pointers, `cstring`, the fixed-width/unsigned integers, `float`,
+  `double`, `bool`, `void`), resolves the header's own `typedef`s, decays an
+  array parameter to a pointer, drops qualifiers, storage classes and
+  attributes, and recognizes the `stdint.h`/`stddef.h` names without reading
+  them. It never runs the preprocessor and never emits something the compiler
+  would reject: a declaration outside the vocabulary (a struct by value, a
+  callback, `long double`, ...) becomes a `// skipped:` comment and is counted on
+  stderr, and a C variadic is written commented out (it needs libffi and the
+  System V AMD64 ABI). No lexer token, AST node, parser rule, opcode or VM
+  change: the tool only writes the `extern "C"` the engine already accepts
+  (`docs/bindgen.md`).
+
 - **`std.datetime`: dates and time.** A new standard-library module
   for civil dates and wall-clock times. A `Date` is a calendar day and a
   `DateTime` adds a time of day plus a UTC offset in minutes; both are plain

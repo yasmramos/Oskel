@@ -133,6 +133,22 @@ target_compile_options(oskel PRIVATE ${OSKEL_WARNINGS})
 
 install(TARGETS oskel RUNTIME DESTINATION bin)
 
+# --------------------------------------------------------------------------- bindgen
+# The binding generator: a C header in, an Oskel `extern "C"` module out. It is
+# a standalone executable that does not link the engine's runtime (it only
+# writes text), so it can be built and shipped on its own. Its sources live
+# under `tools/` and are deliberately *not* part of `OSKEL_ALL_SOURCES` (that
+# glob is `src/*.cpp`), so the generator never ends up inside `oskel`.
+add_library(bindgen_lib STATIC "${CMAKE_CURRENT_SOURCE_DIR}/tools/bindgen.cpp")
+target_include_directories(bindgen_lib PUBLIC include src)
+target_compile_options(bindgen_lib PRIVATE ${OSKEL_WARNINGS})
+
+add_executable(bindgen "${CMAKE_CURRENT_SOURCE_DIR}/tools/bindgen_main.cpp")
+target_link_libraries(bindgen PRIVATE bindgen_lib)
+target_compile_options(bindgen PRIVATE ${OSKEL_WARNINGS})
+
+install(TARGETS bindgen RUNTIME DESTINATION bin)
+
 # The standard library ships next to the binary: `standardLibraryDir` looks for
 # `../share/oskel/std` relative to the executable, so `import std.math` resolves
 # after `make install` and not only when running from the source tree.
@@ -192,6 +208,23 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(freestanding_test)
   oskel_add_cpp_test(bare_metal_test)
 
+  # The binding generator is a standalone tool, not part of `oskel_lib`, so its
+  # unit test links `bindgen_lib` directly instead of the helper above.
+  add_executable(bindgen_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/bindgen_test.cpp")
+  target_link_libraries(bindgen_test PRIVATE bindgen_lib)
+  target_compile_options(bindgen_test PRIVATE ${OSKEL_WARNINGS})
+  add_test(NAME bindgen_test COMMAND bindgen_test
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+  # End-to-end: run the `bindgen` binary on a header, then feed the generated
+  # module back to `oskel -c`, so the tool and the compiler cannot drift apart.
+  add_test(NAME bindgen.end_to_end
+    COMMAND ${CMAKE_COMMAND}
+      "-DBINDGEN_EXE=$<TARGET_FILE:bindgen>"
+      "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+      "-DBINDGEN_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/tests/bindgen/sample.h"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_bindgen_case.cmake")
+
   # --- REPL scripted test (clear) ---
   add_test(NAME repl.clear
     COMMAND ${CMAKE_COMMAND}
@@ -217,6 +250,7 @@ if(BUILD_TESTING)
     COMMAND ${CMAKE_COMMAND}
       "-DOSKEL_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
       "-DOSKEL_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+      "-DOSKEL_EXE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}"
       "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/21_std_math.oskl"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_stdlib.cmake")
 
