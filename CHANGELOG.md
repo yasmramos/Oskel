@@ -255,6 +255,15 @@ may change between minor versions.
 
 ### Fixed
 
+- AOT: a negative string index now counts code points from the end, like the
+  hosted engine. `"abc"[-1]` is `"c"` and `"héllo"[-1]` is `"o"` in the VM, but
+  the string branch of `oskel_table_get` passed the raw index straight to
+  `utf8CharAt`, which walks forward only, so a compiled binary reported "index
+  out of range" and exited 70 on a program the VM accepts. The branch now
+  rebases a negative index against the code-point length (the same rule
+  `ops::normalizeIndex` applies to an array index), so the VM and the AOT
+  backend agree; an out-of-range index still reports the error. Covered by
+  `tests/freestanding_test.cpp` (`test_negative_string_index`).
 - AOT: `arr.push`/`arr.pop` now work in a compiled binary. The hosted engine
   binds both to a native closure that captures its receiver, so `a.push(3)`
   appends in place and returns the array, and `a.pop()` removes and returns the

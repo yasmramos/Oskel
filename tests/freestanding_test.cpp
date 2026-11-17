@@ -406,6 +406,30 @@ static void test_collections() {
   check(result.exitCode == 0, "a program using collections exits 0 through _start");
 }
 
+// A negative string index counts code points from the end, exactly like a
+// negative array index (`ops::normalizeIndex`). `utf8CharAt` walks forward only,
+// so the string branch of `oskel_table_get` must rebase the index against the
+// code-point length first; before that it passed the raw index through and a
+// program the VM accepts (`"abc"[-1]` is `"c"`) faulted with "index out of
+// range". The out-of-range cases must still report the error and exit 70.
+static void test_negative_string_index() {
+  Bytecode proto = compileSource(
+      "print(\"abc\"[-1]);\n"
+      "print(\"abc\"[-3]);\n"
+      "print(\"héllo\"[-1]);\n"
+      "print(\"héllo\"[-5]);\n");
+  RunResult result = buildAndRun("/tmp/oskel_negative_string_index", proto);
+  check(result.output == "c\na\no\nh\n",
+        "a negative string index counts code points from the end");
+  check(result.exitCode == 0, "a program with a negative string index exits 0");
+
+  Bytecode tooLow = compileSource("print(\"abc\"[-5]);\n");
+  RunResult low = buildAndRun("/tmp/oskel_negative_string_index_low", tooLow);
+  check(low.exitCode == 70, "a too-negative string index exits 70");
+  check(low.output.find("index out of range") != std::string::npos,
+        "a too-negative string index reports the range error");
+}
+
 // The hidden helpers for PHASE 6.5 features that lower to a call (PHASE 7c.4a):
 // `$nonNull` (`a!!`) and `$isError` (`try` / `x catch y`). Before this slice the
 // backend rejected both with `global '$nonNull'/'$isError' is read but never
@@ -1781,6 +1805,7 @@ int main() {
   test_boxed_runtime_float_mod();
   test_builtin_print();
   test_collections();
+  test_negative_string_index();
   test_hidden_helpers();
   test_hidden_helpers_non_null_failure();
   test_str_helper();
