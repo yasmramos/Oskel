@@ -251,6 +251,20 @@ static void test_interrupt_setup_is_present() {
                                      0x48, 0xC7, 0xC0, 0x36, 0x00, 0x00, 0x00, 0xEE};
   check(contains(pitCommand, sizeof pitCommand),
         "the prelude programs the PIT (mode 3 to port 0x43)");
+
+  // The keyboard slice: the master PIC mask 0xFC unmasks IRQ1 alongside IRQ0,
+  // and the IRQ1 handler is present. `mov dx, 0x21; mov al, 0xFC; out dx, al`
+  // pins the mask, and the ASCII tables pin the translation.
+  const std::uint8_t picMaskIrq1[] = {0x48, 0xC7, 0xC2, 0x21, 0x00, 0x00, 0x00,
+                                      0x48, 0xC7, 0xC0, 0xFC, 0x00, 0x00, 0x00, 0xEE};
+  check(contains(picMaskIrq1, sizeof picMaskIrq1),
+        "the prelude unmasks the keyboard IRQ (mask 0xFC to port 0x21)");
+
+  // The two scancode tables end with the space key (0x39) entry, so finding a
+  // run of the unshifted lowercase row pins the unshifted table.
+  const std::uint8_t asciiRow[] = {'q', 'w', 'e', 'r', 't', 'y', 'u', 'i'};
+  check(contains(asciiRow, sizeof asciiRow),
+        "the image carries the scancode-to-ASCII table");
 }
 
 // ------------------------------------------------------------ QEMU end to end
@@ -536,6 +550,87 @@ static void test_qemu_fault_reports() {
          + pfResult.output + "]").c_str());
 }
 
+// The keyboard slice end to end. The guest injects its own keystrokes through
+// the i8042 controller (`0xD2` queues a scancode in the output buffer, which
+// raises IRQ1) and then runs a program that calls `input`. That makes the test
+// deterministic and host-independent: no `sendkey` reaches the guest reliably,
+// so the *guest* is the one typing. The program's `input` must return exactly
+// the injected line, which only happens if the IRQ1 handler translated the
+// scancodes and the ring buffer carried them to the `oskel_read` thunk.
+static void test_qemu_keyboard() {
+  const std::string source =
+      "var line = input(\"> \");\n"
+      "print(\"got:\", line);\n";
+
+  Bytecode bytecode = compileSource(source);
+  LoweredChunk chunk = lowerToX64(Target::bareMetalX64(), bytecode, CodeGen{});
+  std::vector<std::uint8_t> code = chunk.code;
+
+  // Find the preamble's `sti; call mainEntry` (FB E8). It is the one point
+  // where interrupts are on and the IDT is installed, so it is where the
+  // injection stub must run.
+  std::size_t callSite = code.size();
+  for (std::size_t i = 0; i + 6 <= code.size(); ++i) {
+    if (code[i] == 0xFB && code[i + 1] == 0xE8) { callSite = i + 1; break; }
+  }
+  check(callSite != code.size(), "the preamble has a sti; call to hook");
+  const std::int32_t rel = static_cast<std::int32_t>(read32(code, callSite + 1));
+  const std::uint64_t mainAddr =
+      kBMCodeBase + callSite + 5 + static_cast<std::int64_t>(rel);
+
+  // The injection stub: for each scancode, wait until the i8042 output buffer
+  // is empty (status bit 0 clear), then queue it with command 0xD2. The IRQ1
+  // handler reads the data port, which clears the buffer for the next byte.
+  const std::uint8_t scancodes[] = {0x23, 0x17, 0x1C};  // 'h', 'i', Enter
+  CodeGen stub(Target::bareMetalX64());
+  for (std::uint8_t sc : scancodes) {
+    CodeGen::Label wait = stub.newLabel();
+    stub.bind(wait);
+    stub.movImm(X64Reg::Rdx, 0x64);
+    stub.inDxAl();
+    stub.testAlImm8(0x01);
+    stub.jcc(Jcc::Ne, wait);
+    stub.movImm(X64Reg::Rdx, 0x64);
+    stub.movImm(X64Reg::Rax, 0xD2);
+    stub.outDxAl();
+    stub.movImm(X64Reg::Rdx, 0x60);
+    stub.movImm(X64Reg::Rax, sc);
+    stub.outDxAl();
+  }
+  stub.finalize();
+  const std::vector<std::uint8_t> stubBytes = stub.code();
+
+  const std::size_t stubOffset = code.size();
+  code.insert(code.end(), stubBytes.begin(), stubBytes.end());
+  // `jmp mainEntry` back to the program, emitted by hand because the target
+  // lies outside this small emitter.
+  const std::size_t jmpAt = code.size();
+  code.push_back(0xE9);
+  const std::int64_t jmpRel = static_cast<std::int64_t>(mainAddr) -
+                              static_cast<std::int64_t>(kBMCodeBase + jmpAt + 5);
+  for (int i = 0; i < 4; ++i) {
+    code.push_back(static_cast<std::uint8_t>((jmpRel >> (8 * i)) & 0xFF));
+  }
+
+  // Retarget the preamble's `call mainEntry` at the stub.
+  const std::int64_t callRel = static_cast<std::int64_t>(kBMCodeBase + stubOffset) -
+                               static_cast<std::int64_t>(kBMCodeBase + callSite + 5);
+  for (int i = 0; i < 4; ++i) {
+    code[callSite + 1 + i] = static_cast<std::uint8_t>((callRel >> (8 * i)) & 0xFF);
+  }
+
+  std::vector<std::uint8_t> elf =
+      buildBareMetalElf(Target::bareMetalX64(), code, chunk.processEntry);
+  const std::string path = tempPath("oskel_bare_metal_keyboard.elf");
+  writeFile(path, elf);
+
+  BootResult result = boot(path);
+  check(result.booted, "the keyboard program boots and reaches the exit port");
+  check(result.output == "> got: hi\n",
+        ("the injected line reaches input [" + result.output + "]").c_str());
+  check(result.exitCode == 0, "the keyboard program exits with code 0");
+}
+
 static void test_qemu_timer_tick() {
   // A program that never returns. With interrupts enabled and the PIC/PIT
   // programmed, the timer fires, the handler acknowledges the PIC and returns
@@ -573,6 +668,7 @@ int main() {
     test_qemu_wall_clock();
     test_qemu_float_arithmetic();
     test_qemu_fault_reports();
+    test_qemu_keyboard();
     test_qemu_timer_tick();
   } else if (qemuRequired()) {
     // CI installs QEMU on purpose: its absence there means the runner setup
