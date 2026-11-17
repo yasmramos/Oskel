@@ -102,6 +102,7 @@ Smaller programs, each focused on one area.
 | `builtins.oskl` | The public standard-library builtins. |
 | `imports.oskl` | The four Java-style `import` forms, with `examples/modules/geometry.oskl`. |
 | `math_imports.oskl` | The `std.math` standard library through every import form. |
+| `json.oskl` | The `std.json` standard library: parsing, serializing and the value mapping. |
 | `wordcount.oskl` | A map-based frequency count. |
 | `full.oskl` | A single program that touches most features; prints `full_example_output.txt`. |
 

@@ -1,0 +1,56 @@
+// The `std.json` standard library: parsing, serializing and the JSON/Oskel
+// value mapping, through every import form.
+//
+// JSON maps onto Oskel's own values — null → nil, object → map, array → array,
+// number → int|double — so a round trip through `stringify`/`parse` returns an
+// equal value and there is no separate JSON tree to walk.
+
+// 1. Qualified: the module is bound under its path.
+import std.json;
+print("scalar = ${std.json.parse("42")}");
+print("nested = ${std.json.stringify(std.json.parse("[1, [2, [3]]]"))}");
+
+// 2. Wildcard: every public name enters the scope unqualified.
+import std.json.*;
+print("bool   = ${parse("true")} ${parse("false")}");
+print("null   = ${parse("null")}");
+
+// A small configuration document: the kind of thing a program reads from a
+// file, edits as a map, and writes back.
+let config = {
+  name: "demo",
+  version: 2,
+  debug: true,
+  limits: {retries: 3, timeout: 1.5},
+  tags: ["alpha", "beta"],
+};
+
+let text = stringify(config);
+print("compact = ${text}");
+
+let loaded = parse(text);
+print("name    = ${loaded.name}");
+print("retries = ${loaded.limits.retries}");
+print("tags    = ${loaded.tags[0]}, ${loaded.tags[1]}");
+
+// 3. Alias: bound under a shorter name.
+import std.json as json;
+print("pretty  =");
+print(json.stringify(loaded, 2));
+
+// 4. Selective: only the listed names enter the scope.
+import { isValid, tryParse } from std.json;
+print("isValid = ${isValid("{\"a\": 1}")} ${isValid("{bad}")}");
+
+// `tryParse` reports a failure instead of aborting, so a program can recover.
+let result = tryParse("[1, 2");
+print("tryParse ok = ${result.ok}, error = ${result.error}");
+
+// The escapes are the inverse of the parser's: a string with control
+// characters survives the round trip unchanged.
+let tricky = "line\n\ttab \"quote\" \\slash";
+print("escaped = ${stringify(tricky)}");
+print("round   = ${parse(stringify(tricky)) == tricky}");
+
+// A number that does not fit the 64-bit range stays a double.
+print("big     = ${parse("100000000000000000000")}");

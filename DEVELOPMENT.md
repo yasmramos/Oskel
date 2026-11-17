@@ -420,6 +420,17 @@ previous one.
   `PI`/`E` are constants. Moving the four C++ builtins out keeps the host
   registry small while the standard library stays mostly Oskel. See
   `docs/language.md` §12.3/§18 and `tests/21_std_math.oskl`.
+- **Standard library: `std.json`** — **done**: a pure-Oskel module for parsing
+  and serializing JSON. It maps JSON onto Oskel's own values (null → `nil`,
+  number → `int`|`double`, object → `map`, array → `array`), so no new runtime
+  type, opcode or builtin is added, and exposes `parse`, `isValid`, `tryParse`
+  and `stringify` (compact or indented). The module is written over the portable
+  primitive surface (indexing, slicing, `len`, `ord`/`chr`,
+  `int`/`double`/`str`/`type`, `panic`, `for ... in`, closures), avoiding the
+  collection/string methods and `pcall`/`error` the AOT backend does not
+  implement yet, so it behaves identically on the VM and under `oskel build`.
+  See `docs/language.md` §12.9/§18, `tests/55_std_json.oskl` and the AOT
+  fixture `tests/native_build_json.oskl`.
 
 ### PHASE 6.6 — FFI with C (1.0)
 

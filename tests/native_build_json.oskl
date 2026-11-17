@@ -1,0 +1,28 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): `std.json` under the
+// AOT backend.
+//
+// `std.json` is written in plain Oskel over the portable primitive surface
+// (indexing, slicing, `len`, `ord`/`chr`, `int`/`double`/`str`/`type`, `panic`,
+// `for ... in`), so it must build to a native binary and agree with the
+// development VM byte for byte. This guards the module against a future edit
+// that reaches for a collection or string method (`.split`, `.map`, `.join`,
+// ...) or `pcall`/`error`, none of which the AOT backend implements yet
+// (DEVELOPMENT.md PHASE 7f), which would otherwise break a native build.
+
+import std.json;
+import std.json.*;
+
+print("scalar =", parse("42"), parse("3.5"), parse("true"), parse("null"));
+print("string =", parse("\"a\\nb\\u0041\""));
+print("array =", stringify(parse("[1, 2, [3, null]]")));
+print("object =", stringify({"a": 1, "b": [true, nil, "x"]}));
+
+let doc = {"name": "Ada", "age": 36, "tags": ["a", "b"], "meta": {"ok": true}};
+let text = stringify(doc);
+print("round trip =", stringify(parse(text)) == text);
+print("pretty =");
+print(stringify({"a": [1, {"b": 2}]}, 2));
+
+print("valid =", isValid("{\"a\": 1}"), isValid("{bad}"));
+print("tryParse ok =", tryParse("[1, 2]").ok);
+print("tryParse bad =", tryParse("[1, 2").ok, tryParse("[1, 2").error);
