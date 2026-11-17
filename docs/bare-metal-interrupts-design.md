@@ -51,9 +51,32 @@ Concretely, after this slice the prelude:
 4. Adds a returning handler: the tick stub ends in `iretq`, not a halt loop.
 5. Enables interrupts (`sti`) immediately before it runs the program.
 
-The observable proof is a program that spins forever while the handler fires
-three times, prints a line on each tick and then exits — the first two ticks
-only happen if the handler returned.
+The observable proof is a program that spins forever: the handler fires on
+every tick, acknowledges the PIC and returns, and after a fixed tick ceiling it
+prints one line and exits. The ceiling is only reached if the handler returned
+on every tick before it.
+
+> **Revision after implementation (tick output).** The first version of this
+> design printed a line *per tick*. Measuring it on QEMU showed why that is
+> wrong: the PIT is wall-clock driven and the prelude enables interrupts just
+> before the program runs, so even a trivial program already spans at least one
+> tick (a plain `print` boot captures exactly one). A per-tick line therefore
+> interleaves with the program's own output and breaks every boot test that
+> compares stdout byte for byte -- `test_qemu_boot`,
+> `test_qemu_float_arithmetic` and `test_qemu_wall_clock` all failed with a
+> stray `tick` in front. The handler is now **silent on every tick**: it only
+> counts, acknowledges and returns, and prints its single line at the ceiling.
+> The tick count is kernel state, not console noise. The ceiling is set high
+> enough (500 ticks = five seconds) that no program which returns on its own ever
+> reaches it, and the tick test's exit code is a dedicated value (`0x77`) so
+> the ceiling cannot be confused with a program returning that code.
+>
+> The ceiling started at three ticks (the design's "three ticks" test) and was
+> raised to 500 for the same reason: a ceiling of 100 (one second) still killed
+> a legitimate long-running program (a 20-million-iteration loop takes ~3.4 s of
+> guest time and was cut off). Five seconds clears every program the suite
+> boots -- the longest finishes in well under a second -- while the tick test
+> still terminates in a fixed, deterministic time.
 
 ## 3. Mandatory checklist (AGENTS.md)
 
@@ -99,16 +122,19 @@ dwords the stub pushed (vector + dummy error code) and `iretq`s:
 
 ```
 irqHandler:
-  push rax, rcx, rdx, rsi, rdi, r8, r9, r10, r11   ; the handler's scratch set
+  push rax, rcx, rdx, rsi, rdi, rbp, r8, r9, r10, r11   ; the handler's scratch set
   mov  rbp, rsp                                    ; save the interrupted rsp
   and  rsp, -16                                    ; 16-byte alignment for the call
-  ; ... tick work (increment counter, maybe write to COM1) ...
+  ; ... tick work (increment counter; at the ceiling, one COM1 line) ...
   mov  rsp, rbp                                    ; back to the interrupt frame
   mov  al, 0x20 ; mov dx, 0x20 ; out dx, al        ; EOI to the master PIC
-  pop  r11, r10, r9, r8, rdi, rsi, rdx, rcx, rax
+  pop  r11, r10, r9, r8, rbp, rdi, rsi, rdx, rcx, rax
   add  rsp, 16                                     ; drop vector + error code
   iretq
 ```
+
+`rbp` is in the set because the interrupted code may be using it as a frame
+pointer (every lowered frame does); it doubles as the saved-`rsp` slot below.
 
 (The alignment detail is why `rbp` appears: the interrupted `rsp` is not known
 to be 16-byte aligned, so the handler must save and restore it around the
@@ -188,12 +214,16 @@ set already follows (`include/native/codegen.h:300-321`). Each gets a
 byte-exact case in `tests/codegen_test.cpp` next to the existing `cli`/`hlt`
 checks (`tests/codegen_test.cpp:91-97`).
 
-### D7 — The handler's work is a counter, then a serial write
+### D7 — The handler's work is a counter, and a serial write only at the ceiling
 
-The tick handler increments the `.bss` counter. To make the tick observable
-without a driver, the handler writes a fixed line to COM1 through the existing
-`handles.write` thunk (`oskel_write`, `src/native/bare_metal.cpp:406`). The
-write is the runtime's own polling loop, which is safe in interrupt context
+The tick handler increments the `.bss` counter on every tick and returns. It is
+silent until the tick ceiling, where it writes one line to COM1 through the
+existing `handles.write` thunk (`oskel_write`, `src/native/bare_metal.cpp:406`)
+and exits. A per-tick write would interleave with the program's own output (see
+the revision note in §2); the counter is the mechanism, the ceiling line is the
+observable.
+
+The write is the runtime's own polling loop, which is safe in interrupt context
 because it touches only rax/rdx/r8/r9/r10 — all of which the handler saves
 (D2).
 
@@ -256,21 +286,22 @@ These pin the setup so a future edit cannot silently drop the remap or the
 program that spins forever:
 
 ```oskl
-while (true) { }
+while (true) { i = i + 1; }
 ```
 
-The prelude's handler prints one line per tick and exits after three. The
-test asserts the serial output is exactly `tick\ntick\ntick\n` and the exit
-code is 0. The first two lines only appear if the handler returned twice, so
-the case proves the `iretq` path, not just that the timer fired. It is
-deterministic because the boot ends at a fixed tick count, not at a wall-clock
-timeout.
+The prelude's handler counts every tick, acknowledges and returns, and at the
+ceiling (500 ticks) prints one line and exits. The test asserts the serial
+output is exactly `tick limit\n` and the exit code is `0x77`. The count
+reaching the ceiling only happens if every tick's handler returned, so the case
+proves the `iretq` path, not just that the timer fired. It is deterministic
+because the boot ends at a fixed tick count, not at a wall-clock timeout.
 
-The existing `test_qemu_boot`, `test_qemu_float_arithmetic` and
-`test_qemu_fault_reports` must keep passing unchanged: a program that returns
-before three ticks still exits through `oskel_exit`, and a fault still halts
-with a trace. The fault tests also confirm D1 — vector 6 and vector 14 still
-reach the fatal handler.
+The existing `test_qemu_boot`, `test_qemu_float_arithmetic`,
+`test_qemu_wall_clock` and `test_qemu_fault_reports` must keep passing
+unchanged: a program that returns before the ceiling still exits through
+`oskel_exit` with its stdout untouched, and a fault still halts with a trace.
+The fault tests also confirm D1 — vector 6 and vector 14 still reach the fatal
+handler.
 
 ## 7. What this unlocks, and what it does not
 
@@ -283,6 +314,11 @@ Does not do: scheduling, context switching, per-interrupt stacks, the APIC
 writing handlers in Oskel (rather than in the prelude) is a language-surface
 question that stays out of this backend-only change.
 
+The tick ceiling is a watchdog, not a scheduler: it exists only so a program
+that never returns cannot hang a headless test run forever. A real kernel would
+replace it with a scheduler that hands the CPU to another task, which is why
+the ceiling is a named constant and not a hard-coded loop count.
+
 ## 8. Risks
 
 - **The `sti` window.** Enabling interrupts before the program runs means any
@@ -290,8 +326,18 @@ question that stays out of this backend-only change.
   IDT is installed *before* `sti` (D4), so a fault is still reported, not a
   triple fault.
 - **A wrong EOI.** A missing or misplaced EOI wedges IRQ0 after the first
-  tick. Mitigation: the three-tick test fails loudly if the second tick never
-  arrives, which is exactly the symptom.
+  tick. Mitigation: the tick test fails loudly if the ceiling is never
+  reached, which is exactly the symptom.
+- **Tick output polluting stdout.** A per-tick print would interleave with the
+  program's own output (a trivial program already spans a tick). Mitigation:
+  the handler is silent per tick and prints only at the ceiling, so a program
+  that returns on its own has byte-identical stdout; the boot tests assert
+  that byte for byte.
+- **The ceiling cutting off a long program.** A ceiling set too low kills a
+  program that legitimately runs for a while (100 ticks = one second was not
+  enough for a 20-million-iteration loop). Mitigation: the ceiling is five
+  seconds of guest time, above everything the suite boots, and it is a named
+  constant so the value is visible in one place.
 - **`.bss` layout drift.** Moving the stack and the arena can break the
   structural test or the loader if the two are not updated together.
   Mitigation: the offset constants live in one place

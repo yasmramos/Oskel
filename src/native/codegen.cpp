@@ -856,7 +856,14 @@ void CodeGen::ud2() {
 
 void CodeGen::cli() { emitByte(0xFA); }
 
+void CodeGen::sti() { emitByte(0xFB); }
+
 void CodeGen::cld() { emitByte(0xFC); }
+
+void CodeGen::iretq() {
+  emitByte(0x48);  // REX.W: the 64-bit `iret` form
+  emitByte(0xCF);
+}
 
 void CodeGen::pushImm8(std::int32_t value) {
   emitByte(0x6A);

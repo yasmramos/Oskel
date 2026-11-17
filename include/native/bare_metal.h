@@ -49,10 +49,11 @@ constexpr std::uint32_t kMultibootFlags = 0x00000000;
 // then the entry point.
 constexpr std::uint64_t kBMPreambleHeaderBytes = 12;
 
-// Size of the `.bss` region the image reserves: the page tables, the boot
-// stack and the arena.
+// Size of the `.bss` region the image reserves: the page tables, a page of
+// kernel data, the boot stack and the arena.
 constexpr std::uint64_t kBMBssBytes =
-    (0x3000 /* page tables */ + 0x4000 /* 16 KiB stack */) +
+    (0x3000 /* page tables */ + 0x1000 /* kernel data */ +
+     0x4000 /* 16 KiB stack */) +
     (1 << 20); /* arena, matching kAotArenaSize */
 
 // Appends the multiboot header, the 32-bit long-mode trampoline, its GDT and

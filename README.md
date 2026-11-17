@@ -313,9 +313,14 @@ boot is exercised by `tests/bare_metal_test.cpp` when `qemu-system-x86_64` is on
 `PATH`.
 
 The prelude reports CPU *exceptions* (it installs an IDT and prints a trace
-before halting); it does not yet service *interrupts* from devices. The design
-for that next step — remapping the PIC, programming the timer, and returning
-from a handler with `iretq` — is in
+before halting) and now *services* the timer: it remaps the 8259 PIC onto
+vectors 0x20-0x2F, programs the 8254 PIT at 100 Hz, unmasks only IRQ0 and
+enables interrupts (`sti`) once the IDT and the PIC are ready. The timer
+handler acknowledges the PIC and returns with `iretq` — a real interrupt
+service loop, kept separate from the fatal fault handler. The tick count is
+kernel state (the handler is silent per tick); after 500 ticks a program that
+never returns gets one `tick limit` line and a dedicated exit code. The design
+lives in
 [docs/bare-metal-interrupts-design.md](docs/bare-metal-interrupts-design.md).
 
 ## Tests

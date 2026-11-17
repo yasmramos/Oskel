@@ -299,13 +299,20 @@ class CodeGen {
 
   // Privileged and port-I/O instructions the bare-metal prelude needs. A
   // kernel has no libc to reach the hardware with, so these are the only way
-  // to talk to a device: `cli` masks interrupts, `hlt` stops the CPU until the
-  // next interrupt (an exit with no OS to return to is a `cli; hlt` loop), and
-  // `out dx, al` / `in al, dx` are the x86 port-I/O pair the 16550 serial port
-  // is driven through. Each is one instruction, so they keep the 1:1 budget.
+  // to talk to a device: `cli`/`sti` mask and unmask interrupts, `hlt` stops
+  // the CPU until the next interrupt (an exit with no OS to return to is a
+  // `cli; hlt` loop), `iretq` is how an interrupt handler gives the CPU back
+  // to the interrupted code, and `out dx, al` / `in al, dx` are the x86
+  // port-I/O pair the 16550 serial port, the 8259 PIC and the 8254 PIT are
+  // driven through. Each is one instruction, so they keep the 1:1 budget.
   void cli();       // FA: clear interrupt flag
+  void sti();       // FB: set interrupt flag
   void hlt();       // F4: halt until the next interrupt
   void cld();       // FC: clear direction flag (rep movsb runs upward)
+  // `iretq` (REX.W + CF): pop RIP, CS and RFLAGS (and RSP, SS when returning
+  // to a different ring) off the interrupt frame and resume. Only a handler
+  // that ends here returns; the fault handler deliberately does not.
+  void iretq();
   // `push imm8` (6A ib): the interrupt stubs push their vector number and a
   // dummy error code. The immediate is sign-extended to 64 bits, which is
   // harmless -- the fault handler only reads the low byte.
