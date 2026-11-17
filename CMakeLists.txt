@@ -342,6 +342,19 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `**` with a float/double operand or a negative exponent (PHASE 7c.1d.2).
+    # It used to lower only for int/int with a non-negative exponent; every
+    # other numeric pair failed with the unsupported-operand error, so a program
+    # the VM accepted did not run under `oskel build`. The float path shares the
+    # embedded musl `pow` with the `pow` builtin and follows the hosted
+    # `makeNumeric` type rule; the binary must agree with the VM, `type` included.
+    add_test(NAME oskel.build_binary_pow
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_pow"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_pow.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # A recursive program with a non-trivial frame checks the process stack the
     # loader hands the binary: the AOT runtime has no call-depth guard, so the
     # reserve must be large enough for the recursion the VM accepts. The
@@ -385,6 +398,18 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_TEST_NAME=oskel.build_binary_json"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_json.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `std.datetime` is plain Oskel over the portable primitive surface, plus
+    # the `time()` builtin the AOT runtime binds as the `now` handle (a syscall,
+    # libc, a Win32 call or the CMOS RTC, one per target). The fixture is the
+    # guard that keeps the module off the collection/string methods and
+    # `pcall`/`error`, and that proves the wall clock works on every AOT path.
+    add_test(NAME oskel.build_binary_datetime
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_datetime"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_datetime.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
     # An `extern "C"` symbol is a host binding the AOT backend cannot resolve

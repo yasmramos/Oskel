@@ -1,0 +1,96 @@
+// The `std.datetime` standard library: civil dates, wall-clock times, the Unix
+// epoch, ISO-8601, calendar arithmetic and the clock, through every import
+// form.
+//
+// A `Date` is a calendar day and a `DateTime` adds a time of day plus a UTC
+// offset. Both are plain maps, so they print, compare and nest like any other
+// value, and the module is pure Oskel: the same program runs on the VM and as
+// an `oskel build` binary.
+
+// 1. Qualified: the module is bound under its path.
+import std.datetime;
+print("qualified = ${std.datetime.iso(std.datetime.date(2024, 2, 29))}");
+
+// 2. Wildcard: every public name enters the scope unqualified.
+import std.datetime.*;
+
+// --- building a date --------------------------------------------------------
+
+let release = date(2024, 2, 29);
+print("date      = ${iso(release)}");
+print("leap      = ${isLeapYear(2024)} ${isLeapYear(1900)}");
+print("february  = ${daysInMonth(2024, 2)} ${daysInMonth(2023, 2)}");
+
+// A `Date` is a map: read its fields with `.`, compare it by value.
+print("fields    = ${release.year}-${release.month}-${release.day}");
+print("is a map  = ${type(release)}");
+
+// --- the Unix epoch ---------------------------------------------------------
+
+// `toDays` counts days from 1970-01-01; `fromDays` is its exact inverse.
+print("day count = ${toDays(release)}");
+print("inverse   = ${iso(fromDays(toDays(release)))}");
+
+// A `DateTime` carries its UTC offset in minutes as data.
+let meeting = datetime(2024, 1, 2, 3, 4, 5, -300);
+print("datetime  = ${iso(meeting)}");
+print("epoch     = ${toEpoch(meeting)}");
+print("utc       = ${iso(toUtc(meeting))}");
+
+// `fromEpoch` is the inverse, and applies the offset as a shift.
+print("from 0    = ${iso(fromEpoch(0))}");
+print("from 0 -5 = ${iso(fromEpoch(0, -300))}");
+print("round     = ${toEpoch(fromEpoch(toEpoch(meeting), meeting.offset)) == toEpoch(meeting)}");
+
+// --- calendar arithmetic ----------------------------------------------------
+
+// Adding days crosses month, year and leap boundaries with no special case.
+print("+1 day    = ${iso(addDays(date(2024, 2, 28), 1))}");
+print("-1 day    = ${iso(addDays(date(2024, 3, 1), -1))}");
+print("+1 month  = ${iso(addMonths(date(2024, 1, 31), 1))}");   // clamped to the 29th
+print("+12 month = ${iso(addMonths(date(2024, 1, 15), 12))}");
+print("+1 second = ${iso(addSeconds(datetime(2024, 1, 1, 23, 59, 59), 1))}");
+
+// --- components -------------------------------------------------------------
+
+print("weekday   = ${weekdayName(release)} (${weekday(release)})");
+print("month     = ${monthName(release)}");
+print("day of yr = ${dayOfYear(release)}");
+print("iso week  = ${isoWeekYear(release)}-W${isoWeek(release)}");
+print("between   = ${daysBetween(date(2024, 1, 1), date(2024, 3, 1))} days");
+
+// --- formatting and parsing -------------------------------------------------
+
+let stamp = datetime(2024, 1, 2, 3, 4, 5, 330);
+print("format    = ${format(stamp, "%Y-%m-%d %H:%M:%S %A %z")}");
+print("format    = ${format(stamp, "%a %b %d, %Y (%j)")}");
+
+let parsed = parse("2024-06-15T12:30:45+05:30");
+print("parsed    = ${iso(parsed)}");
+print("offset    = ${parsed.offset} minutes");
+print("round     = ${iso(parse(iso(stamp))) == iso(stamp)}");
+
+// A bare date parses to a `Date`, not a `DateTime`.
+let parsedDate = parse("2024-06-15");
+print("date only = ${iso(parsedDate)}, has time = ${parsedDate.hour != nil}");
+
+// `isValid`/`tryParse` test a string without aborting.
+print("valid     = ${isValid("2024-02-29")} ${isValid("2024-13-01")}");
+let bad = tryParse("not a date");
+print("tryParse  = ok ${bad.ok}, ${bad.error}");
+
+// --- the clock --------------------------------------------------------------
+
+// 3. Alias: bound under a shorter name.
+import std.datetime as dt;
+print("now year  = ${dt.now().year >= 2024}");   // the wall clock, read live
+print("today     = ${iso(dt.today())}");
+
+// 4. Selective: only the listed names enter the scope.
+import { now, today } from std.datetime;
+let here = now(0);
+let west = now(-300);
+// The same instant seen at two offsets: the epoch seconds agree, the wall clock
+// differs by exactly the offset.
+print("same time = ${toEpoch(here) == toEpoch(west)}");
+print("offset ok = ${toSeconds(here) - toSeconds(west) == 300 * 60}");

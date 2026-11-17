@@ -1,0 +1,276 @@
+// std.datetime: civil dates, wall-clock times, conversion to and from the Unix
+// epoch, ISO-8601 format and parse, calendar arithmetic and the clock.
+//
+// Every expected value here is the proleptic Gregorian calendar's, cross-checked
+// against a reference implementation. The module is pure Oskel, so the same
+// numbers must hold on the development VM and under `oskel build` on every AOT
+// target (see `tests/native_build_datetime.oskl`).
+
+import std.datetime;
+import std.datetime.*;
+
+// --- construction and validation -------------------------------------------
+
+assertEq(iso(date(2024, 2, 29)), "2024-02-29");
+assertEq(date(2024, 2, 29).year, 2024);
+assertEq(date(2024, 2, 29).month, 2);
+assertEq(date(2024, 2, 29).day, 29);
+// A date is a plain map (a struct value), so it prints and compares as one.
+assertEq(type(date(2024, 1, 1)), "map");
+assertEq(date(2024, 1, 1), {year: 2024, month: 1, day: 1});
+
+// The leap rule: divisible by 4, except centuries, except every 400 years.
+assert(isLeapYear(2024));
+assert(isLeapYear(2000));
+assert(!isLeapYear(1900));
+assert(!isLeapYear(2023));
+
+// `daysInMonth` follows the rule, and February is the only month that moves.
+assertEq(daysInMonth(2024, 2), 29);
+assertEq(daysInMonth(2023, 2), 28);
+assertEq(daysInMonth(2000, 2), 29);
+assertEq(daysInMonth(1900, 2), 28);
+assertEq(daysInMonth(2024, 4), 30);
+assertEq(daysInMonth(2024, 1), 31);
+assertEq(daysInMonth(2024, 12), 31);
+
+// --- days from civil, and the inverse --------------------------------------
+
+// The epoch is day zero; the day before is -1.
+assertEq(toDays(date(1970, 1, 1)), 0);
+assertEq(toDays(date(1969, 12, 31)), -1);
+assertEq(toDays(date(1970, 1, 2)), 1);
+assertEq(toDays(date(2000, 1, 1)), 10957);
+assertEq(toDays(date(2024, 2, 29)), 19782);
+assertEq(toDays(date(2024, 1, 1)), 19723);
+assertEq(toDays(date(2023, 1, 1)), 19358);
+
+// The round trip is exact for a spread of dates, including pre-epoch ones.
+assertEq(iso(fromDays(0)), "1970-01-01");
+assertEq(iso(fromDays(-1)), "1969-12-31");
+assertEq(iso(fromDays(10957)), "2000-01-01");
+assertEq(iso(fromDays(19782)), "2024-02-29");
+assertEq(iso(fromDays(toDays(date(1900, 2, 28)))), "1900-02-28");
+assertEq(iso(fromDays(toDays(date(2100, 3, 1)))), "2100-03-01");
+assertEq(iso(fromDays(toDays(date(1969, 7, 20)))), "1969-07-20");
+
+// A long run of consecutive days round-trips, so a single off-by-one in the
+// inverse would surface here.
+var day = toDays(date(1999, 12, 25));
+var cursor = 0;
+while (cursor < 400) {
+  assertEq(toDays(fromDays(day)), day);
+  day = day + 1;
+  cursor = cursor + 1;
+}
+
+// --- seconds since the epoch -----------------------------------------------
+
+let dt = datetime(2024, 1, 2, 3, 4, 5);
+assertEq(dt.hour, 3);
+assertEq(dt.minute, 4);
+assertEq(dt.second, 5);
+assertEq(dt.offset, 0);
+assertEq(toSeconds(dt), 1704164645);
+assertEq(toEpoch(dt), 1704164645);
+
+// The time-of-day components default to zero, so a date and a midnight
+// date-time agree on the epoch seconds.
+assertEq(toEpoch(datetime(2024, 1, 2)), toEpoch(dt) - 3 * 3600 - 4 * 60 - 5);
+assertEq(iso(datetime(2024, 1, 2)), "2024-01-02T00:00:00Z");
+
+// `fromEpoch` is the inverse, and applies the offset as a shift.
+assertEq(iso(fromEpoch(0)), "1970-01-01T00:00:00Z");
+assertEq(iso(fromEpoch(1704164645)), "2024-01-02T03:04:05Z");
+assertEq(iso(fromEpoch(0, -300)), "1969-12-31T19:00:00-05:00");
+assertEq(iso(fromEpoch(0, 60)), "1970-01-01T01:00:00+01:00");
+assertEq(toEpoch(fromEpoch(1704164645)), 1704164645);
+assertEq(toEpoch(fromEpoch(1704164645, -300)), 1704164645);
+
+// A negative instant (before 1970) round-trips through floor division.
+assertEq(toEpoch(fromEpoch(-1)), -1);
+assertEq(iso(fromEpoch(-1)), "1969-12-31T23:59:59Z");
+
+// --- the clock -------------------------------------------------------------
+
+// `now`/`today` read the wall clock, so only their shape is asserted: an
+// ISO-8601 string of the right length and a plausible year. The exact value
+// changes every second.
+let current = now();
+assertEq(len(iso(current)), 20);          // YYYY-MM-DDTHH:MM:SSZ
+assertEq(type(current.hour), "int");
+assert(current.year >= 2024 && current.year < 2200);
+assertEq(current.offset, 0);
+
+// The same reading at another offset names the same instant (a second `now()`
+// call could tick over between them, so it is derived from `current`).
+let local = toOffset(current, -300);
+assertEq(local.offset, -300);
+assertEq(toEpoch(current), toEpoch(local));
+// And the local wall clock is five hours behind UTC.
+assertEq(toSeconds(current) - toSeconds(local), 300 * 60);
+
+let todayDate = today();
+assertEq(type(todayDate.hour), "nil");    // a Date, not a DateTime
+assert(todayDate.year >= 2024 && todayDate.year < 2200);
+// `today` is the date of the instant `now` reports at the same offset, up to
+// the sub-second boundary between the two calls.
+assert(daysBetween(todayDate, fromDays(toDays(current))) >= -1 &&
+       daysBetween(todayDate, fromDays(toDays(current))) <= 1);
+
+// --- zone conversion -------------------------------------------------------
+
+// The same instant at another offset keeps the epoch seconds and shifts the
+// wall clock.
+let instant = datetime(2024, 6, 1, 12, 0, 0, 0);
+let shifted = toOffset(instant, 120);
+assertEq(iso(shifted), "2024-06-01T14:00:00+02:00");
+assertEq(toEpoch(shifted), toEpoch(instant));
+assertEq(iso(toUtc(shifted)), "2024-06-01T12:00:00Z");
+// A west shift crosses midnight into the previous day.
+assertEq(iso(toOffset(datetime(2024, 6, 1, 1, 0, 0), -300)), "2024-05-31T20:00:00-05:00");
+
+// --- calendar arithmetic ---------------------------------------------------
+
+assertEq(iso(addDays(date(2024, 2, 28), 1)), "2024-02-29");
+assertEq(iso(addDays(date(2024, 2, 29), 1)), "2024-03-01");
+assertEq(iso(addDays(date(2024, 12, 31), 1)), "2025-01-01");
+assertEq(iso(addDays(date(2024, 1, 1), -1)), "2023-12-31");
+assertEq(iso(addDays(date(2024, 3, 1), -1)), "2024-02-29");
+// A DateTime keeps its time of day and offset.
+assertEq(iso(addDays(dt, 30)), "2024-02-01T03:04:05Z");
+assertEq(iso(addDays(datetime(2024, 1, 1, 6, 0, 0, -300), 1)), "2024-01-02T06:00:00-05:00");
+
+assertEq(iso(addMonths(date(2024, 1, 31), 1)), "2024-02-29");
+assertEq(iso(addMonths(date(2024, 1, 31), 2)), "2024-03-31");
+assertEq(iso(addMonths(date(2024, 3, 31), -1)), "2024-02-29");
+assertEq(iso(addMonths(date(2024, 12, 15), 1)), "2025-01-15");
+assertEq(iso(addMonths(date(2024, 1, 15), 12)), "2025-01-15");
+assertEq(iso(addMonths(date(2024, 1, 15), -1)), "2023-12-15");
+assertEq(iso(addMonths(dt, 1)), "2024-02-02T03:04:05Z");
+
+assertEq(iso(addSeconds(datetime(2024, 1, 1, 0, 0, 0), 60)), "2024-01-01T00:01:00Z");
+assertEq(iso(addSeconds(datetime(2024, 1, 1, 0, 0, 0), 86400)), "2024-01-02T00:00:00Z");
+assertEq(iso(addSeconds(datetime(2024, 1, 1, 0, 0, 0), -1)), "2023-12-31T23:59:59Z");
+
+// --- differences -----------------------------------------------------------
+
+assertEq(daysBetween(date(2024, 1, 1), date(2024, 3, 1)), 60);
+assertEq(daysBetween(date(2024, 3, 1), date(2024, 1, 1)), -60);
+assertEq(daysBetween(date(2024, 1, 1), date(2024, 1, 1)), 0);
+assertEq(daysBetween(date(2024, 2, 28), date(2024, 3, 1)), 2);
+assertEq(secondsBetween(datetime(2024, 1, 1, 0, 0, 0), datetime(2024, 1, 1, 0, 1, 30)), 90);
+
+// --- components ------------------------------------------------------------
+
+// 1970-01-01 was a Thursday; the weekday is 1 (Monday) through 7 (Sunday).
+assertEq(weekday(date(1970, 1, 1)), 4);
+assertEq(weekday(date(2024, 1, 1)), 1);
+assertEq(weekday(date(2024, 2, 29)), 4);
+assertEq(weekday(date(2000, 1, 1)), 6);
+assertEq(weekdayName(date(2024, 1, 1)), "Monday");
+assertEq(weekdayName(date(2024, 2, 29)), "Thursday");
+assertEq(monthName(date(2024, 1, 1)), "January");
+assertEq(monthName(date(2024, 12, 1)), "December");
+assertEq(dayOfYear(date(2024, 1, 1)), 1);
+assertEq(dayOfYear(date(2024, 2, 29)), 60);
+assertEq(dayOfYear(date(2024, 12, 31)), 366);
+assertEq(dayOfYear(date(2023, 12, 31)), 365);
+
+// The ISO week belongs to the year holding its Thursday, so 2000-01-01 (a
+// Saturday) is week 52 of 1999, and 2023-01-01 (a Sunday) is week 52 of 2022.
+assertEq(isoWeek(date(2024, 1, 1)), 1);
+assertEq(isoWeekYear(date(2024, 1, 1)), 2024);
+assertEq(isoWeek(date(2000, 1, 1)), 52);
+assertEq(isoWeekYear(date(2000, 1, 1)), 1999);
+assertEq(isoWeek(date(2023, 1, 1)), 52);
+assertEq(isoWeekYear(date(2023, 1, 1)), 2022);
+assertEq(isoWeek(date(2024, 2, 29)), 9);
+
+// --- formatting ------------------------------------------------------------
+
+assertEq(iso(date(2024, 1, 2)), "2024-01-02");
+assertEq(iso(datetime(2024, 1, 2, 3, 4, 5, 0)), "2024-01-02T03:04:05Z");
+assertEq(iso(datetime(2024, 1, 2, 3, 4, 5, 330)), "2024-01-02T03:04:05+05:30");
+assertEq(iso(datetime(2024, 1, 2, 3, 4, 5, -300)), "2024-01-02T03:04:05-05:00");
+assertEq(isoLocal(datetime(2024, 1, 2, 3, 4, 5, -300)), "2024-01-02T03:04:05");
+
+assertEq(format(dt, "%Y-%m-%d"), "2024-01-02");
+assertEq(format(dt, "%H:%M:%S"), "03:04:05");
+assertEq(format(dt, "%A, %B %d"), "Tuesday, January 02");
+assertEq(format(dt, "%a %b"), "Tue Jan");
+assertEq(format(dt, "%j"), "002");
+assertEq(format(dt, "%z"), "Z");
+assertEq(format(datetime(2024, 1, 2, 0, 0, 0, -300), "%z"), "-05:00");
+assertEq(format(dt, "100%% sure"), "100% sure");
+assertEq(format(dt, "%q"), "%q");            // an unknown directive is copied
+assertEq(format(date(2024, 2, 29), "%Y/%m/%d"), "2024/02/29");
+
+// --- parsing ---------------------------------------------------------------
+
+// A bare date yields a Date; a date and time yields a DateTime.
+let parsedDate = parse("2024-01-02");
+assertEq(iso(parsedDate), "2024-01-02");
+assertEq(type(parsedDate.hour), "nil");
+
+let parsed = parse("2024-01-02T03:04:05Z");
+assertEq(iso(parsed), "2024-01-02T03:04:05Z");
+assertEq(parsed.hour, 3);
+assertEq(parsed.offset, 0);
+assertEq(toEpoch(parsed), 1704164645);
+
+assertEq(iso(parse("2024-01-02T03:04:05")), "2024-01-02T03:04:05Z");
+assertEq(parse("2024-01-02T03:04:05+05:30").offset, 330);
+assertEq(iso(parse("2024-01-02T03:04:05-05:00")), "2024-01-02T03:04:05-05:00");
+assertEq(toEpoch(parse("2024-01-02T03:04:05+01:00")), 1704164645 - 3600);
+
+// The round trip through `iso` is exact for a spread of values.
+let samples = [
+  date(2024, 2, 29),
+  date(1999, 12, 31),
+  date(2100, 1, 1),
+  datetime(2024, 1, 2, 0, 0, 0),
+  datetime(2024, 1, 2, 23, 59, 59, -300),
+  datetime(2024, 6, 15, 12, 30, 45, 330),
+];
+for sample in samples {
+  assertEq(iso(parse(iso(sample))), iso(sample));
+}
+
+// --- invalid input is rejected ---------------------------------------------
+
+// A malformed string must not parse. `isValid` is the non-aborting probe, so
+// the test uses it (and `tryParse`) rather than `parse`, which panics.
+assert(isValid("2024-02-29"));
+assert(isValid("2024-02-29T12:30:45Z"));
+assert(isValid("2024-02-29T12:30:45+05:30"));
+assert(!isValid("2024-13-01"));      // month out of range
+assert(!isValid("2024-02-30"));      // day out of range for the month
+assert(!isValid("2023-02-29"));      // a leap day in a common year
+assert(!isValid("2024-00-01"));
+assert(!isValid("2024-01-00"));
+assert(!isValid("2024-01-32"));
+assert(!isValid("2024-1-02"));       // the field widths are fixed
+assert(!isValid("2024-01-02T25:00:00Z"));
+assert(!isValid("2024-01-02T12:60:00Z"));
+assert(!isValid("2024-01-02T12:00:60Z"));
+assert(!isValid("2024-01-02T12:00:00+24:00"));
+assert(!isValid("2024-01-02T12:00:00-00:60"));
+assert(!isValid("2024/01/02"));      // wrong separator
+assert(!isValid("2024-01-02x"));     // trailing junk after a valid date
+assert(!isValid("2024-01-02T12:00"));  // a time needs seconds
+assert(!isValid(""));
+assert(!isValid("not a date"));
+
+// `tryParse` reports the failure with a position instead of aborting, and the
+// success shape carries the value.
+let bad = tryParse("2024-13-01");
+assert(!bad.ok);
+assertEq(bad.value, nil);
+assert(len(bad.error) > 0);
+let good = tryParse("2024-02-29T12:30:45Z");
+assert(good.ok);
+assertEq(iso(good.value), "2024-02-29T12:30:45Z");
+assertEq(good.error, nil);
+
+print("datetime ok");

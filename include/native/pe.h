@@ -35,6 +35,7 @@ enum class PeImport : int {
   GetStdHandle,
   ExitProcess,
   VirtualAlloc,
+  GetSystemTimeAsFileTime,
   Count,
 };
 

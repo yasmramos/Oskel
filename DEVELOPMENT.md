@@ -438,6 +438,26 @@ previous one.
   implement yet, so it behaves identically on the VM and under `oskel build`.
   See `docs/language.md` §12.9/§18, `tests/55_std_json.oskl` and the AOT
   fixture `tests/native_build_json.oskl`.
+- **Standard library: `std.datetime`** — **done**: a pure-Oskel module for civil
+  dates and wall-clock times. A `Date`/`DateTime` is an ordinary map built by
+  the exported constructor functions (`date`, `datetime`), so no new runtime
+  type, opcode or builtin is added beyond `time()` (below). It offers the
+  `days_from_civil` algorithm, epoch conversion, calendar arithmetic,
+  differences, components, a `strftime`-like `format` and ISO-8601
+  `parse`/`iso`/`isValid`/`tryParse`. The module is written over the portable
+  primitive surface, avoiding the collection/string methods and `pcall`/`error`
+  the AOT backend does not implement yet, so it behaves identically on the VM and
+  under `oskel build`. See `docs/language.md` §12.10/§18,
+  `tests/56_std_datetime.oskl` and the AOT fixture
+  `tests/native_build_datetime.oskl`.
+- **Builtin `time()` and the AOT wall clock** — **done**: `time()` returns the
+  seconds since the Unix epoch as an `int` (`clock()` stays monotonic and
+  untouched). The AOT runtime binds it as the `now` handle on every path — a
+  syscall on Linux, `time(NULL)` hosted, `GetSystemTimeAsFileTime` on Windows
+  (a new kernel32 import), and the CMOS real-time clock in a bare-metal kernel
+  (the RTC's BCD/binary fields converted to a Unix timestamp in assembly) — so
+  `std.datetime.now()`/`today()` work everywhere. See `docs/language.md` §12.4
+  and `tests/bare_metal_test.cpp` (`test_qemu_wall_clock`).
 
 ### PHASE 6.6 — FFI with C (1.0)
 
@@ -770,11 +790,20 @@ Slices, each independently shippable:
       `tests/codegen_test.cpp` covers the new encodings byte for byte, and
       `tests/freestanding_test.cpp` prints doubles and floats from a real static
       ELF.
-    - **7c.1d.2** — `**` on floats. `std::pow` is *correctly rounded* (glibc,
-      ~0.5 ulp) and the hosted engine calls it; an x87 `2^(y·log2 x)` sequence
-      (`fyl2x`/`f2xm1`/`fscale`) does *not* reproduce it in the last digit, so
-      matching `std::pow` needs a correctly rounded implementation (large).
-      Deferred pending a fidelity decision.
+    - **7c.1d.2** (done) — `**` on floats. `std::pow` is *correctly rounded*
+      (glibc, ~0.5 ulp) and the hosted engine calls it. `oskel_pow` now takes
+      the same int/float/double promotion as `ops::binary`: int/int with a
+      non-negative exponent keeps the wrapping integer loop (`intPow`), and
+      every other numeric pair (a float/double operand, or a negative exponent)
+      converts to binary64, calls the embedded musl `pow` already used by the
+      `pow` builtin, and re-tags the result with `makeNumeric`'s rank rule —
+      binary32 only when at least one operand is a float and none is a double,
+      binary64 otherwise. The result type is decided *before* the call, since
+      `mathlib::pow` clobbers the volatile registers holding the operand tags.
+      `mathlib::pow` is correctly rounded to under 1 ulp, so the printed values
+      match glibc on the fixtures. `tests/lower_test.cpp` runs the four
+      promotion cases and `tests/native_build_pow.oskl` checks a real static
+      ELF against the VM, `type` included.
     - **7c.2a** (done) — globals. `GETGLOBAL`/`SETGLOBAL` lower to a flat
       `AotValue` table the chunk allocates from the arena once at entry (its
       base lives in r15, a callee-saved register no helper touches, so no
@@ -912,6 +941,18 @@ Slices, each independently shippable:
       untouched. Covered by `tests/lower_test.cpp` (push/pop as calls and as
       detached first-class values, an empty-array `pop`, a growing/draining
       accumulator) and the `oskel build` fixture.
+    - **7c.3d** (done) — negative string indexing. `ops::indexGet` normalizes a
+      string index like an array index (`normalizeIndex`): a negative index
+      counts UTF-8 code points from the end, so `"abc"[-1]` is `"c"`. The
+      string branch of `oskel_table_get` passed the raw index straight to
+      `utf8CharAt`, which only walks forward, so a compiled binary reported
+      "index out of range" and exited 70 on a program the VM accepts. The
+      branch now rebases a negative index against the code-point length
+      (`oskel_utf8_len`) before the lookup; a positive index skips the rebase
+      and an out-of-range index still reports the error, so the VM and the AOT
+      backend agree. No new opcode: it is the `GETTABLE` path the array branch
+      already normalizes. Covered by `tests/freestanding_test.cpp`
+      (`test_negative_string_index`, both the values and the error).
     - **7c.4a** (done) — the hidden `$nonNull` and `$isError` helpers. The
       compiler emits `$nonNull` for the non-null assertion `a!!` and `$isError`
       for `try` / `x catch y` (PHASE 6.5/6.7); the AOT backend had no binding
@@ -1256,11 +1297,14 @@ Slices, each independently shippable:
     lowering and the embedded runtime are shared with Linux unchanged. Verified
     in `tests/bare_metal_test.cpp`: the structural checks always run, and the
     end-to-end boot (real serial stdout and exit code under
-    `qemu-system-x86_64 -kernel`) runs when QEMU is on `PATH`. CI installs QEMU
-    on the Linux runners and sets `OSKEL_REQUIRE_QEMU`, which turns a missing
-    binary into a test failure rather than a silent skip, so the boot path
-    cannot disappear from the suite unnoticed; on a developer box without the
-    variable the boot tests skip, and the structural checks still run. The
+    `qemu-system-x86_64 -kernel`) runs whenever QEMU is on `PATH`. The image is
+    x86-64, but QEMU emulates it on any host, so the boot tests run on Linux,
+    Windows and macOS alike -- the arm64 macOS image included; the harness picks
+    its temp directory and exit-code decoding per platform. CI installs QEMU on
+    every runner and sets `OSKEL_REQUIRE_QEMU`, which turns a missing binary
+    into a test failure rather than a silent skip, so the boot path cannot
+    disappear from the suite unnoticed; on a developer box without the variable
+    the boot tests skip, and the structural checks still run. The
     `CodeGen` gained four single-opcode primitives (`cli`, `hlt`, `out dx, al`,
     `in al, dx`) plus `test al, imm8`, each byte-checked in
     `tests/codegen_test.cpp`.
@@ -1268,6 +1312,12 @@ Slices, each independently shippable:
   dispatch (bridge toward the speculative work in
   `docs/ARCHITECTURE_ANALYSIS.md`); other targets (macOS via libc or stubs;
   ARM64 bare metal).
+- Deferred: the bare-metal interrupt path (timer, PIC remap, a returning
+  handler). The bare-metal prelude reports CPU *exceptions* and halts; it does
+  not take or return from *interrupts*, so no device can be serviced. The
+  design for the first slice -- PIC remap, PIT, `sti` and `iretq`, two new
+  `CodeGen` primitives, and the QEMU test that proves the return -- is in
+  `docs/bare-metal-interrupts-design.md`. No code is written yet.
 - Afterwards, LuaJIT's JIT as a reference (see PHASE 8 below).
 - **In the tree now**: the `Target` descriptor (`include/native/target.h`) and
   the x86-64 instruction emitter (`include/native/codegen.h`,
@@ -1402,7 +1452,7 @@ Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair, which `ITER` now yields directly, no new opcode and no helper call) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — open, no slice chosen)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — open, no slice chosen)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-3 done: integer leaf protos with CPU-register allocation, constant folding, strength reduction and compare-branch fusion)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)

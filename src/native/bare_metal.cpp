@@ -460,6 +460,224 @@ void emitBareMetalRuntime(CodeGen& code, const RuntimeHandles& handles) {
   code.movImm(kAotArenaEnd,
               static_cast<std::int64_t>(kBMDataBase + kBMArenaOffset + kAotArenaSize));
   code.retInsn();
+
+  // --- long oskel_time(void) ---
+  // A kernel has no `time` syscall and no libc, so the wall clock comes from the
+  // CMOS real-time clock (the mc146818 at ports 0x70/0x71 every PC has). The RTC
+  // stores the fields in BCD or binary and in 12- or 24-hour form, selected by
+  // status register B, so both are handled. The fields are converted to a Unix
+  // timestamp with the "days from civil" algorithm (Howard Hinnant), which is
+  // the same value Linux and Windows produce.
+  //
+  // Only rax/rcx/rdx/rsi are used (all caller-saved scratch); the callee-saved
+  // rbx/r12-r15 the runtime carries are untouched. The stack frame holds the
+  // fields and the intermediates so no register has to survive a `div`.
+  code.bind(handles.now);
+  {
+    // Field and intermediate slots, rbp-relative.
+    constexpr std::int64_t kSec = -8;
+    constexpr std::int64_t kMin = -16;
+    constexpr std::int64_t kHour = -24;
+    constexpr std::int64_t kDay = -32;
+    constexpr std::int64_t kMonth = -40;
+    constexpr std::int64_t kYear = -48;
+    constexpr std::int64_t kStatusB = -56;
+    constexpr std::int64_t kEra = -64;
+    constexpr std::int64_t kYoe = -72;
+    constexpr std::int64_t kDoy = -80;
+    constexpr std::int64_t kTemp = -88;
+    constexpr std::int64_t kDays = -104;
+    constexpr std::int64_t kPmFlag = -112;
+
+    constexpr std::int64_t kCmosIndex = 0x70;
+    constexpr std::int64_t kCmosData = 0x71;
+    constexpr std::uint8_t kCmosUip = 0x80;    // status A: update in progress
+    constexpr std::uint8_t kCmosBinary = 0x04; // status B bit 2: binary (vs BCD)
+    constexpr std::uint8_t kCmosHour24 = 0x02; // status B bit 1: 24-hour (vs 12)
+
+    // Reads CMOS register `index` and leaves its raw byte in al/rax.
+    auto readRtc = [&](int index) {
+      code.movImm(X64Reg::Rax, index);
+      code.movImm(X64Reg::Rdx, kCmosIndex);
+      code.outDxAl();
+      code.movImm(X64Reg::Rdx, kCmosData);
+      code.inDxAl();
+      code.movzx(X64Reg::Rax, X64Reg::Rax);
+    };
+    auto store = [&](std::int64_t slot) { code.movToMem(X64Reg::Rbp, slot, X64Reg::Rax); };
+
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.subRegImm32(X64Reg::Rsp, 128);
+
+    // Wait out an in-progress update, so the fields are read from one instant.
+    CodeGen::Label wait = code.newLabel();
+    code.bind(wait);
+    code.movImm(X64Reg::Rax, 0x0A);
+    code.movImm(X64Reg::Rdx, kCmosIndex);
+    code.outDxAl();
+    code.movImm(X64Reg::Rdx, kCmosData);
+    code.inDxAl();
+    code.testAlImm8(kCmosUip);
+    code.jcc(Jcc::Ne, wait);
+
+    readRtc(0x0B);
+    store(kStatusB);
+
+    readRtc(0x00);
+    store(kSec);
+    readRtc(0x02);
+    store(kMin);
+    readRtc(0x04);
+    // The hour carries the PM flag in bit 7 in 12-hour mode, which the BCD
+    // conversion below would read as a tens digit. Split it off first: bit 7
+    // becomes `kPmFlag`, and the field keeps its seven low bits (harmless in
+    // 24-hour and binary modes, where bit 7 is already clear).
+    code.movReg(X64Reg::Rcx, X64Reg::Rax);
+    code.andImm32(X64Reg::Rax, 0x80);
+    store(kPmFlag);
+    code.movReg(X64Reg::Rax, X64Reg::Rcx);
+    code.andImm32(X64Reg::Rax, 0x7F);
+    store(kHour);
+    readRtc(0x07);
+    store(kDay);
+    readRtc(0x08);
+    store(kMonth);
+    readRtc(0x09);
+    store(kYear);
+
+    // BCD -> binary, unless status B says the fields are already binary. Each
+    // field is `(bcd & 0x0F) + (bcd >> 4) * 10`.
+    CodeGen::Label bcdDone = code.newLabel();
+    CodeGen::Label bcdLoop = code.newLabel();
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kStatusB);
+    code.andImm32(X64Reg::Rax, kCmosBinary);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Ne, bcdDone);
+    code.leaMem(X64Reg::Rsi, X64Reg::Rbp, kYear);  // slots are contiguous
+    code.movImm(X64Reg::Rcx, 6);
+    code.bind(bcdLoop);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rsi, 0);
+    code.movReg(X64Reg::Rdx, X64Reg::Rax);
+    code.andImm32(X64Reg::Rdx, 0x0F);
+    code.shrImm8(X64Reg::Rax, 4);
+    code.imulImm32(X64Reg::Rax, X64Reg::Rax, 10);
+    code.addReg(X64Reg::Rax, X64Reg::Rdx);
+    code.movToMem(X64Reg::Rsi, 0, X64Reg::Rax);
+    code.addImm32(X64Reg::Rsi, 8);
+    code.subRegImm32(X64Reg::Rcx, 1);
+    code.testReg(X64Reg::Rcx);
+    code.jcc(Jcc::Ne, bcdLoop);
+    code.bind(bcdDone);
+
+    // 12-hour form: `kPmFlag` (bit 7 of the raw hour, split off above) is the
+    // PM flag. Normalize to 0-23 (`12 AM` is 0, `12 PM` is 12).
+    CodeGen::Label hourDone = code.newLabel();
+    CodeGen::Label notNoon = code.newLabel();
+    CodeGen::Label hourStore = code.newLabel();
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kStatusB);
+    code.andImm32(X64Reg::Rax, kCmosHour24);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Ne, hourDone);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kHour);
+    code.cmpImm32(X64Reg::Rax, 12);
+    code.jcc(Jcc::Ne, notNoon);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);  // 12 -> 0
+    code.bind(notNoon);
+    code.movFromMem(X64Reg::Rcx, X64Reg::Rbp, kPmFlag);
+    code.testReg(X64Reg::Rcx);
+    code.jcc(Jcc::Eq, hourStore);
+    code.addImm32(X64Reg::Rax, 12);
+    code.bind(hourStore);
+    code.movToMem(X64Reg::Rbp, kHour, X64Reg::Rax);
+    code.bind(hourDone);
+
+    // The year register holds the last two digits; the kernel targets the 21st
+    // century, so the full year is 2000 + yy.
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kYear);
+    code.addImm32(X64Reg::Rax, 2000);
+    code.movToMem(X64Reg::Rbp, kYear, X64Reg::Rax);
+
+    // days_from_civil(year, month, day): the days since 1970-01-01, with the
+    // standard 400-year era decomposition. Every year here is positive, so the
+    // truncating `div` is the floor the algorithm assumes.
+    CodeGen::Label noDec = code.newLabel();
+    CodeGen::Label mGt2 = code.newLabel();
+    CodeGen::Label mDone = code.newLabel();
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kMonth);
+    code.cmpImm32(X64Reg::Rax, 2);
+    code.jcc(Jcc::Gt, noDec);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kYear);
+    code.subRegImm32(X64Reg::Rax, 1);  // January/February belong to the prior year
+    code.movToMem(X64Reg::Rbp, kYear, X64Reg::Rax);
+    code.bind(noDec);
+
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kYear);
+    code.movImm(X64Reg::Rcx, 400);
+    code.xorReg(X64Reg::Rdx, X64Reg::Rdx);
+    code.divUnsigned(X64Reg::Rcx);
+    code.movToMem(X64Reg::Rbp, kEra, X64Reg::Rax);
+    code.movToMem(X64Reg::Rbp, kYoe, X64Reg::Rdx);
+
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kMonth);
+    code.cmpImm32(X64Reg::Rax, 2);
+    code.jcc(Jcc::Gt, mGt2);
+    code.addImm32(X64Reg::Rax, 9);
+    code.jmp(mDone);
+    code.bind(mGt2);
+    code.subRegImm32(X64Reg::Rax, 3);
+    code.bind(mDone);
+    code.imulImm32(X64Reg::Rax, X64Reg::Rax, 153);
+    code.addImm32(X64Reg::Rax, 2);
+    code.movImm(X64Reg::Rcx, 5);
+    code.xorReg(X64Reg::Rdx, X64Reg::Rdx);
+    code.divUnsigned(X64Reg::Rcx);
+    code.movFromMem(X64Reg::Rcx, X64Reg::Rbp, kDay);
+    code.addReg(X64Reg::Rax, X64Reg::Rcx);
+    code.subRegImm32(X64Reg::Rax, 1);
+    code.movToMem(X64Reg::Rbp, kDoy, X64Reg::Rax);
+
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kYoe);
+    code.imulImm32(X64Reg::Rax, X64Reg::Rax, 365);
+    code.movToMem(X64Reg::Rbp, kTemp, X64Reg::Rax);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kYoe);
+    code.shrImm8(X64Reg::Rax, 2);  // yoe / 4
+    code.movFromMem(X64Reg::Rcx, X64Reg::Rbp, kTemp);
+    code.addReg(X64Reg::Rcx, X64Reg::Rax);
+    code.movToMem(X64Reg::Rbp, kTemp, X64Reg::Rcx);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kYoe);
+    code.movImm(X64Reg::Rcx, 100);
+    code.xorReg(X64Reg::Rdx, X64Reg::Rdx);
+    code.divUnsigned(X64Reg::Rcx);  // yoe / 100
+    code.movFromMem(X64Reg::Rcx, X64Reg::Rbp, kTemp);
+    code.subReg(X64Reg::Rcx, X64Reg::Rax);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kDoy);
+    code.addReg(X64Reg::Rcx, X64Reg::Rax);
+    code.movToMem(X64Reg::Rbp, kTemp, X64Reg::Rcx);  // doe
+
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kEra);
+    code.imulImm32(X64Reg::Rax, X64Reg::Rax, 146097);
+    code.movFromMem(X64Reg::Rcx, X64Reg::Rbp, kTemp);
+    code.addReg(X64Reg::Rax, X64Reg::Rcx);
+    code.subRegImm32(X64Reg::Rax, 719468);
+    code.movToMem(X64Reg::Rbp, kDays, X64Reg::Rax);
+
+    // seconds = days * 86400 + hour * 3600 + minute * 60 + second
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kDays);
+    code.imulImm32(X64Reg::Rax, X64Reg::Rax, 86400);
+    code.movFromMem(X64Reg::Rcx, X64Reg::Rbp, kHour);
+    code.imulImm32(X64Reg::Rcx, X64Reg::Rcx, 3600);
+    code.addReg(X64Reg::Rax, X64Reg::Rcx);
+    code.movFromMem(X64Reg::Rcx, X64Reg::Rbp, kMin);
+    code.imulImm32(X64Reg::Rcx, X64Reg::Rcx, 60);
+    code.addReg(X64Reg::Rax, X64Reg::Rcx);
+    code.movFromMem(X64Reg::Rcx, X64Reg::Rbp, kSec);
+    code.addReg(X64Reg::Rax, X64Reg::Rcx);
+
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
 }
 
 std::vector<std::uint8_t> buildBareMetalElf(const Target& target,
