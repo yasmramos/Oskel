@@ -1188,10 +1188,32 @@ Slices, each independently shippable:
       default `freestanding`). `isSupportedLinkMode`/`requireSupportedLinkMode`
       pin the (target, mode) matrix — freestanding for all three targets, hosted
       for Linux x86-64 only for now — so an unsupported pair is reported instead
-      of emitting bytes. The hosted image itself (object + link) is 7f.4, so
-      `--mode hosted` fails cleanly (exit 65, no binary) until then. This slice
-      changes no code path for freestanding: the emitted binary is byte for byte
-      identical to before. Covered by `tests/build_mode.cmake`.
+      of emitting bytes. This slice changes no code path for freestanding: the
+      emitted binary is byte for byte identical to before. Covered by
+      `tests/build_mode.cmake`.
+    - **7f.4** (done) — the hosted image: a relocatable object plus a link
+      against libc. The emitter gains external references (`ExternalRef` in
+      `include/native/codegen.h`): `callExternal` emits `call rel32` to an
+      undefined symbol and records the displacement slot, and `leaRipExternal`
+      does the same for an address; `exportSymbol` records a defined symbol
+      (the program's `main`). `src/native/object.cpp` wraps the code buffer in
+      an ELF64 `ET_REL` object — `.text`, `.rodata`, `.rela.text` (one
+      relocation per reference: `R_X86_64_PLT32` for a call, `R_X86_64_PC32` for
+      an address, both with addend `-4` because the CPU measures the
+      displacement from the slot's end), `.symtab`/`.strtab` and `.shstrtab`,
+      with the local symbols before the global ones as the ABI requires.
+      `emitHostedRuntime` (`src/native/entry.cpp`) binds the same three entry
+      handles the runtime already references but reaches the system through libc
+      (`write`/`exit`/`malloc`) instead of a raw syscall, and exports the
+      program entry as the C `main` the C runtime calls — the lowering's `main`
+      already has the `int main(void)` shape, so no thunk is needed. `oskel
+      build --mode hosted` writes the object beside the output and links it with
+      the host C compiler (`$CC`, default `cc`, `-no-pie -lm`), removing the
+      temporary object either way. The freestanding path is untouched and its
+      binary is byte for byte identical; a hosted binary agrees with the
+      development VM byte for byte. Covered by `tests/object_test.cpp` (the
+      object's structure) and `tests/build_mode.cmake` (the hosted build runs and
+      is dynamically linked). General `extern "C"` marshalling is 7f.5.
   - **7g** (done) — bare-metal x86-64 (multiboot). A third target,
     `x86_64-freestanding-sysv` (`oskel build --target
     x86_64-freestanding-sysv`), emits a multiboot 1 kernel that a boot loader
@@ -1227,8 +1249,12 @@ Slices, each independently shippable:
     lowering and the embedded runtime are shared with Linux unchanged. Verified
     in `tests/bare_metal_test.cpp`: the structural checks always run, and the
     end-to-end boot (real serial stdout and exit code under
-    `qemu-system-x86_64 -kernel`) runs when QEMU is on `PATH`. The `CodeGen`
-    gained four single-opcode primitives (`cli`, `hlt`, `out dx, al`,
+    `qemu-system-x86_64 -kernel`) runs when QEMU is on `PATH`. CI installs QEMU
+    on the Linux runners and sets `OSKEL_REQUIRE_QEMU`, which turns a missing
+    binary into a test failure rather than a silent skip, so the boot path
+    cannot disappear from the suite unnoticed; on a developer box without the
+    variable the boot tests skip, and the structural checks still run. The
+    `CodeGen` gained four single-opcode primitives (`cli`, `hlt`, `out dx, al`,
     `in al, dx`) plus `test al, imm8`, each byte-checked in
     `tests/codegen_test.cpp`.
 - Deferred: per-instruction type annotations for fast paths without dynamic

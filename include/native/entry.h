@@ -78,3 +78,16 @@ std::uint64_t emitFreestandingRuntime(CodeGen& code, const RuntimeHandles& handl
 // them anyway -- and its return value becomes the process exit code.
 std::uint64_t emitWindowsRuntime(CodeGen& code, const RuntimeHandles& handles,
                                  CodeGen::Label programEntry);
+
+// Hosted entry prelude (PHASE 7f.4). It provides no `_start`: the C runtime
+// does, and it calls the `main` symbol this prelude exports (the lowering's
+// program entry, whose shape -- no arguments, an `int` result -- is already a
+// valid `main`). The three handles reach the system through libc -- `write`,
+// `exit` and `malloc` -- instead of a raw syscall, so the object it belongs to
+// must be linked against the host C library. That link is the whole point of
+// the hosted mode: it is what lets an `extern "C"` symbol resolve.
+//
+// Returns the offset of the exported `main`, which the caller may record as the
+// program entry; the object's real entry point is the linker's `_start`.
+std::uint64_t emitHostedRuntime(CodeGen& code, const RuntimeHandles& handles,
+                                CodeGen::Label programEntry);

@@ -40,6 +40,12 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   The suite globs `tests/*.oskl` and `examples/*.oskl` at **configure time**, so
   a new example or test needs `cmake -S . -B build` again before `ctest` picks
   it up (the build alone will not).
+- The bare-metal boot tests need `qemu-system-x86_64` (`apt install
+  qemu-system-x86` on Debian/Ubuntu). Without it `bare_metal_test` skips the
+  end-to-end cases and runs only the structural ones; CI installs QEMU on the
+  Linux runners and sets `OSKEL_REQUIRE_QEMU`, which makes a missing binary a
+  failure. Reproduce CI locally with
+  `OSKEL_REQUIRE_QEMU=1 ctest` after installing the package.
 - `oskel build` prints lowering errors (unsupported builtins, unlowered
   opcodes) and exits 65 without writing a binary; it never emits a
   mis-compiled one.
@@ -60,8 +66,8 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   against the export's signature (arity and argument types), exactly like the
   direct form. The argument types are captured at the call site, not at flush
   time: a local that shadows a global is gone by then.
-- The AOT backend has two link modes (`LinkMode`, PHASE 7f.3), chosen on the
-  command line and never in the source: `freestanding` (the default) is the
+- The AOT backend has two link modes (`LinkMode`, PHASE 7f.3/7f.4), chosen on
+  the command line and never in the source: `freestanding` (the default) is the
   self-contained image every target emits today (no libc, no linker, `ldd` says
   "not a dynamic executable"); `hosted` links against the host C library so an
   `extern "C"` symbol resolves to the real C function — the mode that makes FFI
@@ -82,6 +88,18 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   module written over the portable surface behaves identically on the VM and
   under `oskel build`; `std/json.oskl` and `tests/native_build_json.oskl` are
   the reference.
+- The hosted image is an object plus a link (PHASE 7f.4), not a closed binary
+  the emitter writes. `native/object.h` emits an ELF64 `ET_REL` object whose
+  `.rela.text` carries one relocation per external reference (`R_X86_64_PLT32`
+  for a call, `R_X86_64_PC32` for an address, both addend `-4`) and whose
+  `.symtab` exports the program's `main`; `emitHostedRuntime` binds the same
+  three entry handles as the freestanding prelude but reaches the system through
+  libc (`write`/`exit`/`malloc`). `oskel build --mode hosted` then invokes the
+  host C compiler (`$CC`, default `cc`, `-no-pie -lm`) to link the object
+  against libc, writing the temporary `.o` beside the output and removing it
+  either way. This makes a C toolchain a *build-time* dependency of the hosted
+  mode only; the freestanding path still needs no toolchain and emits no
+  relocation. General `extern "C"` marshalling is PHASE 7f.5.
 - Windows code paths can be exercised locally without a Windows host: build the
   engine with `x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude -Isrc -static
   -o /tmp/win/oskel.exe src/*.cpp src/native/*.cpp src/jit/*.cpp` and run it

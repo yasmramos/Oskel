@@ -76,6 +76,17 @@ jobs:
       # Build your program with the given configuration. Note that --config is needed because the default Windows generator is a multi-config generator (Visual Studio generator).
       run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }}
 
+    - name: Install QEMU for the bare-metal boot tests (Linux)
+      # The bare-metal target boots its image under `qemu-system-x86_64`; the
+      # Linux runner is the only one that can run it. `OSKEL_REQUIRE_QEMU`
+      # makes a missing binary fail the test instead of skipping it, so the
+      # boot path cannot quietly rot.
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-system-x86
+        echo "OSKEL_REQUIRE_QEMU=1" >> "$GITHUB_ENV"
+
     - name: Test
       working-directory: ${{ steps.strings.outputs.build-output-dir }}
       # Execute tests defined by the CMake configuration. Note that --build-config is needed because the default Windows generator is a multi-config generator (Visual Studio generator).
@@ -106,6 +117,13 @@ jobs:
 
     - name: Build
       run: cmake --build build-asan --parallel
+
+    - name: Install QEMU for the bare-metal boot tests
+      # Same reason as the Release matrix: the boot tests must run, not skip.
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-system-x86
+        echo "OSKEL_REQUIRE_QEMU=1" >> "$GITHUB_ENV"
 
     - name: Test
       working-directory: build-asan

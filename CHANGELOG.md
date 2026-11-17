@@ -11,6 +11,16 @@ may change between minor versions.
 
 ### Changed
 
+- **Bare-metal boot tests now run in CI instead of skipping.** The
+  `bare_metal_test` end-to-end cases boot the kernel under
+  `qemu-system-x86_64`, but CI never installed the package, so `haveQemu()`
+  returned false and the boot, float and CPU-fault tests silently skipped —
+  the new IDT exception handler was never exercised on a runner. The Linux
+  jobs now install `qemu-system-x86` and export `OSKEL_REQUIRE_QEMU`, which
+  makes a missing binary a test failure rather than a skip; a developer box
+  without the variable still skips the boot tests and runs the structural
+  ones. No product code changes.
+
 - **JIT (slice 3): compare-branch fusion.** When a comparison's boolean result
   only feeds the conditional branch right after it, the JIT no longer builds the
   bool (`cmp; setcc; movzx; mov; test; jcc`) and jumps straight off the flags
@@ -59,8 +69,17 @@ may change between minor versions.
   deployment choice, never language syntax, and the (target, mode) matrix is
   validated (freestanding: all targets; hosted: Linux x86-64 only, for now) so
   an unsupported pair is reported instead of emitted. The freestanding binary is
-  unchanged, byte for byte. The hosted image itself is PHASE 7f.4; until it
-  lands, `--mode hosted` fails cleanly.
+  unchanged, byte for byte.
+- **Hosted AOT image: relocatable object + link against libc** (PHASE 7f.4).
+  `oskel build --mode hosted` now closes the image. The emitter produces an
+  ELF64 `ET_REL` object (`native/object.h`): `.rela.text` carries one relocation
+  per external reference (`R_X86_64_PLT32` for a call, `R_X86_64_PC32` for an
+  address) and `.symtab` exports the program's `main`, while the entry prelude
+  reaches the system through libc (`write`/`exit`/`malloc`) instead of a raw
+  syscall. The host C compiler links the object against libc (`$CC`, default
+  `cc`, `-no-pie -lm`). The freestanding output is byte-identical, and the
+  hosted binary agrees with the development VM byte for byte. General
+  `extern "C"` marshalling (a per-signature thunk) is PHASE 7f.5.
 - **`std.json`**, a pure-Oskel standard-library module for parsing and
   serializing JSON. It maps JSON onto Oskel's own values (null → `nil`, number →
   `int`|`double`, object → `map`, array → `array`), so no new runtime type is
