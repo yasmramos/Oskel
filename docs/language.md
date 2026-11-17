@@ -818,7 +818,10 @@ reading `Name` as a variable).
 A struct is local to its file: its name is **not** exported by `import`. A
 module that builds a struct value exports the map, and the importing file sees
 a plain map (it cannot write `Point { ... }` unless it declares its own
-`struct Point`).
+`struct Point`). A module that wants to hand out its struct values to importers
+therefore exports **constructor functions** rather than the type name:
+`std.datetime` (§12.10) declares `struct Date`/`struct DateTime` and exports
+`date`/`datetime`, which return the maps.
 
 ---
 
@@ -1972,7 +1975,15 @@ assertEq(sqrt(81), 9.0);
 | `random(high)` | `int` in `[0, high)`. |
 | `random(low, high)` | `int` in `[low, high)`. |
 | `seed(n)` | Reseeds the generator. |
-| `clock()` | Seconds elapsed since the process started. |
+| `clock()` | Seconds elapsed since the process started (monotonic, for timing — not a date). |
+| `time()` | Seconds since the Unix epoch, UTC, as an `int` (the wall clock; see `std.datetime` in §12.10). |
+
+`time()` reads the system wall clock. It is available on the development VM and
+under `oskel build` on every target: the AOT runtime binds it to a syscall on
+Linux, `time(NULL)` in hosted mode, `GetSystemTimeAsFileTime` on Windows, and
+the CMOS real-time clock in a bare-metal kernel. `clock()` is monotonic (it
+measures elapsed time, not the date) and has no AOT binding, so a native build
+that calls it fails cleanly.
 
 ### 12.5 Utilities
 
@@ -2086,6 +2097,66 @@ print(isValid("{bad}"));           // false
 `std.json` is written in plain Oskel over the portable primitive surface, so it
 behaves identically on the development VM and under `oskel build` (the AOT
 backend).
+
+### 12.10 Dates and time
+
+`std.datetime` (import it first, see §18) works with civil dates and wall-clock
+times. Importing it makes the constructor functions `date` and `datetime`
+visible, but a `Date` or `DateTime` is an ordinary map: its fields are read
+with `.`, it prints as a map, and it compares by value. The module is pure Oskel
+over the portable primitive surface, so it behaves identically on the
+development VM and under `oskel build`.
+
+| Function | Description |
+| --- | --- |
+| `date(year, month, day)` | A `Date`. The fields are validated. |
+| `datetime(year, month, day, hour, minute, second, offset)` | A `DateTime`; the trailing fields default to `0`, and `offset` is minutes from UTC. |
+| `now(offset)` | The current instant as a `DateTime` at `offset` minutes from UTC (0 by default). |
+| `today(offset)` | The current civil day as a `Date`. |
+| `isLeapYear(year)` | True when February has 29 days. |
+| `daysInMonth(year, month)` | 28, 29, 30 or 31. |
+| `toDays(d)` / `fromDays(n)` | Days between 1970-01-01 and the date, and its inverse. |
+| `toSeconds(dt)` | Seconds since the epoch, *without* applying the offset. |
+| `toEpoch(dt)` | Seconds since the epoch of the instant `dt` names (offset applied). |
+| `fromEpoch(seconds, offset)` | A `DateTime` at `offset` minutes from UTC for `seconds`. |
+| `toOffset(dt, offset)` / `toUtc(dt)` | The same instant at another offset. |
+| `addDays(d, n)` / `addMonths(d, n)` / `addSeconds(dt, n)` | Calendar arithmetic (`n` may be negative). |
+| `daysBetween(a, b)` / `secondsBetween(a, b)` | `b - a`. |
+| `weekday(d)` / `weekdayName(d)` | 1 (Monday) to 7 (Sunday), and its name. |
+| `monthName(d)` | The month's full name. |
+| `dayOfYear(d)` | 1 through 366. |
+| `isoWeek(d)` / `isoWeekYear(d)` | The ISO-8601 week number and week-numbering year. |
+| `iso(value)` / `isoLocal(dt)` | ISO-8601 text; `isoLocal` omits the offset. |
+| `format(value, pattern)` | A `strftime`-like template. |
+| `parse(text)` | ISO-8601 text to a `Date` or `DateTime`; a malformed string is a runtime error. |
+| `isValid(text)` / `tryParse(text)` | Test a string without aborting. |
+
+```oskl
+import std.datetime.*;
+
+let d = date(2024, 2, 29);
+print(iso(d));                     // 2024-02-29
+print(daysInMonth(2024, 2));       // 29
+print(toDays(d));                  // 19782
+print(iso(addDays(d, 1)));         // 2024-03-01
+print(weekdayName(d));             // Thursday
+
+let dt = datetime(2024, 1, 2, 3, 4, 5, -300);
+print(iso(dt));                    // 2024-01-02T03:04:05-05:00
+print(toEpoch(dt));                // 1704182645
+print(iso(fromEpoch(0)));          // 1970-01-01T00:00:00Z
+print(format(dt, "%Y-%m-%d %A"));  // 2024-01-02 Tuesday
+print(iso(parse("2024-06-15T12:30:45Z")));   // 2024-06-15T12:30:45Z
+
+let todayDate = today();
+print(iso(todayDate));             // the current date
+print(iso(now(-300)));             // the current instant at UTC-5
+```
+
+A `DateTime` carries its UTC offset as **data**, not as a rule: the module never
+consults a timezone database, so `toOffset`/`toUtc` are exact and a value is the
+same on every machine. The clock comes from the `time()` builtin (§12.4), which
+the AOT backend binds on every target.
 
 ---
 
@@ -2582,8 +2653,9 @@ print(std.math.sqrt(16));   // 4
 print(sqrt(25));            // 5
 ```
 
-The standard library ships `std.math` (§12.3) and `std.json` (§12.9). Both are
-ordinary modules, so the same four import forms apply:
+The standard library ships `std.math` (§12.3), `std.json` (§12.9) and
+`std.datetime` (§12.10). All are ordinary modules, so the same four import
+forms apply:
 
 ```oskel
 import std.json;             // std.json.parse, std.json.stringify, ...

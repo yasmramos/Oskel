@@ -1,0 +1,49 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): `std.datetime` under
+// the AOT backend.
+//
+// `std.datetime` is written in plain Oskel over the portable primitive surface
+// (integer arithmetic, `str`/`int`/`type`/`len`, indexing, `for ... in`,
+// `panic`), so it must build to a native binary and agree with the development
+// VM byte for byte. This guards the module against a future edit that reaches
+// for a collection or string method or a `pcall`/`error`, none of which the AOT
+// backend implements yet (DEVELOPMENT.md PHASE 7f).
+//
+// The output is deterministic on purpose: the build harness compares the
+// binary's stdout with the VM's, so the fixture never prints a raw `now()`
+// value (the two runs are seconds apart). It exercises the clock through a
+// stable predicate instead, which also proves the AOT `time()` handle is bound
+// on every target.
+
+import std.datetime;
+import std.datetime.*;
+
+print("date =", iso(date(2024, 2, 29)));
+print("days =", toDays(date(2024, 2, 29)), toDays(date(1969, 12, 31)));
+print("round =", iso(fromDays(toDays(date(1900, 2, 28)))));
+print("epoch =", iso(fromEpoch(1704164645)), toEpoch(datetime(2024, 1, 2, 3, 4, 5)));
+print("offset =", iso(fromEpoch(0, -300)));
+print("weekday =", weekdayName(date(2024, 1, 1)), weekday(date(2024, 1, 1)));
+print("month =", monthName(date(2024, 12, 1)), dayOfYear(date(2024, 2, 29)));
+print("isoweek =", isoWeek(date(2000, 1, 1)), isoWeekYear(date(2000, 1, 1)));
+print("format =", format(datetime(2024, 1, 2, 3, 4, 5, -300), "%Y-%m-%d %H:%M:%S %A %z"));
+print("parse =", iso(parse("2024-06-15T12:30:45+05:30")));
+print("addDays =", iso(addDays(date(2024, 2, 28), 1)), iso(addDays(date(2024, 1, 1), -1)));
+print("addMonths =", iso(addMonths(date(2024, 1, 31), 1)), iso(addMonths(date(2024, 1, 15), -1)));
+print("between =", daysBetween(date(2024, 1, 1), date(2024, 3, 1)));
+print("leap =", isLeapYear(2000), isLeapYear(1900));
+
+// The clock, through a predicate that is stable across the two runs: the year
+// is well past 2023 and the AOT handle returned a plausible epoch second.
+print("clock =", time() > 1704067200, now().year >= 2024, type(today()) == "map");
+
+// The round trip is exact, so a binary that mis-formats or mis-parses fails.
+let samples = [date(2024, 2, 29), datetime(2024, 1, 2, 0, 0, 0),
+               datetime(2024, 6, 15, 12, 30, 45, 330)];
+var allRound = true;
+for sample in samples {
+  if (iso(parse(iso(sample))) != iso(sample)) {
+    allRound = false;
+  }
+}
+print("round trip =", allRound);
+print("valid =", isValid("2024-02-29"), isValid("2024-13-01"));

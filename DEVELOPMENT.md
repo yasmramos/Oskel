@@ -431,6 +431,26 @@ previous one.
   implement yet, so it behaves identically on the VM and under `oskel build`.
   See `docs/language.md` §12.9/§18, `tests/55_std_json.oskl` and the AOT
   fixture `tests/native_build_json.oskl`.
+- **Standard library: `std.datetime`** — **done**: a pure-Oskel module for civil
+  dates and wall-clock times. A `Date`/`DateTime` is an ordinary map built by
+  the exported constructor functions (`date`, `datetime`), so no new runtime
+  type, opcode or builtin is added beyond `time()` (below). It offers the
+  `days_from_civil` algorithm, epoch conversion, calendar arithmetic,
+  differences, components, a `strftime`-like `format` and ISO-8601
+  `parse`/`iso`/`isValid`/`tryParse`. The module is written over the portable
+  primitive surface, avoiding the collection/string methods and `pcall`/`error`
+  the AOT backend does not implement yet, so it behaves identically on the VM and
+  under `oskel build`. See `docs/language.md` §12.10/§18,
+  `tests/56_std_datetime.oskl` and the AOT fixture
+  `tests/native_build_datetime.oskl`.
+- **Builtin `time()` and the AOT wall clock** — **done**: `time()` returns the
+  seconds since the Unix epoch as an `int` (`clock()` stays monotonic and
+  untouched). The AOT runtime binds it as the `now` handle on every path — a
+  syscall on Linux, `time(NULL)` hosted, `GetSystemTimeAsFileTime` on Windows
+  (a new kernel32 import), and the CMOS real-time clock in a bare-metal kernel
+  (the RTC's BCD/binary fields converted to a Unix timestamp in assembly) — so
+  `std.datetime.now()`/`today()` work everywhere. See `docs/language.md` §12.4
+  and `tests/bare_metal_test.cpp` (`test_qemu_wall_clock`).
 
 ### PHASE 6.6 — FFI with C (1.0)
 

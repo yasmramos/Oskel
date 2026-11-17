@@ -915,6 +915,11 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       {"range", rt.rangeFnBuiltin},
       {"assertEq", rt.assertEqBuiltin},
       {"exit", rt.exitBuiltin},
+      // `time()` (wall clock): the seconds since the Unix epoch, read from the
+      // `entry.now` handle the target's prelude binds. It matches the hosted
+      // builtin, so `time()` is one more builtin that lowers to an ordinary
+      // call.
+      {"time", rt.timeBuiltin},
   };
 
   const GlobalSlots globals = collectGlobals(protos, builtins);

@@ -8,6 +8,10 @@ namespace {
 constexpr long kSysWrite = 1;
 constexpr long kSysMmap = 9;
 constexpr long kSysExitGroup = 231;
+// `time(NULL)`: the wall clock as seconds since the Unix epoch. It is the one
+// value the runtime cannot compute from memory, and the kernel's own clock is
+// already in UTC, so no timezone handling is needed.
+constexpr long kSysTime = 201;
 
 // mmap flags: a private, anonymous, read/write mapping (no file).
 constexpr long kProtReadWrite = 3;
@@ -73,6 +77,17 @@ std::uint64_t emitFreestandingRuntime(CodeGen& code, const RuntimeHandles& handl
   code.addImm32(kAotArenaEnd, static_cast<std::int32_t>(kAotArenaSize));
   code.retInsn();
 
+  // --- long oskel_time(void) ---
+  // `time(NULL)`: seconds since the Unix epoch, in rax. The kernel returns the
+  // current UTC wall clock, so no timezone shift is applied here (a local time
+  // is `std.datetime`'s job, and it is a pure function of this value plus an
+  // offset).
+  code.bind(handles.now);
+  code.xorReg(X64Reg::Rdi, X64Reg::Rdi);  // tloc = NULL
+  code.movImm(X64Reg::Rax, kSysTime);
+  code.syscallInsn();
+  code.retInsn();
+
   // --- _start: the ELF entry point ---
   // The kernel leaves argc at [rsp] and argv[] starting at [rsp+8]. Pass them
   // to the program entry as (argc, argv) and exit with its result. The chunk
@@ -108,6 +123,10 @@ constexpr std::int64_t kWinStdErrorHandle = -12;   // GetStdHandle(STD_ERROR_HAN
 constexpr std::int64_t kWinMemCommitReserve = 0x3000;  // MEM_COMMIT | MEM_RESERVE
 constexpr std::int64_t kWinPageReadWrite = 0x04;       // PAGE_READWRITE
 constexpr std::int64_t kWinShadowSpace = 32;
+// Seconds between the Windows FILETIME epoch (1601-01-01 UTC) and the Unix
+// epoch (1970-01-01 UTC): 134774 days. A FILETIME counts 100-ns intervals, so
+// `filetime / 10000000 - this` is the Unix time in seconds.
+constexpr std::int64_t kWinFileTimeUnixEpochDelta = 11644473600;
 
 // `call qword ptr [rip + delta]` to an imported function, with `delta` measured
 // from the end of the instruction (six bytes: FF 15 + disp32).
@@ -237,6 +256,30 @@ std::uint64_t emitWindowsRuntime(CodeGen& code, const RuntimeHandles& handles,
   code.pop(X64Reg::Rbp);
   code.retInsn();
 
+  // --- long oskel_time(void) ---
+  // GetSystemTimeAsFileTime writes a FILETIME: 100-nanosecond intervals since
+  // 1601-01-01 UTC. The Unix epoch is 11644473600 seconds later, so the value
+  // is `filetime / 10000000 - 11644473600`. The division is unsigned (a
+  // FILETIME is a ULARGE_INTEGER) and the constant is the exact gap between the
+  // two epochs, so the result matches the Linux syscall and libc `time`.
+  code.bind(handles.now);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, kWinShadowSpace + 16);
+  code.leaMem(X64Reg::Rcx, X64Reg::Rbp, -(kWinShadowSpace + 16));
+  code.movImmToMem(X64Reg::Rbp, -(kWinShadowSpace + 16), 0);
+  callImport(code, PeImport::GetSystemTimeAsFileTime);
+  code.movFromMem(X64Reg::Rax, X64Reg::Rbp, -(kWinShadowSpace + 16));
+  // `divUnsigned` zeroes rdx (the high half of the dividend), so the divisor
+  // must not live there; rcx is free once the call returns.
+  code.movImm(X64Reg::Rcx, 10000000);
+  code.divUnsigned(X64Reg::Rcx);
+  code.movImm(X64Reg::Rdx, kWinFileTimeUnixEpochDelta);
+  code.subReg(X64Reg::Rax, X64Reg::Rdx);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
   // --- the entry point ---
   // The loader calls it with no arguments (and rsp 8 mod 16). Reserve the
   // shadow space the calls below need, run the program entry and exit with its
@@ -322,6 +365,20 @@ std::uint64_t emitHostedRuntime(CodeGen& code, const RuntimeHandles& handles,
   code.addImm32(kAotArenaCursor, static_cast<std::int32_t>(kAotArenaFirstOffset));
   code.movReg(kAotArenaEnd, X64Reg::Rax);
   code.addImm32(kAotArenaEnd, static_cast<std::int32_t>(kAotArenaSize));
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  // --- long oskel_time(void) ---
+  // libc `time(NULL)`: seconds since the Unix epoch. The hosted mode links
+  // against libc by construction (that is the point of the mode), so the wall
+  // clock comes from the C library rather than a syscall, and the value is the
+  // same one the freestanding syscall returns.
+  code.bind(handles.now);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.xorReg(X64Reg::Rdi, X64Reg::Rdi);  // tloc = NULL
+  code.callExternal("time");
   code.movReg(X64Reg::Rsp, X64Reg::Rbp);
   code.pop(X64Reg::Rbp);
   code.retInsn();

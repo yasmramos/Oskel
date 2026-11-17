@@ -367,6 +367,18 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_json.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `std.datetime` is plain Oskel over the portable primitive surface, plus
+    # the `time()` builtin the AOT runtime binds as the `now` handle (a syscall,
+    # libc, a Win32 call or the CMOS RTC, one per target). The fixture is the
+    # guard that keeps the module off the collection/string methods and
+    # `pcall`/`error`, and that proves the wall clock works on every AOT path.
+    add_test(NAME oskel.build_binary_datetime
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_datetime"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_datetime.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # An `extern "C"` symbol is a host binding the AOT backend cannot resolve
     # (the FFI lowering is PHASE 7f), so `oskel build` must fail with the
     # dedicated message and write no binary.

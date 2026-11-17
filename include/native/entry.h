@@ -21,10 +21,18 @@ struct RuntimeHandles {
   CodeGen::Label write;      // long oskel_write(long fd, const char* buf, long len)
   CodeGen::Label exit;       // void oskel_exit(long code)   (never returns)
   CodeGen::Label initArena;  // void oskel_init_arena(void)  (maps the bump region)
+  // `long oskel_time(void)`: whole seconds since the Unix epoch, UTC. It is the
+  // wall clock the `time()` builtin reads, and the anchor `std.datetime` builds
+  // civil dates on. Each prelude reaches it differently -- a raw syscall on
+  // Linux, libc `time` in the hosted mode, kernel32 on Windows, the CMOS RTC on
+  // bare metal -- because it is the one value the embedded runtime cannot
+  // compute from memory.
+  CodeGen::Label now;
 };
 
 inline RuntimeHandles newRuntimeHandles(CodeGen& code) {
-  return RuntimeHandles{code.newLabel(), code.newLabel(), code.newLabel()};
+  return RuntimeHandles{code.newLabel(), code.newLabel(), code.newLabel(),
+                        code.newLabel()};
 }
 
 // The generated binary's bump arena (PHASE 7c.1c). `_start` maps a region and

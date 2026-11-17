@@ -103,6 +103,7 @@ Smaller programs, each focused on one area.
 | `imports.oskl` | The four Java-style `import` forms, with `examples/modules/geometry.oskl`. |
 | `math_imports.oskl` | The `std.math` standard library through every import form. |
 | `json.oskl` | The `std.json` standard library: parsing, serializing and the value mapping. |
+| `datetime.oskl` | The `std.datetime` standard library: dates, times, the Unix epoch, ISO-8601 and the clock. |
 | `wordcount.oskl` | A map-based frequency count. |
 | `full.oskl` | A single program that touches most features; prints `full_example_output.txt`. |
 

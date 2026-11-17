@@ -53,6 +53,27 @@ may change between minor versions.
 
 ### Added
 
+- **`std.datetime`: dates and time.** A new standard-library module
+  for civil dates and wall-clock times. A `Date` is a calendar day and a
+  `DateTime` adds a time of day plus a UTC offset in minutes; both are plain
+  maps, so they print, compare and nest like any other value. The module is pure
+  Oskel over the portable primitive surface and offers the `days_from_civil`
+  algorithm (exact for every representable year, pre-epoch included),
+  conversion to and from the Unix epoch, calendar arithmetic (`addDays`,
+  `addMonths`, `addSeconds`), differences, components (`weekday`, `isoWeek`,
+  `dayOfYear`, ...), a `strftime`-like `format`, ISO-8601 `parse`/`iso`, and
+  `isValid`/`tryParse`. A `DateTime` carries its offset as data, so the module
+  never consults a timezone database.
+
+- **`time()` builtin, and a wall clock on every AOT target.** A new
+  `time()` builtin returns the seconds since the Unix epoch as an `int`
+  (`clock()` stays monotonic and is untouched). The AOT backend binds it as the
+  `now` runtime handle on all four paths: a syscall on Linux (freestanding),
+  `time(NULL)` in hosted mode, `GetSystemTimeAsFileTime` on Windows, and the
+  CMOS real-time clock in a bare-metal kernel — the last converting the RTC's
+  BCD/binary fields to a Unix timestamp in assembly, so `std.datetime.now()`
+  works even with no OS and no libc.
+
 - **Design: the bare-metal interrupt path.** `docs/bare-metal-interrupts-design.md`
   proposes the first slice of the bare-metal OS path: remap the 8259 PIC, program
   the 8254 PIT, unmask only IRQ0, add a handler that acknowledges the PIC and

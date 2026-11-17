@@ -89,7 +89,14 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   is read but never assigned" (exit 65) even when the function is unused. A
   module written over the portable surface behaves identically on the VM and
   under `oskel build`; `std/json.oskl` and `tests/native_build_json.oskl` are
-  the reference.
+  the reference, and `std/datetime.oskl` with `tests/native_build_datetime.oskl`
+  is a second one (it also exercises the `time()` wall clock, the one builtin
+  whose AOT binding differs per target).
+- `time()` (epoch seconds, an `int`) is bound as the `now` runtime handle on
+  every AOT path: syscall 201 on Linux, `time(NULL)` hosted, `GetSystemTimeAsFileTime`
+  on Windows (a kernel32 import), and the CMOS RTC in bare metal. `clock()`
+  stays monotonic and has no AOT binding. A `divUnsigned` in the AOT emitters
+  zeroes `rdx`, so a divisor must never live there.
 - The hosted image is an object plus a link (PHASE 7f.4), not a closed binary
   the emitter writes. `native/object.h` emits an ELF64 `ET_REL` object whose
   `.rela.text` carries one relocation per external reference (`R_X86_64_PLT32`
