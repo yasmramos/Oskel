@@ -11,12 +11,17 @@ may change between minor versions.
 
 ### Changed
 
-- **Bare-metal boot tests now run in CI instead of skipping.** The
-  `bare_metal_test` end-to-end cases boot the kernel under
+- **Bare-metal boot tests now run in CI instead of skipping, on all three
+  platforms.** The `bare_metal_test` end-to-end cases boot the kernel under
   `qemu-system-x86_64`, but CI never installed the package, so `haveQemu()`
   returned false and the boot, float and CPU-fault tests silently skipped —
-  the new IDT exception handler was never exercised on a runner. The Linux
-  jobs now install `qemu-system-x86` and export `OSKEL_REQUIRE_QEMU`, which
+  the new IDT exception handler was never exercised on a runner. The boot tests
+  were also compiled out on Windows and macOS, where the harness assumed POSIX
+  (`/tmp`, `chmod`, `WEXITSTATUS`, `command -v`). The compile guard now covers
+  the three platforms, the harness picks its temp directory, QEMU probe,
+  exit-code decoding and null device per platform, and the image stays x86-64
+  because QEMU emulates it anywhere (the arm64 macOS image included). Every CI
+  job installs QEMU (apt/brew/choco) and exports `OSKEL_REQUIRE_QEMU`, which
   makes a missing binary a test failure rather than a skip; a developer box
   without the variable still skips the boot tests and runs the structural
   ones. No product code changes.
