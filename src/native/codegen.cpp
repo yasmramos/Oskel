@@ -820,11 +820,28 @@ void CodeGen::ud2() {
 
 void CodeGen::cli() { emitByte(0xFA); }
 
+void CodeGen::cld() { emitByte(0xFC); }
+
+void CodeGen::pushImm8(std::int32_t value) {
+  emitByte(0x6A);
+  emitByte(static_cast<std::uint8_t>(static_cast<std::int8_t>(value)));
+}
+
 void CodeGen::hlt() { emitByte(0xF4); }
 
 void CodeGen::outDxAl() { emitByte(0xEE); }
 
 void CodeGen::inDxAl() { emitByte(0xEC); }
+
+// lidt [rip + label]: 0F 01 /3 with a RIP-relative ModRM (rm = 101). The
+// four-byte displacement is a fixup resolved by `finalize()`, measured from
+// the slot's end (the next instruction), exactly like `leaRipLabel`.
+void CodeGen::lidtRipLabel(Label label) {
+  emitByte(0x0F);
+  emitByte(0x01);
+  emitByte(0x1D);  // ModRM: mod=00, reg=/3, rm=101 (RIP-relative)
+  recordFixup(label);
+}
 
 void CodeGen::emitBytes(const std::uint8_t* data, std::size_t length) {
   // Byte-at-a-time on purpose: raw payloads must advance the emission

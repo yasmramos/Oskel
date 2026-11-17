@@ -256,8 +256,20 @@ class CodeGen {
   // is driven through. Each is one instruction, so they keep the 1:1 budget.
   void cli();       // FA: clear interrupt flag
   void hlt();       // F4: halt until the next interrupt
+  void cld();       // FC: clear direction flag (rep movsb runs upward)
+  // `push imm8` (6A ib): the interrupt stubs push their vector number and a
+  // dummy error code. The immediate is sign-extended to 64 bits, which is
+  // harmless -- the fault handler only reads the low byte.
+  void pushImm8(std::int32_t value);
   void outDxAl();   // EE: write al to the I/O port in dx
   void inDxAl();    // EC: read the I/O port in dx into al
+  // `lidt [rip + label]` (0F 01 /3): load the interrupt descriptor table
+  // register from the 10-byte pseudo-descriptor (limit + base) at `label`.
+  // The bare-metal prelude installs its own IDT so a CPU exception reports
+  // instead of escalating to a triple fault. Like `leaRipLabel`, the distance
+  // is a fixup resolved by `finalize()`, because the descriptor is emitted
+  // after the entry point that loads it.
+  void lidtRipLabel(Label label);
 
   // Raw bytes, used by the runtime blob and constant payloads.
   void emitBytes(const std::uint8_t* data, std::size_t length);

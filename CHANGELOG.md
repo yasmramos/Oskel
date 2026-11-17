@@ -38,6 +38,19 @@ may change between minor versions.
 
 ### Added
 
+- **Bare-metal CPU-exception handler** (PHASE 7g). The entry point installs
+  an interrupt descriptor table (256 gates, one stub per vector) before the
+  program runs, so a CPU fault reaches a handler that prints `oskel: cpu
+  exception 0xVV rip=0xRRRRRRRRRRRRRRRR` on COM1 and halts. Each stub pushes
+  the vector and, for the ten vectors the CPU does not already tag with one, a
+  dummy error code, so the frame the handler reads is uniform: vector, error
+  code, faulting RIP. Without an IDT a `#UD` is a double fault and then a
+  reset -- a silent hang, which is exactly how the missing `CR4.OSFXSR` hid.
+  `tests/bare_metal_test.cpp` boots a `#UD` (vector 6, no error code) and a
+  `#PF` (vector 14, with error code) under QEMU and checks both are reported
+  with the right vector and RIP. No new opcode: the prelude drives the CPU with
+  `lidt`, `rep movsb` and `push imm8`, primitives the emitter gained (each one
+  instruction, so the 1:1 budget holds).
 - **Two AOT link modes** (PHASE 7f.3). `oskel build --mode
   freestanding|hosted` (default `freestanding`) selects how the image is closed.
   `freestanding` is the self-contained binary every target already emits;
