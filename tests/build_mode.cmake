@@ -12,9 +12,10 @@
 # It asserts:
 #   1. `--mode freestanding` behaves exactly like the default: it builds a
 #      self-contained binary that runs and agrees with the VM,
-#   2. `--mode hosted` is accepted by the CLI but, until the object emitter
-#      lands (PHASE 7f.4), fails cleanly with exit 65 and writes no binary --
-#      never a half-linked image,
+#   2. `--mode hosted` (PHASE 7f.4) links the object against libc and produces
+#      a binary that runs and agrees with the VM; where the (target, mode) pair
+#      has no backend it fails cleanly with exit 65 and writes no binary -- never
+#      a half-linked image,
 #   3. an unknown mode is a usage error (exit 64) that names the valid modes.
 
 if(NOT DEFINED OSKEL_EXE OR NOT DEFINED OSKEL_SCRIPT)

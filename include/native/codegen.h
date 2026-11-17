@@ -173,6 +173,10 @@ class CodeGen {
   // with a count known at emit time, so no `cl` setup is needed.
   void shlImm8(X64Reg dst, std::uint8_t count);
   void shrImm8(X64Reg dst, std::uint8_t count);
+  // `sar r/m64, imm8` (C1 /7 ib): arithmetic (sign-preserving) shift. A
+  // `shl`/`sar` pair re-extends a value from a declared width, which is how the
+  // hosted FFI thunk normalizes a narrow C `int` result (PHASE 7f.5).
+  void sarImm8(X64Reg dst, std::uint8_t count);
   // `bsr dst, src`: index of the most significant set bit of `src` (0 for bit
   // 0). Undefined for src == 0, so the caller must test first. The dtoa
   // generator uses it to measure the mantissa's bit length for the decimal

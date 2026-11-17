@@ -1176,8 +1176,9 @@ Slices, each independently shippable:
     (`tests/build_error.cmake` pins it). Lowering the symbol is a design
     decision still open, because the generated binary is freestanding today
     (`ldd` reports "not a dynamic executable"): curated syscall stubs keep that
-    invariant; an object + external link or a dynamic ELF break it. No slice is
-    chosen yet.
+    invariant; an object + external link or a dynamic ELF break it. Slices 7f.1
+    through 7f.5 landed the hosted object + link and scalar `extern "C"`
+    marshalling; the pointer, struct, callback and variadic shapes remain.
     - **7f.1** (done) — tolerance of an unused host declaration plus the first
       curated stub. A `native fn`/`extern "C"` declaration binds a name to the
       host function the host registered; the compiler emits one read of the name
@@ -1262,6 +1263,41 @@ Slices, each independently shippable:
       development VM byte for byte. Covered by `tests/object_test.cpp` (the
       object's structure) and `tests/build_mode.cmake` (the hosted build runs and
       is dynamically linked). General `extern "C"` marshalling is 7f.5.
+    - **7f.5** (done) — scalar `extern "C"` resolution in the hosted backend.
+      With the object emitter and the hosted link in place, an `extern "C"`
+      symbol can now resolve through the system linker instead of failing the
+      build. The lowerer narrows each declaration to an `AotExternThunk`
+      (`include/native/runtime.h`): one `ffi::ParamClass` per parameter and one
+      `ffi::ReturnClass`, i.e. the register-level shape only, so the runtime
+      never reaches into the compiler's FFI type tables. Only a *scalar*
+      signature is narrowed (an integer/bool/float/double parameter or return);
+      a `ptr`/`cstring`, a struct, a callback or a C variadic is left out and
+      keeps the build rejection, because the thunk's register marshalling cannot
+      express it. `collectExternThunks` builds the list in the hosted mode and
+      seeds each thunk into the symbol's global slot as an `AotClosure`, exactly
+      like a builtin, so a `CALL` reaches it through the ordinary `oskel_call`
+      path. The thunk itself (`emitExternThunk`, `src/native/runtime.cpp`) has
+      the lowering's own function shape and reproduces the hosted
+      `ffi_marshal.h` conversions: a bool is 0/1, an integer is the payload, a
+      number is truncated toward zero for an integer parameter and widened for a
+      `double`; the result is boxed, an integer normalized to its declared width
+      (a C `int` leaves the upper half of `rax` undefined, so a `shl`/`sar`
+      pair — the new `sarImm8` — re-extends it). The C symbol is called through
+      a `callExternal` relocation the linker resolves. The freestanding path is
+      untouched: it passes no thunks, so an `extern "C"` use still fails the
+      build and its image is byte for byte identical. Fixing this slice also
+      surfaced two latent bugs: `cvttsd2si` swapped the REX `R`/`B` bits (only
+      reachable from an r8-r15 destination or an xmm8-15 source, which no prior
+      caller used), and the hosted float/double printer restored `rsp` before
+      the write, leaving the text buffer in the dead zone where libc's `write`
+      clobbered it (the first `print` of a double came out as NUL bytes). The
+      printer now keeps its frame allocated across the write in the hosted mode
+      only, so the freestanding image stays byte-identical. Covered by
+      `tests/build_hosted_extern.cmake` and `tests/native_build_extern_hosted.oskl`
+      (a program calling `abs`/`labs`/`getpid`/`fabs`/`fmod`, built hosted and
+      checked against the VM), and `tests/codegen_test.cpp` pins the extended
+      `cvttsd2si` encodings. A `ptr`/`cstring` parameter or return, a struct, a
+      callback and a C variadic remain 7f work.
   - **7g** (done) — bare-metal x86-64 (multiboot). A third target,
     `x86_64-freestanding-sysv` (`oskel build --target
     x86_64-freestanding-sysv`), emits a multiboot 1 kernel that a boot loader
@@ -1452,7 +1488,7 @@ Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair, which `ITER` now yields directly, no new opcode and no helper call) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — open, no slice chosen)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.5 done, scalar `extern "C"` resolves in the hosted backend, pointer/struct/callback/variadic still open)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-3 done: integer leaf protos with CPU-register allocation, constant folding, strength reduction and compare-branch fusion)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)
