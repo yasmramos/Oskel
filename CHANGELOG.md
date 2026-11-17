@@ -11,6 +11,17 @@ may change between minor versions.
 
 ### Changed
 
+- **`docs/language.md` now states the real implementation status.** The
+  reference claimed "collections (PHASE 6 done)" and "No JIT ... planned for
+  PHASE 8+", both stale: PHASE 6.5/6.6/6.7 are complete on the development
+  engine and the JIT slices 1-3 ship in `oskel`. It also said the compiler
+  emits "40 opcodes" (it is 39, with 40 the budget ceiling), presented
+  `oskelc` as if it existed (`oskel build` is the AOT entry point and `oskelc`
+  is not part of 0.1.0), and described the AOT backend as lowering pointers and
+  callbacks to stubs when PHASE 7f only resolves a scalar `extern "C"` call in
+  the hosted link mode. A new "Implementation status" table opens the document
+  and §16 and §4.6/§15 are corrected to match the tree. Documentation only.
+
 - **Bare-metal boot tests now run in CI instead of skipping, on all three
   platforms.** The `bare_metal_test` end-to-end cases boot the kernel under
   `qemu-system-x86_64`, but CI never installed the package, so `haveQemu()`
