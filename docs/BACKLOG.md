@@ -629,7 +629,8 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    "unused": it ships in `oskel`. It stays a development tool and is never in
    `oskelc`/`oskel build`. The remaining work is the later PHASE 8 slices
    (floats, strings, the boxed runtime, calls), not a freeze.
-5. **[P2]** Add `CHANGELOG.md`.
+5. **[P2] [done]** `CHANGELOG.md` exists and follows Keep a Changelog; keep it
+   updated before each tag (see `docs/RELEASING.md`).
 6. **[P2]** Add `CONTRIBUTING.md` (the rules now live only in
    `DEVELOPMENT.md`/`AGENTS.md`).
 7. **[P2]** Add a `oskel.toml` for native dependencies.
