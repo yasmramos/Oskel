@@ -756,6 +756,47 @@ static void testExecArrayConcat() {
   check(nestedOk, "compiled: nested arrays concatenate to three items");
 }
 
+static void testExecArrayMethods() {
+  // `push` appends in place and returns the receiver array.
+  checkArray(compileAndRun("var a = [1, 2]; var r = a.push(3);"), {1, 2, 3},
+             "compiled: a.push(3) returns the array with the new item");
+  checkArray(compileAndRun("var a = [1, 2]; a.push(3); var r = a;"), {1, 2, 3},
+             "compiled: push mutates the receiver in place");
+  checkArray(compileAndRun("var a = []; var r = a.push(9);"), {9},
+             "compiled: push on an empty array");
+  // Several arguments append in order.
+  checkArray(compileAndRun("var a = [1]; var r = a.push(2, 3, 4);"), {1, 2, 3, 4},
+             "compiled: push appends every argument in order");
+
+  // `pop` removes and returns the last item.
+  checkIntValue(compileAndRun("var a = [1, 2, 3]; var r = a.pop();"), 3,
+                "compiled: pop returns the last item");
+  checkArray(compileAndRun("var a = [1, 2, 3]; a.pop(); var r = a;"), {1, 2},
+             "compiled: pop removes the last item in place");
+  // An empty array's `pop` is nil, not an error.
+  AotValue popped = compileAndRun("var a = []; var r = a.pop();");
+  check(popped.tag == static_cast<std::uint64_t>(AotTag::Nil),
+        "compiled: pop on an empty array is nil");
+
+  // The methods are first-class: a detached binder keeps mutating the same
+  // array, so binding `a.push` and calling it later is visible on `a`.
+  checkArray(compileAndRun("var a = [1]; var p = a.push; p(2); var r = a;"), {1, 2},
+             "compiled: a detached push mutates the receiver it captured");
+  checkIntValue(compileAndRun("var a = [1, 2]; var p = a.pop; var r = p();"), 2,
+                "compiled: a detached pop returns the receiver's last item");
+
+  // Growing and draining an accumulator in a loop exercises the amortised
+  // growth of `push` and the in-place shrink of `pop`.
+  checkArray(compileAndRun("var a = []; var i = 0;"
+                           " while (i < 5) { a.push(i); i = i + 1; }"
+                           " var r = a;"),
+             {0, 1, 2, 3, 4}, "compiled: push grows an accumulator in a loop");
+  checkIntValue(compileAndRun("var a = [1, 2, 3, 4]; var s = 0;"
+                              " while (a.length > 0) { s = s + a.pop(); }"
+                              " var r = s;"),
+                10, "compiled: draining an array with pop sums its items");
+}
+
 static void testExecStringCompare() {
   auto mk = [](OpCode op, const std::string& x, const std::string& y) {
     return makeProto({instr(OpCode::LOADK, 0, 0), instr(OpCode::LOADK, 1, 1),
@@ -1032,6 +1073,7 @@ int main() {
   testExecStringLoad();
   testExecStringConcat();
   testExecArrayConcat();
+  testExecArrayMethods();
   testExecStringCompare();
   testExecGlobals();
   testExecLocals();

@@ -296,6 +296,18 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_concat.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `arr.push`/`arr.pop` are bound methods: the receiver is captured, `push`
+    # returns the array and `pop` the removed item. Checked against the VM here
+    # because the script tests that cover them only run on the hosted engine,
+    # so the AOT backend used to answer `arr.push` with "value has no such
+    # member".
+    add_test(NAME oskel.build_binary_array_methods
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_array_methods"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # A recursive program with a non-trivial frame checks the process stack the
     # loader hands the binary: the AOT runtime has no call-depth guard, so the
     # reserve must be large enough for the recursion the VM accepts. The
