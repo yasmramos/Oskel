@@ -905,6 +905,18 @@ Slices, each independently shippable:
       untouched. Covered by `tests/lower_test.cpp` (push/pop as calls and as
       detached first-class values, an empty-array `pop`, a growing/draining
       accumulator) and the `oskel build` fixture.
+    - **7c.3d** (done) — negative string indexing. `ops::indexGet` normalizes a
+      string index like an array index (`normalizeIndex`): a negative index
+      counts UTF-8 code points from the end, so `"abc"[-1]` is `"c"`. The
+      string branch of `oskel_table_get` passed the raw index straight to
+      `utf8CharAt`, which only walks forward, so a compiled binary reported
+      "index out of range" and exited 70 on a program the VM accepts. The
+      branch now rebases a negative index against the code-point length
+      (`oskel_utf8_len`) before the lookup; a positive index skips the rebase
+      and an out-of-range index still reports the error, so the VM and the AOT
+      backend agree. No new opcode: it is the `GETTABLE` path the array branch
+      already normalizes. Covered by `tests/freestanding_test.cpp`
+      (`test_negative_string_index`, both the values and the error).
     - **7c.4a** (done) — the hidden `$nonNull` and `$isError` helpers. The
       compiler emits `$nonNull` for the non-null assertion `a!!` and `$isError`
       for `try` / `x catch y` (PHASE 6.5/6.7); the AOT backend had no binding
@@ -1395,7 +1407,7 @@ Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair, which `ITER` now yields directly, no new opcode and no helper call) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — open, no slice chosen)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — open, no slice chosen)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-3 done: integer leaf protos with CPU-register allocation, constant folding, strength reduction and compare-branch fusion)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)

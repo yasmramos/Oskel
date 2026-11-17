@@ -2365,6 +2365,7 @@ void emitTableGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   CodeGen::Label map = cg.newLabel();
   CodeGen::Label arrNonNeg = cg.newLabel();
   CodeGen::Label mapMiss = cg.newLabel();
+  CodeGen::Label strNonNeg = cg.newLabel();
   CodeGen::Label oom = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
   CodeGen::Label failArrayType = cg.newLabel();
@@ -2415,8 +2416,20 @@ void emitTableGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.bind(str);
   cg.cmpImm32(Rdx, static_cast<std::int32_t>(kTagInt));
   cg.jcc(Jcc::Ne, failStrType);
+  // A negative index counts code points from the end, exactly like an array
+  // index (`ops::normalizeIndex`). `utf8CharAt` only walks forward, so the
+  // index is rebased against the code-point length first; `utf8Len` clobbers
+  // r8, so the raw index is reloaded from its stack slot before the add.
+  cg.movFromMem(R8, Rbp, -32);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Ge, strNonNeg);
   cg.movReg(Rdi, R12);
-  cg.movFromMem(Rsi, Rbp, -32);
+  cg.callLabel(env.utf8Len);
+  cg.movFromMem(R8, Rbp, -32);
+  cg.addReg(R8, Rax);
+  cg.bind(strNonNeg);
+  cg.movReg(Rdi, R12);
+  cg.movReg(Rsi, R8);
   cg.callLabel(env.utf8CharAt);
   cg.testReg(Rax);
   cg.jcc(Jcc::Eq, failRange);

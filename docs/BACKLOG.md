@@ -266,6 +266,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     correct). A missing `jmp storeCursor` after the string was built. Fixed
     with the `ITER` redesign (items 1-2 of §1) and pinned by
     `tests/freestanding_test.cpp`.
+21. **[P0] [done]** VM/AOT divergence in negative string indexing: `"abc"[-1]`
+    is `"c"` in the VM (`ops::normalizeIndex` rebases a negative index against
+    the code-point length), but the string branch of `oskel_table_get` passed
+    the raw index straight to `utf8CharAt`, which walks forward only, so a
+    compiled binary reported "index out of range" and exited 70 on a program the
+    VM accepts. The branch now rebases a negative index against the code-point
+    length (via `oskel_utf8_len`) before the lookup; an out-of-range index still
+    reports the error. Pinned by `tests/freestanding_test.cpp`
+    (`test_negative_string_index`).
 
 ---
 
