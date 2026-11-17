@@ -255,6 +255,19 @@ may change between minor versions.
 
 ### Fixed
 
+- AOT: `**` now accepts a float/double operand or a negative exponent, like the
+  hosted engine. `oskel_pow` only lowered int/int with a non-negative exponent;
+  every other numeric pair failed with "unsupported operand types for '**'", so
+  `2 ** 0.5`, `2.0 ** 3`, `2 ** -1` and `2.0f ** 3.0f` ran in the VM but not in
+  a compiled binary — a VM/AOT divergence. The helper now takes the same
+  int/float/double promotion as `ops::binary`: int/int with a non-negative
+  exponent keeps the wrapping integer loop, and every other numeric pair
+  converts to binary64, calls the embedded musl `pow` already used by the `pow`
+  builtin, and re-tags the result with `makeNumeric`'s rank rule (binary32 only
+  when at least one operand is a float and none is a double). The result type is
+  decided before the call, since the embedded `pow` clobbers the volatile
+  registers. Covered by `tests/lower_test.cpp` and a `tests/build_binary`
+  fixture (`tests/native_build_pow.oskl`).
 - AOT: a negative string index now counts code points from the end, like the
   hosted engine. `"abc"[-1]` is `"c"` and `"héllo"[-1]` is `"o"` in the VM, but
   the string branch of `oskel_table_get` passed the raw index straight to

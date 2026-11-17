@@ -763,11 +763,20 @@ Slices, each independently shippable:
       `tests/codegen_test.cpp` covers the new encodings byte for byte, and
       `tests/freestanding_test.cpp` prints doubles and floats from a real static
       ELF.
-    - **7c.1d.2** — `**` on floats. `std::pow` is *correctly rounded* (glibc,
-      ~0.5 ulp) and the hosted engine calls it; an x87 `2^(y·log2 x)` sequence
-      (`fyl2x`/`f2xm1`/`fscale`) does *not* reproduce it in the last digit, so
-      matching `std::pow` needs a correctly rounded implementation (large).
-      Deferred pending a fidelity decision.
+    - **7c.1d.2** (done) — `**` on floats. `std::pow` is *correctly rounded*
+      (glibc, ~0.5 ulp) and the hosted engine calls it. `oskel_pow` now takes
+      the same int/float/double promotion as `ops::binary`: int/int with a
+      non-negative exponent keeps the wrapping integer loop (`intPow`), and
+      every other numeric pair (a float/double operand, or a negative exponent)
+      converts to binary64, calls the embedded musl `pow` already used by the
+      `pow` builtin, and re-tags the result with `makeNumeric`'s rank rule —
+      binary32 only when at least one operand is a float and none is a double,
+      binary64 otherwise. The result type is decided *before* the call, since
+      `mathlib::pow` clobbers the volatile registers holding the operand tags.
+      `mathlib::pow` is correctly rounded to under 1 ulp, so the printed values
+      match glibc on the fixtures. `tests/lower_test.cpp` runs the four
+      promotion cases and `tests/native_build_pow.oskl` checks a real static
+      ELF against the VM, `type` included.
     - **7c.2a** (done) — globals. `GETGLOBAL`/`SETGLOBAL` lower to a flat
       `AotValue` table the chunk allocates from the arena once at entry (its
       base lives in r15, a callee-saved register no helper touches, so no
