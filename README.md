@@ -312,6 +312,12 @@ lowering and the embedded runtime; the divergences in
 boot is exercised by `tests/bare_metal_test.cpp` when `qemu-system-x86_64` is on
 `PATH`.
 
+The prelude reports CPU *exceptions* (it installs an IDT and prints a trace
+before halting); it does not yet service *interrupts* from devices. The design
+for that next step — remapping the PIC, programming the timer, and returning
+from a handler with `iretq` — is in
+[docs/bare-metal-interrupts-design.md](docs/bare-metal-interrupts-design.md).
+
 ## Tests
 
 The simplest way to run everything (all `.oskl` scripts, the error cases, the

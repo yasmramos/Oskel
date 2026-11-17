@@ -1273,6 +1273,12 @@ Slices, each independently shippable:
   dispatch (bridge toward the speculative work in
   `docs/ARCHITECTURE_ANALYSIS.md`); other targets (macOS via libc or stubs;
   ARM64 bare metal).
+- Deferred: the bare-metal interrupt path (timer, PIC remap, a returning
+  handler). The bare-metal prelude reports CPU *exceptions* and halts; it does
+  not take or return from *interrupts*, so no device can be serviced. The
+  design for the first slice -- PIC remap, PIT, `sti` and `iretq`, two new
+  `CodeGen` primitives, and the QEMU test that proves the return -- is in
+  `docs/bare-metal-interrupts-design.md`. No code is written yet.
 - Afterwards, LuaJIT's JIT as a reference (see PHASE 8 below).
 - **In the tree now**: the `Target` descriptor (`include/native/target.h`) and
   the x86-64 instruction emitter (`include/native/codegen.h`,

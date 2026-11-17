@@ -48,6 +48,16 @@ may change between minor versions.
 
 ### Added
 
+- **Design: the bare-metal interrupt path.** `docs/bare-metal-interrupts-design.md`
+  proposes the first slice of the bare-metal OS path: remap the 8259 PIC, program
+  the 8254 PIT, unmask only IRQ0, add a handler that acknowledges the PIC and
+  returns with `iretq` (kept separate from the fatal fault handler, which still
+  reports and halts), and enable interrupts with `sti` only after the IDT and the
+  PIC are ready. It adds two single-instruction `CodeGen` primitives (`sti`,
+  `iretq`) and no token, node, parser rule, opcode, VM or compiler change, and it
+  is proven by a QEMU test whose three ticks only happen if the handler returned.
+  Documentation only; no code yet.
+
 - **Bare-metal CPU-exception handler** (PHASE 7g). The entry point installs
   an interrupt descriptor table (256 gates, one stub per vector) before the
   program runs, so a CPU fault reaches a handler that prints `oskel: cpu
