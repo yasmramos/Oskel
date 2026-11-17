@@ -285,7 +285,13 @@ static std::string quote(const std::string& value) { return "\"" + value + "\"";
 
 static void writeFile(const std::string& path, const std::vector<std::uint8_t>& bytes) {
   std::FILE* file = std::fopen(path.c_str(), "wb");
-  if (!file) return;
+  // A silent failure here would leave QEMU booting a kernel that does not
+  // exist, which reads as an empty guest output instead of a write error.
+  if (!file) {
+    std::printf("FAIL: cannot write the boot image to %s\n", path.c_str());
+    ++g_failures;
+    return;
+  }
   std::fwrite(bytes.data(), 1, bytes.size(), file);
   std::fclose(file);
 #if !defined(_WIN32)
@@ -372,7 +378,7 @@ static void test_qemu_boot() {
 static void test_qemu_wall_clock() {
   const std::string source = "print(time());\n";
   Image image = buildImage(source);
-  const std::string path = "/tmp/oskel_bare_metal_clock.elf";
+  const std::string path = tempPath("oskel_bare_metal_clock.elf");
   writeFile(path, image.elf);
 
   const std::int64_t before = static_cast<std::int64_t>(std::time(nullptr));
