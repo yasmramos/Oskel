@@ -286,6 +286,21 @@ int main() {
   differential(mixed, "mixed", {Value(7)}, "mixed(7) matches the VM");
   differential(mixed, "mixed", {Value(8)}, "mixed(8) matches the VM");
 
+  // --- Coalescing: a copy that should share a register -----------------------
+  // `copies` builds a value in one temporary, copies it into a local, copies the
+  // local into a second temporary and returns that. With web coalescing the
+  // three names share a register (no `mov` between them); the result must equal
+  // the VM's either way, which is what this pins down.
+  const char* coalesce =
+      "fn copies(a, b) {\n"
+      "  var t = a * b + 3;\n"
+      "  var u = t;\n"
+      "  var v = u;\n"
+      "  return v;\n"
+      "}\n";
+  differential(coalesce, "copies", {Value(4), Value(5)}, "copies(4,5) matches the VM");
+  differential(coalesce, "copies", {Value(-3), Value(7)}, "copies(-3,7) matches the VM");
+
   // --- Constant folding and strength reduction -------------------------------
   // Every one of these exercises a slice-2 rewrite: an all-constant subtree
   // that folds away, a constant operand applied as an immediate, a `const - var`

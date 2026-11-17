@@ -54,6 +54,26 @@ may change between minor versions.
   without the variable still skips the boot tests and runs the structural
   ones. No product code changes.
 
+- **JIT (slice 4): web-based register allocation with copy coalescing.** The JIT
+  used to tie every slot to a fixed register by index (`R0` to the first pool
+  register, `R1` to the second, ...), so a temporary reused for two values forced
+  a `mov` at every reuse and each `GETLOCAL`/`SETLOCAL` copied between the
+  temporary's register and the local's. The emitter now resolves each read and
+  write through a per-instruction allocation table, and an allocator fills it:
+  it builds a web per slot (the definitions a single live use can observe),
+  interferes webs that are live at the same point, coalesces the copies that do
+  not interfere (a `MOVE`, a local copy, or an in-place `s = s + x`), and colors
+  the result greedily over the seven-register pool; a web the pool cannot cover
+  keeps its 16-byte stack slot, exactly like the old overflow path. A liveness
+  pass that mirrors the emitter's fold decisions also drops a definition nothing
+  observes, which removes the constant a folded expression left behind. The
+  integer loop drops from 17 instructions to 9 (a hand-written `-O2` C++ loop is
+  7) and from 0.051s to 0.039s, within ~1.08x of the C++ loop and about 420x the
+  interpreter. Still 1:1 with the bytecode -- no opcode, superinstruction or
+  runtime specialization is added, and the differential suite (including a
+  20k-round fuzz over 12-local bodies) still proves the compiled body identical
+  to the interpreter.
+
 - **JIT (slice 3): compare-branch fusion.** When a comparison's boolean result
   only feeds the conditional branch right after it, the JIT no longer builds the
   bool (`cmp; setcc; movzx; mov; test; jcc`) and jumps straight off the flags
