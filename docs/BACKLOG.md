@@ -248,9 +248,17 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     direct form. **Partial (7f.3)**: the two link modes are now a CLI concept
     (`LinkMode`, `oskel build --mode freestanding|hosted`, default
     `freestanding`); `hosted` is the mode that links libc so an `extern "C"`
-    symbol resolves at link time, with the (target, mode) matrix validated. The
-    hosted *image* (object + link) is 7f.4, so `--mode hosted` fails cleanly
-    until then. General `extern "C"` symbols are still open.
+    symbol resolves at link time, with the (target, mode) matrix validated.
+    **Partial (7f.4)**: the hosted *image* exists. The emitter produces an
+    ELF64 `ET_REL` object (`native/object.h`) whose `.rela.text` carries one
+    relocation per external reference (`R_X86_64_PLT32` for a call,
+    `R_X86_64_PC32` for an address) and whose `.symtab` exports the program's
+    `main`; the hosted entry prelude (`emitHostedRuntime`) reaches the system
+    through libc (`write`/`exit`/`malloc`) instead of a raw syscall, and
+    `oskel build --mode hosted` links the object against libc with the host C
+    compiler (`$CC`, default `cc`, `-no-pie -lm`). The freestanding output is
+    byte-identical to before. General `extern "C"` *marshalling* (a per-signature
+    thunk) is still open (7f.5): the lowering still rejects an `extern "C"` read.
 20. **[P0] [done]** VM/AOT divergence in string iteration: `emitIterNext`'s
     `str` branch built the character but fell through into the `range` block,
     which overwrote `rax:rdx` with the cursor index, so `for c in "abc"`

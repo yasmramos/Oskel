@@ -186,6 +186,7 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(parse_float_test)
   oskel_add_cpp_test(mathlib_test)
   oskel_add_cpp_test(elf_test)
+  oskel_add_cpp_test(object_test)
   oskel_add_cpp_test(pe_test)
   oskel_add_cpp_test(lower_test)
   oskel_add_cpp_test(freestanding_test)
@@ -334,9 +335,9 @@ if(BUILD_TESTING)
 
     # The link mode is a deployment choice, not language syntax (PHASE 7f.3).
     # `--mode freestanding` must behave exactly like the default (self-contained,
-    # agrees with the VM), `--mode hosted` must fail cleanly until the object
-    # emitter lands (7f.4), and an unknown mode must be a usage error that names
-    # the valid ones.
+    # agrees with the VM), `--mode hosted` links against libc and must agree with
+    # the VM too (7f.4), and an unknown mode must be a usage error that names the
+    # valid ones.
     add_test(NAME oskel.build_mode
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"

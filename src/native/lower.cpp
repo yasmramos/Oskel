@@ -817,8 +817,9 @@ void lowerInstruction(const Instruction& instr, const Bytecode& proto, CodeGen& 
 }  // namespace
 
 LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
-                        const CodeGen& /*codegen*/) {
+                        const CodeGen& /*codegen*/, LinkMode mode) {
   requireSupportedTarget(target);
+  requireSupportedLinkMode(target, mode);
 
   CodeGen cg(target);
 
@@ -1056,13 +1057,18 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   cg.retInsn();
 
   // The entry prelude reaches the system, and that is the one place the
-  // targets differ: Linux goes through syscalls, Windows through kernel32 with
-  // the Microsoft x64 ABI, and bare metal through the serial port and `hlt`.
-  // Everything else -- the lowering and the embedded runtime -- is the same
-  // machine code for all three. The prelude binds the `entry` handles the
-  // runtime already references (write/exit/init_arena).
+  // targets and the link mode differ. Freestanding Linux goes through syscalls,
+  // Windows through kernel32 with the Microsoft x64 ABI, and bare metal through
+  // the serial port and `hlt`; the hosted mode (PHASE 7f.4) instead exports the
+  // program entry as the C `main` and reaches the system through libc, leaving
+  // its undefined symbols for the object emitter and the linker. Everything
+  // else -- the lowering and the embedded runtime -- is the same machine code
+  // for every combination. The prelude binds the `entry` handles the runtime
+  // already references (write/exit/init_arena).
   std::uint64_t startOffset = bareMetalEntry;
-  if (target.os == Os::Windows) {
+  if (mode == LinkMode::Hosted) {
+    startOffset = emitHostedRuntime(cg, entry, mainEntry);
+  } else if (target.os == Os::Windows) {
     startOffset = emitWindowsRuntime(cg, entry, mainEntry);
   } else if (target.os == Os::Freestanding) {
     emitBareMetalRuntime(cg, entry);
@@ -1080,5 +1086,10 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   result.code = cg.code();
   result.programEntry = chunkOffset;
   result.processEntry = startOffset;
+  // The hosted mode carries the references the linker must resolve; the
+  // freestanding modes never create one, so both vectors stay empty and the
+  // image is closed without a linker.
+  result.externals = cg.externalRefs();
+  result.exports = cg.exportedSymbols();
   return result;
 }

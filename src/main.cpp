@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -25,6 +26,7 @@
 #include "native/codegen.h"
 #include "native/elf.h"
 #include "native/lower.h"
+#include "native/object.h"
 #include "native/pe.h"
 #include "native/target.h"
 #include "parser.h"
@@ -287,6 +289,53 @@ bool parseLinkModeName(const std::string &name, LinkMode &out) {
   return false;
 }
 
+// The C compiler the hosted link drives (PHASE 7f.4). It is a *build-time*
+// dependency, never a runtime one: the compiler turns the relocatable object
+// into an executable by linking it against the host C library, which is what
+// lets an `extern "C"` symbol resolve. `$CC` overrides it (so a musl or
+// cross toolchain can be selected), falling back to `cc`.
+std::string hostedLinkerCommand() {
+  if (const char *cc = std::getenv("CC")) {
+    if (*cc != '\0') return cc;
+  }
+  return "cc";
+}
+
+// Quotes a path for a POSIX shell (the hosted link only runs on Linux today).
+// A single quote is the only character a single-quoted string cannot contain,
+// so each one is closed, escaped and reopened.
+std::string shellQuote(const std::string &path) {
+  std::string out = "'";
+  for (char c : path) {
+    if (c == '\'') {
+      out += "'\\''";
+    } else {
+      out += c;
+    }
+  }
+  out += "'";
+  return out;
+}
+
+// Links a relocatable object into a hosted executable by invoking the host C
+// compiler (PHASE 7f.4). `objectPath` is the `.o` just written and `output` the
+// requested executable; `-no-pie` keeps the fixed-address assumptions of the
+// backend and `-lm` provides the libm symbols a `std.math` extern may name.
+// Returns 0 on success, 65 when the toolchain is missing or the link fails --
+// never a half-linked image.
+int linkHostedObject(const std::string &objectPath, const std::string &output) {
+  const std::string command = hostedLinkerCommand() + " " + shellQuote(objectPath) +
+                              " -no-pie -o " + shellQuote(output) + " -lm";
+  const int status = std::system(command.c_str());
+  if (status != 0) {
+    std::string message = "oskel: linking the hosted binary failed (command: " + command +
+                          ")\n";
+    platformPosix().writeErr(message.data(), message.size());
+    return 65;
+  }
+  return 0;
+}
+
 // Compiles `source` (resolving imports) and writes a native binary to `output`.
 // The whole pipeline is the dev engine's: lex, parse, compile to bytecode, then
 // lower the bytecode to machine code and wrap it in a static executable. The
@@ -345,17 +394,25 @@ int buildBinary(const std::string &source, const std::string &name,
   std::vector<std::uint8_t> image;
   try {
     requireSupportedLinkMode(target, mode);
+    LoweredChunk chunk = lowerToX64(target, bytecode, CodeGen{}, mode);
     if (mode == LinkMode::Hosted) {
-      // The hosted image (object + link against libc) lands in PHASE 7f.4. The
-      // mode is accepted and validated now so the CLI surface and the (target,
-      // mode) matrix are in place; until the emitter exists, fail cleanly
-      // instead of writing bytes.
-      std::string message =
-          "oskel: hosted mode is not implemented yet (PHASE 7f.4)\n";
-      platformPosix().writeErr(message.data(), message.size());
-      return 65;
+      // The hosted image is an object the linker closes against libc (PHASE
+      // 7f.4). The object emitter turns the code buffer's external references
+      // into relocations; `cc` resolves them and writes the executable itself,
+      // so there is no in-memory image to write here. The object is a temporary
+      // beside the output and is removed whether the link succeeds or fails.
+      std::vector<std::uint8_t> object = buildRelocatableObject(
+          target, chunk.code, {}, chunk.externals, chunk.exports);
+      const std::string objectPath = output + ".oskel.tmp.o";
+      if (!writeBinaryFile(objectPath, object)) {
+        std::string message = "oskel: cannot write temporary object '" + objectPath + "'\n";
+        platformPosix().writeErr(message.data(), message.size());
+        return 74;
+      }
+      const int linkStatus = linkHostedObject(objectPath, output);
+      std::remove(objectPath.c_str());
+      return linkStatus;
     }
-    LoweredChunk chunk = lowerToX64(target, bytecode, CodeGen{});
     if (target.os == Os::Windows) {
       image = buildStaticPe(target, chunk.code, {}, chunk.processEntry);
     } else if (target.os == Os::Freestanding) {
