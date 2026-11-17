@@ -1,0 +1,621 @@
+// Standard library: dates and time.
+//
+// Imported as `import std.datetime;` (qualified: `std.datetime.now`),
+// `import std.datetime.*;` (unqualified: `now`), `import std.datetime as dt;`
+// or `import { now, Date } from std.datetime;`.
+//
+// A `Date` is a civil calendar day (year, month, day) and a `DateTime` adds a
+// wall-clock time (hour, minute, second) plus a UTC offset in minutes. Both are
+// plain structs, so a value is an ordinary map: it prints, compares and nests
+// in a collection like any other. The module is pure Oskel over the portable
+// primitive surface (integer arithmetic, `str`, `int`, `len`, indexing,
+// `panic`), so it behaves identically on the development VM and under
+// `oskel build` on every AOT target.
+//
+// All arithmetic is done on the proleptic Gregorian calendar through the
+// "days from civil" algorithm (Howard Hinnant), which is exact for every year
+// this library can represent. The clock is read from the `time()` builtin
+// (whole seconds since the Unix epoch, UTC); a `DateTime` carries the UTC
+// offset as data, so `local`/`utc` never consult a timezone database.
+
+// --- civil dates -----------------------------------------------------------
+
+struct Date {
+  year: int;
+  month: int;
+  day: int;
+}
+
+// A civil day and a wall-clock time, plus the offset from UTC in minutes (0 for
+// UTC, -300 for UTC-5). The offset is data, not a rule: the same instant prints
+// differently at two offsets, and the seconds-since-epoch is
+// `toSeconds(dt) - offset * 60`.
+struct DateTime {
+  year: int;
+  month: int;
+  day: int;
+  hour: int;
+  minute: int;
+  second: int;
+  offset: int;
+}
+
+const _SECONDS_PER_DAY = 86400;
+const _SECONDS_PER_HOUR = 3600;
+const _SECONDS_PER_MINUTE = 60;
+let _MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+let _WEEKDAY_NAMES = [
+  "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+];
+
+// The number of days in `month` of `year`, honouring the Gregorian leap rule
+// (divisible by 4, except centuries, except every 400 years).
+fn daysInMonth(year, month) {
+  if (month == 2) {
+    return isLeapYear(year) ? 29 : 28;
+  }
+  if (month == 4 || month == 6 || month == 9 || month == 11) {
+    return 30;
+  }
+  return 31;
+}
+
+fn isLeapYear(year) {
+  if (year % 4 != 0) {
+    return false;
+  }
+  if (year % 100 != 0) {
+    return true;
+  }
+  return year % 400 == 0;
+}
+
+// `days_from_civil`: the days between 1970-01-01 and `year-month-day`, counted
+// on the proleptic Gregorian calendar. `floorDiv` is used instead of `/`, which
+// truncates toward zero, so the result is correct for years before 1970 too.
+fn _daysFromCivil(year, month, day) {
+  var y = year;
+  if (month <= 2) {
+    y = y - 1;
+  }
+  let era = _floorDiv(y, 400);
+  let yoe = y - era * 400;                              // [0, 399]
+  let mp = (month + 9) % 12;                            // March = 0
+  let doy = (153 * mp + 2) / 5 + day - 1;               // [0, 365]
+  let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;      // [0, 146096]
+  return era * 146097 + doe - 719468;
+}
+
+// The inverse: the civil date for a day count. `civil_from_days` in the same
+// algorithm, so `fromDays(toDays(d)) == d` for every representable day.
+fn _civilFromDays(days) {
+  let z = days + 719468;
+  let era = _floorDiv(z, 146097);
+  let doe = z - era * 146097;                           // [0, 146096]
+  let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;  // [0, 399]
+  let y = yoe + era * 400;
+  let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);    // [0, 365]
+  let mp = (5 * doy + 2) / 153;                         // [0, 11]
+  let d = doy - (153 * mp + 2) / 5 + 1;                 // [1, 31]
+  let m = mp < 10 ? mp + 3 : mp - 9;                    // [1, 12]
+  return Date { year: m <= 2 ? y + 1 : y, month: m, day: d };
+}
+
+// Floor division and modulo, which the language's `/` and `%` do not provide
+// for negative operands (they truncate toward zero). The calendar arithmetic
+// needs the floor forms, or a date before 1970 lands one day off.
+fn _floorDiv(a, b) {
+  var q = a / b;
+  if ((a % b != 0) && ((a < 0) != (b < 0))) {
+    q = q - 1;
+  }
+  return q;
+}
+
+fn _floorMod(a, b) {
+  return a - _floorDiv(a, b) * b;
+}
+
+fn _pad2(n) {
+  return n < 10 ? "0" + str(n) : str(n);
+}
+
+fn _padYear(year) {
+  var text = str(year);
+  while (len(text) < 4) {
+    text = "0" + text;
+  }
+  return text;
+}
+
+// --- validation ------------------------------------------------------------
+
+fn _checkDate(year, month, day) {
+  if (month < 1 || month > 12) {
+    panic("month " + str(month) + " is out of range (1-12)");
+  }
+  let last = daysInMonth(year, month);
+  if (day < 1 || day > last) {
+    panic("day " + str(day) + " is out of range (1-" + str(last) + ") for " +
+          _padYear(year) + "-" + _pad2(month));
+  }
+}
+
+fn _checkTime(hour, minute, second) {
+  if (hour < 0 || hour > 23) {
+    panic("hour " + str(hour) + " is out of range (0-23)");
+  }
+  if (minute < 0 || minute > 59) {
+    panic("minute " + str(minute) + " is out of range (0-59)");
+  }
+  if (second < 0 || second > 59) {
+    panic("second " + str(second) + " is out of range (0-59)");
+  }
+}
+
+// --- constructors ----------------------------------------------------------
+
+@MustUse
+fn date(year, month, day) {
+  _checkDate(year, month, day);
+  return Date { year: year, month: month, day: day };
+}
+
+@MustUse
+fn datetime(year, month, day, rest...) {
+  var hour = 0;
+  var minute = 0;
+  var second = 0;
+  var offset = 0;
+  if (len(rest) >= 1) { hour = rest[0]; }
+  if (len(rest) >= 2) { minute = rest[1]; }
+  if (len(rest) >= 3) { second = rest[2]; }
+  if (len(rest) >= 4) { offset = rest[3]; }
+  _checkDate(year, month, day);
+  _checkTime(hour, minute, second);
+  return DateTime {
+    year: year, month: month, day: day,
+    hour: hour, minute: minute, second: second, offset: offset,
+  };
+}
+
+// --- conversion between dates and day counts ------------------------------
+
+@MustUse
+fn toDays(d) {
+  return _daysFromCivil(d.year, d.month, d.day);
+}
+
+@MustUse
+fn fromDays(days) {
+  return _civilFromDays(days);
+}
+
+// --- seconds since the Unix epoch -----------------------------------------
+
+// The seconds between 1970-01-01T00:00:00Z and this wall-clock time, *without*
+// applying the offset: the same `DateTime` in two zones has one `toSeconds`.
+@MustUse
+fn toSeconds(dt) {
+  return toDays(dt) * _SECONDS_PER_DAY + dt.hour * _SECONDS_PER_HOUR +
+         dt.minute * _SECONDS_PER_MINUTE + dt.second;
+}
+
+// The seconds since the epoch for the *instant* `dt` names, applying its UTC
+// offset (a UTC+1 wall clock is an hour ahead of the instant).
+@MustUse
+fn toEpoch(dt) {
+  return toSeconds(dt) - dt.offset * _SECONDS_PER_MINUTE;
+}
+
+// A `DateTime` at `offset` minutes from UTC for `seconds` since the epoch. The
+// offset is applied by shifting the instant, so the fields are the local wall
+// clock at that zone.
+@MustUse
+fn fromEpoch(seconds, rest...) {
+  var offset = 0;
+  if (len(rest) >= 1) { offset = rest[0]; }
+  let local = seconds + offset * _SECONDS_PER_MINUTE;
+  let days = _floorDiv(local, _SECONDS_PER_DAY);
+  var rem = _floorMod(local, _SECONDS_PER_DAY);
+  let date = _civilFromDays(days);
+  let hour = rem / _SECONDS_PER_HOUR;
+  rem = rem % _SECONDS_PER_HOUR;
+  let minute = rem / _SECONDS_PER_MINUTE;
+  let second = rem % _SECONDS_PER_MINUTE;
+  return DateTime {
+    year: date.year, month: date.month, day: date.day,
+    hour: hour, minute: minute, second: second, offset: offset,
+  };
+}
+
+// --- the clock -------------------------------------------------------------
+
+// The current instant, at `offset` minutes from UTC (0 by default).
+@MustUse
+fn now(rest...) {
+  var offset = 0;
+  if (len(rest) >= 1) { offset = rest[0]; }
+  return fromEpoch(time(), offset);
+}
+
+// The current civil day at `offset` minutes from UTC (0 by default).
+@MustUse
+fn today(rest...) {
+  var offset = 0;
+  if (len(rest) >= 1) { offset = rest[0]; }
+  let dt = fromEpoch(time(), offset);
+  return Date { year: dt.year, month: dt.month, day: dt.day };
+}
+
+// --- zone conversion -------------------------------------------------------
+
+// The same instant seen at a different offset. The wall clock shifts by the
+// difference, so the underlying seconds-since-epoch is unchanged.
+@MustUse
+fn toOffset(dt, offset) {
+  return fromEpoch(toEpoch(dt), offset);
+}
+
+@MustUse
+fn toUtc(dt) {
+  return toOffset(dt, 0);
+}
+
+// --- arithmetic ------------------------------------------------------------
+
+// Add (or subtract, with a negative count) whole days. The time of day and the
+// offset are kept; the calendar is normalized through the day count, so a month
+// or year boundary needs no special case.
+@MustUse
+fn addDays(d, count) {
+  let shifted = _civilFromDays(toDays(d) + count);
+  if (d.hour == nil) {
+    return shifted;
+  }
+  return _withDate(d, shifted);
+}
+
+fn _withDate(dt, date) {
+  return DateTime {
+    year: date.year, month: date.month, day: date.day,
+    hour: dt.hour, minute: dt.minute, second: dt.second, offset: dt.offset,
+  };
+}
+
+@MustUse
+fn addMonths(d, count) {
+  let total = d.year * 12 + (d.month - 1) + count;
+  let year = _floorDiv(total, 12);
+  let month = _floorMod(total, 12) + 1;
+  var day = d.day;
+  let last = daysInMonth(year, month);
+  if (day > last) {
+    day = last;
+  }
+  let moved = Date { year: year, month: month, day: day };
+  if (d.hour == nil) {
+    return moved;
+  }
+  return _withDate(d, moved);
+}
+
+@MustUse
+fn addSeconds(dt, count) {
+  return fromEpoch(toEpoch(dt) + count, dt.offset);
+}
+
+// --- differences -----------------------------------------------------------
+
+// The whole days between two dates (`b - a`), which is negative when `a` is the
+// later one.
+@MustUse
+fn daysBetween(a, b) {
+  return toDays(b) - toDays(a);
+}
+
+@MustUse
+fn secondsBetween(a, b) {
+  return toEpoch(b) - toEpoch(a);
+}
+
+// --- components ------------------------------------------------------------
+
+// 1 (Monday) through 7 (Sunday). 1970-01-01 was a Thursday.
+fn weekday(d) {
+  return _floorMod(toDays(d) + 3, 7) + 1;
+}
+
+fn weekdayName(d) {
+  return _WEEKDAY_NAMES[weekday(d) - 1];
+}
+
+fn monthName(d) {
+  return _MONTH_NAMES[d.month - 1];
+}
+
+// The day of the year, 1 through 366.
+fn dayOfYear(d) {
+  return toDays(d) - _daysFromCivil(d.year, 1, 1) + 1;
+}
+
+// The ISO-8601 week number, 1 through 53. A week belongs to the year that holds
+// its Thursday, so the week of a late-December day may be 1 of the next year.
+fn isoWeek(d) {
+  let wd = weekday(d);
+  let thursday = toDays(d) + (4 - wd);
+  let year = _civilFromDays(thursday).year;
+  let jan1 = _daysFromCivil(year, 1, 1);
+  return (thursday - jan1) / 7 + 1;
+}
+
+// The ISO-8601 week-numbering year, which differs from `d.year` around New
+// Year.
+fn isoWeekYear(d) {
+  let wd = weekday(d);
+  let thursday = toDays(d) + (4 - wd);
+  return _civilFromDays(thursday).year;
+}
+
+// --- formatting ------------------------------------------------------------
+
+fn _formatDate(d) {
+  return _padYear(d.year) + "-" + _pad2(d.month) + "-" + _pad2(d.day);
+}
+
+fn _formatOffset(offset) {
+  if (offset == 0) {
+    return "Z";
+  }
+  let sign = offset < 0 ? "-" : "+";
+  let magnitude = offset < 0 ? -offset : offset;
+  return sign + _pad2(magnitude / 60) + ":" + _pad2(magnitude % 60);
+}
+
+fn _formatTime(dt, withOffset) {
+  var text = _pad2(dt.hour) + ":" + _pad2(dt.minute) + ":" + _pad2(dt.second);
+  if (withOffset) {
+    text = text + _formatOffset(dt.offset);
+  }
+  return text;
+}
+
+// ISO-8601. A `Date` is `YYYY-MM-DD`; a `DateTime` is
+// `YYYY-MM-DDTHH:MM:SS` plus `Z` or `+HH:MM`/`-HH:MM` for its offset.
+@MustUse
+fn iso(value) {
+  if (value.hour == nil) {
+    return _formatDate(value);
+  }
+  return _formatDate(value) + "T" + _formatTime(value, true);
+}
+
+// `iso` without the offset suffix, for the wall clock alone.
+@MustUse
+fn isoLocal(dt) {
+  return _formatDate(dt) + "T" + _formatTime(dt, false);
+}
+
+// A `strftime`-like template. The directives are `%Y` (4-digit year), `%m`,
+// `%d`, `%H`, `%M`, `%S`, `%j` (day of year), `%a` (short weekday), `%A`
+// (weekday), `%b` (short month), `%B` (month), `%z` (offset), `%%` (a literal
+// `%`). Anything else is copied through.
+@MustUse
+fn format(value, pattern) {
+  var out = "";
+  var i = 0;
+  while (i < len(pattern)) {
+    let c = pattern[i];
+    if (c != "%" || i + 1 >= len(pattern)) {
+      out = out + c;
+      i = i + 1;
+    } else {
+      let code = pattern[i + 1];
+      if (code == "Y") {
+        out = out + _padYear(value.year);
+      } else if (code == "m") {
+        out = out + _pad2(value.month);
+      } else if (code == "d") {
+        out = out + _pad2(value.day);
+      } else if (code == "H") {
+        out = out + _pad2(value.hour);
+      } else if (code == "M") {
+        out = out + _pad2(value.minute);
+      } else if (code == "S") {
+        out = out + _pad2(value.second);
+      } else if (code == "j") {
+        var day = _pad2(dayOfYear(value));
+        while (len(day) < 3) {
+          day = "0" + day;
+        }
+        out = out + day;
+      } else if (code == "a") {
+        out = out + weekdayName(value)[0:3];
+      } else if (code == "A") {
+        out = out + weekdayName(value);
+      } else if (code == "b") {
+        out = out + monthName(value)[0:3];
+      } else if (code == "B") {
+        out = out + monthName(value);
+      } else if (code == "z") {
+        out = out + _formatOffset(value.offset);
+      } else if (code == "%") {
+        out = out + "%";
+      } else {
+        out = out + "%" + code;
+      }
+      i = i + 2;
+    }
+  }
+  return out;
+}
+
+// --- parsing ---------------------------------------------------------------
+
+// The digit value of `c`, or -1 when it is not a decimal digit.
+fn _digitValue(c) {
+  let n = ord(c);
+  if (n >= 48 && n <= 57) {
+    return n - 48;
+  }
+  return -1;
+}
+
+// Records the first error the scanner meets, so the caller can keep going
+// without indexing past the end. Returns -1 so a digit reader can `return` it.
+fn _parseFail(state, message) {
+  if (state.error == nil) {
+    state.error = message + " (at position " + str(state.pos) + ")";
+  }
+  return -1;
+}
+
+// Reads exactly `count` digits from `state.pos`, advancing past them. Records an
+// error and returns -1 when the run is not all digits or the input ends first.
+fn _readInt(state, count) {
+  var value = 0;
+  var i = 0;
+  while (i < count) {
+    if (state.pos >= len(state.text)) {
+      return _parseFail(state, "unexpected end of input");
+    }
+    let digit = _digitValue(state.text[state.pos]);
+    if (digit < 0) {
+      return _parseFail(state, "expected a digit");
+    }
+    value = value * 10 + digit;
+    state.pos = state.pos + 1;
+    i = i + 1;
+  }
+  return value;
+}
+
+// Consumes the literal `c`, or records an error.
+fn _expect(state, c) {
+  if (state.pos >= len(state.text) || state.text[state.pos] != c) {
+    return _parseFail(state, "expected '" + c + "'");
+  }
+  state.pos = state.pos + 1;
+  return 0;
+}
+
+fn _dateValid(year, month, day) {
+  if (month < 1 || month > 12) {
+    return false;
+  }
+  return day >= 1 && day <= daysInMonth(year, month);
+}
+
+fn _timeValid(hour, minute, second) {
+  return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59 &&
+         second >= 0 && second <= 59;
+}
+
+// Scans the offset after the seconds: `Z`, `+HH:MM`, `-HH:MM`, or nothing (UTC).
+fn _scanOffset(state) {
+  if (state.pos >= len(state.text)) {
+    return 0;
+  }
+  let sign = state.text[state.pos];
+  if (sign == "Z") {
+    state.pos = state.pos + 1;
+    return 0;
+  }
+  if (sign != "+" && sign != "-") {
+    return _parseFail(state, "expected 'Z', '+' or '-'");
+  }
+  state.pos = state.pos + 1;
+  let hours = _readInt(state, 2);
+  _expect(state, ":");
+  let minutes = _readInt(state, 2);
+  if (state.error != nil) {
+    return 0;
+  }
+  if (hours > 23 || minutes > 59) {
+    return _parseFail(state, "offset out of range");
+  }
+  let total = hours * 60 + minutes;
+  return sign == "-" ? -total : total;
+}
+
+// Scans an ISO-8601 date, or a date and time with an optional offset. A bare
+// date yields a `Date`; a date with a time yields a `DateTime`. On failure the
+// returned state carries an `error` message and a nil `value`.
+fn _scan(text) {
+  let state = {text: text, pos: 0, error: nil, value: nil};
+  let year = _readInt(state, 4);
+  _expect(state, "-");
+  let month = _readInt(state, 2);
+  _expect(state, "-");
+  let day = _readInt(state, 2);
+  if (state.error != nil) {
+    return state;
+  }
+  if (!_dateValid(year, month, day)) {
+    _parseFail(state, "date out of range");
+    return state;
+  }
+  if (state.pos >= len(state.text)) {
+    state.value = Date { year: year, month: month, day: day };
+    return state;
+  }
+  _expect(state, "T");
+  let hour = _readInt(state, 2);
+  _expect(state, ":");
+  let minute = _readInt(state, 2);
+  _expect(state, ":");
+  let second = _readInt(state, 2);
+  if (state.error != nil) {
+    return state;
+  }
+  if (!_timeValid(hour, minute, second)) {
+    _parseFail(state, "time out of range");
+    return state;
+  }
+  let offset = _scanOffset(state);
+  if (state.error != nil) {
+    return state;
+  }
+  state.value = DateTime {
+    year: year, month: month, day: day,
+    hour: hour, minute: minute, second: second, offset: offset,
+  };
+  return state;
+}
+
+// Parses an ISO-8601 date or date-time. A malformed string is a runtime error
+// naming the position; use `isValid` or `tryParse` to test a string without
+// aborting.
+@MustUse
+fn parse(text) {
+  let state = _scan(text);
+  if (state.error != nil) {
+    panic("datetime.parse: " + state.error);
+  }
+  return state.value;
+}
+
+// True when `text` is a complete, well-formed ISO-8601 date or date-time.
+@MustUse
+fn isValid(text) {
+  let state = _scan(text);
+  return state.error == nil && state.pos >= len(text);
+}
+
+// Parses without aborting: `{ok, value, error}` where `ok` is a bool, `value`
+// is the parsed value on success, and `error` is a message on failure (or nil).
+// Mirrors `std.json.tryParse`.
+@MustUse
+fn tryParse(text) {
+  let state = _scan(text);
+  if (state.error == nil && state.pos < len(text)) {
+    state.error = "unexpected trailing characters (at position " + str(state.pos) + ")";
+  }
+  if (state.error != nil) {
+    return {ok: false, value: nil, error: state.error};
+  }
+  return {ok: true, value: state.value, error: nil};
+}
