@@ -273,6 +273,10 @@ behave differently — under AOT. This is the exact split in 0.1.0.
   `struct`, ranges, slicing, string interpolation.
 - Arrays and maps (literals, indexing, `in`, `for-in`, printing, and `+` to
   concatenate two arrays).
+- The array methods `push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`,
+  `contains`, `indexOf` and `clear`. Each binds to a closure that captures its
+  receiver, so a call mutates or scans the same array; `contains`/`indexOf`
+  compare structurally (an array or map needle compares by content).
 - These builtins: `print`, `write`, `eprint`, `len`, `type`, `str`, `repr`,
   `bool`, `ord`, `chr`, `assert`, `panic`, `isError`.
 - The numeric conversions `int`, `float`, `double`, and the math builtins
@@ -280,7 +284,8 @@ behave differently — under AOT. This is the exact split in 0.1.0.
 
 **VM only — not yet available in `oskel build` (a build error names the global):**
 
-- Collection methods such as `arr.push`, `map.keys`, `str.upper`. They compile
+- The allocating array methods `slice`, `concat`, `clone` and `reversed`, and
+  the map and string methods such as `map.keys` and `str.upper`. They compile
   but fail at runtime with `value has no such member`.
 - `pcall`, and the I/O and process builtins `readFile`, `writeFile`,
   `fileExists`, `args`, `exit`, `random`, `seed`, `clock`. A program using any

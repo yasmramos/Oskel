@@ -308,6 +308,21 @@ may change between minor versions.
 
 ### Fixed
 
+- AOT: the remaining in-place and query array methods now work in a compiled
+  binary: `shift`, `unshift`, `insert`, `removeAt`, `contains`, `indexOf` and
+  `clear`. They bind like `push`/`pop` (the receiver goes into a shared cell and
+  the method body is an ordinary closure reached through `oskel_call`), so no
+  opcode and no compiler change are needed. The AOT `oskel_member_get` answered
+  every one of them with "value has no such member", a VM/AOT divergence. The
+  member dispatch now resolves the nine bound array names through a
+  selector-indexed table, `shift`/`removeAt` return the removed item (or nil
+  when empty), `unshift`/`insert`/`clear` return the receiver, `contains`/
+  `indexOf` scan with structural equality (an array or map needle compares by
+  content) and a negative index counts from the end, matching the hosted
+  binder's messages and exit code on the failure paths (bad arity,
+  `insert()/removeAt() index out of range`). Covered by `tests/lower_test.cpp`
+  (`testExecArrayMethodsInPlace`), `tests/freestanding_test.cpp`
+  (`test_array_methods_inplace`) and a `tests/build_binary` fixture.
 - Tests: the bare-metal wall-clock boot test now writes its image through the
   portable `tempPath()` helper instead of a hard-coded `/tmp/...`, so it runs on
   Windows too. `test_qemu_wall_clock` was the only one of the five boot tests

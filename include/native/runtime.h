@@ -215,14 +215,21 @@ struct AotRuntimeHandles {
   // outside world for a *value* rather than output, so it reads the `entry.now`
   // handle the target's prelude binds (syscall, libc, kernel32 or the CMOS RTC).
   CodeGen::Label timeBuiltin;      // AotValue oskel_builtin_time(AotValue* args, long argc, AotClosure* self)
-  // Bound array methods (PHASE 7c.3c). `a.push`/`a.pop` on an array yield a
+  // Bound array methods (PHASE 7c.3c/7c.3e). `a.<method>` on an array yields a
   // closure that captured its receiver in one upvalue cell, exactly like the
   // hosted `bindArray`. `bindArrayMethod` builds that closure from the receiver
-  // (rdi:rsi) and a selector (rdx); the two method bodies are ordinary builtins
+  // (rdi:rsi) and a selector (rdx); the method bodies are ordinary builtins
   // with the proto convention, so a `CALL` reaches them through `oskel_call`.
   CodeGen::Label bindArrayMethod;  // AotValue oskel_bind_array_method(AotValue arr, long which)
   CodeGen::Label arrayPushMethod;  // AotValue oskel_builtin_array_push(AotValue* args, long argc, AotClosure* self)
   CodeGen::Label arrayPopMethod;   // AotValue oskel_builtin_array_pop(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label arrayShiftMethod;     // AotValue oskel_builtin_array_shift(...)
+  CodeGen::Label arrayUnshiftMethod;   // AotValue oskel_builtin_array_unshift(...)
+  CodeGen::Label arrayInsertMethod;    // AotValue oskel_builtin_array_insert(...)
+  CodeGen::Label arrayRemoveAtMethod;  // AotValue oskel_builtin_array_remove_at(...)
+  CodeGen::Label arrayContainsMethod;  // AotValue oskel_builtin_array_contains(...)
+  CodeGen::Label arrayIndexOfMethod;   // AotValue oskel_builtin_array_index_of(...)
+  CodeGen::Label arrayClearMethod;     // AotValue oskel_builtin_array_clear(...)
 };
 
 inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
@@ -244,7 +251,9 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel()
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel()
   };
 }
 
