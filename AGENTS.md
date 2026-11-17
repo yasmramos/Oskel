@@ -40,6 +40,12 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   The suite globs `tests/*.oskl` and `examples/*.oskl` at **configure time**, so
   a new example or test needs `cmake -S . -B build` again before `ctest` picks
   it up (the build alone will not).
+- The bare-metal boot tests need `qemu-system-x86_64` (`apt install
+  qemu-system-x86` on Debian/Ubuntu). Without it `bare_metal_test` skips the
+  end-to-end cases and runs only the structural ones; CI installs QEMU on the
+  Linux runners and sets `OSKEL_REQUIRE_QEMU`, which makes a missing binary a
+  failure. Reproduce CI locally with
+  `OSKEL_REQUIRE_QEMU=1 ctest` after installing the package.
 - `oskel build` prints lowering errors (unsupported builtins, unlowered
   opcodes) and exits 65 without writing a binary; it never emits a
   mis-compiled one.

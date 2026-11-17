@@ -1227,8 +1227,12 @@ Slices, each independently shippable:
     lowering and the embedded runtime are shared with Linux unchanged. Verified
     in `tests/bare_metal_test.cpp`: the structural checks always run, and the
     end-to-end boot (real serial stdout and exit code under
-    `qemu-system-x86_64 -kernel`) runs when QEMU is on `PATH`. The `CodeGen`
-    gained four single-opcode primitives (`cli`, `hlt`, `out dx, al`,
+    `qemu-system-x86_64 -kernel`) runs when QEMU is on `PATH`. CI installs QEMU
+    on the Linux runners and sets `OSKEL_REQUIRE_QEMU`, which turns a missing
+    binary into a test failure rather than a silent skip, so the boot path
+    cannot disappear from the suite unnoticed; on a developer box without the
+    variable the boot tests skip, and the structural checks still run. The
+    `CodeGen` gained four single-opcode primitives (`cli`, `hlt`, `out dx, al`,
     `in al, dx`) plus `test al, imm8`, each byte-checked in
     `tests/codegen_test.cpp`.
 - Deferred: per-instruction type annotations for fast paths without dynamic

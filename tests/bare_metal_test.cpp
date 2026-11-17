@@ -8,7 +8,9 @@
 //   2. End to end: if `qemu-system-x86_64` is on PATH, boot the image with
 //      `-kernel`, capture the serial output and check the program's stdout and
 //      exit code. The prelude publishes the exit code on QEMU's isa-debug-exit
-//      port, so the boot terminates instead of spinning in `hlt`.
+//      port, so the boot terminates instead of spinning in `hlt`. CI installs
+//      QEMU and sets `OSKEL_REQUIRE_QEMU`, which turns a missing binary into a
+//      failure: a boot test that silently skips is a boot test that never runs.
 //
 // The program is compiled from real Oskel source (lex -> parse -> compile ->
 // lower), so the whole pipeline is exercised, not a hand-built chunk.
@@ -204,6 +206,16 @@ static void test_idt_is_present() {
 
 // ------------------------------------------------------------ QEMU end to end
 
+// CI sets `OSKEL_REQUIRE_QEMU` on the Linux runner, where the package is
+// installed on purpose. Without the variable a developer box may skip the boot
+// tests; with it a missing QEMU is a failure, not a silent skip, because a test
+// that quietly disappears is how the bare-metal path rots. Defined outside the
+// platform guard so the non-bootable platforms honour it too.
+static bool qemuRequired() {
+  const char* value = std::getenv("OSKEL_REQUIRE_QEMU");
+  return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
 #if defined(__linux__) && defined(__x86_64__)
 #define BARE_METAL_QEMU_TESTS 1
 #include <sys/stat.h>
@@ -389,8 +401,19 @@ int main() {
     test_qemu_boot();
     test_qemu_float_arithmetic();
     test_qemu_fault_reports();
+  } else if (qemuRequired()) {
+    // CI installs QEMU on purpose: its absence there means the runner setup
+    // broke, so fail loudly instead of passing with the boot tests gone.
+    std::printf("FAIL: OSKEL_REQUIRE_QEMU is set but qemu-system-x86_64 is missing\n");
+    ++g_failures;
   } else {
     std::printf("skip: qemu-system-x86_64 not found, boot test skipped\n");
+  }
+#else
+  if (qemuRequired()) {
+    std::printf("FAIL: OSKEL_REQUIRE_QEMU is set but this platform cannot boot "
+                "the bare-metal image\n");
+    ++g_failures;
   }
 #endif
 
