@@ -166,6 +166,12 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   emits cannot drift from the compiler's; keep that the single source of truth.
   It must never emit a declaration the compiler rejects — an unsupported type
   becomes a `// skipped:` comment, and a C variadic is written commented out.
+  Its stdout is byte for byte the same module as its `-o` file, so it is set to
+  binary mode on Windows (`_setmode(_fileno(stdout), _O_BINARY)`); a text-mode
+  stdout would turn every `\n` into `\r\n` and the piped module would differ
+  from the written one. A CMake test cannot see that by capturing stdout with
+  `OUTPUT_VARIABLE` — CMake normalizes CRLF to LF there — so a byte-exact
+  comparison must go through `OUTPUT_FILE` and `cmake -E compare_files`.
 
 ## Commit authorship
 
