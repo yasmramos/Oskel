@@ -1,0 +1,59 @@
+// Fixture for `oskel build` (tests/build_binary.cmake).
+//
+// `arr.push` and `arr.pop` are bound methods: the hosted engine returns a
+// native closure that captures its receiver, so the call mutates the array in
+// place (`push` returns the array, `pop` the removed item or nil when empty).
+// The AOT backend used to answer `arr.push` with "value has no such member",
+// so a compiled binary disagreed with the VM. This fixture is checked against
+// the VM, so both methods -- as a call and as a first-class value -- are pinned
+// by a real program.
+
+// `push` appends and returns the receiver; the receiver is mutated in place.
+var a = [1, 2];
+print(a.push(3));
+print(a);
+print(a.push(4, 5));
+print(a);
+
+// `pop` removes and returns the last item, and returns nil when empty.
+print(a.pop());
+print(a);
+var empty = [];
+print(empty.pop());
+print(empty);
+
+// The methods are first-class: binding one captures the receiver, so the
+// detached closure still mutates the same array.
+var push = a.push;
+var pop = a.pop;
+push(6);
+print(a);
+print(pop());
+print(a);
+
+// A method bound from a temporary receiver keeps that array alive, exactly
+// like the hosted binder.
+var made = [10, 20].push(30);
+print(made);
+
+// Methods inside a loop, growing and draining an accumulator.
+var acc = [];
+var i = 0;
+while (i < 4) {
+  acc.push(i * i);
+  i = i + 1;
+}
+print(acc);
+var drained = [];
+while (acc.length > 0) {
+  drained.push(acc.pop());
+}
+print(drained);
+print(acc);
+
+// `length` still reads the live size, and the result of `push` is the same
+// array object (so a subsequent `push` on it is visible on `a`).
+print(a.length);
+var same = a.push(7);
+print(same.length);
+print(a);

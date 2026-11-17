@@ -143,6 +143,15 @@ struct CollectionEnv {
   CodeGen::Label printRepr;    // void oskel_print_repr(AotValue, long depth)
   CodeGen::Label printStrEsc;  // void oskel_print_str_escaped(AotString*)
   CodeGen::Label lengthConst;  // data: the string "length"
+  // Bound array methods (PHASE 7c.3c): `oskel_member_get` returns a closure for
+  // `arr.push`/`arr.pop`, built by `bindArrayMethod`; the method bodies are
+  // `pushMethod`/`popMethod`. The member names are the data islands `pushConst`
+  // and `popConst` (raw `AotString`s, like `lengthConst`).
+  CodeGen::Label bindArrayMethod;
+  CodeGen::Label pushMethod;
+  CodeGen::Label popMethod;
+  CodeGen::Label pushConst;    // data: the string "push"
+  CodeGen::Label popConst;     // data: the string "pop"
   const DataBlob* msgOom;
   const DataBlob* msgArrayIndexType;
   const DataBlob* msgIndexRange;
@@ -1647,6 +1656,153 @@ void emitArrayConcat(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
   emitFailCall(cg, fail, msgOom);
 }
 
+// `AotValue oskel_bind_array_method(AotValue arr, long which)`: the value of
+// `arr.push` (`which == 0`) or `arr.pop` (`which == 1`). It mirrors the hosted
+// `bindArray`: the method owns its receiver, so the receiver is stored in a
+// 16-byte cell (shared with the method, exactly like a captured local) and the
+// method is an ordinary `AotClosure` whose single upvalue is that cell. The
+// returned `Func` reaches its body through the ordinary `oskel_call` path, so
+// the bytecode and the compiler are unchanged. `arr` is rdi:rsi, the selector
+// rdx; rbx/r12 are callee-saved and preserved across the helper calls.
+void emitBindArrayMethod(CodeGen& cg, CodeGen::Label label, CodeGen::Label cellNew,
+                         CodeGen::Label closure, CodeGen::Label pushMethod,
+                         CodeGen::Label popMethod) {
+  CodeGen::Label usePush = cg.newLabel();
+  CodeGen::Label haveCode = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 16);              // scratch slot for the selector
+  cg.movToMem(Rbp, -24, Rdx);           // which
+  cg.callLabel(cellNew);                // cell holding the receiver (rdi:rsi)
+  cg.movReg(R12, Rax);                  // r12 = cell (callee-saved)
+  cg.movFromMem(Rax, Rbp, -24);         // which
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, usePush);
+  cg.leaRipLabel(Rdi, popMethod);
+  cg.jmp(haveCode);
+  cg.bind(usePush);
+  cg.leaRipLabel(Rdi, pushMethod);
+  cg.bind(haveCode);
+  cg.movImm(Rsi, 0);                    // arity: the body checks its own argc
+  cg.movImm(Rdx, 1);                    // one upvalue: the receiver's cell
+  cg.callLabel(closure);                // rax:rdx = Func value, rdx = AotClosure*
+  cg.movToMem(Rdx, static_cast<std::int64_t>(kAotClosureHeaderSize), R12);
+  cg.addImm32(Rsp, 16);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `AotValue oskel_builtin_array_push(AotValue* args, long argc, AotClosure* self)`:
+// the bound `arr.push(...)`. The receiver is the closure's single upvalue cell;
+// every argument is appended in order and the receiver is returned, matching
+// the hosted `bindArray` `push` (which returns the array, not a count). The
+// window grows *down*, so `args[i]` sits at `args - 16*i`. Growth goes through
+// `oskel_block_ensure`, so an append is amortised O(1).
+void emitArrayPushMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
+  CodeGen::Label loop = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 32);
+  cg.movReg(Rbx, Rdi);                  // args
+  cg.movReg(R12, Rsi);                  // argc
+  cg.movFromMem(Rax, Rdx, static_cast<std::int64_t>(kAotClosureHeaderSize));
+  cg.movFromMem(Rax, Rax, 8);           // cell->payload = AotArray*
+  cg.movToMem(Rbp, -24, Rax);           // array header
+  cg.movImmToMem(Rbp, -32, 0);          // index
+  cg.bind(loop);
+  cg.movFromMem(R8, Rbp, -32);          // index
+  cg.cmpReg(R8, R12);
+  cg.jcc(Jcc::Ge, done);
+  cg.movFromMem(R9, Rbp, -24);          // array
+  cg.movFromMem(R10, R9, kTableLengthOffset);
+  cg.movReg(Rdi, R9);
+  cg.movReg(Rsi, R10);
+  cg.addImm32(Rsi, 1);
+  cg.movImm(Rdx, kArrayItemSize);
+  cg.callLabel(env.blockEnsure);        // rax = items block
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movFromMem(R9, Rbp, -24);          // array
+  cg.movFromMem(R10, R9, kTableLengthOffset);
+  cg.movReg(R11, R10);
+  cg.shlImm8(R11, 4);                   // len * 16
+  cg.addReg(R11, Rax);                  // &block[len]
+  cg.movFromMem(Rcx, Rbp, -32);         // index
+  cg.shlImm8(Rcx, 4);
+  cg.movReg(Rdx, Rbx);
+  cg.subReg(Rdx, Rcx);                  // &args[index]
+  cg.movFromMem(Rcx, Rdx, 0);
+  cg.movToMem(R11, 0, Rcx);
+  cg.movFromMem(Rcx, Rdx, 8);
+  cg.movToMem(R11, 8, Rcx);
+  cg.movFromMem(R10, R9, kTableLengthOffset);
+  cg.addImm32(R10, 1);
+  cg.movToMem(R9, kTableLengthOffset, R10);
+  cg.movFromMem(R8, Rbp, -32);
+  cg.addImm32(R8, 1);
+  cg.movToMem(Rbp, -32, R8);
+  cg.jmp(loop);
+  cg.bind(done);
+  cg.movFromMem(Rdx, Rbp, -24);         // return the receiver array
+  cg.movImm(Rax, kTagArray);
+  cg.addImm32(Rsp, 32);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(oom);
+  emitFailCall(cg, env.fail, *env.msgOom);
+}
+
+// `AotValue oskel_builtin_array_pop(AotValue* args, long argc, AotClosure* self)`:
+// the bound `arr.pop()`. It takes no argument, removes the last item and
+// returns it, or returns nil when the array is empty -- the hosted `bindArray`
+// `pop`. `self`'s single upvalue is the receiver's cell.
+void emitArrayPopMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                        const DataBlob& msgArgc) {
+  CodeGen::Label empty = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Ne, badArgc);
+  cg.movFromMem(Rax, Rdx, static_cast<std::int64_t>(kAotClosureHeaderSize));
+  cg.movFromMem(R12, Rax, 8);           // cell->payload = AotArray*
+  cg.movFromMem(Rbx, R12, kTableLengthOffset);
+  cg.testReg(Rbx);
+  cg.jcc(Jcc::Eq, empty);
+  cg.subRegImm32(Rbx, 1);
+  cg.movToMem(R12, kTableLengthOffset, Rbx);
+  cg.movReg(Rax, Rbx);
+  cg.shlImm8(Rax, 4);                   // (len - 1) * 16
+  cg.movFromMem(R10, R12, kTableBlockOffset);
+  cg.addReg(R10, Rax);
+  cg.movFromMem(Rax, R10, 0);
+  cg.movFromMem(Rdx, R10, 8);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(empty);
+  cg.xorReg(Rax, Rax);                  // nil
+  cg.xorReg(Rdx, Rdx);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(badArgc);
+  emitFailCall(cg, env.fail, msgArgc);
+}
+
 // `void oskel_init_globals(long count)`: allocate `count` `AotValue` slots
 // (16 bytes each) from the arena, clear them to nil, and keep the base in r15
 // (`kAotGlobalBase`). Called once by the chunk entry, before the program runs,
@@ -2323,9 +2479,9 @@ void emitTableGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
 }
 
 // `AotValue oskel_member_get(AotValue obj, AotValue name)`: `obj.name` for a map
-// (the entry, else `length`, else nil), an array (`.length`) or a string
-// (`.length`). Methods are not bound yet, so a miss on an array/string is the
-// "no member" error, exactly as `ops::memberGet` reports it.
+// (the entry, else `length`, else nil), an array (`.length`, or the bound
+// `push`/`pop` methods) or a string (`.length`). A miss on an array/string is
+// the "no such member" error, exactly as `ops::memberGet` reports it.
 void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   CodeGen::Label map = cg.newLabel();
   CodeGen::Label arr = cg.newLabel();
@@ -2341,6 +2497,8 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   CodeGen::Label done = cg.newLabel();
   CodeGen::Label failMember = cg.newLabel();
   CodeGen::Label failIndex = cg.newLabel();
+  CodeGen::Label bindPush = cg.newLabel();
+  CodeGen::Label bindPop = cg.newLabel();
 
   cg.bind(label);
   prologue(cg);
@@ -2387,9 +2545,33 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.leaRipLabel(Rsi, env.lengthConst);
   cg.callLabel(env.strEq);
   cg.testReg(Rax);
-  cg.jcc(Jcc::Eq, failMember);
-  cg.movFromMem(Rdx, R12, kTableLengthOffset);
-  cg.movImm(Rax, kTagInt);
+  cg.jcc(Jcc::Ne, isLength);
+  // Not `.length`: `arr.push`/`arr.pop` bind to a closure over the receiver,
+  // exactly like the hosted `bindArray`. Any other name is "no such member".
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.pushConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindPush);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.popConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindPop);
+  cg.jmp(failMember);
+
+  cg.bind(bindPush);
+  cg.movImm(Rdi, kTagArray);
+  cg.movReg(Rsi, R12);
+  cg.xorReg(Rdx, Rdx);          // selector 0: push
+  cg.callLabel(env.bindArrayMethod);
+  cg.jmp(done);
+
+  cg.bind(bindPop);
+  cg.movImm(Rdi, kTagArray);
+  cg.movReg(Rsi, R12);
+  cg.movImm(Rdx, 1);            // selector 1: pop
+  cg.callLabel(env.bindArrayMethod);
   cg.jmp(done);
 
   cg.bind(str);
@@ -6256,6 +6438,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgBadIndex = addText("oskel: value is not indexable\n");
   DataBlob msgNoMember = addText("oskel: value has no such member\n");
   DataBlob msgImmutable = addText("oskel: strings are immutable\n");
+  DataBlob msgPopArgc = addText("oskel: pop() expects 0 arguments\n");
   DataBlob msgBadAssign = addText("oskel: cannot assign to this value\n");
   DataBlob msgBadField = addText("oskel: cannot assign a field on this value\n");
   DataBlob msgBadIn = addText("oskel: unsupported operands for 'in'\n");
@@ -6376,6 +6559,11 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   env.printRepr = printRepr;
   env.printStrEsc = printStrEsc;
   env.lengthConst = cg.newLabel();
+  env.bindArrayMethod = handles.bindArrayMethod;
+  env.pushMethod = handles.arrayPushMethod;
+  env.popMethod = handles.arrayPopMethod;
+  env.pushConst = cg.newLabel();
+  env.popConst = cg.newLabel();
   env.msgOom = &msgOom;
   env.msgArrayIndexType = &msgArrayIndexType;
   env.msgIndexRange = &msgIndexRange;
@@ -6411,6 +6599,10 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitAlloc(cg, handles.alloc);
   emitConcat(cg, handles.concat, handles.alloc, fail, msgOom);
   emitArrayConcat(cg, handles.arrayConcat, handles.alloc, env.blockEnsure, fail, msgOom);
+  emitBindArrayMethod(cg, handles.bindArrayMethod, handles.cellNew, handles.closure,
+                      handles.arrayPushMethod, handles.arrayPopMethod);
+  emitArrayPushMethod(cg, handles.arrayPushMethod, env);
+  emitArrayPopMethod(cg, handles.arrayPopMethod, env, msgPopArgc);
   emitInitGlobals(cg, handles.initGlobals, handles.alloc, fail, msgOom);
   emitGlobalSet(cg, handles.globalSet);
   emitGlobalGet(cg, handles.globalGet);
@@ -6543,6 +6735,12 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   // out with the other data islands so no code falls through into it.
   cg.bind(env.lengthConst);
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x06\x00\x00\x00\x00\x00\x00\x00length"), 14);
+  // The method member names, the same raw `AotString` layout: an 8-byte length
+  // then the bytes.
+  cg.bind(env.pushConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x04\x00\x00\x00\x00\x00\x00\x00push"), 12);
+  cg.bind(env.popConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x03\x00\x00\x00\x00\x00\x00\x00pop"), 11);
 
   // Data islands last: every code path above ends in `ret` or `ud2`, so
   // control never reaches them, and their addresses are already referenced by

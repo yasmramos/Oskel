@@ -236,6 +236,17 @@ may change between minor versions.
 
 ### Fixed
 
+- AOT: `arr.push`/`arr.pop` now work in a compiled binary. The hosted engine
+  binds both to a native closure that captures its receiver, so `a.push(3)`
+  appends in place and returns the array, and `a.pop()` removes and returns the
+  last item (or nil when empty); the AOT `oskel_member_get` only knew `.length`,
+  so `a.push` failed at run time with "value has no such member" — a
+  VM/AOT divergence. `oskel_member_get` now returns a bound method built the
+  same way the hosted `bindArray` does: the receiver is stored in a shared cell
+  (a closure upvalue) and the method body is reached through the ordinary
+  `oskel_call` path, so the bytecode and the compiler are unchanged. A
+  `tests/build_binary` fixture pins the binary against the VM on Linux and
+  Windows.
 - The `oskel build` end-to-end tests (`tests/build_binary.cmake`,
   `tests/build_error.cmake`, `tests/aot_runtime_error.cmake`) wrote their
   generated binary to a fixed name under `CMAKE_CURRENT_BINARY_DIR`. That
