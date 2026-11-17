@@ -45,6 +45,8 @@ const char* importName(PeImport import) {
       return "ExitProcess";
     case PeImport::VirtualAlloc:
       return "VirtualAlloc";
+    case PeImport::GetSystemTimeAsFileTime:
+      return "GetSystemTimeAsFileTime";
     case PeImport::Count:
       break;
   }

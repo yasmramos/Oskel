@@ -5609,6 +5609,29 @@ void emitExitBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label exitLabel
   emitFailCall(cg, fail, msgType);
 }
 
+// `time()`: the wall clock, in whole seconds since the Unix epoch (UTC), as an
+// `int`. It takes no argument. The value comes from the target's `entry.now`
+// handle, which each prelude binds its own way -- a raw syscall on Linux, libc
+// `time` in the hosted mode, kernel32 on Windows and the CMOS RTC on bare
+// metal -- so this emitter is target-independent and the runtime stays free of
+// libc. The hosted engine's `time` builtin reads the same wall clock.
+void emitTimeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label nowLabel,
+                     CodeGen::Label fail, const DataBlob& msgArgc) {
+  CodeGen::Label ok = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Eq, ok);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(ok);
+  cg.callLabel(nowLabel);          // rax = seconds since the epoch
+  cg.movReg(Rdx, Rax);
+  cg.movImm(Rax, kTagInt);
+  epilogue(cg);
+}
+
 // `void oskel_sb_init(AotStringBuilder* sb, char* data, long capacity)`: start a
 // builder over a caller-owned buffer (`data`/`capacity`) with `length` zero. A
 // caller that renders a `print` value passes a stack buffer, so a small render
@@ -6534,6 +6557,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob textGot = addText(", got ");
   DataBlob msgExitArgc = addText("oskel: exit() expects between 0 and 1 arguments\n");
   DataBlob msgExitType = addText("oskel: exit() expects an integer argument\n");
+  DataBlob msgTimeArgc = addText("oskel: time() expects 0 arguments\n");
 
   CodeGen::Label fail = cg.newLabel();
   CodeGen::Label failDynamic = cg.newLabel();
@@ -6740,6 +6764,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                       sbNew, sbAppend, failDynamic, fail, msgAssertEqArgc,
                       msgAssertEqDefault, textExpected, textGot, msgOom);
   emitExitBuiltin(cg, handles.exitBuiltin, entry.exit, fail, msgExitArgc, msgExitType);
+  emitTimeBuiltin(cg, handles.timeBuiltin, entry.now, fail, msgTimeArgc);
   emitIntTextParser(cg, handles.intTextParser, fail, msgConvertInt);
   dtoa::emitDtoa(cg, dtoaHandles);
   parse_float::emitParseFloat(cg, parseFloatHandles, dtoaHandles);

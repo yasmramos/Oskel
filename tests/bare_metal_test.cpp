@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -310,6 +311,45 @@ static void test_qemu_boot() {
   check(result.exitCode == 0, "the booted program exits with code 0");
 }
 
+// The kernel reads the wall clock from the CMOS RTC and converts it to a Unix
+// timestamp in assembly (no syscall, no libc). QEMU's default RTC tracks the
+// host clock, so `time()` inside the guest must land close to the host's own
+// time -- a wrong epoch base, a BCD misread or a 12-hour slip would be off by
+// days, not seconds.
+static void test_qemu_wall_clock() {
+  const std::string source = "print(time());\n";
+  Image image = buildImage(source);
+  const std::string path = "/tmp/oskel_bare_metal_clock.elf";
+  writeFile(path, image.elf);
+
+  const std::int64_t before = static_cast<std::int64_t>(std::time(nullptr));
+  BootResult result = boot(path);
+  const std::int64_t after = static_cast<std::int64_t>(std::time(nullptr));
+  check(result.booted, "the clock image boots and reaches the exit port");
+
+  // The guest prints one integer and a newline.
+  std::int64_t guest = 0;
+  bool parsed = !result.output.empty();
+  std::size_t i = 0;
+  if (parsed) {
+    for (; i < result.output.size() && result.output[i] != '\n'; ++i) {
+      if (result.output[i] < '0' || result.output[i] > '9') {
+        parsed = false;
+        break;
+      }
+      guest = guest * 10 + (result.output[i] - '0');
+    }
+  }
+  check(parsed, ("the guest printed an integer [" + result.output + "]").c_str());
+  if (parsed) {
+    // A generous window: the boot itself takes a moment, but a wrong epoch base
+    // is off by years and a wrong hour by thousands of seconds.
+    check(guest >= before - 60 && guest <= after + 60,
+          ("the RTC clock agrees with the host [" + std::to_string(guest) + " vs " +
+           std::to_string(before) + ".." + std::to_string(after) + "]").c_str());
+  }
+}
+
 static void test_qemu_float_arithmetic() {
   // The trampoline must set CR4.OSFXSR and CR4.OSXMMEXCPT before the runtime
   // runs, or the first SSE instruction is a #UD: with no IDT that is a double
@@ -399,6 +439,7 @@ int main() {
 #ifdef BARE_METAL_QEMU_TESTS
   if (haveQemu()) {
     test_qemu_boot();
+    test_qemu_wall_clock();
     test_qemu_float_arithmetic();
     test_qemu_fault_reports();
   } else if (qemuRequired()) {

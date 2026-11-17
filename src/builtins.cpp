@@ -1273,6 +1273,19 @@ void registerBuiltins(Runtime& in) {
     return Value(std::chrono::duration<double>(now - startTime).count());
   });
 
+  // Wall-clock time, unlike `clock` (which is monotonic and relative to the
+  // process start). The count is whole seconds since the Unix epoch, UTC: it is
+  // the anchor `std.datetime` builds civil dates on, and it is what the AOT
+  // backend's `now` handle provides on every target.
+  in.addNative("time", [](Runtime& in, Args args) -> Value {
+    need(in, "time", args, 0);
+    auto now = std::chrono::system_clock::now();
+    int64_t seconds = std::chrono::duration_cast<std::chrono::seconds>(
+                          now.time_since_epoch())
+                          .count();
+    return Value(seconds);
+  });
+
   in.addNative("assert", [](Runtime& in, Args args) -> Value {
     needBetween(in, "assert", args, 1, 2);
     if (!args[0].truthy()) {

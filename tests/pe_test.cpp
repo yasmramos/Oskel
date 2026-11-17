@@ -121,10 +121,13 @@ int main() {
   // imported function, so a single kernel32.dll descriptor plus the terminator.
   check(read32(pe, kOh + 112 + 12) == 2 * 20,
         "import directory size is one descriptor + terminator");
-  // DataDirectory[12] is the IAT; it must be published, not left zero.
+  // DataDirectory[12] is the IAT; it must be published, not left zero. The
+  // range covers every slot plus the null terminator, so `Count + 1` thunks.
   check(read32(pe, kOh + 112 + 12 * 8) == importIatRva(PeImport::WriteFile),
         "IAT directory points at the first slot");
-  check(read32(pe, kOh + 112 + 12 * 8 + 4) == 5 * 8, "IAT directory covers every slot");
+  check(read32(pe, kOh + 112 + 12 * 8 + 4) ==
+            (static_cast<int>(PeImport::Count) + 1) * 8,
+        "IAT directory covers every slot");
 
   // --- Section headers ---
   // Section 1 is .idata (first, so its RVA is fixed regardless of the code size).
@@ -165,8 +168,12 @@ int main() {
 
   // Each import has a hint/name entry whose name matches the enum, and the IAT
   // slot `importIatRva` publishes holds that same entry RVA before binding.
-  const char* expected[] = {"WriteFile", "GetStdHandle", "ExitProcess", "VirtualAlloc"};
-  for (int i = 0; i < 4; ++i) {
+  // The list is derived from `PeImport`, so adding an import extends the check
+  // instead of leaving a hard-coded count behind.
+  const char* expected[] = {"WriteFile", "GetStdHandle", "ExitProcess", "VirtualAlloc",
+                            "GetSystemTimeAsFileTime"};
+  const int importCount = static_cast<int>(PeImport::Count);
+  for (int i = 0; i < importCount; ++i) {
     const std::uint32_t entryRva = read32(pe, idataPtr + (iltRva - idataVa) + i * 8);
     const std::size_t entryOffset = idataPtr + (entryRva - idataVa);
     check(std::memcmp(pe.data() + entryOffset + 2, expected[i],
