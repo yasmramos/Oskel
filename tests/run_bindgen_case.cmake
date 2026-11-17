@@ -59,19 +59,31 @@ if(NOT check_exit EQUAL 0)
 endif()
 
 # --- 3. `bindgen <header>` writes the same module to stdout ---
+# Captured with OUTPUT_FILE, not OUTPUT_VARIABLE: CMake normalizes CRLF to LF
+# when it captures into a variable, which would hide a text-mode stdout that
+# turns every '\n' into "\r\n" on Windows. Comparing the raw bytes is what
+# keeps the two output paths identical on every platform.
+set(stdout_file "${CMAKE_CURRENT_BINARY_DIR}/bindgen_stdout.oskl")
+file(REMOVE "${stdout_file}")
 execute_process(
   COMMAND "${BINDGEN_EXE}" "${BINDGEN_HEADER}"
+  OUTPUT_FILE "${stdout_file}"
   RESULT_VARIABLE pipe_exit
-  OUTPUT_VARIABLE pipe_stdout
   ERROR_VARIABLE pipe_stderr
 )
 if(NOT pipe_exit EQUAL 0)
   message(FATAL_ERROR "bindgen (stdout) exited ${pipe_exit}\n--- stderr ---\n${pipe_stderr}")
 endif()
-file(READ "${generated}" generated_text)
-if(NOT pipe_stdout STREQUAL generated_text)
-  message(FATAL_ERROR "bindgen stdout disagrees with the -o file")
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" -E compare_files "${generated}" "${stdout_file}"
+  RESULT_VARIABLE compare_exit
+)
+if(NOT compare_exit EQUAL 0)
+  message(FATAL_ERROR
+    "bindgen stdout differs byte for byte from the -o file (a text-mode stdout "
+    "would translate '\\n' to CRLF on Windows)")
 endif()
+file(READ "${generated}" generated_text)
 # A non-empty generated module: the fixture is not silently empty.
 if(NOT generated_text MATCHES "fn strlen")
   message(FATAL_ERROR "the generated module does not declare strlen:\n${generated_text}")

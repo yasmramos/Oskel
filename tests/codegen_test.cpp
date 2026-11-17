@@ -499,6 +499,16 @@ static void test_sse() {
   g5b.cvttsd2si(X64Reg::Rax, kXmmBase + 0);
   checkBytes("cvttsd2si rax, xmm0", g5b, "F2480F2CC0");
 
+  // The extended-register forms pin the REX bits: the GPR destination is the
+  // ModRM reg field (REX.R) and the xmm source the rm field (REX.B), the reverse
+  // of `movqToXmm`. An r8-r15 destination and an xmm8-15 source exercise both.
+  CodeGen g5c;
+  g5c.cvttsd2si(X64Reg::R9, kXmmBase + 0);
+  checkBytes("cvttsd2si r9, xmm0", g5c, "F24C0F2CC8");
+  CodeGen g5d;
+  g5d.cvttsd2si(X64Reg::Rax, kXmmBase + 8);
+  checkBytes("cvttsd2si rax, xmm8", g5d, "F2490F2CC0");
+
   // movq xmm0, rax -> 66 48 0F 6E C0 (REX.W is mandatory: without it the
   // instruction degrades to the 32-bit `movd`).
   CodeGen g6;
