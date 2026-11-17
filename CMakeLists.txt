@@ -229,6 +229,7 @@ if(BUILD_TESTING)
      CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
     add_test(NAME oskel.build_binary
       COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
@@ -238,6 +239,7 @@ if(BUILD_TESTING)
     # evaluator), not only by the small fixture above.
     add_test(NAME oskel.build_binary_calc
       COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_calc"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/examples/calc.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
@@ -247,6 +249,7 @@ if(BUILD_TESTING)
     # real program.
     add_test(NAME oskel.build_binary_mandelbrot
       COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_mandelbrot"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/examples/mandelbrot.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
@@ -256,6 +259,7 @@ if(BUILD_TESTING)
     # stub that matches the VM bit for bit.
     add_test(NAME oskel.build_binary_math
       COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_math"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_math.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
@@ -264,6 +268,7 @@ if(BUILD_TESTING)
     # members used. Before 7f.1 the declarations alone failed the build.
     add_test(NAME oskel.build_binary_math_pure
       COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_math_pure"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_math_pure.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
@@ -274,6 +279,7 @@ if(BUILD_TESTING)
     # `double`/`float`/`int` builtins must not widen it a second time.
     add_test(NAME oskel.build_binary_conversions
       COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_conversions"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_conversions.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
@@ -286,6 +292,7 @@ if(BUILD_TESTING)
     add_test(NAME oskel.build_binary_array_concat
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_array_concat"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_concat.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
@@ -297,6 +304,7 @@ if(BUILD_TESTING)
     # `kPeStackReserve` -- on Windows, where the two platforms used to differ.
     add_test(NAME oskel.build_binary_deep_recursion
       COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_deep_recursion"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_deep_recursion.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
@@ -308,6 +316,7 @@ if(BUILD_TESTING)
     add_test(NAME oskel.build_binary_builtins
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_builtins"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_builtins.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
@@ -327,6 +336,7 @@ if(BUILD_TESTING)
     # dedicated message and write no binary.
     add_test(NAME oskel.build_extern_error
       COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_extern_error"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern.oskl"
         "-DEXPECTED_MESSAGE=extern \"C\" symbol 'getpid' cannot be resolved by the AOT backend"
@@ -335,6 +345,7 @@ if(BUILD_TESTING)
     # message that says `native fn` rather than `extern "C"` (PHASE 7f.1).
     add_test(NAME oskel.build_native_error
       COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_native_error"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_native_error.oskl"
         "-DEXPECTED_MESSAGE=native fn 'clock' cannot be resolved by the AOT backend"
@@ -348,6 +359,7 @@ if(BUILD_TESTING)
     add_test(NAME oskel.build_native_qualified_error
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_native_qualified_error"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_qualified_error.oskl"
         "-DEXPECTED_MESSAGE=native fn 'clock' cannot be resolved by the AOT backend"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
@@ -358,6 +370,7 @@ if(BUILD_TESTING)
     # below), which is the reference this test compares against.
     add_test(NAME oskel.build_runtime_error
       COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_runtime_error"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.oskl"
         "-DOSKEL_EXPECTED_EXIT=70"

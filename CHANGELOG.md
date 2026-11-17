@@ -169,12 +169,6 @@ may change between minor versions.
   130x faster than the interpreter (about 5x faster than the previous
   stack-slot JIT), and the differential suite still proves the compiled body
   identical to the interpreter for every accepted proto.
-- The `oskel build` CTest runners (`tests/build_binary.cmake`,
-  `tests/build_error.cmake`) name their output after the fixture's stem. Every
-  case wrote the same `oskel_build_output` file, so under a parallel `ctest`
-  two cases could overwrite each other's binary and a spurious
-  "the generated binary disagrees with the VM" failure appeared (the
-  `mandelbrot` case was the usual victim). The names are now unique per case.
 - `ITER` now yields a map's paired value directly. The opcode took two new
   operands: `Instruction::d` is the register that receives the value (`-1` when
   the loop has no value variable) and `Instruction::e` is the done flag, which
@@ -217,6 +211,17 @@ may change between minor versions.
 
 ### Fixed
 
+- The `oskel build` end-to-end tests (`tests/build_binary.cmake`,
+  `tests/build_error.cmake`, `tests/aot_runtime_error.cmake`) wrote their
+  generated binary to a fixed name under `CMAKE_CURRENT_BINARY_DIR`. That
+  variable is the same in every `cmake -P` run, so under `ctest -j` the
+  registered tests (each a separate process) clobbered one another's output:
+  one test removed the file another had just built, or ran a binary produced
+  from a different fixture, and the suite failed intermittently with "oskel
+  build did not create ..." or "the generated binary disagrees with the VM".
+  Each test now passes its unique CTest name (`-DOSKEL_TEST_NAME`) and writes
+  to `${OSKEL_TEST_NAME}${exe_suffix}`, so the output paths never collide. A
+  parallel run is now deterministic.
 - AOT bare metal: the trampoline now sets `CR4.OSFXSR` and `CR4.OSXMMEXCPT`
   (bits 9 and 10) in addition to PAE, so the SSE instructions the float path
   emits execute instead of raising `#UD`. With no IDT installed that fault was
