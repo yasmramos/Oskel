@@ -1,0 +1,88 @@
+// Fixture for `oskel build` (tests/build_binary.cmake).
+//
+// The in-place and query array methods bound by PHASE 7c.3e: `shift`,
+// `unshift`, `insert`, `removeAt`, `contains`, `indexOf` and `clear`. Like
+// `push`/`pop`, each is a native closure that captures its receiver, so a call
+// mutates the array in place (or scans it) and the hosted engine and the AOT
+// backend must agree. The AOT backend used to answer every one of them with
+// "value has no such member". This fixture is checked against the VM, so both
+// the return value and the mutation are pinned by a real program.
+
+// `shift` removes and returns the first item, or nil when empty.
+var a = [1, 2, 3];
+print(a.shift());
+print(a);
+print(a.shift());
+print(a);
+print(a.shift());
+print(a);
+print(a.shift());
+print(a);
+
+// `unshift` inserts at the front and returns the receiver.
+var b = [3, 4];
+print(b.unshift(2));
+print(b.unshift(1));
+print(b);
+
+// `insert` places an item at an index and returns the receiver. A negative
+// index counts from the end; `-1` inserts before the last item.
+var c = [1, 3];
+c.insert(1, 2);
+print(c);
+c.insert(-1, 9);
+print(c);
+c.insert(0, 0);
+print(c);
+
+// `removeAt` removes and returns the item at an index. A negative index counts
+// from the end.
+print(c.removeAt(0));
+print(c);
+print(c.removeAt(-1));
+print(c);
+
+// `contains` and `indexOf` scan with structural equality, so an array or map
+// needle compares by content, exactly like the VM.
+var d = [1, 2, 3, 2];
+print(d.contains(2));
+print(d.contains(9));
+print(d.indexOf(2));
+print(d.indexOf(9));
+var nested = [[1], [2, 3]];
+print(nested.contains([2, 3]));
+print(nested.contains([3, 2]));
+print(nested.indexOf([2, 3]));
+
+// `clear` empties the array in place and returns the receiver.
+var e = [1, 2, 3];
+print(e.clear());
+print(e);
+print(e.length);
+
+// The methods are first-class: binding one captures the receiver, so the
+// detached closure still mutates the same array.
+var shift = b.shift;
+var unshift = b.unshift;
+var contains = b.contains;
+print(shift());
+print(b);
+unshift(0);
+print(b);
+print(contains(0));
+print(contains(42));
+
+// A method inside a loop, draining and refilling the same array.
+var queue = [];
+var i = 0;
+while (i < 5) {
+  queue.unshift(i);
+  i = i + 1;
+}
+print(queue);
+var out = [];
+while (queue.length > 0) {
+  out.insert(out.length, queue.shift());
+}
+print(out);
+print(queue);

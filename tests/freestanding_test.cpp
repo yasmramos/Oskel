@@ -430,6 +430,57 @@ static void test_negative_string_index() {
         "a too-negative string index reports the range error");
 }
 
+// The in-place and query array methods (PHASE 7c.3e): `shift`, `unshift`,
+// `insert`, `removeAt`, `contains`, `indexOf` and `clear`. Each binds like
+// `push`/`pop` -- the receiver is captured in an upvalue -- so a call mutates
+// or scans the same array. Before this slice the backend answered every one of
+// them with "value has no such member". The error paths (bad arity, index out
+// of range) must report the message and exit 70.
+static void test_array_methods_inplace() {
+  Bytecode proto = compileSource(
+      "var a = [1, 2, 3];\n"
+      "print(a.shift());\n"
+      "print(a);\n"
+      "print(a.unshift(0));\n"
+      "print(a);\n"
+      "print(a.insert(2, 9));\n"
+      "print(a);\n"
+      "print(a.removeAt(0));\n"
+      "print(a);\n"
+      "print(a.contains(9), a.contains(99));\n"
+      "print(a.indexOf(9), a.indexOf(99));\n"
+      "print(a.clear());\n"
+      "print(a);\n");
+  RunResult result = buildAndRun("/tmp/oskel_array_methods_inplace", proto);
+  std::string expected =
+      "1\n"
+      "[2, 3]\n"
+      "[0, 2, 3]\n"
+      "[0, 2, 3]\n"
+      "[0, 2, 9, 3]\n"
+      "[0, 2, 9, 3]\n"
+      "0\n"
+      "[2, 9, 3]\n"
+      "true false\n"
+      "1 -1\n"
+      "[]\n"
+      "[]\n";
+  check(result.output == expected, "a compiled program runs the in-place array methods");
+  check(result.exitCode == 0, "a program using the in-place array methods exits 0");
+
+  Bytecode badArity = compileSource("var a = [1];\nprint(a.shift(1));\n");
+  RunResult arity = buildAndRun("/tmp/oskel_array_methods_inplace_arity", badArity);
+  check(arity.exitCode == 70, "a wrong-arity in-place array method exits 70");
+  check(arity.output.find("shift() expects 0 arguments") != std::string::npos,
+        "a wrong-arity in-place array method reports the arity error");
+
+  Bytecode badIndex = compileSource("var a = [1];\nprint(a.removeAt(5));\n");
+  RunResult range = buildAndRun("/tmp/oskel_array_methods_inplace_range", badIndex);
+  check(range.exitCode == 70, "removeAt out of range exits 70");
+  check(range.output.find("removeAt() index out of range") != std::string::npos,
+        "removeAt out of range reports the range error");
+}
+
 // The hidden helpers for PHASE 6.5 features that lower to a call (PHASE 7c.4a):
 // `$nonNull` (`a!!`) and `$isError` (`try` / `x catch y`). Before this slice the
 // backend rejected both with `global '$nonNull'/'$isError' is read but never
@@ -1805,6 +1856,7 @@ int main() {
   test_boxed_runtime_float_mod();
   test_builtin_print();
   test_collections();
+  test_array_methods_inplace();
   test_negative_string_index();
   test_hidden_helpers();
   test_hidden_helpers_non_null_failure();

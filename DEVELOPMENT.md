@@ -953,6 +953,26 @@ Slices, each independently shippable:
       backend agree. No new opcode: it is the `GETTABLE` path the array branch
       already normalizes. Covered by `tests/freestanding_test.cpp`
       (`test_negative_string_index`, both the values and the error).
+    - **7c.3e** (done) — the remaining in-place and query array methods:
+      `shift`, `unshift`, `insert`, `removeAt`, `contains`, `indexOf` and
+      `clear`. They bind exactly like `push`/`pop` (PHASE 7c.3c): the receiver
+      goes into a shared cell and the method is an `AotClosure` over that one
+      upvalue, so a `CALL` reaches the body through `oskel_call`. None of them
+      allocates a new array, so they need no new runtime helper beyond the
+      arena the array already lives in. `shift`/`removeAt` return the removed
+      item (or nil when empty), `unshift`/`insert`/`clear` return the receiver,
+      and `contains`/`indexOf` scan with structural equality
+      (`oskel_value_equal`), so an array or map needle compares by content, as
+      in the VM. A negative index counts from the end
+      (`ops::normalizeIndex`). `oskel_member_get` dispatches the nine bound
+      names through a selector-indexed table instead of one branch per name,
+      and the failure paths report the same messages as the hosted binder
+      (bad arity, `insert()/removeAt() index out of range`) and exit 70. No
+      new opcode and no compiler change: the member form of `GETTABLE` plus
+      `CALL` already carries it, so the `.oskc` is untouched. Covered by
+      `tests/lower_test.cpp` (`testExecArrayMethodsInPlace`), the freestanding
+      `test_array_methods_inplace` (values and the error paths) and the
+      `oskel build` fixture.
     - **7c.4a** (done) — the hidden `$nonNull` and `$isError` helpers. The
       compiler emits `$nonNull` for the non-null assertion `a!!` and `$isError`
       for `try` / `x catch y` (PHASE 6.5/6.7); the AOT backend had no binding
@@ -1326,10 +1346,31 @@ Slices, each independently shippable:
     program, so a CPU exception reaches a handler that prints `oskel: cpu
     exception 0xVV rip=0x...` over the serial port and halts. Without an IDT a
     `#UD` is a double fault and then a reset: the machine hangs with no trace,
-    which is exactly how the missing `CR4.OSFXSR` (above) hid. The ELF emitter
+    which is exactly how the missing `CR4.OSFXSR` (above) hid. The IDT backs
+    two handlers: the *fault* handler above (every vector but the timer) and a
+    *timer* handler for IRQ0 that acknowledges the 8259 PIC and returns with
+    `iretq` -- a device interrupt must never be confused with a fault, so a
+    `#PF` still halts with a trace. Before enabling interrupts the prelude
+    remaps the 8259 PIC off the CPU's exception vectors onto 0x20-0x2F (the
+    standard ICW1-ICW4 sequence), programs the 8254 PIT channel 0 in mode 3
+    (divisor 11931, 100 Hz), unmasks only IRQ0 and masks the rest, and only
+    then executes `sti` -- the last step before the program runs, so no
+    interrupt arrives with the IDT or the PIC half-configured. The timer
+    handler counts ticks in a `.bss` kernel-data page (added by this slice,
+    which shifts the stack and the arena up by one page) and is silent on every
+    tick: it acknowledges the PIC and `iretq`s. A per-tick print would
+    interleave with the program's own output -- a normal program already spans
+    at least one tick -- so the tick count is kernel state and the ceiling is
+    the observable: after 500 ticks (five seconds) a program that never returned
+    gets one `tick limit` line and the dedicated exit code 0x77. The handler
+    saves and restores every register it touches (including `rbp`, since the
+    interrupted code may use it as a frame pointer) and forces 16-byte stack
+    alignment around the `call` into `oskel_write`, because an interrupt lands
+    at an arbitrary instruction, not only at a call boundary. The ELF emitter
     produces an ELF32/i386 image with
     two `PT_LOAD` segments: the code at 1 MiB (R+X) and the `.bss` at 2 MiB
-    (R+W, `p_filesz = 0`, `p_memsz` = page tables + stack + arena). The
+    (R+W, `p_filesz = 0`, `p_memsz` = page tables + kernel data + stack +
+    arena). The
     lowering and the embedded runtime are shared with Linux unchanged. Verified
     in `tests/bare_metal_test.cpp`: the structural checks always run, and the
     end-to-end boot (real serial stdout and exit code under
@@ -1341,19 +1382,13 @@ Slices, each independently shippable:
     into a test failure rather than a silent skip, so the boot path cannot
     disappear from the suite unnoticed; on a developer box without the variable
     the boot tests skip, and the structural checks still run. The
-    `CodeGen` gained four single-opcode primitives (`cli`, `hlt`, `out dx, al`,
-    `in al, dx`) plus `test al, imm8`, each byte-checked in
-    `tests/codegen_test.cpp`.
+    `CodeGen` gained six single-opcode primitives (`cli`, `sti`, `hlt`,
+    `iretq`, `out dx, al`, `in al, dx`) plus `test al, imm8`, each byte-checked
+    in `tests/codegen_test.cpp`.
 - Deferred: per-instruction type annotations for fast paths without dynamic
   dispatch (bridge toward the speculative work in
   `docs/ARCHITECTURE_ANALYSIS.md`); other targets (macOS via libc or stubs;
   ARM64 bare metal).
-- Deferred: the bare-metal interrupt path (timer, PIC remap, a returning
-  handler). The bare-metal prelude reports CPU *exceptions* and halts; it does
-  not take or return from *interrupts*, so no device can be serviced. The
-  design for the first slice -- PIC remap, PIT, `sti` and `iretq`, two new
-  `CodeGen` primitives, and the QEMU test that proves the return -- is in
-  `docs/bare-metal-interrupts-design.md`. No code is written yet.
 - Afterwards, LuaJIT's JIT as a reference (see PHASE 8 below).
 - **In the tree now**: the `Target` descriptor (`include/native/target.h`) and
   the x86-64 instruction emitter (`include/native/codegen.h`,
@@ -1488,7 +1523,7 @@ Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair, which `ITER` now yields directly, no new opcode and no helper call) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.5 done, scalar `extern "C"` resolves in the hosted backend, pointer/struct/callback/variadic still open)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.5 done, scalar `extern "C"` resolves in the hosted backend, pointer/struct/callback/variadic still open)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-3 done: integer leaf protos with CPU-register allocation, constant folding, strength reduction and compare-branch fusion)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)

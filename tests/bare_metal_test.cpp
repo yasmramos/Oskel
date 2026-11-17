@@ -205,6 +205,54 @@ static void test_idt_is_present() {
   check(lidtFound, "the entry point installs the IDT with lidt");
 }
 
+// The interrupt setup the prelude programs before it enables interrupts: the
+// 8259 PIC remap, the 8254 PIT divisor and the two new privileged bytes. All
+// four are visible in the image, so a future edit cannot silently drop one and
+// leave the machine with interrupts enabled but nowhere for the timer to go.
+static void test_interrupt_setup_is_present() {
+  Image image = buildImage("print(\"hi\");\n");
+  const std::vector<std::uint8_t>& elf = image.elf;
+
+  // `sti` (FB) and `iretq` (48 CF). The pair is the whole mechanism: without
+  // the `sti` the timer never fires, and without the `iretq` the handler never
+  // returns. Look for the exact `iretq` bytes so the check cannot be satisfied
+  // by an unrelated 0xCF.
+  bool stiFound = false;
+  bool iretqFound = false;
+  for (std::size_t i = 0; i + 2 <= elf.size(); ++i) {
+    if (elf[i] == 0xFB) stiFound = true;
+    if (elf[i] == 0x48 && elf[i + 1] == 0xCF) iretqFound = true;
+  }
+  check(stiFound, "the prelude enables interrupts with sti");
+  check(iretqFound, "the timer handler returns with iretq");
+
+  // `mov dx, 0x20; mov al, 0x11; out dx, al` -- the master PIC ICW1. `movImm`
+  // emits the imm32 form (REX.W + C7 /0) for each register, so the sequence is
+  // `48 C7 C2 <port>` then `48 C7 C0 <value>` then `EE`. Finding it pins the
+  // remap; the same shape with port 0xA0 pins the slave.
+  const std::uint8_t icw1Master[] = {0x48, 0xC7, 0xC2, 0x20, 0x00, 0x00, 0x00,
+                                     0x48, 0xC7, 0xC0, 0x11, 0x00, 0x00, 0x00, 0xEE};
+  const std::uint8_t icw1Slave[] = {0x48, 0xC7, 0xC2, 0xA0, 0x00, 0x00, 0x00,
+                                    0x48, 0xC7, 0xC0, 0x11, 0x00, 0x00, 0x00, 0xEE};
+  auto contains = [&elf](const std::uint8_t* needle, std::size_t n) {
+    for (std::size_t i = 0; i + n <= elf.size(); ++i) {
+      if (std::memcmp(&elf[i], needle, n) == 0) return true;
+    }
+    return false;
+  };
+  check(contains(icw1Master, sizeof icw1Master),
+        "the prelude remaps the master PIC (ICW1 to port 0x20)");
+  check(contains(icw1Slave, sizeof icw1Slave),
+        "the prelude remaps the slave PIC (ICW1 to port 0xA0)");
+
+  // `mov dx, 0x43; mov al, 0x36; out dx, al` -- the PIT command word
+  // (channel 0, lobyte/hibyte, mode 3).
+  const std::uint8_t pitCommand[] = {0x48, 0xC7, 0xC2, 0x43, 0x00, 0x00, 0x00,
+                                     0x48, 0xC7, 0xC0, 0x36, 0x00, 0x00, 0x00, 0xEE};
+  check(contains(pitCommand, sizeof pitCommand),
+        "the prelude programs the PIT (mode 3 to port 0x43)");
+}
+
 // ------------------------------------------------------------ QEMU end to end
 
 // CI sets `OSKEL_REQUIRE_QEMU` on the runners, where the package is installed
@@ -488,12 +536,36 @@ static void test_qemu_fault_reports() {
          + pfResult.output + "]").c_str());
 }
 
+static void test_qemu_timer_tick() {
+  // A program that never returns. With interrupts enabled and the PIC/PIT
+  // programmed, the timer fires, the handler acknowledges the PIC and returns
+  // with `iretq`; after kTickLimit ticks there is nothing to return to, so the
+  // kernel prints its one line and stops with the dedicated exit code. The
+  // count reaching the limit only happens if every tick's handler returned, so
+  // this pins the `iretq` path, not merely that the timer fired.
+  const std::string source = "var i = 0;\nwhile (true) { i = i + 1; }\n";
+  Image image = buildImage(source);
+  const std::string path = tempPath("oskel_bare_metal_tick.elf");
+  writeFile(path, image.elf);
+
+  BootResult result = boot(path);
+  check(result.booted, "the spinning program stops at the tick limit");
+
+  // The handler is silent per tick (see kTickLimit), so the only line is the
+  // ceiling. A clean program's output is untouched, which the other boot tests
+  // still assert byte for byte.
+  check(result.output == "tick limit\n",
+        ("the tick ceiling prints one line [" + result.output + "]").c_str());
+  check(result.exitCode == 0x77, "the tick ceiling exits with the dedicated code");
+}
+
 #endif  // BARE_METAL_QEMU_TESTS
 
 int main() {
   test_elf_structure();
   test_rejects_wrong_target();
   test_idt_is_present();
+  test_interrupt_setup_is_present();
 
 #ifdef BARE_METAL_QEMU_TESTS
   if (haveQemu()) {
@@ -501,6 +573,7 @@ int main() {
     test_qemu_wall_clock();
     test_qemu_float_arithmetic();
     test_qemu_fault_reports();
+    test_qemu_timer_tick();
   } else if (qemuRequired()) {
     // CI installs QEMU on purpose: its absence there means the runner setup
     // broke, so fail loudly instead of passing with the boot tests gone.

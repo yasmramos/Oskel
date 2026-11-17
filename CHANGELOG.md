@@ -91,15 +91,26 @@ may change between minor versions.
   BCD/binary fields to a Unix timestamp in assembly, so `std.datetime.now()`
   works even with no OS and no libc.
 
-- **Design: the bare-metal interrupt path.** `docs/bare-metal-interrupts-design.md`
-  proposes the first slice of the bare-metal OS path: remap the 8259 PIC, program
-  the 8254 PIT, unmask only IRQ0, add a handler that acknowledges the PIC and
-  returns with `iretq` (kept separate from the fatal fault handler, which still
-  reports and halts), and enable interrupts with `sti` only after the IDT and the
-  PIC are ready. It adds two single-instruction `CodeGen` primitives (`sti`,
-  `iretq`) and no token, node, parser rule, opcode, VM or compiler change, and it
-  is proven by a QEMU test whose three ticks only happen if the handler returned.
-  Documentation only; no code yet.
+- **The bare-metal interrupt path: the timer tick** (PHASE 7g). The
+  bare-metal prelude now *services* interrupts, not just reports exceptions. It
+  remaps the 8259 PIC off the CPU's exception vectors onto 0x20-0x2F (the
+  standard ICW1-ICW4 sequence), programs the 8254 PIT channel 0 in mode 3
+  (divisor 11931, 100 Hz), unmasks only IRQ0 and masks the rest, and enables
+  interrupts with `sti` as the last step before the program runs -- so no
+  interrupt arrives with the IDT or the PIC half-configured. The IDT now backs
+  two handlers: the fatal *fault* handler (unchanged; every vector but the
+  timer still reports and halts) and a *timer* handler for IRQ0 that
+  acknowledges the PIC and returns with `iretq`. The handler saves and restores
+  every register it touches and forces 16-byte stack alignment around its
+  `call`, because an interrupt lands at an arbitrary instruction. It counts
+  ticks in a new `.bss` kernel-data page and is silent on every tick -- a
+  per-tick print would interleave with the program's own output, since a normal
+  program already spans a tick -- so after 500 ticks (five seconds) a program
+  that never returned gets one `tick limit` line and the dedicated exit code
+  `0x77`. `CodeGen` gains `sti` (`FB`) and `iretq` (`48 CF`), two
+  single-instruction primitives, each byte-checked in `tests/codegen_test.cpp`.
+  The design is in `docs/bare-metal-interrupts-design.md`. No token, node,
+  parser rule, opcode, VM or compiler change.
 
 - **Bare-metal CPU-exception handler** (PHASE 7g). The entry point installs
   an interrupt descriptor table (256 gates, one stub per vector) before the
@@ -308,6 +319,21 @@ may change between minor versions.
 
 ### Fixed
 
+- AOT: the remaining in-place and query array methods now work in a compiled
+  binary: `shift`, `unshift`, `insert`, `removeAt`, `contains`, `indexOf` and
+  `clear`. They bind like `push`/`pop` (the receiver goes into a shared cell and
+  the method body is an ordinary closure reached through `oskel_call`), so no
+  opcode and no compiler change are needed. The AOT `oskel_member_get` answered
+  every one of them with "value has no such member", a VM/AOT divergence. The
+  member dispatch now resolves the nine bound array names through a
+  selector-indexed table, `shift`/`removeAt` return the removed item (or nil
+  when empty), `unshift`/`insert`/`clear` return the receiver, `contains`/
+  `indexOf` scan with structural equality (an array or map needle compares by
+  content) and a negative index counts from the end, matching the hosted
+  binder's messages and exit code on the failure paths (bad arity,
+  `insert()/removeAt() index out of range`). Covered by `tests/lower_test.cpp`
+  (`testExecArrayMethodsInPlace`), `tests/freestanding_test.cpp`
+  (`test_array_methods_inplace`) and a `tests/build_binary` fixture.
 - Tests: the bare-metal wall-clock boot test now writes its image through the
   portable `tempPath()` helper instead of a hard-coded `/tmp/...`, so it runs on
   Windows too. `test_qemu_wall_clock` was the only one of the five boot tests

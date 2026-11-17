@@ -26,6 +26,8 @@ constexpr X64Reg R9 = X64Reg::R9;
 constexpr X64Reg R10 = X64Reg::R10;
 constexpr X64Reg R11 = X64Reg::R11;
 constexpr X64Reg R12 = X64Reg::R12;
+constexpr X64Reg R13 = X64Reg::R13;
+constexpr X64Reg R14 = X64Reg::R14;
 constexpr X64Reg Rbp = X64Reg::Rbp;
 constexpr X64Reg Rsp = X64Reg::Rsp;
 
@@ -143,15 +145,31 @@ struct CollectionEnv {
   CodeGen::Label printRepr;    // void oskel_print_repr(AotValue, long depth)
   CodeGen::Label printStrEsc;  // void oskel_print_str_escaped(AotString*)
   CodeGen::Label lengthConst;  // data: the string "length"
-  // Bound array methods (PHASE 7c.3c): `oskel_member_get` returns a closure for
-  // `arr.push`/`arr.pop`, built by `bindArrayMethod`; the method bodies are
-  // `pushMethod`/`popMethod`. The member names are the data islands `pushConst`
-  // and `popConst` (raw `AotString`s, like `lengthConst`).
+  // Bound array methods (PHASE 7c.3c/7c.3e): `oskel_member_get` returns a
+  // closure for `arr.push`/`arr.pop`/`arr.shift`/`arr.unshift`/`arr.insert`/
+  // `arr.removeAt`/`arr.contains`/`arr.indexOf`/`arr.clear`, built by
+  // `bindArrayMethod`; the method bodies are the `*Method` labels below. The
+  // member names are the data islands `*Const` (raw `AotString`s, like
+  // `lengthConst`).
   CodeGen::Label bindArrayMethod;
   CodeGen::Label pushMethod;
   CodeGen::Label popMethod;
-  CodeGen::Label pushConst;    // data: the string "push"
-  CodeGen::Label popConst;     // data: the string "pop"
+  CodeGen::Label shiftMethod;
+  CodeGen::Label unshiftMethod;
+  CodeGen::Label insertMethod;
+  CodeGen::Label removeAtMethod;
+  CodeGen::Label containsMethod;
+  CodeGen::Label indexOfMethod;
+  CodeGen::Label clearMethod;
+  CodeGen::Label pushConst;      // data: the string "push"
+  CodeGen::Label popConst;       // data: the string "pop"
+  CodeGen::Label shiftConst;     // data: the string "shift"
+  CodeGen::Label unshiftConst;   // data: the string "unshift"
+  CodeGen::Label insertConst;    // data: the string "insert"
+  CodeGen::Label removeAtConst;  // data: the string "removeAt"
+  CodeGen::Label containsConst;  // data: the string "contains"
+  CodeGen::Label indexOfConst;   // data: the string "indexOf"
+  CodeGen::Label clearConst;     // data: the string "clear"
   const DataBlob* msgOom;
   const DataBlob* msgArrayIndexType;
   const DataBlob* msgIndexRange;
@@ -1716,18 +1734,21 @@ void emitArrayConcat(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
   emitFailCall(cg, fail, msgOom);
 }
 
-// `AotValue oskel_bind_array_method(AotValue arr, long which)`: the value of
-// `arr.push` (`which == 0`) or `arr.pop` (`which == 1`). It mirrors the hosted
-// `bindArray`: the method owns its receiver, so the receiver is stored in a
-// 16-byte cell (shared with the method, exactly like a captured local) and the
-// method is an ordinary `AotClosure` whose single upvalue is that cell. The
-// returned `Func` reaches its body through the ordinary `oskel_call` path, so
-// the bytecode and the compiler are unchanged. `arr` is rdi:rsi, the selector
-// rdx; rbx/r12 are callee-saved and preserved across the helper calls.
+// `AotValue oskel_bind_array_method(AotValue arr, long which)`: the value of a
+// bound array method. `which` indexes `methods` (the order `oskel_member_get`
+// assigns: push, pop, shift, unshift, insert, removeAt, contains, indexOf,
+// clear). It mirrors the hosted `bindArray`: the method owns its receiver, so
+// the receiver is stored in a 16-byte cell (shared with the method, exactly
+// like a captured local) and the method is an ordinary `AotClosure` whose
+// single upvalue is that cell. The returned `Func` reaches its body through
+// the ordinary `oskel_call` path, so the bytecode and the compiler are
+// unchanged. `arr` is rdi:rsi, the selector rdx; rbx/r12 are callee-saved and
+// preserved across the helper calls.
 void emitBindArrayMethod(CodeGen& cg, CodeGen::Label label, CodeGen::Label cellNew,
-                         CodeGen::Label closure, CodeGen::Label pushMethod,
-                         CodeGen::Label popMethod) {
-  CodeGen::Label usePush = cg.newLabel();
+                         CodeGen::Label closure,
+                         const std::vector<CodeGen::Label>& methods) {
+  std::vector<CodeGen::Label> use(methods.size());
+  for (CodeGen::Label& l : use) l = cg.newLabel();
   CodeGen::Label haveCode = cg.newLabel();
 
   cg.bind(label);
@@ -1738,13 +1759,21 @@ void emitBindArrayMethod(CodeGen& cg, CodeGen::Label label, CodeGen::Label cellN
   cg.movToMem(Rbp, -24, Rdx);           // which
   cg.callLabel(cellNew);                // cell holding the receiver (rdi:rsi)
   cg.movReg(R12, Rax);                  // r12 = cell (callee-saved)
-  cg.movFromMem(Rax, Rbp, -24);         // which
-  cg.testReg(Rax);
-  cg.jcc(Jcc::Eq, usePush);
-  cg.leaRipLabel(Rdi, popMethod);
+  // Select the method body: `cmp rdx, i; je use[i]` for every entry, then the
+  // last one as the fallthrough so no selector needs a final unconditional
+  // jump. `oskel_member_get` only ever passes a valid selector.
+  for (std::size_t i = 0; i + 1 < methods.size(); ++i) {
+    cg.movFromMem(Rax, Rbp, -24);
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(i));
+    cg.jcc(Jcc::Eq, use[i]);
+  }
+  cg.leaRipLabel(Rdi, methods.back());
   cg.jmp(haveCode);
-  cg.bind(usePush);
-  cg.leaRipLabel(Rdi, pushMethod);
+  for (std::size_t i = 0; i + 1 < methods.size(); ++i) {
+    cg.bind(use[i]);
+    cg.leaRipLabel(Rdi, methods[i]);
+    cg.jmp(haveCode);
+  }
   cg.bind(haveCode);
   cg.movImm(Rsi, 0);                    // arity: the body checks its own argc
   cg.movImm(Rdx, 1);                    // one upvalue: the receiver's cell
@@ -1856,6 +1885,452 @@ void emitArrayPopMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& 
   cg.bind(empty);
   cg.xorReg(Rax, Rax);                  // nil
   cg.xorReg(Rdx, Rdx);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(badArgc);
+  emitFailCall(cg, env.fail, msgArgc);
+}
+
+// Loads the bound method's receiver array into `dst`: `self` (rdx) owns one
+// upvalue cell (`oskel_cell_new`) whose payload is the `AotArray*`. Clobbers
+// rax.
+void emitLoadArrayReceiver(CodeGen& cg, X64Reg dst, X64Reg selfReg) {
+  cg.movFromMem(Rax, selfReg, static_cast<std::int64_t>(kAotClosureHeaderSize));
+  cg.movFromMem(dst, Rax, 8);
+}
+
+// `AotValue oskel_builtin_array_shift(AotValue* args, long argc, AotClosure* self)`:
+// the bound `arr.shift()`. It takes no argument, removes the first item and
+// returns it, or returns nil when the array is empty -- the hosted `bindArray`
+// `shift`. The tail items move down one slot with a single `rep movsb` (the
+// destination is below the source, so a forward copy never overwrites an
+// unread item).
+void emitArrayShiftMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                          const DataBlob& msgArgc) {
+  CodeGen::Label empty = cg.newLabel();
+  CodeGen::Label noMove = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 16);
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Ne, badArgc);
+  emitLoadArrayReceiver(cg, Rbx, Rdx);
+  cg.movFromMem(R12, Rbx, kTableLengthOffset);
+  cg.testReg(R12);
+  cg.jcc(Jcc::Eq, empty);
+  cg.movFromMem(R10, Rbx, kTableBlockOffset);  // items block
+  cg.movFromMem(Rax, R10, 0);
+  cg.movToMem(Rbp, -24, Rax);                  // front tag
+  cg.movFromMem(Rax, R10, 8);
+  cg.movToMem(Rbp, -32, Rax);                  // front payload
+  // memmove: block[0..len-2] = block[1..len-1], (len - 1) * 16 bytes.
+  cg.movReg(R11, R12);
+  cg.subRegImm32(R11, 1);
+  cg.testReg(R11);
+  cg.jcc(Jcc::Eq, noMove);
+  cg.shlImm8(R11, 4);
+  cg.movReg(Rdi, R10);
+  cg.movReg(Rsi, R10);
+  cg.addImm32(Rsi, 16);
+  cg.movReg(Rcx, R11);
+  cg.repMovsb();
+  cg.bind(noMove);
+  cg.subRegImm32(R12, 1);
+  cg.movToMem(Rbx, kTableLengthOffset, R12);
+  cg.movFromMem(Rax, Rbp, -24);
+  cg.movFromMem(Rdx, Rbp, -32);
+  cg.addImm32(Rsp, 16);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(empty);
+  cg.xorReg(Rax, Rax);                          // nil
+  cg.xorReg(Rdx, Rdx);
+  cg.addImm32(Rsp, 16);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(badArgc);
+  emitFailCall(cg, env.fail, msgArgc);
+}
+
+// `AotValue oskel_builtin_array_unshift(AotValue* args, long argc, AotClosure* self)`:
+// the bound `arr.unshift(x)`. It inserts `x` at the front and returns the
+// receiver -- the hosted `bindArray` `unshift`. The block grows through
+// `oskel_block_ensure`, then the items move up one slot with a backward loop
+// (the destination is above the source, so a forward copy would clobber).
+void emitArrayUnshiftMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                            const DataBlob& msgArgc) {
+  CodeGen::Label shiftLoop = cg.newLabel();
+  CodeGen::Label shiftDone = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 16);
+  cg.movToMem(Rbp, -24, Rdi);                   // args
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
+  emitLoadArrayReceiver(cg, Rbx, Rdx);
+  cg.movFromMem(R12, Rbx, kTableLengthOffset);
+  cg.movReg(Rdi, Rbx);
+  cg.movReg(Rsi, R12);
+  cg.addImm32(Rsi, 1);
+  cg.movImm(Rdx, kArrayItemSize);
+  cg.callLabel(env.blockEnsure);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movReg(R10, Rax);                          // items block
+  // for (j = len; j > 0; --j) block[j] = block[j-1].
+  cg.movReg(R8, R12);
+  cg.bind(shiftLoop);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Eq, shiftDone);
+  cg.movReg(R9, R8);
+  cg.shlImm8(R9, 4);
+  cg.addReg(R9, R10);                           // &block[j]
+  cg.movFromMem(Rcx, R9, -16);
+  cg.movToMem(R9, 0, Rcx);
+  cg.movFromMem(Rcx, R9, -8);
+  cg.movToMem(R9, 8, Rcx);
+  cg.subRegImm32(R8, 1);
+  cg.jmp(shiftLoop);
+  cg.bind(shiftDone);
+  cg.movFromMem(Rdi, Rbp, -24);                 // args
+  cg.movFromMem(Rcx, Rdi, 0);                   // args[0] tag
+  cg.movToMem(R10, 0, Rcx);
+  cg.movFromMem(Rcx, Rdi, 8);                   // args[0] payload
+  cg.movToMem(R10, 8, Rcx);
+  cg.addImm32(R12, 1);
+  cg.movToMem(Rbx, kTableLengthOffset, R12);
+  cg.movReg(Rdx, Rbx);
+  cg.movImm(Rax, kTagArray);
+  cg.addImm32(Rsp, 16);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(badArgc);
+  emitFailCall(cg, env.fail, msgArgc);
+  cg.bind(oom);
+  emitFailCall(cg, env.fail, *env.msgOom);
+}
+
+// `AotValue oskel_builtin_array_insert(AotValue* args, long argc, AotClosure* self)`:
+// the bound `arr.insert(index, x)`. A negative index counts from the end, an
+// index outside `[0, len]` is the hosted "index out of range" error; the item
+// goes in at `index` and the receiver is returned. The block grows, then the
+// items from `index` on move up one slot (backward loop).
+void emitArrayInsertMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                           const DataBlob& msgArgc, const DataBlob& msgIndexType,
+                           const DataBlob& msgRange) {
+  CodeGen::Label nonNegative = cg.newLabel();
+  CodeGen::Label shiftLoop = cg.newLabel();
+  CodeGen::Label shiftDone = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label badType = cg.newLabel();
+  CodeGen::Label badRange = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 32);
+  cg.movToMem(Rbp, -24, Rdi);                   // args
+  cg.cmpImm32(Rsi, 2);
+  cg.jcc(Jcc::Ne, badArgc);
+  emitLoadArrayReceiver(cg, Rbx, Rdx);
+  cg.movFromMem(R12, Rbx, kTableLengthOffset);
+  cg.movFromMem(Rdi, Rbp, -24);                 // args
+  cg.movFromMem(Rax, Rdi, 0);                   // index tag
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Ne, badType);
+  cg.movFromMem(R8, Rdi, 8);                    // index
+  cg.testReg(R8);
+  cg.jcc(Jcc::Ge, nonNegative);
+  cg.addReg(R8, R12);                           // negative: count from the end
+  cg.bind(nonNegative);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Lt, badRange);
+  cg.cmpReg(R8, R12);
+  cg.jcc(Jcc::Gt, badRange);
+  cg.movToMem(Rbp, -32, R8);                    // index
+  cg.movReg(Rdi, Rbx);
+  cg.movReg(Rsi, R12);
+  cg.addImm32(Rsi, 1);
+  cg.movImm(Rdx, kArrayItemSize);
+  cg.callLabel(env.blockEnsure);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movReg(R10, Rax);                          // items block
+  // for (j = len; j > index; --j) block[j] = block[j-1].
+  cg.movReg(R8, R12);
+  cg.bind(shiftLoop);
+  cg.movFromMem(R9, Rbp, -32);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Le, shiftDone);
+  cg.movReg(R11, R8);
+  cg.shlImm8(R11, 4);
+  cg.addReg(R11, R10);                          // &block[j]
+  cg.movFromMem(Rcx, R11, -16);
+  cg.movToMem(R11, 0, Rcx);
+  cg.movFromMem(Rcx, R11, -8);
+  cg.movToMem(R11, 8, Rcx);
+  cg.subRegImm32(R8, 1);
+  cg.jmp(shiftLoop);
+  cg.bind(shiftDone);
+  cg.movFromMem(R8, Rbp, -32);
+  cg.shlImm8(R8, 4);
+  cg.addReg(R8, R10);                           // &block[index]
+  cg.movFromMem(Rdi, Rbp, -24);                 // args
+  cg.movFromMem(Rcx, Rdi, -16);                 // args[1] tag
+  cg.movToMem(R8, 0, Rcx);
+  cg.movFromMem(Rcx, Rdi, -8);                  // args[1] payload
+  cg.movToMem(R8, 8, Rcx);
+  cg.addImm32(R12, 1);
+  cg.movToMem(Rbx, kTableLengthOffset, R12);
+  cg.movReg(Rdx, Rbx);
+  cg.movImm(Rax, kTagArray);
+  cg.addImm32(Rsp, 32);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(badArgc);
+  emitFailCall(cg, env.fail, msgArgc);
+  cg.bind(badType);
+  emitFailCall(cg, env.fail, msgIndexType);
+  cg.bind(badRange);
+  emitFailCall(cg, env.fail, msgRange);
+  cg.bind(oom);
+  emitFailCall(cg, env.fail, *env.msgOom);
+}
+
+// `AotValue oskel_builtin_array_remove_at(AotValue* args, long argc, AotClosure* self)`:
+// the bound `arr.removeAt(index)`. A negative index counts from the end, an
+// index outside `[0, len)` is the hosted "index out of range" error; the item
+// is removed and returned. The tail items move down one slot with a single
+// forward `rep movsb`.
+void emitArrayRemoveAtMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                             const DataBlob& msgArgc, const DataBlob& msgIndexType,
+                             const DataBlob& msgRange) {
+  CodeGen::Label nonNegative = cg.newLabel();
+  CodeGen::Label noMove = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label badType = cg.newLabel();
+  CodeGen::Label badRange = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 32);
+  cg.movToMem(Rbp, -24, Rdi);                   // args
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
+  emitLoadArrayReceiver(cg, Rbx, Rdx);
+  cg.movFromMem(R12, Rbx, kTableLengthOffset);
+  cg.movFromMem(Rdi, Rbp, -24);                 // args
+  cg.movFromMem(Rax, Rdi, 0);                   // index tag
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Ne, badType);
+  cg.movFromMem(R8, Rdi, 8);                    // index
+  cg.testReg(R8);
+  cg.jcc(Jcc::Ge, nonNegative);
+  cg.addReg(R8, R12);
+  cg.bind(nonNegative);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Lt, badRange);
+  cg.cmpReg(R8, R12);
+  cg.jcc(Jcc::Ge, badRange);
+  cg.movToMem(Rbp, -32, R8);                    // index
+  cg.movFromMem(R10, Rbx, kTableBlockOffset);   // items block
+  cg.movReg(R9, R8);
+  cg.shlImm8(R9, 4);
+  cg.addReg(R9, R10);                           // &block[index]
+  cg.movFromMem(Rax, R9, 0);
+  cg.movToMem(Rbp, -40, Rax);                   // value tag
+  cg.movFromMem(Rax, R9, 8);
+  cg.movToMem(Rbp, -48, Rax);                   // value payload
+  // memmove: block[index..len-2] = block[index+1..len-1], (len-1-index)*16.
+  cg.movReg(R11, R12);
+  cg.subRegImm32(R11, 1);
+  cg.subReg(R11, R8);
+  cg.testReg(R11);
+  cg.jcc(Jcc::Eq, noMove);
+  cg.shlImm8(R11, 4);
+  cg.movReg(Rdi, R9);
+  cg.movReg(Rsi, R9);
+  cg.addImm32(Rsi, 16);
+  cg.movReg(Rcx, R11);
+  cg.repMovsb();
+  cg.bind(noMove);
+  cg.subRegImm32(R12, 1);
+  cg.movToMem(Rbx, kTableLengthOffset, R12);
+  cg.movFromMem(Rax, Rbp, -40);
+  cg.movFromMem(Rdx, Rbp, -48);
+  cg.addImm32(Rsp, 32);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(badArgc);
+  emitFailCall(cg, env.fail, msgArgc);
+  cg.bind(badType);
+  emitFailCall(cg, env.fail, msgIndexType);
+  cg.bind(badRange);
+  emitFailCall(cg, env.fail, msgRange);
+}
+
+// `AotValue oskel_builtin_array_contains(AotValue* args, long argc, AotClosure* self)`:
+// the bound `arr.contains(x)`. It scans the items and returns a Bool, using the
+// shared `oskel_compare` with `Eq` so nested arrays/maps compare structurally,
+// exactly like the hosted `bindArray` `contains` (which calls `Value::equals`).
+void emitArrayContainsMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                             const DataBlob& msgArgc) {
+  CodeGen::Label loop = cg.newLabel();
+  CodeGen::Label found = cg.newLabel();
+  CodeGen::Label miss = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.push(R13);
+  cg.push(R14);
+  cg.subRegImm32(Rsp, 16);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
+  emitLoadArrayReceiver(cg, Rbx, Rdx);
+  cg.movFromMem(R13, Rdi, 0);                   // needle tag
+  cg.movFromMem(R14, Rdi, 8);                   // needle payload
+  cg.movFromMem(Rax, Rbx, kTableLengthOffset);
+  cg.movToMem(Rbp, -40, Rax);                   // len
+  cg.xorReg(R12, R12);                          // index
+  cg.bind(loop);
+  cg.movFromMem(R8, Rbp, -40);
+  cg.cmpReg(R12, R8);
+  cg.jcc(Jcc::Ae, miss);
+  cg.movReg(R9, R12);
+  cg.shlImm8(R9, 4);
+  cg.movFromMem(R10, Rbx, kTableBlockOffset);
+  cg.addReg(R9, R10);                           // &item
+  cg.movFromMem(Rdi, R9, 0);
+  cg.movFromMem(Rsi, R9, 8);
+  cg.movReg(Rdx, R13);
+  cg.movReg(Rcx, R14);
+  cg.movImm(R8, static_cast<std::int64_t>(AotCompareOp::Eq));
+  cg.callLabel(env.compare);
+  cg.testReg(Rdx);
+  cg.jcc(Jcc::Ne, found);
+  cg.addImm32(R12, 1);
+  cg.jmp(loop);
+  cg.bind(found);
+  cg.movImm(Rax, kTagBool);
+  cg.movImm(Rdx, 1);
+  cg.jmp(done);
+  cg.bind(miss);
+  cg.movImm(Rax, kTagBool);
+  cg.xorReg(Rdx, Rdx);
+  cg.bind(done);
+  cg.addImm32(Rsp, 16);
+  cg.pop(R14);
+  cg.pop(R13);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(badArgc);
+  emitFailCall(cg, env.fail, msgArgc);
+}
+
+// `AotValue oskel_builtin_array_index_of(AotValue* args, long argc, AotClosure* self)`:
+// the bound `arr.indexOf(x)`. Same scan as `contains`, but it returns the first
+// matching index as an Int, or -1 when there is no match.
+void emitArrayIndexOfMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                            const DataBlob& msgArgc) {
+  CodeGen::Label loop = cg.newLabel();
+  CodeGen::Label found = cg.newLabel();
+  CodeGen::Label miss = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.push(R13);
+  cg.push(R14);
+  cg.subRegImm32(Rsp, 16);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
+  emitLoadArrayReceiver(cg, Rbx, Rdx);
+  cg.movFromMem(R13, Rdi, 0);                   // needle tag
+  cg.movFromMem(R14, Rdi, 8);                   // needle payload
+  cg.movFromMem(Rax, Rbx, kTableLengthOffset);
+  cg.movToMem(Rbp, -40, Rax);                   // len
+  cg.xorReg(R12, R12);                          // index
+  cg.bind(loop);
+  cg.movFromMem(R8, Rbp, -40);
+  cg.cmpReg(R12, R8);
+  cg.jcc(Jcc::Ae, miss);
+  cg.movReg(R9, R12);
+  cg.shlImm8(R9, 4);
+  cg.movFromMem(R10, Rbx, kTableBlockOffset);
+  cg.addReg(R9, R10);
+  cg.movFromMem(Rdi, R9, 0);
+  cg.movFromMem(Rsi, R9, 8);
+  cg.movReg(Rdx, R13);
+  cg.movReg(Rcx, R14);
+  cg.movImm(R8, static_cast<std::int64_t>(AotCompareOp::Eq));
+  cg.callLabel(env.compare);
+  cg.testReg(Rdx);
+  cg.jcc(Jcc::Ne, found);
+  cg.addImm32(R12, 1);
+  cg.jmp(loop);
+  cg.bind(found);
+  cg.movImm(Rax, kTagInt);
+  cg.movReg(Rdx, R12);
+  cg.jmp(done);
+  cg.bind(miss);
+  cg.movImm(Rax, kTagInt);
+  cg.movImm(Rdx, -1);
+  cg.bind(done);
+  cg.addImm32(Rsp, 16);
+  cg.pop(R14);
+  cg.pop(R13);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(badArgc);
+  emitFailCall(cg, env.fail, msgArgc);
+}
+
+// `AotValue oskel_builtin_array_clear(AotValue* args, long argc, AotClosure* self)`:
+// the bound `arr.clear()`. It sets the length to zero in place and returns the
+// receiver -- the hosted `bindArray` `clear`. The items block is kept (the
+// capacity is unchanged), exactly as `std::vector::clear` keeps it.
+void emitArrayClearMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                          const DataBlob& msgArgc) {
+  CodeGen::Label badArgc = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Ne, badArgc);
+  emitLoadArrayReceiver(cg, Rbx, Rdx);
+  cg.movImmToMem(Rbx, kTableLengthOffset, 0);
+  cg.movReg(Rdx, Rbx);
+  cg.movImm(Rax, kTagArray);
   cg.pop(R12);
   cg.pop(Rbx);
   epilogue(cg);
@@ -2572,6 +3047,14 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   CodeGen::Label failIndex = cg.newLabel();
   CodeGen::Label bindPush = cg.newLabel();
   CodeGen::Label bindPop = cg.newLabel();
+  CodeGen::Label bindShift = cg.newLabel();
+  CodeGen::Label bindUnshift = cg.newLabel();
+  CodeGen::Label bindInsert = cg.newLabel();
+  CodeGen::Label bindRemoveAt = cg.newLabel();
+  CodeGen::Label bindContains = cg.newLabel();
+  CodeGen::Label bindIndexOf = cg.newLabel();
+  CodeGen::Label bindClear = cg.newLabel();
+  CodeGen::Label bind = cg.newLabel();
 
   cg.bind(label);
   prologue(cg);
@@ -2619,8 +3102,10 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.callLabel(env.strEq);
   cg.testReg(Rax);
   cg.jcc(Jcc::Ne, isLength);
-  // Not `.length`: `arr.push`/`arr.pop` bind to a closure over the receiver,
-  // exactly like the hosted `bindArray`. Any other name is "no such member".
+  // Not `.length`: each other name that matches a bound array method builds a
+  // closure over the receiver, exactly like the hosted `bindArray`. The
+  // selector is the method's index in `bindArrayMethod`'s table; any other
+  // name is "no such member".
   cg.movFromMem(Rdi, Rbp, -24);
   cg.leaRipLabel(Rsi, env.pushConst);
   cg.callLabel(env.strEq);
@@ -2631,19 +3116,74 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.callLabel(env.strEq);
   cg.testReg(Rax);
   cg.jcc(Jcc::Ne, bindPop);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.shiftConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindShift);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.unshiftConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindUnshift);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.insertConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindInsert);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.removeAtConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindRemoveAt);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.containsConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindContains);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.indexOfConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindIndexOf);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.clearConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindClear);
   cg.jmp(failMember);
 
+  // Every `bind*` block loads the receiver (r12), sets the selector in rdx and
+  // calls the shared binder.
   cg.bind(bindPush);
-  cg.movImm(Rdi, kTagArray);
-  cg.movReg(Rsi, R12);
-  cg.xorReg(Rdx, Rdx);          // selector 0: push
-  cg.callLabel(env.bindArrayMethod);
-  cg.jmp(done);
-
+  cg.movImm(Rdx, 0);            // push
+  cg.jmp(bind);
   cg.bind(bindPop);
+  cg.movImm(Rdx, 1);            // pop
+  cg.jmp(bind);
+  cg.bind(bindShift);
+  cg.movImm(Rdx, 2);            // shift
+  cg.jmp(bind);
+  cg.bind(bindUnshift);
+  cg.movImm(Rdx, 3);            // unshift
+  cg.jmp(bind);
+  cg.bind(bindInsert);
+  cg.movImm(Rdx, 4);            // insert
+  cg.jmp(bind);
+  cg.bind(bindRemoveAt);
+  cg.movImm(Rdx, 5);            // removeAt
+  cg.jmp(bind);
+  cg.bind(bindContains);
+  cg.movImm(Rdx, 6);            // contains
+  cg.jmp(bind);
+  cg.bind(bindIndexOf);
+  cg.movImm(Rdx, 7);            // indexOf
+  cg.jmp(bind);
+  cg.bind(bindClear);
+  cg.movImm(Rdx, 8);            // clear
+  cg.bind(bind);
   cg.movImm(Rdi, kTagArray);
   cg.movReg(Rsi, R12);
-  cg.movImm(Rdx, 1);            // selector 1: pop
   cg.callLabel(env.bindArrayMethod);
   cg.jmp(done);
 
@@ -6734,6 +7274,15 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgNoMember = addText("oskel: value has no such member\n");
   DataBlob msgImmutable = addText("oskel: strings are immutable\n");
   DataBlob msgPopArgc = addText("oskel: pop() expects 0 arguments\n");
+  DataBlob msgShiftArgc = addText("oskel: shift() expects 0 arguments\n");
+  DataBlob msgUnshiftArgc = addText("oskel: unshift() expects 1 argument\n");
+  DataBlob msgInsertArgc = addText("oskel: insert() expects 2 arguments\n");
+  DataBlob msgRemoveAtArgc = addText("oskel: removeAt() expects 1 argument\n");
+  DataBlob msgContainsArgc = addText("oskel: contains() expects 1 argument\n");
+  DataBlob msgIndexOfArgc = addText("oskel: indexOf() expects 1 argument\n");
+  DataBlob msgClearArgc = addText("oskel: clear() expects 0 arguments\n");
+  DataBlob msgInsertRange = addText("oskel: insert() index out of range\n");
+  DataBlob msgRemoveAtRange = addText("oskel: removeAt() index out of range\n");
   DataBlob msgBadAssign = addText("oskel: cannot assign to this value\n");
   DataBlob msgBadField = addText("oskel: cannot assign a field on this value\n");
   DataBlob msgBadIn = addText("oskel: unsupported operands for 'in'\n");
@@ -6866,8 +7415,22 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   env.bindArrayMethod = handles.bindArrayMethod;
   env.pushMethod = handles.arrayPushMethod;
   env.popMethod = handles.arrayPopMethod;
+  env.shiftMethod = handles.arrayShiftMethod;
+  env.unshiftMethod = handles.arrayUnshiftMethod;
+  env.insertMethod = handles.arrayInsertMethod;
+  env.removeAtMethod = handles.arrayRemoveAtMethod;
+  env.containsMethod = handles.arrayContainsMethod;
+  env.indexOfMethod = handles.arrayIndexOfMethod;
+  env.clearMethod = handles.arrayClearMethod;
   env.pushConst = cg.newLabel();
   env.popConst = cg.newLabel();
+  env.shiftConst = cg.newLabel();
+  env.unshiftConst = cg.newLabel();
+  env.insertConst = cg.newLabel();
+  env.removeAtConst = cg.newLabel();
+  env.containsConst = cg.newLabel();
+  env.indexOfConst = cg.newLabel();
+  env.clearConst = cg.newLabel();
   env.msgOom = &msgOom;
   env.msgArrayIndexType = &msgArrayIndexType;
   env.msgIndexRange = &msgIndexRange;
@@ -6904,9 +7467,22 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitConcat(cg, handles.concat, handles.alloc, fail, msgOom);
   emitArrayConcat(cg, handles.arrayConcat, handles.alloc, env.blockEnsure, fail, msgOom);
   emitBindArrayMethod(cg, handles.bindArrayMethod, handles.cellNew, handles.closure,
-                      handles.arrayPushMethod, handles.arrayPopMethod);
+                      {handles.arrayPushMethod, handles.arrayPopMethod,
+                       handles.arrayShiftMethod, handles.arrayUnshiftMethod,
+                       handles.arrayInsertMethod, handles.arrayRemoveAtMethod,
+                       handles.arrayContainsMethod, handles.arrayIndexOfMethod,
+                       handles.arrayClearMethod});
   emitArrayPushMethod(cg, handles.arrayPushMethod, env);
   emitArrayPopMethod(cg, handles.arrayPopMethod, env, msgPopArgc);
+  emitArrayShiftMethod(cg, handles.arrayShiftMethod, env, msgShiftArgc);
+  emitArrayUnshiftMethod(cg, handles.arrayUnshiftMethod, env, msgUnshiftArgc);
+  emitArrayInsertMethod(cg, handles.arrayInsertMethod, env, msgInsertArgc,
+                        msgArrayIndexType, msgInsertRange);
+  emitArrayRemoveAtMethod(cg, handles.arrayRemoveAtMethod, env, msgRemoveAtArgc,
+                          msgArrayIndexType, msgRemoveAtRange);
+  emitArrayContainsMethod(cg, handles.arrayContainsMethod, env, msgContainsArgc);
+  emitArrayIndexOfMethod(cg, handles.arrayIndexOfMethod, env, msgIndexOfArgc);
+  emitArrayClearMethod(cg, handles.arrayClearMethod, env, msgClearArgc);
   emitInitGlobals(cg, handles.initGlobals, handles.alloc, fail, msgOom);
   emitGlobalSet(cg, handles.globalSet);
   emitGlobalGet(cg, handles.globalGet);
@@ -7052,6 +7628,20 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x04\x00\x00\x00\x00\x00\x00\x00push"), 12);
   cg.bind(env.popConst);
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x03\x00\x00\x00\x00\x00\x00\x00pop"), 11);
+  cg.bind(env.shiftConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x05\x00\x00\x00\x00\x00\x00\x00shift"), 13);
+  cg.bind(env.unshiftConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x07\x00\x00\x00\x00\x00\x00\x00unshift"), 15);
+  cg.bind(env.insertConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x06\x00\x00\x00\x00\x00\x00\x00insert"), 14);
+  cg.bind(env.removeAtConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x08\x00\x00\x00\x00\x00\x00\x00removeAt"), 16);
+  cg.bind(env.containsConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x08\x00\x00\x00\x00\x00\x00\x00" "contains"), 16);
+  cg.bind(env.indexOfConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x07\x00\x00\x00\x00\x00\x00\x00indexOf"), 15);
+  cg.bind(env.clearConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x05\x00\x00\x00\x00\x00\x00\x00" "clear"), 13);
 
   // Data islands last: every code path above ends in `ret` or `ud2`, so
   // control never reaches them, and their addresses are already referenced by

@@ -273,6 +273,10 @@ behave differently — under AOT. This is the exact split in 0.1.0.
   `struct`, ranges, slicing, string interpolation.
 - Arrays and maps (literals, indexing, `in`, `for-in`, printing, and `+` to
   concatenate two arrays).
+- The array methods `push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`,
+  `contains`, `indexOf` and `clear`. Each binds to a closure that captures its
+  receiver, so a call mutates or scans the same array; `contains`/`indexOf`
+  compare structurally (an array or map needle compares by content).
 - These builtins: `print`, `write`, `eprint`, `len`, `type`, `str`, `repr`,
   `bool`, `ord`, `chr`, `assert`, `panic`, `isError`.
 - The numeric conversions `int`, `float`, `double`, and the math builtins
@@ -280,7 +284,8 @@ behave differently — under AOT. This is the exact split in 0.1.0.
 
 **VM only — not yet available in `oskel build` (a build error names the global):**
 
-- Collection methods such as `arr.push`, `map.keys`, `str.upper`. They compile
+- The allocating array methods `slice`, `concat`, `clone` and `reversed`, and
+  the map and string methods such as `map.keys` and `str.upper`. They compile
   but fail at runtime with `value has no such member`.
 - `pcall`, and the I/O and process builtins `readFile`, `writeFile`,
   `fileExists`, `args`, `exit`, `random`, `seed`, `clock`. A program using any
@@ -333,9 +338,14 @@ boot is exercised by `tests/bare_metal_test.cpp` when `qemu-system-x86_64` is on
 `PATH`.
 
 The prelude reports CPU *exceptions* (it installs an IDT and prints a trace
-before halting); it does not yet service *interrupts* from devices. The design
-for that next step — remapping the PIC, programming the timer, and returning
-from a handler with `iretq` — is in
+before halting) and now *services* the timer: it remaps the 8259 PIC onto
+vectors 0x20-0x2F, programs the 8254 PIT at 100 Hz, unmasks only IRQ0 and
+enables interrupts (`sti`) once the IDT and the PIC are ready. The timer
+handler acknowledges the PIC and returns with `iretq` — a real interrupt
+service loop, kept separate from the fatal fault handler. The tick count is
+kernel state (the handler is silent per tick); after 500 ticks a program that
+never returns gets one `tick limit` line and a dedicated exit code. The design
+lives in
 [docs/bare-metal-interrupts-design.md](docs/bare-metal-interrupts-design.md).
 
 ## Tests
