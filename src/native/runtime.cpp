@@ -302,7 +302,7 @@ void emitPrintValueCore(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeL
                         const DataBlob& badValue,
                         const DataBlob& textTrue, const DataBlob& textFalse,
                         const DataBlob& textNil, const DataBlob& textNewline,
-                        std::int64_t fd, bool newline) {
+                        std::int64_t fd, bool newline, bool hosted) {
   CodeGen::Label asInt = cg.newLabel();
   CodeGen::Label asBool = cg.newLabel();
   CodeGen::Label asNil = cg.newLabel();
@@ -366,8 +366,17 @@ void emitPrintValueCore(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeL
   cg.movReg(Rsi, Rax);                        // length
   cg.movReg(Rdi, Rsp);
   cg.addImm32(Rdi, static_cast<std::int32_t>(kDtoaScratchBytes));
-  cg.addImm32(Rsp, static_cast<std::int32_t>(kDtoaFrameBytes));
-  emitWriteToFd(cg, writeLabel, fd);
+  // In the hosted mode the write reaches libc, whose own stack use can reach the
+  // dead zone below rsp; the frame must stay allocated so the text buffer stays
+  // above rsp. The freestanding syscall stub cannot touch it, so its code is
+  // left exactly as it was (the byte-identity contract of that backend).
+  if (hosted) {
+    emitWriteToFd(cg, writeLabel, fd);
+    cg.addImm32(Rsp, static_cast<std::int32_t>(kDtoaFrameBytes));
+  } else {
+    cg.addImm32(Rsp, static_cast<std::int32_t>(kDtoaFrameBytes));
+    emitWriteToFd(cg, writeLabel, fd);
+  }
   cg.jmp(done);
 
   cg.bind(asBool);
@@ -414,10 +423,11 @@ void emitPrintValue(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeLabel
                     CodeGen::Label formatDouble, CodeGen::Label printRepr,
                     const DataBlob& badValue,
                     const DataBlob& textTrue, const DataBlob& textFalse,
-                    const DataBlob& textNil, const DataBlob& textNewline) {
+                    const DataBlob& textNil, const DataBlob& textNewline,
+                    bool hosted) {
   emitPrintValueCore(cg, label, writeLabel, fail, writeInt, formatDouble, printRepr,
                      badValue, textTrue, textFalse, textNil, textNewline, /*fd=*/1,
-                     /*newline=*/true);
+                     /*newline=*/true, hosted);
 }
 
 // `void oskel_print_value_raw(AotValue v)`: prints the value with no trailing
@@ -427,10 +437,11 @@ void emitPrintValueRaw(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeLa
                        CodeGen::Label formatDouble, CodeGen::Label printRepr,
                        const DataBlob& badValue,
                        const DataBlob& textTrue, const DataBlob& textFalse,
-                       const DataBlob& textNil, const DataBlob& textNewline) {
+                       const DataBlob& textNil, const DataBlob& textNewline,
+                       bool hosted) {
   emitPrintValueCore(cg, label, writeLabel, fail, writeInt, formatDouble, printRepr,
                      badValue, textTrue, textFalse, textNil, textNewline, /*fd=*/1,
-                     /*newline=*/false);
+                     /*newline=*/false, hosted);
 }
 
 // `void oskel_print_value_err_raw(AotValue v)`: prints the value with no trailing
@@ -440,10 +451,11 @@ void emitPrintValueErrRaw(CodeGen& cg, CodeGen::Label label, CodeGen::Label writ
                           CodeGen::Label formatDouble, CodeGen::Label printRepr,
                           const DataBlob& badValue,
                           const DataBlob& textTrue, const DataBlob& textFalse,
-                          const DataBlob& textNil, const DataBlob& textNewline) {
+                          const DataBlob& textNil, const DataBlob& textNewline,
+                          bool hosted) {
   emitPrintValueCore(cg, label, writeLabel, fail, writeInt, formatDouble, printRepr,
                      badValue, textTrue, textFalse, textNil, textNewline, /*fd=*/2,
-                     /*newline=*/false);
+                     /*newline=*/false, hosted);
 }
 
 // One of the `print`/`write`/`eprint` builtins, as a machine-code function with
@@ -804,23 +816,39 @@ void emitArith(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   emitFailCall(cg, fail, msgTypes);
 }
 
-// `AotValue oskel_pow(AotValue a, AotValue b)`: integer `**` for int/int with a
-// non-negative exponent, replicating `intPow` (wrapping multiply, square and
-// multiply). Every other case needs `pow` from libm and is deferred.
+// `AotValue oskel_pow(AotValue a, AotValue b)`: `**` with the int/float/double
+// promotion of `ops::binary`. int/int with a non-negative exponent uses the
+// wrapping integer loop (`intPow`); every other numeric pair (a float/double
+// operand, or a negative exponent) converts to binary64, calls the embedded
+// musl `pow` and re-tags the result, so a float/float result rounds back to
+// binary32 exactly like the hosted `makeNumeric`. A non-number operand is the
+// unsupported-operand error.
 void emitPow(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
-             const DataBlob& msgPow) {
+             const DataBlob& msgPow, CodeGen::Label mathPow) {
   CodeGen::Label bad = cg.newLabel();
+  CodeGen::Label floatPath = cg.newLabel();
+  CodeGen::Label floatFloat = cg.newLabel();
+  CodeGen::Label floatDouble = cg.newLabel();
   CodeGen::Label loop = cg.newLabel();
   CodeGen::Label skipMul = cg.newLabel();
 
   cg.bind(label);
   prologue(cg);
+  // Both operands must be numbers; anything else is the unsupported pair.
+  emitIsNumberFlag(cg, Rdi);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, bad);
+  emitIsNumberFlag(cg, Rdx);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, bad);
+  // int/int with a non-negative exponent stays integer; every other numeric
+  // pair goes through `pow`.
   cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagInt));
-  cg.jcc(Jcc::Ne, bad);
+  cg.jcc(Jcc::Ne, floatPath);
   cg.cmpImm32(Rdx, static_cast<std::int32_t>(kTagInt));
-  cg.jcc(Jcc::Ne, bad);
+  cg.jcc(Jcc::Ne, floatPath);
   cg.testReg(Rcx);
-  cg.jcc(Jcc::S, bad);  // negative exponent -> std::pow (7c.1c)
+  cg.jcc(Jcc::S, floatPath);  // negative exponent -> pow (7c.1c/7c.1d.2)
 
   cg.movReg(R8, Rcx);  // exp = b
   cg.movReg(R9, Rsi);  // factor = a
@@ -838,6 +866,38 @@ void emitPow(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
 
   cg.movReg(Rdx, Rax);
   cg.movImm(Rax, kTagInt);
+  epilogue(cg);
+
+  // --- float/double path ---
+  // `mathPow` clobbers the volatile registers (including the operand tags in
+  // rdi/rdx), so the result type is decided *before* the call and each branch
+  // re-does the conversion and the call. The type follows `makeNumeric`'s rank
+  // rule: binary32 only when at least one operand is a float and none is a
+  // double; int/int (a negative exponent) and any double stay binary64.
+  cg.bind(floatPath);
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagDouble));
+  cg.jcc(Jcc::Eq, floatDouble);
+  cg.cmpImm32(Rdx, static_cast<std::int32_t>(kTagDouble));
+  cg.jcc(Jcc::Eq, floatDouble);
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagFloat));
+  cg.jcc(Jcc::Eq, floatFloat);
+  cg.cmpImm32(Rdx, static_cast<std::int32_t>(kTagFloat));
+  cg.jcc(Jcc::Ne, floatDouble);  // int/int (negative exponent) -> double
+  cg.bind(floatFloat);
+  emitToDouble(cg, Rdi, Rsi, kXmmBase + 0);  // xmm0 = a
+  emitToDouble(cg, Rdx, Rcx, kXmmBase + 1);  // xmm1 = b
+  cg.callLabel(mathPow);                     // xmm0 = pow(a, b)
+  cg.cvtsd2ss(kXmmBase + 0, kXmmBase + 0);
+  cg.cvtss2sd(kXmmBase + 0, kXmmBase + 0);  // store the binary32 value widened
+  cg.movqFromXmm(Rdx, kXmmBase + 0);
+  cg.movImm(Rax, kTagFloat);
+  epilogue(cg);
+  cg.bind(floatDouble);
+  emitToDouble(cg, Rdi, Rsi, kXmmBase + 0);  // xmm0 = a
+  emitToDouble(cg, Rdx, Rcx, kXmmBase + 1);  // xmm1 = b
+  cg.callLabel(mathPow);                     // xmm0 = pow(a, b)
+  cg.movqFromXmm(Rdx, kXmmBase + 0);
+  cg.movImm(Rax, kTagDouble);
   epilogue(cg);
 
   cg.bind(bad);
@@ -2365,6 +2425,7 @@ void emitTableGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   CodeGen::Label map = cg.newLabel();
   CodeGen::Label arrNonNeg = cg.newLabel();
   CodeGen::Label mapMiss = cg.newLabel();
+  CodeGen::Label strNonNeg = cg.newLabel();
   CodeGen::Label oom = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
   CodeGen::Label failArrayType = cg.newLabel();
@@ -2415,8 +2476,20 @@ void emitTableGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.bind(str);
   cg.cmpImm32(Rdx, static_cast<std::int32_t>(kTagInt));
   cg.jcc(Jcc::Ne, failStrType);
+  // A negative index counts code points from the end, exactly like an array
+  // index (`ops::normalizeIndex`). `utf8CharAt` only walks forward, so the
+  // index is rebased against the code-point length first; `utf8Len` clobbers
+  // r8, so the raw index is reloaded from its stack slot before the add.
+  cg.movFromMem(R8, Rbp, -32);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Ge, strNonNeg);
   cg.movReg(Rdi, R12);
-  cg.movFromMem(Rsi, Rbp, -32);
+  cg.callLabel(env.utf8Len);
+  cg.movFromMem(R8, Rbp, -32);
+  cg.addReg(R8, Rax);
+  cg.bind(strNonNeg);
+  cg.movReg(Rdi, R12);
+  cg.movReg(Rsi, R8);
   cg.callLabel(env.utf8CharAt);
   cg.testReg(Rax);
   cg.jcc(Jcc::Eq, failRange);
@@ -5596,6 +5669,29 @@ void emitExitBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label exitLabel
   emitFailCall(cg, fail, msgType);
 }
 
+// `time()`: the wall clock, in whole seconds since the Unix epoch (UTC), as an
+// `int`. It takes no argument. The value comes from the target's `entry.now`
+// handle, which each prelude binds its own way -- a raw syscall on Linux, libc
+// `time` in the hosted mode, kernel32 on Windows and the CMOS RTC on bare
+// metal -- so this emitter is target-independent and the runtime stays free of
+// libc. The hosted engine's `time` builtin reads the same wall clock.
+void emitTimeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label nowLabel,
+                     CodeGen::Label fail, const DataBlob& msgArgc) {
+  CodeGen::Label ok = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Eq, ok);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(ok);
+  cg.callLabel(nowLabel);          // rax = seconds since the epoch
+  cg.movReg(Rdx, Rax);
+  cg.movImm(Rax, kTagInt);
+  epilogue(cg);
+}
+
 // `void oskel_sb_init(AotStringBuilder* sb, char* data, long capacity)`: start a
 // builder over a caller-owned buffer (`data`/`capacity`) with `length` zero. A
 // caller that renders a `print` value passes a stack buffer, so a small render
@@ -6407,10 +6503,209 @@ void emitPrintRepr(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeLabel,
   epilogue(cg);
 }
 
+// ------------------------------------------------------------------- extern thunks
+
+// The System V AMD64 integer argument registers, in order (PHASE 7f.5). A
+// scalar `extern "C"` signature has at most `kMaxExternArgs` (6) parameters, so
+// at most 6 of these 6 registers and 6 of the 8 SSE registers are used: the two
+// counters in `emitExternThunk` can never overrun.
+constexpr X64Reg kIntArgRegs[] = {Rdi, Rsi, Rdx, Rcx, R8, R9};
+// A scratch xmm for the register-class conversions (a boxed number narrowed to
+// an integer, an integer widened to a float). It must not collide with an
+// argument xmm: a scalar signature uses at most xmm0-xmm5, so xmm7 is free. It
+// is kept in the xmm0-xmm7 range deliberately, so no instruction that uses it
+// needs a REX prefix.
+constexpr int XmmScratch = kXmmBase + 7;
+
+// Normalizes the integer returned in `rax` to its declared width, exactly like
+// the hosted `wrapInteger`: a C `int` leaves the upper half of `rax` undefined,
+// so a `shl`/`sar` pair re-extends a narrow signed value and a mask zero-extends
+// an unsigned one.
+void normalizeIntegerReturn(CodeGen& cg, const std::string& type) {
+  if (type == "int8") {
+    cg.shlImm8(Rax, 56);
+    cg.sarImm8(Rax, 56);
+  } else if (type == "int16") {
+    cg.shlImm8(Rax, 48);
+    cg.sarImm8(Rax, 48);
+  } else if (type == "uint8") {
+    cg.andImm32(Rax, 0xff);
+  } else if (type == "uint16") {
+    cg.andImm32(Rax, 0xffff);
+  } else if (type == "uint" || type == "uint32") {
+    cg.movReg32(Rax, Rax);  // zero-extends the low 32 bits
+  } else if (type == "int64" || type == "uint64" || type == "size_t") {
+    // Full width: `rax` already holds the whole value.
+  } else {
+    // "", "any", "int", "int32": a C `int` is 32 bits.
+    cg.shlImm8(Rax, 32);
+    cg.sarImm8(Rax, 32);
+  }
+}
+
+// Emits the marshalling thunk for one scalar `extern "C"` symbol (PHASE 7f.5).
+// It has the lowering's own function shape `AotValue thunk(AotValue* args, long
+// argc, AotClosure* self)`, so it drops into the `oskel_call` dispatch exactly
+// like a user function or a seeded builtin: the chunk seeds it as a `Func` in
+// the symbol's global slot.
+//
+// The body walks the caller's argument window -- `args[i]` is at
+// `[rbx - 16*i]`, tag then payload, because the register file grows down --
+// converts each boxed value to the register its `ParamClass` assigns (a
+// general-purpose register for the integer/pointer class, an SSE register for
+// the floating class), calls the real C symbol through an external relocation,
+// then boxes the result. It reproduces the hosted `ffi_marshal.h` conversions:
+// a bool is 0/1, an integer is the payload, a number is truncated toward zero
+// for an integer parameter and widened for a `double`; the return is normalized
+// to the declared width.
+void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fail,
+                     const DataBlob& msgArity, const DataBlob& msgType) {
+  CodeGen::Label arityOk = cg.newLabel();
+
+  cg.bind(thunk.label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.movReg(Rbx, Rdi);  // args base; parameter i lives at [rbx - 16*i]
+
+  // The thunk is the callee, so it checks its own arity, exactly like a user
+  // function's prologue. A direct call is already arity-checked at compile time,
+  // so this only fires through a first-class reference (`var f = abs; f(1, 2)`).
+  cg.cmpImm32(Rsi, static_cast<std::int32_t>(thunk.params.size()));
+  cg.jcc(Jcc::Eq, arityOk);
+  emitFailCall(cg, fail, msgArity);
+  cg.bind(arityOk);
+
+  int gpr = 0;
+  int sse = 0;
+  for (std::size_t i = 0; i < thunk.params.size(); ++i) {
+    const std::int64_t base = -16LL * static_cast<std::int64_t>(i);
+    cg.movFromMem(R10, Rbx, base);  // the value's tag
+    switch (thunk.params[i]) {
+      case ffi::ParamClass::Int: {
+        // A bool (payload 0/1), an int, or a number (truncated toward zero).
+        CodeGen::Label asIs = cg.newLabel();
+        CodeGen::Label asNumber = cg.newLabel();
+        CodeGen::Label done = cg.newLabel();
+        cg.cmpImm32(R10, static_cast<std::int32_t>(kTagBool));
+        cg.jcc(Jcc::Eq, asIs);
+        cg.cmpImm32(R10, static_cast<std::int32_t>(kTagInt));
+        cg.jcc(Jcc::Eq, asIs);
+        cg.cmpImm32(R10, static_cast<std::int32_t>(kTagFloat));
+        cg.jcc(Jcc::Eq, asNumber);
+        cg.cmpImm32(R10, static_cast<std::int32_t>(kTagDouble));
+        cg.jcc(Jcc::Eq, asNumber);
+        emitFailCall(cg, fail, msgType);
+        cg.bind(asNumber);
+        cg.movFromMem(R11, Rbx, base + 8);
+        cg.movqToXmm(XmmScratch, R11);
+        cg.cvttsd2si(kIntArgRegs[gpr], XmmScratch);
+        cg.jmp(done);
+        cg.bind(asIs);
+        cg.movFromMem(kIntArgRegs[gpr], Rbx, base + 8);
+        cg.bind(done);
+        ++gpr;
+        break;
+      }
+      case ffi::ParamClass::Double: {
+        // A number; an int is widened to binary64. A Float/Double payload is
+        // already the binary64 bit pattern, so it moves verbatim.
+        CodeGen::Label asIs = cg.newLabel();
+        CodeGen::Label asInt = cg.newLabel();
+        CodeGen::Label done = cg.newLabel();
+        cg.cmpImm32(R10, static_cast<std::int32_t>(kTagFloat));
+        cg.jcc(Jcc::Eq, asIs);
+        cg.cmpImm32(R10, static_cast<std::int32_t>(kTagDouble));
+        cg.jcc(Jcc::Eq, asIs);
+        cg.cmpImm32(R10, static_cast<std::int32_t>(kTagInt));
+        cg.jcc(Jcc::Eq, asInt);
+        emitFailCall(cg, fail, msgType);
+        cg.bind(asInt);
+        cg.movFromMem(R11, Rbx, base + 8);
+        cg.cvtsi2sd(kXmmBase + sse, R11);
+        cg.jmp(done);
+        cg.bind(asIs);
+        cg.movFromMem(R11, Rbx, base + 8);
+        cg.movqToXmm(kXmmBase + sse, R11);
+        cg.bind(done);
+        ++sse;
+        break;
+      }
+      case ffi::ParamClass::Float: {
+        // A number narrowed to binary32 (the ABI passes it in an SSE register).
+        CodeGen::Label asIs = cg.newLabel();
+        CodeGen::Label asInt = cg.newLabel();
+        CodeGen::Label done = cg.newLabel();
+        cg.cmpImm32(R10, static_cast<std::int32_t>(kTagFloat));
+        cg.jcc(Jcc::Eq, asIs);
+        cg.cmpImm32(R10, static_cast<std::int32_t>(kTagDouble));
+        cg.jcc(Jcc::Eq, asIs);
+        cg.cmpImm32(R10, static_cast<std::int32_t>(kTagInt));
+        cg.jcc(Jcc::Eq, asInt);
+        emitFailCall(cg, fail, msgType);
+        cg.bind(asInt);
+        cg.movFromMem(R11, Rbx, base + 8);
+        cg.cvtsi2sd(XmmScratch, R11);
+        cg.cvtsd2ss(kXmmBase + sse, XmmScratch);
+        cg.jmp(done);
+        cg.bind(asIs);
+        cg.movFromMem(R11, Rbx, base + 8);
+        cg.movqToXmm(kXmmBase + sse, R11);
+        cg.cvtsd2ss(kXmmBase + sse, kXmmBase + sse);
+        cg.bind(done);
+        ++sse;
+        break;
+      }
+      default:
+        // A pointer, callback or struct parameter is not part of the scalar
+        // thunk; the lowerer rejects such a declaration before it reaches here.
+        emitFailCall(cg, fail, msgType);
+        break;
+    }
+  }
+
+  cg.callExternal(thunk.symbol);
+
+  // Box the C result: the integer family comes back in `rax` and is normalized
+  // to its declared width, a float/double in `xmm0`. A `void` returns nil.
+  switch (thunk.returns) {
+    case ffi::ReturnClass::Void:
+      cg.movImm(Rax, kTagNil);
+      cg.xorReg(Rdx, Rdx);
+      break;
+    case ffi::ReturnClass::Float:
+      cg.cvtss2sd(Xmm0, Xmm0);  // a `float` return is binary32; box it as binary64
+      cg.movqFromXmm(Rdx, Xmm0);
+      cg.movImm(Rax, kTagFloat);
+      break;
+    case ffi::ReturnClass::Double:
+      cg.movqFromXmm(Rdx, Xmm0);
+      cg.movImm(Rax, kTagDouble);
+      break;
+    case ffi::ReturnClass::Bool:
+      cg.andImm32(Rax, 0xff);
+      cg.testReg(Rax);
+      cg.setcc(Jcc::Ne, Rdx);
+      cg.movzx(Rdx, Rdx);
+      cg.movImm(Rax, kTagBool);
+      break;
+    default:  // Int
+      normalizeIntegerReturn(cg, thunk.returnType);
+      cg.movReg(Rdx, Rax);
+      cg.movImm(Rax, kTagInt);
+      break;
+  }
+
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
 }  // namespace
 
 void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
-                    const RuntimeHandles& entry) {
+                    const RuntimeHandles& entry,
+                    const std::vector<AotExternThunk>* externThunks, bool hosted) {
   // Constant text, bound after all code so nothing falls through into it.
   std::vector<DataBlob> data;
   auto addText = [&](const char* text) {
@@ -6521,7 +6816,16 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob textGot = addText(", got ");
   DataBlob msgExitArgc = addText("oskel: exit() expects between 0 and 1 arguments\n");
   DataBlob msgExitType = addText("oskel: exit() expects an integer argument\n");
-
+  DataBlob msgTimeArgc = addText("oskel: time() expects 0 arguments\n");
+  // The scalar `extern "C"` thunks (PHASE 7f.5). A direct call is arity- and
+  // type-checked at compile time, so these only fire through a first-class
+  // reference (`var f = abs; f("x")`). The arity message is the shared one; the
+  // type message is added only in the hosted mode, so a freestanding image
+  // stays byte for byte what it was.
+  DataBlob msgExternType;
+  if (externThunks != nullptr) {
+    msgExternType = addText("oskel: argument type does not match the extern \"C\" declaration\n");
+  }
   CodeGen::Label fail = cg.newLabel();
   CodeGen::Label failDynamic = cg.newLabel();
   CodeGen::Label writeInt = cg.newLabel();
@@ -6610,6 +6914,11 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitCellNew(cg, handles.cellNew, handles.alloc, fail, msgOom);
   emitCall(cg, handles.call, fail, msgCallNonFunc);
   emitArityError(cg, handles.arityError, fail, msgArity);
+  if (externThunks != nullptr) {
+    for (const AotExternThunk& thunk : *externThunks) {
+      emitExternThunk(cg, thunk, fail, msgArity, msgExternType);
+    }
+  }
   emitPrintStrEsc(cg, printStrEsc, entry.write, textQuote, textEscQuote,
                   textEscBackslash, textEscNL, textEscTab, textEscCR, textHexPrefix);
   // The string builder and the recursive repr are shared by `print` and `$str`:
@@ -6630,13 +6939,13 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitPrintRepr(cg, printRepr, entry.write, sbInit, reprInto);
   emitPrintValue(cg, handles.printValue, entry.write, fail, writeInt,
                  dtoaHandles.formatDouble, printRepr, msgPrint, textTrue, textFalse,
-                 textNil, textNewline);
+                 textNil, textNewline, hosted);
   emitPrintValueRaw(cg, handles.printValueRaw, entry.write, fail, writeInt,
                     dtoaHandles.formatDouble, printRepr, msgPrint, textTrue, textFalse,
-                    textNil, textNewline);
+                    textNil, textNewline, hosted);
   emitPrintValueErrRaw(cg, handles.printValueErrRaw, entry.write, fail, writeInt,
                        dtoaHandles.formatDouble, printRepr, msgPrint, textTrue,
-                       textFalse, textNil, textNewline);
+                       textFalse, textNil, textNewline, hosted);
   emitPrintBuiltin(cg, handles.printBuiltin, handles.printValueRaw, entry.write,
                    textSpace, textNewline, /*fd=*/1, /*newline=*/true);
   emitPrintBuiltin(cg, handles.writeBuiltin, handles.printValueRaw, entry.write,
@@ -6646,7 +6955,6 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitTruthy(cg, handles.truthy);
   emitArith(cg, handles.arithValues, fail, msgTypes, msgDivZero, handles.concat,
             handles.arrayConcat);
-  emitPow(cg, handles.powValues, fail, msgPow);
   emitShift(cg, handles.shiftValues, fail, msgShift);
   emitBitwise(cg, handles.bitwiseValues, fail, msgBit);
   emitNegate(cg, handles.negateValue, fail, msgNeg);
@@ -6703,6 +7011,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   // set of tables; `mathlib::emitMathLib` emits them plus the wrappers' targets.
   mathlib::MathHandles math = mathlib::newMathHandles(cg);
   mathlib::emitMathLib(cg, math);
+  // `**` shares the embedded `pow` with the `pow` builtin.
+  emitPow(cg, handles.powValues, fail, msgPow, math.pow);
   emitTranscendentalBuiltin(cg, handles.expBuiltin, fail, math.exp, msgExpType, false,
                             msgLogNonPositive);
   emitTranscendentalBuiltin(cg, handles.logBuiltin, fail, math.log, msgLogType, true,
@@ -6727,6 +7037,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                       sbNew, sbAppend, failDynamic, fail, msgAssertEqArgc,
                       msgAssertEqDefault, textExpected, textGot, msgOom);
   emitExitBuiltin(cg, handles.exitBuiltin, entry.exit, fail, msgExitArgc, msgExitType);
+  emitTimeBuiltin(cg, handles.timeBuiltin, entry.now, fail, msgTimeArgc);
   emitIntTextParser(cg, handles.intTextParser, fail, msgConvertInt);
   dtoa::emitDtoa(cg, dtoaHandles);
   parse_float::emitParseFloat(cg, parseFloatHandles, dtoaHandles);

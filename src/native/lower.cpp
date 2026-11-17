@@ -256,8 +256,60 @@ struct GlobalSlots {
   int count = 0;
 };
 
+// Narrows the compiler's `extern "C"` declarations to the scalar thunks the
+// hosted backend resolves through the system linker (PHASE 7f.5).
+//
+// The compiler records the full ABI signature on each `ExternSymbol`; a thunk
+// only needs the register classes, so this walks every proto's externs and, for
+// a scalar signature (no pointer, struct, callback or C variadic), produces one
+// `AotExternThunk`. A non-scalar signature is left out: `collectGlobals` then
+// rejects it exactly as before, so the unsupported shapes keep their clean build
+// error instead of compiling to a thunk that would marshal the wrong registers.
+//
+// Deduplicated by symbol name: several protos may declare the same C function
+// (`std.math` and a user block both naming `abs`), and one thunk serves all of
+// them, seeded into the single global slot the name resolves to.
+std::vector<AotExternThunk> collectExternThunks(const std::vector<const Bytecode*>& protos,
+                                                std::unordered_set<std::string>& resolved) {
+  std::vector<AotExternThunk> thunks;
+  std::unordered_set<std::string> seen;
+  for (const Bytecode* proto : protos) {
+    for (const ExternSymbol& symbol : proto->externs) {
+      if (!seen.insert(symbol.name).second) continue;
+      if (symbol.variadic) continue;
+      AotExternThunk thunk;
+      thunk.symbol = symbol.name;
+      bool scalar = true;
+      for (const ffi::TypeSpec& param : symbol.paramTypes) {
+        ffi::ParamClass cls = ffi::ParamClass::Int;
+        if (param.isStruct || param.isCallback ||
+            !ffi::classifyParam(param.scalarType, cls) ||
+            cls == ffi::ParamClass::Pointer) {
+          scalar = false;
+          break;
+        }
+        thunk.params.push_back(cls);
+      }
+      if (!scalar) continue;
+      ffi::ReturnClass ret = ffi::ReturnClass::Int;
+      if (symbol.returnType.isStruct ||
+          !ffi::classifyReturn(symbol.returnType.scalarType, ret) ||
+          ret == ffi::ReturnClass::Ptr || ret == ffi::ReturnClass::CString ||
+          ret == ffi::ReturnClass::Struct) {
+        continue;
+      }
+      thunk.returns = ret;
+      thunk.returnType = symbol.returnType.scalarType;
+      resolved.insert(symbol.name);
+      thunks.push_back(std::move(thunk));
+    }
+  }
+  return thunks;
+}
+
 GlobalSlots collectGlobals(const std::vector<const Bytecode*>& protos,
-                           const std::unordered_map<std::string, CodeGen::Label>& builtins) {
+                           const std::unordered_map<std::string, CodeGen::Label>& builtins,
+                           const std::unordered_set<std::string>& resolvedExterns) {
   GlobalSlots globals;
   // The host bindings the chunk declares: `extern "C"` symbols and `native fn`
   // names. Each declaration compiles to `GETGLOBAL N; SETGLOBAL N` (the read
@@ -369,6 +421,7 @@ GlobalSlots collectGlobals(const std::vector<const Bytecode*>& protos,
   }
   for (const std::string& name : hostBindings) {
     if (builtins.find(name) != builtins.end()) continue;  // has a stub
+    if (resolvedExterns.find(name) != resolvedExterns.end()) continue;  // a linker-resolved scalar thunk
     const bool used = usedNatives.find(name) != usedNatives.end();
     if (!used && reads[name] <= declarations[name]) continue;  // declared but unused
     if (externNames.find(name) != externNames.end()) {
@@ -915,9 +968,28 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       {"range", rt.rangeFnBuiltin},
       {"assertEq", rt.assertEqBuiltin},
       {"exit", rt.exitBuiltin},
+      // `time()` (wall clock): the seconds since the Unix epoch, read from the
+      // `entry.now` handle the target's prelude binds. It matches the hosted
+      // builtin, so `time()` is one more builtin that lowers to an ordinary
+      // call.
+      {"time", rt.timeBuiltin},
   };
 
-  const GlobalSlots globals = collectGlobals(protos, builtins);
+  // The scalar `extern "C"` surface, hosted only (PHASE 7f.5): each symbol gets
+  // a marshalling thunk the chunk seeds as a `Func` into its global slot, so a
+  // `CALL` reaches the real C function through the ordinary `oskel_call` path.
+  // The thunk's label is created here (before the body is emitted) and bound by
+  // `emitAotRuntime` at the end, exactly like a builtin's code label. In the
+  // freestanding mode the list stays empty: the image carries no external
+  // reference and an `extern "C"` use keeps the build rejection.
+  std::vector<AotExternThunk> externThunks;
+  std::unordered_set<std::string> resolvedExterns;
+  if (mode == LinkMode::Hosted) {
+    externThunks = collectExternThunks(protos, resolvedExterns);
+    for (AotExternThunk& thunk : externThunks) thunk.label = cg.newLabel();
+  }
+
+  const GlobalSlots globals = collectGlobals(protos, builtins, resolvedExterns);
 
   const std::uint64_t chunkOffset = cg.offset();
 
@@ -948,6 +1020,21 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     cg.movReg(X64Reg::Rsi, X64Reg::Rax);
     // `oskel_closure` returns the Func value in rax:rdx, so rdx already holds the
     // payload that `oskel_global_set` expects.
+    cg.callLabel(rt.globalSet);
+  }
+  // The scalar `extern "C"` thunks (PHASE 7f.5), seeded exactly like a builtin:
+  // the thunk's code becomes an `AotClosure` in the symbol's global slot, so the
+  // `SETGLOBAL` the declaration emits stores a real function over it and a call
+  // dispatches through `oskel_call` into the marshalling body.
+  for (const AotExternThunk& thunk : externThunks) {
+    auto slot = globals.slotOfName.find(thunk.symbol);
+    if (slot == globals.slotOfName.end()) continue;
+    cg.leaRipLabel(X64Reg::Rdi, thunk.label);
+    cg.movImm(X64Reg::Rsi, 0);  // arity: the thunk checks its own argc
+    cg.movImm(X64Reg::Rdx, 0);  // upvalueCount
+    cg.callLabel(rt.closure);
+    cg.movImm(X64Reg::Rdi, slot->second);
+    cg.movReg(X64Reg::Rsi, X64Reg::Rax);
     cg.callLabel(rt.globalSet);
   }
   {
@@ -1075,7 +1162,8 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   } else {
     startOffset = emitFreestandingRuntime(cg, entry, mainEntry);
   }
-  emitAotRuntime(cg, rt, entry);
+  emitAotRuntime(cg, rt, entry, externThunks.empty() ? nullptr : &externThunks,
+                 mode == LinkMode::Hosted);
   // String constants last: their bytes are addressed by `lea` from the code
   // above, and no path falls through into them.
   emitStringConstants(cg, stringConstants);

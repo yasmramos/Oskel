@@ -1,0 +1,25 @@
+// Fixture for the hosted `extern "C"` test (tests/build_hosted_extern.cmake).
+//
+// A scalar `extern "C"` declaration is a host binding the freestanding backend
+// still rejects (it has no host), but the hosted backend resolves it through
+// the system linker (PHASE 7f.5): each symbol gets a marshalling thunk and the
+// chunk seeds it as a function, so the calls reach the real C functions.
+//
+// The signatures cover the register classes the thunk marshals: a general-
+// purpose integer (including a fixed width, which the thunk normalizes back to
+// its declared width), an SSE double, and a `void` return.
+extern "C" {
+  fn abs(x: int): int;
+  fn labs(x: int64): int64;
+  fn getpid(): int;
+  fn fabs(x: double): double;
+  fn fmod(a: double, b: double): double;
+}
+
+assertEq(abs(-7), 7);
+assertEq(labs(-9000000000), 9000000000);
+assertEq(getpid() > 0, true);
+assertEq(fabs(-2.5), 2.5);
+assertEq(fmod(7.5, 2.0), 1.5);
+
+print("extern hosted ok");

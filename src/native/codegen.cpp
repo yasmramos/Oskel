@@ -489,6 +489,7 @@ void CodeGen::shiftImm8(std::uint8_t ext, X64Reg dst, std::uint8_t count) {
 
 void CodeGen::shlImm8(X64Reg dst, std::uint8_t count) { shiftImm8(4, dst, count); }
 void CodeGen::shrImm8(X64Reg dst, std::uint8_t count) { shiftImm8(5, dst, count); }
+void CodeGen::sarImm8(X64Reg dst, std::uint8_t count) { shiftImm8(7, dst, count); }
 
 // bsr r64, r/m64: 0F BD /r with REX.W. The destination is the reg field.
 void CodeGen::bsrReg(X64Reg dst, X64Reg src) {
@@ -721,8 +722,11 @@ void CodeGen::cvttsd2si(X64Reg dst, int srcXmm) {
   std::uint8_t d = enc(dst);
   std::uint8_t s = static_cast<std::uint8_t>(srcXmm - kXmmBase);
   std::uint8_t byte = 0x40 | 0x08;  // W=1: a 64-bit destination, not a 32-bit one
-  if (d >= 8) byte |= 0x01;
-  if (s >= 8) byte |= 0x04;
+  // F2 0F 2C /r: the GPR destination is the ModRM *reg* field and the xmm source
+  // is the *rm* field (the reverse of `movqToXmm`), so a GPR r8-r15 needs REX.R
+  // and an xmm8-15 needs REX.B.
+  if (d >= 8) byte |= 0x04;
+  if (s >= 8) byte |= 0x01;
   // F2 is the mandatory prefix and must precede REX; a REX separated from the
   // opcode by a legacy prefix is ignored, which would silently select the
   // 32-bit form (the result zero-extends instead of sign-extending).

@@ -1,0 +1,35 @@
+// Fixture for `oskel build` (tests/build_binary.cmake), PHASE 7c.1d.2.
+//
+// `**` used to lower only for int/int with a non-negative exponent; every other
+// numeric pair (a float/double operand, or a negative exponent) fell to the
+// unsupported-operand error, so a program the VM accepted failed `oskel build`
+// at run time. The float path now shares the embedded musl `pow` with the `pow`
+// builtin and re-tags the result with the hosted `makeNumeric` rule: binary32
+// only when at least one operand is a float and none is a double. The binary
+// must agree with the VM byte for byte, `type` included.
+//
+// `mathlib::pow` is correctly rounded to under 1 ulp, so the printed values
+// match glibc on these inputs.
+
+print("int ** int =", 2 ** 10, type(2 ** 10));
+print("int ** 0 =", 3 ** 0, type(3 ** 0));
+print("0 ** 0 =", 0 ** 0, type(0 ** 0));
+
+// An int base with a negative exponent promotes to double (the hosted engine
+// falls to `std::pow`).
+print("int ** -1 =", 2 ** -1, type(2 ** -1));
+
+// A float/double exponent or base takes the `pow` path.
+print("2 ** 0.5 =", 2 ** 0.5, type(2 ** 0.5));
+print("2.0 ** 3 =", 2.0 ** 3, type(2.0 ** 3));
+print("4.0 ** 0.5 =", 4.0 ** 0.5, type(4.0 ** 0.5));
+
+// float/float stays binary32; a float with a double promotes to double.
+print("2.0f ** 3.0f =", 2.0f ** 3.0f, type(2.0f ** 3.0f));
+print("2.0f ** 3.0 =", 2.0f ** 3.0, type(2.0f ** 3.0));
+
+// The associative form is unaffected: `-2 ** 2` is `-(2 ** 2)`.
+print("-2 ** 2 =", -2 ** 2, type(-2 ** 2));
+
+// A larger int power wraps exactly like the hosted `intPow`.
+print("3 ** 40 =", 3 ** 40);

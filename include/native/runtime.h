@@ -1,7 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
+#include "ffi_types.h"
 #include "native/codegen.h"
 #include "native/entry.h"
 #include "native/value.h"
@@ -207,6 +210,11 @@ struct AotRuntimeHandles {
   CodeGen::Label rangeFnBuiltin;   // AotValue oskel_builtin_range_fn(AotValue* args, long argc, AotClosure* self)
   CodeGen::Label assertEqBuiltin;  // AotValue oskel_builtin_assert_eq(AotValue* args, long argc, AotClosure* self)
   CodeGen::Label exitBuiltin;      // AotValue oskel_builtin_exit(AotValue* args, long argc, AotClosure* self)
+  // `time()` (wall clock): takes no argument and returns the whole seconds since
+  // the Unix epoch as an `int`. It is the only public builtin that reaches the
+  // outside world for a *value* rather than output, so it reads the `entry.now`
+  // handle the target's prelude binds (syscall, libc, kernel32 or the CMOS RTC).
+  CodeGen::Label timeBuiltin;      // AotValue oskel_builtin_time(AotValue* args, long argc, AotClosure* self)
   // Bound array methods (PHASE 7c.3c). `a.push`/`a.pop` on an array yield a
   // closure that captured its receiver in one upvalue cell, exactly like the
   // hosted `bindArray`. `bindArrayMethod` builds that closure from the receiver
@@ -236,7 +244,7 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel()
+      code.newLabel(), code.newLabel(), code.newLabel()
   };
 }
 
@@ -278,9 +286,43 @@ enum class AotShiftOp : std::int64_t {
   Shr = 2,
 };
 
+// A scalar `extern "C"` symbol the hosted backend resolves through the system
+// linker (PHASE 7f.5).
+//
+// The compiler's `ExternSymbol` carries the whole ABI signature in the FFI
+// vocabulary; the lowerer narrows it to this register-level description -- one
+// `ParamClass` per parameter and one `ReturnClass` -- so the runtime emits a
+// marshalling thunk without reaching into the compiler's type tables. Only
+// scalar signatures are narrowed here: a `ptr`/`cstring`, a struct, a callback
+// or a C variadic is left out and keeps the build rejection (later 7f work).
+struct AotExternThunk {
+  // Bound by `emitAotRuntime` to the thunk's entry, so the caller can seed it
+  // into the symbol's global slot before the body is emitted (a forward
+  // reference, exactly like a builtin's code label).
+  CodeGen::Label label;
+  std::string symbol;                  // the C symbol, e.g. "abs"
+  std::vector<ffi::ParamClass> params; // one class per parameter, in order
+  ffi::ReturnClass returns = ffi::ReturnClass::Int;
+  // The declared spellings, read only to truncate the returned integer to its
+  // width (a C `int` leaves the upper half of `rax` undefined).
+  std::string returnType;
+};
+
 // Appends every runtime helper to `code` and binds `handles`. `entry` comes
 // from `entry.h`: the runtime prints through `oskel_write` and reports a fatal
 // error through `oskel_exit`, so the caller must emit the entry prelude into
 // the same buffer (see `emitFreestandingRuntime`).
+//
+// `externThunks`, when non-null, is the scalar `extern "C"` surface of the
+// hosted mode: one marshalling thunk is emitted per symbol and each thunk's
+// `label` is bound. The freestanding path passes null, so its image is
+// unchanged and carries no external reference.
+//
+// `hosted` selects the hosted write path, where the float/double printer must
+// keep its formatting frame allocated across the call into libc's `write` (see
+// `emitPrintValueCore`). It is false for every freestanding target, whose image
+// then stays byte for byte what it was.
 void emitAotRuntime(CodeGen& code, const AotRuntimeHandles& handles,
-                    const RuntimeHandles& entry);
+                    const RuntimeHandles& entry,
+                    const std::vector<AotExternThunk>* externThunks = nullptr,
+                    bool hosted = false);
