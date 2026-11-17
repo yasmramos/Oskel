@@ -393,6 +393,17 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_builtins.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # Error values (PHASE 7c.5c): `error(message, code?)`, `isError`, `type`,
+    # `.message`/`.code`, structural equality, `print`/`repr` and interpolation
+    # must agree with the VM. This is what makes value-based `try`/`catch` work
+    # in a native binary (`$isError` now sees a real error tag).
+    add_test(NAME oskel.build_binary_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_error"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_error.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # The link mode is a deployment choice, not language syntax (PHASE 7f.3).
     # `--mode freestanding` must behave exactly like the default (self-contained,
     # agrees with the VM), `--mode hosted` links against libc and must agree with

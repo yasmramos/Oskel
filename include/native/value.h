@@ -42,6 +42,7 @@ enum class AotTag : std::uint64_t {
   Array = 7,   // payload is the address of an `AotArray`
   Map = 8,     // payload is the address of an `AotMap`
   Range = 9,   // payload is the address of an `AotRange`
+  Error = 10,  // payload is the address of an `AotError`
 };
 
 // On-image layout of a string: an 8-byte length followed by the bytes. The
@@ -122,6 +123,19 @@ struct AotRange {
 };
 
 constexpr std::size_t kAotRangeHeaderSize = 3 * sizeof(std::uint64_t);
+
+// On-image layout of an error value (PHASE 7c.5c): the address of the message
+// `AotString` and the integer code (0 by default). An `Error` payload points at
+// the header. The layout mirrors the hosted `ErrorObj` (a message and a code),
+// so `err.message`, `err.code`, `type(err) == "error"` and the rendering agree
+// with the development engine. The message is a pointer, so `AotValue` stays
+// 16 bytes; the code sits right after it.
+struct AotError {
+  std::uint64_t message;  // address of an `AotString`
+  std::int64_t code;
+};
+
+constexpr std::size_t kAotErrorHeaderSize = 2 * sizeof(std::uint64_t);
 
 // On-image layout of a string builder (PHASE 7c.4b.2): a growable byte buffer in
 // the arena, used to render a collection or function to an `AotString` for
