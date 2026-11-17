@@ -291,6 +291,14 @@ may change between minor versions.
 
 ### Fixed
 
+- Tests: the bare-metal wall-clock boot test now writes its image through the
+  portable `tempPath()` helper instead of a hard-coded `/tmp/...`, so it runs on
+  Windows too. `test_qemu_wall_clock` was the only one of the five boot tests
+  that still named `/tmp` directly; `writeFile` failed silently there, QEMU
+  booted a kernel that did not exist and the guest printed nothing, which the
+  test reported as an empty integer. `writeFile` now fails loudly when it cannot
+  open the image, so a bad path reads as a write error instead of a silent
+  empty guest.
 - AOT: `**` now accepts a float/double operand or a negative exponent, like the
   hosted engine. `oskel_pow` only lowered int/int with a non-negative exponent;
   every other numeric pair failed with "unsupported operand types for '**'", so
