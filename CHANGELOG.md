@@ -9,8 +9,66 @@ may change between minor versions.
 
 ## [Unreleased]
 
+### Changed
+
+- **JIT (slice 3): compare-branch fusion.** When a comparison's boolean result
+  only feeds the conditional branch right after it, the JIT no longer builds the
+  bool (`cmp; setcc; movzx; mov; test; jcc`) and jumps straight off the flags
+  (`cmp; jcc`). A backward liveness pass proves the result dead past the branch
+  and that the branch is reached by fall-through alone (never a jump target), so
+  the re-test the VM would perform is never lost; a result that is reused
+  afterwards stays unfused and correct. The integer loop drops from 0.062s to
+  0.051s (about 320x the interpreter, within ~1.4x of a hand-written `-O2` C++
+  loop). Still 1:1 with the bytecode — the fusion rewrites how one opcode and its
+  branch are emitted, and no opcode, superinstruction or runtime specialization
+  is added. The differential suite (including the fuzz corpus) still proves the
+  compiled body identical to the interpreter.
+
+- **JIT (slice 2): constant folding, strength reduction and register-direct
+  codegen.** The development engine's JIT now folds an expression whose operands
+  are compile-time constants (`2 * 3` becomes `6`), applies a constant operand as
+  a machine immediate (`n + 7` is one `add`, `i * 2` is one `shl`), and computes
+  in the destination register instead of copying operands through scratch, so a
+  tight integer loop is another ~2x faster than slice 1 (about 260x the
+  interpreter, within ~1.7x of a hand-written `-O2` C++ loop). Everything stays
+  1:1 with the bytecode — a constant propagation over the proto feeds the same
+  emitter, and no opcode, superinstruction or runtime specialization is added.
+  The differential suite (including the fuzz corpus) still proves the compiled
+  body identical to the interpreter.
+
 ### Added
 
+- **Two AOT link modes** (PHASE 7f.3). `oskel build --mode
+  freestanding|hosted` (default `freestanding`) selects how the image is closed.
+  `freestanding` is the self-contained binary every target already emits;
+  `hosted` links against the host C library so an `extern "C"` symbol resolves
+  to the real C function — the mode that makes FFI work. The mode is a
+  deployment choice, never language syntax, and the (target, mode) matrix is
+  validated (freestanding: all targets; hosted: Linux x86-64 only, for now) so
+  an unsupported pair is reported instead of emitted. The freestanding binary is
+  unchanged, byte for byte. The hosted image itself is PHASE 7f.4; until it
+  lands, `--mode hosted` fails cleanly.
+- **Bare-metal AOT target** (PHASE 7g). `oskel build --target
+  x86_64-freestanding-sysv` emits a multiboot 1 kernel that a boot loader
+  (QEMU `-kernel`, GRUB, Limine) loads at 1 MiB and enters directly, with no
+  operating system underneath. The image is an ELF32/i386 whose 32-bit
+  trampoline builds an identity page table, turns on long mode and installs its
+  own 64-bit GDT before jumping into the shared 64-bit runtime, so the program
+  itself is the same machine code the Linux target emits. The runtime talks to
+  a 16550 serial port at COM1 (`oskel_write`), ends the program with a `cli`/
+  `hlt` loop (`oskel_exit`) and takes its bump-allocator arena from a `.bss`
+  region the loader zeroes (`oskel_init_arena`). Verified end to end under
+  `qemu-system-x86_64 -kernel` in `tests/bare_metal_test.cpp`.
+- AOT: the public builtins `range`, `assertEq` and `exit` compile into the
+  freestanding binary (PHASE 7c.5b.5), so a program that uses them builds with
+  `oskel build` instead of failing on an unassigned global. `range` builds the
+  same `Range` value as the hidden `$range` helper (one bound means `0..end`);
+  `assertEq` compares with the shared structural `==` and, on a mismatch,
+  renders the hosted `"<msg>: expected A, got B"` text through the embedded
+  `repr` and string builder before exiting 70; `exit` leaves through the entry
+  prelude's `oskel_exit`, so it stops the program with the given code. All three
+  match the development VM byte for byte and are covered by
+  `tests/native_build_builtins.oskl` and the `freestanding_test` suite.
 - A `switch` case label may be a `const` name (a top-level `const`, or a local
   `const`/`let` in the same frame), not only a literal or a range, so a shared
   constant reads as a label instead of a repeated magic number. The name is
@@ -26,9 +84,35 @@ may change between minor versions.
   declaration without a stub fails with a dedicated message
   (`native fn 'X' cannot be resolved by the AOT backend (PHASE 7f)`) instead of
   the generic unassigned-global error a typo produces. `sqrt` is seeded from the
-  exact `sqrtsd` stub, so `native fn sqrt` resolves without a host. The
-  transcendentals (`pow`, `sin`, `cos`, `tan`, `log`, `exp`) stay rejected: a
-  hand-written implementation would not reproduce libm's last bit.
+  exact `sqrtsd` stub, so `native fn sqrt` resolves without a host; the libm
+  primitives (`exp`, `log`, `pow`, `sin`, `cos`, `tan`) resolve from the embedded
+  musl ports (PHASE 7c.5b.4).
+- A qualified call to a module's native export is now checked at compile time
+  and rejected by `oskel build` (PHASE 7f.2). `std.math.pow(...)` reads the
+  module table with `GETTABLE`, not with `GETGLOBAL`, so the AOT lowerer never
+  saw the use: a program that called a host binding through its namespace
+  compiled to a binary that faulted at run time (`cannot call a non-function
+  value`) instead of failing the build. The compiler propagates each public
+  native export's signature on the imported module, records the qualified access
+  when it emits the member read, and resolves it once the chunk is compiled
+  (deferred, because a hoisted function is compiled before the `import` that
+  loads the module). The build now rejects the use with the same message as the
+  direct form, and a qualified call is checked against the export's signature
+  (arity and argument types) exactly like `pow(2.0)`, so `std.math.pow(2.0)`
+  fails with `'std.math.pow' expects 2 arguments, got 1`.
+- AOT: the transcendental builtins `exp`, `log` and `pow` (PHASE 7c.5b.4a) and
+  the trigonometric builtins `sin`, `cos` and `tan` (PHASE 7c.5b.4b) are now
+  available in a freestanding binary. The development engine resolves them
+  through the host's libm, which a freestanding AOT binary cannot link, so the
+  musl routines (MIT, Arm Limited) are emitted directly as x86-64 through
+  `CodeGen` (the approach already used for `dtoa` and `parse_float`) and the
+  runtime stays libc-free. `exp`/`log`/`pow` port the musl kernels and the
+  `pow` special cases; the trigonometric family ports `__rem_pio2` (with its
+  large-argument helper), the `__sin`/`__cos`/`__tan` kernels and the public
+  entry points. The wrappers do the arity/type checks and the `log`
+  non-positive check, and are seeded into their global slots like the other
+  builtins, so neither the compiler nor the bytecode changes. glibc is not
+  correctly rounded for these functions, so the contract is "agrees to 1 ulp".
 - `struct` literals support field shorthand: `Point { x, y }` is sugar for
   `Point { x: x, y: y }`, taking each value from the variable of the same name
   in scope. The shorthand and the `name: value` form mix freely in one literal
@@ -73,6 +157,41 @@ may change between minor versions.
 
 ### Changed
 
+- The development-engine JIT keeps each scalar slot in a physical CPU register
+  instead of its 16-byte stack slot. The bytecode contract is untouched (no new
+  opcode, no superinstruction, no runtime specialization): the JIT still lowers
+  each opcode 1:1, but a slot the dataflow proves only ever holds
+  `nil`/`bool`/`int` now lives in `rax`/`rcx`/`rdx`/`rsi`/`rdi`/`r8`/`r9` with
+  the raw payload, and the tag is materialized only at the frame boundary. A
+  slot that changes scalar kind (a `bool` comparison feeding an `int` slot and
+  back) stays in its register, because the kind at each use is read from the
+  dataflow state rather than fixed per slot. A tight integer loop is now about
+  130x faster than the interpreter (about 5x faster than the previous
+  stack-slot JIT), and the differential suite still proves the compiled body
+  identical to the interpreter for every accepted proto.
+- The `oskel build` CTest runners (`tests/build_binary.cmake`,
+  `tests/build_error.cmake`) name their output after the fixture's stem. Every
+  case wrote the same `oskel_build_output` file, so under a parallel `ctest`
+  two cases could overwrite each other's binary and a spurious
+  "the generated binary disagrees with the VM" failure appeared (the
+  `mandelbrot` case was the usual victim). The names are now unique per case.
+- `ITER` now yields a map's paired value directly. The opcode took two new
+  operands: `Instruction::d` is the register that receives the value (`-1` when
+  the loop has no value variable) and `Instruction::e` is the done flag, which
+  used to overload `Instruction::jump` (backlog §1.2). `jump` is now a jump
+  target only. `for k, v in map` no longer calls the hidden `$mapValue` helper
+  (retired from the hosted engine and the AOT runtime), so the value form is one
+  `ITER` per turn instead of an `ITER` plus a call.
+- The `oskel build` CTest cases now run the same fixture list on Windows as on
+  Linux. Windows registered only two cases (`build_binary` and
+  `build_binary_deep_recursion`) against Linux's ten, so the Windows PE path was
+  exercised by two programs while the shared AOT backend was covered by ten —
+  the gap the 1 MiB stack reserve slipped through. The runners
+  (`tests/build_binary.cmake`, `tests/build_error.cmake`,
+  `tests/aot_runtime_error.cmake`) are now portable: the Windows output keeps
+  its `.exe` suffix and the static-link `ldd` check is Linux-only. The
+  Windows-only `tests/build_binary_pe.cmake` is gone, and one list registers
+  every case on both hosts.
 - The AOT backend compares two arrays or maps by content, like the hosted
   engine, instead of by pointer identity. `[1, 2] == [1, 2]` is now true in a
   compiled binary, and `in` over an array of arrays matches the VM. The
@@ -98,6 +217,41 @@ may change between minor versions.
 
 ### Fixed
 
+- AOT bare metal: the trampoline now sets `CR4.OSFXSR` and `CR4.OSXMMEXCPT`
+  (bits 9 and 10) in addition to PAE, so the SSE instructions the float path
+  emits execute instead of raising `#UD`. With no IDT installed that fault was
+  a triple fault, so any program doing float *arithmetic* (`1.0 / 3.0`, a
+  `float` comparison) hung the machine silently, while printing a float
+  *literal* worked because it only exercises the integer `dtoa`. The 64-bit
+  entry point also brings COM1 up (mask interrupts, divisor 1 for 115200 baud,
+  8N1, enable the FIFO) before the program runs, so a real 16550 transmits
+  rather than only QEMU's emulated one. `tests/bare_metal_test.cpp` pins both:
+  a structural check for the CR4 sequence and an end-to-end float-arithmetic
+  boot under QEMU.
+- AOT: `+` on two arrays now concatenates in a compiled binary. The hosted
+  engine builds a fresh array with the left items followed by the right items
+  and leaves both operands unchanged (`docs/language.md`: "concatenation of
+  strings or arrays"; `tests/06_operators.oskl` asserts `[1] + [2] == [1, 2]`),
+  but the AOT `oskel_arith` rejected the pair as "unsupported operand types", so
+  a program that ran on the VM exited 70 as an AOT binary — a mis-compiled
+  image, which the backend must never emit. `oskel_arith` now dispatches `+` on
+  two arrays to the new `oskel_array_concat` helper (one `ADD` path, no new
+  opcode), and a `tests/build_binary` fixture pins the binary against the VM on
+  Linux and Windows.
+- A compiled binary printed `0 1 2` for `for c in "abc"` instead of `a b c`.
+  The `str` branch of `oskel_iter_next` built the character but fell through
+  into the `range` block, which overwrote `rax:rdx` with the cursor index; a
+  missing `jmp` after the string was built. The VM was correct, so this was an
+  AOT-only divergence, now pinned by `tests/freestanding_test.cpp`.
+- A `struct` name and an import binding the same name no longer coexist
+  silently. `struct Point { ... }` plus `import std.math as Point;` used to
+  leave both alive: `Point { ... }` stayed a struct literal while
+  `Point.sqrt(9.0)` resolved to the alias, so the winner was undefined. The
+  collision is now a compile error in both source orders and for every import
+  form (alias, wildcard, selective), reported by `recordImportBinding` within a
+  chunk and by `compileStructDecl` across REPL entries. A struct is
+  compile-time metadata, not a value binding, so it is not covered by the
+  "a local `let`/`var`/`fn` wins over an import" rule.
 - A Windows AOT binary was killed with no message when a program recursed a few
   thousand frames with a non-trivial frame. The PE emitter reserved only 1 MiB
   of stack (the Windows default) while the AOT runtime has no call-depth guard,

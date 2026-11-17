@@ -40,13 +40,21 @@ struct Target {
   Os os = Os::Linux;
   Abi abi = Abi::SysV;
 
-  // The targets with a backend today: Linux x86-64 (direct syscalls) and
-  // Windows x86-64 (kernel32 through the Microsoft x64 ABI). Both share the
-  // x86-64 lowering; only the entry prelude differs, because the two systems
-  // reach the outside world differently.
+  // The targets with a backend today: Linux x86-64 (direct syscalls), Windows
+  // x86-64 (kernel32 through the Microsoft x64 ABI) and bare metal x86-64
+  // (multiboot, no operating system). All three share the x86-64 lowering and
+  // the embedded runtime; only the entry prelude differs, because each reaches
+  // the outside world differently.
   static constexpr Target linuxX64() { return Target{}; }
   static constexpr Target winX64() {
     return Target{Arch::X86_64, Os::Windows, Abi::Win64};
+  }
+  // Freestanding bare metal: the generated image is a multiboot kernel the
+  // boot loader (QEMU `-kernel`, GRUB, Limine) loads and enters directly. It
+  // shares the System V x86-64 lowering with Linux; the prelude speaks to the
+  // serial port instead of the kernel.
+  static constexpr Target bareMetalX64() {
+    return Target{Arch::X86_64, Os::Freestanding, Abi::SysV};
   }
 };
 
@@ -101,6 +109,7 @@ inline bool isSupportedTarget(const Target& target) {
   if (target.arch != Arch::X86_64) return false;
   if (target.os == Os::Linux && target.abi == Abi::SysV) return true;
   if (target.os == Os::Windows && target.abi == Abi::Win64) return true;
+  if (target.os == Os::Freestanding && target.abi == Abi::SysV) return true;
   return false;
 }
 
@@ -111,6 +120,66 @@ inline void requireSupportedTarget(const Target& target) {
   if (!isSupportedTarget(target)) {
     throw std::invalid_argument("native: no backend for target " + targetName(target) +
                                 " (supported: " + targetName(Target::linuxX64()) + ", " +
-                                targetName(Target::winX64()) + ")");
+                                targetName(Target::winX64()) + ", " +
+                                targetName(Target::bareMetalX64()) + ")");
+  }
+}
+
+// How the AOT backend terminates an image (PHASE 7f.3).
+//
+// The lowering and the embedded runtime are shared; the mode only decides how
+// the generated code reaches the outside world and how the image is closed:
+//
+//   - Freestanding: the default today. The image carries its own runtime and
+//     speaks to the kernel (Linux syscalls), kernel32 (Windows) or the serial
+//     port (bare metal) directly. No libc, no linker, no external symbol: an
+//     `extern "C"`/`native fn` binding is resolved from a curated stub or the
+//     build fails. `ldd` reports "not a dynamic executable".
+//   - Hosted: an object file linked against the host C library, so an
+//     `extern "C"` symbol resolves to the real C function at link time. This is
+//     the mode that makes FFI work, and the one `oskelc` is documented to be.
+//     The image depends on libc, so it is *not* freestanding.
+//
+// The mode is a deployment choice, never language syntax: the same source
+// compiles in either mode, and the choice lives on the command line.
+enum class LinkMode : std::uint8_t {
+  Freestanding,
+  Hosted,
+};
+
+inline const char* linkModeName(LinkMode mode) {
+  switch (mode) {
+    case LinkMode::Freestanding:
+      return "freestanding";
+    case LinkMode::Hosted:
+      return "hosted";
+  }
+  return "unknown";
+}
+
+// Whether the (target, mode) pair has a backend today. Freestanding is
+// implemented for all three targets; hosted needs a C toolchain to link against
+// and is Linux x86-64 only for now (Windows and macOS hosted link differently
+// and are later work), so the CLI can report the unsupported pair instead of
+// emitting bytes it cannot close.
+inline bool isSupportedLinkMode(const Target& target, LinkMode mode) {
+  if (!isSupportedTarget(target)) return false;
+  switch (mode) {
+    case LinkMode::Freestanding:
+      return true;
+    case LinkMode::Hosted:
+      return target.os == Os::Linux && target.arch == Arch::X86_64;
+  }
+  return false;
+}
+
+// Fails loudly instead of emitting bytes for a (target, mode) pair the backend
+// cannot close. A caller that reaches here with an unsupported pair is a
+// configuration error, not a reason to silently pick another mode.
+inline void requireSupportedLinkMode(const Target& target, LinkMode mode) {
+  if (!isSupportedLinkMode(target, mode)) {
+    throw std::invalid_argument(
+        std::string("native: no ") + linkModeName(mode) + " backend for target " +
+        targetName(target));
   }
 }

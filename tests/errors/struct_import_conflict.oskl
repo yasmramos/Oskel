@@ -1,0 +1,8 @@
+// expect-exit: 65
+// A `struct` name and an import binding the same name must not coexist
+// silently: `sqrt { ... }` stays a struct literal while `sqrt.member` would
+// fail only at run time, so the collision is a compile error (backlog §3.5).
+
+struct sqrt { x: int; }
+import mods.a as sqrt;
+print(sqrt(4));

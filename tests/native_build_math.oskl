@@ -7,9 +7,9 @@
 // `std::sqrt` bit for bit). This program runs on the development VM and builds
 // to a native binary that must agree byte for byte.
 //
-// The transcendentals (`pow`, `sin`, ...) are not stubbed: a hand-written
-// implementation would not reproduce libm's last bit, so this fixture avoids
-// them and `tests/native_build_math_native_error.oskl` covers the rejection.
+// The libm primitives (`pow`, `sin`, `cos`, `tan`, `log`, `exp`) resolve from
+// the embedded musl ports (PHASE 7c.5b.4), and `tests/native_build_native_error.oskl`
+// covers a `native fn` that is still unresolved.
 
 // Both import forms, so the qualified `std.math.sqrt(...)` below and the bare
 // members both resolve.

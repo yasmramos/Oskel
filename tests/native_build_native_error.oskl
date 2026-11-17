@@ -1,0 +1,8 @@
+// Fixture for the `oskel build` native-fn error test (tests/build_error.cmake).
+//
+// `clock` is a `native fn` the development VM resolves through its host registry
+// (a host builtin), so this program runs on the VM. The AOT backend has no host,
+// and `clock` has no curated stub, so `oskel build` must fail with the dedicated
+// message instead of the generic unassigned-global one a typo produces.
+native fn clock(): double;
+print(clock());

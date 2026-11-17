@@ -658,6 +658,11 @@ void CodeGen::testAhImm8(std::uint8_t value) {
   emitByte(value);
 }
 
+void CodeGen::testAlImm8(std::uint8_t value) {
+  emitByte(0xA8);  // A8 ib: test al, imm8
+  emitByte(value);
+}
+
 void CodeGen::movqToXmm(int xmm, X64Reg src) {
   // 66 REX.W 0F 6E /r: reg field = xmm (REX.R), rm field = GPR (REX.B).
   std::uint8_t d = static_cast<std::uint8_t>(xmm - kXmmBase);
@@ -812,6 +817,14 @@ void CodeGen::ud2() {
   emitByte(0x0F);
   emitByte(0x0B);
 }
+
+void CodeGen::cli() { emitByte(0xFA); }
+
+void CodeGen::hlt() { emitByte(0xF4); }
+
+void CodeGen::outDxAl() { emitByte(0xEE); }
+
+void CodeGen::inDxAl() { emitByte(0xEC); }
 
 void CodeGen::emitBytes(const std::uint8_t* data, std::size_t length) {
   // Byte-at-a-time on purpose: raw payloads must advance the emission

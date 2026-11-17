@@ -1,0 +1,7 @@
+// Test fixture: a module that declares a `native fn` the AOT backend has no
+// curated stub for (`clock` is a host builtin). `import modules.hostclock;`
+// makes it available as `modules.hostclock.clock`. The VM resolves it through
+// its host registry; the AOT backend must reject a qualified call to it
+// (PHASE 7f.2).
+
+native fn clock(): double;

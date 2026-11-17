@@ -1,21 +1,38 @@
-# End-to-end test for `oskel build` (PHASE 7d): compile a .oskl program to a
+# End-to-end test for `oskel build` (PHASE 7d/7e): compile a .oskl program to a
 # native binary and run it.
 #
-# Registered by CMakeLists.txt on Linux x86-64 only (the AOT backend targets
-# x86_64-linux-sysv). Expects:
+# Registered by CMakeLists.txt on every host the AOT backend targets (Linux
+# x86-64 and Windows x86-64). Expects:
 #   -DOSKEL_EXE=<path to the oskel executable>
 #   -DOSKEL_SCRIPT=<the .oskl file to build>
 #
 # It asserts:
 #   1. `oskel build` exits 0 and writes the requested output,
 #   2. the generated binary runs and prints exactly the VM's output,
-#   3. the binary is statically linked (no dynamic dependencies).
+#   3. the binary is statically linked (no dynamic dependencies) -- a check the
+#      ELF target can make with `ldd` and the PE target cannot, so it is guarded
+#      by `UNIX`. The PE is static by construction (kernel32.dll is its only
+#      import), so nothing is lost there.
 
 if(NOT DEFINED OSKEL_EXE OR NOT DEFINED OSKEL_SCRIPT)
   message(FATAL_ERROR "build_binary.cmake requires OSKEL_EXE and OSKEL_SCRIPT")
 endif()
 
-set(out "${CMAKE_CURRENT_BINARY_DIR}/oskel_build_output")
+# The output keeps the host's executable suffix: the Windows loader appends
+# `.exe` when a command names an extension-less path, so the binary must be
+# written and launched under the same name the platform expects. The script runs
+# under `cmake -P`, where `CMAKE_EXECUTABLE_SUFFIX` is not populated, so the
+# suffix is derived from the host name instead.
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
+  set(exe_suffix ".exe")
+else()
+  set(exe_suffix "")
+endif()
+# Every case registered from this runner would otherwise share one output name
+# and overwrite each other under a parallel `ctest`, so the fixture's stem is
+# part of the name.
+get_filename_component(script_stem "${OSKEL_SCRIPT}" NAME_WE)
+set(out "${CMAKE_CURRENT_BINARY_DIR}/oskel_build_output_${script_stem}${exe_suffix}")
 file(REMOVE "${out}")
 
 execute_process(
@@ -60,14 +77,18 @@ if(NOT run_stdout STREQUAL vm_stdout)
     "--- vm ---\n${vm_stdout}\n--- binary ---\n${run_stdout}")
 endif()
 
-# A freestanding binary must not depend on a shared runtime.
-execute_process(
-  COMMAND ldd "${out}"
-  RESULT_VARIABLE ldd_exit
-  OUTPUT_VARIABLE ldd_out
-  ERROR_VARIABLE ldd_err
-)
-set(ldd_text "${ldd_out}${ldd_err}")
-if(NOT ldd_text MATCHES "not a dynamic executable|statically linked")
-  message(FATAL_ERROR "the generated binary is dynamically linked:\n${ldd_text}")
+# A freestanding ELF binary must not depend on a shared runtime. The PE target
+# has no `ldd` and needs none: a PE that imports only kernel32.dll is static by
+# construction.
+if(UNIX)
+  execute_process(
+    COMMAND ldd "${out}"
+    RESULT_VARIABLE ldd_exit
+    OUTPUT_VARIABLE ldd_out
+    ERROR_VARIABLE ldd_err
+  )
+  set(ldd_text "${ldd_out}${ldd_err}")
+  if(NOT ldd_text MATCHES "not a dynamic executable|statically linked")
+    message(FATAL_ERROR "the generated binary is dynamically linked:\n${ldd_text}")
+  endif()
 endif()

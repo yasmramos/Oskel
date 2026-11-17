@@ -210,6 +210,10 @@ class CodeGen {
   void cmpImm32(X64Reg lhs, std::int32_t value);  // cmp r/m64, imm32
   void testReg(X64Reg reg);
   void testImm32(X64Reg reg, std::int32_t value);  // test r/m64, imm32 (F7 /0)
+  // `test al, imm8` (A8 ib): the 8-bit form the serial prelude needs to poll
+  // the 16550 line-status register, whose ready bit lives in the low byte.
+  // The symmetric `testAhImm8` below serves the x87 status word.
+  void testAlImm8(std::uint8_t value);
   void setcc(Jcc cc, X64Reg dst);          // setcc r/m8: dst low byte = 0/1
   void movzx(X64Reg dst, X64Reg src);      // movzx r64, r/m8 (zero-extend)
   // movzx r64, byte [base+disp]: loads one byte and zero-extends it. The
@@ -243,6 +247,17 @@ class CodeGen {
   void syscallInsn();
   void retInsn();
   void ud2();
+
+  // Privileged and port-I/O instructions the bare-metal prelude needs. A
+  // kernel has no libc to reach the hardware with, so these are the only way
+  // to talk to a device: `cli` masks interrupts, `hlt` stops the CPU until the
+  // next interrupt (an exit with no OS to return to is a `cli; hlt` loop), and
+  // `out dx, al` / `in al, dx` are the x86 port-I/O pair the 16550 serial port
+  // is driven through. Each is one instruction, so they keep the 1:1 budget.
+  void cli();       // FA: clear interrupt flag
+  void hlt();       // F4: halt until the next interrupt
+  void outDxAl();   // EE: write al to the I/O port in dx
+  void inDxAl();    // EC: read the I/O port in dx into al
 
   // Raw bytes, used by the runtime blob and constant payloads.
   void emitBytes(const std::uint8_t* data, std::size_t length);

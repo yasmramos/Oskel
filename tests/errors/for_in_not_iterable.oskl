@@ -1,0 +1,7 @@
+// expect-exit: 70
+// `for-in` needs an iterable (array, string, map or range); any other value is
+// a runtime error naming its type, not a silent no-op.
+
+for x in 5 {
+  print(x);
+}

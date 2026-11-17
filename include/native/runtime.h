@@ -122,13 +122,9 @@ struct AotRuntimeHandles {
   // highest address) and item `i` sits at `first - 16 * i`. The result is an
   // ordinary `Array` value, exactly like the VM's packed `rest` binding.
   CodeGen::Label packRest;   // AotValue oskel_pack_rest(AotValue* first, long count)
-  // The hidden `$mapValue` helper (`for k, v in map`), with the proto
-  // convention. It returns the value paired with a key, so the key/value loop
-  // form lowers to an ordinary call.
-  CodeGen::Label mapValueBuiltin;  // AotValue oskel_builtin_map_value(AotValue* args, long argc, AotClosure* self)
-  // The remaining hidden helpers the compiler emits for PHASE 6.5 features.
-  // They use the proto convention too and are seeded into their global slots
-  // like `print` and `$mapValue`, so each one is an ordinary call.
+  // The hidden helpers the compiler emits for PHASE 6.5 features. They use the
+  // proto convention and are seeded into their global slots like `print`, so
+  // each one is an ordinary call.
   // `$isError` (try/catch) reports whether a value is an error; the AOT runtime
   // has no error values yet, so it is always false and the success path of
   // `try`/`x catch y` runs (a real failure still exits 70).
@@ -191,6 +187,26 @@ struct AotRuntimeHandles {
   CodeGen::Label expBuiltin;  // AotValue oskel_builtin_exp(AotValue* args, long argc, AotClosure* self)
   CodeGen::Label logBuiltin;  // AotValue oskel_builtin_log(AotValue* args, long argc, AotClosure* self)
   CodeGen::Label powBuiltin;  // AotValue oskel_builtin_pow(AotValue* args, long argc, AotClosure* self)
+  // The trigonometric builtins (PHASE 7c.5b.4b): `sin`, `cos` and `tan`. Same
+  // shape as the exp/log/pow wrappers; the embedded routines reduce the
+  // argument with `__rem_pio2` and match the hosted engine to 1 ulp.
+  CodeGen::Label sinBuiltin;  // AotValue oskel_builtin_sin(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label cosBuiltin;  // AotValue oskel_builtin_cos(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label tanBuiltin;  // AotValue oskel_builtin_tan(AotValue* args, long argc, AotClosure* self)
+  // Array concatenation (`a + b` on two arrays), the array twin of `concat`:
+  // allocates a fresh array of `lenA + lenB` items and copies both runs in,
+  // leaving the operands unchanged. It is the hosted `ops::binary` `Tok::Plus`
+  // case for two arrays, used by `oskel_arith` for `Add`.
+  CodeGen::Label arrayConcat;  // AotValue oskel_array_concat(AotValue a, AotValue b)
+  // The remaining public builtins (PHASE 7c.5b.5): `range`, `assertEq` and
+  // `exit`. `range` builds the same `Range` value as the hidden `$range` helper
+  // (one bound defaults the start to 0); `assertEq` compares two values with the
+  // shared `oskel_compare` and, on a mismatch, renders the same
+  // "<msg>: expected A, got B" text the hosted builtin produces; `exit` leaves
+  // through the entry prelude's `oskel_exit`, so it never returns.
+  CodeGen::Label rangeFnBuiltin;   // AotValue oskel_builtin_range_fn(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label assertEqBuiltin;  // AotValue oskel_builtin_assert_eq(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label exitBuiltin;      // AotValue oskel_builtin_exit(AotValue* args, long argc, AotClosure* self)
 };
 
 inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
@@ -210,7 +226,8 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel()
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel()
   };
 }
 
