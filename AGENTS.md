@@ -156,6 +156,16 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   hard-coding the path. `dpkg-deb`/`pkgbuild`/`hdiutil` are on their images;
   `rpmbuild` is installed on demand and the `.rpm` is skipped, not failed, if it
   cannot be.
+- `bindgen` (the C binding generator, `docs/bindgen.md`) is a second executable
+  shipped beside `oskel`. It is standalone — it links no engine code — and its
+  sources live under `tools/`, *outside* the `src/*.cpp` glob, so it is never
+  pulled into `oskel`; `nm build/oskel | grep bindgen` must stay empty. Every
+  packaging format must ship it (`/usr/bin/bindgen`, `/usr/local/bin/bindgen`,
+  `{app}\bin\bindgen.exe`) or the three platforms drift apart. It reuses
+  `isKnownTypeName`/`isIntegerTypeName` from `src/ast.h` so the vocabulary it
+  emits cannot drift from the compiler's; keep that the single source of truth.
+  It must never emit a declaration the compiler rejects — an unsupported type
+  becomes a `// skipped:` comment, and a C variadic is written commented out.
 
 ## Commit authorship
 
