@@ -783,11 +783,20 @@ Slices, each independently shippable:
       `tests/codegen_test.cpp` covers the new encodings byte for byte, and
       `tests/freestanding_test.cpp` prints doubles and floats from a real static
       ELF.
-    - **7c.1d.2** — `**` on floats. `std::pow` is *correctly rounded* (glibc,
-      ~0.5 ulp) and the hosted engine calls it; an x87 `2^(y·log2 x)` sequence
-      (`fyl2x`/`f2xm1`/`fscale`) does *not* reproduce it in the last digit, so
-      matching `std::pow` needs a correctly rounded implementation (large).
-      Deferred pending a fidelity decision.
+    - **7c.1d.2** (done) — `**` on floats. `std::pow` is *correctly rounded*
+      (glibc, ~0.5 ulp) and the hosted engine calls it. `oskel_pow` now takes
+      the same int/float/double promotion as `ops::binary`: int/int with a
+      non-negative exponent keeps the wrapping integer loop (`intPow`), and
+      every other numeric pair (a float/double operand, or a negative exponent)
+      converts to binary64, calls the embedded musl `pow` already used by the
+      `pow` builtin, and re-tags the result with `makeNumeric`'s rank rule —
+      binary32 only when at least one operand is a float and none is a double,
+      binary64 otherwise. The result type is decided *before* the call, since
+      `mathlib::pow` clobbers the volatile registers holding the operand tags.
+      `mathlib::pow` is correctly rounded to under 1 ulp, so the printed values
+      match glibc on the fixtures. `tests/lower_test.cpp` runs the four
+      promotion cases and `tests/native_build_pow.oskl` checks a real static
+      ELF against the VM, `type` included.
     - **7c.2a** (done) — globals. `GETGLOBAL`/`SETGLOBAL` lower to a flat
       `AotValue` table the chunk allocates from the arena once at entry (its
       base lives in r15, a callee-saved register no helper touches, so no
@@ -1281,11 +1290,14 @@ Slices, each independently shippable:
     lowering and the embedded runtime are shared with Linux unchanged. Verified
     in `tests/bare_metal_test.cpp`: the structural checks always run, and the
     end-to-end boot (real serial stdout and exit code under
-    `qemu-system-x86_64 -kernel`) runs when QEMU is on `PATH`. CI installs QEMU
-    on the Linux runners and sets `OSKEL_REQUIRE_QEMU`, which turns a missing
-    binary into a test failure rather than a silent skip, so the boot path
-    cannot disappear from the suite unnoticed; on a developer box without the
-    variable the boot tests skip, and the structural checks still run. The
+    `qemu-system-x86_64 -kernel`) runs whenever QEMU is on `PATH`. The image is
+    x86-64, but QEMU emulates it on any host, so the boot tests run on Linux,
+    Windows and macOS alike -- the arm64 macOS image included; the harness picks
+    its temp directory and exit-code decoding per platform. CI installs QEMU on
+    every runner and sets `OSKEL_REQUIRE_QEMU`, which turns a missing binary
+    into a test failure rather than a silent skip, so the boot path cannot
+    disappear from the suite unnoticed; on a developer box without the variable
+    the boot tests skip, and the structural checks still run. The
     `CodeGen` gained four single-opcode primitives (`cli`, `hlt`, `out dx, al`,
     `in al, dx`) plus `test al, imm8`, each byte-checked in
     `tests/codegen_test.cpp`.
@@ -1293,6 +1305,12 @@ Slices, each independently shippable:
   dispatch (bridge toward the speculative work in
   `docs/ARCHITECTURE_ANALYSIS.md`); other targets (macOS via libc or stubs;
   ARM64 bare metal).
+- Deferred: the bare-metal interrupt path (timer, PIC remap, a returning
+  handler). The bare-metal prelude reports CPU *exceptions* and halts; it does
+  not take or return from *interrupts*, so no device can be serviced. The
+  design for the first slice -- PIC remap, PIT, `sti` and `iretq`, two new
+  `CodeGen` primitives, and the QEMU test that proves the return -- is in
+  `docs/bare-metal-interrupts-design.md`. No code is written yet.
 - Afterwards, LuaJIT's JIT as a reference (see PHASE 8 below).
 - **In the tree now**: the `Target` descriptor (`include/native/target.h`) and
   the x86-64 instruction emitter (`include/native/codegen.h`,

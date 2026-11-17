@@ -11,12 +11,17 @@ may change between minor versions.
 
 ### Changed
 
-- **Bare-metal boot tests now run in CI instead of skipping.** The
-  `bare_metal_test` end-to-end cases boot the kernel under
+- **Bare-metal boot tests now run in CI instead of skipping, on all three
+  platforms.** The `bare_metal_test` end-to-end cases boot the kernel under
   `qemu-system-x86_64`, but CI never installed the package, so `haveQemu()`
   returned false and the boot, float and CPU-fault tests silently skipped —
-  the new IDT exception handler was never exercised on a runner. The Linux
-  jobs now install `qemu-system-x86` and export `OSKEL_REQUIRE_QEMU`, which
+  the new IDT exception handler was never exercised on a runner. The boot tests
+  were also compiled out on Windows and macOS, where the harness assumed POSIX
+  (`/tmp`, `chmod`, `WEXITSTATUS`, `command -v`). The compile guard now covers
+  the three platforms, the harness picks its temp directory, QEMU probe,
+  exit-code decoding and null device per platform, and the image stays x86-64
+  because QEMU emulates it anywhere (the arm64 macOS image included). Every CI
+  job installs QEMU (apt/brew/choco) and exports `OSKEL_REQUIRE_QEMU`, which
   makes a missing binary a test failure rather than a skip; a developer box
   without the variable still skips the boot tests and runs the structural
   ones. No product code changes.
@@ -68,6 +73,16 @@ may change between minor versions.
   CMOS real-time clock in a bare-metal kernel — the last converting the RTC's
   BCD/binary fields to a Unix timestamp in assembly, so `std.datetime.now()`
   works even with no OS and no libc.
+
+- **Design: the bare-metal interrupt path.** `docs/bare-metal-interrupts-design.md`
+  proposes the first slice of the bare-metal OS path: remap the 8259 PIC, program
+  the 8254 PIT, unmask only IRQ0, add a handler that acknowledges the PIC and
+  returns with `iretq` (kept separate from the fatal fault handler, which still
+  reports and halts), and enable interrupts with `sti` only after the IDT and the
+  PIC are ready. It adds two single-instruction `CodeGen` primitives (`sti`,
+  `iretq`) and no token, node, parser rule, opcode, VM or compiler change, and it
+  is proven by a QEMU test whose three ticks only happen if the handler returned.
+  Documentation only; no code yet.
 
 - **Bare-metal CPU-exception handler** (PHASE 7g). The entry point installs
   an interrupt descriptor table (256 gates, one stub per vector) before the
@@ -276,6 +291,19 @@ may change between minor versions.
 
 ### Fixed
 
+- AOT: `**` now accepts a float/double operand or a negative exponent, like the
+  hosted engine. `oskel_pow` only lowered int/int with a non-negative exponent;
+  every other numeric pair failed with "unsupported operand types for '**'", so
+  `2 ** 0.5`, `2.0 ** 3`, `2 ** -1` and `2.0f ** 3.0f` ran in the VM but not in
+  a compiled binary — a VM/AOT divergence. The helper now takes the same
+  int/float/double promotion as `ops::binary`: int/int with a non-negative
+  exponent keeps the wrapping integer loop, and every other numeric pair
+  converts to binary64, calls the embedded musl `pow` already used by the `pow`
+  builtin, and re-tags the result with `makeNumeric`'s rank rule (binary32 only
+  when at least one operand is a float and none is a double). The result type is
+  decided before the call, since the embedded `pow` clobbers the volatile
+  registers. Covered by `tests/lower_test.cpp` and a `tests/build_binary`
+  fixture (`tests/native_build_pow.oskl`).
 - AOT: a negative string index now counts code points from the end, like the
   hosted engine. `"abc"[-1]` is `"c"` and `"héllo"[-1]` is `"o"` in the VM, but
   the string branch of `oskel_table_get` passed the raw index straight to
