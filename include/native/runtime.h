@@ -207,6 +207,14 @@ struct AotRuntimeHandles {
   CodeGen::Label rangeFnBuiltin;   // AotValue oskel_builtin_range_fn(AotValue* args, long argc, AotClosure* self)
   CodeGen::Label assertEqBuiltin;  // AotValue oskel_builtin_assert_eq(AotValue* args, long argc, AotClosure* self)
   CodeGen::Label exitBuiltin;      // AotValue oskel_builtin_exit(AotValue* args, long argc, AotClosure* self)
+  // Bound array methods (PHASE 7c.3c). `a.push`/`a.pop` on an array yield a
+  // closure that captured its receiver in one upvalue cell, exactly like the
+  // hosted `bindArray`. `bindArrayMethod` builds that closure from the receiver
+  // (rdi:rsi) and a selector (rdx); the two method bodies are ordinary builtins
+  // with the proto convention, so a `CALL` reaches them through `oskel_call`.
+  CodeGen::Label bindArrayMethod;  // AotValue oskel_bind_array_method(AotValue arr, long which)
+  CodeGen::Label arrayPushMethod;  // AotValue oskel_builtin_array_push(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label arrayPopMethod;   // AotValue oskel_builtin_array_pop(AotValue* args, long argc, AotClosure* self)
 };
 
 inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
@@ -227,7 +235,8 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel()
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel()
   };
 }
 

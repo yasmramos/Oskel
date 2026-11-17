@@ -181,8 +181,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 6. AOT backend (`src/native/lower.cpp`, `src/native/runtime.cpp`)
 
-1. **[P0]** VM/AOT divergence in collection methods: `arr.push`, `map.keys`,
-   `str.upper`, ... work in the VM and fail in AOT with "no such member".
+1. **[P0]** VM/AOT divergence in collection methods: `arr.push` and `arr.pop`
+   now bind in AOT (PHASE 7c.3c), but `map.keys`, `str.upper`, and the rest of
+   the array/string/map methods still work in the VM and fail in AOT with
+   "no such member". The binding mechanism (receiver captured in a closure
+   upvalue, method body reached through `oskel_call`) generalises to the rest.
 2. **[P0] [done]** VM/AOT divergence in structural equality: `[1,2] == [1,2]`
    is true in the VM (content) and false in AOT (identity). The equality helper
    in `oskel_compare` now descends into arrays and maps (equal length, equal
