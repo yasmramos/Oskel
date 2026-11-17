@@ -617,6 +617,27 @@ static void testExecIntDivModPow() {
   checkInt(mk(OpCode::MOD, INT64_MIN, -1), 0, "exec: INT64_MIN % -1 == 0 (int)");
 }
 
+static void testExecFloatPow() {
+  auto mk = [](Value x, Value y) {
+    return makeProto({instr(OpCode::LOADK, 0, 0), instr(OpCode::LOADK, 1, 1),
+                      instr(OpCode::POW, 0, 0, 1), instr(OpCode::HALT)},
+                     {x, y}, 2);
+  };
+  // An int base with a negative exponent promotes to double, like the hosted
+  // `ops::binary` (which falls to `std::pow`).
+  checkDouble(mk(Value(static_cast<int64_t>(2)), Value(static_cast<int64_t>(-1))), 0.5,
+              "exec: 2 ** -1 == 0.5 (double)");
+  checkDouble(mk(Value(static_cast<int64_t>(2)), Value(2.0)), 4.0,
+              "exec: 2 ** 2.0 == 4.0 (double)");
+  checkDouble(mk(Value(4.0), Value(0.5)), 2.0, "exec: 4.0 ** 0.5 == 2.0 (double)");
+  // float/float stays binary32.
+  checkFloat(mk(Value::fromFloat(2.0f), Value::fromFloat(3.0f)),
+             static_cast<double>(8.0f), "exec: 2.0f ** 3.0f == 8.0f (float)");
+  // A float with a double promotes to double.
+  checkDouble(mk(Value::fromFloat(2.0f), Value(3.0)), 8.0,
+              "exec: 2.0f ** 3.0 == 8.0 (double)");
+}
+
 static void testExecShifts() {
   auto mk = [](OpCode op, std::int64_t x, std::int64_t y) {
     return makeProto({instr(OpCode::LOADK, 0, 0), instr(OpCode::LOADK, 1, 1),
@@ -1144,6 +1165,7 @@ int main() {
   testExecFloatArithmetic();
   testExecFloatMod();
   testExecIntDivModPow();
+  testExecFloatPow();
   testExecShifts();
   testExecFloatComparisons();
   testExecFloatNegate();

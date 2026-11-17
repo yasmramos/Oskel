@@ -469,8 +469,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    compiler's const folding warns; the runtime does not warn. Make the runtime
    consistent with the compile-time policy.
 2. **[P1]** `binary` `StarStar` with an int base and a negative exponent falls
-   to `std::pow` and yields a double, not an int. Decide and document the type
-   rule.
+   to `std::pow` and yields a double, not an int. The type rule is now
+   documented and implemented in both engines (PHASE 7c.1d.2): rank is the
+   widest operand's, so a negative int exponent yields a double. Reconsider
+   whether it should stay an int (the rule is settled, the choice is not).
 3. **[P1]** `binary` `Shl`/`Shr` reject `b < 0 || b > 63`; verify the same rule
    in the AOT path.
 4. **[P2]** `indexGet` for a map with a missing key returns `nil` (JS-style)

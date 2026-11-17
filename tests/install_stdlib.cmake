@@ -6,6 +6,7 @@
 # Registered by CMakeLists.txt; expects:
 #   -DOSKEL_SOURCE_DIR=<repository root>
 #   -DOSKEL_BUILD_DIR=<cmake build directory>
+#   -DOSKEL_EXE_SUFFIX=<CMAKE_EXECUTABLE_SUFFIX, "" or ".exe">
 #   -DOSKEL_SCRIPT=<a .oskl file that imports std.math and exits 0>
 
 if(NOT DEFINED OSKEL_SOURCE_DIR OR NOT DEFINED OSKEL_BUILD_DIR OR NOT DEFINED OSKEL_SCRIPT)
@@ -32,6 +33,15 @@ if(NOT EXISTS "${prefix}/share/oskel/std/math.oskl")
   message(FATAL_ERROR
     "the installed tree is missing share/oskel/std/math.oskl; the standard "
     "library is not being installed")
+endif()
+
+# The binding generator ships beside the engine; a packaging format that
+# forgot it would drift from the others. `EXISTS` does not append the platform
+# executable suffix, so CMake passes it in.
+if(NOT EXISTS "${prefix}/bin/bindgen${OSKEL_EXE_SUFFIX}")
+  message(FATAL_ERROR
+    "the installed tree is missing bin/bindgen${OSKEL_EXE_SUFFIX}; the binding "
+    "generator is not being installed")
 endif()
 
 # Run the installed binary from an unrelated directory, so the working

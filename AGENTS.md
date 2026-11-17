@@ -41,10 +41,12 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   a new example or test needs `cmake -S . -B build` again before `ctest` picks
   it up (the build alone will not).
 - The bare-metal boot tests need `qemu-system-x86_64` (`apt install
-  qemu-system-x86` on Debian/Ubuntu). Without it `bare_metal_test` skips the
-  end-to-end cases and runs only the structural ones; CI installs QEMU on the
-  Linux runners and sets `OSKEL_REQUIRE_QEMU`, which makes a missing binary a
-  failure. Reproduce CI locally with
+  qemu-system-x86` on Debian/Ubuntu, `brew install qemu` on macOS, `choco
+  install qemu` on Windows). Without it `bare_metal_test` skips the
+  end-to-end cases and runs only the structural ones; CI installs QEMU on every
+  runner and sets `OSKEL_REQUIRE_QEMU`, which makes a missing binary a failure.
+  QEMU emulates x86-64 on any host, so the boot tests run on all three
+  platforms, the arm64 macOS image included. Reproduce CI locally with
   `OSKEL_REQUIRE_QEMU=1 ctest` after installing the package.
 - `oskel build` prints lowering errors (unsupported builtins, unlowered
   opcodes) and exits 65 without writing a binary; it never emits a
@@ -87,7 +89,14 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   is read but never assigned" (exit 65) even when the function is unused. A
   module written over the portable surface behaves identically on the VM and
   under `oskel build`; `std/json.oskl` and `tests/native_build_json.oskl` are
-  the reference.
+  the reference, and `std/datetime.oskl` with `tests/native_build_datetime.oskl`
+  is a second one (it also exercises the `time()` wall clock, the one builtin
+  whose AOT binding differs per target).
+- `time()` (epoch seconds, an `int`) is bound as the `now` runtime handle on
+  every AOT path: syscall 201 on Linux, `time(NULL)` hosted, `GetSystemTimeAsFileTime`
+  on Windows (a kernel32 import), and the CMOS RTC in bare metal. `clock()`
+  stays monotonic and has no AOT binding. A `divUnsigned` in the AOT emitters
+  zeroes `rdx`, so a divisor must never live there.
 - The hosted image is an object plus a link (PHASE 7f.4), not a closed binary
   the emitter writes. `native/object.h` emits an ELF64 `ET_REL` object whose
   `.rela.text` carries one relocation per external reference (`R_X86_64_PLT32`
@@ -147,6 +156,16 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   hard-coding the path. `dpkg-deb`/`pkgbuild`/`hdiutil` are on their images;
   `rpmbuild` is installed on demand and the `.rpm` is skipped, not failed, if it
   cannot be.
+- `bindgen` (the C binding generator, `docs/bindgen.md`) is a second executable
+  shipped beside `oskel`. It is standalone — it links no engine code — and its
+  sources live under `tools/`, *outside* the `src/*.cpp` glob, so it is never
+  pulled into `oskel`; `nm build/oskel | grep bindgen` must stay empty. Every
+  packaging format must ship it (`/usr/bin/bindgen`, `/usr/local/bin/bindgen`,
+  `{app}\bin\bindgen.exe`) or the three platforms drift apart. It reuses
+  `isKnownTypeName`/`isIntegerTypeName` from `src/ast.h` so the vocabulary it
+  emits cannot drift from the compiler's; keep that the single source of truth.
+  It must never emit a declaration the compiler rejects — an unsupported type
+  becomes a `// skipped:` comment, and a C variadic is written commented out.
 
 ## Commit authorship
 

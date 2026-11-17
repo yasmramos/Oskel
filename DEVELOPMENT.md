@@ -90,6 +90,13 @@ is a small, self-contained cleanup.
   `native/elf.cpp` (no AsmJIT, no ELFIO). Links against musl static.
 - `oskel build` thin alias over `oskelc`
 
+A third, standalone binary ships alongside them: `bindgen`, the C binding
+generator (`docs/bindgen.md`). It reads a C header and writes an Oskel
+`extern "C"` module. It is a pure text transformation, so it does not link
+`oskel_lib` (or the runtime, the compiler, the VM or libffi): its sources live
+under `tools/` and are deliberately outside the `src/*.cpp` glob that builds the
+engine, so it can be built and shipped on its own.
+
 Boundary rule: src/compiler.* and src/native/* must not include
 interpreter.h, vm.h or jit/jit.h. Enforced by tests/check_compiler_boundary.cmake.
 
@@ -431,6 +438,26 @@ previous one.
   implement yet, so it behaves identically on the VM and under `oskel build`.
   See `docs/language.md` §12.9/§18, `tests/55_std_json.oskl` and the AOT
   fixture `tests/native_build_json.oskl`.
+- **Standard library: `std.datetime`** — **done**: a pure-Oskel module for civil
+  dates and wall-clock times. A `Date`/`DateTime` is an ordinary map built by
+  the exported constructor functions (`date`, `datetime`), so no new runtime
+  type, opcode or builtin is added beyond `time()` (below). It offers the
+  `days_from_civil` algorithm, epoch conversion, calendar arithmetic,
+  differences, components, a `strftime`-like `format` and ISO-8601
+  `parse`/`iso`/`isValid`/`tryParse`. The module is written over the portable
+  primitive surface, avoiding the collection/string methods and `pcall`/`error`
+  the AOT backend does not implement yet, so it behaves identically on the VM and
+  under `oskel build`. See `docs/language.md` §12.10/§18,
+  `tests/56_std_datetime.oskl` and the AOT fixture
+  `tests/native_build_datetime.oskl`.
+- **Builtin `time()` and the AOT wall clock** — **done**: `time()` returns the
+  seconds since the Unix epoch as an `int` (`clock()` stays monotonic and
+  untouched). The AOT runtime binds it as the `now` handle on every path — a
+  syscall on Linux, `time(NULL)` hosted, `GetSystemTimeAsFileTime` on Windows
+  (a new kernel32 import), and the CMOS real-time clock in a bare-metal kernel
+  (the RTC's BCD/binary fields converted to a Unix timestamp in assembly) — so
+  `std.datetime.now()`/`today()` work everywhere. See `docs/language.md` §12.4
+  and `tests/bare_metal_test.cpp` (`test_qemu_wall_clock`).
 
 ### PHASE 6.6 — FFI with C (1.0)
 
@@ -763,11 +790,20 @@ Slices, each independently shippable:
       `tests/codegen_test.cpp` covers the new encodings byte for byte, and
       `tests/freestanding_test.cpp` prints doubles and floats from a real static
       ELF.
-    - **7c.1d.2** — `**` on floats. `std::pow` is *correctly rounded* (glibc,
-      ~0.5 ulp) and the hosted engine calls it; an x87 `2^(y·log2 x)` sequence
-      (`fyl2x`/`f2xm1`/`fscale`) does *not* reproduce it in the last digit, so
-      matching `std::pow` needs a correctly rounded implementation (large).
-      Deferred pending a fidelity decision.
+    - **7c.1d.2** (done) — `**` on floats. `std::pow` is *correctly rounded*
+      (glibc, ~0.5 ulp) and the hosted engine calls it. `oskel_pow` now takes
+      the same int/float/double promotion as `ops::binary`: int/int with a
+      non-negative exponent keeps the wrapping integer loop (`intPow`), and
+      every other numeric pair (a float/double operand, or a negative exponent)
+      converts to binary64, calls the embedded musl `pow` already used by the
+      `pow` builtin, and re-tags the result with `makeNumeric`'s rank rule —
+      binary32 only when at least one operand is a float and none is a double,
+      binary64 otherwise. The result type is decided *before* the call, since
+      `mathlib::pow` clobbers the volatile registers holding the operand tags.
+      `mathlib::pow` is correctly rounded to under 1 ulp, so the printed values
+      match glibc on the fixtures. `tests/lower_test.cpp` runs the four
+      promotion cases and `tests/native_build_pow.oskl` checks a real static
+      ELF against the VM, `type` included.
     - **7c.2a** (done) — globals. `GETGLOBAL`/`SETGLOBAL` lower to a flat
       `AotValue` table the chunk allocates from the arena once at entry (its
       base lives in r15, a callee-saved register no helper touches, so no
@@ -1281,11 +1317,14 @@ Slices, each independently shippable:
     lowering and the embedded runtime are shared with Linux unchanged. Verified
     in `tests/bare_metal_test.cpp`: the structural checks always run, and the
     end-to-end boot (real serial stdout and exit code under
-    `qemu-system-x86_64 -kernel`) runs when QEMU is on `PATH`. CI installs QEMU
-    on the Linux runners and sets `OSKEL_REQUIRE_QEMU`, which turns a missing
-    binary into a test failure rather than a silent skip, so the boot path
-    cannot disappear from the suite unnoticed; on a developer box without the
-    variable the boot tests skip, and the structural checks still run. The
+    `qemu-system-x86_64 -kernel`) runs whenever QEMU is on `PATH`. The image is
+    x86-64, but QEMU emulates it on any host, so the boot tests run on Linux,
+    Windows and macOS alike -- the arm64 macOS image included; the harness picks
+    its temp directory and exit-code decoding per platform. CI installs QEMU on
+    every runner and sets `OSKEL_REQUIRE_QEMU`, which turns a missing binary
+    into a test failure rather than a silent skip, so the boot path cannot
+    disappear from the suite unnoticed; on a developer box without the variable
+    the boot tests skip, and the structural checks still run. The
     `CodeGen` gained four single-opcode primitives (`cli`, `hlt`, `out dx, al`,
     `in al, dx`) plus `test al, imm8`, each byte-checked in
     `tests/codegen_test.cpp`.
@@ -1293,6 +1332,12 @@ Slices, each independently shippable:
   dispatch (bridge toward the speculative work in
   `docs/ARCHITECTURE_ANALYSIS.md`); other targets (macOS via libc or stubs;
   ARM64 bare metal).
+- Deferred: the bare-metal interrupt path (timer, PIC remap, a returning
+  handler). The bare-metal prelude reports CPU *exceptions* and halts; it does
+  not take or return from *interrupts*, so no device can be serviced. The
+  design for the first slice -- PIC remap, PIT, `sti` and `iretq`, two new
+  `CodeGen` primitives, and the QEMU test that proves the return -- is in
+  `docs/bare-metal-interrupts-design.md`. No code is written yet.
 - Afterwards, LuaJIT's JIT as a reference (see PHASE 8 below).
 - **In the tree now**: the `Target` descriptor (`include/native/target.h`) and
   the x86-64 instruction emitter (`include/native/codegen.h`,

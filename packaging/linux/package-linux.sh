@@ -69,6 +69,7 @@ trap 'rm -rf "$work"' EXIT
 root="$work/deb"
 mkdir -p "$root/DEBIAN" "$root/usr/bin" "$root/usr/share/oskel"
 install -m 0755 "$stage/bin/oskel" "$root/usr/bin/oskel"
+install -m 0755 "$stage/bin/bindgen" "$root/usr/bin/bindgen"
 cp -a "$stage/share/oskel/std" "$root/usr/share/oskel/std"
 
 installed_size="$(du -sk "$root" | cut -f1)"
@@ -121,10 +122,12 @@ general-purpose language with a Lua-style bytecode architecture.
 %install
 mkdir -p %{buildroot}/usr/bin %{buildroot}/usr/share/oskel
 install -m 0755 "$stage/bin/oskel" %{buildroot}/usr/bin/oskel
+install -m 0755 "$stage/bin/bindgen" %{buildroot}/usr/bin/bindgen
 cp -a "$stage/share/oskel/std" %{buildroot}/usr/share/oskel/std
 
 %files
 /usr/bin/oskel
+/usr/bin/bindgen
 /usr/share/oskel/std
 
 %changelog

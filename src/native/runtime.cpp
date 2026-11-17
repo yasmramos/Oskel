@@ -822,23 +822,39 @@ void emitArith(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   emitFailCall(cg, fail, msgTypes);
 }
 
-// `AotValue oskel_pow(AotValue a, AotValue b)`: integer `**` for int/int with a
-// non-negative exponent, replicating `intPow` (wrapping multiply, square and
-// multiply). Every other case needs `pow` from libm and is deferred.
+// `AotValue oskel_pow(AotValue a, AotValue b)`: `**` with the int/float/double
+// promotion of `ops::binary`. int/int with a non-negative exponent uses the
+// wrapping integer loop (`intPow`); every other numeric pair (a float/double
+// operand, or a negative exponent) converts to binary64, calls the embedded
+// musl `pow` and re-tags the result, so a float/float result rounds back to
+// binary32 exactly like the hosted `makeNumeric`. A non-number operand is the
+// unsupported-operand error.
 void emitPow(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
-             const DataBlob& msgPow) {
+             const DataBlob& msgPow, CodeGen::Label mathPow) {
   CodeGen::Label bad = cg.newLabel();
+  CodeGen::Label floatPath = cg.newLabel();
+  CodeGen::Label floatFloat = cg.newLabel();
+  CodeGen::Label floatDouble = cg.newLabel();
   CodeGen::Label loop = cg.newLabel();
   CodeGen::Label skipMul = cg.newLabel();
 
   cg.bind(label);
   prologue(cg);
+  // Both operands must be numbers; anything else is the unsupported pair.
+  emitIsNumberFlag(cg, Rdi);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, bad);
+  emitIsNumberFlag(cg, Rdx);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, bad);
+  // int/int with a non-negative exponent stays integer; every other numeric
+  // pair goes through `pow`.
   cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagInt));
-  cg.jcc(Jcc::Ne, bad);
+  cg.jcc(Jcc::Ne, floatPath);
   cg.cmpImm32(Rdx, static_cast<std::int32_t>(kTagInt));
-  cg.jcc(Jcc::Ne, bad);
+  cg.jcc(Jcc::Ne, floatPath);
   cg.testReg(Rcx);
-  cg.jcc(Jcc::S, bad);  // negative exponent -> std::pow (7c.1c)
+  cg.jcc(Jcc::S, floatPath);  // negative exponent -> pow (7c.1c/7c.1d.2)
 
   cg.movReg(R8, Rcx);  // exp = b
   cg.movReg(R9, Rsi);  // factor = a
@@ -856,6 +872,38 @@ void emitPow(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
 
   cg.movReg(Rdx, Rax);
   cg.movImm(Rax, kTagInt);
+  epilogue(cg);
+
+  // --- float/double path ---
+  // `mathPow` clobbers the volatile registers (including the operand tags in
+  // rdi/rdx), so the result type is decided *before* the call and each branch
+  // re-does the conversion and the call. The type follows `makeNumeric`'s rank
+  // rule: binary32 only when at least one operand is a float and none is a
+  // double; int/int (a negative exponent) and any double stay binary64.
+  cg.bind(floatPath);
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagDouble));
+  cg.jcc(Jcc::Eq, floatDouble);
+  cg.cmpImm32(Rdx, static_cast<std::int32_t>(kTagDouble));
+  cg.jcc(Jcc::Eq, floatDouble);
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagFloat));
+  cg.jcc(Jcc::Eq, floatFloat);
+  cg.cmpImm32(Rdx, static_cast<std::int32_t>(kTagFloat));
+  cg.jcc(Jcc::Ne, floatDouble);  // int/int (negative exponent) -> double
+  cg.bind(floatFloat);
+  emitToDouble(cg, Rdi, Rsi, kXmmBase + 0);  // xmm0 = a
+  emitToDouble(cg, Rdx, Rcx, kXmmBase + 1);  // xmm1 = b
+  cg.callLabel(mathPow);                     // xmm0 = pow(a, b)
+  cg.cvtsd2ss(kXmmBase + 0, kXmmBase + 0);
+  cg.cvtss2sd(kXmmBase + 0, kXmmBase + 0);  // store the binary32 value widened
+  cg.movqFromXmm(Rdx, kXmmBase + 0);
+  cg.movImm(Rax, kTagFloat);
+  epilogue(cg);
+  cg.bind(floatDouble);
+  emitToDouble(cg, Rdi, Rsi, kXmmBase + 0);  // xmm0 = a
+  emitToDouble(cg, Rdx, Rcx, kXmmBase + 1);  // xmm1 = b
+  cg.callLabel(mathPow);                     // xmm0 = pow(a, b)
+  cg.movqFromXmm(Rdx, kXmmBase + 0);
+  cg.movImm(Rax, kTagDouble);
   epilogue(cg);
 
   cg.bind(bad);
@@ -6149,6 +6197,29 @@ void emitExitBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label exitLabel
   emitFailCall(cg, fail, msgType);
 }
 
+// `time()`: the wall clock, in whole seconds since the Unix epoch (UTC), as an
+// `int`. It takes no argument. The value comes from the target's `entry.now`
+// handle, which each prelude binds its own way -- a raw syscall on Linux, libc
+// `time` in the hosted mode, kernel32 on Windows and the CMOS RTC on bare
+// metal -- so this emitter is target-independent and the runtime stays free of
+// libc. The hosted engine's `time` builtin reads the same wall clock.
+void emitTimeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label nowLabel,
+                     CodeGen::Label fail, const DataBlob& msgArgc) {
+  CodeGen::Label ok = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Eq, ok);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(ok);
+  cg.callLabel(nowLabel);          // rax = seconds since the epoch
+  cg.movReg(Rdx, Rax);
+  cg.movImm(Rax, kTagInt);
+  epilogue(cg);
+}
+
 // `void oskel_sb_init(AotStringBuilder* sb, char* data, long capacity)`: start a
 // builder over a caller-owned buffer (`data`/`capacity`) with `length` zero. A
 // caller that renders a `print` value passes a stack buffer, so a small render
@@ -7083,6 +7154,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob textGot = addText(", got ");
   DataBlob msgExitArgc = addText("oskel: exit() expects between 0 and 1 arguments\n");
   DataBlob msgExitType = addText("oskel: exit() expects an integer argument\n");
+  DataBlob msgTimeArgc = addText("oskel: time() expects 0 arguments\n");
 
   CodeGen::Label fail = cg.newLabel();
   CodeGen::Label failDynamic = cg.newLabel();
@@ -7235,7 +7307,6 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitTruthy(cg, handles.truthy);
   emitArith(cg, handles.arithValues, fail, msgTypes, msgDivZero, handles.concat,
             handles.arrayConcat);
-  emitPow(cg, handles.powValues, fail, msgPow);
   emitShift(cg, handles.shiftValues, fail, msgShift);
   emitBitwise(cg, handles.bitwiseValues, fail, msgBit);
   emitNegate(cg, handles.negateValue, fail, msgNeg);
@@ -7292,6 +7363,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   // set of tables; `mathlib::emitMathLib` emits them plus the wrappers' targets.
   mathlib::MathHandles math = mathlib::newMathHandles(cg);
   mathlib::emitMathLib(cg, math);
+  // `**` shares the embedded `pow` with the `pow` builtin.
+  emitPow(cg, handles.powValues, fail, msgPow, math.pow);
   emitTranscendentalBuiltin(cg, handles.expBuiltin, fail, math.exp, msgExpType, false,
                             msgLogNonPositive);
   emitTranscendentalBuiltin(cg, handles.logBuiltin, fail, math.log, msgLogType, true,
@@ -7316,6 +7389,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                       sbNew, sbAppend, failDynamic, fail, msgAssertEqArgc,
                       msgAssertEqDefault, textExpected, textGot, msgOom);
   emitExitBuiltin(cg, handles.exitBuiltin, entry.exit, fail, msgExitArgc, msgExitType);
+  emitTimeBuiltin(cg, handles.timeBuiltin, entry.now, fail, msgTimeArgc);
   emitIntTextParser(cg, handles.intTextParser, fail, msgConvertInt);
   dtoa::emitDtoa(cg, dtoaHandles);
   parse_float::emitParseFloat(cg, parseFloatHandles, dtoaHandles);
