@@ -390,6 +390,21 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_mode.cmake")
+
+    # A scalar `extern "C"` declaration resolves through the system linker in
+    # the hosted mode (PHASE 7f.5): the backend emits a marshalling thunk per
+    # symbol, seeds it as a function and lets `cc` resolve the name. Linux x86-64
+    # only: the link needs a host C toolchain and the thunk marshalling is the
+    # System V AMD64 ABI. The same fixture must still fail the freestanding build
+    # (that backend has no host), which `oskel.build_extern_error` checks.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      add_test(NAME oskel.build_hosted_extern
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted.oskl"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+    endif()
     # `std.json` is plain Oskel over the portable primitive surface, so it must
     # build to a native binary and agree with the VM. The fixture is the guard
     # that keeps the module off the collection/string methods and
@@ -477,8 +492,10 @@ if(BUILD_TESTING)
     # `native_build_extern` is an input for `tests/build_error.cmake`. It also
     # runs on the VM as an ordinary script, but only where the host resolves
     # its `extern "C"` symbol (`getpid`): on Windows the VM cannot bind it, so
-    # the script is skipped there.
-    if(name STREQUAL "native_build_extern" AND WIN32)
+    # the script is skipped there. The hosted fixture binds the same libc
+    # symbols, so it is skipped there for the same reason.
+    if((name STREQUAL "native_build_extern" OR
+        name STREQUAL "native_build_extern_hosted") AND WIN32)
       continue()
     endif()
     # C variadics need libffi plus the System V AMD64 ABI; the declaration is

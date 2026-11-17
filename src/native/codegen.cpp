@@ -489,6 +489,7 @@ void CodeGen::shiftImm8(std::uint8_t ext, X64Reg dst, std::uint8_t count) {
 
 void CodeGen::shlImm8(X64Reg dst, std::uint8_t count) { shiftImm8(4, dst, count); }
 void CodeGen::shrImm8(X64Reg dst, std::uint8_t count) { shiftImm8(5, dst, count); }
+void CodeGen::sarImm8(X64Reg dst, std::uint8_t count) { shiftImm8(7, dst, count); }
 
 // bsr r64, r/m64: 0F BD /r with REX.W. The destination is the reg field.
 void CodeGen::bsrReg(X64Reg dst, X64Reg src) {
