@@ -15,6 +15,11 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 #include "bindgen.h"
 #include "util.h"
 #include "version.h"
@@ -34,6 +39,13 @@ const char* kUsage =
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+  // The module is compared byte for byte against the `-o` file (which is
+  // opened in binary mode) and may be piped into another tool, so stdout must
+  // not translate '\n' into "\r\n".
+  _setmode(_fileno(stdout), _O_BINARY);
+#endif
+
   std::vector<std::string> arguments(argv + 1, argv + argc);
 
   std::string input;
