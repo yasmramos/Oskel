@@ -65,6 +65,7 @@ Name: "associate"; Description: "Associate .oskl files with Oskel"; GroupDescrip
 
 [Files]
 Source: "{#StageDir}\bin\{#AppExeName}"; DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "{#StageDir}\bin\bindgen.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "{#StageDir}\share\oskel\std\*"; DestDir: "{app}\share\oskel\std"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion

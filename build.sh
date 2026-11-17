@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
-# Builds the Oskel interpreter into build/oskel.
+# Builds the Oskel interpreter into build/oskel and the binding generator into
+# build/bindgen.
 # Usage: ./build.sh
 #   CXX=clang++ ./build.sh
 #   CXXFLAGS="-O0 -g" ./build.sh
@@ -28,3 +29,9 @@ mkdir -p build
 # shellcheck disable=SC2086
 "$CXX" -std=c++17 $CXXFLAGS -Wall -Wextra -Iinclude -Isrc -o build/oskel src/*.cpp src/native/*.cpp src/jit/*.cpp
 echo "Built build/oskel"
+
+# The binding generator is a standalone executable (it does not link the
+# engine): `tools/bindgen.cpp` plus its CLI in `tools/bindgen_main.cpp`.
+# shellcheck disable=SC2086
+"$CXX" -std=c++17 $CXXFLAGS -Wall -Wextra -Iinclude -Isrc -o build/bindgen tools/bindgen.cpp tools/bindgen_main.cpp
+echo "Built build/bindgen"

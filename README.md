@@ -97,6 +97,26 @@ On Windows, with `cmd.exe`:
 g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build\oskel.exe src\*.cpp src\native\*.cpp src\jit\*.cpp
 ```
 
+### bindgen (the C binding generator)
+
+Every build above also produces `bindgen` (`bindgen.exe` on Windows) next to the
+engine. It reads a C header and writes an Oskel `extern "C"` module, so a C
+library can be called from Oskel without writing the signatures by hand:
+
+```sh
+./build/bindgen mylib.h -o mylib.oskl
+```
+
+With CMake it is built as `build-cmake/bindgen`, and with the manual build it is
+a second command:
+
+```sh
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/bindgen tools/bindgen.cpp tools/bindgen_main.cpp
+```
+
+See [docs/bindgen.md](docs/bindgen.md) for the C → Oskel type mapping and what is
+skipped.
+
 ## Usage
 
 ```text

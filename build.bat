@@ -20,4 +20,16 @@ if errorlevel 1 (
 )
 
 echo Built build\oskel.exe
+
+rem The binding generator: a standalone executable, so it is built on its own
+rem from tools\ (it is not part of the engine source list above).
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build\bindgen.exe tools\bindgen.cpp tools\bindgen_main.cpp
+
+if errorlevel 1 (
+    echo.
+    echo Build failed.
+    exit /b 1
+)
+
+echo Built build\bindgen.exe
 endlocal

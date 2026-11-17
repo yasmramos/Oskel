@@ -90,6 +90,13 @@ is a small, self-contained cleanup.
   `native/elf.cpp` (no AsmJIT, no ELFIO). Links against musl static.
 - `oskel build` thin alias over `oskelc`
 
+A third, standalone binary ships alongside them: `bindgen`, the C binding
+generator (`docs/bindgen.md`). It reads a C header and writes an Oskel
+`extern "C"` module. It is a pure text transformation, so it does not link
+`oskel_lib` (or the runtime, the compiler, the VM or libffi): its sources live
+under `tools/` and are deliberately outside the `src/*.cpp` glob that builds the
+engine, so it can be built and shipped on its own.
+
 Boundary rule: src/compiler.* and src/native/* must not include
 interpreter.h, vm.h or jit/jit.h. Enforced by tests/check_compiler_boundary.cmake.
 
