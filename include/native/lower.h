@@ -53,13 +53,29 @@ struct LoweringError : std::exception {
 // it in 7c.2). `processEntry` is the `_start` offset to hand to
 // `buildStaticElf`: it runs the chunk and exits 0, so a program's exit code
 // does not depend on whatever value R0 happens to hold.
+//
+// `externals` and `exports` are only populated in the hosted mode (PHASE 7f.4):
+// they are the undefined symbols the code calls through libc and the defined
+// symbols it exports (`main`), which the object emitter turns into `.rela.text`
+// and `.symtab`. A freestanding image carries neither -- every reference there
+// resolves through a label -- so both vectors stay empty and the image needs no
+// linker.
 struct LoweredChunk {
   std::vector<std::uint8_t> code;
   std::uint64_t programEntry = 0;
   std::uint64_t processEntry = 0;
+  std::vector<ExternalRef> externals;
+  std::vector<ExportedSymbol> exports;
 };
 
 // Lowers `proto` to x86-64 machine code. The lowering assumes the System V
 // AMD64 ABI (Linux x86-64). Windows x86-64 support is deferred to PHASE 7e.
+//
+// `mode` selects the entry prelude (PHASE 7f.4): `Freestanding` appends the
+// target's own `_start`/runtime (Linux syscalls, kernel32 or the serial port),
+// while `Hosted` exports the program's entry as the C `main` and reaches the
+// system through libc, leaving the undefined symbols for the object emitter and
+// the linker to resolve. The default keeps every existing caller freestanding.
 LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
-                        const CodeGen& codegen);
+                        const CodeGen& codegen,
+                        LinkMode mode = LinkMode::Freestanding);

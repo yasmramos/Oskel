@@ -774,6 +774,42 @@ void CodeGen::callLabel(Label label) {
   recordFixup(label);
 }
 
+// `call rel32` to an undefined symbol (PHASE 7f.4). The four-byte displacement
+// is left zero and recorded as an external reference; the object emitter turns
+// it into an `R_X86_64_PLT32` relocation and the system linker fills it. The
+// emitter's own `finalize()` never touches these slots -- a label fixup and an
+// external reference are disjoint -- so an image with no external reference
+// carries no relocation.
+void CodeGen::callExternal(const std::string& symbol) {
+  emitByte(0xE8);
+  ExternalRef ref;
+  ref.patchAt = code_.size();
+  ref.symbol = symbol;
+  ref.call = true;
+  for (int i = 0; i < 4; ++i) put8(code_, 0);
+  externalRefs_.push_back(std::move(ref));
+}
+
+// `lea dst, [rip + symbol]` for an undefined symbol: the same encoding as
+// `leaRipLabel`, but the displacement slot is an external reference
+// (`R_X86_64_PC32`) instead of a label fixup.
+void CodeGen::leaRipExternal(X64Reg dst, const std::string& symbol) {
+  std::uint8_t d = enc(dst);
+  rex(true, d, false, 0, 5);
+  emitByte(0x8D);
+  emitByte(static_cast<std::uint8_t>((0x00 << 6) | ((d & 0x07) << 3) | 0x05));
+  ExternalRef ref;
+  ref.patchAt = code_.size();
+  ref.symbol = symbol;
+  ref.call = false;
+  for (int i = 0; i < 4; ++i) put8(code_, 0);
+  externalRefs_.push_back(std::move(ref));
+}
+
+void CodeGen::exportSymbol(const std::string& name, std::size_t offset) {
+  exportedSymbols_.push_back(ExportedSymbol{name, offset});
+}
+
 // call r/m64: opcode FF /2. The reg field carries the /2 extension; the target
 // register goes in the ModRM rm field (and REX.B when it is r8-r15).
 void CodeGen::callReg(X64Reg target) {

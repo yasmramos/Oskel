@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "native/target.h"
@@ -41,6 +42,28 @@ enum class X64Reg {
 // `kGprCount + N` (xmm0..xmm15) when passed to the SSE emitters; they never
 // appear in the X64Reg enum itself.
 constexpr int kGprCount = 16;
+
+// A reference to an undefined external symbol (PHASE 7f.4): a C function or
+// object the hosted link resolves. `patchAt` is the offset of the four-byte
+// PC-relative displacement slot inside the code buffer; the object emitter
+// (`native/object.h`) turns the reference into an ELF relocation and the system
+// linker fills the slot. The freestanding path never creates one -- every
+// reference there resolves through a label -- so an image with no external
+// reference carries no relocation at all.
+struct ExternalRef {
+  std::size_t patchAt = 0;  // offset of the 4-byte displacement slot in .text
+  std::string symbol;       // the undefined symbol's name (e.g. "write")
+  bool call = false;        // true: R_X86_64_PLT32 (a call); false: R_X86_64_PC32
+};
+
+// A symbol the object defines and exports, resolved at `finalize()` (PHASE
+// 7f.4). The hosted image exports `main` so the C runtime's `_start` reaches
+// the program; the freestanding image exports nothing (its entry is a fixed
+// address in the ELF header).
+struct ExportedSymbol {
+  std::string name;
+  std::size_t offset = 0;
+};
 
 // Named alias for the base of the synthetic xmm numbering: callers write
 // `kXmmBase + N` for xmmN. Declared in the header so tests and the backend
@@ -238,6 +261,32 @@ class CodeGen {
   // fixup. The caller computes `delta` from `offset()`.
   void callRipRel(std::int32_t ripDelta);
 
+  // --- External references (PHASE 7f.4, the hosted mode) ---
+  //
+  // `callExternal` emits `call rel32` to an undefined symbol and records an
+  // `ExternalRef` the object emitter turns into an `R_X86_64_PLT32` relocation;
+  // the system linker fills the displacement with the symbol's PLT entry (or
+  // the resolved address for a `-no-pie` link). The freestanding path never
+  // calls these, so its image stays relocation-free.
+  void callExternal(const std::string& symbol);
+  // `lea dst, [rip + symbol]`: the address of an undefined symbol (or of one the
+  // object defines) computed without loading memory. Records an `R_X86_64_PC32`
+  // relocation. Used to pass a C string constant the object defines, or an
+  // external object's address, to a helper.
+  void leaRipExternal(X64Reg dst, const std::string& symbol);
+
+  // The undefined external symbols this code references, in emission order.
+  // Duplicates are kept: each reference is a separate relocation site.
+  const std::vector<ExternalRef>& externalRefs() const { return externalRefs_; }
+
+  // Records a symbol this code defines, so the object emitter exports it with
+  // the offset it had at `finalize()`. The caller binds it after emitting the
+  // defining instruction.
+  void exportSymbol(const std::string& name, std::size_t offset);
+
+  // The symbols this code defines and exports, in registration order.
+  const std::vector<ExportedSymbol>& exportedSymbols() const { return exportedSymbols_; }
+
   // Stack.
   void push(X64Reg reg);
   void pop(X64Reg reg);
@@ -323,6 +372,8 @@ class CodeGen {
   std::vector<std::size_t> labelOffset_;  // label id -> offset, kUnbound until bound
   std::vector<bool> labelBound_;          // label id -> bound (offset 0 is valid)
   std::vector<PendingFixup> fixups_;
+  std::vector<ExternalRef> externalRefs_;   // undefined symbols (hosted mode)
+  std::vector<ExportedSymbol> exportedSymbols_;
   Target target_;
 
   static std::uint8_t enc(X64Reg reg) { return static_cast<std::uint8_t>(reg); }

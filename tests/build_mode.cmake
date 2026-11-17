@@ -87,7 +87,14 @@ if(UNIX)
   endif()
 endif()
 
-# --- 2. `--mode hosted` fails cleanly until the object emitter exists ---
+# --- 2. `--mode hosted` links against libc (PHASE 7f.4) ---
+#
+# Hosted mode is Linux x86-64 only for now: it needs a C toolchain at build
+# time and a host C library to link against. The runner does not detect the
+# platform itself (a CMake script has no reliable processor variable): it lets
+# the build decide. A success must produce a binary that runs and agrees with
+# the VM and is dynamically linked (the whole point of the mode); a refusal must
+# be the clean exit 65 with no binary and a message that names the mode.
 set(out_hosted "${CMAKE_CURRENT_BINARY_DIR}/oskel_build_mode_hosted_${script_stem}${exe_suffix}")
 file(REMOVE "${out_hosted}")
 execute_process(
@@ -96,13 +103,56 @@ execute_process(
   OUTPUT_VARIABLE hosted_stdout
   ERROR_VARIABLE hosted_stderr
 )
-if(NOT hosted_exit EQUAL 65)
-  message(FATAL_ERROR
-    "oskel build --mode hosted exited ${hosted_exit}, expected 65\n--- stdout ---\n"
-    "${hosted_stdout}\n--- stderr ---\n${hosted_stderr}")
-endif()
-if(EXISTS "${out_hosted}")
-  message(FATAL_ERROR "oskel build --mode hosted wrote '${out_hosted}' despite the error")
+
+if(hosted_exit EQUAL 0)
+  if(NOT EXISTS "${out_hosted}")
+    message(FATAL_ERROR "oskel build --mode hosted did not create '${out_hosted}'")
+  endif()
+  execute_process(
+    COMMAND "${out_hosted}"
+    RESULT_VARIABLE hosted_run_exit
+    OUTPUT_VARIABLE hosted_run_stdout
+    ERROR_VARIABLE hosted_run_stderr
+  )
+  if(NOT hosted_run_exit EQUAL 0)
+    message(FATAL_ERROR
+      "the hosted binary exited ${hosted_run_exit}\n--- stdout ---\n${hosted_run_stdout}\n"
+      "--- stderr ---\n${hosted_run_stderr}")
+  endif()
+  if(NOT hosted_run_stdout STREQUAL vm_stdout)
+    message(FATAL_ERROR
+      "the hosted binary disagrees with the VM\n--- vm ---\n${vm_stdout}\n"
+      "--- binary ---\n${hosted_run_stdout}")
+  endif()
+  # The hosted image depends on the host C library -- that is the difference
+  # from the freestanding one, and what lets an `extern "C"` symbol resolve.
+  if(UNIX)
+    execute_process(
+      COMMAND ldd "${out_hosted}"
+      RESULT_VARIABLE hosted_ldd_exit
+      OUTPUT_VARIABLE hosted_ldd_out
+      ERROR_VARIABLE hosted_ldd_err
+    )
+    set(hosted_ldd_text "${hosted_ldd_out}${hosted_ldd_err}")
+    if(NOT hosted_ldd_text MATCHES "libc")
+      message(FATAL_ERROR "the hosted binary is not linked against libc:\n${hosted_ldd_text}")
+    endif()
+  endif()
+else()
+  # The (target, mode) pair has no backend here: it must fail cleanly, naming
+  # the mode, and never write a binary.
+  if(NOT hosted_exit EQUAL 65)
+    message(FATAL_ERROR
+      "oskel build --mode hosted exited ${hosted_exit}, expected 0 or 65\n"
+      "--- stdout ---\n${hosted_stdout}\n--- stderr ---\n${hosted_stderr}")
+  endif()
+  if(EXISTS "${out_hosted}")
+    message(FATAL_ERROR "oskel build --mode hosted wrote '${out_hosted}' despite the error")
+  endif()
+  if(NOT hosted_stderr MATCHES "hosted")
+    message(FATAL_ERROR
+      "the unsupported-mode error does not name the mode:\n--- stderr ---\n${hosted_stderr}")
+  endif()
 endif()
 
 # --- 3. An unknown mode is a usage error that names the valid modes ---

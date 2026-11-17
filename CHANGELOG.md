@@ -59,8 +59,17 @@ may change between minor versions.
   deployment choice, never language syntax, and the (target, mode) matrix is
   validated (freestanding: all targets; hosted: Linux x86-64 only, for now) so
   an unsupported pair is reported instead of emitted. The freestanding binary is
-  unchanged, byte for byte. The hosted image itself is PHASE 7f.4; until it
-  lands, `--mode hosted` fails cleanly.
+  unchanged, byte for byte.
+- **Hosted AOT image: relocatable object + link against libc** (PHASE 7f.4).
+  `oskel build --mode hosted` now closes the image. The emitter produces an
+  ELF64 `ET_REL` object (`native/object.h`): `.rela.text` carries one relocation
+  per external reference (`R_X86_64_PLT32` for a call, `R_X86_64_PC32` for an
+  address) and `.symtab` exports the program's `main`, while the entry prelude
+  reaches the system through libc (`write`/`exit`/`malloc`) instead of a raw
+  syscall. The host C compiler links the object against libc (`$CC`, default
+  `cc`, `-no-pie -lm`). The freestanding output is byte-identical, and the
+  hosted binary agrees with the development VM byte for byte. General
+  `extern "C"` marshalling (a per-signature thunk) is PHASE 7f.5.
 - **`std.json`**, a pure-Oskel standard-library module for parsing and
   serializing JSON. It maps JSON onto Oskel's own values (null → `nil`, number →
   `int`|`double`, object → `map`, array → `array`), so no new runtime type is

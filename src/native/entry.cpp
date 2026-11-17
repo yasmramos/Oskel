@@ -252,3 +252,86 @@ std::uint64_t emitWindowsRuntime(CodeGen& code, const RuntimeHandles& handles,
 
   return startOffset;
 }
+
+std::uint64_t emitHostedRuntime(CodeGen& code, const RuntimeHandles& handles,
+                                CodeGen::Label programEntry) {
+  // --- long oskel_write(long fd, const char* buf, long len) ---
+  // libc's `write` may write fewer bytes than asked (a pipe, a signal), so the
+  // Platform contract's "no short writes" is honoured here, exactly like the
+  // freestanding prelude. The loop state lives in callee-saved registers the
+  // libc call preserves: the runtime's arena cursor (r13), arena end (r14) and
+  // global table (r15) must survive, and so must rbx/r12 (the lowering's own
+  // scratch), so all four are saved and restored around the body.
+  code.bind(handles.write);
+  {
+    CodeGen::Label loop = code.newLabel();
+    CodeGen::Label done = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.push(X64Reg::Rbx);
+    code.push(X64Reg::R12);
+    code.push(X64Reg::R13);
+    code.push(X64Reg::R14);
+    code.movReg(X64Reg::Rbx, X64Reg::Rdi);  // fd
+    code.movReg(X64Reg::R12, X64Reg::Rsi);  // buf
+    code.movReg(X64Reg::R13, X64Reg::Rdx);  // remaining
+    code.xorReg(X64Reg::R14, X64Reg::R14);  // running total
+    code.bind(loop);
+    code.testReg(X64Reg::R13);
+    code.jcc(Jcc::Le, done);  // nothing left to write
+    code.movReg(X64Reg::Rdi, X64Reg::Rbx);
+    code.movReg(X64Reg::Rsi, X64Reg::R12);
+    code.movReg(X64Reg::Rdx, X64Reg::R13);
+    code.callExternal("write");
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Le, done);  // error (rax < 0) or no progress
+    code.addReg(X64Reg::R12, X64Reg::Rax);
+    code.subReg(X64Reg::R13, X64Reg::Rax);
+    code.addReg(X64Reg::R14, X64Reg::Rax);
+    code.jmp(loop);
+    code.bind(done);
+    code.movReg(X64Reg::Rax, X64Reg::R14);  // return the total, like the syscall prelude
+    code.pop(X64Reg::R14);
+    code.pop(X64Reg::R13);
+    code.pop(X64Reg::R12);
+    code.pop(X64Reg::Rbx);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
+  // --- void oskel_exit(long code) ---
+  // libc `exit` runs the atexit handlers and flushes stdio before the process
+  // ends, so the hosted image never loses buffered output. It never returns.
+  code.bind(handles.exit);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.callExternal("exit");
+  code.ud2();  // unreachable: exit never returns
+
+  // --- void oskel_init_arena(void) ---
+  // `malloc(kAotArenaSize)` and seed the allocator state. libc owns the region
+  // and frees it at `exit`; the runtime's own bump allocator then serves every
+  // allocation from it, so the value helpers stay libc-free. The cursor starts
+  // `kAotArenaFirstOffset` in, so no live pointer is ever zero.
+  code.bind(handles.initArena);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.movImm(X64Reg::Rdi, kAotArenaSize);
+  code.callExternal("malloc");
+  code.movReg(kAotArenaCursor, X64Reg::Rax);
+  code.addImm32(kAotArenaCursor, static_cast<std::int32_t>(kAotArenaFirstOffset));
+  code.movReg(kAotArenaEnd, X64Reg::Rax);
+  code.addImm32(kAotArenaEnd, static_cast<std::int32_t>(kAotArenaSize));
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  // The program's entry becomes the C `main` the C runtime calls: the lowering
+  // already gives it the `int main(void)` shape (no arguments, an `int`
+  // result), so no thunk is needed. `_start` -- which crt1.o defines -- reaches
+  // it through `__libc_start_main`, so the object exports the symbol rather than
+  // naming an entry offset.
+  const std::size_t mainOffset = code.labelOffset(programEntry);
+  code.exportSymbol("main", mainOffset);
+  return mainOffset;
+}

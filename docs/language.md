@@ -2391,8 +2391,10 @@ compiles either way):
   `extern "C"` symbol resolves to the real C function at link time. This is the
   mode that makes FFI work, and the one `oskelc` is documented to be. It needs a
   C toolchain at build time and produces a binary that *does* depend on libc, so
-  it is not freestanding. (The hosted image itself is PHASE 7f.4; until it
-  lands, `--mode hosted` fails cleanly instead of writing a binary.)
+  it is not freestanding. The emitter wraps the program in a relocatable object
+  and the host C compiler (`$CC`, default `cc`) links it against libc; the
+  entry prelude reaches the system through libc (`write`/`exit`/`malloc`) and
+  the program's entry is exported as the C `main`.
 
 ```sh
 oskel build app.oskl                       # freestanding (default)
