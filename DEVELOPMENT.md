@@ -917,6 +917,26 @@ Slices, each independently shippable:
       backend agree. No new opcode: it is the `GETTABLE` path the array branch
       already normalizes. Covered by `tests/freestanding_test.cpp`
       (`test_negative_string_index`, both the values and the error).
+    - **7c.3e** (done) — the remaining in-place and query array methods:
+      `shift`, `unshift`, `insert`, `removeAt`, `contains`, `indexOf` and
+      `clear`. They bind exactly like `push`/`pop` (PHASE 7c.3c): the receiver
+      goes into a shared cell and the method is an `AotClosure` over that one
+      upvalue, so a `CALL` reaches the body through `oskel_call`. None of them
+      allocates a new array, so they need no new runtime helper beyond the
+      arena the array already lives in. `shift`/`removeAt` return the removed
+      item (or nil when empty), `unshift`/`insert`/`clear` return the receiver,
+      and `contains`/`indexOf` scan with structural equality
+      (`oskel_value_equal`), so an array or map needle compares by content, as
+      in the VM. A negative index counts from the end
+      (`ops::normalizeIndex`). `oskel_member_get` dispatches the nine bound
+      names through a selector-indexed table instead of one branch per name,
+      and the failure paths report the same messages as the hosted binder
+      (bad arity, `insert()/removeAt() index out of range`) and exit 70. No
+      new opcode and no compiler change: the member form of `GETTABLE` plus
+      `CALL` already carries it, so the `.oskc` is untouched. Covered by
+      `tests/lower_test.cpp` (`testExecArrayMethodsInPlace`), the freestanding
+      `test_array_methods_inplace` (values and the error paths) and the
+      `oskel build` fixture.
     - **7c.4a** (done) — the hidden `$nonNull` and `$isError` helpers. The
       compiler emits `$nonNull` for the non-null assertion `a!!` and `$isError`
       for `try` / `x catch y` (PHASE 6.5/6.7); the AOT backend had no binding
@@ -1407,7 +1427,7 @@ Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair, which `ITER` now yields directly, no new opcode and no helper call) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — open, no slice chosen)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — open, no slice chosen)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-3 done: integer leaf protos with CPU-register allocation, constant folding, strength reduction and compare-branch fusion)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)

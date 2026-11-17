@@ -313,6 +313,12 @@ static void checkBool(const Bytecode& proto, bool expected, const char* what) {
   check(ok, what);
 }
 
+static void checkBoolValue(const AotValue& value, bool expected, const char* what) {
+  bool ok = value.tag == static_cast<std::uint64_t>(AotTag::Bool) &&
+            (value.payload != 0) == expected;
+  check(ok, what);
+}
+
 // Compiles a source string with the real compiler, lowers it and runs the
 // chunk. The compiled tests below drive the whole front end this way, so they
 // lock the compiler/lowerer contract rather than a hand-built proto.
@@ -797,6 +803,77 @@ static void testExecArrayMethods() {
                 10, "compiled: draining an array with pop sums its items");
 }
 
+// The in-place and query array methods (PHASE 7c.3e): `shift`, `unshift`,
+// `insert`, `removeAt`, `contains`, `indexOf` and `clear`. Each binds like
+// `push`/`pop` -- the receiver is captured -- so a call mutates or scans the
+// same array the VM sees.
+static void testExecArrayMethodsInPlace() {
+  // `shift` removes and returns the first item; an empty array yields nil.
+  checkIntValue(compileAndRun("var a = [1, 2, 3]; var r = a.shift();"), 1,
+                "compiled: shift returns the first item");
+  checkArray(compileAndRun("var a = [1, 2, 3]; a.shift(); var r = a;"), {2, 3},
+             "compiled: shift removes the first item in place");
+  AotValue shifted = compileAndRun("var a = []; var r = a.shift();");
+  check(shifted.tag == static_cast<std::uint64_t>(AotTag::Nil),
+        "compiled: shift on an empty array is nil");
+
+  // `unshift` inserts at the front and returns the receiver.
+  checkArray(compileAndRun("var a = [3, 4]; var r = a.unshift(2);"), {2, 3, 4},
+             "compiled: unshift returns the array with the new front item");
+  checkArray(compileAndRun("var a = [3, 4]; a.unshift(2); var r = a;"), {2, 3, 4},
+             "compiled: unshift mutates the receiver in place");
+  checkArray(compileAndRun("var a = []; var r = a.unshift(1);"), {1},
+             "compiled: unshift on an empty array");
+
+  // `insert` places an item at an index and returns the receiver. A negative
+  // index counts from the end.
+  checkArray(compileAndRun("var a = [1, 3]; var r = a.insert(1, 2);"), {1, 2, 3},
+             "compiled: insert places the item at the index");
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.insert(-1, 9);"), {1, 2, 9, 3},
+             "compiled: insert with a negative index counts from the end");
+  checkArray(compileAndRun("var a = [1, 2]; var r = a.insert(2, 3);"), {1, 2, 3},
+             "compiled: insert at the end appends");
+
+  // `removeAt` removes and returns the item at an index; a negative index
+  // counts from the end.
+  checkIntValue(compileAndRun("var a = [1, 2, 3]; var r = a.removeAt(0);"), 1,
+                "compiled: removeAt returns the item at the index");
+  checkArray(compileAndRun("var a = [1, 2, 3]; a.removeAt(0); var r = a;"), {2, 3},
+             "compiled: removeAt removes the item in place");
+  checkIntValue(compileAndRun("var a = [1, 2, 3]; var r = a.removeAt(-1);"), 3,
+                "compiled: removeAt with a negative index counts from the end");
+
+  // `contains`/`indexOf` scan with structural equality, so an array needle
+  // compares by content.
+  checkBoolValue(compileAndRun("var a = [1, 2, 3]; var r = a.contains(2);"), true,
+                 "compiled: contains finds a present item");
+  checkBoolValue(compileAndRun("var a = [1, 2, 3]; var r = a.contains(9);"), false,
+                 "compiled: contains misses an absent item");
+  checkIntValue(compileAndRun("var a = [1, 2, 3, 2]; var r = a.indexOf(2);"), 1,
+                "compiled: indexOf returns the first matching index");
+  checkIntValue(compileAndRun("var a = [1, 2, 3]; var r = a.indexOf(9);"), -1,
+                "compiled: indexOf is -1 when there is no match");
+  checkBoolValue(compileAndRun("var a = [[1], [2, 3]]; var r = a.contains([2, 3]);"), true,
+                 "compiled: contains compares nested arrays by content");
+  checkIntValue(compileAndRun("var a = [[1], [2, 3]]; var r = a.indexOf([2, 3]);"), 1,
+                "compiled: indexOf compares nested arrays by content");
+
+  // `clear` empties the array in place and returns the receiver.
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.clear();"), {},
+             "compiled: clear returns the emptied array");
+  checkIntValue(compileAndRun("var a = [1, 2, 3]; a.clear(); var r = a.length;"), 0,
+                "compiled: clear empties the receiver in place");
+
+  // The methods are first-class: a detached binder keeps mutating the same
+  // array.
+  checkIntValue(compileAndRun("var a = [1, 2]; var s = a.shift; var r = s();"), 1,
+                "compiled: a detached shift returns the receiver's first item");
+  checkArray(compileAndRun("var a = [2, 3]; var u = a.unshift; u(1); var r = a;"), {1, 2, 3},
+             "compiled: a detached unshift mutates the receiver it captured");
+  checkBoolValue(compileAndRun("var a = [1, 2]; var c = a.contains; var r = c(2);"), true,
+                 "compiled: a detached contains scans the receiver it captured");
+}
+
 static void testExecStringCompare() {
   auto mk = [](OpCode op, const std::string& x, const std::string& y) {
     return makeProto({instr(OpCode::LOADK, 0, 0), instr(OpCode::LOADK, 1, 1),
@@ -1074,6 +1151,7 @@ int main() {
   testExecStringConcat();
   testExecArrayConcat();
   testExecArrayMethods();
+  testExecArrayMethodsInPlace();
   testExecStringCompare();
   testExecGlobals();
   testExecLocals();

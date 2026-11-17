@@ -309,6 +309,19 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # The in-place and query array methods (PHASE 7c.3e): `shift`, `unshift`,
+    # `insert`, `removeAt`, `contains`, `indexOf` and `clear`. Same binding
+    # mechanism as `push`/`pop`, so the receiver is captured and the call
+    # mutates or scans it; the backend used to answer each with "value has no
+    # such member". Checked against the VM, so both the return value and the
+    # mutation are pinned.
+    add_test(NAME oskel.build_binary_array_methods_inplace
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_array_methods_inplace"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods_inplace.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # A recursive program with a non-trivial frame checks the process stack the
     # loader hands the binary: the AOT runtime has no call-depth guard, so the
     # reserve must be large enough for the recursion the VM accepts. The

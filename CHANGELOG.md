@@ -255,6 +255,21 @@ may change between minor versions.
 
 ### Fixed
 
+- AOT: the remaining in-place and query array methods now work in a compiled
+  binary: `shift`, `unshift`, `insert`, `removeAt`, `contains`, `indexOf` and
+  `clear`. They bind like `push`/`pop` (the receiver goes into a shared cell and
+  the method body is an ordinary closure reached through `oskel_call`), so no
+  opcode and no compiler change are needed. The AOT `oskel_member_get` answered
+  every one of them with "value has no such member", a VM/AOT divergence. The
+  member dispatch now resolves the nine bound array names through a
+  selector-indexed table, `shift`/`removeAt` return the removed item (or nil
+  when empty), `unshift`/`insert`/`clear` return the receiver, `contains`/
+  `indexOf` scan with structural equality (an array or map needle compares by
+  content) and a negative index counts from the end, matching the hosted
+  binder's messages and exit code on the failure paths (bad arity,
+  `insert()/removeAt() index out of range`). Covered by `tests/lower_test.cpp`
+  (`testExecArrayMethodsInPlace`), `tests/freestanding_test.cpp`
+  (`test_array_methods_inplace`) and a `tests/build_binary` fixture.
 - AOT: a negative string index now counts code points from the end, like the
   hosted engine. `"abc"[-1]` is `"c"` and `"héllo"[-1]` is `"o"` in the VM, but
   the string branch of `oskel_table_get` passed the raw index straight to
