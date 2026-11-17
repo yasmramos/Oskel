@@ -76,15 +76,33 @@ jobs:
       # Build your program with the given configuration. Note that --config is needed because the default Windows generator is a multi-config generator (Visual Studio generator).
       run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }}
 
-    - name: Install QEMU for the bare-metal boot tests (Linux)
-      # The bare-metal target boots its image under `qemu-system-x86_64`; the
-      # Linux runner is the only one that can run it. `OSKEL_REQUIRE_QEMU`
-      # makes a missing binary fail the test instead of skipping it, so the
-      # boot path cannot quietly rot.
-      if: runner.os == 'Linux'
+    - name: Install QEMU for the bare-metal boot tests
+      # The bare-metal target boots its image under `qemu-system-x86_64`. QEMU
+      # emulates x86-64 on any host, so every runner can run the boot tests --
+      # including the arm64 macOS image. `OSKEL_REQUIRE_QEMU` makes a missing
+      # binary fail the test instead of skipping it, so the boot path cannot
+      # quietly rot on a platform whose emulator was never installed.
+      shell: bash
       run: |
-        sudo apt-get update
-        sudo apt-get install -y qemu-system-x86
+        if [ "$RUNNER_OS" = "Linux" ]; then
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86
+        elif [ "$RUNNER_OS" = "macOS" ]; then
+          brew install qemu
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+        elif [ "$RUNNER_OS" = "Windows" ]; then
+          # The Chocolatey package runs QEMU's NSIS installer, which does not
+          # put the binary on PATH. Locate it instead of hard-coding the
+          # install directory, then hand the runner a Windows-style path.
+          choco install qemu -y --no-progress
+          qemu_dir="$(dirname "$(find '/c/Program Files' -maxdepth 2 \
+            -iname 'qemu-system-x86_64.exe' 2>/dev/null | head -n 1)")"
+          if [ -z "$qemu_dir" ] || [ "$qemu_dir" = "." ]; then
+            echo "::error::qemu-system-x86_64.exe not found after choco install"
+            exit 1
+          fi
+          cygpath -w "$qemu_dir" >> "$GITHUB_PATH"
+        fi
         echo "OSKEL_REQUIRE_QEMU=1" >> "$GITHUB_ENV"
 
     - name: Test

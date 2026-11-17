@@ -206,18 +206,24 @@ static void test_idt_is_present() {
 
 // ------------------------------------------------------------ QEMU end to end
 
-// CI sets `OSKEL_REQUIRE_QEMU` on the Linux runner, where the package is
-// installed on purpose. Without the variable a developer box may skip the boot
-// tests; with it a missing QEMU is a failure, not a silent skip, because a test
-// that quietly disappears is how the bare-metal path rots. Defined outside the
-// platform guard so the non-bootable platforms honour it too.
+// CI sets `OSKEL_REQUIRE_QEMU` on the runners, where the package is installed
+// on purpose. Without the variable a developer box may skip the boot tests;
+// with it a missing QEMU is a failure, not a silent skip, because a test that
+// quietly disappears is how the bare-metal path rots. Defined outside the
+// platform guard so a platform without the emulator still honours it.
 static bool qemuRequired() {
   const char* value = std::getenv("OSKEL_REQUIRE_QEMU");
   return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
-#if defined(__linux__) && defined(__x86_64__)
+// The image is x86-64, but QEMU emulates that on any host, so the boot tests
+// run on every platform the emulator supports -- including an arm64 macOS
+// runner -- not only on an x86-64 host.
+#if defined(__linux__) || defined(__APPLE__) || defined(_WIN32)
 #define BARE_METAL_QEMU_TESTS 1
+#endif
+
+#if defined(__linux__) || defined(__APPLE__)
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -225,17 +231,66 @@ static bool qemuRequired() {
 
 #ifdef BARE_METAL_QEMU_TESTS
 
-static bool haveQemu() {
-  // `command -v` is a shell builtin, so it goes through `sh -c`.
-  return std::system("command -v qemu-system-x86_64 >/dev/null 2>&1") == 0;
+// `std::system` reports the child's status differently per platform: POSIX
+// packs it into a wait status (`WEXITSTATUS`), Windows returns the exit code
+// as-is.
+static int systemExitCode(int status) {
+#if defined(_WIN32)
+  return status;
+#else
+  return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#endif
 }
+
+// The null device differs: `NUL` on Windows, `/dev/null` everywhere else.
+#if defined(_WIN32)
+static const char* const kNullDevice = "NUL";
+#else
+static const char* const kNullDevice = "/dev/null";
+#endif
+
+static bool haveQemu() {
+  // Probing with `--version` beats `command -v`: the latter is a shell
+  // builtin and is absent from Windows' `cmd`.
+  const std::string command =
+      std::string("qemu-system-x86_64 --version > ") + kNullDevice + " 2>&1";
+  return systemExitCode(std::system(command.c_str())) == 0;
+}
+
+// A writable directory that exists on every platform: the environment names it
+// (`TMPDIR` on macOS, `TEMP`/`TMP` on Windows), with `/tmp` as the Linux
+// fallback.
+static std::string tempDir() {
+  for (const char* name : {"TMPDIR", "TEMP", "TMP"}) {
+    const char* value = std::getenv(name);
+    if (value != nullptr && *value != '\0') return std::string(value);
+  }
+  return "/tmp";
+}
+
+static std::string tempPath(const std::string& name) {
+  std::string dir = tempDir();
+  if (!dir.empty() && dir.back() != '/' && dir.back() != '\\') dir += '/';
+  // QEMU and `cmd` both take forward slashes on Windows, and they sidestep the
+  // backslash escaping in `-serial file:C:\...`.
+  for (char& c : dir) {
+    if (c == '\\') c = '/';
+  }
+  return dir + name;
+}
+
+// Quote an argument so a path with spaces survives both `sh` and `cmd`.
+static std::string quote(const std::string& value) { return "\"" + value + "\""; }
 
 static void writeFile(const std::string& path, const std::vector<std::uint8_t>& bytes) {
   std::FILE* file = std::fopen(path.c_str(), "wb");
   if (!file) return;
   std::fwrite(bytes.data(), 1, bytes.size(), file);
   std::fclose(file);
+#if !defined(_WIN32)
+  // QEMU only reads the file, so the executable bit is a POSIX nicety.
   chmod(path.c_str(), 0755);
+#endif
 }
 
 // Boots `path` in QEMU and returns the serial output and the exit code the
@@ -250,20 +305,18 @@ struct BootResult {
 static BootResult boot(const std::string& path) {
   const std::string serial = path + ".serial";
   std::remove(serial.c_str());
-  std::string command = "qemu-system-x86_64 -kernel " + path + " -serial file:" + serial +
-                        " -display none -no-reboot" +
+  std::string command = "qemu-system-x86_64 -kernel " + quote(path) + " -serial " +
+                        quote("file:" + serial) + " -display none -no-reboot" +
                         " -device isa-debug-exit,iobase=0x501,iosize=0x04" +
-                        " >/dev/null 2>&1";
+                        " > " + kNullDevice + " 2>&1";
   int status = std::system(command.c_str());
 
   BootResult result;
-  if (WIFEXITED(status)) {
-    int code = WEXITSTATUS(status);
-    // 2N + 1: recover N. Anything else means the boot did not reach the exit.
-    if (code >= 1 && code % 2 == 1) {
-      result.exitCode = (code - 1) / 2;
-      result.booted = true;
-    }
+  const int code = systemExitCode(status);
+  // 2N + 1: recover N. Anything else means the boot did not reach the exit.
+  if (code >= 1 && code % 2 == 1) {
+    result.exitCode = (code - 1) / 2;
+    result.booted = true;
   }
 
   std::FILE* file = std::fopen(serial.c_str(), "rb");
@@ -297,7 +350,7 @@ static void test_qemu_boot() {
       "print(\"a =\", m[\"a\"]);\n";
 
   Image image = buildImage(source);
-  const std::string path = "/tmp/oskel_bare_metal_boot.elf";
+  const std::string path = tempPath("oskel_bare_metal_boot.elf");
   writeFile(path, image.elf);
 
   BootResult result = boot(path);
@@ -323,7 +376,7 @@ static void test_qemu_float_arithmetic() {
       "print(\"cmp\", 1.5 < 2.5, 3.0 >= 3.0);\n";
 
   Image image = buildImage(source);
-  const std::string path = "/tmp/oskel_bare_metal_float.elf";
+  const std::string path = tempPath("oskel_bare_metal_float.elf");
   writeFile(path, image.elf);
 
   BootResult result = boot(path);
@@ -351,7 +404,7 @@ static void test_qemu_fault_reports() {
 
   Image image;
   image.elf = buildBareMetalElf(Target::bareMetalX64(), chunk.code, chunk.processEntry);
-  const std::string path = "/tmp/oskel_bare_metal_fault.elf";
+  const std::string path = tempPath("oskel_bare_metal_fault.elf");
   writeFile(path, image.elf);
 
   BootResult result = boot(path);
@@ -379,7 +432,7 @@ static void test_qemu_fault_reports() {
 
   Image pfImage;
   pfImage.elf = buildBareMetalElf(Target::bareMetalX64(), pf.code, pf.processEntry);
-  const std::string pfPath = "/tmp/oskel_bare_metal_pf.elf";
+  const std::string pfPath = tempPath("oskel_bare_metal_pf.elf");
   writeFile(pfPath, pfImage.elf);
 
   BootResult pfResult = boot(pfPath);
