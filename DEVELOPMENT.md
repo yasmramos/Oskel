@@ -1176,7 +1176,8 @@ Slices, each independently shippable:
     `include/native/bare_metal.h`): it builds an identity page table with 2 MiB
     huge pages, turns on PAE and long mode (and, in CR4, `OSFXSR` and
     `OSXMMEXCPT`, without which the first SSE instruction the float path emits
-    is a `#UD` -- a triple fault, since no IDT is installed), installs its own
+    is a `#UD` that, with no IDT installed yet, escalated to a triple fault),
+    installs its own
     GDT with a 64-bit code segment and far-jumps into the shared 64-bit
     runtime. From there the program is byte-for-byte the same machine code the
     Linux target emits; only the prelude differs, because a kernel has no
@@ -1188,7 +1189,13 @@ Slices, each independently shippable:
     QEMU's `isa-debug-exit` port and spins in `hlt` (on real hardware the port
     write is ignored and the `hlt` loop is the end of the program); and
     `oskel_init_arena` points the bump allocator at a `.bss` region the loader
-    zeroes instead of `mmap`. The ELF emitter produces an ELF32/i386 image with
+    zeroes instead of `mmap`. The entry point also installs an interrupt
+    descriptor table (256 gates, one stub per vector) before running the
+    program, so a CPU exception reaches a handler that prints `oskel: cpu
+    exception 0xVV rip=0x...` over the serial port and halts. Without an IDT a
+    `#UD` is a double fault and then a reset: the machine hangs with no trace,
+    which is exactly how the missing `CR4.OSFXSR` (above) hid. The ELF emitter
+    produces an ELF32/i386 image with
     two `PT_LOAD` segments: the code at 1 MiB (R+X) and the `.bss` at 2 MiB
     (R+W, `p_filesz = 0`, `p_memsz` = page tables + stack + arena). The
     lowering and the embedded runtime are shared with Linux unchanged. Verified

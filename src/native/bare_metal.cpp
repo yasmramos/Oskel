@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 
@@ -13,6 +14,49 @@ constexpr std::int64_t kSerialFcr = 0x3FA;   // FIFO control
 constexpr std::int64_t kSerialLcr = 0x3FB;   // line control (8N1 = 0x03)
 constexpr std::int64_t kSerialLsr = 0x3FD;   // line status (bit 5 = THR empty)
 constexpr std::uint8_t kSerialThrEmpty = 0x20;
+
+// The interrupt descriptor table the prelude installs. It has one 16-byte
+// gate per vector, so a CPU exception (#UD, #GP, #PF, ...) reaches our handler
+// instead of escalating to a triple fault: with no IDT, a `#UD` is a double
+// fault and then a reset -- the machine hangs with no trace. The gates point
+// at one tiny stub per vector; each stub pushes the vector number and jumps to
+// a single common handler that reports the vector and the faulting RIP over
+// the serial port before halting.
+constexpr std::uint64_t kIdtGateCount = 256;
+constexpr std::uint64_t kIdtGateBytes = 16;
+constexpr std::uint8_t kIdtGateType = 0x8E;  // present, DPL 0, 64-bit interrupt gate
+constexpr std::uint16_t kIdtLimit =
+    static_cast<std::uint16_t>(kIdtGateCount * kIdtGateBytes - 1);
+
+// Vectors for which the CPU pushes an error code on the interrupt frame
+// (Intel SDM, "Exception and Interrupt Reference"): #DF, #TS, #NP, #SS, #GP,
+// #PF, #AC, #CP, #VC, #SX. Every other vector does not, so its stub pushes a
+// dummy zero first and the frame layout is the same for both -- [rsp] = vector,
+// [rsp+8] = error code, [rsp+16] = faulting RIP.
+bool vectorPushesErrorCode(int vector) {
+  switch (vector) {
+    case 8: case 10: case 11: case 12: case 13: case 14:
+    case 17: case 21: case 29: case 30:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// The message the common fault handler prints and the stack buffer it builds
+// it in. The template carries placeholder hex digits the handler overwrites:
+// two for the vector and sixteen for the faulting RIP.
+constexpr char kFaultTemplate[] =
+    "oskel: cpu exception 0x00 rip=0x0000000000000000\n";
+constexpr std::int64_t kFaultTemplateLen = sizeof(kFaultTemplate) - 1;
+constexpr std::int64_t kFaultVectorHexOffset = 23;  // right after "exception 0x"
+constexpr std::int64_t kFaultRipHexOffset = 32;     // right after " rip=0x"
+constexpr std::int32_t kFaultMessageBytes = 64;
+// The fault handler publishes this on QEMU's isa-debug-exit port (the same
+// port `oskel_exit` uses) so a test harness sees a deterministic, fast exit
+// instead of spinning in `hlt` forever. On real hardware nothing decodes the
+// port and the `hlt` loop is the end.
+constexpr std::uint8_t kFaultExitCode = 0xFD;
 
 // .bss layout, all relative to kBMDataBase: the page tables first, then the
 // boot stack (which grows down toward them) and the arena at the top.
@@ -101,11 +145,144 @@ void write16At(std::vector<std::uint8_t>& out, std::size_t off, std::uint16_t v)
 
 }  // namespace
 
+// Emits a branch-free-in-spirit sequence that writes `digits` hexadecimal
+// digits of `value` (most significant first) into `[base + offset]`. The fault
+// handler uses it to render the vector number and the faulting RIP. `value`
+// and `base` survive; rax is clobbered.
+static void emitHexDigits(CodeGen& code, X64Reg value, X64Reg base, std::int64_t offset,
+                   int digits) {
+  for (int i = 0; i < digits; ++i) {
+    const int shift = (digits - 1 - i) * 4;
+    CodeGen::Label letter = code.newLabel();
+    CodeGen::Label store = code.newLabel();
+    code.movReg(X64Reg::Rax, value);
+    if (shift != 0) code.shrImm8(X64Reg::Rax, static_cast<std::uint8_t>(shift));
+    code.andImm32(X64Reg::Rax, 0xF);
+    code.cmpImm32(X64Reg::Rax, 9);
+    code.jcc(Jcc::A, letter);            // unsigned above 9 -> a-f
+    code.addImm32(X64Reg::Rax, '0');
+    code.jmp(store);
+    code.bind(letter);
+    code.addImm32(X64Reg::Rax, 'a' - 10);
+    code.bind(store);
+    code.movByteToMem(base, offset + i, X64Reg::Rax);
+  }
+}
+
+// Emits the interrupt descriptor table, one stub per vector and the single
+// common fault handler, and binds `descriptorLabel` at the 10-byte
+// pseudo-descriptor the entry point loads with `lidt`.
+//
+// A CPU exception is not maskable by `cli`, so the only defence against a
+// silent triple fault is an IDT: without one, the first `#UD` (say an SSE
+// instruction before CR4.OSFXSR is set) escalates to a double fault and then a
+// reset with nothing printed. Every gate points at a stub that pushes the
+// vector number -- preceded by a dummy error code when the CPU did not push
+// one -- so the frame the handler sees is always `[rsp]` = vector, `[rsp+8]` =
+// error code, `[rsp+16]` = faulting RIP. The handler prints `oskel: cpu
+// exception 0xVV rip=0xRRRRRRRRRRRRRRRR` over the serial port and halts: a
+// fault is fatal here, there is no handler to return to.
+static void emitIdt(CodeGen& code, const RuntimeHandles& handles,
+             CodeGen::Label descriptorLabel) {
+  std::vector<CodeGen::Label> stubs(kIdtGateCount);
+  for (std::uint64_t v = 0; v < kIdtGateCount; ++v) stubs[v] = code.newLabel();
+  CodeGen::Label handler = code.newLabel();
+  CodeGen::Label templateBytes = code.newLabel();
+
+  const std::int64_t stackTop =
+      static_cast<std::int64_t>(kBMDataBase + kBMStackTopOffset);
+
+  // --- the common fault handler ---
+  // Read the vector and the faulting RIP off the interrupt frame, then switch
+  // to the top of the boot stack: the fault may have happened on a stack that
+  // is itself broken (a stack overflow is a `#PF`/`#DF`), and the handler
+  // needs room to build its message.
+  code.bind(handler);
+  code.movFromMem(X64Reg::R8, X64Reg::Rsp, 0);   // vector
+  code.movFromMem(X64Reg::R9, X64Reg::Rsp, 16);  // faulting RIP
+  code.movImm(X64Reg::Rsp, stackTop);
+  code.subRegImm32(X64Reg::Rsp, kFaultMessageBytes);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);  // message buffer base
+
+  code.leaRipLabel(X64Reg::Rsi, templateBytes);
+  code.movReg(X64Reg::Rdi, X64Reg::Rbp);
+  code.movImm(X64Reg::Rcx, kFaultTemplateLen);
+  code.cld();
+  code.repMovsb();
+
+  emitHexDigits(code, X64Reg::R9, X64Reg::Rbp, kFaultRipHexOffset, 16);
+  emitHexDigits(code, X64Reg::R8, X64Reg::Rbp, kFaultVectorHexOffset, 2);
+
+  code.movImm(X64Reg::Rdi, 1);  // fd, ignored: a kernel prints to COM1
+  code.movReg(X64Reg::Rsi, X64Reg::Rbp);
+  code.movImm(X64Reg::Rdx, kFaultTemplateLen);
+  code.callLabel(handles.write);
+
+  CodeGen::Label spin = code.newLabel();
+  code.cli();
+  code.movImm(X64Reg::Rax, kFaultExitCode);
+  code.movImm(X64Reg::Rdx, 0x501);  // QEMU isa-debug-exit; ignored on real hardware
+  code.outDxAl();
+  code.bind(spin);
+  code.hlt();
+  code.jmp(spin);
+
+  // --- one stub per vector ---
+  for (std::uint64_t v = 0; v < kIdtGateCount; ++v) {
+    code.bind(stubs[v]);
+    if (!vectorPushesErrorCode(static_cast<int>(v))) code.pushImm8(0);
+    code.pushImm8(static_cast<std::int32_t>(v));
+    code.jmp(handler);
+  }
+
+  // --- the message template ---
+  code.bind(templateBytes);
+  code.emitBytes(reinterpret_cast<const std::uint8_t*>(kFaultTemplate),
+                 static_cast<std::size_t>(kFaultTemplateLen));
+
+  // --- the gate table ---
+  const std::uint8_t zero = 0x00;
+  while (code.offset() % 16 != 0) code.emitBytes(&zero, 1);
+  const std::uint64_t idtOffset = code.offset();
+  for (std::uint64_t v = 0; v < kIdtGateCount; ++v) {
+    const std::uint64_t stub = kBMCodeBase + code.labelOffset(stubs[v]);
+    std::uint8_t gate[kIdtGateBytes] = {0};
+    gate[0] = static_cast<std::uint8_t>(stub & 0xFF);
+    gate[1] = static_cast<std::uint8_t>((stub >> 8) & 0xFF);
+    gate[2] = 0x08;  // code selector (the 64-bit code segment)
+    gate[3] = 0x00;
+    gate[4] = 0x00;  // no interrupt stack table
+    gate[5] = kIdtGateType;
+    gate[6] = static_cast<std::uint8_t>((stub >> 16) & 0xFF);
+    gate[7] = static_cast<std::uint8_t>((stub >> 24) & 0xFF);
+    gate[8] = static_cast<std::uint8_t>((stub >> 32) & 0xFF);
+    gate[9] = static_cast<std::uint8_t>((stub >> 40) & 0xFF);
+    gate[10] = static_cast<std::uint8_t>((stub >> 48) & 0xFF);
+    gate[11] = static_cast<std::uint8_t>((stub >> 56) & 0xFF);
+    code.emitBytes(gate, kIdtGateBytes);
+  }
+
+  // --- the pseudo-descriptor (limit + base) ---
+  code.bind(descriptorLabel);
+  const std::uint64_t idtBase = kBMCodeBase + idtOffset;
+  std::uint8_t descriptor[10];
+  descriptor[0] = static_cast<std::uint8_t>(kIdtLimit & 0xFF);
+  descriptor[1] = static_cast<std::uint8_t>((kIdtLimit >> 8) & 0xFF);
+  for (int i = 0; i < 8; ++i) {
+    descriptor[2 + i] = static_cast<std::uint8_t>((idtBase >> (8 * i)) & 0xFF);
+  }
+  code.emitBytes(descriptor, sizeof descriptor);
+}
+
 std::uint64_t emitBareMetalPreamble(CodeGen& code, const RuntimeHandles& handles,
                                     CodeGen::Label programEntry) {
   if (code.offset() != 0) {
     throw std::runtime_error("native/bare_metal: the multiboot header must be first");
   }
+
+  // The IDT pseudo-descriptor is a forward reference from the entry point's
+  // `lidt`, so the label is created before anything is emitted.
+  const CodeGen::Label idtDescriptor = code.newLabel();
 
   // --- Multiboot 1 header (12 bytes, 4-byte aligned, first 8 KiB of the file) ---
   const std::uint32_t magic = kMultibootMagic;
@@ -201,10 +378,20 @@ std::uint64_t emitBareMetalPreamble(CodeGen& code, const RuntimeHandles& handles
   outSerial(kSerialLcr, 0x03);   // line control: 8N1, DLAB off
   outSerial(kSerialFcr, 0xC7);   // FIFO: enable, clear, 14-byte threshold
 
+  // Install the IDT before the program can fault. `lidt` loads a forward
+  // reference the emitter patches at `finalize()`, since the table is emitted
+  // after this code.
+  code.lidtRipLabel(idtDescriptor);
+
   code.callLabel(programEntry);
   code.movReg(X64Reg::Rdi, X64Reg::Rax);  // exit code = main's result
   code.callLabel(handles.exit);
   code.ud2();  // oskel_exit never returns
+
+  // The IDT, its per-vector stubs and the common fault handler. Emitted after
+  // the entry point and never fallen into: `oskel_exit` above is a `cli; hlt`
+  // loop, so the `ud2` never even runs.
+  emitIdt(code, handles, idtDescriptor);
 
   return entryOffset;
 }

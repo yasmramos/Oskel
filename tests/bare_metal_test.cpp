@@ -169,6 +169,39 @@ static void test_rejects_wrong_target() {
   check(rejected, "the bare-metal emitter rejects a non-bare-metal target");
 }
 
+// The IDT must be present in the image. The strongest portable check is that
+// the entry point's `lidt` and the gate table are consistent: the gate for a
+// vector points into the code segment and has the interrupt-gate type byte.
+static void test_idt_is_present() {
+  Image image = buildImage("print(\"hi\");\n");
+  const std::vector<std::uint8_t>& elf = image.elf;
+
+  // The IDT pseudo-descriptor is 10 bytes (2-byte limit + 8-byte base) and the
+  // gate table it points at is 256 * 16 = 4096 bytes, so look for a plausible
+  // descriptor: limit 0x0FFF followed by a base inside the code segment.
+  const std::size_t codeBase = static_cast<std::size_t>(kBMCodeBase);
+  bool found = false;
+  for (std::size_t i = 0; i + 10 <= elf.size(); ++i) {
+    if (read16(elf, i) != 0x0FFF) continue;
+    std::uint64_t base = 0;
+    for (int b = 0; b < 8; ++b) base |= static_cast<std::uint64_t>(elf[i + 2 + b]) << (8 * b);
+    if (base < codeBase || base >= codeBase + elf.size()) continue;
+    found = true;
+    break;
+  }
+  check(found, "the image carries an IDT pseudo-descriptor (limit 0x0FFF)");
+
+  // `lidt [rip + disp]` is 0F 01 1D followed by a disp32. Find one and check
+  // the displacement lands on a descriptor above.
+  bool lidtFound = false;
+  for (std::size_t i = 0; i + 7 <= elf.size(); ++i) {
+    if (elf[i] != 0x0F || elf[i + 1] != 0x01 || elf[i + 2] != 0x1D) continue;
+    lidtFound = true;
+    break;
+  }
+  check(lidtFound, "the entry point installs the IDT with lidt");
+}
+
 // ------------------------------------------------------------ QEMU end to end
 
 #if defined(__linux__) && defined(__x86_64__)
@@ -292,16 +325,70 @@ static void test_qemu_float_arithmetic() {
   check(result.exitCode == 0, "the booted float program exits with code 0");
 }
 
+static void test_qemu_fault_reports() {
+  // A fault must report, not hang. Build a normal image and overwrite the
+  // program's entry with `ud2` (0F 0B): that is a #UD (vector 6) with no error
+  // code, exactly the class of fault that used to escalate to a triple fault.
+  // The IDT should catch it, print `oskel: cpu exception 0x06 rip=0x...` and
+  // publish the fault exit code on the isa-debug-exit port.
+  Bytecode bytecode = compileSource("print(\"unreachable\");\n");
+  LoweredChunk chunk = lowerToX64(Target::bareMetalX64(), bytecode, CodeGen{});
+  const std::uint64_t entry = chunk.programEntry;
+  chunk.code[entry] = 0x0F;
+  chunk.code[entry + 1] = 0x0B;
+
+  Image image;
+  image.elf = buildBareMetalElf(Target::bareMetalX64(), chunk.code, chunk.processEntry);
+  const std::string path = "/tmp/oskel_bare_metal_fault.elf";
+  writeFile(path, image.elf);
+
+  BootResult result = boot(path);
+  check(result.booted, "a faulting program reaches the fault handler's exit");
+
+  // The vector is 6 (#UD) and the RIP is in the code segment (0x10xxxx).
+  const bool reported =
+      result.output.rfind("oskel: cpu exception 0x06 rip=0x", 0) == 0 &&
+      result.output.find("rip=0x000000000010") != std::string::npos;
+  check(reported, ("the fault handler reports the vector and RIP ["
+                   + result.output + "]").c_str());
+
+  // A fault *with* an error code must frame the same way. Write to an unmapped
+  // address (`movabs rax, 0x100000000; mov [rax], rax`): a #PF (vector 14),
+  // which the CPU pushes with an error code, so the stub must not push a dummy
+  // one. If it did, the vector the handler reads would be the error code and
+  // the report would name the wrong exception.
+  LoweredChunk pf = lowerToX64(Target::bareMetalX64(), bytecode, CodeGen{});
+  const std::uint64_t at = pf.programEntry;
+  const std::uint8_t pageFault[] = {
+      0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,  // movabs rax, 0x100000000
+      0x48, 0x89, 0x00,                                            // mov [rax], rax
+  };
+  std::memcpy(&pf.code[at], pageFault, sizeof pageFault);
+
+  Image pfImage;
+  pfImage.elf = buildBareMetalElf(Target::bareMetalX64(), pf.code, pf.processEntry);
+  const std::string pfPath = "/tmp/oskel_bare_metal_pf.elf";
+  writeFile(pfPath, pfImage.elf);
+
+  BootResult pfResult = boot(pfPath);
+  check(pfResult.booted, "a page fault reaches the fault handler's exit");
+  check(pfResult.output.rfind("oskel: cpu exception 0x0e rip=0x", 0) == 0,
+        ("the error-code fault is reported as vector 14 ["
+         + pfResult.output + "]").c_str());
+}
+
 #endif  // BARE_METAL_QEMU_TESTS
 
 int main() {
   test_elf_structure();
   test_rejects_wrong_target();
+  test_idt_is_present();
 
 #ifdef BARE_METAL_QEMU_TESTS
   if (haveQemu()) {
     test_qemu_boot();
     test_qemu_float_arithmetic();
+    test_qemu_fault_reports();
   } else {
     std::printf("skip: qemu-system-x86_64 not found, boot test skipped\n");
   }

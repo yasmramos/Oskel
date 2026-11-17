@@ -5,6 +5,7 @@
 # x86-64 and Windows x86-64). Expects:
 #   -DOSKEL_EXE=<path to the oskel executable>
 #   -DOSKEL_SCRIPT=<the .oskl file to build>
+#   -DOSKEL_TEST_NAME=<the CTest name, used for a unique output path>
 #
 # It asserts:
 #   1. `oskel build` exits 0 and writes the requested output,
@@ -14,8 +15,8 @@
 #      by `UNIX`. The PE is static by construction (kernel32.dll is its only
 #      import), so nothing is lost there.
 
-if(NOT DEFINED OSKEL_EXE OR NOT DEFINED OSKEL_SCRIPT)
-  message(FATAL_ERROR "build_binary.cmake requires OSKEL_EXE and OSKEL_SCRIPT")
+if(NOT DEFINED OSKEL_EXE OR NOT DEFINED OSKEL_SCRIPT OR NOT DEFINED OSKEL_TEST_NAME)
+  message(FATAL_ERROR "build_binary.cmake requires OSKEL_EXE, OSKEL_SCRIPT and OSKEL_TEST_NAME")
 endif()
 
 # The output keeps the host's executable suffix: the Windows loader appends
@@ -28,11 +29,10 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
 else()
   set(exe_suffix "")
 endif()
-# Every case registered from this runner would otherwise share one output name
-# and overwrite each other under a parallel `ctest`, so the fixture's stem is
-# part of the name.
-get_filename_component(script_stem "${OSKEL_SCRIPT}" NAME_WE)
-set(out "${CMAKE_CURRENT_BINARY_DIR}/oskel_build_output_${script_stem}${exe_suffix}")
+# The output path embeds the test name: every `cmake -P` run shares the same
+# `CMAKE_CURRENT_BINARY_DIR`, so a fixed name would make parallel tests (each a
+# separate process) clobber one another's binary. The test name is unique.
+set(out "${CMAKE_CURRENT_BINARY_DIR}/${OSKEL_TEST_NAME}${exe_suffix}")
 file(REMOVE "${out}")
 
 execute_process(

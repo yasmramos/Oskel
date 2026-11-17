@@ -6,10 +6,11 @@
 # Registered by CMakeLists.txt on every host the AOT backend targets. Expects:
 #   -DOSKEL_EXE=<path to the oskel executable>
 #   -DOSKEL_SCRIPT=<the .oskl file to build>
+#   -DOSKEL_TEST_NAME=<the CTest name, used for a unique output path>
 #   -DOSKEL_EXPECTED_EXIT=<the runtime-error code the VM also uses>
 
-if(NOT DEFINED OSKEL_EXE OR NOT DEFINED OSKEL_SCRIPT OR NOT DEFINED OSKEL_EXPECTED_EXIT)
-  message(FATAL_ERROR "aot_runtime_error.cmake requires OSKEL_EXE, OSKEL_SCRIPT and OSKEL_EXPECTED_EXIT")
+if(NOT DEFINED OSKEL_EXE OR NOT DEFINED OSKEL_SCRIPT OR NOT DEFINED OSKEL_TEST_NAME OR NOT DEFINED OSKEL_EXPECTED_EXIT)
+  message(FATAL_ERROR "aot_runtime_error.cmake requires OSKEL_EXE, OSKEL_SCRIPT, OSKEL_TEST_NAME and OSKEL_EXPECTED_EXIT")
 endif()
 
 # Match the host's executable suffix, so the binary is written and launched
@@ -19,7 +20,9 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
 else()
   set(exe_suffix "")
 endif()
-set(out "${CMAKE_CURRENT_BINARY_DIR}/oskel_aot_runtime_error_output${exe_suffix}")
+# The output path embeds the test name (see build_binary.cmake): parallel tests
+# share `CMAKE_CURRENT_BINARY_DIR`, so a fixed name would collide.
+set(out "${CMAKE_CURRENT_BINARY_DIR}/${OSKEL_TEST_NAME}${exe_suffix}")
 file(REMOVE "${out}")
 
 execute_process(
