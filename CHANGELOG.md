@@ -61,6 +61,18 @@ may change between minor versions.
   an unsupported pair is reported instead of emitted. The freestanding binary is
   unchanged, byte for byte. The hosted image itself is PHASE 7f.4; until it
   lands, `--mode hosted` fails cleanly.
+- **`std.json`**, a pure-Oskel standard-library module for parsing and
+  serializing JSON. It maps JSON onto Oskel's own values (null → `nil`, number →
+  `int`|`double`, object → `map`, array → `array`), so no new runtime type is
+  introduced, and exposes `parse`, `isValid`, `tryParse` and `stringify`
+  (compact, or pretty-printed with an `indent`). A JSON number is an `int` when
+  the literal fits the signed 64-bit range and a `double` otherwise; `\uXXXX`
+  escapes are decoded, with surrogate pairs combined and a lone surrogate
+  rejected; the nesting depth is bounded at 256; and `stringify` refuses the
+  values JSON cannot spell (a non-finite number, a function, a range). The
+  module is written over the portable primitive surface, so it behaves
+  identically on the development VM and under `oskel build` (the AOT backend),
+  which the new `tests/native_build_json.oskl` fixture guards.
 - **Bare-metal AOT target** (PHASE 7g). `oskel build --target
   x86_64-freestanding-sysv` emits a multiboot 1 kernel that a boot loader
   (QEMU `-kernel`, GRUB, Limine) loads at 1 MiB and enters directly, with no
