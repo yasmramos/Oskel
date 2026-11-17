@@ -81,14 +81,19 @@ is a small, self-contained cleanup.
 
 ### Toolchain binaries and the compiler boundary
 
-`oskel` ships as a single binary until PHASE 7d. After the split:
+`oskel` ships as a single binary today, and `oskel build` is the AOT entry
+point inside it. PHASE 7d wired that subcommand into the CLI; the split into a
+separate host compiler is still pending, so the two binaries below are the
+target of that split, not the current state:
 
 - `oskel` development engine (run, REPL, -c). Includes the VM and the JIT (the
   JIT uses the project's own `native/codegen.h` emitter, not AsmJIT).
 - `oskelc` host compiler (oskelc file.oskl -o app). Reads sources and
   writes the ELF with the project's own `native/codegen.cpp` and
-  `native/elf.cpp` (no AsmJIT, no ELFIO). Links against musl static.
-- `oskel build` thin alias over `oskelc`
+  `native/elf.cpp` (no AsmJIT, no ELFIO). Links against musl static. Planned;
+  not part of 0.1.0.
+- `oskel build` thin alias over `oskelc` (the goal; today it runs the AOT
+  backend in-process)
 
 A third, standalone binary ships alongside them: `bindgen`, the C binding
 generator (`docs/bindgen.md`). It reads a C header and writes an Oskel
