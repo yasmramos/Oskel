@@ -93,6 +93,16 @@ static void test_bare_metal_instructions() {
   }
   {
     CodeGen g;
+    g.sti();
+    checkBytes("sti", g, "FB");
+  }
+  {
+    CodeGen g;
+    g.iretq();
+    checkBytes("iretq", g, "48CF");
+  }
+  {
+    CodeGen g;
     g.hlt();
     checkBytes("hlt", g, "F4");
   }

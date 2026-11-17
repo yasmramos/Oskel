@@ -20,13 +20,77 @@ constexpr std::uint8_t kSerialThrEmpty = 0x20;
 // instead of escalating to a triple fault: with no IDT, a `#UD` is a double
 // fault and then a reset -- the machine hangs with no trace. The gates point
 // at one tiny stub per vector; each stub pushes the vector number and jumps to
-// a single common handler that reports the vector and the faulting RIP over
-// the serial port before halting.
+// a handler that reports the vector and the faulting RIP over the serial port.
+//
+// There are two handlers behind those stubs. The *fault* handler (every vector
+// but the timer) is fatal: it prints and halts, because a CPU exception means
+// the runtime is in an unknown state and there is nothing safe to return to.
+// The *timer* handler (IRQ0, remapped to vector 0x20) is not fatal: it
+// acknowledges the 8259 PIC and returns to the interrupted code with `iretq`.
+// Keeping them apart is deliberate -- a device interrupt must never be
+// confused with a fault, so a `#PF` still halts with a trace.
 constexpr std::uint64_t kIdtGateCount = 256;
 constexpr std::uint64_t kIdtGateBytes = 16;
 constexpr std::uint8_t kIdtGateType = 0x8E;  // present, DPL 0, 64-bit interrupt gate
 constexpr std::uint16_t kIdtLimit =
     static_cast<std::uint16_t>(kIdtGateCount * kIdtGateBytes - 1);
+
+// The 8259 PIC and the 8254 PIT: the two chips the prelude programs to get a
+// periodic timer interrupt. Neither is remapped or programmed by the firmware
+// in a way a kernel can rely on, so the prelude does it itself before enabling
+// interrupts.
+//
+// The PIC powers up mapping IRQ0-IRQ7 onto vectors 0x08-0x0F, which collide
+// with the CPU's own exceptions (#DF at 8, #TS at 10, ...), so it is remapped
+// to 0x20-0x2F with the standard ICW1-ICW4 sequence. The PIT then drives IRQ0
+// at a fixed frequency, and only IRQ0 is unmasked: every other device stays
+// quiet until it has a driver.
+constexpr std::int64_t kPicMasterCmd = 0x20;   // master: command (ICW1, OCW2)
+constexpr std::int64_t kPicMasterData = 0x21;  // master: data (ICW2-4, OCW1)
+constexpr std::int64_t kPicSlaveCmd = 0xA0;
+constexpr std::int64_t kPicSlaveData = 0xA1;
+constexpr std::uint8_t kPicIcw1Init = 0x11;             // init + ICW4 needed
+constexpr std::uint8_t kPicVectorBaseMaster = 0x20;     // IRQ0 -> vector 0x20
+constexpr std::uint8_t kPicVectorBaseSlave = 0x28;      // IRQ8 -> vector 0x28
+constexpr std::uint8_t kPicIcw3Master = 0x04;           // slave cascaded on IRQ2
+constexpr std::uint8_t kPicIcw3Slave = 0x02;            // cascade identity 2
+constexpr std::uint8_t kPicIcw4Mode8086 = 0x01;         // 8086/88 mode
+constexpr std::uint8_t kPicMaskIrq0Only = 0xFE;         // all masked but IRQ0
+constexpr std::uint8_t kPicMaskAll = 0xFF;
+constexpr std::uint8_t kPicEoi = 0x20;                  // non-specific EOI
+
+constexpr std::int64_t kPitChannel0 = 0x40;             // channel 0 data port
+constexpr std::int64_t kPitCommand = 0x43;              // mode/command register
+constexpr std::uint8_t kPitMode3Channel0 = 0x36;        // ch0, lobyte/hibyte, mode 3
+constexpr std::uint16_t kPitDivisor = 11931;            // 1193182 / 100 Hz
+
+// The vector IRQ0 lands on after the remap, and the tick ceiling that stops a
+// program which never returns. The bare-metal prelude has no scheduler to hand
+// control to, so a `while (true)` would spin forever with nothing to preempt it
+// and no way for a test harness to observe it; after `kTickLimit` ticks the
+// kernel prints one line and exits.
+//
+// The handler is *silent* on every tick before the ceiling. Printing per tick
+// was the first idea, and it is wrong: a normal program already spans at least
+// one tick (the PIT is wall-clock driven and the prelude enables interrupts
+// just before the program runs), so a per-tick line would interleave with the
+// program's own output and break every boot test that checks stdout byte for
+// byte. The tick count is therefore kernel state, and the *ceiling* is the
+// observable.
+//
+// The ceiling is a watchdog, not a limit on normal programs: it is set at five
+// seconds of guest time (500 ticks at 100 Hz), far above every program in the
+// test suite (the boot tests finish in well under a second), so a program that
+// returns on its own never reaches it and keeps byte-identical stdout. Reaching
+// the ceiling also proves the return path: the count only advances if every
+// earlier tick's handler `iretq`d back to the program.
+constexpr std::int32_t kTimerVector = 0x20;
+constexpr std::int32_t kTickLimit = 500;
+// A distinctive exit code, so the tick watchdog's stop cannot be confused with
+// a program returning that value on its own.
+constexpr std::int32_t kTickExitCode = 0x77;
+constexpr char kTickTemplate[] = "tick limit\n";
+constexpr std::int64_t kTickBytes = sizeof(kTickTemplate) - 1;
 
 // Vectors for which the CPU pushes an error code on the interrupt frame
 // (Intel SDM, "Exception and Interrupt Reference"): #DF, #TS, #NP, #SS, #GP,
@@ -58,13 +122,21 @@ constexpr std::int32_t kFaultMessageBytes = 64;
 // port and the `hlt` loop is the end.
 constexpr std::uint8_t kFaultExitCode = 0xFD;
 
-// .bss layout, all relative to kBMDataBase: the page tables first, then the
-// boot stack (which grows down toward them) and the arena at the top.
+// .bss layout, all relative to kBMDataBase: the page tables first, then a
+// page of kernel data (the tick counter the timer handler owns), the boot stack
+// (which grows down toward them) and the arena at the top.
 constexpr std::uint64_t kBMPml4Offset = 0x0000;
 constexpr std::uint64_t kBMPdptOffset = 0x1000;
 constexpr std::uint64_t kBMPdOffset = 0x2000;
-constexpr std::uint64_t kBMStackTopOffset = 0x7000;  // 16 KiB stack, top address
-constexpr std::uint64_t kBMArenaOffset = 0x7000;     // arena sits right above
+constexpr std::uint64_t kBMKernelDataOffset = 0x3000;  // 4 KiB of kernel state
+constexpr std::uint64_t kBMStackTopOffset = 0x8000;    // 16 KiB stack, top address
+constexpr std::uint64_t kBMArenaOffset = 0x8000;       // arena sits right above
+
+// The tick counter, the first word of the kernel-data page: the timer handler
+// increments it and exits once it reaches `kTickLimit`. A `.bss` word is the
+// only writable state the image has (there is no data segment), and the loader
+// zeroes it.
+constexpr std::uint64_t kBMKernelDataTicks = kBMKernelDataOffset;
 
 // Fixed offsets, relative to the trampoline's first byte, of the pieces the
 // trampoline addresses by absolute address. They are a property of the
@@ -169,9 +241,9 @@ static void emitHexDigits(CodeGen& code, X64Reg value, X64Reg base, std::int64_t
   }
 }
 
-// Emits the interrupt descriptor table, one stub per vector and the single
-// common fault handler, and binds `descriptorLabel` at the 10-byte
-// pseudo-descriptor the entry point loads with `lidt`.
+// Emits the interrupt descriptor table, one stub per vector, the fatal fault
+// handler and the returning timer handler, and binds `descriptorLabel` at the
+// 10-byte pseudo-descriptor the entry point loads with `lidt`.
 //
 // A CPU exception is not maskable by `cli`, so the only defence against a
 // silent triple fault is an IDT: without one, the first `#UD` (say an SSE
@@ -179,15 +251,26 @@ static void emitHexDigits(CodeGen& code, X64Reg value, X64Reg base, std::int64_t
 // reset with nothing printed. Every gate points at a stub that pushes the
 // vector number -- preceded by a dummy error code when the CPU did not push
 // one -- so the frame the handler sees is always `[rsp]` = vector, `[rsp+8]` =
-// error code, `[rsp+16]` = faulting RIP. The handler prints `oskel: cpu
-// exception 0xVV rip=0xRRRRRRRRRRRRRRRR` over the serial port and halts: a
-// fault is fatal here, there is no handler to return to.
+// error code, `[rsp+16]` = faulting RIP.
+//
+// The stubs dispatch by vector. The timer (IRQ0, remapped to `kTimerVector`)
+// reaches the *returning* handler: it counts the tick and acknowledges the PIC
+// and `iretq`s -- silently, because a per-tick print would interleave with the
+// program's own output (see `kTickLimit`) -- until the tick ceiling, where a
+// program that never returned is stopped with one line and a dedicated exit
+// code, since a bare-metal program has no scheduler to preempt it. Every other
+// vector reaches the *fatal* handler, which prints `oskel: cpu exception 0xVV
+// rip=0x...` and halts: a fault means the runtime is in an unknown state and
+// there is nothing safe to return to.
 static void emitIdt(CodeGen& code, const RuntimeHandles& handles,
              CodeGen::Label descriptorLabel) {
   std::vector<CodeGen::Label> stubs(kIdtGateCount);
   for (std::uint64_t v = 0; v < kIdtGateCount; ++v) stubs[v] = code.newLabel();
-  CodeGen::Label handler = code.newLabel();
-  CodeGen::Label templateBytes = code.newLabel();
+  CodeGen::Label faultHandler = code.newLabel();
+  CodeGen::Label tickHandler = code.newLabel();
+  CodeGen::Label tickDone = code.newLabel();
+  CodeGen::Label faultTemplateBytes = code.newLabel();
+  CodeGen::Label tickBytes = code.newLabel();
 
   const std::int64_t stackTop =
       static_cast<std::int64_t>(kBMDataBase + kBMStackTopOffset);
@@ -197,14 +280,14 @@ static void emitIdt(CodeGen& code, const RuntimeHandles& handles,
   // to the top of the boot stack: the fault may have happened on a stack that
   // is itself broken (a stack overflow is a `#PF`/`#DF`), and the handler
   // needs room to build its message.
-  code.bind(handler);
+  code.bind(faultHandler);
   code.movFromMem(X64Reg::R8, X64Reg::Rsp, 0);   // vector
   code.movFromMem(X64Reg::R9, X64Reg::Rsp, 16);  // faulting RIP
   code.movImm(X64Reg::Rsp, stackTop);
   code.subRegImm32(X64Reg::Rsp, kFaultMessageBytes);
   code.movReg(X64Reg::Rbp, X64Reg::Rsp);  // message buffer base
 
-  code.leaRipLabel(X64Reg::Rsi, templateBytes);
+  code.leaRipLabel(X64Reg::Rsi, faultTemplateBytes);
   code.movReg(X64Reg::Rdi, X64Reg::Rbp);
   code.movImm(X64Reg::Rcx, kFaultTemplateLen);
   code.cld();
@@ -227,18 +310,85 @@ static void emitIdt(CodeGen& code, const RuntimeHandles& handles,
   code.hlt();
   code.jmp(spin);
 
+  // --- the timer handler (IRQ0): count, (silently) acknowledge, return ---
+  // Save every register the handler touches. rbp is included because the
+  // interrupted code may be using it as a frame pointer (every lowered frame
+  // does); it doubles as the saved-rsp slot below. An interrupt gate has
+  // already cleared IF, so the handler cannot be re-entered.
+  code.bind(tickHandler);
+  code.push(X64Reg::Rax);
+  code.push(X64Reg::Rcx);
+  code.push(X64Reg::Rdx);
+  code.push(X64Reg::Rsi);
+  code.push(X64Reg::Rdi);
+  code.push(X64Reg::Rbp);
+  code.push(X64Reg::R8);
+  code.push(X64Reg::R9);
+  code.push(X64Reg::R10);
+  code.push(X64Reg::R11);
+  // The interrupted rsp is not known to be 16-byte aligned -- an interrupt can
+  // land anywhere, not only at a `call` boundary -- so save it and force the
+  // alignment the System V ABI wants at the `call` into `oskel_write`.
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.andImm32(X64Reg::Rsp, -16);
+
+  // ticks++ (r10 = &ticks, r11 = the new value)
+  code.movImm(X64Reg::R10, static_cast<std::int64_t>(kBMDataBase + kBMKernelDataTicks));
+  code.movFromMem(X64Reg::R11, X64Reg::R10, 0);
+  code.addImm32(X64Reg::R11, 1);
+  code.movToMem(X64Reg::R10, 0, X64Reg::R11);
+
+  // After kTickLimit ticks there is nothing to return to, so stop. The demo
+  // ends here; a real kernel would reschedule instead.
+  code.cmpImm32(X64Reg::R11, kTickLimit);
+  code.jcc(Jcc::Ge, tickDone);
+
+  // End of interrupt: acknowledge the PIC, restore, `iretq`. No print here:
+  // see `kTickLimit` for why a per-tick line would corrupt a program's stdout.
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.movImm(X64Reg::Rax, kPicEoi);
+  code.movImm(X64Reg::Rdx, kPicMasterCmd);
+  code.outDxAl();
+  code.pop(X64Reg::R11);
+  code.pop(X64Reg::R10);
+  code.pop(X64Reg::R9);
+  code.pop(X64Reg::R8);
+  code.pop(X64Reg::Rbp);
+  code.pop(X64Reg::Rdi);
+  code.pop(X64Reg::Rsi);
+  code.pop(X64Reg::Rdx);
+  code.pop(X64Reg::Rcx);
+  code.pop(X64Reg::Rax);
+  code.addImm32(X64Reg::Rsp, 16);  // drop the stub's vector + error code
+  code.iretq();
+
+  // The ceiling: a program that never returned has run for kTickLimit ticks.
+  // Print the one line that proves the timer fired and returned this far, then
+  // stop with a dedicated exit code.
+  code.bind(tickDone);
+  code.movImm(X64Reg::Rdi, 1);  // fd, ignored
+  code.leaRipLabel(X64Reg::Rsi, tickBytes);
+  code.movImm(X64Reg::Rdx, kTickBytes);
+  code.callLabel(handles.write);
+  code.movImm(X64Reg::Rdi, kTickExitCode);
+  code.callLabel(handles.exit);
+  code.ud2();  // oskel_exit never returns
+
   // --- one stub per vector ---
   for (std::uint64_t v = 0; v < kIdtGateCount; ++v) {
     code.bind(stubs[v]);
     if (!vectorPushesErrorCode(static_cast<int>(v))) code.pushImm8(0);
     code.pushImm8(static_cast<std::int32_t>(v));
-    code.jmp(handler);
+    code.jmp(v == static_cast<std::uint64_t>(kTimerVector) ? tickHandler : faultHandler);
   }
 
-  // --- the message template ---
-  code.bind(templateBytes);
+  // --- the message templates ---
+  code.bind(faultTemplateBytes);
   code.emitBytes(reinterpret_cast<const std::uint8_t*>(kFaultTemplate),
                  static_cast<std::size_t>(kFaultTemplateLen));
+  code.bind(tickBytes);
+  code.emitBytes(reinterpret_cast<const std::uint8_t*>(kTickTemplate),
+                 static_cast<std::size_t>(kTickBytes));
 
   // --- the gate table ---
   const std::uint8_t zero = 0x00;
@@ -378,10 +528,45 @@ std::uint64_t emitBareMetalPreamble(CodeGen& code, const RuntimeHandles& handles
   outSerial(kSerialLcr, 0x03);   // line control: 8N1, DLAB off
   outSerial(kSerialFcr, 0xC7);   // FIFO: enable, clear, 14-byte threshold
 
+  // Remap the 8259 PIC off the CPU's exception vectors and onto 0x20-0x2F, so
+  // IRQ0 becomes a usable interrupt instead of colliding with #DF/#TS/... The
+  // sequence is the standard ICW1-ICW4 initialisation of both chips: start the
+  // init, set the vector bases, tell the master the slave hangs off IRQ2 and
+  // the slave its cascade identity, then select 8086/88 mode. Interrupts are
+  // still masked here (`cli` from the trampoline, and the PIC masks below).
+  auto outPort = [&code](std::int64_t port, std::uint8_t value) {
+    code.movImm(X64Reg::Rdx, port);
+    code.movImm(X64Reg::Rax, value);
+    code.outDxAl();
+  };
+  outPort(kPicMasterCmd, kPicIcw1Init);
+  outPort(kPicSlaveCmd, kPicIcw1Init);
+  outPort(kPicMasterData, kPicVectorBaseMaster);
+  outPort(kPicSlaveData, kPicVectorBaseSlave);
+  outPort(kPicMasterData, kPicIcw3Master);
+  outPort(kPicSlaveData, kPicIcw3Slave);
+  outPort(kPicMasterData, kPicIcw4Mode8086);
+  outPort(kPicSlaveData, kPicIcw4Mode8086);
+  outPort(kPicMasterData, kPicMaskIrq0Only);  // unmask only the timer
+  outPort(kPicSlaveData, kPicMaskAll);
+
+  // Program the 8254 PIT channel 0 in mode 3 (square wave) at a fixed
+  // frequency: the 16-bit divisor is loaded low byte first, and the chip
+  // divides its 1.193182 MHz input by it to drive IRQ0.
+  outPort(kPitCommand, kPitMode3Channel0);
+  outPort(kPitChannel0, static_cast<std::uint8_t>(kPitDivisor & 0xFF));
+  outPort(kPitChannel0, static_cast<std::uint8_t>((kPitDivisor >> 8) & 0xFF));
+
   // Install the IDT before the program can fault. `lidt` loads a forward
   // reference the emitter patches at `finalize()`, since the table is emitted
   // after this code.
   code.lidtRipLabel(idtDescriptor);
+
+  // Unmask interrupts as the very last step: the IDT and the PIC are now both
+  // ready, so the first timer tick arrives with somewhere to go. Nothing before
+  // this point can be interrupted, which is what keeps the half-configured PIC
+  // from delivering a spurious vector.
+  code.sti();
 
   code.callLabel(programEntry);
   code.movReg(X64Reg::Rdi, X64Reg::Rax);  // exit code = main's result

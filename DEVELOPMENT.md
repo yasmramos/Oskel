@@ -1346,10 +1346,31 @@ Slices, each independently shippable:
     program, so a CPU exception reaches a handler that prints `oskel: cpu
     exception 0xVV rip=0x...` over the serial port and halts. Without an IDT a
     `#UD` is a double fault and then a reset: the machine hangs with no trace,
-    which is exactly how the missing `CR4.OSFXSR` (above) hid. The ELF emitter
+    which is exactly how the missing `CR4.OSFXSR` (above) hid. The IDT backs
+    two handlers: the *fault* handler above (every vector but the timer) and a
+    *timer* handler for IRQ0 that acknowledges the 8259 PIC and returns with
+    `iretq` -- a device interrupt must never be confused with a fault, so a
+    `#PF` still halts with a trace. Before enabling interrupts the prelude
+    remaps the 8259 PIC off the CPU's exception vectors onto 0x20-0x2F (the
+    standard ICW1-ICW4 sequence), programs the 8254 PIT channel 0 in mode 3
+    (divisor 11931, 100 Hz), unmasks only IRQ0 and masks the rest, and only
+    then executes `sti` -- the last step before the program runs, so no
+    interrupt arrives with the IDT or the PIC half-configured. The timer
+    handler counts ticks in a `.bss` kernel-data page (added by this slice,
+    which shifts the stack and the arena up by one page) and is silent on every
+    tick: it acknowledges the PIC and `iretq`s. A per-tick print would
+    interleave with the program's own output -- a normal program already spans
+    at least one tick -- so the tick count is kernel state and the ceiling is
+    the observable: after 500 ticks (five seconds) a program that never returned
+    gets one `tick limit` line and the dedicated exit code 0x77. The handler
+    saves and restores every register it touches (including `rbp`, since the
+    interrupted code may use it as a frame pointer) and forces 16-byte stack
+    alignment around the `call` into `oskel_write`, because an interrupt lands
+    at an arbitrary instruction, not only at a call boundary. The ELF emitter
     produces an ELF32/i386 image with
     two `PT_LOAD` segments: the code at 1 MiB (R+X) and the `.bss` at 2 MiB
-    (R+W, `p_filesz = 0`, `p_memsz` = page tables + stack + arena). The
+    (R+W, `p_filesz = 0`, `p_memsz` = page tables + kernel data + stack +
+    arena). The
     lowering and the embedded runtime are shared with Linux unchanged. Verified
     in `tests/bare_metal_test.cpp`: the structural checks always run, and the
     end-to-end boot (real serial stdout and exit code under
@@ -1361,19 +1382,13 @@ Slices, each independently shippable:
     into a test failure rather than a silent skip, so the boot path cannot
     disappear from the suite unnoticed; on a developer box without the variable
     the boot tests skip, and the structural checks still run. The
-    `CodeGen` gained four single-opcode primitives (`cli`, `hlt`, `out dx, al`,
-    `in al, dx`) plus `test al, imm8`, each byte-checked in
-    `tests/codegen_test.cpp`.
+    `CodeGen` gained six single-opcode primitives (`cli`, `sti`, `hlt`,
+    `iretq`, `out dx, al`, `in al, dx`) plus `test al, imm8`, each byte-checked
+    in `tests/codegen_test.cpp`.
 - Deferred: per-instruction type annotations for fast paths without dynamic
   dispatch (bridge toward the speculative work in
   `docs/ARCHITECTURE_ANALYSIS.md`); other targets (macOS via libc or stubs;
   ARM64 bare metal).
-- Deferred: the bare-metal interrupt path (timer, PIC remap, a returning
-  handler). The bare-metal prelude reports CPU *exceptions* and halts; it does
-  not take or return from *interrupts*, so no device can be serviced. The
-  design for the first slice -- PIC remap, PIT, `sti` and `iretq`, two new
-  `CodeGen` primitives, and the QEMU test that proves the return -- is in
-  `docs/bare-metal-interrupts-design.md`. No code is written yet.
 - Afterwards, LuaJIT's JIT as a reference (see PHASE 8 below).
 - **In the tree now**: the `Target` descriptor (`include/native/target.h`) and
   the x86-64 instruction emitter (`include/native/codegen.h`,
