@@ -21,6 +21,17 @@ may change between minor versions.
 
 ### Changed
 
+- **The status table and the phase line catch up to the AOT error values
+  (PHASE 7c.5c).** `docs/language.md` still said `pcall`/`error` "and real error
+  catching do not" lower, which the 7c.5c work made false: `error` values and
+  value-based `try`/`catch` now behave identically on the VM and under `oskel
+  build` (`error`, `isError`, `type`, `.message`/`.code`, equality, `print`,
+  `repr`, interpolation, `catch` recovering a returned error). Only `pcall` and
+  raised runtime errors stay out, the latter because the AOT runtime has no
+  unwinding. The row now says so. `DEVELOPMENT.md`'s Phase 7 status line also
+  omitted the completed `7c.4a-d`, `7c.5a`, `7c.5c` and `7c.6` slices; it lists
+  them, and keeps `7c.5b` marked in progress as its section says.
+
 - **The docs stop promising what the tree does not do.** `DEVELOPMENT.md` §8 now
   marks the `.oskc`/`.oskpkg` formats and their bytecode verification as
   *planned* (nothing serializes a `Bytecode` to disk yet), and `docs/language.md`
