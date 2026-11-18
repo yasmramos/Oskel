@@ -1133,6 +1133,27 @@ Slices, each independently shippable:
       three are seeded into their global slots like the other builtins and are
       covered by `tests/freestanding_test.cpp` (the values and every failure
       path) and `tests/native_build_builtins.oskl` (the `oskel build` fixture).
+    - **7c.5c** (done) — error values. `error()`/`isError` were previously
+      unbound in AOT (`isError` returned a constant `false`), so `try`/`catch`
+      never caught and an error was not a value. The AOT runtime now has a real
+      `error` tag: an `AotError` header (`AotString* message` + `int64 code`)
+      over the arena. `error(message, code?)` mirrors the hosted builtin (the
+      message is a string taken verbatim or any other value through `$str`; the
+      optional code is an integer, `0` by default; one or two arguments, else the
+      wrong-arity error). The tag flows through every shared helper: `type`
+      reports `"error"`, `isError`/`$isError` see it (so `try` propagates and
+      `catch` recovers), `==` compares by message *and* code, `print`/`toString`
+      render the message alone and the recursive `repr` renders the
+      `error("message")` / `error("message", code)` debug form (the code only
+      when non-zero), `$str` interpolation renders the message, and
+      `err.message`/`err.code` read the fields (`oskel_member_get` gained the
+      two member-name islands; any other name is the "no such member" error).
+      No new opcode and no bytecode change -- it is a runtime value like the
+      others. Covered by `tests/native_build_error.oskl` (built and run against
+      the VM by `tests/build_binary.cmake`), which is what makes value-based
+      `try`/`catch` work in a native binary. `pcall` (backlog §6.4) and
+      catchable *runtime* errors (the AOT runtime has no unwinding) remain out
+      of scope.
     - **7c.6** (done) — variadic parameter packs. A function with a trailing
       `rest...` parameter was a lowering error ("variadic function",
       `PHASE 7c.3`); it now compiles. The child proto's prologue checks the

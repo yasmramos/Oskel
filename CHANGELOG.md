@@ -101,6 +101,22 @@ may change between minor versions.
 
 ### Added
 
+- **AOT error values** (PHASE 7c.5c). `error()` and `isError` were unbound in
+  the AOT backend (`isError` returned a constant `false`), so value-based
+  `try`/`catch` never caught in a native binary. `oskel build` now has a real
+  `error` value: `error(message, code?)` builds an arena-backed `AotError`
+  (message string + integer code, `0` by default; one or two arguments, else
+  the wrong-arity error), and the tag flows through every shared helper so
+  `type(err)` is `"error"`, `isError`/`$isError` see it, `==` compares by
+  message and code, `print`/`toString` render the message, `repr` renders the
+  `error("message")` / `error("message", code)` debug form, interpolation
+  renders the message, and `err.message`/`err.code` read the fields. No new
+  opcode and no bytecode change — it is a runtime value like the others. This
+  is what makes `try` propagate and `catch` recover in a freestanding binary,
+  matching the development VM; a raised *runtime* error (no unwinding in AOT)
+  still exits 70. Covered by `tests/native_build_error.oskl` and
+  `test_error_values` in `tests/freestanding_test.cpp`.
+
 - **Bare-metal keyboard input: the IRQ1 handler and the `input` builtin.** The
   multiboot kernel now has a keyboard. After the PIC remap, IRQ1 is vector
   `0x21`; the handler reads the scancode from the i8042 data port (`0x60`),

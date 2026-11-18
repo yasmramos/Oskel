@@ -2295,6 +2295,13 @@ data with the same field names.
 ordinary values, they can be stored, returned, compared and carried through
 containers like any other value.
 
+Error values behave identically on the development VM and under `oskel build`
+(the AOT backend): `error`, `isError`, `type`, `.message`/`.code`, equality,
+`print`/`repr` and interpolation all agree, which is what makes value-based
+`try`/`catch` (§13.3) work in a native binary. A raised runtime error, in
+contrast, has no representation in the freestanding AOT runtime (no unwinding),
+so only `error` values are recoverable there.
+
 ### 13.3 Propagating and recovering: `try` and `catch`
 
 `pcall` turns a raised error into a value, but it is awkward for the common
