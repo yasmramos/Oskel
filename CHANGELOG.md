@@ -472,6 +472,21 @@ may change between minor versions.
 
 ### Fixed
 
+- **`bindgen` no longer drops a declaration in silence.** A function returning
+  a function pointer (`int (*signal(int, void (*)(int)))(int);`) vanished
+  without a `// skipped:` comment and without being counted, which broke the
+  tool's "never silently mis-translate" contract; it is now reported as a
+  callback the vocabulary cannot express, while a function-pointer *variable*
+  (`int (*fp)(void);`) stays silently ignored, since it is not a function. Two
+  malformed diagnostics are corrected as well: the skip reasons read as noun
+  phrases (`'cb_t' is not expressible in the FFI vocabulary (callbacks are not
+  generated)`, `'MyType' is not a known type`) instead of concatenating a
+  sentence fragment after `parameter type `, and a type the vocabulary does not
+  know *after a modifier* (`unsigned __int64 x`) is now reported instead of
+  discarding the whole declaration. No token, AST node, parser rule, opcode,
+  VM or compiler change: `bindgen` only writes the `extern "C"` the engine
+  already accepts, and the end-to-end fixture is unchanged.
+
 - AOT: the remaining in-place and query array methods now work in a compiled
   binary: `shift`, `unshift`, `insert`, `removeAt`, `contains`, `indexOf` and
   `clear`. They bind like `push`/`pop` (the receiver goes into a shared cell and

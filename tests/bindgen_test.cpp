@@ -131,6 +131,57 @@ int main() {
     check(result.skipped == 3, "the three skips are counted");
   }
 
+  // A function *returning* a function pointer is a declaration the vocabulary
+  // cannot express: it must be reported, not dropped in silence. A
+  // function-pointer *variable* is not a binding and stays silent.
+  {
+    const bindgen::Result result = bindgen::generate(
+        "int (*bsd_signal(int sig, void (*func)(int)))(int);\n"
+        "char *(*strlist(int n))(int, int);\n"
+        "int (*fp_var)(void);\n"
+        "void (*handler)(int);\n"
+        "int normal(int x);\n",
+        "t.h");
+    check(contains(result.text, "// skipped: bsd_signal: returns a function pointer"),
+          "a function returning a function pointer is skipped, not dropped");
+    check(contains(result.text, "// skipped: strlist: returns a function pointer"),
+          "a function returning a pointer-to-function pointer is skipped too");
+    check(!contains(result.text, "fp_var"), "a function-pointer variable is not reported");
+    check(!contains(result.text, "handler"), "a function-pointer variable is not reported");
+    check(contains(result.text, "fn normal(x: int32): int32;"),
+          "the bindable declaration is still emitted");
+    check(result.emitted == 1, "only the bindable declaration is emitted");
+    check(result.skipped == 2, "the two function-pointer returns are counted");
+  }
+
+  // A type the vocabulary does not know is reported with a well-formed reason,
+  // and a modifier before it does not make the declaration vanish.
+  {
+    const bindgen::Result result = bindgen::generate(
+        "int uses_unknown(MyType x);\n"
+        "unsigned __int64 win1(void);\n"
+        "unsigned len(int x);\n",
+        "t.h");
+    check(contains(result.text, "// skipped: uses_unknown: parameter type 'MyType' is not a known type"),
+          "an unknown parameter type is reported");
+    check(contains(result.text, "// skipped: win1: return type '__int64' is not a known type"),
+          "an unknown type after a modifier is reported, not dropped");
+    check(contains(result.text, "fn len(x: int32): uint32;"),
+          "'unsigned len' is still the implicit-int declarator");
+    check(result.skipped == 2, "the two unknown types are counted");
+  }
+
+  // A function-pointer typedef used as a type is reported with a well-formed
+  // reason (the alias name is quoted, the sentence reads as a noun phrase).
+  {
+    const bindgen::Result result = bindgen::generate(
+        "typedef int (*cb_t)(int);\nint register_cb(cb_t cb);\n", "t.h");
+    check(contains(result.text,
+                   "// skipped: register_cb: parameter type 'cb_t' is not expressible"),
+          "a function-pointer typedef type is reported with its name");
+    check(result.skipped == 1, "the typedef skip is counted");
+  }
+
   // A declaration named after an Oskel keyword cannot be bound.
   {
     const bindgen::Result result = bindgen::generate("int for(int x);\n", "t.h");

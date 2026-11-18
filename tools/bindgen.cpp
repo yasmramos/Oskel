@@ -411,8 +411,18 @@ class Bindgen {
             advance();
             continue;
           }
-          // After a modifier, a word that is not a type name is the declarator
-          // itself: `unsigned len` is `unsigned int len`, not a type `len`.
+          // After a modifier, a word that is not a type name is usually the
+          // declarator itself: `unsigned len` is `unsigned int len`, not a
+          // type `len`. But `unsigned __int64 x` (a spelling the vocabulary
+          // does not know) has the unknown word as the *type*, told apart by a
+          // declarator or a `*` right after it. Record it so the type check
+          // reports it, instead of dropping the whole declaration in silence.
+          if (haveModifiers && (peek(1).kind == TokKind::Ident ||
+                                (peek(1).kind == TokKind::Punct && peek(1).text == "*"))) {
+            spec.word = t.text;
+            advance();
+            continue;
+          }
           if (haveModifiers) break;
         }
         spec.word = t.text;
@@ -431,7 +441,7 @@ class Bindgen {
     if (spec.isStructTag) {
       base.kind = Base::Kind::Struct;
       base.ok = false;
-      base.reason = "struct/union/enum '" + spec.word + "' crosses by value";
+      base.reason = "'" + spec.word + "' crosses by value";
       return base;
     }
     const std::string& w = spec.word;
@@ -510,7 +520,7 @@ class Bindgen {
       return base;
     }
     base.ok = false;
-    base.reason = "unknown type '" + w + "'";
+    base.reason = "'" + w + "' is not a known type";
     return base;
   }
 
@@ -577,7 +587,10 @@ class Bindgen {
         if (checkPunct("(")) skipParens();  // the parameter list
         declarator.ok = false;
         declarator.kind = Base::Kind::Unknown;
-        declarator.reason = "a function-pointer typedef is not in the FFI vocabulary";
+        declarator.reason =
+            (name.empty() ? std::string("a function-pointer typedef")
+                          : "'" + name + "'") +
+            " is not expressible in the FFI vocabulary (callbacks are not generated)";
       } else {
         declarator = parsePointers(base);
         if (check(TokKind::Ident)) name = advance().text;
@@ -644,6 +657,27 @@ class Bindgen {
     // A declaration that is not a plain `name(` is a variable, a function
     // pointer, or something else slice 1 does not bind: skip it.
     if (!check(TokKind::Ident)) {
+      // A `(` here opens a parenthesized declarator. Two shapes matter: a
+      // function-pointer *variable* (`int (*fp)(void);`) is not a binding and
+      // is skipped in silence, while a *function returning* a function pointer
+      // (`int (*signal(int, void (*)(int)))(int);`) is a declaration the FFI
+      // vocabulary cannot express and must be reported, never dropped in
+      // silence. They are told apart by what follows the name inside the
+      // parentheses: a `(` begins a parameter list (a function), a `)` closes
+      // the declarator (a variable).
+      if (checkPunct("(")) {
+        std::size_t ahead = 1;
+        while (peek(ahead).kind == TokKind::Punct && peek(ahead).text == "*") ++ahead;
+        if (peek(ahead).kind == TokKind::Ident &&
+            peek(ahead + 1).kind == TokKind::Punct && peek(ahead + 1).text == "(") {
+          const std::string innerName = peek(ahead).text;
+          skipToSemicolon();
+          skipped_.push_back(innerName +
+                             ": returns a function pointer, a callback the FFI "
+                             "vocabulary cannot express");
+          return;
+        }
+      }
       skipToSemicolon();
       return;
     }
@@ -827,7 +861,8 @@ class Bindgen {
   }
 
   static std::string quoteReason(const Base& base) {
-    return base.reason.empty() ? std::string("is not in the FFI vocabulary") : base.reason;
+    return base.reason.empty() ? std::string("is not expressible in the FFI vocabulary")
+                               : base.reason;
   }
 
   static bool isOskelKeyword(const std::string& name) {

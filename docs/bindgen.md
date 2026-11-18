@@ -93,13 +93,20 @@ as active code. The current skips are:
   aggregate across the C boundary is not in the slice-1 scope; a pointer to one
   is a `ptr`.
 - a **callback** (`R (*)(P...)`), as a parameter or through a function-pointer
-  `typedef`.
+  `typedef`, and a **function returning a function pointer**
+  (`R (*f(...))(P...)`), which is the same callback shape spelled as a return.
 - `long double` and any type the tool cannot resolve to the vocabulary.
 - a function whose name is a **reserved Oskel keyword** (`for`, `struct`, ...),
   which cannot be a binding name.
 - a **function definition** (`static inline ... { ... }`), which has no exported
   symbol to bind.
 - a **duplicate** declaration of an already-emitted name.
+
+A **variable** — including a function-pointer variable like `int (*fp)(void);`
+— is not a binding and is skipped *without* a comment: it is not a declaration
+the vocabulary failed to express, it is simply not a function. Every
+*declaration* that names a function is either emitted or reported, never dropped
+in silence.
 
 ## Variadic functions
 
