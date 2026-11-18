@@ -51,7 +51,7 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `module_resolver.cpp` | dotted module path | source file path | ✅ |
 | `vm.cpp` | `Bytecode*` | execution | ✅ |
 | `main.cpp` | CLI | full pipeline | ✅ (VM as dev engine, PHASE 4) |
-| `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slices 1-3 |
+| `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slices 1-4 |
 | `value.cpp` | `Value`, tagged union | shared runtime | ✅ |
 | `builtins.cpp` / `ops.cpp` | native builtins, shared operators | runtime library | ✅ |
 | `ffi.cpp` | `extern "C"` declarations | marshalling natives | ✅ PHASE 6.6 |
@@ -1476,6 +1476,28 @@ perform is never lost; a comparison whose result is reused afterwards stays
 unfused and correct. The same loop drops to about 320x the interpreter, within
 about 1.4x of the hand-written loop. The fusion rewrites *how* one opcode and its
 branch are emitted, so it is still 1:1 with the bytecode.
+
+Slice 4 (done) replaces the fixed per-slot register map with **web-based register
+allocation and copy coalescing**. The emitter used to tie a slot to a register by
+index (`R0` to the first pool register, `R1` to the second, ...), so a temporary
+reused for two values forced a `mov` at each reuse and every `GETLOCAL`/
+`SETLOCAL` copied between the temporary's register and the local's. The emitter
+now resolves every read and write through a per-instruction allocation table
+(`readReg[i][slot]`/`writeReg[i][slot]`), and `allocateRegisters` fills it: it
+builds a *web* per slot (the definitions a single live use can observe, via
+reaching definitions unioned over the live points), interferes webs that are live
+at the same point, coalesces the copies that do not interfere (a `MOVE`, a local
+copy, or an in-place `s = s + x`) after dropping the spurious interference edge
+between a pure-copy web and its source, and colors the merged graph greedily over
+the seven-register pool. A web the pool cannot cover keeps its 16-byte stack
+slot, exactly like the old overflow path, so the code stays correct when the
+register pressure exceeds the pool. A liveness pass that mirrors the emitter's
+fold decisions also drops a definition no read observes (`deadDef`), which
+removes the constant a folded expression left behind. The integer loop falls from
+17 instructions to 9 (a hand-written `-O2` C++ loop is 7) and from 0.051s to
+0.039s, within about 1.08x of the hand-written loop and about 420x the
+interpreter. The allocation rewrites *where* a value lives, never *how many*
+opcodes run, so it is still 1:1 with the bytecode.
 
 Later slices widen the subset (floats, then strings, then the boxed value
 runtime, then calls and guards) and add the tiering policy (compile after a

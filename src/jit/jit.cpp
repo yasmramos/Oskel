@@ -27,6 +27,14 @@ constexpr bool jitHostSupported() {
 #endif
 }
 
+// Physical registers a register-resident slot can live in: all caller-saved,
+// and a supported proto is a leaf (no `CALL`), so the body makes no call that
+// could clobber them. r10/r11 stay scratch and rbp is the frame pointer.
+constexpr int kJitRegPoolCount = 7;
+constexpr X64Reg kJitRegPool[kJitRegPoolCount] = {
+    X64Reg::Rax, X64Reg::Rcx, X64Reg::Rdx, X64Reg::Rsi,
+    X64Reg::Rdi, X64Reg::R8, X64Reg::R9};
+
 // -------------------------------------------------------------- value analysis
 //
 // The JIT only compiles a proto whose body provably manipulates `nil`, `bool`
@@ -236,21 +244,678 @@ struct Analysis {
   std::vector<std::int64_t> defVal;
   std::vector<Ty> defKind;
 
-  // Per slot, true when some reachable instruction reads the slot's *value* at
-  // run time (the emitter materializes it in a register or stack slot). A slot
-  // that is only ever read through a folded constant -- an operand the emitter
-  // replaces by an immediate, or a `defConst` result -- never needs its value,
-  // so a `LOADK` that defines such a slot emits nothing. This removes the
-  // constants a folded expression leaves behind.
-  std::vector<bool> materialized;
-
   // Compare-branch fusion. For a comparison whose boolean result is dead right
   // after a conditional branch on it, the emitter skips materializing the bool
   // and turns the pair into `cmp; jcc`. `fusedBranch[i]` is the branch index a
   // comparison at `i` jumps for, or -1 when the comparison emits normally; a
   // branch listed here emits nothing (the comparison already jumped).
   std::vector<int> fusedBranch;
+
+  // Register allocation. `readReg[i][slot]` is the physical register (an index
+  // into `kJitRegPool`, or -1 for a stack slot) holding a slot's value when
+  // instruction `i` *reads* it; `writeReg[i][slot]` is the register it lands in
+  // when `i` *defines* it. The two differ because one instruction can read and
+  // write the same slot through different registers. `entryReg[slot]` is the
+  // register a parameter's incoming value is lifted into.
+  std::vector<std::vector<int>> readReg;
+  std::vector<std::vector<int>> writeReg;
+  std::vector<int> entryReg;
+
+  // Per instruction, true when it is a pure definition whose value no reachable
+  // read observes (a dead web). The emitter skips it: it is the last residue a
+  // folded expression leaves behind, e.g. a `LOADK` whose constant the emitter
+  // already used as an immediate.
+  std::vector<bool> deadDef;
 };
+
+// The slots an instruction reads. Shared by the liveness pass, the fusion pass
+// and the allocator, so they all agree with the VM's operand use.
+void instrReads(const Instruction& in, int numRegs, int total, std::vector<int>& out) {
+  auto ok = [&](int s) { return s >= 0 && s < total; };
+  switch (in.op) {
+    case OpCode::MOVE:
+      if (ok(in.b)) out.push_back(in.b);
+      break;
+    case OpCode::ADD:
+    case OpCode::SUB:
+    case OpCode::MUL:
+    case OpCode::BAND:
+    case OpCode::BOR:
+    case OpCode::BXOR:
+    case OpCode::EQ:
+    case OpCode::NEQ:
+    case OpCode::LT:
+    case OpCode::LTE:
+    case OpCode::GT:
+    case OpCode::GTE:
+      if (ok(in.b)) out.push_back(in.b);
+      if (ok(in.c)) out.push_back(in.c);
+      break;
+    case OpCode::UNOP:
+      if (ok(in.b)) out.push_back(in.b);
+      break;
+    case OpCode::JMP_IF_FALSE:
+    case OpCode::JMP_IF_TRUE:
+      if (ok(in.a)) out.push_back(in.a);
+      break;
+    case OpCode::DECLLOCAL:
+    case OpCode::SETLOCAL:
+      if (ok(in.a)) out.push_back(in.a);
+      break;
+    case OpCode::GETLOCAL:
+      if (ok(numRegs + in.b)) out.push_back(numRegs + in.b);
+      break;
+    case OpCode::RETURN:
+      if (ok(in.a)) out.push_back(in.a);
+      break;
+    default:
+      break;
+  }
+}
+
+// The slots an instruction defines. Every supported instruction defines at most
+// one slot.
+void instrWrites(const Instruction& in, int numRegs, int total, std::vector<int>& out) {
+  auto ok = [&](int s) { return s >= 0 && s < total; };
+  switch (in.op) {
+    case OpCode::LOADK:
+    case OpCode::MOVE:
+    case OpCode::ADD:
+    case OpCode::SUB:
+    case OpCode::MUL:
+    case OpCode::BAND:
+    case OpCode::BOR:
+    case OpCode::BXOR:
+    case OpCode::UNOP:
+    case OpCode::EQ:
+    case OpCode::NEQ:
+    case OpCode::LT:
+    case OpCode::LTE:
+    case OpCode::GT:
+    case OpCode::GTE:
+    case OpCode::GETLOCAL:
+      if (ok(in.a)) out.push_back(in.a);
+      break;
+    case OpCode::DECLLOCAL:
+    case OpCode::SETLOCAL:
+      if (ok(numRegs + in.b)) out.push_back(numRegs + in.b);
+      break;
+    default:
+      break;
+  }
+}
+
+// The successor instruction indices of `i` (its fall-through and/or its jump
+// target). A `RETURN`/`HALT` has none.
+void instrSuccessors(const Instruction& in, int i, std::vector<int>& out) {
+  switch (in.op) {
+    case OpCode::JMP:
+      out.push_back(in.jump);
+      break;
+    case OpCode::JMP_IF_FALSE:
+    case OpCode::JMP_IF_TRUE:
+      out.push_back(in.jump);
+      out.push_back(i + 1);
+      break;
+    case OpCode::RETURN:
+    case OpCode::HALT:
+      break;
+    default:
+      out.push_back(i + 1);
+      break;
+  }
+}
+
+// Web-based register allocation with copy coalescing (PHASE 8.4).
+//
+// The older scheme tied every slot to a fixed register by index (`R0` to the
+// first pool register, `R1` to the second, ...), so a temporary reused for two
+// different values forced a copy at each reuse and every `GETLOCAL`/`SETLOCAL`
+// copied between the temporary's register and the local's. This pass instead
+// gives each *web* -- a maximal set of definitions a single use can observe --
+// its own register. Two temporaries whose live ranges do not overlap then share
+// a register, and a copy whose two webs do not interfere disappears. It runs
+// after the verifier, so every slot is a scalar; a web the 7-register pool
+// cannot color keeps its 16-byte stack slot (a `-1` register), exactly like the
+// old overflow path.
+void allocateRegisters(const Bytecode& proto, Analysis& result) {
+  const int n = static_cast<int>(proto.code.size());
+  const int numRegs = result.numRegs;
+  const int total = numRegs + result.numLocals;
+  const int K = kJitRegPoolCount;
+
+  result.readReg.assign(static_cast<std::size_t>(n), std::vector<int>(total, -1));
+  result.writeReg.assign(static_cast<std::size_t>(n), std::vector<int>(total, -1));
+  result.entryReg.assign(static_cast<std::size_t>(total), -1);
+  result.deadDef.assign(static_cast<std::size_t>(n), false);
+  if (n == 0 || total == 0) return;
+
+  auto indexOk = [&](int s) { return s >= 0 && s < total; };
+
+  // The slots an instruction actually reads at run time, mirroring the emitter's
+  // fold decisions: an operand the emitter replaces by an immediate (a
+  // `constIn` hit) is not read, and neither is a branch on a constant or on a
+  // `nil`/`int` condition (decided by the type). Liveness over these reads makes
+  // a definition nothing observes -- the constant a folded expression leaves
+  // behind -- dead, so the emitter can skip it.
+  auto constAt = [&](int i, int slot, std::int64_t& v) -> bool {
+    if (!indexOk(slot)) return false;
+    const std::size_t ii = static_cast<std::size_t>(i);
+    if (ii >= result.hasConst.size() ||
+        static_cast<std::size_t>(slot) >= result.hasConst[ii].size()) {
+      return false;
+    }
+    if (!result.hasConst[ii][static_cast<std::size_t>(slot)]) return false;
+    v = result.constVal[ii][static_cast<std::size_t>(slot)];
+    return true;
+  };
+  auto tyAt = [&](int i, int slot) -> Ty {
+    const std::size_t ii = static_cast<std::size_t>(i);
+    if (ii >= result.stateIn.size() || !indexOk(slot) ||
+        static_cast<std::size_t>(slot) >= result.stateIn[ii].size()) {
+      return Ty::Top;
+    }
+    return result.stateIn[ii][static_cast<std::size_t>(slot)];
+  };
+  auto runtimeReads = [&](int i, const Instruction& in, std::vector<int>& out) {
+    std::int64_t v = 0;
+    switch (in.op) {
+      case OpCode::MOVE:
+        if (indexOk(in.b)) out.push_back(in.b);
+        break;
+      case OpCode::ADD:
+      case OpCode::SUB:
+      case OpCode::MUL:
+      case OpCode::BAND:
+      case OpCode::BOR:
+      case OpCode::BXOR: {
+        if (result.defConst[static_cast<std::size_t>(i)]) break;
+        const bool bc = constAt(i, in.b, v);
+        const bool cc = constAt(i, in.c, v);
+        if (bc && !cc) { if (indexOk(in.c)) out.push_back(in.c); }
+        else if (cc && !bc) { if (indexOk(in.b)) out.push_back(in.b); }
+        else { if (indexOk(in.b)) out.push_back(in.b); if (indexOk(in.c)) out.push_back(in.c); }
+        break;
+      }
+      case OpCode::EQ:
+      case OpCode::NEQ:
+      case OpCode::LT:
+      case OpCode::LTE:
+      case OpCode::GT:
+      case OpCode::GTE: {
+        if (result.defConst[static_cast<std::size_t>(i)]) break;
+        const bool bc = constAt(i, in.b, v) && fitsImm32(v);
+        const bool cc = constAt(i, in.c, v) && fitsImm32(v);
+        if (bc && !cc) { if (indexOk(in.c)) out.push_back(in.c); }
+        else if (cc && !bc) { if (indexOk(in.b)) out.push_back(in.b); }
+        else { if (indexOk(in.b)) out.push_back(in.b); if (indexOk(in.c)) out.push_back(in.c); }
+        break;
+      }
+      case OpCode::UNOP: {
+        if (result.defConst[static_cast<std::size_t>(i)]) break;
+        if (static_cast<UnaryOp>(in.c) == UnaryOp::Not) {
+          const Ty t = tyAt(i, in.b);
+          if (t == Ty::Nil || t == Ty::Int) break;  // result decided by the type
+        }
+        if (indexOk(in.b)) out.push_back(in.b);
+        break;
+      }
+      case OpCode::JMP_IF_FALSE:
+      case OpCode::JMP_IF_TRUE: {
+        if (constAt(i, in.a, v)) break;  // branch decided at compile time
+        const Ty t = tyAt(i, in.a);
+        if (t == Ty::Nil || t == Ty::Int) break;  // decided by the type
+        if (indexOk(in.a)) out.push_back(in.a);
+        break;
+      }
+      case OpCode::DECLLOCAL:
+      case OpCode::SETLOCAL:
+        if (constAt(i, in.a, v)) break;
+        if (indexOk(in.a)) out.push_back(in.a);
+        break;
+      case OpCode::GETLOCAL:
+        if (constAt(i, numRegs + in.b, v)) break;
+        if (indexOk(numRegs + in.b)) out.push_back(numRegs + in.b);
+        break;
+      case OpCode::RETURN:
+        if (indexOk(in.a)) out.push_back(in.a);
+        break;
+      default:
+        break;
+    }
+  };
+
+  // Fallback: the pre-8.4 fixed by-index mapping, used when a live slot has no
+  // reaching definition (which the verifier should already have ruled out).
+  auto identityMapping = [&]() {
+    result.readReg.assign(static_cast<std::size_t>(n), std::vector<int>(total, -1));
+    result.writeReg.assign(static_cast<std::size_t>(n), std::vector<int>(total, -1));
+    result.entryReg.assign(static_cast<std::size_t>(total), -1);
+    result.deadDef.assign(static_cast<std::size_t>(n), false);
+    for (int s = 0; s < total; ++s) {
+      if (s < K && static_cast<std::size_t>(s) < result.regResident.size() &&
+          result.regResident[static_cast<std::size_t>(s)]) {
+        result.entryReg[static_cast<std::size_t>(s)] = s;
+        for (int i = 0; i < n; ++i) {
+          result.readReg[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)] = s;
+          result.writeReg[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)] = s;
+        }
+      }
+    }
+  };
+
+  // Definitions: one per writing instruction, plus a synthetic entry definition
+  // per parameter (its incoming value).
+  std::vector<int> genDef(static_cast<std::size_t>(n), -1);
+  std::vector<int> defSlot;
+  std::vector<int> defInstr;
+  std::vector<int> entryDef(static_cast<std::size_t>(total), -1);
+  for (int i = 0; i < n; ++i) {
+    if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+    std::vector<int> wr;
+    instrWrites(proto.code[static_cast<std::size_t>(i)], numRegs, total, wr);
+    if (!wr.empty()) {
+      genDef[static_cast<std::size_t>(i)] = static_cast<int>(defSlot.size());
+      defSlot.push_back(wr[0]);
+      defInstr.push_back(i);
+    }
+  }
+  for (int p = 0; p < proto.numParams && p < numRegs; ++p) {
+    entryDef[static_cast<std::size_t>(p)] = static_cast<int>(defSlot.size());
+    defSlot.push_back(p);
+    defInstr.push_back(-1);
+  }
+  const int numDefs = static_cast<int>(defSlot.size());
+  if (numDefs == 0) return;
+
+  // Liveness per slot (backward fixpoint).
+  std::vector<std::vector<bool>> liveIn(static_cast<std::size_t>(n), std::vector<bool>(total, false));
+  std::vector<std::vector<bool>> liveOut(static_cast<std::size_t>(n), std::vector<bool>(total, false));
+  {
+    bool changed = true;
+    int guard = 0;
+    while (changed && guard++ < 100000) {
+      changed = false;
+      for (int i = n - 1; i >= 0; --i) {
+        if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+        std::vector<bool> out(total, false);
+        std::vector<int> succ;
+        instrSuccessors(proto.code[static_cast<std::size_t>(i)], i, succ);
+        for (int s : succ) {
+          if (s < 0 || s >= n || !result.reachable[static_cast<std::size_t>(s)]) continue;
+          for (int k = 0; k < total; ++k) {
+            if (liveIn[static_cast<std::size_t>(s)][static_cast<std::size_t>(k)]) {
+              out[static_cast<std::size_t>(k)] = true;
+            }
+          }
+        }
+        std::vector<bool> in = out;
+        std::vector<int> wr;
+        instrWrites(proto.code[static_cast<std::size_t>(i)], numRegs, total, wr);
+        for (int w : wr) in[static_cast<std::size_t>(w)] = false;
+        std::vector<int> rd;
+        runtimeReads(i, proto.code[static_cast<std::size_t>(i)], rd);
+        for (int r : rd) in[static_cast<std::size_t>(r)] = true;
+        if (out != liveOut[static_cast<std::size_t>(i)] || in != liveIn[static_cast<std::size_t>(i)]) {
+          liveOut[static_cast<std::size_t>(i)] = out;
+          liveIn[static_cast<std::size_t>(i)] = in;
+          changed = true;
+        }
+      }
+    }
+  }
+
+  // Reaching definitions (forward fixpoint).
+  std::vector<std::vector<char>> reach(static_cast<std::size_t>(n), std::vector<char>(numDefs, 0));
+  std::vector<std::vector<char>> reachOut(static_cast<std::size_t>(n), std::vector<char>(numDefs, 0));
+  std::vector<std::vector<int>> preds(static_cast<std::size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+    std::vector<int> succ;
+    instrSuccessors(proto.code[static_cast<std::size_t>(i)], i, succ);
+    for (int s : succ) {
+      if (s >= 0 && s < n && result.reachable[static_cast<std::size_t>(s)]) {
+        preds[static_cast<std::size_t>(s)].push_back(i);
+      }
+    }
+  }
+  {
+    bool changed = true;
+    int guard = 0;
+    while (changed && guard++ < 100000) {
+      changed = false;
+      for (int i = 0; i < n; ++i) {
+        if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+        std::vector<char> in(numDefs, 0);
+        if (i == 0) {
+          for (int p = 0; p < proto.numParams && p < numRegs; ++p) {
+            if (entryDef[static_cast<std::size_t>(p)] >= 0) in[static_cast<std::size_t>(entryDef[static_cast<std::size_t>(p)])] = 1;
+          }
+        }
+        for (int p : preds[static_cast<std::size_t>(i)]) {
+          for (int d = 0; d < numDefs; ++d) {
+            if (reachOut[static_cast<std::size_t>(p)][static_cast<std::size_t>(d)]) in[static_cast<std::size_t>(d)] = 1;
+          }
+        }
+        std::vector<char> out = in;
+        std::vector<int> wr;
+        instrWrites(proto.code[static_cast<std::size_t>(i)], numRegs, total, wr);
+        for (int s : wr) {
+          for (int d = 0; d < numDefs; ++d) {
+            if (defSlot[static_cast<std::size_t>(d)] == s) out[static_cast<std::size_t>(d)] = 0;
+          }
+        }
+        if (genDef[static_cast<std::size_t>(i)] >= 0) out[static_cast<std::size_t>(genDef[static_cast<std::size_t>(i)])] = 1;
+        if (in != reach[static_cast<std::size_t>(i)] || out != reachOut[static_cast<std::size_t>(i)]) {
+          reach[static_cast<std::size_t>(i)] = in;
+          reachOut[static_cast<std::size_t>(i)] = out;
+          changed = true;
+        }
+      }
+    }
+  }
+
+  // Web construction: definitions a single live use can observe share a web, so
+  // at any point where a slot is live all its reaching definitions are one web
+  // and a read can name a single register.
+  std::vector<int> uf(static_cast<std::size_t>(numDefs));
+  for (int d = 0; d < numDefs; ++d) uf[static_cast<std::size_t>(d)] = d;
+  auto find = [&](int x) {
+    while (uf[static_cast<std::size_t>(x)] != x) {
+      uf[static_cast<std::size_t>(x)] = uf[static_cast<std::size_t>(uf[static_cast<std::size_t>(x)])];
+      x = uf[static_cast<std::size_t>(x)];
+    }
+    return x;
+  };
+  auto unite = [&](int a, int b) {
+    a = find(a);
+    b = find(b);
+    if (a != b) uf[static_cast<std::size_t>(a)] = b;
+  };
+  bool consistent = true;
+  for (int i = 0; i < n; ++i) {
+    if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+    for (int s = 0; s < total; ++s) {
+      const bool lin = liveIn[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)];
+      const bool lout = liveOut[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)];
+      if (!lin && !lout) continue;
+      const std::vector<char>& set = lin ? reach[static_cast<std::size_t>(i)] : reachOut[static_cast<std::size_t>(i)];
+      int first = -1;
+      for (int d = 0; d < numDefs; ++d) {
+        if (set[static_cast<std::size_t>(d)] && defSlot[static_cast<std::size_t>(d)] == s) {
+          if (first < 0) first = d;
+          else unite(first, d);
+        }
+      }
+      if (first < 0 && s < proto.numParams && entryDef[static_cast<std::size_t>(s)] >= 0) first = entryDef[static_cast<std::size_t>(s)];
+      if (first < 0) consistent = false;
+    }
+  }
+  if (!consistent) {
+    identityMapping();
+    return;
+  }
+
+  std::vector<int> webOf(static_cast<std::size_t>(numDefs), -1);
+  std::vector<int> rootToWeb(static_cast<std::size_t>(numDefs), -1);
+  int numWebs = 0;
+  for (int d = 0; d < numDefs; ++d) {
+    const int r = find(d);
+    if (rootToWeb[static_cast<std::size_t>(r)] < 0) rootToWeb[static_cast<std::size_t>(r)] = numWebs++;
+    webOf[static_cast<std::size_t>(d)] = rootToWeb[static_cast<std::size_t>(r)];
+  }
+
+  // Per instruction and slot, the web of the reaching definition.
+  std::vector<std::vector<int>> webIn(static_cast<std::size_t>(n), std::vector<int>(total, -1));
+  std::vector<std::vector<int>> webOut(static_cast<std::size_t>(n), std::vector<int>(total, -1));
+  for (int i = 0; i < n; ++i) {
+    if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+    for (int d = 0; d < numDefs; ++d) {
+      if (reach[static_cast<std::size_t>(i)][static_cast<std::size_t>(d)]) {
+        webIn[static_cast<std::size_t>(i)][static_cast<std::size_t>(defSlot[static_cast<std::size_t>(d)])] = webOf[static_cast<std::size_t>(d)];
+      }
+      if (reachOut[static_cast<std::size_t>(i)][static_cast<std::size_t>(d)]) {
+        webOut[static_cast<std::size_t>(i)][static_cast<std::size_t>(defSlot[static_cast<std::size_t>(d)])] = webOf[static_cast<std::size_t>(d)];
+      }
+    }
+  }
+
+  // Interference: two webs that are live at the same point need different
+  // registers. A *pure copy* web (a `MOVE`/`GETLOCAL`/`DECLLOCAL`/`SETLOCAL`
+  // whose destination web has no other definition) holds its source's value
+  // wherever both are live, so the edge between the pair is spurious: dropping
+  // it lets the copy coalesce away.
+  auto webAt = [&](int i, int s) -> int {
+    if (!indexOk(s)) return -1;
+    return webIn[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)];
+  };
+  std::vector<std::vector<char>> adj(static_cast<std::size_t>(numWebs), std::vector<char>(numWebs, 0));
+  std::vector<std::vector<char>> moveRel(static_cast<std::size_t>(numWebs), std::vector<char>(numWebs, 0));
+  {
+    std::vector<int> webDefCount(static_cast<std::size_t>(numWebs), 0);
+    for (int d = 0; d < numDefs; ++d) webDefCount[static_cast<std::size_t>(webOf[static_cast<std::size_t>(d)])]++;
+    for (int i = 0; i < n; ++i) {
+      if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+      if (genDef[static_cast<std::size_t>(i)] < 0) continue;
+      const Instruction& in = proto.code[static_cast<std::size_t>(i)];
+      const int dw = webOf[static_cast<std::size_t>(genDef[static_cast<std::size_t>(i)])];
+      int sw = -1;
+      switch (in.op) {
+        case OpCode::MOVE: sw = webAt(i, in.b); break;
+        case OpCode::GETLOCAL: sw = webAt(i, numRegs + in.b); break;
+        case OpCode::DECLLOCAL:
+        case OpCode::SETLOCAL: sw = webAt(i, in.a); break;
+        default: break;
+      }
+      if (sw >= 0 && sw != dw && webDefCount[static_cast<std::size_t>(dw)] == 1) {
+        moveRel[static_cast<std::size_t>(sw)][static_cast<std::size_t>(dw)] = 1;
+        moveRel[static_cast<std::size_t>(dw)][static_cast<std::size_t>(sw)] = 1;
+      }
+    }
+  }
+  auto addEdge = [&](int a, int b) {
+    if (a >= 0 && b >= 0 && a != b && !moveRel[static_cast<std::size_t>(a)][static_cast<std::size_t>(b)]) {
+      adj[static_cast<std::size_t>(a)][static_cast<std::size_t>(b)] = 1;
+      adj[static_cast<std::size_t>(b)][static_cast<std::size_t>(a)] = 1;
+    }
+  };
+  for (int i = 0; i < n; ++i) {
+    if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+    std::vector<int> inw;
+    std::vector<int> outw;
+    for (int s = 0; s < total; ++s) {
+      if (liveIn[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)] && webIn[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)] >= 0) {
+        inw.push_back(webIn[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)]);
+      }
+      if (liveOut[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)] && webOut[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)] >= 0) {
+        outw.push_back(webOut[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)]);
+      }
+    }
+    for (std::size_t x = 0; x < inw.size(); ++x) {
+      for (std::size_t y = x + 1; y < inw.size(); ++y) addEdge(inw[x], inw[y]);
+    }
+    for (std::size_t x = 0; x < outw.size(); ++x) {
+      for (std::size_t y = x + 1; y < outw.size(); ++y) addEdge(outw[x], outw[y]);
+    }
+  }
+
+  // Copy coalescing: a copy `dst = src` whose two webs do not interfere can
+  // share a register, which removes the move. The candidates are the copies
+  // themselves and an arithmetic definition that overwrites one of its operands
+  // (`s = s + x`), which becomes an in-place update.
+  std::vector<std::pair<int, int>> copies;
+  for (int i = 0; i < n; ++i) {
+    if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+    if (genDef[static_cast<std::size_t>(i)] < 0) continue;
+    const Instruction& in = proto.code[static_cast<std::size_t>(i)];
+    const int dw = webOf[static_cast<std::size_t>(genDef[static_cast<std::size_t>(i)])];
+    auto note = [&](int srcWeb) { if (srcWeb >= 0 && srcWeb != dw) copies.emplace_back(srcWeb, dw); };
+    switch (in.op) {
+      case OpCode::MOVE:
+        note(webAt(i, in.b));
+        break;
+      case OpCode::GETLOCAL:
+        note(webAt(i, numRegs + in.b));
+        break;
+      case OpCode::DECLLOCAL:
+      case OpCode::SETLOCAL:
+        note(webAt(i, in.a));
+        break;
+      case OpCode::ADD:
+      case OpCode::SUB:
+      case OpCode::MUL:
+      case OpCode::BAND:
+      case OpCode::BOR:
+      case OpCode::BXOR:
+        if (in.a == in.b) note(webAt(i, in.b));
+        if (in.a == in.c) note(webAt(i, in.c));
+        break;
+      default:
+        break;
+    }
+  }
+
+  std::vector<int> wuf(static_cast<std::size_t>(numWebs));
+  for (int w = 0; w < numWebs; ++w) wuf[static_cast<std::size_t>(w)] = w;
+  auto wfind = [&](int x) {
+    while (wuf[static_cast<std::size_t>(x)] != x) {
+      wuf[static_cast<std::size_t>(x)] = wuf[static_cast<std::size_t>(wuf[static_cast<std::size_t>(x)])];
+      x = wuf[static_cast<std::size_t>(x)];
+    }
+    return x;
+  };
+  std::vector<std::vector<int>> members(static_cast<std::size_t>(numWebs));
+  for (int w = 0; w < numWebs; ++w) members[static_cast<std::size_t>(w)].push_back(w);
+  for (const auto& c : copies) {
+    const int ra = wfind(c.first);
+    const int rb = wfind(c.second);
+    if (ra == rb) continue;
+    bool clash = false;
+    for (int x : members[static_cast<std::size_t>(ra)]) {
+      for (int y = 0; y < numWebs && !clash; ++y) {
+        if (adj[static_cast<std::size_t>(x)][static_cast<std::size_t>(y)] && wfind(y) == rb) clash = true;
+      }
+      if (clash) break;
+    }
+    for (int y : members[static_cast<std::size_t>(rb)]) {
+      for (int x = 0; x < numWebs && !clash; ++x) {
+        if (adj[static_cast<std::size_t>(y)][static_cast<std::size_t>(x)] && wfind(x) == ra) clash = true;
+      }
+      if (clash) break;
+    }
+    if (clash) continue;
+    // Keep the merged web colorable: its distinct neighbour roots must be fewer
+    // than the pool, or the merge only creates a spill.
+    std::vector<int> nbrs;
+    auto addNbr = [&](int root) {
+      for (int z : nbrs) {
+        if (z == root) return;
+      }
+      nbrs.push_back(root);
+    };
+    for (int x : members[static_cast<std::size_t>(ra)]) {
+      for (int y = 0; y < numWebs; ++y) {
+        if (adj[static_cast<std::size_t>(x)][static_cast<std::size_t>(y)]) addNbr(wfind(y));
+      }
+    }
+    for (int y : members[static_cast<std::size_t>(rb)]) {
+      for (int x = 0; x < numWebs; ++x) {
+        if (adj[static_cast<std::size_t>(y)][static_cast<std::size_t>(x)]) addNbr(wfind(x));
+      }
+    }
+    if (static_cast<int>(nbrs.size()) >= K) continue;
+    wuf[static_cast<std::size_t>(rb)] = ra;
+    for (int y : members[static_cast<std::size_t>(rb)]) members[static_cast<std::size_t>(ra)].push_back(y);
+    members[static_cast<std::size_t>(rb)].clear();
+  }
+
+  // Greedy colouring on the merged interference graph; a web with no free colour
+  // keeps its stack slot.
+  std::vector<int> color(static_cast<std::size_t>(numWebs), -1);
+  {
+    std::vector<int> roots;
+    for (int w = 0; w < numWebs; ++w) {
+      if (wfind(w) == w) roots.push_back(w);
+    }
+    std::vector<std::vector<int>> fadj(static_cast<std::size_t>(numWebs));
+    for (int w = 0; w < numWebs; ++w) {
+      for (int y = 0; y < numWebs; ++y) {
+        if (!adj[static_cast<std::size_t>(w)][static_cast<std::size_t>(y)]) continue;
+        const int a = wfind(w);
+        const int b = wfind(y);
+        if (a == b) continue;
+        bool seen = false;
+        for (int z : fadj[static_cast<std::size_t>(a)]) {
+          if (z == b) { seen = true; break; }
+        }
+        if (!seen) {
+          fadj[static_cast<std::size_t>(a)].push_back(b);
+          fadj[static_cast<std::size_t>(b)].push_back(a);
+        }
+      }
+    }
+    std::sort(roots.begin(), roots.end(), [&](int a, int b) {
+      return fadj[static_cast<std::size_t>(a)].size() > fadj[static_cast<std::size_t>(b)].size();
+    });
+    for (int r : roots) {
+      std::vector<char> used(K, 0);
+      for (int nb : fadj[static_cast<std::size_t>(r)]) {
+        if (color[static_cast<std::size_t>(nb)] >= 0) used[static_cast<std::size_t>(color[static_cast<std::size_t>(nb)])] = 1;
+      }
+      int c = -1;
+      for (int k = 0; k < K; ++k) {
+        if (!used[static_cast<std::size_t>(k)]) { c = k; break; }
+      }
+      color[static_cast<std::size_t>(r)] = c;
+    }
+  }
+  std::vector<int> regOf(static_cast<std::size_t>(numWebs), -1);
+  for (int w = 0; w < numWebs; ++w) regOf[static_cast<std::size_t>(w)] = color[static_cast<std::size_t>(wfind(w))];
+
+  // A web that never appears in a live set is dead: its definition writes a value
+  // nothing reads, so the emitter skips it.
+  std::vector<char> webLive(static_cast<std::size_t>(numWebs), 0);
+  for (int i = 0; i < n; ++i) {
+    if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+    for (int s = 0; s < total; ++s) {
+      if (liveIn[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)] && webIn[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)] >= 0) {
+        webLive[static_cast<std::size_t>(webIn[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)])] = 1;
+      }
+      if (liveOut[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)] && webOut[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)] >= 0) {
+        webLive[static_cast<std::size_t>(webOut[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)])] = 1;
+      }
+    }
+  }
+  for (int d = 0; d < numDefs; ++d) {
+    if (defInstr[static_cast<std::size_t>(d)] >= 0 && !webLive[static_cast<std::size_t>(webOf[static_cast<std::size_t>(d)])]) {
+      result.deadDef[static_cast<std::size_t>(defInstr[static_cast<std::size_t>(d)])] = true;
+    }
+  }
+  // A fused comparison is not dead: it emits the `cmp; jcc` for its branch.
+  for (int i = 0; i < n; ++i) {
+    if (result.fusedBranch[static_cast<std::size_t>(i)] >= 0) result.deadDef[static_cast<std::size_t>(i)] = false;
+  }
+
+  // Publish the allocation.
+  for (int i = 0; i < n; ++i) {
+    if (!result.reachable[static_cast<std::size_t>(i)]) continue;
+    for (int s = 0; s < total; ++s) {
+      if (liveIn[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)] && webIn[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)] >= 0) {
+        result.readReg[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)] = regOf[static_cast<std::size_t>(webIn[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)])];
+      }
+    }
+    if (genDef[static_cast<std::size_t>(i)] >= 0 && !result.deadDef[static_cast<std::size_t>(i)]) {
+      const int s = defSlot[static_cast<std::size_t>(genDef[static_cast<std::size_t>(i)])];
+      result.writeReg[static_cast<std::size_t>(i)][static_cast<std::size_t>(s)] =
+          regOf[static_cast<std::size_t>(webOf[static_cast<std::size_t>(genDef[static_cast<std::size_t>(i)])])];
+    }
+  }
+  for (int p = 0; p < proto.numParams && p < numRegs; ++p) {
+    if (entryDef[static_cast<std::size_t>(p)] >= 0) {
+      result.entryReg[static_cast<std::size_t>(p)] = regOf[static_cast<std::size_t>(webOf[static_cast<std::size_t>(entryDef[static_cast<std::size_t>(p)])])];
+    }
+  }
+}
 
 // Forward dataflow to a fixpoint, then a verification pass. The fixpoint is a
 // sound over-approximation: a register the fixpoint cannot pin down to a
@@ -799,100 +1464,9 @@ Analysis analyze(const Bytecode& proto) {
     }
   }
 
-  // Dead-constant analysis (see `Analysis::materialized`). Mirror the emitter's
-  // fold decisions: an operand the emitter replaces by an immediate, or a whole
-  // instruction `defConst` folds, never needs the operand's value. Every other
-  // read materializes it. A `LOADK` whose slot is never materialized then emits
-  // nothing -- the constants a folded expression leaves behind disappear.
-  result.materialized.assign(total, false);
-  {
-    auto constAt = [&](int i, int slot, std::int64_t& v) {
-      if (slot < 0 || slot >= total) return false;
-      const std::size_t ii = static_cast<std::size_t>(i);
-      if (ii >= result.hasConst.size() ||
-          static_cast<std::size_t>(slot) >= result.hasConst[ii].size()) {
-        return false;
-      }
-      if (!result.hasConst[ii][static_cast<std::size_t>(slot)]) return false;
-      v = result.constVal[ii][static_cast<std::size_t>(slot)];
-      return true;
-    };
-    auto tyAt = [&](int i, int slot) -> Ty {
-      const std::size_t ii = static_cast<std::size_t>(i);
-      if (ii >= result.stateIn.size() || slot < 0 ||
-          static_cast<std::size_t>(slot) >= result.stateIn[ii].size()) {
-        return Ty::Top;
-      }
-      return result.stateIn[ii][static_cast<std::size_t>(slot)];
-    };
-    for (int i = 0; i < n; ++i) {
-      if (!result.reachable[static_cast<std::size_t>(i)]) continue;
-      const Instruction& in = proto.code[static_cast<std::size_t>(i)];
-      const std::size_t ii = static_cast<std::size_t>(i);
-      std::int64_t bv = 0, dv = 0;
-      switch (in.op) {
-        case OpCode::MOVE:
-          if (indexOk(in.b)) result.materialized[static_cast<std::size_t>(in.b)] = true;
-          break;
-        case OpCode::ADD:
-        case OpCode::SUB:
-        case OpCode::MUL:
-        case OpCode::BAND:
-        case OpCode::BOR:
-        case OpCode::BXOR:
-        case OpCode::EQ:
-        case OpCode::NEQ:
-        case OpCode::LT:
-        case OpCode::LTE:
-        case OpCode::GT:
-        case OpCode::GTE: {
-          if (result.defConst[ii]) break;  // fully folded, no operand read
-          const bool bc = constAt(i, in.b, bv);
-          const bool cc = constAt(i, in.c, dv);
-          const bool bUsable = bc && fitsImm32(bv);
-          const bool cUsable = cc && fitsImm32(dv);
-          if (bUsable && !cc) {
-            if (indexOk(in.c)) result.materialized[static_cast<std::size_t>(in.c)] = true;
-          } else if (cUsable && !bc) {
-            if (indexOk(in.b)) result.materialized[static_cast<std::size_t>(in.b)] = true;
-          } else {
-            if (indexOk(in.b)) result.materialized[static_cast<std::size_t>(in.b)] = true;
-            if (indexOk(in.c)) result.materialized[static_cast<std::size_t>(in.c)] = true;
-          }
-          break;
-        }
-        case OpCode::UNOP:
-          if (result.defConst[ii]) break;
-          if (indexOk(in.b)) result.materialized[static_cast<std::size_t>(in.b)] = true;
-          break;
-        case OpCode::JMP_IF_FALSE:
-        case OpCode::JMP_IF_TRUE: {
-          if (constAt(i, in.a, bv)) break;
-          const Ty t = tyAt(i, in.a);
-          if (t == Ty::Nil || t == Ty::Int) break;  // branch decided by the type
-          if (indexOk(in.a)) result.materialized[static_cast<std::size_t>(in.a)] = true;
-          break;
-        }
-        case OpCode::DECLLOCAL:
-        case OpCode::SETLOCAL:
-          if (constAt(i, in.a, bv)) break;
-          if (indexOk(in.a)) result.materialized[static_cast<std::size_t>(in.a)] = true;
-          break;
-        case OpCode::GETLOCAL:
-          if (constAt(i, result.numRegs + in.b, bv)) break;
-          if (indexOk(result.numRegs + in.b)) {
-            result.materialized[static_cast<std::size_t>(result.numRegs + in.b)] = true;
-          }
-          break;
-        case OpCode::RETURN:
-          if (indexOk(in.a)) result.materialized[static_cast<std::size_t>(in.a)] = true;
-          break;
-        default:
-          break;
-      }
-    }
-  }
-
+  // Dead-constant analysis now lives in `allocateRegisters`: a definition whose
+  // web no live read observes is a `deadDef` the emitter skips, which covers the
+  // constant a folded expression leaves behind. See `Analysis::deadDef`.
 
   // Compare-branch fusion (see `Analysis::fusedBranch`). Backward liveness over
   // the reachable instructions; a comparison's boolean result may be dropped
@@ -902,73 +1476,10 @@ Analysis analyze(const Bytecode& proto) {
   result.fusedBranch.assign(n, -1);
   {
     auto reads = [&](const Instruction& in, std::vector<int>& out) {
-      switch (in.op) {
-        case OpCode::MOVE:
-          if (indexOk(in.b)) out.push_back(in.b);
-          break;
-        case OpCode::ADD:
-        case OpCode::SUB:
-        case OpCode::MUL:
-        case OpCode::BAND:
-        case OpCode::BOR:
-        case OpCode::BXOR:
-        case OpCode::EQ:
-        case OpCode::NEQ:
-        case OpCode::LT:
-        case OpCode::LTE:
-        case OpCode::GT:
-        case OpCode::GTE:
-          if (indexOk(in.b)) out.push_back(in.b);
-          if (indexOk(in.c)) out.push_back(in.c);
-          break;
-        case OpCode::UNOP:
-          if (indexOk(in.b)) out.push_back(in.b);
-          break;
-        case OpCode::JMP_IF_FALSE:
-        case OpCode::JMP_IF_TRUE:
-          if (indexOk(in.a)) out.push_back(in.a);
-          break;
-        case OpCode::DECLLOCAL:
-        case OpCode::SETLOCAL:
-          if (indexOk(in.a)) out.push_back(in.a);
-          break;
-        case OpCode::GETLOCAL:
-          if (indexOk(result.numRegs + in.b)) out.push_back(result.numRegs + in.b);
-          break;
-        case OpCode::RETURN:
-          if (indexOk(in.a)) out.push_back(in.a);
-          break;
-        default:
-          break;
-      }
+      instrReads(in, result.numRegs, total, out);
     };
     auto writes = [&](const Instruction& in, std::vector<int>& out) {
-      switch (in.op) {
-        case OpCode::LOADK:
-        case OpCode::MOVE:
-        case OpCode::ADD:
-        case OpCode::SUB:
-        case OpCode::MUL:
-        case OpCode::BAND:
-        case OpCode::BOR:
-        case OpCode::BXOR:
-        case OpCode::UNOP:
-        case OpCode::EQ:
-        case OpCode::NEQ:
-        case OpCode::LT:
-        case OpCode::LTE:
-        case OpCode::GT:
-        case OpCode::GTE:
-        case OpCode::GETLOCAL:
-          if (indexOk(in.a)) out.push_back(in.a);
-          break;
-        case OpCode::DECLLOCAL:
-        case OpCode::SETLOCAL:
-          if (indexOk(result.numRegs + in.b)) out.push_back(result.numRegs + in.b);
-          break;
-        default:
-          break;
-      }
+      instrWrites(in, result.numRegs, total, out);
     };
 
     std::vector<std::vector<bool>> liveIn(n, std::vector<bool>(total, false));
@@ -1043,6 +1554,11 @@ Analysis analyze(const Bytecode& proto) {
     }
   }
 
+  // Register allocation (see `Analysis::readReg`/`writeReg`/`entryReg` and
+  // `allocateRegisters`). Runs last: it needs the fusion result to know which
+  // definitions the emitter still emits.
+  allocateRegisters(proto, result);
+
   result.supported = true;
   return result;
 }
@@ -1065,27 +1581,31 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
   auto slotDisp = [](int s) { return -16 * (static_cast<std::int64_t>(s) + 1); };
   auto outDisp = [&]() { return slotDisp(total); };
 
-  // Physical registers a register-resident slot can live in. They are all
-  // caller-saved, and a supported proto is a leaf (no `CALL`), so the body
-  // makes no call that could clobber them; r10/r11 stay scratch and rbp is the
-  // frame pointer. A slot the pool cannot cover (too many slots) keeps its
-  // 16-byte stack slot. Keeping the common scalar body entirely in registers is
-  // what removes the load/store traffic the stack model paid on every
-  // operation.
-  const X64Reg kRegPool[] = {X64Reg::Rax, X64Reg::Rcx, X64Reg::Rdx,
-                             X64Reg::Rsi, X64Reg::Rdi, X64Reg::R8, X64Reg::R9};
-  const int kRegPoolCount = static_cast<int>(sizeof(kRegPool) / sizeof(kRegPool[0]));
-  std::vector<int> regOf(static_cast<std::size_t>(total), -1);
-  for (int s = 0; s < total; ++s) {
-    if (s < kRegPoolCount && static_cast<std::size_t>(s) < analysis.regResident.size() &&
-        analysis.regResident[static_cast<std::size_t>(s)]) {
-      regOf[static_cast<std::size_t>(s)] = s;
-    }
-  }
-  auto isReg = [&](int slot) {
-    return slot >= 0 && slot < total && regOf[static_cast<std::size_t>(slot)] >= 0;
+  // Register allocation lookup. `curI` is the instruction being emitted, set at
+  // the top of the loop below; these helpers resolve a slot's register through
+  // the allocation tables. A slot is read through `analysis.readReg` and defined
+  // through `analysis.writeReg` (or `entryReg` for a parameter's incoming
+  // value), so one instruction can read and write the same slot through
+  // different registers. An entry is an index into `kJitRegPool`, or -1 for a
+  // slot that keeps its 16-byte stack slot.
+  int curI = -1;
+  auto readRegOf = [&](int i, int slot) -> int {
+    if (slot < 0 || slot >= total) return -1;
+    const std::size_t ii = static_cast<std::size_t>(i);
+    if (ii >= analysis.readReg.size()) return -1;
+    return analysis.readReg[ii][static_cast<std::size_t>(slot)];
   };
-  auto physOf = [&](int slot) { return kRegPool[regOf[static_cast<std::size_t>(slot)]]; };
+  auto writeRegOf = [&](int i, int slot) -> int {
+    if (slot < 0 || slot >= total) return -1;
+    const std::size_t ii = static_cast<std::size_t>(i);
+    if (ii >= analysis.writeReg.size()) return -1;
+    return analysis.writeReg[ii][static_cast<std::size_t>(slot)];
+  };
+  auto poolReg = [&](int idx) { return kJitRegPool[idx]; };
+  auto entryRegOf = [&](int slot) -> int {
+    if (slot < 0 || slot >= total) return -1;
+    return analysis.entryReg[static_cast<std::size_t>(slot)];
+  };
 
   // One label per instruction plus one for the implicit end.
   std::vector<CodeGen::Label> labels(static_cast<std::size_t>(n) + 1);
@@ -1106,37 +1626,42 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
     cg.movzxFromMem(X64Reg::R11, X64Reg::Rbp, srcDisp);
     cg.movByteToMem(X64Reg::Rbp, dstDisp, X64Reg::R11);
   };
-  // Loads the raw scalar payload of a slot into `dst`: from its register when
-  // it has one, else from the stack payload word. The tag is not read; the
-  // caller knows the slot's scalar kind from the dataflow state.
-  auto loadScalar = [&](X64Reg dst, int slot) {
-    if (isReg(slot)) {
-      if (physOf(slot) != dst) cg.movReg(dst, physOf(slot));
+  // Loads the raw scalar payload of a slot into `dst`, reading the slot at
+  // instruction `i`: from its allocated register when it has one, else from the
+  // stack payload word. The tag is not read; the caller knows the slot's scalar
+  // kind from the dataflow state.
+  auto loadScalarAt = [&](int i, X64Reg dst, int slot) {
+    const int r = readRegOf(i, slot);
+    if (r >= 0) {
+      if (poolReg(r) != dst) cg.movReg(dst, poolReg(r));
     } else {
       cg.movFromMem(dst, X64Reg::Rbp, slotDisp(slot) + 8);
     }
   };
   // Writes a canonical scalar payload (`src`: a full int64, or 0/1 for a bool)
-  // of kind `kind` to a slot: its register, or the stack slot plus the kind's
-  // tag.
-  auto storeScalar = [&](int slot, Ty kind, X64Reg src) {
-    if (isReg(slot)) {
-      if (physOf(slot) != src) cg.movReg(physOf(slot), src);
+  // of kind `kind` to a slot's register allocated at instruction `i`, else to
+  // the stack slot plus the kind's tag.
+  auto storeScalarAt = [&](int i, int slot, Ty kind, X64Reg src) {
+    const int r = writeRegOf(i, slot);
+    if (r >= 0) {
+      if (poolReg(r) != src) cg.movReg(poolReg(r), src);
     } else {
       cg.movToMem(X64Reg::Rbp, slotDisp(slot) + 8, src);
       cg.movImmByteToMem(X64Reg::Rbp, slotDisp(slot), tagOf(kind));
     }
   };
-  // Copies a whole slot between the two representations. `kind` is the scalar
-  // kind of the source at this point, needed when the destination is a stack
-  // slot (to pick its tag).
-  auto copySlotValue = [&](int dstSlot, Ty kind, int srcSlot) {
-    if (isReg(srcSlot) && isReg(dstSlot)) {
-      cg.movReg(physOf(dstSlot), physOf(srcSlot));
-    } else if (isReg(srcSlot)) {
-      storeScalar(dstSlot, kind, physOf(srcSlot));
-    } else if (isReg(dstSlot)) {
-      loadScalar(physOf(dstSlot), srcSlot);
+  // Copies a whole slot between the two representations at instruction `i`.
+  // `kind` is the scalar kind of the source at this point, needed when the
+  // destination is a stack slot (to pick its tag).
+  auto copySlotValueAt = [&](int i, int dstSlot, Ty kind, int srcSlot) {
+    const int sr = readRegOf(i, srcSlot);
+    const int dr = writeRegOf(i, dstSlot);
+    if (sr >= 0 && dr >= 0) {
+      if (poolReg(dr) != poolReg(sr)) cg.movReg(poolReg(dr), poolReg(sr));
+    } else if (sr >= 0) {
+      storeScalarAt(i, dstSlot, kind, poolReg(sr));
+    } else if (dr >= 0) {
+      loadScalarAt(i, poolReg(dr), srcSlot);
     } else {
       copySlot(slotDisp(dstSlot), slotDisp(srcSlot));
     }
@@ -1146,10 +1671,11 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
     cg.pop(X64Reg::Rbp);
     cg.retInsn();
   };
-  auto returnValue = [&](int slot, Ty kind) {
+  auto returnValue = [&](int i, int slot, Ty kind) {
     cg.movFromMem(X64Reg::R11, X64Reg::Rbp, outDisp());  // out pointer
-    if (isReg(slot)) {
-      cg.movToMem(X64Reg::R11, 8, physOf(slot));
+    const int r = readRegOf(i, slot);
+    if (r >= 0) {
+      cg.movToMem(X64Reg::R11, 8, poolReg(r));
       cg.movImmByteToMem(X64Reg::R11, 0, tagOf(kind));
     } else {
       cg.movFromMem(X64Reg::R10, X64Reg::Rbp, slotDisp(slot) + 8);  // payload
@@ -1168,9 +1694,9 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
   };
 
   // Prologue: frame, save the out pointer, copy the incoming arguments to their
-  // stack slots, then lift the resident ones into their registers. The lift
-  // runs after the whole copy loop, so it may freely use rdi/rsi (the argument
-  // pointer and count) as destinations.
+  // stack slots, then lift the ones with an entry register. The lift runs after
+  // the whole copy loop, so it may freely use rdi/rsi (the argument pointer and
+  // count) as destinations.
   cg.push(X64Reg::Rbp);
   cg.movReg(X64Reg::Rbp, X64Reg::Rsp);
   cg.subRegImm32(X64Reg::Rsp, static_cast<std::int32_t>(frameSize));
@@ -1182,7 +1708,7 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
     cg.movByteToMem(X64Reg::Rbp, slotDisp(i), X64Reg::R10);
   }
   for (int i = 0; i < proto.numParams && i < numRegs; ++i) {
-    if (isReg(i)) cg.movFromMem(physOf(i), X64Reg::Rbp, slotDisp(i) + 8);
+    if (entryRegOf(i) >= 0) cg.movFromMem(poolReg(entryRegOf(i)), X64Reg::Rbp, slotDisp(i) + 8);
   }
 
   // The compile-time constant of `slot` on entry to instruction `i`, if the
@@ -1200,11 +1726,12 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
     kind = analysis.constKind[ii][static_cast<std::size_t>(slot)];
     return true;
   };
-  // Writes a scalar constant to a slot: its register, or its stack slot with
-  // the kind's tag.
+  // Writes a scalar constant to a slot at the current instruction: its
+  // allocated register, or its stack slot with the kind's tag.
   auto emitConst = [&](int slot, Ty kind, std::int64_t value) {
-    if (isReg(slot)) {
-      cg.movImm(physOf(slot), value);
+    const int r = writeRegOf(curI, slot);
+    if (r >= 0) {
+      cg.movImm(poolReg(r), value);
     } else {
       storeSlot(slotDisp(slot), tagOf(kind), value);
     }
@@ -1219,39 +1746,46 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
       default: cg.xorReg(dst, src); break;  // BXOR
     }
   };
-  // `dst = lhs OP rhs` with both operands in slots. The destination's register
-  // is spent in place when it already holds an operand; otherwise the result is
-  // computed in scratch and stored. A register operand is used directly, so no
-  // copy stands between the operands and the ALU.
+  // `dst = lhs OP rhs` with both operands in slots, at the current instruction.
+  // The destination's register is spent in place when it already holds an
+  // operand; otherwise the result is computed in scratch and stored. A register
+  // operand is used directly, so no copy stands between the operands and the
+  // ALU. All three registers are resolved at the current instruction, so the
+  // same slot may be read and written through different registers.
   auto emitBinReg = [&](OpCode op, int dst, int lhs, int rhs) {
-    if (isReg(dst)) {
-      const X64Reg d = physOf(dst);
-      if (dst == lhs) {
-        if (isReg(rhs)) applyReg(op, d, physOf(rhs));
-        else { loadScalar(X64Reg::R10, rhs); applyReg(op, d, X64Reg::R10); }
+    const int dr = writeRegOf(curI, dst);
+    const int lr = readRegOf(curI, lhs);
+    const int rr = readRegOf(curI, rhs);
+    if (dr >= 0) {
+      const X64Reg d = poolReg(dr);
+      if (dr == lr) {
+        // `d` already holds the left operand (the right one too, when it is the
+        // same register, so `d OP d` is still right).
+        if (rr >= 0) applyReg(op, d, poolReg(rr));
+        else { loadScalarAt(curI, X64Reg::R10, rhs); applyReg(op, d, X64Reg::R10); }
         return;
       }
-      if (dst == rhs && isCommutative(op)) {
-        if (isReg(lhs)) applyReg(op, d, physOf(lhs));
-        else { loadScalar(X64Reg::R10, lhs); applyReg(op, d, X64Reg::R10); }
+      if (dr == rr && isCommutative(op)) {
+        if (lr >= 0) applyReg(op, d, poolReg(lr));
+        else { loadScalarAt(curI, X64Reg::R10, lhs); applyReg(op, d, X64Reg::R10); }
         return;
       }
-      if (dst != rhs) {
-        // `dst` is a distinct register, free until here: compute into it
+      if (dr != rr) {
+        // `d` is a distinct register, free until here: compute into it
         // directly, without a scratch copy.
-        loadScalar(d, lhs);
-        if (isReg(rhs)) applyReg(op, d, physOf(rhs));
-        else { loadScalar(X64Reg::R10, rhs); applyReg(op, d, X64Reg::R10); }
+        loadScalarAt(curI, d, lhs);
+        if (rr >= 0) applyReg(op, d, poolReg(rr));
+        else { loadScalarAt(curI, X64Reg::R10, rhs); applyReg(op, d, X64Reg::R10); }
         return;
       }
-      // `dst == rhs` with a non-commutative op (only `SUB`): the old right
-      // operand lives in `dst`, so the scratch path below reads it before the
+      // `dr == rr` with a non-commutative op (only `SUB`): the old right operand
+      // lives in `dst`, so the scratch path below reads it before the
       // destination is overwritten.
     }
-    loadScalar(X64Reg::R10, lhs);
-    loadScalar(X64Reg::R11, rhs);
+    loadScalarAt(curI, X64Reg::R10, lhs);
+    loadScalarAt(curI, X64Reg::R11, rhs);
     applyReg(op, X64Reg::R10, X64Reg::R11);
-    storeScalar(dst, Ty::Int, X64Reg::R10);
+    storeScalarAt(curI, dst, Ty::Int, X64Reg::R10);
   };
   // `dst = var OP imm` for an integer immediate: identity and absorbing cases
   // first (no instruction), then the immediate form, a shift for a power of two,
@@ -1261,11 +1795,11 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
   auto emitBinImm = [&](OpCode op, int dst, int varSlot, std::int64_t imm) {
     if ((op == OpCode::ADD || op == OpCode::SUB || op == OpCode::BOR ||
          op == OpCode::BXOR) && imm == 0) {
-      copySlotValue(dst, Ty::Int, varSlot);
+      copySlotValueAt(curI, dst, Ty::Int, varSlot);
       return;
     }
     if (op == OpCode::MUL && imm == 1) {
-      copySlotValue(dst, Ty::Int, varSlot);
+      copySlotValueAt(curI, dst, Ty::Int, varSlot);
       return;
     }
     if ((op == OpCode::MUL || op == OpCode::BAND) && imm == 0) {
@@ -1273,14 +1807,15 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
       return;
     }
     if (op == OpCode::BAND && imm == -1) {
-      copySlotValue(dst, Ty::Int, varSlot);
+      copySlotValueAt(curI, dst, Ty::Int, varSlot);
       return;
     }
     // Compute in the destination register when it has one: `dst` is dead until
     // this instruction, so it is free scratch, and the final store becomes a
     // no-op. Otherwise fall back to r10.
-    const X64Reg work = isReg(dst) ? physOf(dst) : X64Reg::R10;
-    loadScalar(work, varSlot);
+    const int dr = writeRegOf(curI, dst);
+    const X64Reg work = dr >= 0 ? poolReg(dr) : X64Reg::R10;
+    loadScalarAt(curI, work, varSlot);
     const bool immOk = fitsImm32(imm);
     switch (op) {
       case OpCode::ADD:
@@ -1316,7 +1851,7 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
         cg.xorReg(work, X64Reg::R11);
         break;
     }
-    storeScalar(dst, Ty::Int, work);
+    storeScalarAt(curI, dst, Ty::Int, work);
   };
 
   // Emits the `cmp` (or `test`) that leaves the flags for a comparison at `i`,
@@ -1334,19 +1869,19 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
     Jcc cc = compareCc(op);
     if (bConst && !cConst && fitsImm32(cv)) {
       // const OP var  ==  var OP' const (mirror the condition).
-      loadScalar(X64Reg::R10, c);
+      loadScalarAt(i, X64Reg::R10, c);
       cg.cmpImm32(X64Reg::R10, static_cast<std::int32_t>(cv));
       cc = mirrorCc(cc);
     } else if (cConst && !bConst && fitsImm32(dv)) {
-      loadScalar(X64Reg::R10, b);
+      loadScalarAt(i, X64Reg::R10, b);
       cg.cmpImm32(X64Reg::R10, static_cast<std::int32_t>(dv));
-    } else if (isReg(b) && isReg(c)) {
+    } else if (readRegOf(i, b) >= 0 && readRegOf(i, c) >= 0) {
       // Both operands live in registers: compare them directly, so no scratch
       // copy stands before the compare.
-      cg.cmpReg(physOf(b), physOf(c));
+      cg.cmpReg(poolReg(readRegOf(i, b)), poolReg(readRegOf(i, c)));
     } else {
-      loadScalar(X64Reg::R10, b);
-      loadScalar(X64Reg::R11, c);
+      loadScalarAt(i, X64Reg::R10, b);
+      loadScalarAt(i, X64Reg::R11, c);
       cg.cmpReg(X64Reg::R10, X64Reg::R11);
     }
     return cc;
@@ -1355,6 +1890,9 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
   for (int i = 0; i < n; ++i) {
     if (!analysis.reachable[static_cast<std::size_t>(i)]) continue;
     cg.bind(labels[static_cast<std::size_t>(i)]);
+    curI = i;
+    // A dead definition has no observable effect: skip it.
+    if (analysis.deadDef[static_cast<std::size_t>(i)]) continue;
     const Instruction& in = proto.code[static_cast<std::size_t>(i)];
     const std::vector<Ty>& st = analysis.stateIn[static_cast<std::size_t>(i)];
     auto tyOf = [&](int r) { return st[static_cast<std::size_t>(r)]; };
@@ -1362,11 +1900,6 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
 
     switch (in.op) {
       case OpCode::LOADK: {
-        // A constant no reachable read ever materializes is dead: a folded
-        // expression consumed it as an immediate, so the slot is never loaded.
-        if (in.a >= 0 && in.a < total && !analysis.materialized[static_cast<std::size_t>(in.a)]) {
-          break;
-        }
         const Value& k = proto.constants[static_cast<std::size_t>(in.b)];
         const Ty t = constTy(k);
         const std::int64_t payload =
@@ -1375,7 +1908,7 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
         break;
       }
       case OpCode::MOVE:
-        copySlotValue(in.a, tyOf(in.b), in.b);
+        copySlotValueAt(i, in.a, tyOf(in.b), in.b);
         break;
       case OpCode::ADD:
       case OpCode::SUB:
@@ -1402,9 +1935,9 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
           } else {
             // `const - var`: compute `const` in scratch, load `var`, subtract.
             cg.movImm(X64Reg::R11, cv);
-            loadScalar(X64Reg::R10, in.c);
+            loadScalarAt(i, X64Reg::R10, in.c);
             cg.subReg(X64Reg::R11, X64Reg::R10);
-            storeScalar(in.a, Ty::Int, X64Reg::R11);
+            storeScalarAt(i, in.a, Ty::Int, X64Reg::R11);
           }
         } else if (cConst && !bConst) {
           emitBinImm(in.op, in.a, in.b, dv);
@@ -1430,18 +1963,18 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
           } else if (operand == Ty::Int) {
             cg.movImm(X64Reg::R10, 0);
           } else {
-            loadScalar(X64Reg::R10, in.b);
+            loadScalarAt(i, X64Reg::R10, in.b);
             cg.testReg(X64Reg::R10);
             cg.setcc(Jcc::Eq, X64Reg::R10);
             cg.movzx(X64Reg::R10, X64Reg::R10);
           }
-          storeScalar(in.a, Ty::Bool, X64Reg::R10);
+          storeScalarAt(i, in.a, Ty::Bool, X64Reg::R10);
           break;
         }
-        loadScalar(X64Reg::R10, in.b);
+        loadScalarAt(i, X64Reg::R10, in.b);
         if (op == UnaryOp::Negate) cg.negReg(X64Reg::R10);
         else cg.notReg(X64Reg::R10);
-        storeScalar(in.a, Ty::Int, X64Reg::R10);
+        storeScalarAt(i, in.a, Ty::Int, X64Reg::R10);
         break;
       }
       case OpCode::EQ:
@@ -1467,7 +2000,7 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
         }
         cg.setcc(cc, X64Reg::R10);
         cg.movzx(X64Reg::R10, X64Reg::R10);
-        storeScalar(in.a, Ty::Bool, X64Reg::R10);
+        storeScalarAt(i, in.a, Ty::Bool, X64Reg::R10);
         break;
       }
       case OpCode::JMP:
@@ -1497,8 +2030,9 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
         } else if (tyOf(in.a) == Ty::Int) {
           if (jumpWhenTrue) cg.jmp(labels[static_cast<std::size_t>(in.jump)]);
         } else if (tyOf(in.a) == Ty::Bool) {
-          if (isReg(in.a)) {
-            cg.testReg(physOf(in.a));
+          const int ar = readRegOf(i, in.a);
+          if (ar >= 0) {
+            cg.testReg(poolReg(ar));
           } else {
             cg.movFromMem(X64Reg::R10, X64Reg::Rbp, slotDisp(in.a) + 8);
             cg.testReg(X64Reg::R10);
@@ -1513,18 +2047,18 @@ std::vector<std::uint8_t> emitProto(const Bytecode& proto, const Analysis& analy
         std::int64_t cv = 0;
         Ty ck = Ty::Undef;
         if (constIn(i, in.a, cv, ck)) emitConst(dst, ck, cv);
-        else copySlotValue(dst, tyOf(in.a), in.a);
+        else copySlotValueAt(i, dst, tyOf(in.a), in.a);
         break;
       }
       case OpCode::GETLOCAL: {
         std::int64_t cv = 0;
         Ty ck = Ty::Undef;
         if (constIn(i, numRegs + in.b, cv, ck)) emitConst(in.a, ck, cv);
-        else copySlotValue(in.a, ltyOf(in.b), numRegs + in.b);
+        else copySlotValueAt(i, in.a, ltyOf(in.b), numRegs + in.b);
         break;
       }
       case OpCode::RETURN:
-        returnValue(in.a, tyOf(in.a));
+        returnValue(i, in.a, tyOf(in.a));
         break;
       case OpCode::HALT:
         returnNil();
