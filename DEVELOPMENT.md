@@ -1642,7 +1642,7 @@ contains none of them.**
 | `myapp` | Native binary (Linux/macOS) | (GraalVM) `.exe` |
 | `myapp.exe` | Native binary (Windows) | (GraalVM) `.exe` |
 
-**`.oskpkg` format** (ZIP):
+**`.oskpkg` format** (ZIP) — **planned; not implemented in 0.1.0**:
 myapp.oskpkg
 ├── META-INF/MANIFEST.MF
 ├── bin/main.oskc
@@ -1651,7 +1651,10 @@ myapp.oskpkg
 └── README.md
 
 
-**`.oskc` format** (binary):
+**`.oskc` format** (binary) — **planned; not implemented in 0.1.0**. The compiler
+holds a `Bytecode` in memory and the AOT backend lowers it directly; nothing
+serializes it to disk yet, and no command writes or reads a `.oskc` file. The
+layout below is the target format, not the current behaviour:
 +--------+--------+--------+--------+
 | 'J' | 'O' | 'L' | 'C' | magic
 +--------+--------+--------+--------+
@@ -1675,7 +1678,8 @@ myapp.oskpkg
 +--------+--------+--------+--------+
 
 
-**Bytecode verification** (on `.oskc` load):
+**Bytecode verification** (on `.oskc` load) — **planned; not implemented in
+0.1.0** (there is no `.oskc` loader yet):
 - **Level 1 (structural)**: mandatory. Magic, version, ranges, valid opcodes,
   operands in range, checksum.
 - **Level 2 (semantic)**: optional. Jumps to valid instructions, registers

@@ -2683,17 +2683,22 @@ import { parse, stringify } from std.json;
 ---
 
 ## 19. File extensions
-| Extension | What it is | Java analog |
-|-----------|------------|-------------|
-| `.oskl` | Source code | `.java` |
-| `.oskc` | Bytecode | `.class` |
-| `.oskpkg` | Package (ZIP) | `.jar` |
-| `.osklib` | Native library | `.dll` / `.so` / `.dylib` |
-| `.oskdoc` | Documentation | `.javadoc` |
-| `myapp` | Native binary (Linux/macOS) | (GraalVM) `.exe` |
-| `myapp.exe` | Native binary (Windows) | (GraalVM) `.exe` |
 
-**`.oskpkg` format** (ZIP):
+Only `.oskl` (source) and the native binary exist in 0.1.0. The rest of the
+table is the target naming, not something the compiler writes today: there is no
+bytecode serializer, no package reader and no native-library loader yet.
+
+| Extension | What it is | Java analog | Status |
+|-----------|------------|-------------|--------|
+| `.oskl` | Source code | `.java` | ✅ |
+| `.oskc` | Bytecode | `.class` | planned |
+| `.oskpkg` | Package (ZIP) | `.jar` | planned |
+| `.osklib` | Native library | `.dll` / `.so` / `.dylib` | planned |
+| `.oskdoc` | Documentation | `.javadoc` | planned |
+| `myapp` | Native binary (Linux/macOS) | (GraalVM) `.exe` | ✅ |
+| `myapp.exe` | Native binary (Windows) | (GraalVM) `.exe` | ✅ |
+
+**`.oskpkg` format** (ZIP) — planned, not implemented in 0.1.0:
 
 ```text
 myapp.oskpkg
@@ -2703,3 +2708,8 @@ myapp.oskpkg
 ├── resources/icon.png
 └── README.md
 ```
+
+The `.oskc` bytecode layout, its checksum and the Level 1/Level 2 verification
+steps are specified in `DEVELOPMENT.md` §8; all of it is planned, since nothing
+serializes a `Bytecode` to disk yet — the compiler keeps it in memory and the
+AOT backend lowers it directly.
