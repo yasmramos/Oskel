@@ -1192,8 +1192,8 @@ Slices, each independently shippable:
     decision still open, because the generated binary is freestanding today
     (`ldd` reports "not a dynamic executable"): curated syscall stubs keep that
     invariant; an object + external link or a dynamic ELF break it. Slices 7f.1
-    through 7f.5 landed the hosted object + link and scalar `extern "C"`
-    marshalling; the pointer, struct, callback and variadic shapes remain.
+    through 7f.6 landed the hosted object + link and scalar/pointer `extern "C"`
+    marshalling; the struct, callback and variadic shapes remain.
     - **7f.1** (done) — tolerance of an unused host declaration plus the first
       curated stub. A `native fn`/`extern "C"` declaration binds a name to the
       host function the host registered; the compiler emits one read of the name
@@ -1313,6 +1313,35 @@ Slices, each independently shippable:
       checked against the VM), and `tests/codegen_test.cpp` pins the extended
       `cvttsd2si` encodings. A `ptr`/`cstring` parameter or return, a struct, a
       callback and a C variadic remain 7f work.
+    - **7f.6** (done) — `cstring`/`ptr` parameters and a `cstring` return in the
+      hosted backend. The scalar thunk of 7f.5 is extended to the pointer
+      register class, so a program can pass text to a C function and read text
+      back. A `cstring`/`ptr` *parameter* travels in a general-purpose register
+      as a machine address: `nil` marshals to C's NULL (0) and a Oskel string is
+      copied into a fresh, NUL-terminated arena block whose address is passed,
+      because an `AotString` is a length word followed by the bytes and is
+      *not* NUL-terminated — exactly the `const char *` a C callee dereferences.
+      Marshalling a pointer argument calls `alloc` and `rep movsb`, which
+      clobber the integer argument registers, so every integer argument is now
+      staged in a small stack frame and loaded into its register only just
+      before the call (the SSE arguments are written directly, since nothing
+      clobbers an xmm register). A `cstring` *return* comes back in `rax`: NULL
+      becomes `nil`, otherwise the bytes are scanned to the NUL (with the hosted
+      engine's 16 MiB cap, `src/ffi.cpp`) and copied into an `AotString`, which
+      the thunk returns as a `Str` value. Boxing the result as the existing
+      `Str` tag — rather than adding an `AotTag::Ptr` — keeps every shared
+      helper (`type`, `print`, comparison, interpolation) untouched, so the
+      freestanding image stays byte for byte identical; the cost is a documented
+      VM/AOT divergence (BACKLOG §6 item 23): a returned `cstring` prints and
+      compares `== nil` like the VM, but reads as `"string"` in `type()` and the
+      string operations then accept it. An opaque
+      `ptr` *return* is still rejected: the AOT runtime has no representation
+      for a handle it must never dereference. A struct, a callback and a C
+      variadic remain 7f work. Covered by
+      `tests/native_build_extern_hosted.oskl`, extended with
+      `strlen`/`strcmp`/`strncmp` (a pointer then a `size_t`, exercising the
+      staging order) and `strchr` (a `cstring` return, including the NULL
+      no-match case), built hosted and checked against the VM.
   - **7g** (done) — bare-metal x86-64 (multiboot). A third target,
     `x86_64-freestanding-sysv` (`oskel build --target
     x86_64-freestanding-sysv`), emits a multiboot 1 kernel that a boot loader
@@ -1540,7 +1569,7 @@ Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair, which `ITER` now yields directly, no new opcode and no helper call) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.5 done, scalar `extern "C"` resolves in the hosted backend, pointer/struct/callback/variadic still open)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.6 done, scalar and `cstring`/`ptr` `extern "C"` resolve in the hosted backend, struct/callback/variadic still open)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-3 done: integer leaf protos with CPU-register allocation, constant folding, strength reduction and compare-branch fusion)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)

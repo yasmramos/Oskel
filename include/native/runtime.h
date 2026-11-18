@@ -302,14 +302,17 @@ enum class AotShiftOp : std::int64_t {
 };
 
 // A scalar `extern "C"` symbol the hosted backend resolves through the system
-// linker (PHASE 7f.5).
+// linker (PHASE 7f.5, extended to `cstring`/`ptr` in 7f.6).
 //
 // The compiler's `ExternSymbol` carries the whole ABI signature in the FFI
 // vocabulary; the lowerer narrows it to this register-level description -- one
 // `ParamClass` per parameter and one `ReturnClass` -- so the runtime emits a
-// marshalling thunk without reaching into the compiler's type tables. Only
-// scalar signatures are narrowed here: a `ptr`/`cstring`, a struct, a callback
-// or a C variadic is left out and keeps the build rejection (later 7f work).
+// marshalling thunk without reaching into the compiler's type tables. A scalar,
+// `cstring` or `ptr` *parameter* is narrowed (a pointer travels in a GPR); a
+// struct or a callback parameter is left out and keeps the build rejection.
+// A `cstring` return is narrowed (the thunk scans the `const char *` into an
+// `AotString`); an opaque `ptr` return is left out, because the AOT runtime has
+// no representation for a handle it must never dereference.
 struct AotExternThunk {
   // Bound by `emitAotRuntime` to the thunk's entry, so the caller can seed it
   // into the symbol's global slot before the body is emitted (a forward
@@ -328,7 +331,7 @@ struct AotExternThunk {
 // error through `oskel_exit`, so the caller must emit the entry prelude into
 // the same buffer (see `emitFreestandingRuntime`).
 //
-// `externThunks`, when non-null, is the scalar `extern "C"` surface of the
+// `externThunks`, when non-null, is the `extern "C"` surface of the
 // hosted mode: one marshalling thunk is emitted per symbol and each thunk's
 // `label` is bound. The freestanding path passes null, so its image is
 // unchanged and carries no external reference.

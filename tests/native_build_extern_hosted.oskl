@@ -7,13 +7,20 @@
 //
 // The signatures cover the register classes the thunk marshals: a general-
 // purpose integer (including a fixed width, which the thunk normalizes back to
-// its declared width), an SSE double, and a `void` return.
+// its declared width), an SSE double, and a `void` return. PHASE 7f.6 adds the
+// pointer class: a `cstring` parameter travels as a `const char *` (the thunk
+// materialises a NUL-terminated copy of the Oskel string in the arena) and a
+// `cstring` return is scanned back into an Oskel string.
 extern "C" {
   fn abs(x: int): int;
   fn labs(x: int64): int64;
   fn getpid(): int;
   fn fabs(x: double): double;
   fn fmod(a: double, b: double): double;
+  fn strlen(s: cstring): size_t;
+  fn strcmp(a: cstring, b: cstring): int;
+  fn strncmp(a: cstring, b: cstring, n: size_t): int;
+  fn strchr(s: cstring, c: int): cstring;
 }
 
 assertEq(abs(-7), 7);
@@ -21,5 +28,24 @@ assertEq(labs(-9000000000), 9000000000);
 assertEq(getpid() > 0, true);
 assertEq(fabs(-2.5), 2.5);
 assertEq(fmod(7.5, 2.0), 1.5);
+
+// A Oskel string is a valid `const char *`: NUL-terminated for the whole call.
+assertEq(strlen("hello"), 5);
+assertEq(strlen(""), 0);
+assertEq(strcmp("abc", "abc"), 0);
+assertEq(strcmp("abc", "abd") < 0, true);
+// A `size_t` argument travels in a GPR after two pointers, and the integer
+// arguments are staged so a later `alloc` (from a pointer argument) cannot
+// clobber them.
+assertEq(strncmp("hello", "help", 3), 0);
+assertEq(strncmp("hello", "help", 4) != 0, true);
+
+// A `cstring` return is scanned back into an Oskel string; a NULL pointer
+// (`strchr` with no match) becomes `nil`. The non-NULL case is checked by
+// feeding the handle back into a C function: the VM keeps a `cstring` return
+// as an opaque handle (so `assertEq` against a string would differ), but the
+// bytes are the same and the AOT thunk reproduces them.
+assertEq(strcmp(strchr("hello", 108), "llo"), 0);
+assertEq(strchr("hello", 122) == nil, true);
 
 print("extern hosted ok");
