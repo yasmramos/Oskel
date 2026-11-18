@@ -317,6 +317,16 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     (with `ptr`/`cstring` in `type()`, handle equality and the pointer builtins)
     removes the divergence; until then the parity fixtures avoid comparing a
     returned `cstring` against a string.
+24. **[P0] [done]** Silent memory corruption when a rendered collection crossed
+    the string builder's 64-byte initial capacity. `oskel_sb_append_escaped`
+    kept its loop index in `r13` and pushed/popped it around the loop; `r13` is
+    `kAotArenaCursor` (entry.h) and the loop calls the allocating
+    `oskel_sb_append`, so the allocator read a clobbered cursor and the closing
+    pop rewound it past live blocks. `str()`/`repr()`/`print`/interpolation of
+    any array or map of strings past 64 bytes came out garbled or crashed,
+    nondeterministically. The index now lives in a caller-saved scratch (`r11`),
+    reloaded from its slot after every call. Regression:
+    `tests/native_build_string_repr.oskl`.
 
 ---
 

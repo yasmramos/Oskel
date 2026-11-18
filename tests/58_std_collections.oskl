@@ -1,0 +1,209 @@
+// std.collections: mapping, filtering, folding, searching, reshaping,
+// grouping and sorting over arrays.
+//
+// The module is pure Oskel over the portable primitive surface, so every
+// expected value here must hold on the development VM and under `oskel build`
+// on every AOT target (see `tests/native_build_collections.oskl`). These are the
+// same operations as the array methods, provided as functions because the AOT
+// backend does not bind the methods yet (`docs/BACKLOG.md` §6 item 1).
+
+import std.collections;
+import std.collections.*;
+
+let nums = [5, 3, 8, 1, 9, 2, 8, 1];
+
+// --- map / filter / reject / each -------------------------------------------
+
+assertEq(map(nums, x => x * 2), [10, 6, 16, 2, 18, 4, 16, 2]);
+assertEq(map([], x => x), []);
+assertEq(map(["a", "b"], s => s + "!"), ["a!", "b!"]);
+assertEq(filter(nums, x => x > 4), [5, 8, 9, 8]);
+assertEq(filter(nums, x => x > 100), []);
+assertEq(reject(nums, x => x > 4), [3, 1, 2, 1]);
+assertEq(reject(nums, x => true), []);
+
+// `each` returns the array unchanged, for side effects.
+var seen = [];
+each([1, 2, 3], x => seen[len(seen)] = x * 10);
+assertEq(seen, [10, 20, 30]);
+assertEq(each([1, 2], x => x), [1, 2]);
+
+// The input array is never mutated.
+assertEq(nums, [5, 3, 8, 1, 9, 2, 8, 1]);
+
+// --- fold / sum -------------------------------------------------------------
+
+assertEq(fold([1, 2, 3, 4], (acc, x) => acc + x, 0), 10);
+assertEq(fold([1, 2, 3], (acc, x) => acc * x, 1), 6);
+assertEq(fold([], (acc, x) => acc + x, 42), 42);
+assertEq(fold(["a", "b", "c"], (acc, s) => acc + s, ""), "abc");
+assertEq(sum([1, 2, 3, 4]), 10);
+assertEq(sum([]), 0);
+assertEq(sumBy(nums, x => x * 10), 370);
+
+// --- minimum / maximum ------------------------------------------------------
+
+assertEq(minimum(nums), 1);
+assertEq(maximum(nums), 9);
+assertEq(minimum([7]), 7);
+assertEq(maximum([7]), 7);
+assertEq(minimum([]), nil);
+assertEq(maximum([]), nil);
+// minBy/maxBy select the *element*, not the key.
+assertEq(minBy(["ccc", "a", "bb"], s => len(s)), "a");
+assertEq(maxBy(["ccc", "a", "bb"], s => len(s)), "ccc");
+assertEq(minBy([], s => len(s)), nil);
+assertEq(maxBy([], s => len(s)), nil);
+
+// --- count / find / findIndex ----------------------------------------------
+
+assertEq(count(nums, x => x > 4), 4);
+assertEq(count(nums, x => x == 8), 2);
+assertEq(count(nums, x => x > 100), 0);
+assertEq(find(nums, x => x > 6), 8);
+assertEq(find(nums, x => x > 100), nil);
+assertEq(find(["a", "bb", "c"], s => len(s) == 2), "bb");
+assertEq(findIndex(nums, x => x == 8), 2);
+assertEq(findIndex(nums, x => x == 100), -1);
+assertEq(findIndex(nums, x => x == 5), 0);
+
+// --- any / all / none -------------------------------------------------------
+
+assertEq(any(nums, x => x > 8), true);
+assertEq(any(nums, x => x > 100), false);
+assertEq(all(nums, x => x > 0), true);
+assertEq(all(nums, x => x > 1), false);
+assertEq(none(nums, x => x > 100), true);
+assertEq(none(nums, x => x > 8), false);
+// The empty array is a vacuous truth for `all`, and false for `any`.
+assertEq(any([], x => true), false);
+assertEq(all([], x => false), true);
+
+// --- take / drop ------------------------------------------------------------
+
+assertEq(take(nums, 3), [5, 3, 8]);
+assertEq(drop(nums, 3), [1, 9, 2, 8, 1]);
+// The count is clamped to [0, len].
+assertEq(take(nums, 0), []);
+assertEq(drop(nums, 0), nums);
+assertEq(take(nums, 100), nums);
+assertEq(drop(nums, 100), []);
+assertEq(take(nums, -5), []);
+assertEq(drop(nums, -5), nums);
+// `take` + `drop` reconstruct the array.
+assertEq(take(nums, 3) + drop(nums, 3), nums);
+
+// --- partition --------------------------------------------------------------
+
+let parts = partition(nums, x => x % 2 == 0);
+assertEq(parts[0], [8, 2, 8]);
+assertEq(parts[1], [5, 3, 1, 9, 1]);
+assertEq(len(parts), 2);
+assertEq(partition([1, 3, 5], x => x % 2 == 0), [[], [1, 3, 5]]);
+assertEq(partition([2, 4], x => x % 2 == 0), [[2, 4], []]);
+
+// --- chunk ------------------------------------------------------------------
+
+assertEq(chunk([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4], [5]]);
+assertEq(chunk([1, 2, 3, 4], 2), [[1, 2], [3, 4]]);
+assertEq(chunk([1, 2, 3], 5), [[1, 2, 3]]);
+assertEq(chunk([1, 2, 3], 1), [[1], [2], [3]]);
+assertEq(chunk([], 3), []);
+// A size below 1 is a runtime error, so a valid call never reaches it.
+assertEq(chunk([1], 100), [[1]]);
+
+// --- zip / flatten / reverse ------------------------------------------------
+
+assertEq(zip([1, 2, 3], ["a", "b", "c"]), [[1, "a"], [2, "b"], [3, "c"]]);
+// Stops at the shorter array.
+assertEq(zip([1, 2, 3], ["a", "b"]), [[1, "a"], [2, "b"]]);
+assertEq(zip([1], ["a", "b", "c"]), [[1, "a"]]);
+assertEq(zip([], ["a"]), []);
+assertEq(flatten([[1, 2], [3], [4, 5]]), [1, 2, 3, 4, 5]);
+assertEq(flatten([[1, 2], [], [3]]), [1, 2, 3]);
+assertEq(flatten([]), []);
+assertEq(reverse([1, 2, 3]), [3, 2, 1]);
+assertEq(reverse([]), []);
+assertEq(reverse([1]), [1]);
+assertEq(reverse(nums), [1, 8, 2, 9, 1, 8, 3, 5]);
+
+// --- unique -----------------------------------------------------------------
+
+assertEq(unique([1, 1, 2, 3, 3, 3, 1]), [1, 2, 3]);
+assertEq(unique([1, 2, 3]), [1, 2, 3]);
+assertEq(unique([]), []);
+assertEq(unique(nums), [5, 3, 8, 1, 9, 2]);
+// `uniqueBy` keeps the first element of each key group.
+assertEq(uniqueBy(nums, x => x % 3), [5, 3, 1]);
+assertEq(uniqueBy(["aa", "b", "cc", "d"], s => len(s)), ["aa", "b"]);
+
+// --- groupBy / countBy ------------------------------------------------------
+
+let byMod3 = groupBy(nums, x => x % 3);
+assertEq(byMod3["0"], [3, 9]);
+assertEq(byMod3["1"], [1, 1]);
+assertEq(byMod3["2"], [5, 8, 2, 8]);
+assertEq(len(byMod3), 3);
+// Keys are strings, so a numeric key is grouped through `str`.
+assertEq(groupBy([1, 2, 3], x => x)[ "1"], [1]);
+assertEq(countBy(nums, x => x % 3), {"0": 2, "1": 2, "2": 4});
+assertEq(countBy([], x => x), {});
+assertEq(countBy(["a", "bb", "c"], s => len(s)), {"1": 2, "2": 1});
+
+// --- sort -------------------------------------------------------------------
+
+assertEq(sort([3, 1, 2]), [1, 2, 3]);
+assertEq(sort(nums), [1, 1, 2, 3, 5, 8, 8, 9]);
+assertEq(sort([]), []);
+assertEq(sort([1]), [1]);
+assertEq(sort([2, 2, 1, 1]), [1, 1, 2, 2]);
+assertEq(sort(["pear", "apple", "fig"]), ["apple", "fig", "pear"]);
+assertEq(sortBy(nums, (a, b) => a > b), [9, 8, 8, 5, 3, 2, 1, 1]);
+assertEq(sortBy(["bbb", "a", "cc"], (a, b) => len(a) < len(b)), ["a", "cc", "bbb"]);
+assertEq(sortByKey(["bbb", "a", "cc", "dddd"], s => len(s)), ["a", "cc", "bbb", "dddd"]);
+assertEq(sortByKey(nums, x => -x), [9, 8, 8, 5, 3, 2, 1, 1]);
+// The sort is stable: equal keys keep their input order.
+assertEq(sortBy([[1, "a"], [1, "b"], [0, "c"], [0, "d"]], (p, q) => p[0] < q[0]),
+         [[0, "c"], [0, "d"], [1, "a"], [1, "b"]]);
+// Sorting does not touch the input.
+let unsorted = [3, 1, 2];
+assertEq(sort(unsorted), [1, 2, 3]);
+assertEq(unsorted, [3, 1, 2]);
+
+// A larger array than any small case, to exercise every merge pass.
+let big = [];
+var i = 0;
+while (i < 100) {
+  big[len(big)] = (i * 37) % 100;
+  i = i + 1;
+}
+let sortedBig = sort(big);
+assertEq(len(sortedBig), 100);
+assertEq(sortedBig[0], 0);
+assertEq(sortedBig[99], 99);
+assertEq(findIndex(sortedBig, x => x < 0), -1);
+var ascending = true;
+var j = 1;
+while (j < len(sortedBig)) {
+  if (sortedBig[j - 1] > sortedBig[j]) {
+    ascending = false;
+  }
+  j = j + 1;
+}
+assertEq(ascending, true);
+
+// --- composition ------------------------------------------------------------
+
+// The helpers chain: the top three distinct values, descending.
+let top3 = take(sortBy(unique(nums), (a, b) => a > b), 3);
+assertEq(top3, [9, 8, 5]);
+// Group, then measure each group by walking the map (no map methods, which the
+// AOT backend does not bind).
+let byParity = groupBy(nums, x => x % 2 == 0 ? "even" : "odd");
+var groupSizes = [];
+for k, group in byParity {
+  groupSizes[len(groupSizes)] = len(group);
+}
+assertEq(sort(groupSizes), [3, 5]);
+
+print("collections ok");

@@ -2239,6 +2239,64 @@ and Windows. Three cases deviate from POSIX `posixpath`, all deliberately:
 discarding the parts before it). `normalize` and `relative` match
 `posixpath.normpath`/`relpath` exactly.
 
+### 12.12 Collections
+
+`import std.collections;` adds functional helpers over arrays: mapping,
+filtering, folding, searching, reshaping, grouping and sorting. Every function
+takes a **new** array or map and never mutates its input, so a caller can keep
+the original and chain freely.
+
+The array methods (`xs.map(f)`, `xs.filter(f)`, `xs.sort()`, ...) exist too and
+are the shorter form on the development VM, but the AOT backend does not bind
+them yet: `oskel build` compiles a call to one and the binary fails at run time
+with `value has no such member` (BACKLOG §6 item 1). These functions are the
+same operations over the portable primitive surface, so they work identically
+on the VM and in a native binary. **Prefer them when a program must compile with
+`oskel build`.**
+
+| Function | Description |
+| --- | --- |
+| `map(xs, f)` | A new array with `f(element)`. |
+| `filter(xs, f)` / `reject(xs, f)` | The elements for which `f` is truthy / falsy. |
+| `each(xs, f)` | Calls `f(element)` for side effects; returns `xs`. |
+| `fold(xs, f, init)` | Left fold with `f(accumulator, element)`. |
+| `sum(xs)` / `sumBy(xs, f)` | The sum of the elements / of `f(element)`. |
+| `minimum(xs)` / `maximum(xs)` | The smallest / largest element, or `nil` when empty. |
+| `minBy(xs, key)` / `maxBy(xs, key)` | The element whose key is smallest / largest, or `nil`. |
+| `count(xs, f)` | How many elements satisfy `f`. |
+| `find(xs, f)` / `findIndex(xs, f)` | The first element / index satisfying `f`, else `nil` / `-1`. |
+| `any(xs, f)` / `all(xs, f)` / `none(xs, f)` | Whether some / every / no element satisfies `f`. |
+| `take(xs, n)` / `drop(xs, n)` | The first `n` / the elements after the first `n` (clamped). |
+| `partition(xs, f)` | `[yes, no]`: the elements that satisfy `f` and those that do not. |
+| `chunk(xs, size)` | Consecutive groups of at most `size` elements. |
+| `zip(a, b)` | Pairs of elements, stopping at the shorter array. |
+| `flatten(xs)` | One level of nesting removed. |
+| `reverse(xs)` | The elements in reverse order. |
+| `unique(xs)` / `uniqueBy(xs, key)` | The elements with duplicates removed, keeping the first. |
+| `groupBy(xs, key)` | A map from `str(key(element))` to the elements that produced it. |
+| `countBy(xs, key)` | A map from `str(key(element))` to how many produced it. |
+| `sort(xs)` / `sortBy(xs, less)` / `sortByKey(xs, key)` | A new sorted array. `sort` is stable. |
+
+```oskl
+import std.collections.*;
+
+let nums = [5, 3, 8, 1, 9, 2, 8, 1];
+
+print(filter(nums, x => x > 4));          // [5, 8, 9, 8]
+print(fold(nums, (acc, x) => acc + x, 0)); // 37
+print(sort(nums));                        // [1, 1, 2, 3, 5, 8, 8, 9]
+print(unique(nums));                      // [5, 3, 8, 1, 9, 2]
+print(groupBy(nums, x => x % 3));         // {"2": [5, 8, 2, 8], "0": [3, 9], "1": [1, 1]}
+print(take(sortBy(nums, (a, b) => a > b), 3)); // [9, 8, 8]
+```
+
+A `groupBy`/`countBy`/`uniqueBy`/`*By` key is compared through `str`, because a
+map key must be a string (§10); `2` and `"2"` therefore land in the same bucket,
+which is the useful default for a grouping key. `sort` is a stable merge sort, so
+two elements the comparator considers equal keep their input order. `sort`,
+`minimum`/`maximum` and the `By` variants need the elements (or their keys) to be
+mutually comparable: numbers with numbers, strings with strings.
+
 ---
 
 ## 13. Errors and diagnostics
@@ -2743,8 +2801,8 @@ print(sqrt(25));            // 5
 ```
 
 The standard library ships `std.math` (§12.3), `std.json` (§12.9),
-`std.datetime` (§12.10) and `std.path` (§12.11). All are ordinary modules, so
-the same four import forms apply:
+`std.datetime` (§12.10), `std.path` (§12.11) and `std.collections` (§12.12). All
+are ordinary modules, so the same four import forms apply:
 
 ```oskel
 import std.json;             // std.json.parse, std.json.stringify, ...

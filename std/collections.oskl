@@ -1,0 +1,492 @@
+// Standard library: array and collection helpers.
+//
+// Imported as `import std.collections;` (qualified: `std.collections.map`),
+// `import std.collections.*;` (unqualified: `map`), `import std.collections as c;`
+// or `import { map, filter } from std.collections;`.
+//
+// Why a module and not methods: the array methods (`map`, `filter`, `sort`, ...)
+// are implemented in the VM, but the AOT backend does not bind them yet (a miss
+// is "value has no such member"; `docs/BACKLOG.md` §6 item 1). These are the
+// same operations as ordinary functions over the portable primitive surface, so
+// they work identically on the development VM and under `oskel build` on every
+// target. Prefer them over the methods when a program must compile natively.
+//
+// The module is pure Oskel over the portable primitive surface (indexing,
+// slicing, `len`, `str`, `panic`, `for ... in`, closures, `@MustUse`). It
+// deliberately avoids the collection/string methods and `pcall`/`error`, which
+// the AOT backend does not implement yet (DEVELOPMENT.md PHASE 7f).
+//
+// Every function returns a **new** array or map and never mutates its input,
+// so a caller can keep the original and chain freely.
+//
+// A `groupBy`/`countBy`/`uniqueBy`/`*By` key is compared and grouped through
+// `str`, because map keys must be strings (`docs/language.md` §10); `2` and
+// `"2"` therefore land in the same bucket, which is the useful default for a
+// grouping key.
+
+// --- mapping and filtering --------------------------------------------------
+
+// A new array with `f(element)` for each element.
+//
+//   map([1, 2, 3], x => x * x) -> [1, 4, 9]
+@MustUse
+fn map(xs, f) {
+  var out = [];
+  for x in xs {
+    out[len(out)] = f(x);
+  }
+  return out;
+}
+
+// The elements for which `f` is truthy.
+//
+//   filter([1, 2, 3, 4], x => x % 2 == 0) -> [2, 4]
+@MustUse
+fn filter(xs, f) {
+  var out = [];
+  for x in xs {
+    if (f(x)) {
+      out[len(out)] = x;
+    }
+  }
+  return out;
+}
+
+// Calls `f(element)` for each element and returns the array unchanged, for
+// side effects.
+@MustUse
+fn each(xs, f) {
+  for x in xs {
+    f(x);
+  }
+  return xs;
+}
+
+// The elements that do **not** satisfy `f`.
+@MustUse
+fn reject(xs, f) {
+  return filter(xs, x => !f(x));
+}
+
+// --- folding and aggregation ------------------------------------------------
+
+// Folds left with `f(accumulator, element)`, starting from `init`.
+//
+//   fold([1, 2, 3], (acc, x) => acc + x, 0) -> 6
+@MustUse
+fn fold(xs, f, init) {
+  var acc = init;
+  for x in xs {
+    acc = f(acc, x);
+  }
+  return acc;
+}
+
+// The sum of the elements (numbers). Zero for an empty array.
+@MustUse
+fn sum(xs) {
+  var total = 0;
+  for x in xs {
+    total = total + x;
+  }
+  return total;
+}
+
+// The sum of `f(element)` over the array.
+@MustUse
+fn sumBy(xs, f) {
+  var total = 0;
+  for x in xs {
+    total = total + f(x);
+  }
+  return total;
+}
+
+// The smallest element, or `nil` when the array is empty.
+@MustUse
+fn minimum(xs) {
+  if (len(xs) == 0) {
+    return nil;
+  }
+  var best = xs[0];
+  for x in xs {
+    if (x < best) {
+      best = x;
+    }
+  }
+  return best;
+}
+
+// The largest element, or `nil` when the array is empty.
+@MustUse
+fn maximum(xs) {
+  if (len(xs) == 0) {
+    return nil;
+  }
+  var best = xs[0];
+  for x in xs {
+    if (x > best) {
+      best = x;
+    }
+  }
+  return best;
+}
+
+// The element whose key is smallest, or `nil` when the array is empty.
+@MustUse
+fn minBy(xs, key) {
+  if (len(xs) == 0) {
+    return nil;
+  }
+  var best = xs[0];
+  var bestKey = key(xs[0]);
+  for x in xs {
+    let k = key(x);
+    if (k < bestKey) {
+      best = x;
+      bestKey = k;
+    }
+  }
+  return best;
+}
+
+// The element whose key is largest, or `nil` when the array is empty.
+@MustUse
+fn maxBy(xs, key) {
+  if (len(xs) == 0) {
+    return nil;
+  }
+  var best = xs[0];
+  var bestKey = key(xs[0]);
+  for x in xs {
+    let k = key(x);
+    if (k > bestKey) {
+      best = x;
+      bestKey = k;
+    }
+  }
+  return best;
+}
+
+// How many elements satisfy `f`.
+@MustUse
+fn count(xs, f) {
+  var n = 0;
+  for x in xs {
+    if (f(x)) {
+      n = n + 1;
+    }
+  }
+  return n;
+}
+
+// --- searching --------------------------------------------------------------
+
+// The first element that satisfies `f`, or `nil`.
+@MustUse
+fn find(xs, f) {
+  for x in xs {
+    if (f(x)) {
+      return x;
+    }
+  }
+  return nil;
+}
+
+// The index of the first element that satisfies `f`, or `-1`.
+@MustUse
+fn findIndex(xs, f) {
+  var i = 0;
+  while (i < len(xs)) {
+    if (f(xs[i])) {
+      return i;
+    }
+    i = i + 1;
+  }
+  return -1;
+}
+
+// True when at least one element satisfies `f`. False for an empty array.
+@MustUse
+fn any(xs, f) {
+  for x in xs {
+    if (f(x)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// True when every element satisfies `f`. True for an empty array.
+@MustUse
+fn all(xs, f) {
+  for x in xs {
+    if (!f(x)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// True when no element satisfies `f`.
+@MustUse
+fn none(xs, f) {
+  return !any(xs, f);
+}
+
+// --- reshaping --------------------------------------------------------------
+
+// The first `n` elements (`n` is clamped to `[0, len]`).
+@MustUse
+fn take(xs, n) {
+  if (n <= 0) {
+    return [];
+  }
+  if (n >= len(xs)) {
+    return xs[0:len(xs)];
+  }
+  return xs[0:n];
+}
+
+// The elements after the first `n` (`n` is clamped to `[0, len]`).
+@MustUse
+fn drop(xs, n) {
+  if (n <= 0) {
+    return xs[0:len(xs)];
+  }
+  if (n >= len(xs)) {
+    return [];
+  }
+  return xs[n:len(xs)];
+}
+
+// Splits the array in two: the elements that satisfy `f` and those that do not.
+// The result is `[yes, no]`.
+//
+//   partition([1, 2, 3, 4], x => x > 2) -> [[3, 4], [1, 2]]
+@MustUse
+fn partition(xs, f) {
+  var yes = [];
+  var no = [];
+  for x in xs {
+    if (f(x)) {
+      yes[len(yes)] = x;
+    } else {
+      no[len(no)] = x;
+    }
+  }
+  return [yes, no];
+}
+
+// Splits the array into consecutive groups of at most `size` elements. The last
+// group may be shorter. A `size` below 1 is a runtime error.
+//
+//   chunk([1, 2, 3, 4, 5], 2) -> [[1, 2], [3, 4], [5]]
+@MustUse
+fn chunk(xs, size) {
+  if (size < 1) {
+    panic("chunk size must be at least 1");
+  }
+  var out = [];
+  var i = 0;
+  while (i < len(xs)) {
+    let end = i + size < len(xs) ? i + size : len(xs);
+    out[len(out)] = xs[i:end];
+    i = i + size;
+  }
+  return out;
+}
+
+// Pairs the elements of two arrays, stopping at the shorter one.
+//
+//   zip([1, 2, 3], ["a", "b"]) -> [[1, "a"], [2, "b"]]
+@MustUse
+fn zip(a, b) {
+  var out = [];
+  let n = len(a) < len(b) ? len(a) : len(b);
+  var i = 0;
+  while (i < n) {
+    out[len(out)] = [a[i], b[i]];
+    i = i + 1;
+  }
+  return out;
+}
+
+// Flattens one level of nesting.
+//
+//   flatten([[1, 2], [3], []]) -> [1, 2, 3]
+@MustUse
+fn flatten(xs) {
+  var out = [];
+  for group in xs {
+    for x in group {
+      out[len(out)] = x;
+    }
+  }
+  return out;
+}
+
+// A new array with the elements in reverse order.
+@MustUse
+fn reverse(xs) {
+  var out = [];
+  var i = len(xs) - 1;
+  while (i >= 0) {
+    out[len(out)] = xs[i];
+    i = i - 1;
+  }
+  return out;
+}
+
+// The elements with the duplicates removed, keeping the first occurrence.
+//
+//   unique([1, 1, 2, 3, 1]) -> [1, 2, 3]
+@MustUse
+fn unique(xs) {
+  var out = [];
+  for x in xs {
+    if (!_contains(out, x)) {
+      out[len(out)] = x;
+    }
+  }
+  return out;
+}
+
+// Like `unique`, but the elements are told apart by `key(element)`.
+@MustUse
+fn uniqueBy(xs, key) {
+  var out = [];
+  var seen = [];
+  for x in xs {
+    let k = str(key(x));
+    if (!_contains(seen, k)) {
+      seen[len(seen)] = k;
+      out[len(out)] = x;
+    }
+  }
+  return out;
+}
+
+// --- grouping ---------------------------------------------------------------
+
+// Groups the elements by `str(key(element))`. The result is a map from key to
+// the array of elements that produced it, in first-seen order.
+//
+//   groupBy([1, 2, 3, 4], x => x % 2) -> {"1": [1, 3], "0": [2, 4]}
+@MustUse
+fn groupBy(xs, key) {
+  var out = {};
+  for x in xs {
+    let k = str(key(x));
+    if (out[k] == nil) {
+      out[k] = [];
+    }
+    let bucket = out[k];
+    bucket[len(bucket)] = x;
+  }
+  return out;
+}
+
+// Counts the elements by `str(key(element))`.
+//
+//   countBy([1, 2, 3, 4], x => x % 2) -> {"1": 2, "0": 2}
+@MustUse
+fn countBy(xs, key) {
+  var out = {};
+  for x in xs {
+    let k = str(key(x));
+    let n = out[k];
+    if (n == nil) {
+      out[k] = 1;
+    } else {
+      out[k] = n + 1;
+    }
+  }
+  return out;
+}
+
+// --- sorting ----------------------------------------------------------------
+
+// A new array sorted by `less(a, b)`. The sort is stable: two elements for which
+// `less` is false both ways keep their relative order.
+//
+//   sort([3, 1, 2], (a, b) => a < b) -> [1, 2, 3]
+@MustUse
+fn sortBy(xs, less) {
+  let n = len(xs);
+  if (n < 2) {
+    return xs[0:n];
+  }
+  // Bottom-up merge sort: `src` holds the runs and `dst` the merged output, and
+  // the two are swapped each pass. Taking from the right only when it is
+  // strictly less keeps the sort stable.
+  var src = xs[0:n];
+  var dst = xs[0:n];
+  var width = 1;
+  while (width < n) {
+    var i = 0;
+    while (i < n) {
+      let mid = i + width < n ? i + width : n;
+      let end = i + 2 * width < n ? i + 2 * width : n;
+      var a = i;
+      var b = mid;
+      var k = i;
+      while (a < mid && b < end) {
+        if (less(src[b], src[a])) {
+          dst[k] = src[b];
+          b = b + 1;
+        } else {
+          dst[k] = src[a];
+          a = a + 1;
+        }
+        k = k + 1;
+      }
+      while (a < mid) {
+        dst[k] = src[a];
+        a = a + 1;
+        k = k + 1;
+      }
+      while (b < end) {
+        dst[k] = src[b];
+        b = b + 1;
+        k = k + 1;
+      }
+      i = i + 2 * width;
+    }
+    let swap = src;
+    src = dst;
+    dst = swap;
+    width = width * 2;
+  }
+  return src;
+}
+
+// A new array sorted by `key(element)`.
+//
+//   sortByKey(["bbb", "a", "cc"], s => len(s)) -> ["a", "cc", "bbb"]
+@MustUse
+fn sortByKey(xs, key) {
+  return sortBy(xs, (a, b) => key(a) < key(b));
+}
+
+// A new array sorted in ascending order. The elements must be mutually
+// comparable (numbers with numbers, strings with strings).
+//
+//   sort([3, 1, 2]) -> [1, 2, 3]
+@MustUse
+fn sort(xs) {
+  return sortBy(xs, (a, b) => a < b);
+}
+
+// --- helpers ----------------------------------------------------------------
+
+// Structural membership, the primitive equivalent of `array.contains`. Kept
+// private: a caller uses `x in array` (§8), which the AOT backend lowers.
+fn _contains(xs, value) {
+  for x in xs {
+    if (x == value) {
+      return true;
+    }
+  }
+  return false;
+}

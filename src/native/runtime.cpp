@@ -7096,7 +7096,6 @@ void emitSbAppendEscaped(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbApp
   prologue(cg);
   cg.push(Rbx);
   cg.push(R12);
-  cg.push(X64Reg::R13);
   cg.subRegImm32(Rsp, 40);
   cg.movReg(Rbx, Rdi);  // sb
   cg.movReg(R12, Rsi);  // string
@@ -7107,13 +7106,19 @@ void emitSbAppendEscaped(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbApp
   cg.movImm(Rdx, static_cast<std::int64_t>(textQuote.text.size()));
   cg.callLabel(sbAppend);
 
+  // The loop index lives in r11, a caller-saved scratch, and is reloaded from
+  // its stack slot after every call. It must not live in a callee-saved
+  // register that carries global state: r13 is `kAotArenaCursor` and r14 is
+  // `kAotArenaEnd` (entry.h), and `sbAppend` allocates (growing the builder) as
+  // it goes, so both clobbering r13 and saving/restoring it around the loop
+  // would leave the arena cursor stale and hand the same bytes out twice.
   cg.bind(loop);
-  cg.movFromMem(X64Reg::R13, Rbp, -40);
+  cg.movFromMem(R11, Rbp, -40);
   cg.movFromMem(R9, R12, 0);
-  cg.cmpReg(X64Reg::R13, R9);
+  cg.cmpReg(R11, R9);
   cg.jcc(Jcc::Ae, loopDone);
 
-  cg.movReg(R10, X64Reg::R13);
+  cg.movReg(R10, R11);
   cg.addReg(R10, R12);
   cg.movzxFromMem(R10, R10, kStringDataOffset);
   cg.cmpImm32(R10, '"');
@@ -7200,9 +7205,9 @@ void emitSbAppendEscaped(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbApp
   cg.callLabel(sbAppendByte);
 
   cg.bind(next);
-  cg.movFromMem(X64Reg::R13, Rbp, -40);
-  cg.addImm32(X64Reg::R13, 1);
-  cg.movToMem(Rbp, -40, X64Reg::R13);
+  cg.movFromMem(R11, Rbp, -40);
+  cg.addImm32(R11, 1);
+  cg.movToMem(Rbp, -40, R11);
   cg.jmp(loop);
 
   cg.bind(loopDone);
@@ -7211,7 +7216,6 @@ void emitSbAppendEscaped(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbApp
   cg.movImm(Rdx, static_cast<std::int64_t>(textQuote.text.size()));
   cg.callLabel(sbAppend);
   cg.addImm32(Rsp, 40);
-  cg.pop(X64Reg::R13);
   cg.pop(R12);
   cg.pop(Rbx);
   epilogue(cg);
