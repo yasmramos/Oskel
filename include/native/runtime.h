@@ -241,10 +241,15 @@ struct AotRuntimeHandles {
   CodeGen::Label arrayContainsMethod;  // AotValue oskel_builtin_array_contains(...)
   CodeGen::Label arrayIndexOfMethod;   // AotValue oskel_builtin_array_index_of(...)
   CodeGen::Label arrayClearMethod;     // AotValue oskel_builtin_array_clear(...)
+  CodeGen::Label arraySliceMethod;     // AotValue oskel_builtin_array_slice(...)
+  CodeGen::Label arrayConcatMethod;    // AotValue oskel_builtin_array_concat(...)
+  CodeGen::Label arrayReversedMethod;  // AotValue oskel_builtin_array_reversed(...)
+  CodeGen::Label arrayCloneMethod;     // AotValue oskel_builtin_array_clone(...)
 };
 
 inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
   return AotRuntimeHandles{
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),

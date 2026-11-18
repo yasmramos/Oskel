@@ -481,6 +481,53 @@ static void test_array_methods_inplace() {
         "removeAt out of range reports the range error");
 }
 
+// The allocating array methods (PHASE 7c.3f): `slice`, `concat`, `reversed` and
+// `clone`. Each allocates a fresh array from the arena and leaves the receiver
+// untouched, so this exercises the arena allocation path under the real `_start`
+// and pins the return values against the VM.
+static void test_array_methods_alloc() {
+  Bytecode proto = compileSource(
+      "var a = [1, 2, 3, 4, 5];\n"
+      "print(a.slice());\n"
+      "print(a.slice(1, 3));\n"
+      "print(a.slice(-2));\n"
+      "print(a.concat([6, 7]));\n"
+      "print(a.reversed());\n"
+      "var c = a.clone();\n"
+      "c.push(9);\n"
+      "print(c);\n"
+      "print(a);\n");
+  RunResult result = buildAndRun("/tmp/oskel_array_methods_alloc", proto);
+  std::string expected =
+      "[1, 2, 3, 4, 5]\n"
+      "[2, 3]\n"
+      "[4, 5]\n"
+      "[1, 2, 3, 4, 5, 6, 7]\n"
+      "[5, 4, 3, 2, 1]\n"
+      "[1, 2, 3, 4, 5, 9]\n"
+      "[1, 2, 3, 4, 5]\n";
+  check(result.output == expected, "a compiled program runs the allocating array methods");
+  check(result.exitCode == 0, "a program using the allocating array methods exits 0");
+
+  Bytecode badArity = compileSource("var a = [1];\nprint(a.concat());\n");
+  RunResult arity = buildAndRun("/tmp/oskel_array_methods_alloc_arity", badArity);
+  check(arity.exitCode == 70, "a wrong-arity allocating array method exits 70");
+  check(arity.output.find("concat() expects 1 argument") != std::string::npos,
+        "a wrong-arity allocating array method reports the arity error");
+
+  Bytecode badType = compileSource("var a = [1];\nprint(a.concat(5));\n");
+  RunResult type = buildAndRun("/tmp/oskel_array_methods_alloc_type", badType);
+  check(type.exitCode == 70, "concat of a non-array exits 70");
+  check(type.output.find("concat() expects an array") != std::string::npos,
+        "concat of a non-array reports the type error");
+
+  Bytecode badStart = compileSource("var a = [1];\nprint(a.slice(\"x\"));\n");
+  RunResult start = buildAndRun("/tmp/oskel_array_methods_alloc_start", badStart);
+  check(start.exitCode == 70, "slice with a non-integer start exits 70");
+  check(start.output.find("slice() expects an integer start") != std::string::npos,
+        "slice with a non-integer start reports the type error");
+}
+
 // The hidden helpers for PHASE 6.5 features that lower to a call (PHASE 7c.4a):
 // `$nonNull` (`a!!`) and `$isError` (`try` / `x catch y`). Before this slice the
 // backend rejected both with `global '$nonNull'/'$isError' is read but never
@@ -1911,6 +1958,7 @@ int main() {
   test_builtin_print();
   test_collections();
   test_array_methods_inplace();
+  test_array_methods_alloc();
   test_negative_string_index();
   test_hidden_helpers();
   test_hidden_helpers_non_null_failure();

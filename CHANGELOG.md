@@ -144,6 +144,24 @@ may change between minor versions.
   `dirname("a")` is `.`, and `join("a", "/b")` is `a/b`). No new runtime type,
   opcode or builtin; the VM and `oskel build` agree byte for byte.
 
+- **AOT allocating array methods** (PHASE 7c.3f). The bound array methods
+  `slice`, `concat`, `reversed` and `clone` were unbound in the AOT backend, so
+  a native binary answered each with "value has no such member". They now bind
+  like the in-place methods (`push`/`pop` in PHASE 7c.3c,
+  `shift`/`unshift`/`insert`/`removeAt`/`contains`/`indexOf`/`clear` in PHASE
+  7c.3e): the receiver goes into a shared cell, the method is an `AotClosure`
+  over that one upvalue, and the body is reached through `oskel_call`. Each
+  returns a *new* array and leaves the receiver untouched, so a shared
+  `emitArrayAlloc` helper allocates a fresh `AotArray` header plus its items
+  block once, sized to the exact item count. `slice(start?, end?)` follows the
+  hosted binder (optional bounds, a negative bound counts from the end, every
+  bound clamped and `end < start` raised to `start`), `concat(other)` appends
+  another array (a non-array fails with "concat() expects an array"),
+  `reversed()` copies the items in reverse and `clone()` copies them in order
+  (a shallow copy). No new opcode and no compiler change: the member form of
+  `GETTABLE` plus `CALL` already carries it, so the `.oskc` is untouched. The
+  failure paths report the hosted messages and exit 70.
+
 - **AOT error values** (PHASE 7c.5c). `error()` and `isError` were unbound in
   the AOT backend (`isError` returned a constant `false`), so value-based
   `try`/`catch` never caught in a native binary. `oskel build` now has a real

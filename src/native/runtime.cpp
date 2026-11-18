@@ -167,6 +167,10 @@ struct CollectionEnv {
   CodeGen::Label containsMethod;
   CodeGen::Label indexOfMethod;
   CodeGen::Label clearMethod;
+  CodeGen::Label sliceMethod;
+  CodeGen::Label concatMethod;
+  CodeGen::Label reversedMethod;
+  CodeGen::Label cloneMethod;
   CodeGen::Label pushConst;      // data: the string "push"
   CodeGen::Label popConst;       // data: the string "pop"
   CodeGen::Label shiftConst;     // data: the string "shift"
@@ -176,6 +180,10 @@ struct CollectionEnv {
   CodeGen::Label containsConst;  // data: the string "contains"
   CodeGen::Label indexOfConst;   // data: the string "indexOf"
   CodeGen::Label clearConst;     // data: the string "clear"
+  CodeGen::Label sliceConst;     // data: the string "slice"
+  CodeGen::Label concatConst;    // data: the string "concat"
+  CodeGen::Label reversedConst;  // data: the string "reversed"
+  CodeGen::Label cloneConst;     // data: the string "clone"
   // The error member names (`err.message` / `err.code`), raw `AotString`s.
   CodeGen::Label messageConst;   // data: the string "message"
   CodeGen::Label codeConst;      // data: the string "code"
@@ -2380,6 +2388,366 @@ void emitArrayClearMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv
   emitFailCall(cg, env.fail, msgArgc);
 }
 
+// Allocates a fresh `AotArray` header and its items block for `count` items,
+// with length and capacity set to `count` and the block bound. `count` is read
+// from the stack slot `countSlot`; the header and the block are stored in
+// `headerSlot` and `blockSlot`. Jumps to `oom` when the arena is exhausted.
+// Every value the two `oskel_alloc` calls would clobber lives in a slot, so the
+// helper needs no callee-saved register of its own.
+void emitArrayAlloc(CodeGen& cg, const CollectionEnv& env, std::int64_t countSlot,
+                    std::int64_t headerSlot, std::int64_t blockSlot,
+                    CodeGen::Label oom) {
+  cg.movImm(Rdi, static_cast<std::int64_t>(kAotArrayHeaderSize));
+  cg.callLabel(env.alloc);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rbp, headerSlot, Rax);
+  cg.movImmToMem(Rax, kTableLengthOffset, 0);
+  cg.movImmToMem(Rax, kTableCapacityOffset, 0);
+  cg.movImmToMem(Rax, kTableBlockOffset, 0);
+  cg.movFromMem(Rdi, Rbp, countSlot);
+  cg.shlImm8(Rdi, 4);  // count * sizeof(AotValue)
+  cg.callLabel(env.alloc);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rbp, blockSlot, Rax);
+  cg.movFromMem(R8, Rbp, headerSlot);
+  cg.movFromMem(R9, Rbp, countSlot);
+  cg.movToMem(R8, kTableLengthOffset, R9);
+  cg.movToMem(R8, kTableCapacityOffset, R9);
+  cg.movToMem(R8, kTableBlockOffset, Rax);
+}
+
+// `AotValue oskel_builtin_array_clone(AotValue* args, long argc, AotClosure* self)`:
+// the bound `arr.clone()`. It takes no argument and returns a shallow copy of
+// the receiver as a new array -- the hosted `bindArray` `clone` (`makeArray`
+// over a copy of the items). The receiver is left untouched, so a later write
+// through the copy does not reach it.
+void emitArrayCloneMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                          const DataBlob& msgArgc) {
+  CodeGen::Label loop = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 48);
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Ne, badArgc);
+  emitLoadArrayReceiver(cg, Rbx, Rdx);
+  cg.movFromMem(R12, Rbx, kTableLengthOffset);
+  cg.movToMem(Rbp, -40, R12);           // count
+  emitArrayAlloc(cg, env, -40, -48, -56, oom);
+  cg.movFromMem(R9, Rbp, -40);          // count
+  cg.movFromMem(R10, Rbx, kTableBlockOffset);   // src
+  cg.movFromMem(R11, Rbp, -56);                 // dst
+  cg.xorReg(R8, R8);                            // index
+  cg.bind(loop);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ae, done);
+  cg.movReg(Rax, R8);
+  cg.shlImm8(Rax, 4);
+  cg.addReg(Rax, R10);
+  cg.movReg(Rdx, R8);
+  cg.shlImm8(Rdx, 4);
+  cg.addReg(Rdx, R11);
+  cg.movFromMem(Rcx, Rax, 0);
+  cg.movToMem(Rdx, 0, Rcx);
+  cg.movFromMem(Rcx, Rax, 8);
+  cg.movToMem(Rdx, 8, Rcx);
+  cg.addImm32(R8, 1);
+  cg.jmp(loop);
+  cg.bind(done);
+  cg.movFromMem(Rdx, Rbp, -48);         // the new array
+  cg.movImm(Rax, kTagArray);
+  cg.addImm32(Rsp, 48);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(badArgc);
+  emitFailCall(cg, env.fail, msgArgc);
+  cg.bind(oom);
+  emitFailCall(cg, env.fail, *env.msgOom);
+}
+
+// `AotValue oskel_builtin_array_reversed(AotValue* args, long argc, AotClosure* self)`:
+// the bound `arr.reversed()`. It takes no argument and returns a new array with
+// the receiver's items in reverse order -- the hosted `bindArray` `reversed`
+// (`std::reverse` over a copy). The receiver is unchanged.
+void emitArrayReversedMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                             const DataBlob& msgArgc) {
+  CodeGen::Label loop = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 48);
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Ne, badArgc);
+  emitLoadArrayReceiver(cg, Rbx, Rdx);
+  cg.movFromMem(R12, Rbx, kTableLengthOffset);
+  cg.movToMem(Rbp, -40, R12);           // count
+  emitArrayAlloc(cg, env, -40, -48, -56, oom);
+  cg.movFromMem(R9, Rbp, -40);          // count
+  cg.movFromMem(R10, Rbx, kTableBlockOffset);   // src
+  cg.movFromMem(R11, Rbp, -56);                 // dst
+  cg.xorReg(R8, R8);                            // index
+  cg.bind(loop);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ae, done);
+  cg.movReg(Rax, R9);                   // count - 1 - index
+  cg.subRegImm32(Rax, 1);
+  cg.subReg(Rax, R8);
+  cg.shlImm8(Rax, 4);
+  cg.addReg(Rax, R10);
+  cg.movReg(Rdx, R8);
+  cg.shlImm8(Rdx, 4);
+  cg.addReg(Rdx, R11);
+  cg.movFromMem(Rcx, Rax, 0);
+  cg.movToMem(Rdx, 0, Rcx);
+  cg.movFromMem(Rcx, Rax, 8);
+  cg.movToMem(Rdx, 8, Rcx);
+  cg.addImm32(R8, 1);
+  cg.jmp(loop);
+  cg.bind(done);
+  cg.movFromMem(Rdx, Rbp, -48);         // the new array
+  cg.movImm(Rax, kTagArray);
+  cg.addImm32(Rsp, 48);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(badArgc);
+  emitFailCall(cg, env.fail, msgArgc);
+  cg.bind(oom);
+  emitFailCall(cg, env.fail, *env.msgOom);
+}
+
+// `AotValue oskel_builtin_array_concat(AotValue* args, long argc, AotClosure* self)`:
+// the bound `arr.concat(other)`. It takes one array and returns a new array of
+// the receiver's items followed by `other`'s -- the hosted `bindArray` `concat`
+// (`items = self->items; items.insert(end, other...)`). A non-array argument is
+// the hosted "concat() expects an array" error; both operands are read only.
+void emitArrayConcatMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                           const DataBlob& msgArgc, const DataBlob& msgType) {
+  CodeGen::Label copyA = cg.newLabel();
+  CodeGen::Label copyADone = cg.newLabel();
+  CodeGen::Label copyB = cg.newLabel();
+  CodeGen::Label copyBDone = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label badType = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 48);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
+  emitLoadArrayReceiver(cg, Rbx, Rdx);   // receiver array (A)
+  cg.movFromMem(Rax, Rdi, 0);            // args[0] tag
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagArray));
+  cg.jcc(Jcc::Ne, badType);
+  cg.movFromMem(R12, Rdi, 8);            // other array (B)
+  cg.movFromMem(R8, Rbx, kTableLengthOffset);
+  cg.movFromMem(R9, R12, kTableLengthOffset);
+  cg.addReg(R8, R9);                     // lenA + lenB
+  cg.movToMem(Rbp, -40, R8);
+  emitArrayAlloc(cg, env, -40, -48, -56, oom);
+  cg.movFromMem(R11, Rbp, -56);          // dst cursor
+  // Copy A's items.
+  cg.movFromMem(R9, Rbx, kTableLengthOffset);
+  cg.movFromMem(R10, Rbx, kTableBlockOffset);
+  cg.xorReg(R8, R8);
+  cg.bind(copyA);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ae, copyADone);
+  cg.movReg(Rax, R8);
+  cg.shlImm8(Rax, 4);
+  cg.addReg(Rax, R10);
+  cg.movFromMem(Rcx, Rax, 0);
+  cg.movToMem(R11, 0, Rcx);
+  cg.movFromMem(Rcx, Rax, 8);
+  cg.movToMem(R11, 8, Rcx);
+  cg.addImm32(R11, 16);
+  cg.addImm32(R8, 1);
+  cg.jmp(copyA);
+  cg.bind(copyADone);
+  // Copy B's items.
+  cg.movFromMem(R9, R12, kTableLengthOffset);
+  cg.movFromMem(R10, R12, kTableBlockOffset);
+  cg.xorReg(R8, R8);
+  cg.bind(copyB);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ae, copyBDone);
+  cg.movReg(Rax, R8);
+  cg.shlImm8(Rax, 4);
+  cg.addReg(Rax, R10);
+  cg.movFromMem(Rcx, Rax, 0);
+  cg.movToMem(R11, 0, Rcx);
+  cg.movFromMem(Rcx, Rax, 8);
+  cg.movToMem(R11, 8, Rcx);
+  cg.addImm32(R11, 16);
+  cg.addImm32(R8, 1);
+  cg.jmp(copyB);
+  cg.bind(copyBDone);
+  cg.movFromMem(Rdx, Rbp, -48);          // the new array
+  cg.movImm(Rax, kTagArray);
+  cg.addImm32(Rsp, 48);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(badArgc);
+  emitFailCall(cg, env.fail, msgArgc);
+  cg.bind(badType);
+  emitFailCall(cg, env.fail, msgType);
+  cg.bind(oom);
+  emitFailCall(cg, env.fail, *env.msgOom);
+}
+
+// `AotValue oskel_builtin_array_slice(AotValue* args, long argc, AotClosure* self)`:
+// the bound `arr.slice(start?, end?)`. Both bounds are optional and default to
+// `0` and the length; a negative bound counts from the end and every bound is
+// clamped to `[0, length]` (the hosted `clampIndex`), then `end < start` is
+// raised to `start`. The selected `[start, end)` is copied into a new array --
+// the hosted `bindArray` `slice`. The receiver is unchanged.
+void emitArraySliceMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                          const DataBlob& msgArgc, const DataBlob& msgStart,
+                          const DataBlob& msgEnd) {
+  // Stack slots: start (-24), end (-32), count (-40), header (-48), block (-56).
+  // r13/r14 are the allocator's cursor/end, so nothing here may use them.
+  CodeGen::Label noStart = cg.newLabel();
+  CodeGen::Label haveStart = cg.newLabel();
+  CodeGen::Label noEnd = cg.newLabel();
+  CodeGen::Label haveEnd = cg.newLabel();
+  CodeGen::Label startClamped = cg.newLabel();
+  CodeGen::Label startHigh = cg.newLabel();
+  CodeGen::Label endClamped = cg.newLabel();
+  CodeGen::Label endHigh = cg.newLabel();
+  CodeGen::Label count = cg.newLabel();
+  CodeGen::Label copyLoop = cg.newLabel();
+  CodeGen::Label copyDone = cg.newLabel();
+  CodeGen::Label badArity = cg.newLabel();
+  CodeGen::Label badStart = cg.newLabel();
+  CodeGen::Label badEnd = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 48);
+  cg.cmpImm32(Rsi, 2);
+  cg.jcc(Jcc::A, badArity);             // argc > 2
+  emitLoadArrayReceiver(cg, Rbx, Rdx);
+  cg.movFromMem(R12, Rbx, kTableLengthOffset);  // length
+  // start: args[0] when present, else 0.
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Eq, noStart);
+  cg.movFromMem(Rax, Rdi, 0);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Ne, badStart);
+  cg.movFromMem(Rax, Rdi, 8);
+  cg.movToMem(Rbp, -24, Rax);
+  cg.jmp(haveStart);
+  cg.bind(noStart);
+  cg.movImmToMem(Rbp, -24, 0);
+  cg.bind(haveStart);
+  // end: args[1] when present, else the length.
+  cg.cmpImm32(Rsi, 2);
+  cg.jcc(Jcc::Ne, noEnd);
+  cg.movFromMem(Rax, Rdi, -16);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Ne, badEnd);
+  cg.movFromMem(Rax, Rdi, -8);
+  cg.movToMem(Rbp, -32, Rax);
+  cg.jmp(haveEnd);
+  cg.bind(noEnd);
+  cg.movToMem(Rbp, -32, R12);
+  cg.bind(haveEnd);
+  // Clamp start into [0, length]: a negative bound counts from the end.
+  cg.movFromMem(R8, Rbp, -24);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Ge, startClamped);
+  cg.addReg(R8, R12);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Ge, startClamped);
+  cg.xorReg(R8, R8);
+  cg.bind(startClamped);
+  cg.cmpReg(R8, R12);
+  cg.jcc(Jcc::Le, startHigh);
+  cg.movReg(R8, R12);
+  cg.bind(startHigh);
+  cg.movToMem(Rbp, -24, R8);
+  // Clamp end into [0, length].
+  cg.movFromMem(R9, Rbp, -32);
+  cg.testReg(R9);
+  cg.jcc(Jcc::Ge, endClamped);
+  cg.addReg(R9, R12);
+  cg.testReg(R9);
+  cg.jcc(Jcc::Ge, endClamped);
+  cg.xorReg(R9, R9);
+  cg.bind(endClamped);
+  cg.cmpReg(R9, R12);
+  cg.jcc(Jcc::Le, endHigh);
+  cg.movReg(R9, R12);
+  cg.bind(endHigh);
+  // end < start is raised to start.
+  cg.cmpReg(R9, R8);
+  cg.jcc(Jcc::Ge, count);
+  cg.movReg(R9, R8);
+  // count = end - start.
+  cg.bind(count);
+  cg.movReg(R10, R9);
+  cg.subReg(R10, R8);
+  cg.movToMem(Rbp, -40, R10);
+  emitArrayAlloc(cg, env, -40, -48, -56, oom);
+  cg.movFromMem(R9, Rbp, -40);          // count
+  cg.movFromMem(R10, Rbx, kTableBlockOffset);
+  cg.movFromMem(R11, Rbp, -24);         // start
+  cg.shlImm8(R11, 4);
+  cg.addReg(R10, R11);                  // src = &block[start]
+  cg.movFromMem(R11, Rbp, -56);         // dst
+  cg.xorReg(R8, R8);                    // index
+  cg.bind(copyLoop);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ae, copyDone);
+  cg.movReg(Rax, R8);
+  cg.shlImm8(Rax, 4);
+  cg.addReg(Rax, R10);
+  cg.movReg(Rdx, R8);
+  cg.shlImm8(Rdx, 4);
+  cg.addReg(Rdx, R11);
+  cg.movFromMem(Rcx, Rax, 0);
+  cg.movToMem(Rdx, 0, Rcx);
+  cg.movFromMem(Rcx, Rax, 8);
+  cg.movToMem(Rdx, 8, Rcx);
+  cg.addImm32(R8, 1);
+  cg.jmp(copyLoop);
+  cg.bind(copyDone);
+  cg.movFromMem(Rdx, Rbp, -48);         // the new array
+  cg.movImm(Rax, kTagArray);
+  cg.addImm32(Rsp, 48);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(badArity);
+  emitFailCall(cg, env.fail, msgArgc);
+  cg.bind(badStart);
+  emitFailCall(cg, env.fail, msgStart);
+  cg.bind(badEnd);
+  emitFailCall(cg, env.fail, msgEnd);
+  cg.bind(oom);
+  emitFailCall(cg, env.fail, *env.msgOom);
+}
+
 // `void oskel_init_globals(long count)`: allocate `count` `AotValue` slots
 // (16 bytes each) from the arena, clear them to nil, and keep the base in r15
 // (`kAotGlobalBase`). Called once by the chunk entry, before the program runs,
@@ -3099,6 +3467,10 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   CodeGen::Label bindContains = cg.newLabel();
   CodeGen::Label bindIndexOf = cg.newLabel();
   CodeGen::Label bindClear = cg.newLabel();
+  CodeGen::Label bindSlice = cg.newLabel();
+  CodeGen::Label bindConcat = cg.newLabel();
+  CodeGen::Label bindReversed = cg.newLabel();
+  CodeGen::Label bindClone = cg.newLabel();
   CodeGen::Label bind = cg.newLabel();
 
   cg.bind(label);
@@ -3222,6 +3594,26 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.callLabel(env.strEq);
   cg.testReg(Rax);
   cg.jcc(Jcc::Ne, bindClear);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.sliceConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindSlice);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.concatConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindConcat);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.reversedConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindReversed);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.cloneConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindClone);
   cg.jmp(failMember);
 
   // Every `bind*` block loads the receiver (r12), sets the selector in rdx and
@@ -3252,6 +3644,18 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.jmp(bind);
   cg.bind(bindClear);
   cg.movImm(Rdx, 8);            // clear
+  cg.jmp(bind);
+  cg.bind(bindSlice);
+  cg.movImm(Rdx, 9);            // slice
+  cg.jmp(bind);
+  cg.bind(bindConcat);
+  cg.movImm(Rdx, 10);           // concat
+  cg.jmp(bind);
+  cg.bind(bindReversed);
+  cg.movImm(Rdx, 11);           // reversed
+  cg.jmp(bind);
+  cg.bind(bindClone);
+  cg.movImm(Rdx, 12);           // clone
   cg.bind(bind);
   cg.movImm(Rdi, kTagArray);
   cg.movReg(Rsi, R12);
@@ -7696,6 +8100,13 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgContainsArgc = addText("oskel: contains() expects 1 argument\n");
   DataBlob msgIndexOfArgc = addText("oskel: indexOf() expects 1 argument\n");
   DataBlob msgClearArgc = addText("oskel: clear() expects 0 arguments\n");
+  DataBlob msgArraySliceArgc = addText("oskel: slice() expects between 0 and 2 arguments\n");
+  DataBlob msgArraySliceStart = addText("oskel: slice() expects an integer start\n");
+  DataBlob msgArraySliceEnd = addText("oskel: slice() expects an integer end\n");
+  DataBlob msgConcatArgc = addText("oskel: concat() expects 1 argument\n");
+  DataBlob msgConcatType = addText("oskel: concat() expects an array\n");
+  DataBlob msgReversedArgc = addText("oskel: reversed() expects 0 arguments\n");
+  DataBlob msgCloneArgc = addText("oskel: clone() expects 0 arguments\n");
   DataBlob msgInsertRange = addText("oskel: insert() index out of range\n");
   DataBlob msgRemoveAtRange = addText("oskel: removeAt() index out of range\n");
   DataBlob msgBadAssign = addText("oskel: cannot assign to this value\n");
@@ -7850,6 +8261,10 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   env.containsMethod = handles.arrayContainsMethod;
   env.indexOfMethod = handles.arrayIndexOfMethod;
   env.clearMethod = handles.arrayClearMethod;
+  env.sliceMethod = handles.arraySliceMethod;
+  env.concatMethod = handles.arrayConcatMethod;
+  env.reversedMethod = handles.arrayReversedMethod;
+  env.cloneMethod = handles.arrayCloneMethod;
   env.pushConst = cg.newLabel();
   env.popConst = cg.newLabel();
   env.shiftConst = cg.newLabel();
@@ -7859,6 +8274,10 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   env.containsConst = cg.newLabel();
   env.indexOfConst = cg.newLabel();
   env.clearConst = cg.newLabel();
+  env.sliceConst = cg.newLabel();
+  env.concatConst = cg.newLabel();
+  env.reversedConst = cg.newLabel();
+  env.cloneConst = cg.newLabel();
   env.messageConst = cg.newLabel();
   env.codeConst = cg.newLabel();
   env.msgOom = &msgOom;
@@ -7901,7 +8320,9 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                        handles.arrayShiftMethod, handles.arrayUnshiftMethod,
                        handles.arrayInsertMethod, handles.arrayRemoveAtMethod,
                        handles.arrayContainsMethod, handles.arrayIndexOfMethod,
-                       handles.arrayClearMethod});
+                       handles.arrayClearMethod, handles.arraySliceMethod,
+                       handles.arrayConcatMethod, handles.arrayReversedMethod,
+                       handles.arrayCloneMethod});
   emitArrayPushMethod(cg, handles.arrayPushMethod, env);
   emitArrayPopMethod(cg, handles.arrayPopMethod, env, msgPopArgc);
   emitArrayShiftMethod(cg, handles.arrayShiftMethod, env, msgShiftArgc);
@@ -7913,6 +8334,11 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitArrayContainsMethod(cg, handles.arrayContainsMethod, env, msgContainsArgc);
   emitArrayIndexOfMethod(cg, handles.arrayIndexOfMethod, env, msgIndexOfArgc);
   emitArrayClearMethod(cg, handles.arrayClearMethod, env, msgClearArgc);
+  emitArraySliceMethod(cg, handles.arraySliceMethod, env, msgArraySliceArgc,
+                       msgArraySliceStart, msgArraySliceEnd);
+  emitArrayConcatMethod(cg, handles.arrayConcatMethod, env, msgConcatArgc, msgConcatType);
+  emitArrayReversedMethod(cg, handles.arrayReversedMethod, env, msgReversedArgc);
+  emitArrayCloneMethod(cg, handles.arrayCloneMethod, env, msgCloneArgc);
   emitInitGlobals(cg, handles.initGlobals, handles.alloc, fail, msgOom);
   emitGlobalSet(cg, handles.globalSet);
   emitGlobalGet(cg, handles.globalGet);
@@ -8081,6 +8507,14 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x07\x00\x00\x00\x00\x00\x00\x00indexOf"), 15);
   cg.bind(env.clearConst);
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x05\x00\x00\x00\x00\x00\x00\x00" "clear"), 13);
+  cg.bind(env.sliceConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x05\x00\x00\x00\x00\x00\x00\x00" "slice"), 13);
+  cg.bind(env.concatConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x06\x00\x00\x00\x00\x00\x00\x00" "concat"), 14);
+  cg.bind(env.reversedConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x08\x00\x00\x00\x00\x00\x00\x00" "reversed"), 16);
+  cg.bind(env.cloneConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x05\x00\x00\x00\x00\x00\x00\x00" "clone"), 13);
   cg.bind(env.messageConst);
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x07\x00\x00\x00\x00\x00\x00\x00" "message"), 15);
   cg.bind(env.codeConst);
