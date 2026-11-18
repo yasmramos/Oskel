@@ -1,0 +1,68 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): error values under the
+// AOT backend (PHASE 7c.5c).
+//
+// `error(message, code?)` builds a value of the distinct `error` type; `type`,
+// `isError`, `.message`, `.code`, structural equality, `print`/`repr` and
+// string interpolation must all agree with the development VM byte for byte.
+// This is what makes the value-based `try`/`catch` work in a native binary.
+
+// --- construction, type and fields ----------------------------------------
+
+let e = error("boom");
+assertEq(type(e), "error");
+assertEq(isError(e), true);
+assertEq(isError(42), false);
+assertEq(isError(nil), false);
+assertEq(isError("x"), false);
+assertEq(e.message, "boom");
+assertEq(e.code, 0);
+
+let coded = error("bad request", 404);
+assertEq(coded.message, "bad request");
+assertEq(coded.code, 404);
+assertEq(error("neg", -3).code, -3);
+
+// A non-string message is stringified, like the hosted `error` builtin.
+assertEq(error(123).message, "123");
+assertEq(error(1.5).message, "1.5");
+assertEq(error(true).message, "true");
+
+// --- rendering -------------------------------------------------------------
+
+// `print`/`toString` render the message alone; the repr is the `error(...)`
+// debug form, with the code only when it is non-zero.
+print(e);
+print(coded);
+print(repr(e));
+print(repr(coded));
+print(repr(error("neg", -3)));
+print("interp = ${e}");
+print("nested = ${[error("a"), error("b", 2)]}");
+
+// --- equality --------------------------------------------------------------
+
+assertEq(error("x") == error("x"), true);
+assertEq(error("x") != error("x"), false);
+assertEq(error("x") == error("y"), false);
+assertEq(error("x", 1) == error("x"), false);
+assertEq(error("x", 1) == error("x", 1), true);
+assertEq(error("x") == "x", false);
+
+// --- as ordinary values ----------------------------------------------------
+
+let list = [error("a"), error("b", 2)];
+assertEq(list[0].message, "a");
+assertEq(list[1].code, 2);
+let table = {err: error("m")};
+assertEq(table.err.message, "m");
+
+fn failWith(msg) {
+  return error(msg);
+}
+
+// `catch` recovers a returned error; the fallback is a full expression.
+assertEq(failWith("nope") catch 0, 0);
+assertEq(failWith("nope") catch error("fallback", 1).message, "fallback");
+assertEq((error("bad") catch 7), 7);
+
+print("error values ok");

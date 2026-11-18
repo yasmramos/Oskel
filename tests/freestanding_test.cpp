@@ -1836,6 +1836,60 @@ static void test_structural_equality() {
   check(result.exitCode == 0, "structural equality exits 0 through _start");
 }
 
+// Error values (PHASE 7c.5c): `error(message, code?)`, `isError`, `type`,
+// `.message`/`.code`, structural equality, printing/repr and interpolation must
+// match the hosted engine. This is what makes value-based `try`/`catch` work in
+// a native binary, so the same program also propagates and recovers.
+static void test_error_values() {
+  Bytecode proto = compileSource(
+      "let e = error(\"boom\");\n"
+      "print(type(e));\n"
+      "print(isError(e), isError(42), isError(nil), isError(\"x\"));\n"
+      "print(e.message, e.code);\n"
+      "let coded = error(\"bad\", 404);\n"
+      "print(coded.message, coded.code);\n"
+      "print(error(123).message, error(true).message);\n"
+      "print(e);\n"
+      "print(repr(e));\n"
+      "print(repr(coded));\n"
+      "print(repr(error(\"neg\", -3)));\n"
+      "print(\"interp = ${e}\");\n"
+      "print(error(\"x\") == error(\"x\"));\n"
+      "print(error(\"x\") == error(\"y\"));\n"
+      "print(error(\"x\", 1) == error(\"x\"));\n"
+      "print(error(\"x\", 1) == error(\"x\", 1));\n"
+      "print(error(\"x\") == \"x\");\n"
+      "print([error(\"a\"), error(\"b\", 2)][1].code);\n"
+      "fn failWith(m) { return error(m); }\n"
+      "print(failWith(\"nope\") catch 0);\n"
+      "print((error(\"bad\") catch 7));\n"
+      "print(\"done\");\n");
+  RunResult result = buildAndRun("/tmp/oskel_error_values", proto);
+  std::string expected =
+      "error\n"
+      "true false false false\n"
+      "boom 0\n"
+      "bad 404\n"
+      "123 true\n"
+      "boom\n"
+      "error(\"boom\")\n"
+      "error(\"bad\", 404)\n"
+      "error(\"neg\", -3)\n"
+      "interp = boom\n"
+      "true\n"
+      "false\n"
+      "false\n"
+      "true\n"
+      "false\n"
+      "2\n"
+      "0\n"
+      "7\n"
+      "done\n";
+  check(result.output == expected,
+        "a compiled program computes error values like the hosted engine");
+  check(result.exitCode == 0, "error values exit 0 through _start");
+}
+
 #endif  // FREESTANDING_EXEC_TESTS
 
 int main() {
@@ -1887,6 +1941,7 @@ int main() {
   test_variadic();
   test_variadic_arity_error();
   test_structural_equality();
+  test_error_values();
 #else
   std::printf("skipped: platform and execution tests require Linux x86-64\n");
 #endif

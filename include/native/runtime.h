@@ -128,10 +128,15 @@ struct AotRuntimeHandles {
   // The hidden helpers the compiler emits for PHASE 6.5 features. They use the
   // proto convention and are seeded into their global slots like `print`, so
   // each one is an ordinary call.
-  // `$isError` (try/catch) reports whether a value is an error; the AOT runtime
-  // has no error values yet, so it is always false and the success path of
-  // `try`/`x catch y` runs (a real failure still exits 70).
+  // `$isError` (try/catch) reports whether a value is an error. It reads the
+  // error tag, so a value built by `error(...)` (PHASE 7c.5c) is recognized and
+  // `try`/`x catch y` propagates/recovers exactly like the VM.
   CodeGen::Label isErrorBuiltin;   // AotValue oskel_builtin_is_error(AotValue* args, long argc, AotClosure* self)
+  // `error(message, code?)` (PHASE 7c.5c) builds an error value: a distinct
+  // runtime tag (`type(err) == "error"`) carrying a message and an integer code
+  // (0 by default). It mirrors the hosted `error` builtin, so `error("x")` is a
+  // value the AOT program can store, compare, render and catch.
+  CodeGen::Label errorBuiltin;     // AotValue oskel_builtin_error(AotValue* args, long argc, AotClosure* self)
   // `$nonNull` (`a!!`): returns the operand, or fails when it is nil.
   CodeGen::Label nonNullBuiltin;   // AotValue oskel_builtin_non_null(AotValue* args, long argc, AotClosure* self)
   // `$str` (string interpolation and computed keys): renders the operand to a
@@ -215,6 +220,12 @@ struct AotRuntimeHandles {
   // outside world for a *value* rather than output, so it reads the `entry.now`
   // handle the target's prelude binds (syscall, libc, kernel32 or the CMOS RTC).
   CodeGen::Label timeBuiltin;      // AotValue oskel_builtin_time(AotValue* args, long argc, AotClosure* self)
+  // `input([prompt])`: reads one line from the keyboard and returns it as a
+  // string (nil on end of input). It reads through the `entry.read` handle,
+  // which only the bare-metal prelude binds -- the keyboard slice gives the
+  // kernel an input channel -- so it is seeded as a global for that target
+  // only (see `lowerToX64`). The other targets keep the AOT `input` unseeded.
+  CodeGen::Label inputBuiltin;     // AotValue oskel_builtin_input(AotValue* args, long argc, AotClosure* self)
   // Bound array methods (PHASE 7c.3c/7c.3e). `a.<method>` on an array yields a
   // closure that captured its receiver in one upvalue cell, exactly like the
   // hosted `bindArray`. `bindArrayMethod` builds that closure from the receiver
@@ -253,7 +264,7 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel()
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel()
   };
 }
 
@@ -296,14 +307,17 @@ enum class AotShiftOp : std::int64_t {
 };
 
 // A scalar `extern "C"` symbol the hosted backend resolves through the system
-// linker (PHASE 7f.5).
+// linker (PHASE 7f.5, extended to `cstring`/`ptr` in 7f.6).
 //
 // The compiler's `ExternSymbol` carries the whole ABI signature in the FFI
 // vocabulary; the lowerer narrows it to this register-level description -- one
 // `ParamClass` per parameter and one `ReturnClass` -- so the runtime emits a
-// marshalling thunk without reaching into the compiler's type tables. Only
-// scalar signatures are narrowed here: a `ptr`/`cstring`, a struct, a callback
-// or a C variadic is left out and keeps the build rejection (later 7f work).
+// marshalling thunk without reaching into the compiler's type tables. A scalar,
+// `cstring` or `ptr` *parameter* is narrowed (a pointer travels in a GPR); a
+// struct or a callback parameter is left out and keeps the build rejection.
+// A `cstring` return is narrowed (the thunk scans the `const char *` into an
+// `AotString`); an opaque `ptr` return is left out, because the AOT runtime has
+// no representation for a handle it must never dereference.
 struct AotExternThunk {
   // Bound by `emitAotRuntime` to the thunk's entry, so the caller can seed it
   // into the symbol's global slot before the body is emitted (a forward
@@ -322,7 +336,7 @@ struct AotExternThunk {
 // error through `oskel_exit`, so the caller must emit the entry prelude into
 // the same buffer (see `emitFreestandingRuntime`).
 //
-// `externThunks`, when non-null, is the scalar `extern "C"` surface of the
+// `externThunks`, when non-null, is the `extern "C"` surface of the
 // hosted mode: one marshalling thunk is emitted per symbol and each thunk's
 // `label` is bound. The freestanding path passes null, so its image is
 // unchanged and carries no external reference.
@@ -331,7 +345,13 @@ struct AotExternThunk {
 // keep its formatting frame allocated across the call into libc's `write` (see
 // `emitPrintValueCore`). It is false for every freestanding target, whose image
 // then stays byte for byte what it was.
+//
+// `hasInput` is true only for the bare-metal target, the one whose prelude
+// binds `entry.read` (the keyboard). It makes `emitAotRuntime` emit the `input`
+// builtin body; every other target leaves it out, so its image never references
+// the unbound `entry.read` label. `lowerToX64` seeds the `input` global under
+// the same condition, so the body and its only caller appear together.
 void emitAotRuntime(CodeGen& code, const AotRuntimeHandles& handles,
                     const RuntimeHandles& entry,
                     const std::vector<AotExternThunk>* externThunks = nullptr,
-                    bool hosted = false);
+                    bool hosted = false, bool hasInput = false);

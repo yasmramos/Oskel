@@ -55,7 +55,7 @@ constexpr std::uint8_t kPicVectorBaseSlave = 0x28;      // IRQ8 -> vector 0x28
 constexpr std::uint8_t kPicIcw3Master = 0x04;           // slave cascaded on IRQ2
 constexpr std::uint8_t kPicIcw3Slave = 0x02;            // cascade identity 2
 constexpr std::uint8_t kPicIcw4Mode8086 = 0x01;         // 8086/88 mode
-constexpr std::uint8_t kPicMaskIrq0Only = 0xFE;         // all masked but IRQ0
+constexpr std::uint8_t kPicMaskIrq0Irq1 = 0xFC;         // all masked but IRQ0+IRQ1
 constexpr std::uint8_t kPicMaskAll = 0xFF;
 constexpr std::uint8_t kPicEoi = 0x20;                  // non-specific EOI
 
@@ -63,6 +63,57 @@ constexpr std::int64_t kPitChannel0 = 0x40;             // channel 0 data port
 constexpr std::int64_t kPitCommand = 0x43;              // mode/command register
 constexpr std::uint8_t kPitMode3Channel0 = 0x36;        // ch0, lobyte/hibyte, mode 3
 constexpr std::uint16_t kPitDivisor = 11931;            // 1193182 / 100 Hz
+
+// The PS/2 keyboard: the second device with a driver, after the timer. The
+// i8042 controller raises IRQ1 when a scancode is ready at the data port, and
+// the handler translates scancode-set-1 make codes to ASCII and appends them
+// to a ring buffer in the kernel-data page. A program reads them through the
+// `input` builtin, which the prelude's `oskel_read` thunk serves.
+//
+// The vector is IRQ1 after the PIC remap, and the two i8042 ports are the
+// status/command register (0x64) and the data register (0x60).
+constexpr std::int32_t kKeyboardVector = 0x21;  // IRQ1 after the PIC remap
+constexpr std::int64_t kKeyboardData = 0x60;    // i8042 data port (scancode)
+constexpr std::uint8_t kScanLeftShift = 0x2A;   // set-1 make code
+constexpr std::uint8_t kScanRightShift = 0x36;
+constexpr std::uint8_t kScanLeftShiftUp = 0xAA;  // set-1 break code
+constexpr std::uint8_t kScanRightShiftUp = 0xB6;
+constexpr std::uint8_t kScanBreakBit = 0x80;     // set on every break code
+
+// Scancode-set-1 make codes to ASCII, unshifted and shifted. Index 0 is unused
+// (no scancode produces it), an entry of 0 means "no character" (a modifier, a
+// function key or a key the driver ignores), and 0x0D is Enter. The two tables
+// are emitted as bytes in the text section and indexed by the raw scancode the
+// controller delivers; a key with no entry stays unmapped until a later slice
+// needs it.
+constexpr std::uint8_t kKbNoChar = 0x00;
+constexpr std::uint8_t kKbEnter = '\n';  // the line terminator `input` consumes
+constexpr std::uint8_t kKbBackspace = 0x08;
+constexpr std::uint8_t kKbTab = 0x09;
+
+constexpr std::uint8_t kKbUnshifted[128] = {
+    kKbNoChar, kKbNoChar, '1', '2', '3', '4', '5', '6',
+    '7', '8', '9', '0', '-', '=', kKbBackspace, kKbTab,
+    'q', 'w', 'e', 'r', 't', 'y', 'u', 'i',
+    'o', 'p', '[', ']', kKbEnter, kKbNoChar,
+    'a', 's', 'd', 'f', 'g', 'h', 'j', 'k',
+    'l', ';', '\'', '`', kKbNoChar, '\\',
+    'z', 'x', 'c', 'v', 'b', 'n', 'm', ',',
+    '.', '/', kKbNoChar, kKbNoChar, kKbNoChar, ' ',
+    // 0x3A..0x7F: caps lock, function keys, keypad, arrows -- unmapped.
+};
+
+constexpr std::uint8_t kKbShifted[128] = {
+    kKbNoChar, kKbNoChar, '!', '@', '#', '$', '%', '^',
+    '&', '*', '(', ')', '_', '+', kKbBackspace, kKbTab,
+    'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I',
+    'O', 'P', '{', '}', kKbEnter, kKbNoChar,
+    'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K',
+    'L', ':', '"', '~', kKbNoChar, '|',
+    'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<',
+    '>', '?', kKbNoChar, kKbNoChar, kKbNoChar, ' ',
+    // 0x3A..0x7F: caps lock, function keys, keypad, arrows -- unmapped.
+};
 
 // The vector IRQ0 lands on after the remap, and the tick ceiling that stops a
 // program which never returns. The bare-metal prelude has no scheduler to hand
@@ -137,6 +188,23 @@ constexpr std::uint64_t kBMArenaOffset = 0x8000;       // arena sits right above
 // only writable state the image has (there is no data segment), and the loader
 // zeroes it.
 constexpr std::uint64_t kBMKernelDataTicks = kBMKernelDataOffset;
+
+// The keyboard ring buffer, later in the same kernel-data page. The IRQ1
+// handler is the producer (`head`), the `oskel_read` thunk the consumer
+// (`tail`), so a keystroke typed while the program is busy is queued instead of
+// lost. The buffer is a byte array of `kKbBufferSize` slots; `head`/`tail`
+// wrap modulo that size, and the buffer is empty when the two are equal.
+// Keeping all of this in the zeroed `.bss` page means no data segment and no
+// relocation.
+constexpr std::uint64_t kKbHeadOffset = kBMKernelDataOffset + 0x100;
+constexpr std::uint64_t kKbTailOffset = kBMKernelDataOffset + 0x108;
+constexpr std::uint64_t kKbBufferOffset = kBMKernelDataOffset + 0x110;
+constexpr std::uint64_t kKbBufferSize = 256;
+// The shift state the IRQ1 handler maintains: 0 with no shift key held, 1
+// while either shift is down. A single byte, so a scancode table lookup can
+// select between the unshifted and shifted maps.
+constexpr std::uint64_t kKbShiftStateOffset =
+    kBMKernelDataOffset + 0x110 + kKbBufferSize;
 
 // Fixed offsets, relative to the trampoline's first byte, of the pieces the
 // trampoline addresses by absolute address. They are a property of the
@@ -268,9 +336,12 @@ static void emitIdt(CodeGen& code, const RuntimeHandles& handles,
   for (std::uint64_t v = 0; v < kIdtGateCount; ++v) stubs[v] = code.newLabel();
   CodeGen::Label faultHandler = code.newLabel();
   CodeGen::Label tickHandler = code.newLabel();
+  CodeGen::Label keyboardHandler = code.newLabel();
   CodeGen::Label tickDone = code.newLabel();
   CodeGen::Label faultTemplateBytes = code.newLabel();
   CodeGen::Label tickBytes = code.newLabel();
+  CodeGen::Label scancodeUnshifted = code.newLabel();
+  CodeGen::Label scancodeShifted = code.newLabel();
 
   const std::int64_t stackTop =
       static_cast<std::int64_t>(kBMDataBase + kBMStackTopOffset);
@@ -374,12 +445,124 @@ static void emitIdt(CodeGen& code, const RuntimeHandles& handles,
   code.callLabel(handles.exit);
   code.ud2();  // oskel_exit never returns
 
+  // --- the keyboard handler (IRQ1): translate, buffer, acknowledge, return ---
+  // The i8042 raises IRQ1 when a scancode is ready at port 0x60. The handler
+  // reads it, tracks the shift keys, translates the make code to ASCII through
+  // one of the two tables and appends the character to the ring buffer in the
+  // kernel-data page; the `oskel_read` thunk drains that buffer for `input`.
+  // Like the timer handler it saves every register it touches, acknowledges the
+  // PIC and `iretq`s. A break code (bit 7 set) only updates the shift state.
+  code.bind(keyboardHandler);
+  code.push(X64Reg::Rax);
+  code.push(X64Reg::Rcx);
+  code.push(X64Reg::Rdx);
+  code.push(X64Reg::Rsi);
+  code.push(X64Reg::Rdi);
+  code.push(X64Reg::Rbp);
+  code.push(X64Reg::R8);
+  code.push(X64Reg::R9);
+  code.push(X64Reg::R10);
+  code.push(X64Reg::R11);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+
+  // Read the scancode into r8 (zero-extended).
+  code.movImm(X64Reg::Rdx, kKeyboardData);
+  code.inDxAl();
+  code.movzx(X64Reg::R8, X64Reg::Rax);
+
+  // Break code (bit 7 set): a key release. Only the shifts matter, and only to
+  // clear the shift state.
+  CodeGen::Label kbEoi = code.newLabel();
+  CodeGen::Label kbRelease = code.newLabel();
+  CodeGen::Label kbShiftUp = code.newLabel();
+  code.testAlImm8(kScanBreakBit);
+  code.jcc(Jcc::Ne, kbRelease);
+
+  // Make code: both shift keys set the shift state.
+  CodeGen::Label kbShiftsOn = code.newLabel();
+  CodeGen::Label kbNeedShifted = code.newLabel();
+  CodeGen::Label kbHaveBase = code.newLabel();
+  code.cmpImm32(X64Reg::R8, kScanLeftShift);
+  code.jcc(Jcc::Eq, kbShiftsOn);
+  code.cmpImm32(X64Reg::R8, kScanRightShift);
+  code.jcc(Jcc::Eq, kbShiftsOn);
+
+  // Translate: pick the table by shift state, then index it by the scancode.
+  // CodeGen has no indexed memory operand, so the table base is added to the
+  // scancode first and the byte is loaded from [base + 0].
+  code.movImm(X64Reg::R10, static_cast<std::int64_t>(kBMDataBase + kKbShiftStateOffset));
+  code.movzxFromMem(X64Reg::R9, X64Reg::R10, 0);  // shift state
+  code.testReg(X64Reg::R9);
+  code.jcc(Jcc::Ne, kbNeedShifted);
+  code.leaRipLabel(X64Reg::R10, scancodeUnshifted);
+  code.jmp(kbHaveBase);
+  code.bind(kbNeedShifted);
+  code.leaRipLabel(X64Reg::R10, scancodeShifted);
+  code.bind(kbHaveBase);
+  code.addReg(X64Reg::R10, X64Reg::R8);            // &table[scancode]
+  code.movzxFromMem(X64Reg::Rax, X64Reg::R10, 0);  // ASCII, 0 if unmapped
+  code.testReg(X64Reg::Rax);
+  code.jcc(Jcc::Eq, kbEoi);                        // modifier/ignored key
+
+  // Append: buffer[head] = ascii; head = (head + 1) mod kKbBufferSize.
+  code.movImm(X64Reg::R10, static_cast<std::int64_t>(kBMDataBase + kKbHeadOffset));
+  code.movFromMem(X64Reg::R9, X64Reg::R10, 0);    // head
+  code.movImm(X64Reg::R11, static_cast<std::int64_t>(kBMDataBase + kKbBufferOffset));
+  code.addReg(X64Reg::R11, X64Reg::R9);           // &buffer[head]
+  code.movByteToMem(X64Reg::R11, 0, X64Reg::Rax);
+  code.addImm32(X64Reg::R9, 1);
+  code.andImm32(X64Reg::R9, static_cast<std::int32_t>(kKbBufferSize - 1));
+  code.movToMem(X64Reg::R10, 0, X64Reg::R9);
+  code.jmp(kbEoi);
+
+  code.bind(kbShiftsOn);
+  code.movImm(X64Reg::R10, static_cast<std::int64_t>(kBMDataBase + kKbShiftStateOffset));
+  code.movImmByteToMem(X64Reg::R10, 0, 1);
+  code.jmp(kbEoi);
+
+  code.bind(kbRelease);
+  code.cmpImm32(X64Reg::R8, kScanLeftShiftUp);
+  code.jcc(Jcc::Eq, kbShiftUp);
+  code.cmpImm32(X64Reg::R8, kScanRightShiftUp);
+  code.jcc(Jcc::Ne, kbEoi);
+  code.bind(kbShiftUp);
+  code.movImm(X64Reg::R10, static_cast<std::int64_t>(kBMDataBase + kKbShiftStateOffset));
+  code.movImmByteToMem(X64Reg::R10, 0, 0);
+
+  // End of interrupt: acknowledge the PIC, restore, `iretq` -- the same tail as
+  // the timer handler.
+  code.bind(kbEoi);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.movImm(X64Reg::Rax, kPicEoi);
+  code.movImm(X64Reg::Rdx, kPicMasterCmd);
+  code.outDxAl();
+  code.pop(X64Reg::R11);
+  code.pop(X64Reg::R10);
+  code.pop(X64Reg::R9);
+  code.pop(X64Reg::R8);
+  code.pop(X64Reg::Rbp);
+  code.pop(X64Reg::Rdi);
+  code.pop(X64Reg::Rsi);
+  code.pop(X64Reg::Rdx);
+  code.pop(X64Reg::Rcx);
+  code.pop(X64Reg::Rax);
+  code.addImm32(X64Reg::Rsp, 16);  // drop the stub's vector + error code
+  code.iretq();
+
   // --- one stub per vector ---
+  // Dispatch by vector: the timer (IRQ0) and the keyboard (IRQ1) reach their
+  // returning handlers, every other vector the fatal fault handler.
   for (std::uint64_t v = 0; v < kIdtGateCount; ++v) {
     code.bind(stubs[v]);
     if (!vectorPushesErrorCode(static_cast<int>(v))) code.pushImm8(0);
     code.pushImm8(static_cast<std::int32_t>(v));
-    code.jmp(v == static_cast<std::uint64_t>(kTimerVector) ? tickHandler : faultHandler);
+    if (v == static_cast<std::uint64_t>(kTimerVector)) {
+      code.jmp(tickHandler);
+    } else if (v == static_cast<std::uint64_t>(kKeyboardVector)) {
+      code.jmp(keyboardHandler);
+    } else {
+      code.jmp(faultHandler);
+    }
   }
 
   // --- the message templates ---
@@ -389,6 +572,12 @@ static void emitIdt(CodeGen& code, const RuntimeHandles& handles,
   code.bind(tickBytes);
   code.emitBytes(reinterpret_cast<const std::uint8_t*>(kTickTemplate),
                  static_cast<std::size_t>(kTickBytes));
+
+  // --- the scancode translation tables ---
+  code.bind(scancodeUnshifted);
+  code.emitBytes(kKbUnshifted, sizeof kKbUnshifted);
+  code.bind(scancodeShifted);
+  code.emitBytes(kKbShifted, sizeof kKbShifted);
 
   // --- the gate table ---
   const std::uint8_t zero = 0x00;
@@ -547,7 +736,7 @@ std::uint64_t emitBareMetalPreamble(CodeGen& code, const RuntimeHandles& handles
   outPort(kPicSlaveData, kPicIcw3Slave);
   outPort(kPicMasterData, kPicIcw4Mode8086);
   outPort(kPicSlaveData, kPicIcw4Mode8086);
-  outPort(kPicMasterData, kPicMaskIrq0Only);  // unmask only the timer
+  outPort(kPicMasterData, kPicMaskIrq0Irq1);  // unmask the timer and the keyboard
   outPort(kPicSlaveData, kPicMaskAll);
 
   // Program the 8254 PIT channel 0 in mode 3 (square wave) at a fixed
@@ -645,6 +834,54 @@ void emitBareMetalRuntime(CodeGen& code, const RuntimeHandles& handles) {
   code.movImm(kAotArenaEnd,
               static_cast<std::int64_t>(kBMDataBase + kBMArenaOffset + kAotArenaSize));
   code.retInsn();
+
+  // --- long oskel_read(char* buf, long len) ---
+  // The input counterpart to `oskel_write`: it fills `buf` with one line and
+  // returns the byte count, consuming the terminating newline. The bytes come
+  // from the IRQ1 keyboard ring buffer, which the handler fills; when the
+  // buffer is empty the thunk `hlt`s (interrupts are enabled during the
+  // program) and wakes on the next keystroke. A CR is dropped so a host that
+  // injects `\r\n` sees the same line a bare `\n` produces. Only r8-r11 and the
+  // scratch rax/rcx/rdx are touched; the callee-saved registers the runtime
+  // carries are preserved.
+  code.bind(handles.read);
+  {
+    CodeGen::Label loop = code.newLabel();
+    CodeGen::Label haveByte = code.newLabel();
+    CodeGen::Label done = code.newLabel();
+    code.xorReg(X64Reg::R8, X64Reg::R8);  // count = 0
+    code.bind(loop);
+    code.cmpReg(X64Reg::R8, X64Reg::Rsi);
+    code.jcc(Jcc::Ge, done);  // buffer full: an over-long line is truncated
+    code.movImm(X64Reg::R11, static_cast<std::int64_t>(kBMDataBase + kKbHeadOffset));
+    code.movFromMem(X64Reg::R9, X64Reg::R11, 0);  // head
+    code.movImm(X64Reg::R11, static_cast<std::int64_t>(kBMDataBase + kKbTailOffset));
+    code.movFromMem(X64Reg::R10, X64Reg::R11, 0);  // tail
+    code.cmpReg(X64Reg::R9, X64Reg::R10);
+    code.jcc(Jcc::Ne, haveByte);
+    code.hlt();  // empty: wait for the next interrupt (a keystroke or a tick)
+    code.jmp(loop);
+    code.bind(haveByte);
+    code.movImm(X64Reg::R11, static_cast<std::int64_t>(kBMDataBase + kKbBufferOffset));
+    code.addReg(X64Reg::R11, X64Reg::R10);  // &buffer[tail]
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R11, 0);
+    code.addImm32(X64Reg::R10, 1);
+    code.andImm32(X64Reg::R10, static_cast<std::int32_t>(kKbBufferSize - 1));
+    code.movImm(X64Reg::R11, static_cast<std::int64_t>(kBMDataBase + kKbTailOffset));
+    code.movToMem(X64Reg::R11, 0, X64Reg::R10);  // publish the new tail
+    code.cmpImm32(X64Reg::Rax, kKbEnter);
+    code.jcc(Jcc::Eq, done);
+    code.cmpImm32(X64Reg::Rax, '\r');
+    code.jcc(Jcc::Eq, loop);  // drop a CR the host may send
+    code.movReg(X64Reg::R11, X64Reg::Rdi);
+    code.addReg(X64Reg::R11, X64Reg::R8);  // &buf[count]
+    code.movByteToMem(X64Reg::R11, 0, X64Reg::Rax);
+    code.addImm32(X64Reg::R8, 1);
+    code.jmp(loop);
+    code.bind(done);
+    code.movReg(X64Reg::Rax, X64Reg::R8);
+    code.retInsn();
+  }
 
   // --- long oskel_time(void) ---
   // A kernel has no `time` syscall and no libc, so the wall clock comes from the

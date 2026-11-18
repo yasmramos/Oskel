@@ -51,9 +51,8 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `module_resolver.cpp` | dotted module path | source file path | ✅ |
 | `vm.cpp` | `Bytecode*` | execution | ✅ |
 | `main.cpp` | CLI | full pipeline | ✅ (VM as dev engine, PHASE 4) |
-| `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slices 1-3 |
+| `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slices 1-4 |
 | `value.cpp` | `Value`, tagged union | shared runtime | ✅ |
-| `env.cpp` | `Env`, lexical scope chain | **unused** (see note) | ⚠️ |
 | `builtins.cpp` / `ops.cpp` | native builtins, shared operators | runtime library | ✅ |
 | `ffi.cpp` | `extern "C"` declarations | marshalling natives | ✅ PHASE 6.6 |
 | `diagnostic.cpp` | `CompileError`, `Warning`, `RuntimeError` | stderr output | ✅ |
@@ -70,25 +69,21 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `native/entry.cpp` | program entry label | `_start`/entry + prelude (Linux syscalls, Windows kernel32) | ✅ PHASE 7c.0/7e |
 | `native/bare_metal.cpp` | code + entry | multiboot ELF32/i386 kernel (bare-metal prelude + trampoline) | ✅ PHASE 7g |
 
-**Note on `env.cpp`.** It is the lexical scope chain of the retired AST
-interpreter. The VM keeps locals in reference-counted `Cell`s and never
-constructs an `Env`, and `Function::closure` (the only `Env` owner left in
-`value.h`) is never assigned, so `env.cpp` is dead code kept only by
-`tests/gc_test.cpp`. It is not part of the AST interpreter path (which is
-gone) nor of the VM; it can be deleted once `gc_test.cpp` drops it. The
-`functionGcOps` visitor in `value.cpp` still walks `closure`, so removing it
-is a small, self-contained cleanup.
-
 ### Toolchain binaries and the compiler boundary
 
-`oskel` ships as a single binary until PHASE 7d. After the split:
+`oskel` ships as a single binary today, and `oskel build` is the AOT entry
+point inside it. PHASE 7d wired that subcommand into the CLI; the split into a
+separate host compiler is still pending, so the two binaries below are the
+target of that split, not the current state:
 
 - `oskel` development engine (run, REPL, -c). Includes the VM and the JIT (the
   JIT uses the project's own `native/codegen.h` emitter, not AsmJIT).
 - `oskelc` host compiler (oskelc file.oskl -o app). Reads sources and
   writes the ELF with the project's own `native/codegen.cpp` and
-  `native/elf.cpp` (no AsmJIT, no ELFIO). Links against musl static.
-- `oskel build` thin alias over `oskelc`
+  `native/elf.cpp` (no AsmJIT, no ELFIO). Links against musl static. Planned;
+  not part of 0.1.0.
+- `oskel build` thin alias over `oskelc` (the goal; today it runs the AOT
+  backend in-process)
 
 A third, standalone binary ships alongside them: `bindgen`, the C binding
 generator (`docs/bindgen.md`). It reads a C header and writes an Oskel
@@ -338,7 +333,7 @@ previous one.
 - `in` for arrays, maps, strings and ranges
 - Retire the temporary `PRINT` opcode: from 6c/6e every `print` arity compiles
   to `CALL`, and the opcode is deleted at the 6f gate (§3.6)
-- Already in the tree: the shared `Value` and lexical `Env` (`value.cpp`, `env.cpp`) plus the cycle collector in `gc.cpp`. Slice 6a is done: top-level `fn` declarations, parameters, `return`, recursion and general calls compile and run on the VM. Slice 6b is done: `GETUPVAL`/`SETUPVAL`, upvalue descriptors, lambdas and closures that escape their defining scope (verified by `examples/closures.oskl` and `tests/09_lambdas.oskl`). The compiler still rejects collections and `for-in` with a `(Phase 6)` message; those land in 6c.
+- Already in the tree: the shared `Value` (`value.cpp`) plus the cycle collector in `gc.cpp`. Slice 6a is done: top-level `fn` declarations, parameters, `return`, recursion and general calls compile and run on the VM. Slice 6b is done: `GETUPVAL`/`SETUPVAL`, upvalue descriptors, lambdas and closures that escape their defining scope (verified by `examples/closures.oskl` and `tests/09_lambdas.oskl`). The compiler still rejects collections and `for-in` with a `(Phase 6)` message; those land in 6c.
 - Memory in the VM: closures that capture each other's variables, and tables that contain themselves (directly or through a closure stored in them), form cycles that reference counting cannot free. A `Cell` registers with the cycle collector when a closure captures it, and `Function` must report its `upvalues` (the captured cells) as well as `capturedGcNodes` from `visit`; a missing edge makes every cycle through a cell immortal. The VM runs `gcCollectIfNeeded()` at `CLOSURE` and `NEWTABLE`, the instructions that create the objects cycles are made of, so a program that never creates a closure is still collected. Regression tests: `testCapturedCellsAreNotRetainedByTheVM`, `testClosureCyclesAreCollected`, `testTableCyclesAreCollectedWithoutClosures` and `testClosureStoredInTheTableItCapturesIsCollected` in `tests/vm_test.cpp`; build it with `-DOSKEL_GC_STRESS` to collect at every safe point.
 - **6f done**: `PRINT` retired. Every `print` arity compiles to `CALL`. The
   opcode count is now 39/40.
@@ -458,6 +453,20 @@ previous one.
   (the RTC's BCD/binary fields converted to a Unix timestamp in assembly) — so
   `std.datetime.now()`/`today()` work everywhere. See `docs/language.md` §12.4
   and `tests/bare_metal_test.cpp` (`test_qemu_wall_clock`).
+- **Standard library: `std.path`** — **done**: a pure-Oskel module for
+  filesystem paths. A path is an ordinary string, not a new type, so a result
+  feeds the file builtins directly and no new runtime type, opcode or builtin is
+  added. It offers `join`, `basename`, `dirname`, `extension`, `stem`,
+  `withExtension`, `withBasename`, `split`, `isAbsolute`/`isRelative`,
+  `normalize` and `relative`. The separator is `/` on every platform and a `\`
+  is folded to `/`, so the results are deterministic across Linux, macOS and
+  Windows; `normalize`/`relative` match `posixpath.normpath`/`relpath` exactly,
+  with three documented deviations elsewhere (`basename`, `dirname`, `join`).
+  The module is written over the portable primitive surface, avoiding the
+  collection/string methods and `pcall`/`error` the AOT backend does not
+  implement yet, so it behaves identically on the VM and under `oskel build`.
+  See `docs/language.md` §12.11/§18, `tests/57_std_path.oskl` and the AOT
+  fixture `tests/native_build_path.oskl`.
 
 ### PHASE 6.6 — FFI with C (1.0)
 
@@ -1138,6 +1147,27 @@ Slices, each independently shippable:
       three are seeded into their global slots like the other builtins and are
       covered by `tests/freestanding_test.cpp` (the values and every failure
       path) and `tests/native_build_builtins.oskl` (the `oskel build` fixture).
+    - **7c.5c** (done) — error values. `error()`/`isError` were previously
+      unbound in AOT (`isError` returned a constant `false`), so `try`/`catch`
+      never caught and an error was not a value. The AOT runtime now has a real
+      `error` tag: an `AotError` header (`AotString* message` + `int64 code`)
+      over the arena. `error(message, code?)` mirrors the hosted builtin (the
+      message is a string taken verbatim or any other value through `$str`; the
+      optional code is an integer, `0` by default; one or two arguments, else the
+      wrong-arity error). The tag flows through every shared helper: `type`
+      reports `"error"`, `isError`/`$isError` see it (so `try` propagates and
+      `catch` recovers), `==` compares by message *and* code, `print`/`toString`
+      render the message alone and the recursive `repr` renders the
+      `error("message")` / `error("message", code)` debug form (the code only
+      when non-zero), `$str` interpolation renders the message, and
+      `err.message`/`err.code` read the fields (`oskel_member_get` gained the
+      two member-name islands; any other name is the "no such member" error).
+      No new opcode and no bytecode change -- it is a runtime value like the
+      others. Covered by `tests/native_build_error.oskl` (built and run against
+      the VM by `tests/build_binary.cmake`), which is what makes value-based
+      `try`/`catch` work in a native binary. `pcall` (backlog §6.4) and
+      catchable *runtime* errors (the AOT runtime has no unwinding) remain out
+      of scope.
     - **7c.6** (done) — variadic parameter packs. A function with a trailing
       `rest...` parameter was a lowering error ("variadic function",
       `PHASE 7c.3`); it now compiles. The child proto's prologue checks the
@@ -1197,8 +1227,8 @@ Slices, each independently shippable:
     decision still open, because the generated binary is freestanding today
     (`ldd` reports "not a dynamic executable"): curated syscall stubs keep that
     invariant; an object + external link or a dynamic ELF break it. Slices 7f.1
-    through 7f.5 landed the hosted object + link and scalar `extern "C"`
-    marshalling; the pointer, struct, callback and variadic shapes remain.
+    through 7f.6 landed the hosted object + link and scalar/pointer `extern "C"`
+    marshalling; the struct, callback and variadic shapes remain.
     - **7f.1** (done) — tolerance of an unused host declaration plus the first
       curated stub. A `native fn`/`extern "C"` declaration binds a name to the
       host function the host registered; the compiler emits one read of the name
@@ -1318,6 +1348,35 @@ Slices, each independently shippable:
       checked against the VM), and `tests/codegen_test.cpp` pins the extended
       `cvttsd2si` encodings. A `ptr`/`cstring` parameter or return, a struct, a
       callback and a C variadic remain 7f work.
+    - **7f.6** (done) — `cstring`/`ptr` parameters and a `cstring` return in the
+      hosted backend. The scalar thunk of 7f.5 is extended to the pointer
+      register class, so a program can pass text to a C function and read text
+      back. A `cstring`/`ptr` *parameter* travels in a general-purpose register
+      as a machine address: `nil` marshals to C's NULL (0) and a Oskel string is
+      copied into a fresh, NUL-terminated arena block whose address is passed,
+      because an `AotString` is a length word followed by the bytes and is
+      *not* NUL-terminated — exactly the `const char *` a C callee dereferences.
+      Marshalling a pointer argument calls `alloc` and `rep movsb`, which
+      clobber the integer argument registers, so every integer argument is now
+      staged in a small stack frame and loaded into its register only just
+      before the call (the SSE arguments are written directly, since nothing
+      clobbers an xmm register). A `cstring` *return* comes back in `rax`: NULL
+      becomes `nil`, otherwise the bytes are scanned to the NUL (with the hosted
+      engine's 16 MiB cap, `src/ffi.cpp`) and copied into an `AotString`, which
+      the thunk returns as a `Str` value. Boxing the result as the existing
+      `Str` tag — rather than adding an `AotTag::Ptr` — keeps every shared
+      helper (`type`, `print`, comparison, interpolation) untouched, so the
+      freestanding image stays byte for byte identical; the cost is a documented
+      VM/AOT divergence (BACKLOG §6 item 23): a returned `cstring` prints and
+      compares `== nil` like the VM, but reads as `"string"` in `type()` and the
+      string operations then accept it. An opaque
+      `ptr` *return* is still rejected: the AOT runtime has no representation
+      for a handle it must never dereference. A struct, a callback and a C
+      variadic remain 7f work. Covered by
+      `tests/native_build_extern_hosted.oskl`, extended with
+      `strlen`/`strcmp`/`strncmp` (a pointer then a `size_t`, exercising the
+      staging order) and `strchr` (a `cstring` return, including the NULL
+      no-match case), built hosted and checked against the VM.
   - **7g** (done) — bare-metal x86-64 (multiboot). A third target,
     `x86_64-freestanding-sysv` (`oskel build --target
     x86_64-freestanding-sysv`), emits a multiboot 1 kernel that a boot loader
@@ -1480,13 +1539,48 @@ that the branch is reached by fall-through alone, so the re-test the VM would
 perform is never lost; a comparison whose result is reused afterwards stays
 unfused and correct. The same loop drops to about 320x the interpreter, within
 about 1.4x of the hand-written loop. The fusion rewrites *how* one opcode and its
-branch are emitted, so it is still 1:1 with the bytecode.
+branch are emitted; the bytecode still executes the same two opcodes, so the
+contract below holds.
+
+**What "1:1" means here.** The invariant is about the *bytecode*, not about the
+native instruction count: the JIT never adds, removes or merges a bytecode
+opcode, and a program's result never depends on which opcodes were compiled.
+The optimizer is free to change how an opcode (or an adjacent opcode plus its
+branch) is *emitted* — constant folding, strength reduction, compare-branch
+fusion are all peephole rewrites of the emission, and none of them introduces a
+superinstruction or a runtime specialization. This is why slice 3's fusion is
+still within the rule: it emits one `cmp; jcc` where the interpreter would
+execute an `EQ` then a `JMP_IF_FALSE`, but the two opcodes still run, and an
+unfused comparison (one whose result is reused) stays correct.
+
+Slice 4 (done) replaces the fixed per-slot register map with **web-based register
+allocation and copy coalescing**. The emitter used to tie a slot to a register by
+index (`R0` to the first pool register, `R1` to the second, ...), so a temporary
+reused for two values forced a `mov` at each reuse and every `GETLOCAL`/
+`SETLOCAL` copied between the temporary's register and the local's. The emitter
+now resolves every read and write through a per-instruction allocation table
+(`readReg[i][slot]`/`writeReg[i][slot]`), and `allocateRegisters` fills it: it
+builds a *web* per slot (the definitions a single live use can observe, via
+reaching definitions unioned over the live points), interferes webs that are live
+at the same point, coalesces the copies that do not interfere (a `MOVE`, a local
+copy, or an in-place `s = s + x`) after dropping the spurious interference edge
+between a pure-copy web and its source, and colors the merged graph greedily over
+the seven-register pool. A web the pool cannot cover keeps its 16-byte stack
+slot, exactly like the old overflow path, so the code stays correct when the
+register pressure exceeds the pool. A liveness pass that mirrors the emitter's
+fold decisions also drops a definition no read observes (`deadDef`), which
+removes the constant a folded expression left behind. The integer loop falls from
+17 instructions to 9 (a hand-written `-O2` C++ loop is 7) and from 0.051s to
+0.039s, within about 1.08x of the hand-written loop and about 420x the
+interpreter. The allocation rewrites *where* a value lives, never *how many*
+opcodes run, so it is still 1:1 with the bytecode.
 
 Later slices widen the subset (floats, then strings, then the boxed value
 runtime, then calls and guards) and add the tiering policy (compile after a
 call threshold instead of on the first call), following LuaJIT as the
-reference. Everything stays 1:1 with the bytecode; the moment a design needs
-inline caching or specialization, it is out of scope (§6).
+reference. Everything stays 1:1 with the bytecode in the sense above; the
+moment a design needs inline caching or specialization, it is out of scope
+(§6).
 
 ### Post-1.0 — UI library
 
@@ -1523,8 +1617,8 @@ Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair, which `ITER` now yields directly, no new opcode and no helper call) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.5 done, scalar `extern "C"` resolves in the hosted backend, pointer/struct/callback/variadic still open)
-Phase 8: 🔶 in progress (JIT for the development VM, slices 1-3 done: integer leaf protos with CPU-register allocation, constant folding, strength reduction and compare-branch fusion)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.6 done, scalar and `cstring`/`ptr` `extern "C"` resolve in the hosted backend, struct/callback/variadic still open)
+Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)
 
@@ -1625,7 +1719,7 @@ contains none of them.**
 | `myapp` | Native binary (Linux/macOS) | (GraalVM) `.exe` |
 | `myapp.exe` | Native binary (Windows) | (GraalVM) `.exe` |
 
-**`.oskpkg` format** (ZIP):
+**`.oskpkg` format** (ZIP) — **planned; not implemented in 0.1.0**:
 myapp.oskpkg
 ├── META-INF/MANIFEST.MF
 ├── bin/main.oskc
@@ -1634,7 +1728,10 @@ myapp.oskpkg
 └── README.md
 
 
-**`.oskc` format** (binary):
+**`.oskc` format** (binary) — **planned; not implemented in 0.1.0**. The compiler
+holds a `Bytecode` in memory and the AOT backend lowers it directly; nothing
+serializes it to disk yet, and no command writes or reads a `.oskc` file. The
+layout below is the target format, not the current behaviour:
 +--------+--------+--------+--------+
 | 'J' | 'O' | 'L' | 'C' | magic
 +--------+--------+--------+--------+
@@ -1658,7 +1755,8 @@ myapp.oskpkg
 +--------+--------+--------+--------+
 
 
-**Bytecode verification** (on `.oskc` load):
+**Bytecode verification** (on `.oskc` load) — **planned; not implemented in
+0.1.0** (there is no `.oskc` loader yet):
 - **Level 1 (structural)**: mandatory. Magic, version, ranges, valid opcodes,
   operands in range, checksum.
 - **Level 2 (semantic)**: optional. Jumps to valid instructions, registers

@@ -282,9 +282,7 @@ std::vector<AotExternThunk> collectExternThunks(const std::vector<const Bytecode
       bool scalar = true;
       for (const ffi::TypeSpec& param : symbol.paramTypes) {
         ffi::ParamClass cls = ffi::ParamClass::Int;
-        if (param.isStruct || param.isCallback ||
-            !ffi::classifyParam(param.scalarType, cls) ||
-            cls == ffi::ParamClass::Pointer) {
+        if (param.isStruct || param.isCallback || !ffi::classifyParam(param.scalarType, cls)) {
           scalar = false;
           break;
         }
@@ -294,8 +292,7 @@ std::vector<AotExternThunk> collectExternThunks(const std::vector<const Bytecode
       ffi::ReturnClass ret = ffi::ReturnClass::Int;
       if (symbol.returnType.isStruct ||
           !ffi::classifyReturn(symbol.returnType.scalarType, ret) ||
-          ret == ffi::ReturnClass::Ptr || ret == ffi::ReturnClass::CString ||
-          ret == ffi::ReturnClass::Struct) {
+          ret == ffi::ReturnClass::Ptr || ret == ffi::ReturnClass::Struct) {
         continue;
       }
       thunk.returns = ret;
@@ -909,7 +906,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   // The builtins the AOT runtime provides, keyed by the global name the hosted
   // engine installs. The chunk seeds each one into its global slot as an
   // `AotClosure`, so a `CALL` reaches it through the ordinary `oskel_call` path.
-  const std::unordered_map<std::string, CodeGen::Label> builtins = {
+  std::unordered_map<std::string, CodeGen::Label> builtins = {
       {"print", rt.printBuiltin},
       {"write", rt.writeBuiltin},
       {"eprint", rt.eprintBuiltin},
@@ -937,6 +934,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       {"assert", rt.assertBuiltin},
       {"panic", rt.panicBuiltin},
       {"isError", rt.isErrorBuiltin},
+      {"error", rt.errorBuiltin},
       // The numeric conversions (PHASE 7c.5b.1): `int`/`float`/`double` for a
       // numeric or boolean operand, matching the hosted conversion.
       {"int", rt.intBuiltin},
@@ -974,6 +972,13 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       // call.
       {"time", rt.timeBuiltin},
   };
+
+  // `input` reads the keyboard, so only the bare-metal prelude -- the one that
+  // binds `entry.read` -- seeds it; on the other targets the name stays
+  // unresolved and a program that calls it fails the build like any other
+  // unseeded builtin. This mirrors `emitAotRuntime`'s `hasInput`.
+  const bool hasInput = target.os == Os::Freestanding;
+  if (hasInput) builtins.emplace("input", rt.inputBuiltin);
 
   // The scalar `extern "C"` surface, hosted only (PHASE 7f.5): each symbol gets
   // a marshalling thunk the chunk seeds as a `Func` into its global slot, so a
@@ -1163,7 +1168,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     startOffset = emitFreestandingRuntime(cg, entry, mainEntry);
   }
   emitAotRuntime(cg, rt, entry, externThunks.empty() ? nullptr : &externThunks,
-                 mode == LinkMode::Hosted);
+                 mode == LinkMode::Hosted, hasInput);
   // String constants last: their bytes are addressed by `lea` from the code
   // above, and no path falls through into them.
   emitStringConstants(cg, stringConstants);

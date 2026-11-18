@@ -4,6 +4,19 @@ Language version: **0.1.0**
 
 This guide describes the syntax and semantics of Oskel as implemented by the compiler and the register-based VM included in this repository.
 
+## Implementation status
+
+The language surface this reference documents is implemented on the development engine (`oskel`) in full. The native (AOT) backend and the JIT lag behind it, and the gaps are listed in §16:
+
+| Area | Development engine (`oskel`) | AOT backend (`oskel build`) |
+| --- | --- | --- |
+| Language core: functions, closures, control flow, collections | ✅ | ✅ (subset the lowerer covers) |
+| Types, nullability, `struct`, variadics, `import`, `switch`, `defer` (PHASE 6.5) | ✅ | ✅ (all are compile-time; `struct` is erased, `switch`/`defer` lower to existing opcodes) |
+| `native fn` (PHASE 6.5) | ✅ | 🔶 only for the curated stubs the backend seeds; anything else fails the build (PHASE 7f) |
+| FFI with C (PHASE 6.6) | ✅ | 🔶 scalar `extern "C"` in `--mode hosted` only; FFI is hosted-only by design (PHASE 7f, §4.5) |
+| Error values, `pcall`, `try`/`catch`, unions, `@MustUse` (PHASE 6.7) | ✅ | 🔶 `catch`/`!!` lower; `pcall`/`error` and real error catching do not |
+| JIT (PHASE 8) | 🔶 integer leaf protos (slices 1-4) | — (never) |
+
 ## Table of contents
 
 1. [Execution model](#1-execution-model)
@@ -37,10 +50,10 @@ A Oskel program is a UTF-8 text file (extension `.oskl`). The pipeline is:
 
 1. **Lexer**: turns the text into tokens.
 2. **Parser**: builds an AST with a recursive-descent parser and operator precedence.
-3. **Compiler**: translates the AST to bytecode (40 opcodes, register-based).
+3. **Compiler**: translates the AST to bytecode (39 opcodes today, register-based, under a hard budget of 40).
 4. **VM**: executes the bytecode.
 
-The AST is never executed: the `oskel` executable compiles source to bytecode and runs it on the register-based VM, and the compiler and the VM cover functions, closures, control flow, and collections (PHASE 6 done).
+The AST is never executed: the `oskel` executable compiles source to bytecode and runs it on the register-based VM. The compiler and the VM implement the whole language surface this reference documents — functions, closures and control flow, collections, the type system with nullability and `struct` (PHASE 6.5), FFI with C (PHASE 6.6) and error values with `pcall`, `try`/`catch`, unions and `@MustUse` (PHASE 6.7). The AOT backend (PHASE 7) compiles a subset of the same programs to a native binary through `oskel build`; §16 lists the constructs it does not yet lower.
 
 The program runs from top to bottom in the global scope. Simple statements end with `;`. Statements with a block (`if`, `while`, `for`, `fn`) close with `}` and optionally accept a `;` after it.
 
@@ -439,8 +452,21 @@ print(loadByte(buf, 0));    // 65
 free(buf);
 ```
 
-The AOT backend (PHASE 7) lowers the same handles to real C pointers, so a
-program that only passes them to natives compiles unchanged.
+The AOT backend (PHASE 7) is to lower the same handles to real C pointers, but
+that is not implemented yet (PHASE 7f): a program that passes a pointer to a
+native does not compile with `oskel build` today.
+
+**FFI is hosted-only under `oskel build`.** The decision (PHASE 7f) is that a
+program using `extern "C"` compiles with `oskel build --mode hosted`, which
+links it against the host C library so the symbol resolves to the real C
+function; the freestanding mode, which is the default, has no host to resolve a
+symbol against and reports it (exit 65) instead of emitting a broken binary.
+This is deliberate, not a gap to paper over: the freestanding image is
+self-contained by construction, and a general `extern "C"` call is exactly the
+thing that breaks that property. So the rule is simple — **if a program uses
+FFI, build it hosted.** The development engine (`oskel`) is unaffected: it
+resolves the symbol through `Platform::lookupSymbol` and runs the same program
+either way.
 
 **`extern "C"` blocks.** A C function is declared with `extern` (PHASE 6.6).
 Three spellings are accepted and compile to the same thing:
@@ -581,7 +607,8 @@ through the C frame, so the extern call captures it and re-raises it once C
 returns: `pcall` catches it like any other runtime error. A struct the callback
 returns that does not match the declared shape (not a map, a missing field, a
 field of the wrong type) fails the same way. The AOT backend
-(PHASE 7) will lower callbacks to compile-time stubs and never links `libffi`.
+(PHASE 7) is to lower callbacks to compile-time stubs and never link `libffi`;
+that is not implemented yet.
 
 **C variadics.** A trailing bare `...` declares a C variadic function: the named
 parameters are the fixed prefix and every extra argument is passed through the
@@ -2158,6 +2185,51 @@ consults a timezone database, so `toOffset`/`toUtc` are exact and a value is the
 same on every machine. The clock comes from the `time()` builtin (§12.4), which
 the AOT backend binds on every target.
 
+### 12.11 Paths
+
+`import std.path;` adds filesystem-path manipulation. A path is an ordinary
+string, not a new type, so a result feeds the file builtins (§12.6) directly and
+nests, compares and interpolates like any other string. The module is pure
+Oskel, so it runs identically on the VM and under `oskel build`.
+
+| Function | Description |
+| --- | --- |
+| `join(parts...)` | Joins the parts with `/`, dropping empty ones and collapsing the separators between them. |
+| `basename(p)` | The last component, with trailing separators ignored. |
+| `dirname(p)` | Everything up to the last separator (`.` for a bare name). |
+| `extension(p)` | The last component's extension, including the dot (`.gz` for `a.tar.gz`). |
+| `stem(p)` | The last component without its extension. |
+| `withExtension(p, ext)` | Replaces the extension; a leading dot in `ext` is optional. |
+| `withBasename(p, name)` | Replaces the last component. |
+| `split(p)` | The path as an array of components (the root is its own element). |
+| `isAbsolute(p)` / `isRelative(p)` | Whether the path starts with `/`. |
+| `normalize(p)` | Resolves `.` and `..` and collapses separators, lexically. |
+| `relative(from, to)` | The path that reaches `to` from `from`. |
+
+```oskl
+import std.path.*;
+
+print(join("a", "b", "c"));            // a/b/c
+print(join("/", "usr", "local", "bin")); // /usr/local/bin
+print(basename("/a/b/c.txt"));         // c.txt
+print(dirname("/a/b/c.txt"));          // /a/b
+print(extension("a.tar.gz"));          // .gz
+print(stem("/a/b/c.txt"));             // c
+print(split("/a/b"));                  // ["/", "a", "b"]
+print(normalize("/a/./b/../c"));       // /a/c
+print(relative("/a", "/a/b/c"));       // b/c
+```
+
+The separator is `/` on every platform, and a `\` is folded to `/` on the way
+in, so the module is deterministic and its results are the same on Linux, macOS
+and Windows. Three cases deviate from POSIX `posixpath`, all deliberately:
+`basename("a/b/")` is `b` (a trailing separator is ignored, as Rust's
+`Path::file_name` does, so `basename` and `dirname` stay inverse),
+`dirname("a")` is `.` (the parent of a bare name is the current directory), and
+`join("a", "/b")` is `a/b` (a separator between parts collapses rather than
+discarding the parts before it). `normalize` and `relative` match
+`posixpath.normpath`/`relpath` exactly.
+
 ---
 
 ## 13. Errors and diagnostics
@@ -2279,6 +2351,13 @@ data with the same field names.
 `panic(...)`. To catch a raised error use `pcall` (§13.1). Because errors are
 ordinary values, they can be stored, returned, compared and carried through
 containers like any other value.
+
+Error values behave identically on the development VM and under `oskel build`
+(the AOT backend): `error`, `isError`, `type`, `.message`/`.code`, equality,
+`print`/`repr` and interpolation all agree, which is what makes value-based
+`try`/`catch` (§13.3) work in a native binary. A raised runtime error, in
+contrast, has no representation in the freestanding AOT runtime (no unwinding),
+so only `error` values are recoverable there.
 
 ### 13.3 Propagating and recovering: `try` and `catch`
 
@@ -2460,12 +2539,12 @@ compiles either way):
   dynamic dependencies.
 - `--mode hosted` links the compiled program against the host C library, so an
   `extern "C"` symbol resolves to the real C function at link time. This is the
-  mode that makes FFI work, and the one `oskelc` is documented to be. It needs a
-  C toolchain at build time and produces a binary that *does* depend on libc, so
-  it is not freestanding. The emitter wraps the program in a relocatable object
-  and the host C compiler (`$CC`, default `cc`) links it against libc; the
-  entry prelude reaches the system through libc (`write`/`exit`/`malloc`) and
-  the program's entry is exported as the C `main`.
+  mode that makes FFI work, and the mode the planned `oskelc` host compiler is
+  documented to emit. It needs a C toolchain at build time and produces a binary
+  that *does* depend on libc, so it is not freestanding. The emitter wraps the
+  program in a relocatable object and the host C compiler (`$CC`, default `cc`)
+  links it against libc; the entry prelude reaches the system through libc
+  (`write`/`exit`/`malloc`) and the program's entry is exported as the C `main`.
 
 ```sh
 oskel build app.oskl                       # freestanding (default)
@@ -2494,29 +2573,30 @@ parameter binds an ordinary array of the extras, built by the runtime's
 `oskel_pack_rest`, so a program using them behaves the same on the VM and in the
 static binary.
 
-**Planned (PHASE 7)**:
+**Planned (a later release)**:
 
 ```sh
-oskelc <file.oskl> -o app    compiles to a native binary (AOT, musl static)
-oskelc <file.oskl> -c        compiles to bytecode (.oskc)
+oskelc <file.oskl> -o app      compiles to a native binary (AOT, musl static)
+oskelc <file.oskl> -c          compiles to bytecode (.oskc)
 oskelc -pkg ... -o app.oskpkg  packages a .oskpkg
 ```
 
-`oskelc` is the host compiler. It reads sources and writes the ELF, so it links libc; the freestanding part is what it emits, not the compiler itself. 
-`oskel` (the development engine) may use AsmJIT JIT; oskelc uses AsmJIT Assembler (no JIT).
+`oskelc` is a planned separate host compiler: it reads sources and writes the ELF, so it links libc, and the freestanding part is what it emits, not the compiler itself. It is **not** part of 0.1.0 — `oskel build` is the AOT entry point today, and it is not yet a thin alias over `oskelc` (the split in `DEVELOPMENT.md` §2 is the target, not the current state). There is also no `.oskc` serializer in the tree yet, so `-c` and `-pkg` are future work.
 
 ---
 
 ## 16. Known limitations
 
-- Dynamic typing. The `oskel` executable compiles source to bytecode and runs it on the register-based VM; the AST is never executed. The compiler and the VM cover functions, closures, control flow, and collections (PHASE 6 done).
-- No JIT. A JIT (AsmJIT) is planned for `oskel` (development engine) in PHASE 8+, not for `oskelc` (product).
+- Dynamic typing. The `oskel` executable compiles source to bytecode and runs it on the register-based VM; the AST is never executed. The compiler and the VM implement the whole language surface this reference documents (PHASE 6 and its 6.5/6.6/6.7 additions).
+- The JIT covers only a narrow integer subset, and only in the development engine. `oskel` (a script run, `-e` and the REPL) compiles a *leaf* function whose body only manipulates `nil`/`bool`/`int` to native x86-64 the first time it is called (PHASE 8, slices 1-4: constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing). Everything else keeps running on the interpreter, so results never change, and `oskel build` and the generated binary never contain the JIT. `oskel --no-jit` disables it.
 - No classes, interfaces or inheritance (and there never will be — maps + closures replace them). A `struct` (data only, no methods) is supported (see §4.7): it is a named map shape checked at compile time, not a class.
 - No `try`/`catch` *statement* and no catchable exceptions. Error handling is value-based: `nil` (not found), `pcall(fn, ...)` to turn a raised runtime error into a `{ok, value, error}` map (see §13.1), and the error-value operators `try expr` (propagate, Rust's `?`) and `expr catch default` (recover locally, Zig's `catch`, see §13.3). `panic()` is for unrecoverable errors. A raised runtime error is not a value and is not caught by `catch`; use `pcall` for that.
 - Modules use Java-style `import` (see §18). `import` is only allowed at the top level of a module: nesting an import inside a function or block is a compile error. `require` (Lua-style) is dropped — `import` is the only module form. A module is loaded once, eagerly, when the program is compiled, and a cyclic import is a compile error rather than a crash.
 - No `++`, `--` or default parameters. A trailing `rest...` parameter makes a function variadic (see §7.1). `switch` on literals and ranges is supported (see §6.10), and so is the post-test loop `do { ... } while (cond);` (see §6.4).
 - Optional types and nullability are implemented for declarations and expressions (PHASE 6.5). Type annotations (`let x: int = 5`), local inference, the nullable `T?` annotation, and the null-safe expressions `?.`, `??` and `!!` are checked at compile time. `struct` is implemented (see §4.7) and so is `native fn` (see §7.6), the typed declaration of a host-provided function.
-- FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the System V AMD64 ABI without `libffi` for scalars and structs by value. A `fn(P...): R` parameter is a callback: the development engine builds a `libffi` closure that re-enters the VM (its `R` may be a scalar or a struct by value), while the AOT backend (PHASE 7) lowers callbacks to compile-time stubs and never links `libffi`. A trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...): int`), which applies the C default argument promotions and goes through `libffi`; like a class-MEMORY struct it needs the System V AMD64 ABI plus `libffi`, and is rejected at compile time elsewhere.
+- FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the System V AMD64 ABI without `libffi` for scalars and structs by value. A `fn(P...): R` parameter is a callback: the development engine builds a `libffi` closure that re-enters the VM (its `R` may be a scalar or a struct by value). A trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...): int`), which applies the C default argument promotions and goes through `libffi`; like a class-MEMORY struct it needs the System V AMD64 ABI plus `libffi`, and is rejected at compile time elsewhere.
+- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.5 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux x86-64 only), where the program is linked against libc; the freestanding mode, which is the default, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, structs by value, callbacks and C variadics are not lowered yet, and `native fn` declarations the backend has no stub for fail the build with a dedicated message.
+- A function's text representation differs between the engines: the VM renders a named function as `<fn name>` (`<native fn name>` for a host binding) while the AOT binary renders every function as `<fn>`, because the AOT closure object carries only code, arity and upvalue count and no name. This is a known parity gap (BACKLOG §6.22); `tests/freestanding_test.cpp` pins the AOT form and `tests/native_build_control_flow.oskl` avoids printing a bare function so the fixture agrees on both engines.
 - No UI library yet. Skia + SDL2 + declarative UI is planned for post-1.0.
 - No async/await, generics, full pattern matching, generators, or transactions. These are out of scope (see `DEVELOPMENT.md`).
 - Map keys are always strings. Literals accept identifier, string, scalar (`int`, `float`, `double`, `true`, `false`, `nil`) and computed `[expr]` keys; non-string keys are canonicalized to their string form.
@@ -2653,9 +2733,9 @@ print(std.math.sqrt(16));   // 4
 print(sqrt(25));            // 5
 ```
 
-The standard library ships `std.math` (§12.3), `std.json` (§12.9) and
-`std.datetime` (§12.10). All are ordinary modules, so the same four import
-forms apply:
+The standard library ships `std.math` (§12.3), `std.json` (§12.9),
+`std.datetime` (§12.10) and `std.path` (§12.11). All are ordinary modules, so
+the same four import forms apply:
 
 ```oskel
 import std.json;             // std.json.parse, std.json.stringify, ...
@@ -2667,17 +2747,22 @@ import { parse, stringify } from std.json;
 ---
 
 ## 19. File extensions
-| Extension | What it is | Java analog |
-|-----------|------------|-------------|
-| `.oskl` | Source code | `.java` |
-| `.oskc` | Bytecode | `.class` |
-| `.oskpkg` | Package (ZIP) | `.jar` |
-| `.osklib` | Native library | `.dll` / `.so` / `.dylib` |
-| `.oskdoc` | Documentation | `.javadoc` |
-| `myapp` | Native binary (Linux/macOS) | (GraalVM) `.exe` |
-| `myapp.exe` | Native binary (Windows) | (GraalVM) `.exe` |
 
-**`.oskpkg` format** (ZIP):
+Only `.oskl` (source) and the native binary exist in 0.1.0. The rest of the
+table is the target naming, not something the compiler writes today: there is no
+bytecode serializer, no package reader and no native-library loader yet.
+
+| Extension | What it is | Java analog | Status |
+|-----------|------------|-------------|--------|
+| `.oskl` | Source code | `.java` | ✅ |
+| `.oskc` | Bytecode | `.class` | planned |
+| `.oskpkg` | Package (ZIP) | `.jar` | planned |
+| `.osklib` | Native library | `.dll` / `.so` / `.dylib` | planned |
+| `.oskdoc` | Documentation | `.javadoc` | planned |
+| `myapp` | Native binary (Linux/macOS) | (GraalVM) `.exe` | ✅ |
+| `myapp.exe` | Native binary (Windows) | (GraalVM) `.exe` | ✅ |
+
+**`.oskpkg` format** (ZIP) — planned, not implemented in 0.1.0:
 
 ```text
 myapp.oskpkg
@@ -2687,3 +2772,8 @@ myapp.oskpkg
 ├── resources/icon.png
 └── README.md
 ```
+
+The `.oskc` bytecode layout, its checksum and the Level 1/Level 2 verification
+steps are specified in `DEVELOPMENT.md` §8; all of it is planned, since nothing
+serializes a `Bytecode` to disk yet — the compiler keeps it in memory and the
+AOT backend lowers it directly.

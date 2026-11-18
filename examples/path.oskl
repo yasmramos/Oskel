@@ -1,0 +1,81 @@
+// The `std.path` standard library: joining, splitting and normalising
+// filesystem paths, through every import form.
+//
+// A path is an ordinary string, not a new type, so `join` feeds the file
+// builtins (`readFile`, `writeFile`, `fileExists`) directly and a path nests in
+// a collection, compares and interpolates like any other string.
+
+// 1. Qualified: the module is bound under its path.
+import std.path;
+print("qualified = ${std.path.join("a", "b")}");
+
+// 2. Wildcard: every public name enters the scope unqualified.
+import std.path.*;
+
+// 3. Alias: a shorter name for the module.
+import std.path as path;
+
+// 4. Selective: only the names asked for.
+import { normalize } from std.path;
+
+// --- building a path --------------------------------------------------------
+
+let base = join("build", "release", "bin");
+print("base      = ${base}");                    // build/release/bin
+
+// Empty parts are dropped and separators never double, so pieces can be
+// assembled from a config value that may be empty.
+let exe = join(base, "", "oskel");
+print("exe       = ${exe}");                     // build/release/bin/oskel
+
+// A leading separator makes the result absolute.
+print("absolute  = ${join("/", "usr", "local", "bin")}");   // /usr/local/bin
+
+// --- taking a path apart ----------------------------------------------------
+
+let file = "/home/user/projects/oskel/README.md";
+print("basename  = ${basename(file)}");          // README.md
+print("dirname   = ${dirname(file)}");           // /home/user/projects/oskel
+print("extension = ${extension(file)}");         // .md
+print("stem      = ${stem(file)}");              // README
+print("split     = ${split(file)}");             // ["/", "home", "user", ...]
+
+// A dotfile has no extension: the leading dot is part of the name.
+print("dotfile   = ${extension(".bashrc")}");    // (empty)
+
+// --- replacing a component --------------------------------------------------
+
+// Changing the extension is the common case, and the dot is optional.
+print("renamed   = ${withExtension(file, "txt")}");   // .../README.txt
+print("swapped   = ${withBasename(file, "NOTES.md")}"); // .../NOTES.md
+
+// --- normalising ------------------------------------------------------------
+
+// `..` cancels the component before it, lexically, without touching the disk.
+let messy = "/var/log/../tmp/./cache//data";
+print("messy     = ${messy}");
+print("clean     = ${normalize(messy)}");        // /var/tmp/cache/data
+
+// A relative path keeps a leading `..` it cannot cancel.
+print("upward    = ${normalize("src/../../lib")}");   // ../lib
+
+// --- relative paths ---------------------------------------------------------
+
+let root = "/srv/app";
+let target = "/srv/app/data/2024/report.csv";
+print("relative  = ${relative(root, target)}");  // data/2024/report.csv
+print("upward    = ${relative(target, root)}");  // ../../..
+
+// --- composing with the file builtins ---------------------------------------
+
+// The payoff of a path being a string: it goes straight into the file API
+// without a wrapper to unwrap.
+let outDir = normalize(join("build", "out", "..", "out"));
+let outFile = join(outDir, "summary.txt");
+print("outFile   = ${outFile}");                 // build/out/summary.txt
+print("parent    = ${dirname(outFile)}");        // build/out
+print("exists    = ${fileExists(outFile)}");     // false: not created here
+
+// The import forms all reach the same functions.
+print("alias     = ${path.basename("/x/y.txt")}");
+print("selective = ${normalize("/a/./b")}");

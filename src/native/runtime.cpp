@@ -41,6 +41,7 @@ constexpr std::int64_t kTagFunc = static_cast<std::int64_t>(AotTag::Func);
 constexpr std::int64_t kTagArray = static_cast<std::int64_t>(AotTag::Array);
 constexpr std::int64_t kTagMap = static_cast<std::int64_t>(AotTag::Map);
 constexpr std::int64_t kTagRange = static_cast<std::int64_t>(AotTag::Range);
+constexpr std::int64_t kTagError = static_cast<std::int64_t>(AotTag::Error);
 
 // Field offsets of the collection headers (see `native/value.h`). Arrays and
 // maps share the same three-word header (length, capacity, block), so one set
@@ -57,6 +58,11 @@ constexpr std::int64_t kMapEntryValueOffset = 8;
 constexpr std::int64_t kRangeStartOffset = 0;
 constexpr std::int64_t kRangeEndOffset = 8;
 constexpr std::int64_t kRangeInclusiveOffset = 16;
+
+// Field offsets of an error header (see `native/value.h`): the message
+// `AotString` address, then the integer code.
+constexpr std::int64_t kErrorMessageOffset = 0;
+constexpr std::int64_t kErrorCodeOffset = 8;
 
 // Byte offset of a string's first byte from its `AotString` header (see
 // `native/value.h`): the length is an 8-byte word, the bytes follow.
@@ -170,6 +176,9 @@ struct CollectionEnv {
   CodeGen::Label containsConst;  // data: the string "contains"
   CodeGen::Label indexOfConst;   // data: the string "indexOf"
   CodeGen::Label clearConst;     // data: the string "clear"
+  // The error member names (`err.message` / `err.code`), raw `AotString`s.
+  CodeGen::Label messageConst;   // data: the string "message"
+  CodeGen::Label codeConst;      // data: the string "code"
   const DataBlob* msgOom;
   const DataBlob* msgArrayIndexType;
   const DataBlob* msgIndexRange;
@@ -327,6 +336,7 @@ void emitPrintValueCore(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeL
   CodeGen::Label asStr = cg.newLabel();
   CodeGen::Label asNum = cg.newLabel();
   CodeGen::Label asRepr = cg.newLabel();
+  CodeGen::Label asError = cg.newLabel();
   CodeGen::Label boolFalse = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
 
@@ -357,12 +367,26 @@ void emitPrintValueCore(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeL
   cg.jcc(Jcc::Eq, asRepr);
   cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagRange));
   cg.jcc(Jcc::Eq, asRepr);
+  // An error prints its message alone (`Value::toString` display form).
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagError));
+  cg.jcc(Jcc::Eq, asError);
   emitFailCall(cg, fail, badValue);
 
   cg.bind(asRepr);
   cg.xorReg(Rdx, Rdx);          // depth = 0
   cg.movImm(Rcx, fd);           // target fd for the nested render
   cg.callLabel(printRepr);
+  cg.jmp(done);
+
+  // An error: write the message `AotString`'s bytes verbatim (no quoting),
+  // exactly like a string.
+  cg.bind(asError);
+  cg.movFromMem(Rcx, Rsi, kErrorMessageOffset);  // message AotString*
+  cg.movFromMem(Rdi, Rcx, 0);                    // length
+  cg.addImm32(Rcx, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movReg(Rsi, Rdi);                           // rsi = length
+  cg.movReg(Rdi, Rcx);                           // rdi = bytes
+  emitWriteToFd(cg, writeLabel, fd);
   cg.jmp(done);
 
   cg.bind(asInt);
@@ -1106,6 +1130,7 @@ void emitCompare(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   CodeGen::Label eqIdentity = cg.newLabel();
   CodeGen::Label eqStrPair = cg.newLabel();
   CodeGen::Label eqRange = cg.newLabel();
+  CodeGen::Label eqError = cg.newLabel();
   CodeGen::Label eqArray = cg.newLabel();
   CodeGen::Label eqMap = cg.newLabel();
   CodeGen::Label eqArrayLoop = cg.newLabel();
@@ -1298,14 +1323,17 @@ void emitCompare(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
 
   cg.bind(eqNonNumeric);
   // Two values of different kinds are never equal (a number pair was handled
-  // above). Same kind: strings by content, ranges by their three fields, arrays
-  // and maps structurally; everything else (nil, bool, func, ptr) is identity.
+  // above). Same kind: strings by content, ranges by their three fields, errors
+  // by message and code, arrays and maps structurally; everything else (nil,
+  // bool, func, ptr) is identity.
   cg.cmpReg(Rdi, Rdx);
   cg.jcc(Jcc::Ne, eqRetFalse);
   cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, eqStrPair);
   cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagRange));
   cg.jcc(Jcc::Eq, eqRange);
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagError));
+  cg.jcc(Jcc::Eq, eqError);
   cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagArray));
   cg.jcc(Jcc::Eq, eqArray);
   cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagMap));
@@ -1331,6 +1359,20 @@ void emitCompare(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   cg.cmpReg(R8, R9);
   cg.jcc(Jcc::Ne, eqRetFalse);
   cg.jmp(eqRetTrue);
+
+  // An error is equal when the message string and the code both match, the same
+  // rule as the hosted `ErrorObj` (`message` and `code` compared by value).
+  cg.bind(eqError);
+  cg.movFromMem(R8, Rsi, kErrorCodeOffset);
+  cg.movFromMem(R9, Rcx, kErrorCodeOffset);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ne, eqRetFalse);
+  cg.movFromMem(R8, Rsi, kErrorMessageOffset);
+  cg.movFromMem(R9, Rcx, kErrorMessageOffset);
+  cg.movReg(Rsi, R8);  // message A
+  cg.movReg(Rcx, R9);  // message B
+  cg.callLabel(strEquals);
+  cg.jmp(eqReturn);
 
   // --- arrays: equal length, then equal items, in order ---
   cg.bind(eqArray);
@@ -3035,6 +3077,9 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   CodeGen::Label arr = cg.newLabel();
   CodeGen::Label str = cg.newLabel();
   CodeGen::Label range = cg.newLabel();
+  CodeGen::Label error = cg.newLabel();
+  CodeGen::Label errorMessage = cg.newLabel();
+  CodeGen::Label errorCode = cg.newLabel();
   CodeGen::Label rangeAsc = cg.newLabel();
   CodeGen::Label rangeSat = cg.newLabel();
   CodeGen::Label rangeUse = cg.newLabel();
@@ -3072,7 +3117,33 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.jcc(Jcc::Eq, str);
   cg.cmpImm32(Rbx, static_cast<std::int32_t>(kTagRange));
   cg.jcc(Jcc::Eq, range);
+  cg.cmpImm32(Rbx, static_cast<std::int32_t>(kTagError));
+  cg.jcc(Jcc::Eq, error);
   cg.jmp(failMember);
+
+  // An error has two members: `message` (the message string) and `code` (the
+  // integer code). Any other name is "value has no such member", matching the
+  // hosted `memberGet`.
+  cg.bind(error);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.messageConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, errorMessage);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.codeConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, errorCode);
+  cg.jmp(failMember);
+  cg.bind(errorMessage);
+  cg.movFromMem(Rdx, R12, kErrorMessageOffset);
+  cg.movImm(Rax, kTagStr);
+  cg.jmp(done);
+  cg.bind(errorCode);
+  cg.movFromMem(Rdx, R12, kErrorCodeOffset);
+  cg.movImm(Rax, kTagInt);
+  cg.jmp(done);
 
   cg.bind(map);
   cg.movReg(Rdi, R12);
@@ -3901,15 +3972,108 @@ void emitIterNextRange(CodeGen& cg, CodeGen::Label range, CodeGen::Label rangeAs
 }
 
 // `AotValue oskel_builtin_is_error(AotValue* args, long argc, AotClosure* self)`:
-// the hidden `$isError` helper that `try` and `x catch y` compile to. The AOT
-// runtime has no error values yet, so a value is never an error: the helper
-// returns `false` and the success path of the construct runs. A real runtime
-// failure still exits with code 70 before any `try` can observe it.
+// the hidden `$isError` helper that `try` and `x catch y` compile to. It is the
+// exact test the hosted engine uses: a value is an error only when its tag is
+// `Error`, so a user map with an `ok` field is never mistaken for one. With
+// error values now a real tag, `try`/`catch` observes the propagation the same
+// way the VM does.
 void emitIsErrorBuiltin(CodeGen& cg, CodeGen::Label label) {
   cg.bind(label);
   prologue(cg);
+  // args[0] is the operand: the argument window grows *down* from `args`, so
+  // args[0] sits at [rdi + 0] (tag) and [rdi + 8] (payload).
+  cg.movFromMem(Rax, Rdi, 0);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagError));
+  cg.setcc(Jcc::Eq, Rdx);
+  cg.movzx(Rdx, Rdx);
   cg.movImm(Rax, kTagBool);
-  cg.xorReg(Rdx, Rdx);  // false
+  epilogue(cg);
+}
+
+// `AotValue oskel_builtin_error(AotValue* args, long argc, AotClosure* self)`:
+// the public `error(message, code?)`. It mirrors the hosted builtin: the message
+// is the first argument rendered to a string (a string is taken verbatim, any
+// other value through `toString`), and the optional second argument is the
+// integer code (0 by default). The result is an `Error` value.
+void emitErrorBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
+                      CodeGen::Label fail, CodeGen::Label strBuiltin,
+                      const DataBlob& msgOom, const DataBlob& msgCodeType,
+                      const DataBlob& msgArity) {
+  CodeGen::Label arityOk = cg.newLabel();
+  CodeGen::Label arityOk2 = cg.newLabel();
+  CodeGen::Label haveCode = cg.newLabel();
+  CodeGen::Label codeOk = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 32);
+  cg.movReg(Rbx, Rdi);              // args
+  cg.movReg(R12, Rsi);             // argc
+
+  // `error` takes one or two arguments; anything else is the wrong-arity error,
+  // matching the hosted `needBetween(in, "error", args, 1, 2)`.
+  cg.cmpImm32(R12, 1);
+  cg.jcc(Jcc::Ge, arityOk);
+  emitFailCall(cg, fail, msgArity);
+  cg.bind(arityOk);
+  cg.cmpImm32(R12, 2);
+  cg.jcc(Jcc::Le, arityOk2);
+  emitFailCall(cg, fail, msgArity);
+  cg.bind(arityOk2);
+
+  // code = 0 unless a second argument is present and an integer.
+  cg.xorReg(R8, R8);
+  cg.movToMem(Rbp, -24, R8);        // code = 0
+  cg.cmpImm32(R12, 2);
+  cg.jcc(Jcc::Lt, haveCode);
+  cg.movFromMem(Rax, Rbx, -16);     // args[1].tag
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Eq, codeOk);
+  emitFailCall(cg, fail, msgCodeType);
+  cg.bind(codeOk);
+  cg.movFromMem(Rax, Rbx, -8);      // args[1].payload
+  cg.movToMem(Rbp, -24, Rax);
+
+  cg.bind(haveCode);
+  // message = str(args[0]): a string is returned as-is, anything else is
+  // rendered. `oskel_builtin_str` follows the hosted `toString`; it takes a
+  // pointer to a single-element argument window, so copy args[0] into a 16-byte
+  // stack slot (tag at rbp-48, payload at rbp-40) and pass its address.
+  cg.movFromMem(Rax, Rbx, 0);
+  cg.movToMem(Rbp, -48, Rax);
+  cg.movFromMem(Rax, Rbx, 8);
+  cg.movToMem(Rbp, -40, Rax);
+  cg.leaMem(Rdi, Rbp, -48);         // args = &slot
+  cg.movImm(Rsi, 1);                // argc
+  cg.callLabel(strBuiltin);         // rax:rdx = Str value
+  cg.movReg(R8, Rdx);               // message AotString*
+
+  // Allocate the error header.
+  cg.movToMem(Rbp, -32, R8);
+  cg.movImm(Rdi, static_cast<std::int64_t>(kAotErrorHeaderSize));
+  cg.callLabel(allocLabel);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movReg(R12, Rax);
+  cg.movFromMem(R8, Rbp, -32);
+  cg.movToMem(R12, kErrorMessageOffset, R8);
+  cg.movFromMem(R8, Rbp, -24);
+  cg.movToMem(R12, kErrorCodeOffset, R8);
+  cg.movReg(Rdx, R12);
+  cg.movImm(Rax, kTagError);
+  cg.jmp(done);
+
+  cg.bind(oom);
+  emitFailCall(cg, fail, msgOom);
+
+  cg.bind(done);
+  cg.addImm32(Rsp, 32);
+  cg.pop(R12);
+  cg.pop(Rbx);
   epilogue(cg);
 }
 
@@ -3985,6 +4149,7 @@ void emitStrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
   CodeGen::Label asStr = cg.newLabel();
   CodeGen::Label asNum = cg.newLabel();
   CodeGen::Label asRepr = cg.newLabel();
+  CodeGen::Label asError = cg.newLabel();
   CodeGen::Label asRange = cg.newLabel();
   CodeGen::Label rangeIncl = cg.newLabel();
   CodeGen::Label rangeAfterSep = cg.newLabel();
@@ -4034,6 +4199,9 @@ void emitStrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
   cg.jcc(Jcc::Eq, asRepr);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagFunc));
   cg.jcc(Jcc::Eq, asRepr);
+  // An error renders as its message alone (the hosted display form).
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagError));
+  cg.jcc(Jcc::Eq, asError);
   emitFailCall(cg, fail, msgStrBad);
 
   // A collection or function renders with the recursive repr, so `"${[1, 2]}"`
@@ -4042,6 +4210,13 @@ void emitStrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
   cg.movFromMem(Rdi, Rbx, 0);
   cg.movFromMem(Rsi, Rbx, 8);
   cg.callLabel(reprToString);
+  cg.jmp(done);
+
+  // An error renders as its message string (the hosted display form).
+  cg.bind(asError);
+  cg.movFromMem(Rdx, Rbx, 8);            // error header
+  cg.movFromMem(Rdx, Rdx, kErrorMessageOffset);
+  cg.movImm(Rax, kTagStr);
   cg.jmp(done);
 
   // A string renders as itself.
@@ -4663,7 +4838,8 @@ void emitTypeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
                      CodeGen::Label fail, const DataBlob& msgOom, const DataBlob& tNil,
                      const DataBlob& tBool, const DataBlob& tInt, const DataBlob& tFloat,
                      const DataBlob& tDouble, const DataBlob& tStr, const DataBlob& tArray,
-                     const DataBlob& tMap, const DataBlob& tFunc, const DataBlob& tRange) {
+                     const DataBlob& tMap, const DataBlob& tFunc, const DataBlob& tRange,
+                     const DataBlob& tError) {
   CodeGen::Label asNil = cg.newLabel();
   CodeGen::Label asBool = cg.newLabel();
   CodeGen::Label asInt = cg.newLabel();
@@ -4674,6 +4850,7 @@ void emitTypeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
   CodeGen::Label asMap = cg.newLabel();
   CodeGen::Label asFunc = cg.newLabel();
   CodeGen::Label asRange = cg.newLabel();
+  CodeGen::Label asError = cg.newLabel();
   CodeGen::Label buildConst = cg.newLabel();
   CodeGen::Label oom = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
@@ -4703,6 +4880,8 @@ void emitTypeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
   cg.jcc(Jcc::Eq, asFunc);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagRange));
   cg.jcc(Jcc::Eq, asRange);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagError));
+  cg.jcc(Jcc::Eq, asError);
   cg.jmp(asNil);  // every AotTag is covered; default is defensive only
 
 #define OSKEL_TYPE_CASE(name, blob)          \
@@ -4720,6 +4899,7 @@ void emitTypeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
   OSKEL_TYPE_CASE(asMap, tMap)
   OSKEL_TYPE_CASE(asFunc, tFunc)
   OSKEL_TYPE_CASE(asRange, tRange)
+  OSKEL_TYPE_CASE(asError, tError)
 #undef OSKEL_TYPE_CASE
 
   cg.bind(buildConst);
@@ -6232,6 +6412,86 @@ void emitTimeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label nowLabel,
   epilogue(cg);
 }
 
+// `AotValue oskel_builtin_input(AotValue* args, long argc, AotClosure* self)`:
+// the public `input`. It takes an optional prompt, writes it to stdout and then
+// reads one line through the `entry.read` handle, returning the line as a
+// string (nil when the read reports end of input). The read handle is bound by
+// the bare-metal prelude (the keyboard slice); the builtin is only seeded for
+// that target, so the other preludes never reference it.
+//
+// The line is read into a fixed 256-byte stack buffer -- the same size as the
+// kernel's keyboard ring buffer -- and copied into a fresh arena string, so the
+// result outlives the call. `read` consumes the newline and returns the byte
+// count, which may be zero for an empty line.
+void emitInputBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label readLabel,
+                      CodeGen::Label rawPrint, CodeGen::Label allocLabel,
+                      CodeGen::Label fail, const DataBlob& msgArgc,
+                      const DataBlob& msgOom) {
+  constexpr std::int64_t kBufferBytes = 256;
+  constexpr std::int64_t kBufferOffset = -272;  // rbp-relative, below rbx/r12
+  CodeGen::Label noPrompt = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, static_cast<std::int32_t>(kBufferBytes + 16));
+
+  // `input` takes at most one argument (the prompt).
+  CodeGen::Label arityOk = cg.newLabel();
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Le, arityOk);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(arityOk);
+  // Prompt: render args[0] with the raw printer (no newline), matching the
+  // hosted `input`'s `args[0].toString()`.
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Eq, noPrompt);
+  cg.movFromMem(Rsi, Rdi, 8);  // payload
+  cg.movFromMem(Rdi, Rdi, 0);  // tag
+  cg.callLabel(rawPrint);
+
+  cg.bind(noPrompt);
+  // read(buf, 256): rdi = &buf, rsi = 256. The keyboard has no end of input, so
+  // the count is the line's byte length and may be zero for an empty line --
+  // which becomes an empty string, exactly like the hosted `input`.
+  cg.leaMem(Rdi, Rbp, kBufferOffset);
+  cg.movImm(Rsi, kBufferBytes);
+  cg.callLabel(readLabel);
+
+  cg.movReg(R12, Rax);  // byte count
+  cg.movReg(Rdi, Rax);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
+  cg.callLabel(allocLabel);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rax, 0, R12);  // length word
+  cg.movReg(Rbx, Rax);
+  cg.movReg(Rdi, Rax);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
+  cg.leaMem(Rsi, Rbp, kBufferOffset);
+  cg.movReg(Rcx, R12);
+  cg.cld();
+  cg.repMovsb();
+  cg.movReg(Rdx, Rbx);
+  cg.movImm(Rax, kTagStr);
+  cg.jmp(done);
+
+  cg.bind(oom);
+  emitFailCall(cg, fail, msgOom);
+
+  cg.bind(done);
+  cg.addImm32(Rsp, static_cast<std::int32_t>(kBufferBytes + 16));
+  cg.pop(R12);
+  cg.pop(Rbx);
+  cg.movReg(Rsp, Rbp);
+  cg.pop(Rbp);
+  cg.retInsn();
+}
+
 // `void oskel_sb_init(AotStringBuilder* sb, char* data, long capacity)`: start a
 // builder over a caller-owned buffer (`data`/`capacity`) with `length` zero. A
 // caller that renders a `print` value passes a stack buffer, so a small render
@@ -6544,7 +6804,8 @@ void emitReprInto(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbAppend,
                   const DataBlob& textComma, const DataBlob& textColon,
                   const DataBlob& textOpenBracket, const DataBlob& textCloseBracket,
                   const DataBlob& textOpenBrace, const DataBlob& textCloseBrace,
-                  const DataBlob& textEllipsis) {
+                  const DataBlob& textEllipsis, const DataBlob& textError,
+                  const DataBlob& textCloseParen) {
   CodeGen::Label asInt = cg.newLabel();
   CodeGen::Label asBool = cg.newLabel();
   CodeGen::Label boolFalse = cg.newLabel();
@@ -6555,6 +6816,12 @@ void emitReprInto(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbAppend,
   CodeGen::Label asArray = cg.newLabel();
   CodeGen::Label asMap = cg.newLabel();
   CodeGen::Label asRange = cg.newLabel();
+  CodeGen::Label asError = cg.newLabel();
+  CodeGen::Label errorNoCode = cg.newLabel();
+  CodeGen::Label errorCodePos = cg.newLabel();
+  CodeGen::Label errorCodeConv = cg.newLabel();
+  CodeGen::Label errorCodeLoop = cg.newLabel();
+  CodeGen::Label errorCodeEmit = cg.newLabel();
   CodeGen::Label rangeIncl = cg.newLabel();
   CodeGen::Label rangeAfterSep = cg.newLabel();
   CodeGen::Label arrayLoop = cg.newLabel();
@@ -6611,6 +6878,8 @@ void emitReprInto(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbAppend,
   cg.jcc(Jcc::Eq, asMap);
   cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagRange));
   cg.jcc(Jcc::Eq, asRange);
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagError));
+  cg.jcc(Jcc::Eq, asError);
   cg.jmp(done);
 
   cg.bind(asInt);
@@ -6796,6 +7065,42 @@ void emitReprInto(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbAppend,
   cg.subReg(Rdx, R8);
   cg.movReg(Rsi, R8);
   cg.movReg(Rdi, Rbx);
+  cg.callLabel(sbAppend);
+  cg.jmp(done);
+
+  // An error: `error("message")`, or `error("message", code)` when the code is
+  // non-zero, matching the hosted debug form.
+  cg.bind(asError);
+  cg.movReg(Rdi, Rbx);
+  cg.leaRipLabel(Rsi, textError.label);
+  cg.movImm(Rdx, static_cast<std::int64_t>(textError.text.size()));
+  cg.callLabel(sbAppend);
+  cg.movFromMem(R12, Rbp, -40);          // error header
+  cg.movReg(Rdi, Rbx);
+  cg.movFromMem(Rsi, R12, kErrorMessageOffset);
+  cg.callLabel(sbAppendEscaped);
+  cg.movFromMem(R9, R12, kErrorCodeOffset);
+  cg.testReg(R9);
+  cg.jcc(Jcc::Eq, errorNoCode);
+  cg.movReg(Rdi, Rbx);
+  cg.leaRipLabel(Rsi, textComma.label);
+  cg.movImm(Rdx, static_cast<std::int64_t>(textComma.text.size()));
+  cg.callLabel(sbAppend);
+  cg.movFromMem(Rax, R12, kErrorCodeOffset);
+  cg.movReg(R8, Rsp);
+  cg.addImm32(R8, 64);
+  emitIntDigitsBackwards(cg, R8, errorCodePos, errorCodeConv, errorCodeLoop,
+                         errorCodeEmit);
+  cg.movReg(Rdx, Rsp);
+  cg.addImm32(Rdx, 64);
+  cg.subReg(Rdx, R8);
+  cg.movReg(Rsi, R8);
+  cg.movReg(Rdi, Rbx);
+  cg.callLabel(sbAppend);
+  cg.bind(errorNoCode);
+  cg.movReg(Rdi, Rbx);
+  cg.leaRipLabel(Rsi, textCloseParen.label);
+  cg.movImm(Rdx, static_cast<std::int64_t>(textCloseParen.text.size()));
   cg.callLabel(sbAppend);
   cg.jmp(done);
 
@@ -7057,6 +7362,12 @@ constexpr X64Reg kIntArgRegs[] = {Rdi, Rsi, Rdx, Rcx, R8, R9};
 // needs a REX prefix.
 constexpr int XmmScratch = kXmmBase + 7;
 
+// The hosted engine caps a returned `cstring` scan at 16 MiB (`src/ffi.cpp`):
+// past the cap the C `const char *` contract is broken and the read stops with
+// a clear error instead of walking off the end of the buffer. The thunk matches
+// that bound so a hosted binary and the VM agree.
+constexpr std::int32_t kMaxCStringBytes = 1 << 24;
+
 // Normalizes the integer returned in `rax` to its declared width, exactly like
 // the hosted `wrapInteger`: a C `int` leaves the upper half of `rax` undefined,
 // so a `shl`/`sar` pair re-extends a narrow signed value and a mask zero-extends
@@ -7099,13 +7410,22 @@ void normalizeIntegerReturn(CodeGen& cg, const std::string& type) {
 // for an integer parameter and widened for a `double`; the return is normalized
 // to the declared width.
 void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fail,
-                     const DataBlob& msgArity, const DataBlob& msgType) {
+                     CodeGen::Label allocLabel, const DataBlob& msgArity,
+                     const DataBlob& msgType, const DataBlob& msgOom,
+                     const DataBlob& msgCStringTooLong) {
   CodeGen::Label arityOk = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
 
   cg.bind(thunk.label);
   prologue(cg);
   cg.push(Rbx);
-  cg.push(R12);
+  cg.push(R12);  // a callee-saved scratch: the `alloc`/`rep movsb` calls clobber rdi/rsi/rcx/r10/r11
+  // The integer arguments are staged here and loaded into their registers only
+  // just before the call, because marshalling a later pointer argument calls
+  // `alloc` and `rep movsb`, which clobber the argument registers. Six 8-byte
+  // slots keep the frame 16-byte aligned (48 is a multiple of 16).
+  constexpr std::int32_t kArgStageBytes = 6 * 8;
+  cg.subRegImm32(Rsp, kArgStageBytes);
   cg.movReg(Rbx, Rdi);  // args base; parameter i lives at [rbx - 16*i]
 
   // The thunk is the callee, so it checks its own arity, exactly like a user
@@ -7139,11 +7459,12 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         cg.bind(asNumber);
         cg.movFromMem(R11, Rbx, base + 8);
         cg.movqToXmm(XmmScratch, R11);
-        cg.cvttsd2si(kIntArgRegs[gpr], XmmScratch);
+        cg.cvttsd2si(R11, XmmScratch);
         cg.jmp(done);
         cg.bind(asIs);
-        cg.movFromMem(kIntArgRegs[gpr], Rbx, base + 8);
+        cg.movFromMem(R11, Rbx, base + 8);
         cg.bind(done);
+        cg.movToMem(Rsp, 8LL * gpr, R11);
         ++gpr;
         break;
       }
@@ -7196,13 +7517,59 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         ++sse;
         break;
       }
+      case ffi::ParamClass::Pointer: {
+        // A `cstring`/`ptr` crosses as a GPR holding a machine address. `nil`
+        // is C's NULL (0). A Oskel string is an `AotString` (a length then the
+        // bytes, *not* NUL-terminated), so it cannot be passed as-is: the thunk
+        // materialises a NUL-terminated copy in the arena and passes its
+        // address, exactly the `const char *` a C callee dereferences. A
+        // non-string value is not a pointer the AOT runtime can represent, so
+        // it fails like the hosted engine does.
+        CodeGen::Label isNil = cg.newLabel();
+        CodeGen::Label isStr = cg.newLabel();
+        CodeGen::Label staged = cg.newLabel();
+        cg.cmpImm32(R10, static_cast<std::int32_t>(kTagNil));
+        cg.jcc(Jcc::Eq, isNil);
+        cg.cmpImm32(R10, static_cast<std::int32_t>(kTagStr));
+        cg.jcc(Jcc::Eq, isStr);
+        emitFailCall(cg, fail, msgType);
+        cg.bind(isNil);
+        cg.xorReg(R11, R11);  // NULL
+        cg.jmp(staged);
+        cg.bind(isStr);
+        cg.movFromMem(R12, Rbx, base + 8);  // the AotString* (a length word)
+        cg.movFromMem(Rdi, R12, 0);         // the byte length
+        cg.addImm32(Rdi, 1);                // the bytes plus the terminating NUL
+        cg.callLabel(allocLabel);           // rax = the block (or null)
+        cg.testReg(Rax);
+        cg.jcc(Jcc::Eq, oom);
+        // Copy the bytes: dst = rax, src = the AotString's bytes, count = the
+        // length (reloaded from the header, which r12 still points at). `rep
+        // movsb` leaves rax (the block) untouched and advances rdi to its end,
+        // so the NUL goes right after the bytes.
+        cg.movReg(Rdi, Rax);
+        cg.movReg(Rsi, R12);
+        cg.addImm32(Rsi, static_cast<std::int32_t>(kAotStringHeaderSize));
+        cg.movFromMem(Rcx, R12, 0);
+        cg.repMovsb();
+        cg.movImmByteToMem(Rdi, 0, 0);  // the terminating NUL
+        cg.movReg(R11, Rax);
+        cg.bind(staged);
+        cg.movToMem(Rsp, 8LL * gpr, R11);
+        ++gpr;
+        break;
+      }
       default:
-        // A pointer, callback or struct parameter is not part of the scalar
-        // thunk; the lowerer rejects such a declaration before it reaches here.
+        // A callback or struct parameter is not part of this thunk; the lowerer
+        // rejects such a declaration before it reaches here.
         emitFailCall(cg, fail, msgType);
         break;
     }
   }
+
+  // Load the staged integer arguments into their registers now that every
+  // `alloc`/`rep movsb` has run. The SSE arguments are already in place.
+  for (int k = 0; k < gpr; ++k) cg.movFromMem(kIntArgRegs[k], Rsp, 8LL * k);
 
   cg.callExternal(thunk.symbol);
 
@@ -7229,6 +7596,49 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
       cg.movzx(Rdx, Rdx);
       cg.movImm(Rax, kTagBool);
       break;
+    case ffi::ReturnClass::CString: {
+      // A `const char *` comes back in `rax`. NULL is nil; otherwise the bytes
+      // are scanned to the NUL (with the hosted engine's 16 MiB cap) and copied
+      // into an `AotString`, which is the AOT representation of text.
+      CodeGen::Label null = cg.newLabel();
+      CodeGen::Label scanned = cg.newLabel();
+      CodeGen::Label scanLoop = cg.newLabel();
+      CodeGen::Label returned = cg.newLabel();
+      cg.testReg(Rax);
+      cg.jcc(Jcc::Eq, null);
+      cg.movReg(R12, Rax);      // the C string; r12 survives the `alloc`
+      cg.xorReg(Rcx, Rcx);      // the byte count
+      cg.bind(scanLoop);
+      // `movzxFromMem` takes a displacement, so index through a temporary base.
+      cg.movReg(R11, R12);
+      cg.addReg(R11, Rcx);
+      cg.movzxFromMem(R10, R11, 0);
+      cg.testReg(R10);
+      cg.jcc(Jcc::Eq, scanned);
+      cg.addImm32(Rcx, 1);
+      cg.cmpImm32(Rcx, static_cast<std::int32_t>(kMaxCStringBytes));
+      cg.jcc(Jcc::B, scanLoop);
+      emitFailCall(cg, fail, msgCStringTooLong);
+      cg.bind(scanned);
+      cg.movReg(Rdi, Rcx);
+      cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
+      cg.callLabel(allocLabel);
+      cg.testReg(Rax);
+      cg.jcc(Jcc::Eq, oom);
+      cg.movToMem(Rax, 0, Rcx);  // the AotString length
+      cg.movReg(Rdi, Rax);
+      cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
+      cg.movReg(Rsi, R12);
+      cg.repMovsb();             // copies rcx bytes (the scan left rcx = length)
+      cg.movReg(Rdx, Rax);
+      cg.movImm(Rax, kTagStr);
+      cg.jmp(returned);
+      cg.bind(null);
+      cg.movImm(Rax, kTagNil);
+      cg.xorReg(Rdx, Rdx);
+      cg.bind(returned);
+      break;
+    }
     default:  // Int
       normalizeIntegerReturn(cg, thunk.returnType);
       cg.movReg(Rdx, Rax);
@@ -7236,16 +7646,21 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
       break;
   }
 
+  cg.addImm32(Rsp, kArgStageBytes);
   cg.pop(R12);
   cg.pop(Rbx);
   epilogue(cg);
+
+  cg.bind(oom);
+  emitFailCall(cg, fail, msgOom);
 }
 
 }  // namespace
 
 void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                     const RuntimeHandles& entry,
-                    const std::vector<AotExternThunk>* externThunks, bool hosted) {
+                    const std::vector<AotExternThunk>* externThunks, bool hosted,
+                    bool hasInput) {
   // Constant text, bound after all code so nothing falls through into it.
   std::vector<DataBlob> data;
   auto addText = [&](const char* text) {
@@ -7326,6 +7741,10 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob typeNameMap = addText("map");
   DataBlob typeNameFunc = addText("function");
   DataBlob typeNameRange = addText("range");
+  DataBlob typeNameError = addText("error");
+  DataBlob msgErrorCodeType = addText("oskel: error() expects an integer code\n");
+  DataBlob textError = addText("error(");
+  DataBlob textCloseParen = addText(")");
   DataBlob textOskelPrefix = addText("oskel: ");
   DataBlob msgLenType = addText("oskel: len() is not defined for this type\n");
   DataBlob msgOrdType = addText("oskel: ord() expects a string argument\n");
@@ -7366,6 +7785,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgExitArgc = addText("oskel: exit() expects between 0 and 1 arguments\n");
   DataBlob msgExitType = addText("oskel: exit() expects an integer argument\n");
   DataBlob msgTimeArgc = addText("oskel: time() expects 0 arguments\n");
+  DataBlob msgInputArgc = addText("oskel: input() expects between 0 and 1 arguments\n");
   // The scalar `extern "C"` thunks (PHASE 7f.5). A direct call is arity- and
   // type-checked at compile time, so these only fire through a first-class
   // reference (`var f = abs; f("x")`). The arity message is the shared one; the
@@ -7374,6 +7794,14 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgExternType;
   if (externThunks != nullptr) {
     msgExternType = addText("oskel: argument type does not match the extern \"C\" declaration\n");
+  }
+  // The returned-`cstring` scan cap message, hosted only, for the same
+  // byte-identity reason.
+  DataBlob msgCStringTooLong;
+  if (externThunks != nullptr) {
+    msgCStringTooLong = addText(
+        "oskel: a C function returned a 'cstring' longer than 16777216 bytes with no NUL "
+        "terminator; the host broke the `const char *` contract\n");
   }
   CodeGen::Label fail = cg.newLabel();
   CodeGen::Label failDynamic = cg.newLabel();
@@ -7431,6 +7859,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   env.containsConst = cg.newLabel();
   env.indexOfConst = cg.newLabel();
   env.clearConst = cg.newLabel();
+  env.messageConst = cg.newLabel();
+  env.codeConst = cg.newLabel();
   env.msgOom = &msgOom;
   env.msgArrayIndexType = &msgArrayIndexType;
   env.msgIndexRange = &msgIndexRange;
@@ -7492,7 +7922,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitArityError(cg, handles.arityError, fail, msgArity);
   if (externThunks != nullptr) {
     for (const AotExternThunk& thunk : *externThunks) {
-      emitExternThunk(cg, thunk, fail, msgArity, msgExternType);
+      emitExternThunk(cg, thunk, fail, handles.alloc, msgArity, msgExternType, msgOom,
+                      msgCStringTooLong);
     }
   }
   emitPrintStrEsc(cg, printStrEsc, entry.write, textQuote, textEscQuote,
@@ -7510,7 +7941,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitReprInto(cg, reprInto, sbAppend, sbAppendEscaped, dtoaHandles.formatDouble,
                textTrue, textFalse, textNil, textFunc, textComma, textColon,
                textOpenBracket, textCloseBracket, textOpenBrace, textCloseBrace,
-               textEllipsis);
+               textEllipsis, textError, textCloseParen);
   emitReprToString(cg, reprToString, sbNew, reprInto, handles.alloc, fail, msgOom);
   emitPrintRepr(cg, printRepr, entry.write, sbInit, reprInto);
   emitPrintValue(cg, handles.printValue, entry.write, fail, writeInt,
@@ -7551,6 +7982,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitContains(cg, handles.contains, env);
   emitIterNext(cg, handles.iterNext, env);
   emitIsErrorBuiltin(cg, handles.isErrorBuiltin);
+  emitErrorBuiltin(cg, handles.errorBuiltin, handles.alloc, fail, handles.strBuiltin,
+                   msgOom, msgErrorCodeType, msgArity);
   emitNonNullBuiltin(cg, handles.nonNullBuiltin, fail, msgNonNull);
   emitStrBuiltin(cg, handles.strBuiltin, handles.alloc, fail,
                  dtoaHandles.formatDouble, reprToString, msgOom, textTrue, textFalse,
@@ -7565,7 +7998,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitLenBuiltin(cg, handles.lenBuiltin, env, msgLenType);
   emitTypeBuiltin(cg, handles.typeBuiltin, handles.alloc, fail, msgOom, typeNameNil,
                   typeNameBool, typeNameInt, typeNameFloat, typeNameDouble, typeNameStr,
-                  typeNameArray, typeNameMap, typeNameFunc, typeNameRange);
+                  typeNameArray, typeNameMap, typeNameFunc, typeNameRange, typeNameError);
   emitReprBuiltin(cg, handles.reprBuiltin, reprToString);
   emitBoolBuiltin(cg, handles.boolBuiltin, handles.truthy);
   emitOrdBuiltin(cg, handles.ordBuiltin, env.utf8Len, fail, msgOrdType, msgOrdChar);
@@ -7614,6 +8047,12 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                       msgAssertEqDefault, textExpected, textGot, msgOom);
   emitExitBuiltin(cg, handles.exitBuiltin, entry.exit, fail, msgExitArgc, msgExitType);
   emitTimeBuiltin(cg, handles.timeBuiltin, entry.now, fail, msgTimeArgc);
+  // `input` is the bare-metal keyboard builtin: only the prelude that binds
+  // `entry.read` may reference it (see `emitAotRuntime`'s `hasInput`).
+  if (hasInput) {
+    emitInputBuiltin(cg, handles.inputBuiltin, entry.read, handles.printValueRaw,
+                     handles.alloc, fail, msgInputArgc, msgOom);
+  }
   emitIntTextParser(cg, handles.intTextParser, fail, msgConvertInt);
   dtoa::emitDtoa(cg, dtoaHandles);
   parse_float::emitParseFloat(cg, parseFloatHandles, dtoaHandles);
@@ -7642,6 +8081,10 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x07\x00\x00\x00\x00\x00\x00\x00indexOf"), 15);
   cg.bind(env.clearConst);
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x05\x00\x00\x00\x00\x00\x00\x00" "clear"), 13);
+  cg.bind(env.messageConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x07\x00\x00\x00\x00\x00\x00\x00" "message"), 15);
+  cg.bind(env.codeConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x04\x00\x00\x00\x00\x00\x00\x00" "code"), 12);
 
   // Data islands last: every code path above ends in `ret` or `ud2`, so
   // control never reaches them, and their addresses are already referenced by

@@ -393,6 +393,29 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_builtins.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # Error values (PHASE 7c.5c): `error(message, code?)`, `isError`, `type`,
+    # `.message`/`.code`, structural equality, `print`/`repr` and interpolation
+    # must agree with the VM. This is what makes value-based `try`/`catch` work
+    # in a native binary (`$isError` now sees a real error tag).
+    add_test(NAME oskel.build_binary_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_error"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_error.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `switch`, `defer` and `struct` lower in AOT but no earlier fixture
+    # exercised them: `switch` on an int, a string and a range, `defer` in LIFO
+    # order across nested scopes, and `struct` with typed/untyped fields,
+    # nesting, a struct return type and structural equality. All of it stays on
+    # the portable surface, so the VM and the binary must agree byte for byte.
+    add_test(NAME oskel.build_binary_control_flow
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_control_flow"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_control_flow.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # The link mode is a deployment choice, not language syntax (PHASE 7f.3).
     # `--mode freestanding` must behave exactly like the default (self-contained,
     # agrees with the VM), `--mode hosted` links against libc and must agree with
@@ -439,6 +462,17 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_TEST_NAME=oskel.build_binary_datetime"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_datetime.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `std.path` is plain Oskel over the portable primitive surface, so it must
+    # build to a native binary and agree with the VM. The fixture is the guard
+    # that keeps the module off the collection/string methods and
+    # `pcall`/`error`, which the AOT backend does not implement yet (PHASE 7f).
+    add_test(NAME oskel.build_binary_path
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_path"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_path.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
     # An `extern "C"` symbol is a host binding the AOT backend cannot resolve

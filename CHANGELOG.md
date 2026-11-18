@@ -9,7 +9,49 @@ may change between minor versions.
 
 ## [Unreleased]
 
+### Removed
+
+- **The unused `Env` scope chain and `Function::closure`.** The VM keeps locals
+  in reference-counted `Cell`s and `Function::upvalues`, so `Env` was never
+  constructed and `closure` was only ever assigned by the GC test. `src/env.h`
+  and `src/env.cpp` are deleted, the field is dropped from `Function`, and the
+  `envGcOps` table and the closure edge in the `value.cpp` function visitor go
+  with them. The three `gc_test.cpp` cases are rewritten over `Cell` and
+  `Function::upvalues`, which is what the VM actually uses.
+
 ### Changed
+
+- **The docs stop promising what the tree does not do.** `DEVELOPMENT.md` §8 now
+  marks the `.oskc`/`.oskpkg` formats and their bytecode verification as
+  *planned* (nothing serializes a `Bytecode` to disk yet), and `docs/language.md`
+  §19 says the same for the extension table. `DEVELOPMENT.md` §8 also states
+  what the JIT's "1:1" rule actually means: the invariant is over the bytecode
+  opcodes, not the native instruction count, so the slice-3 compare-branch
+  fusion is a peephole rewrite of the emission, not a superinstruction.
+
+- **FFI is documented as hosted-only under `oskel build`.** The decision (PHASE
+  7f) is recorded in `docs/language.md` §4.5 and §16 and BACKLOG §7.20: a program
+  using `extern "C"` builds with `--mode hosted`; the freestanding default, which
+  is self-contained by construction, reports the unresolved symbol instead of
+  emitting a broken binary. This is the design, not a temporary gap.
+
+- **`docs/BACKLOG.md` reflects the tree.** The Env and parity items are marked
+  done (VM/AOT parity already runs through `tests/build_binary.cmake`), the JIT
+  item is decided as *keep* (it ships on by default in `oskel` and gives ~420x
+  on its integer leaf subset), and §6.22 plus `docs/language.md` §16 record the
+  one known parity gap: a function renders as `<fn name>` in the VM but `<fn>`
+  in the AOT binary, since the AOT closure object has no name field.
+
+- **`docs/language.md` now states the real implementation status.** The
+  reference claimed "collections (PHASE 6 done)" and "No JIT ... planned for
+  PHASE 8+", both stale: PHASE 6.5/6.6/6.7 are complete on the development
+  engine and the JIT slices 1-4 ship in `oskel`. It also said the compiler
+  emits "40 opcodes" (it is 39, with 40 the budget ceiling), presented
+  `oskelc` as if it existed (`oskel build` is the AOT entry point and `oskelc`
+  is not part of 0.1.0), and described the AOT backend as lowering pointers and
+  callbacks to stubs when PHASE 7f only resolves a scalar `extern "C"` call in
+  the hosted link mode. A new "Implementation status" table opens the document
+  and §16 and §4.6/§15 are corrected to match the tree. Documentation only.
 
 - **Bare-metal boot tests now run in CI instead of skipping, on all three
   platforms.** The `bare_metal_test` end-to-end cases boot the kernel under
@@ -25,6 +67,26 @@ may change between minor versions.
   makes a missing binary a test failure rather than a skip; a developer box
   without the variable still skips the boot tests and runs the structural
   ones. No product code changes.
+
+- **JIT (slice 4): web-based register allocation with copy coalescing.** The JIT
+  used to tie every slot to a fixed register by index (`R0` to the first pool
+  register, `R1` to the second, ...), so a temporary reused for two values forced
+  a `mov` at every reuse and each `GETLOCAL`/`SETLOCAL` copied between the
+  temporary's register and the local's. The emitter now resolves each read and
+  write through a per-instruction allocation table, and an allocator fills it:
+  it builds a web per slot (the definitions a single live use can observe),
+  interferes webs that are live at the same point, coalesces the copies that do
+  not interfere (a `MOVE`, a local copy, or an in-place `s = s + x`), and colors
+  the result greedily over the seven-register pool; a web the pool cannot cover
+  keeps its 16-byte stack slot, exactly like the old overflow path. A liveness
+  pass that mirrors the emitter's fold decisions also drops a definition nothing
+  observes, which removes the constant a folded expression left behind. The
+  integer loop drops from 17 instructions to 9 (a hand-written `-O2` C++ loop is
+  7) and from 0.051s to 0.039s, within ~1.08x of the C++ loop and about 420x the
+  interpreter. Still 1:1 with the bytecode -- no opcode, superinstruction or
+  runtime specialization is added, and the differential suite (including a
+  20k-round fuzz over 12-local bodies) still proves the compiled body identical
+  to the interpreter.
 
 - **JIT (slice 3): compare-branch fusion.** When a comparison's boolean result
   only feeds the conditional branch right after it, the JIT no longer builds the
@@ -52,6 +114,64 @@ may change between minor versions.
   body identical to the interpreter.
 
 ### Added
+
+- **`std.path`: filesystem paths.** A new standard-library module for joining,
+  splitting and normalising filesystem paths. A path is an ordinary string, not
+  a new type, so a result feeds the file builtins (`readFile`, `writeFile`,
+  `fileExists`) directly and nests, compares and interpolates like any other
+  string. The module is pure Oskel over the portable primitive surface and
+  offers `join`, `basename`, `dirname`, `extension`, `stem`, `withExtension`,
+  `withBasename`, `split`, `isAbsolute`/`isRelative`, `normalize` and
+  `relative`. The separator is `/` on every platform and a `\` is folded to `/`,
+  so the results are deterministic across Linux, macOS and Windows;
+  `normalize`/`relative` match `posixpath.normpath`/`relpath` exactly, with
+  three documented deviations elsewhere (`basename("a/b/")` is `b`,
+  `dirname("a")` is `.`, and `join("a", "/b")` is `a/b`). No new runtime type,
+  opcode or builtin; the VM and `oskel build` agree byte for byte.
+
+- **AOT error values** (PHASE 7c.5c). `error()` and `isError` were unbound in
+  the AOT backend (`isError` returned a constant `false`), so value-based
+  `try`/`catch` never caught in a native binary. `oskel build` now has a real
+  `error` value: `error(message, code?)` builds an arena-backed `AotError`
+  (message string + integer code, `0` by default; one or two arguments, else
+  the wrong-arity error), and the tag flows through every shared helper so
+  `type(err)` is `"error"`, `isError`/`$isError` see it, `==` compares by
+  message and code, `print`/`toString` render the message, `repr` renders the
+  `error("message")` / `error("message", code)` debug form, interpolation
+  renders the message, and `err.message`/`err.code` read the fields. No new
+  opcode and no bytecode change — it is a runtime value like the others. This
+  is what makes `try` propagate and `catch` recover in a freestanding binary,
+  matching the development VM; a raised *runtime* error (no unwinding in AOT)
+  still exits 70. Covered by `tests/native_build_error.oskl` and
+  `test_error_values` in `tests/freestanding_test.cpp`.
+
+- **Bare-metal keyboard input: the IRQ1 handler and the `input` builtin.** The
+  multiboot kernel now has a keyboard. After the PIC remap, IRQ1 is vector
+  `0x21`; the handler reads the scancode from the i8042 data port (`0x60`),
+  tracks the two shift keys, translates a set-1 *make* code to ASCII through a
+  pair of 128-byte tables and appends the character to a 256-byte ring buffer in
+  the zeroed kernel-data page. The master PIC is masked with `0xFC` (unmasking
+  IRQ1 alongside IRQ0), and the handler acknowledges the PIC and `iretq`s like
+  the timer handler. A new `oskel_read` thunk drains the buffer for the
+  `input([prompt])` builtin, which reads one line (blocking with `hlt` on an
+  empty buffer) and returns it as a string, an empty line included. `input` is
+  seeded only for the bare-metal target — the one whose prelude binds
+  `entry.read` — so on Linux and Windows the name stays unresolved and a
+  program that calls it fails the build with the usual unseeded-global error.
+  Backend-only: no token, AST node, parser rule, opcode, VM path or compiler
+  path changes (`docs/bare-metal-interrupts-design.md` §9). The end-to-end test
+  is deterministic and host-independent: the guest injects its own scancodes
+  through the i8042 (`0xD2`), because a QEMU-monitor `sendkey` does not reliably
+  reach the guest.
+
+- **A VM/AOT parity fixture for `switch`, `defer` and `struct`.** The curated
+  parity list covered functions, collections, ranges, slices and builtins but
+  never exercised these three constructs, which the AOT backend lowers
+  correctly. `tests/native_build_control_flow.oskl`
+  (`oskel.build_binary_control_flow`) covers `switch` on an int, a string and a
+  range, `defer` in LIFO order across nested scopes, and `struct` with typed and
+  untyped fields, nesting, a struct return type and structural equality; the
+  CMake script asserts the VM and the binary agree byte for byte.
 
 - **`bindgen`, the C binding generator.** A standalone executable (built next to
   `oskel`, shipped in `bin/`, and *not* linked into the engine) that reads a C

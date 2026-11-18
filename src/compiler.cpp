@@ -1138,10 +1138,9 @@ void Compiler::compileBlockBody(const BlockStmt& block) {
     };
 
     // Reserve slots in source order. A `var` reuses a binding already present
-    // in this scope; `let`/`const` always create a fresh cell, like
-    // `Env::define` overwriting an existing name. The binding's type (PHASE
-    // 6.5) is recorded here too, so a hoisted closure sees the annotated or
-    // inferred type of a binding declared later.
+    // in this scope; `let`/`const` always create a fresh cell. The binding's
+    // type (PHASE 6.5) is recorded here too, so a hoisted closure sees the
+    // annotated or inferred type of a binding declared later.
     for (const auto& child : block.stmts) {
       if (!child) continue;
       if (const auto* let = std::get_if<LetStmt>(&child->node)) {
@@ -1336,7 +1335,7 @@ void Compiler::compileLet(const LetStmt& s) {
     } else if (s.kind == Tok::Var) {
       // `var` redeclares a binding only when it already exists in the *current*
       // scope. A declaration in a nested block shadows an enclosing binding by
-      // creating a new cell, exactly like `Env::define` does.
+      // creating a new cell.
       auto existing = scopes_.back().vars.find(s.name);
       if (existing != scopes_.back().vars.end()) {
         emit(OpCode::SETLOCAL, reg, existing->second.slot);
@@ -1347,7 +1346,7 @@ void Compiler::compileLet(const LetStmt& s) {
       }
     } else {
       // Nested block: frame-local variable. The declaration happens after the
-      // initializer is compiled, exactly like `Env::define`.
+      // initializer is compiled.
       int slot = declareLocal(s.name, s.kind != Tok::Var, declared);
       emit(OpCode::DECLLOCAL, reg, slot);
     }
