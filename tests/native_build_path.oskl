@@ -1,0 +1,54 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): `std.path` under the
+// AOT backend.
+//
+// `std.path` is written in plain Oskel over the portable primitive surface
+// (indexing, slicing, `len`, `ord`/`chr`, `str`, `for ... in`, closures), so it
+// must build to a native binary and agree with the development VM byte for
+// byte. This guards the module against a future edit that reaches for a
+// collection or string method or a `pcall`/`error`, none of which the AOT
+// backend implements yet (DEVELOPMENT.md PHASE 7f).
+//
+// Every line is deterministic and platform-independent: the separator is `/`
+// and a `\` is folded to `/`, so the binary prints the same text on Linux and
+// Windows.
+
+import std.path;
+import std.path.*;
+import std.path as p;
+import { join, basename } from std.path;
+
+print("join =", join("a", "b", "c"));
+print("joinAbs =", join("/", "usr", "bin"));
+print("joinEmpty =", join("a", "", "b"));
+print("joinWin =", join("C:\\a", "b"));
+print("basename =", basename("/a/b/c.txt"), basename("a/b/"), basename("/"));
+print("dirname =", dirname("/a/b/c.txt"), dirname("a"), dirname("/"));
+print("extension =", extension("a.tar.gz"), extension(".bashrc"), extension("noext"));
+print("stem =", stem("/a/b/c.txt"), stem("a.tar.gz"), stem(".bashrc"));
+print("withExtension =", withExtension("a/b/c.txt", "md"), withExtension("c", ""));
+print("withBasename =", withBasename("a/b/c.txt", "d.md"));
+print("split =", split("/a/b/c"));
+print("isAbsolute =", isAbsolute("/a"), isAbsolute("a"), isRelative("a"));
+print("normalize =", normalize("/a/./b/../c"), normalize("a/../../b"), normalize("a//b/"));
+print("normalizeRoot =", normalize("/.."), normalize(""), normalize("."));
+print("relative =", relative("/a", "/a/b/c"), relative("/a/b", "/a/c"), relative("a", "b"));
+print("relativeUp =", relative("/a/b/c", "/a"), relative("/a", "/a"));
+
+// The module composes with the file builtins: a path is a plain string.
+let file = join(normalize(join("build", "tmp", "..", "tmp")), "probe.txt");
+print("compose =", file, dirname(file), basename(file), extension(file));
+
+// The four import forms reach the same functions.
+print("qualified =", p.join("x", "y"), std.path.basename("/x/y.txt"));
+print("selective =", join("x", "y"), basename("/x/y.txt"));
+
+// A round trip over a spread of paths, so a single off-by-one in the
+// components fails the build.
+let samples = ["/a/b/c.txt", "a/b/", "/", "x", "/usr/local/lib"];
+var allStable = true;
+for sample in samples {
+  if (normalize(sample) != normalize(normalize(sample))) {
+    allStable = false;
+  }
+}
+print("stable =", allStable);

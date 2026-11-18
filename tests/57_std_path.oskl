@@ -1,0 +1,197 @@
+// std.path: joining, splitting and normalising filesystem paths.
+//
+// A path is an ordinary string, so every expected value here is a plain string
+// literal and the module needs no new type. It is pure Oskel, so the same
+// results must hold on the development VM and under `oskel build` on every AOT
+// target (see `tests/native_build_path.oskl`).
+//
+// The separator is `/` on every platform, and a `\` is folded to `/`, so these
+// expectations are the same on Linux, macOS and Windows.
+
+import std.path;
+import std.path.*;
+
+// --- join ------------------------------------------------------------------
+
+assertEq(join("a", "b", "c"), "a/b/c");
+assertEq(join("a"), "a");
+assertEq(join(), "");
+assertEq(join("a", "", "b"), "a/b");
+assertEq(join("", "", ""), "");
+
+// A separator already present is not doubled: the join adds exactly one.
+assertEq(join("a/", "b"), "a/b");
+assertEq(join("a", "/b"), "a/b");
+assertEq(join("a/", "/b"), "a/b");
+assertEq(join("a//", "//b"), "a/b");
+
+// A leading separator in the first part makes the whole path absolute.
+assertEq(join("/", "usr", "bin"), "/usr/bin");
+assertEq(join("/usr", "bin"), "/usr/bin");
+assertEq(join("/", "a"), "/a");
+assertEq(join("/"), "/");
+
+// More than two parts.
+assertEq(join("a", "b", "c", "d"), "a/b/c/d");
+assertEq(join("/", "a", "b", "c"), "/a/b/c");
+
+// A `\` inside a part is folded to `/`, like every other entry point.
+assertEq(join("C:\\a", "b"), "C:/a/b");
+assertEq(join("a", "b\\c"), "a/b/c");
+
+// --- basename ---------------------------------------------------------------
+
+assertEq(basename("/a/b/c.txt"), "c.txt");
+assertEq(basename("a/b/c.txt"), "c.txt");
+assertEq(basename("c.txt"), "c.txt");
+assertEq(basename("a/b/"), "b");        // trailing separators are ignored
+assertEq(basename("a/b///"), "b");
+assertEq(basename("/"), "/");           // the root keeps its separator
+assertEq(basename("//"), "/");
+assertEq(basename("a"), "a");
+assertEq(basename(""), "");
+
+// --- dirname ----------------------------------------------------------------
+
+assertEq(dirname("/a/b/c.txt"), "/a/b");
+assertEq(dirname("a/b/c.txt"), "a/b");
+assertEq(dirname("/a"), "/");
+assertEq(dirname("a"), ".");            // no separator: the parent is `.`
+assertEq(dirname("a/b"), "a");
+assertEq(dirname("/"), "/");
+assertEq(dirname("a/b/"), "a");         // trailing separators are ignored
+assertEq(dirname(""), ".");
+
+// The two components rebuild the path, except for the `..`-free normal form.
+assertEq(join(dirname("/x/y/z"), basename("/x/y/z")), "/x/y/z");
+assertEq(join(dirname("x/y/z"), basename("x/y/z")), "x/y/z");
+
+// --- extension and stem -----------------------------------------------------
+
+assertEq(extension("/a/b/c.txt"), ".txt");
+assertEq(extension("a.tar.gz"), ".gz"); // only the last dot counts
+assertEq(extension("c.txt"), ".txt");
+assertEq(extension("noext"), "");
+assertEq(extension(".bashrc"), "");     // a leading dot is not an extension
+assertEq(extension("a/b/.config"), "");
+assertEq(extension("/a/b/"), "");       // no last component to speak of
+assertEq(extension(""), "");
+
+assertEq(stem("/a/b/c.txt"), "c");
+assertEq(stem("a.tar.gz"), "a.tar");
+assertEq(stem("c.txt"), "c");
+assertEq(stem("noext"), "noext");
+assertEq(stem(".bashrc"), ".bashrc");   // the whole dotfile is the stem
+assertEq(stem("/a/b/"), "b");           // trailing separators are ignored
+
+// stem + extension rebuilds the last component.
+assertEq(stem("a/b/c.txt") + extension("a/b/c.txt"), "c.txt");
+assertEq(stem("a.tar.gz") + extension("a.tar.gz"), "a.tar.gz");
+
+// --- withExtension / withBasename ------------------------------------------
+
+assertEq(withExtension("a/b/c.txt", ".md"), "a/b/c.md");
+assertEq(withExtension("a/b/c.txt", "md"), "a/b/c.md"); // the dot is implied
+assertEq(withExtension("c", ".md"), "c.md");
+assertEq(withExtension("c", "md"), "c.md");
+assertEq(withExtension("/a/b/c.txt", ""), "/a/b/c");
+assertEq(withExtension("a/b/", ".md"), "a/b.md");      // trailing separators are ignored
+
+assertEq(withBasename("a/b/c.txt", "d.md"), "a/b/d.md");
+assertEq(withBasename("c.txt", "d.md"), "d.md");
+assertEq(withBasename("/c.txt", "d.md"), "/d.md");
+
+// --- split ------------------------------------------------------------------
+
+assertEq(split("/a/b"), ["/", "a", "b"]);
+assertEq(split("a/b"), ["a", "b"]);
+assertEq(split("a"), ["a"]);
+assertEq(split("/"), ["/"]);
+assertEq(split(""), []);
+assertEq(split("a/b/"), ["a", "b"]);      // trailing separators are dropped
+assertEq(split("a//b"), ["a", "b"]);      // runs collapse
+assertEq(split("//a"), ["/", "a"]);
+assertEq(split("/a/b/c/d"), ["/", "a", "b", "c", "d"]);
+
+// `join` of every split component is the original path back.
+let pieces = split("/a/b/c");
+assertEq(join(pieces[0], pieces[1], pieces[2], pieces[3]), "/a/b/c");
+
+// --- predicates -------------------------------------------------------------
+
+assert(isAbsolute("/a"));
+assert(isAbsolute("/"));
+assert(!isAbsolute("a"));
+assert(!isAbsolute(""));
+assert(!isAbsolute("./a"));
+
+assert(isRelative("a"));
+assert(isRelative(""));
+assert(!isRelative("/a"));
+assert(isRelative("./a"));
+
+// The two predicates are exact negations.
+assert(!isAbsolute("a/b") && isRelative("a/b"));
+assert(isAbsolute("/a/b") && !isRelative("/a/b"));
+
+// --- normalize --------------------------------------------------------------
+
+assertEq(normalize("/a/./b/../c"), "/a/c");
+assertEq(normalize("a//b/"), "a/b");
+assertEq(normalize("/.."), "/");
+assertEq(normalize("/../.."), "/");
+assertEq(normalize("a/../../b"), "../b"); // a leading `..` in a relative path survives
+assertEq(normalize("../../a"), "../../a");
+assertEq(normalize("a/./b"), "a/b");
+assertEq(normalize("a/.."), ".");
+assertEq(normalize("."), ".");
+assertEq(normalize(""), ".");
+assertEq(normalize("/"), "/");
+assertEq(normalize("/a/b/"), "/a/b");
+assertEq(normalize("a/b/../.."), ".");
+assertEq(normalize("/a/b/../../.."), "/");
+
+// Normalising an already normal path is a no-op (idempotence).
+assertEq(normalize(normalize("/a/./b/../c")), "/a/c");
+assertEq(normalize(normalize("a/../../b")), "../b");
+
+// A Windows-shaped path folds to `/` first.
+assertEq(normalize("C:\\a\\..\\b"), "C:/b");
+
+// --- relative ---------------------------------------------------------------
+
+assertEq(relative("/a", "/a/b/c"), "b/c");
+assertEq(relative("/a/b", "/a/c"), "../c");
+assertEq(relative("/a", "/a"), ".");
+assertEq(relative("a", "a"), ".");
+assertEq(relative("a", "b"), "../b");
+assertEq(relative("/a/b/c", "/a"), "../..");  // reaching a grandparent
+assertEq(relative("/a/b/c", "/a/b"), "..");
+assertEq(relative("/a", "/a/b"), "b");
+assertEq(relative("a/b", "a/b/c/d"), "c/d");
+
+// Absolute and relative do not mix: `to` is returned normalised.
+assertEq(relative("/a", "b"), "b");
+assertEq(relative("a", "/b"), "/b");
+
+// Both sides are normalised before the comparison.
+assertEq(relative("/a/./b", "/a/b/c"), "c");
+assertEq(relative("/a", "/a/./b/../c"), "c");
+
+// Joining the result back onto `from` reaches `to` (for two absolute paths).
+assertEq(normalize(join("/a/b", relative("/a/b", "/a/c"))), "/a/c");
+assertEq(normalize(join("/a", relative("/a", "/a/b/c"))), "/a/b/c");
+
+// --- composition with the file builtins -------------------------------------
+//
+// A path is a string, so `join` feeds `writeFile`/`readFile`/`fileExists`
+// directly. This is the whole point of not wrapping it in a type.
+let dir = normalize(join("build", "tmp", "..", "tmp"));
+assertEq(dir, "build/tmp");
+let file = join(dir, "probe.txt");
+assertEq(file, "build/tmp/probe.txt");
+assertEq(dirname(file), "build/tmp");
+assertEq(basename(file), "probe.txt");
+assertEq(extension(file), ".txt");
+
+print("path ok");
