@@ -14,7 +14,7 @@ The language surface this reference documents is implemented on the development 
 | Types, nullability, `struct`, variadics, `import`, `switch`, `defer` (PHASE 6.5) | ✅ | ✅ (all are compile-time; `struct` is erased, `switch`/`defer` lower to existing opcodes) |
 | `native fn` (PHASE 6.5) | ✅ | 🔶 only for the curated stubs the backend seeds; anything else fails the build (PHASE 7f) |
 | FFI with C (PHASE 6.6) | ✅ | 🔶 scalar `extern "C"` in `--mode hosted` only; FFI is hosted-only by design (PHASE 7f, §4.5) |
-| Error values, `pcall`, `try`/`catch`, unions, `@MustUse` (PHASE 6.7) | ✅ | 🔶 `catch`/`!!` lower; `pcall`/`error` and real error catching do not |
+| Error values, `pcall`, `try`/`catch`, unions, `@MustUse` (PHASE 6.7) | ✅ | 🔶 `error` values and value-based `try`/`catch` work (PHASE 7c.5c); `pcall` and raised runtime errors do not (no unwinding) |
 | JIT (PHASE 8) | 🔶 integer leaf protos (slices 1-4) | — (never) |
 
 ## Table of contents

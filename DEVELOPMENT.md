@@ -429,7 +429,7 @@ previous one.
   and `stringify` (compact or indented). The module is written over the portable
   primitive surface (indexing, slicing, `len`, `ord`/`chr`,
   `int`/`double`/`str`/`type`, `panic`, `for ... in`, closures), avoiding the
-  collection/string methods and `pcall`/`error` the AOT backend does not
+  collection/string methods and `pcall` the AOT backend does not
   implement yet, so it behaves identically on the VM and under `oskel build`.
   See `docs/language.md` §12.9/§18, `tests/55_std_json.oskl` and the AOT
   fixture `tests/native_build_json.oskl`.
@@ -440,7 +440,7 @@ previous one.
   `days_from_civil` algorithm, epoch conversion, calendar arithmetic,
   differences, components, a `strftime`-like `format` and ISO-8601
   `parse`/`iso`/`isValid`/`tryParse`. The module is written over the portable
-  primitive surface, avoiding the collection/string methods and `pcall`/`error`
+  primitive surface, avoiding the collection/string methods and `pcall`
   the AOT backend does not implement yet, so it behaves identically on the VM and
   under `oskel build`. See `docs/language.md` §12.10/§18,
   `tests/56_std_datetime.oskl` and the AOT fixture
@@ -463,7 +463,7 @@ previous one.
   Windows; `normalize`/`relative` match `posixpath.normpath`/`relpath` exactly,
   with three documented deviations elsewhere (`basename`, `dirname`, `join`).
   The module is written over the portable primitive surface, avoiding the
-  collection/string methods and `pcall`/`error` the AOT backend does not
+  collection/string methods and `pcall` the AOT backend does not
   implement yet, so it behaves identically on the VM and under `oskel build`.
   See `docs/language.md` §12.11/§18, `tests/57_std_path.oskl` and the AOT
   fixture `tests/native_build_path.oskl`.
@@ -1617,7 +1617,7 @@ Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair, which `ITER` now yields directly, no new opcode and no helper call) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.6 done, scalar and `cstring`/`ptr` `extern "C"` resolve in the hosted backend, struct/callback/variadic still open)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.4a-d, 7c.5a, 7c.5c, 7c.6, 7d, 7e, 7g done; 7c.5b — the remaining builtins — in progress; 7f — FFI in AOT — 7f.1-7f.6 done, scalar and `cstring`/`ptr` `extern "C"` resolve in the hosted backend, struct/callback/variadic still open)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)
