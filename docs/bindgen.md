@@ -75,12 +75,30 @@ like this:
 | `void *` | `ptr` | any other pointer too |
 | `char *` | `cstring` | a NUL-terminated string |
 | `T[N]`, `T[]` | `ptr` | an array parameter decays |
+| `R (*)(P...)` | `fn(P...): R` | a callback parameter (see below) |
 | `int8_t` … `uint64_t`, `size_t`, `intptr_t`, `uintptr_t`, `ptrdiff_t` | the matching FFI name | recognized without reading `<stdint.h>` |
 
-A `typedef` the header itself declares is resolved, including through pointers
-and arrays. Qualifiers (`const`, `volatile`, `restrict`), storage classes
-(`static`, `extern`, `inline`) and attributes (`__attribute__((...))`,
-`__declspec(...)`) are dropped.
+A `typedef` the header itself declares is resolved, including through pointers,
+arrays and function pointers. Qualifiers (`const`, `volatile`, `restrict`),
+storage classes (`static`, `extern`, `inline`) and attributes
+(`__attribute__((...))`, `__declspec(...)`) are dropped.
+
+### Callbacks
+
+A C function-pointer parameter becomes a Oskel callback, the `fn(P...): R` the
+engine accepts as a parameter (PHASE 6.6). The declarator is written three ways
+in C and all three are recognized:
+
+| C | Oskel |
+|---|-------|
+| `void qsort(..., int (*cmp)(const void *, const void *));` | `cmp: fn(ptr, ptr): int32` |
+| `void takes_fn(int cmp(int, int));` (a function *type*) | `cmp: fn(int32, int32): int32` |
+| `typedef void (*sighandler_t)(int);` then `sighandler_t h` | `h: fn(int32): void` |
+
+The engine's vocabulary bounds a callback: it may only be a **parameter** (a
+function *returning* a callback is skipped), its parameters must be scalars (a
+callback that takes another callback is skipped) and it may not be variadic. A
+callback that returns a struct by value is skipped as well.
 
 ## What is skipped, and why
 
@@ -92,9 +110,13 @@ as active code. The current skips are:
 - a **struct/union/enum by value** (a parameter or a return). Passing an
   aggregate across the C boundary is not in the slice-1 scope; a pointer to one
   is a `ptr`.
-- a **callback** (`R (*)(P...)`), as a parameter or through a function-pointer
-  `typedef`, and a **function returning a function pointer**
-  (`R (*f(...))(P...)`), which is the same callback shape spelled as a return.
+- a callback used where the engine does not accept one: **returned** by a
+  function (`R (*f(...))(P...)`), **taking another callback**, **variadic**, or
+  **returning a struct by value**. A callback *parameter* is generated.
+- a signature passing more than **six register-sized values** (the
+  `kMaxExternArgs` bound the FFI thunks enforce). The compiler rejects a longer
+  non-variadic `extern` declaration, so the generator skips it instead of
+  emitting a module `oskel -c` would refuse.
 - `long double` and any type the tool cannot resolve to the vocabulary.
 - a function whose name is a **reserved Oskel keyword** (`for`, `struct`, ...),
   which cannot be a binding name.

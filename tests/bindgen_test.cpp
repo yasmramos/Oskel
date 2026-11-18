@@ -126,9 +126,10 @@ int main() {
         "t.h");
     check(contains(result.text, "// skipped: make:"), "a struct-by-value return is skipped");
     check(contains(result.text, "// skipped: weird:"), "a long double is skipped");
-    check(contains(result.text, "// skipped: takes_cb:"), "a callback is skipped");
-    check(result.emitted == 0, "nothing unsupported is emitted as code");
-    check(result.skipped == 3, "the three skips are counted");
+    check(contains(result.text, "fn takes_cb(cb: fn(int32): int32, n: int32): void;"),
+          "a callback parameter is generated as `fn(P...): R`");
+    check(result.emitted == 1, "the callback declaration is emitted, not skipped");
+    check(result.skipped == 2, "only the two unsupported skips are counted");
   }
 
   // A function *returning* a function pointer is a declaration the vocabulary
@@ -142,9 +143,9 @@ int main() {
         "void (*handler)(int);\n"
         "int normal(int x);\n",
         "t.h");
-    check(contains(result.text, "// skipped: bsd_signal: returns a function pointer"),
+    check(contains(result.text, "// skipped: bsd_signal: returns a callback"),
           "a function returning a function pointer is skipped, not dropped");
-    check(contains(result.text, "// skipped: strlist: returns a function pointer"),
+    check(contains(result.text, "// skipped: strlist: returns a callback"),
           "a function returning a pointer-to-function pointer is skipped too");
     check(!contains(result.text, "fp_var"), "a function-pointer variable is not reported");
     check(!contains(result.text, "handler"), "a function-pointer variable is not reported");
@@ -171,15 +172,67 @@ int main() {
     check(result.skipped == 2, "the two unknown types are counted");
   }
 
-  // A function-pointer typedef used as a type is reported with a well-formed
-  // reason (the alias name is quoted, the sentence reads as a noun phrase).
+  // A function-pointer typedef used as a parameter type is resolved to a
+  // callback, exactly like the declarator written inline.
   {
     const bindgen::Result result = bindgen::generate(
         "typedef int (*cb_t)(int);\nint register_cb(cb_t cb);\n", "t.h");
-    check(contains(result.text,
-                   "// skipped: register_cb: parameter type 'cb_t' is not expressible"),
-          "a function-pointer typedef type is reported with its name");
-    check(result.skipped == 1, "the typedef skip is counted");
+    check(contains(result.text, "fn register_cb(cb: fn(int32): int32): int32;"),
+          "a function-pointer typedef type is generated as a callback");
+    check(result.emitted == 1, "the typedef-typed declaration is emitted");
+  }
+
+  // The callback shapes the engine's vocabulary accepts: a `void` return, a
+  // pointer parameter and return, and a function-*type* parameter (which C
+  // adjusts to a function pointer).
+  {
+    const bindgen::Result result = bindgen::generate(
+        "int atexit(void (*func)(void));\n"
+        "void *(*start_fn)(void *);\n"
+        "int pthread_create(void *t, const void *a, void *(*start)(void *), void *arg);\n"
+        "void takes_fn_type(int foo(int, double));\n",
+        "t.h");
+    check(contains(result.text, "fn atexit(func: fn(): void): int32;"),
+          "a callback with no parameters and a void return is generated");
+    check(contains(result.text, "fn pthread_create(t: ptr, a: ptr, start: fn(ptr): ptr, arg: ptr): int32;"),
+          "a callback with a pointer parameter and return is generated");
+    check(contains(result.text, "fn takes_fn_type(foo: fn(int32, double): int32): void;"),
+          "a function-type parameter is generated as a callback");
+  }
+
+  // The callback shapes the engine rejects: a callback as a return type, a
+  // callback that takes a callback, and a C variadic callback.
+  {
+    const bindgen::Result result = bindgen::generate(
+        "int (*signal(int, void (*)(int)))(int);\n"
+        "void nested(int (*cb)(int (*inner)(int)));\n"
+        "void variadic_cb(int (*cb)(int, ...));\n",
+        "t.h");
+    check(contains(result.text, "// skipped: signal: returns a callback"),
+          "a function returning a callback is reported");
+    check(contains(result.text, "// skipped: nested: a callback that takes a callback"),
+          "a nested callback is reported");
+    check(contains(result.text, "// skipped: variadic_cb: a C variadic callback"),
+          "a variadic callback is reported");
+    check(result.emitted == 0, "none of the rejected callback shapes is emitted");
+    check(result.skipped == 3, "the three rejected shapes are counted");
+  }
+
+  // A pointer *to* a function pointer (a second `*`) and an array of function
+  // pointers are opaque pointers, not callbacks: the FFI passes them as `ptr`.
+  {
+    const bindgen::Result result = bindgen::generate(
+        "void takes_pp(int (**pp)(int));\n"
+        "void takes_arr(int (*arr[4])(int));\n"
+        "typedef int (**ppcb_t)(int);\n"
+        "int reg(ppcb_t p);\n",
+        "t.h");
+    check(contains(result.text, "fn takes_pp(pp: ptr): void;"),
+          "a pointer to a function pointer is an opaque ptr");
+    check(contains(result.text, "fn takes_arr(arr: ptr): void;"),
+          "an array of function pointers is an opaque ptr");
+    check(contains(result.text, "fn reg(p: ptr): int32;"),
+          "a pointer-to-function-pointer typedef is an opaque ptr");
   }
 
   // A declaration named after an Oskel keyword cannot be bound.

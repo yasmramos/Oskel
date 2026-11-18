@@ -147,6 +147,19 @@ may change between minor versions.
 
 ### Added
 
+- **`bindgen` translates a callback parameter.** A C function-pointer parameter
+  becomes the Oskel `fn(P...): R` the engine accepts as a parameter (PHASE 6.6),
+  in all three C spellings: the inline declarator (`int (*cmp)(const void *,
+  const void *)`), the function *type* (`int cmp(int, int)`, which C adjusts to
+  a pointer) and a function-pointer `typedef` used as a type. This unblocks the
+  common C APIs — `qsort`, `atexit`, `signal`, `pthread_create` — that were
+  skipped wholesale before. The shapes the vocabulary does not accept stay
+  skipped with a reason: a callback *returned* by a function, one that takes
+  another callback, a variadic callback, and a callback returning a struct by
+  value. A pointer *to* a function pointer stays an opaque `ptr`. No token, AST
+  node, parser rule, opcode, VM or compiler change: `bindgen` only writes the
+  `extern "C"` the engine already accepts.
+
 - **`std.collections`: functional helpers over arrays.** A new standard-library
   module for mapping, filtering, folding, searching, reshaping, grouping and
   sorting. It offers `map`, `filter`, `reject`, `each`, `fold`, `sum`, `sumBy`,
