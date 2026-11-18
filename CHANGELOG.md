@@ -21,9 +21,23 @@ may change between minor versions.
 
 ### Changed
 
+- **The docs stop promising what the tree does not do.** `DEVELOPMENT.md` §8 now
+  marks the `.oskc`/`.oskpkg` formats and their bytecode verification as
+  *planned* (nothing serializes a `Bytecode` to disk yet), and `docs/language.md`
+  §19 says the same for the extension table. `DEVELOPMENT.md` §8 also states
+  what the JIT's "1:1" rule actually means: the invariant is over the bytecode
+  opcodes, not the native instruction count, so the slice-3 compare-branch
+  fusion is a peephole rewrite of the emission, not a superinstruction.
+
+- **FFI is documented as hosted-only under `oskel build`.** The decision (PHASE
+  7f) is recorded in `docs/language.md` §4.5 and §16 and BACKLOG §7.20: a program
+  using `extern "C"` builds with `--mode hosted`; the freestanding default, which
+  is self-contained by construction, reports the unresolved symbol instead of
+  emitting a broken binary. This is the design, not a temporary gap.
+
 - **`docs/BACKLOG.md` reflects the tree.** The Env and parity items are marked
   done (VM/AOT parity already runs through `tests/build_binary.cmake`), the JIT
-  item is decided as *keep* (it ships on by default in `oskel` and gives ~175x
+  item is decided as *keep* (it ships on by default in `oskel` and gives ~420x
   on its integer leaf subset), and §6.22 plus `docs/language.md` §16 record the
   one known parity gap: a function renders as `<fn name>` in the VM but `<fn>`
   in the AOT binary, since the AOT closure object has no name field.
@@ -31,7 +45,7 @@ may change between minor versions.
 - **`docs/language.md` now states the real implementation status.** The
   reference claimed "collections (PHASE 6 done)" and "No JIT ... planned for
   PHASE 8+", both stale: PHASE 6.5/6.6/6.7 are complete on the development
-  engine and the JIT slices 1-3 ship in `oskel`. It also said the compiler
+  engine and the JIT slices 1-4 ship in `oskel`. It also said the compiler
   emits "40 opcodes" (it is 39, with 40 the budget ceiling), presented
   `oskelc` as if it existed (`oskel build` is the AOT entry point and `oskelc`
   is not part of 0.1.0), and described the AOT backend as lowering pointers and
