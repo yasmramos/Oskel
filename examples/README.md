@@ -105,6 +105,7 @@ Smaller programs, each focused on one area.
 | `json.oskl` | The `std.json` standard library: parsing, serializing and the value mapping. |
 | `datetime.oskl` | The `std.datetime` standard library: dates, times, the Unix epoch, ISO-8601 and the clock. |
 | `path.oskl` | The `std.path` standard library: joining, splitting and normalising filesystem paths. |
+| `collections_stdlib.oskl` | The `std.collections` standard library: mapping, filtering, folding, grouping and sorting, over a small data set. |
 | `wordcount.oskl` | A map-based frequency count. |
 | `full.oskl` | A single program that touches most features; prints `full_example_output.txt`. |
 

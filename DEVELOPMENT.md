@@ -467,6 +467,20 @@ previous one.
   implement yet, so it behaves identically on the VM and under `oskel build`.
   See `docs/language.md` §12.11/§18, `tests/57_std_path.oskl` and the AOT
   fixture `tests/native_build_path.oskl`.
+- **Standard library: `std.collections`** — **done**: a pure-Oskel module of
+  functional helpers over arrays. It offers `map`, `filter`, `reject`, `each`,
+  `fold`, `sum`, `sumBy`, `minimum`/`maximum`, `minBy`/`maxBy`, `count`,
+  `find`/`findIndex`, `any`/`all`/`none`, `take`/`drop`, `partition`, `chunk`,
+  `zip`, `flatten`, `reverse`, `unique`/`uniqueBy`, `groupBy`, `countBy` and
+  `sort`/`sortBy`/`sortByKey`. Every function returns a new array or map and
+  never mutates its input; `sort` is a stable merge sort. No new runtime type,
+  opcode or builtin. The module is written over the portable primitive surface
+  precisely because the array methods (`xs.map(f)`, `xs.sort()`, ...) are
+  VM-only today — the AOT backend does not bind them, so `oskel build` compiles
+  a call and the binary fails at run time with `value has no such member`
+  (BACKLOG §6 item 1). These helpers behave identically on the VM and under
+  `oskel build`. See `docs/language.md` §12.12/§18, `tests/58_std_collections.oskl`
+  and the AOT fixture `tests/native_build_collections.oskl`.
 
 ### PHASE 6.6 — FFI with C (1.0)
 

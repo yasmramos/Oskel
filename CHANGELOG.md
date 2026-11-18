@@ -147,6 +147,21 @@ may change between minor versions.
 
 ### Added
 
+- **`std.collections`: functional helpers over arrays.** A new standard-library
+  module for mapping, filtering, folding, searching, reshaping, grouping and
+  sorting. It offers `map`, `filter`, `reject`, `each`, `fold`, `sum`, `sumBy`,
+  `minimum`/`maximum`, `minBy`/`maxBy`, `count`, `find`/`findIndex`,
+  `any`/`all`/`none`, `take`/`drop`, `partition`, `chunk`, `zip`, `flatten`,
+  `reverse`, `unique`/`uniqueBy`, `groupBy`, `countBy` and
+  `sort`/`sortBy`/`sortByKey`. Every function returns a new array or map and
+  never mutates its input; `sort` is a stable merge sort. The module exists
+  because the array methods (`xs.map(f)`, `xs.sort()`, ...) are VM-only today:
+  the AOT backend does not bind them, so `oskel build` compiles a call and the
+  binary fails at run time with `value has no such member` (BACKLOG §6 item 1).
+  These are the same operations over the portable primitive surface, so they
+  behave identically on the VM and under `oskel build`. No new runtime type,
+  opcode or builtin.
+
 - **`std.path`: filesystem paths.** A new standard-library module for joining,
   splitting and normalising filesystem paths. A path is an ordinary string, not
   a new type, so a result feeds the file builtins (`readFile`, `writeFile`,

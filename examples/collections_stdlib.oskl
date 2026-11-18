@@ -1,0 +1,104 @@
+// The `std.collections` standard library: mapping, filtering, folding,
+// searching, reshaping, grouping and sorting over arrays, through every import
+// form.
+//
+// These are the same operations as the array methods, provided as functions.
+// The array methods are implemented in the VM but the AOT backend does not bind
+// them yet (`docs/BACKLOG.md` §6 item 1), so a program that must compile with
+// `oskel build` uses these instead. The module is pure Oskel: the same program
+// runs on the VM and as a native binary.
+
+// 1. Qualified: the module is bound under its path.
+import std.collections;
+print("qualified = ${std.collections.sum([1, 2, 3])}");
+
+// 2. Wildcard: every public name enters the scope unqualified.
+import std.collections.*;
+
+// 3. Alias: a shorter name for the module.
+import std.collections as c;
+
+// 4. Selective: only the names asked for.
+import { groupBy, sortBy } from std.collections;
+
+// --- a small data set -------------------------------------------------------
+
+// A sale is a map; the module works on any element type, because every helper
+// takes a function.
+let sales = [
+  {"region": "north", "amount": 120, "units": 3},
+  {"region": "south", "amount": 80,  "units": 2},
+  {"region": "north", "amount": 200, "units": 5},
+  {"region": "east",  "amount": 50,  "units": 1},
+  {"region": "south", "amount": 90,  "units": 4},
+  {"region": "north", "amount": 30,  "units": 1}
+];
+
+// --- mapping and filtering --------------------------------------------------
+
+print("amounts = ${map(sales, s => s.amount)}");
+print("big     = ${map(filter(sales, s => s.amount > 100), s => s.region)}");
+
+// --- aggregation ------------------------------------------------------------
+
+print("total   = ${sum(map(sales, s => s.amount))}");
+print("units   = ${sumBy(sales, s => s.units)}");
+print("best    = ${maxBy(sales, s => s.amount).region}");
+print("worst   = ${minBy(sales, s => s.amount).region}");
+print("mean    = ${sumBy(sales, s => s.amount) / len(sales)}");
+
+// --- searching --------------------------------------------------------------
+
+print("east    = ${find(sales, s => s.region == "east").amount}");
+print("index   = ${findIndex(sales, s => s.amount == 90)}");
+print("any>150 = ${any(sales, s => s.amount > 150)}");
+print("all>0   = ${all(sales, s => s.amount > 0)}");
+
+// --- reshaping --------------------------------------------------------------
+
+// Take the top three sales: sort a copy, then take a prefix.
+let top3 = take(sortBy(sales, (a, b) => a.amount > b.amount), 3);
+print("top3    = ${map(top3, s => s.amount)}");
+// Split by size, then by a predicate.
+print("chunks  = ${chunk(map(sales, s => s.amount), 4)}");
+let split = partition(sales, s => s.amount >= 90);
+print("high    = ${map(split[0], s => s.amount)}");
+print("low     = ${map(split[1], s => s.amount)}");
+// Pair the amounts with their units.
+print("zipped  = ${zip(map(sales, s => s.amount), map(sales, s => s.units))}");
+
+// --- grouping ---------------------------------------------------------------
+
+// Group the sales by region: a map from region to the sales in it.
+let byRegion = groupBy(sales, s => s.region);
+for region, group in byRegion {
+  print("region  = ${region}: n=${len(group)} total=${sumBy(group, s => s.amount)}");
+}
+print("counts  = ${countBy(sales, s => s.region)}");
+
+// --- deduplication ----------------------------------------------------------
+
+let visits = ["home", "about", "home", "pricing", "about", "home"];
+print("unique  = ${unique(visits)}");
+print("uniqueBy= ${uniqueBy(sales, s => s.region)}");
+
+// --- sorting ----------------------------------------------------------------
+
+print("sorted  = ${sort([3, 1, 4, 1, 5, 9, 2, 6])}");
+print("byKey   = ${map(sortByKey(sales, s => s.amount), s => s.amount)}");
+print("regions = ${sort(unique(map(sales, s => s.region)))}");
+
+// --- composition ------------------------------------------------------------
+
+// The helpers chain: the busiest regions, most sales first. A map is walked with
+// `for k, v` (it is not an array), then the groups are sorted by size.
+var groups = [];
+for region, group in byRegion {
+  groups[len(groups)] = group;
+}
+let busiest = sortByKey(groups, group => -len(group));
+print("busiest = ${len(busiest)} groups, largest ${len(busiest[0])}");
+
+// The import forms all reach the same functions.
+print("alias   = ${c.reverse([1, 2, 3])}");
+print("selective = ${sort([2, 1])} ${groupBy([1, 2, 3, 4], x => x % 2)}");

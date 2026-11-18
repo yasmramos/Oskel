@@ -487,6 +487,18 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_path.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `std.collections` exists because the AOT backend does not bind the array
+    # methods yet (docs/BACKLOG.md §6 item 1); it is plain Oskel over the
+    # portable primitive surface, so it must build to a native binary and agree
+    # with the VM. The fixture is the guard that keeps the module off the
+    # methods, `pcall`/`error` and the rest of the AOT gaps.
+    add_test(NAME oskel.build_binary_collections
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_collections"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_collections.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # Regression for the string-builder corruption: `oskel_sb_append_escaped`
     # kept its loop index in r13, the arena cursor (`kAotArenaCursor`, entry.h),
     # and pushed/popped it around the allocating `oskel_sb_append`, so a
