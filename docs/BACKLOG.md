@@ -376,6 +376,16 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 19. ~~**[P3]** `installExterns` recurses over children; make it iterative for
     deep module trees.~~ **Done**: `VM::installExterns` now walks the module
     tree with an explicit stack.
+20. **[P0] Decided: FFI under `oskel build` is hosted-only.** A program that
+    uses `extern "C"` compiles with `oskel build --mode hosted` (Linux x86-64),
+    which links it against libc so the symbol resolves to the real C function.
+    The freestanding mode — the default — has no host to resolve against and
+    reports the unresolved symbol (exit 65) instead of emitting a broken binary.
+    This is the design, not a temporary gap: the freestanding image is
+    self-contained by construction and a general `extern "C"` call is what
+    breaks that. The remaining 7f work (pointers, structs by value, callbacks
+    and C variadics in the AOT backend) is scoped to the hosted mode. Documented
+    in `docs/language.md` §4.5 and §16.
 
 ---
 

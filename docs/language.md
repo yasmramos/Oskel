@@ -13,7 +13,7 @@ The language surface this reference documents is implemented on the development 
 | Language core: functions, closures, control flow, collections | ✅ | ✅ (subset the lowerer covers) |
 | Types, nullability, `struct`, variadics, `import`, `switch`, `defer` (PHASE 6.5) | ✅ | ✅ (all are compile-time; `struct` is erased, `switch`/`defer` lower to existing opcodes) |
 | `native fn` (PHASE 6.5) | ✅ | 🔶 only for the curated stubs the backend seeds; anything else fails the build (PHASE 7f) |
-| FFI with C (PHASE 6.6) | ✅ | 🔶 scalar `extern "C"` in `--mode hosted` only (PHASE 7f) |
+| FFI with C (PHASE 6.6) | ✅ | 🔶 scalar `extern "C"` in `--mode hosted` only; FFI is hosted-only by design (PHASE 7f, §4.5) |
 | Error values, `pcall`, `try`/`catch`, unions, `@MustUse` (PHASE 6.7) | ✅ | 🔶 `catch`/`!!` lower; `pcall`/`error` and real error catching do not |
 | JIT (PHASE 8) | 🔶 integer leaf protos (slices 1-3) | — (never) |
 
@@ -455,6 +455,18 @@ free(buf);
 The AOT backend (PHASE 7) is to lower the same handles to real C pointers, but
 that is not implemented yet (PHASE 7f): a program that passes a pointer to a
 native does not compile with `oskel build` today.
+
+**FFI is hosted-only under `oskel build`.** The decision (PHASE 7f) is that a
+program using `extern "C"` compiles with `oskel build --mode hosted`, which
+links it against the host C library so the symbol resolves to the real C
+function; the freestanding mode, which is the default, has no host to resolve a
+symbol against and reports it (exit 65) instead of emitting a broken binary.
+This is deliberate, not a gap to paper over: the freestanding image is
+self-contained by construction, and a general `extern "C"` call is exactly the
+thing that breaks that property. So the rule is simple — **if a program uses
+FFI, build it hosted.** The development engine (`oskel`) is unaffected: it
+resolves the symbol through `Platform::lookupSymbol` and runs the same program
+either way.
 
 **`extern "C"` blocks.** A C function is declared with `extern` (PHASE 6.6).
 Three spellings are accepted and compile to the same thing:
@@ -2475,12 +2487,12 @@ compiles either way):
   dynamic dependencies.
 - `--mode hosted` links the compiled program against the host C library, so an
   `extern "C"` symbol resolves to the real C function at link time. This is the
-  mode that makes FFI work, and the one `oskelc` is documented to be. It needs a
-  C toolchain at build time and produces a binary that *does* depend on libc, so
-  it is not freestanding. The emitter wraps the program in a relocatable object
-  and the host C compiler (`$CC`, default `cc`) links it against libc; the
-  entry prelude reaches the system through libc (`write`/`exit`/`malloc`) and
-  the program's entry is exported as the C `main`.
+  mode that makes FFI work, and the mode the planned `oskelc` host compiler is
+  documented to emit. It needs a C toolchain at build time and produces a binary
+  that *does* depend on libc, so it is not freestanding. The emitter wraps the
+  program in a relocatable object and the host C compiler (`$CC`, default `cc`)
+  links it against libc; the entry prelude reaches the system through libc
+  (`write`/`exit`/`malloc`) and the program's entry is exported as the C `main`.
 
 ```sh
 oskel build app.oskl                       # freestanding (default)
@@ -2531,7 +2543,7 @@ oskelc -pkg ... -o app.oskpkg  packages a .oskpkg
 - No `++`, `--` or default parameters. A trailing `rest...` parameter makes a function variadic (see §7.1). `switch` on literals and ranges is supported (see §6.10), and so is the post-test loop `do { ... } while (cond);` (see §6.4).
 - Optional types and nullability are implemented for declarations and expressions (PHASE 6.5). Type annotations (`let x: int = 5`), local inference, the nullable `T?` annotation, and the null-safe expressions `?.`, `??` and `!!` are checked at compile time. `struct` is implemented (see §4.7) and so is `native fn` (see §7.6), the typed declaration of a host-provided function.
 - FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the System V AMD64 ABI without `libffi` for scalars and structs by value. A `fn(P...): R` parameter is a callback: the development engine builds a `libffi` closure that re-enters the VM (its `R` may be a scalar or a struct by value). A trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...): int`), which applies the C default argument promotions and goes through `libffi`; like a class-MEMORY struct it needs the System V AMD64 ABI plus `libffi`, and is rejected at compile time elsewhere.
-- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.5 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux x86-64 only), where the program is linked against libc; the freestanding mode, which is the default, still reports the unresolved symbol and exits 65. Pointers, structs by value, callbacks and C variadics are not lowered yet, and `native fn` declarations the backend has no stub for fail the build with a dedicated message.
+- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.5 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux x86-64 only), where the program is linked against libc; the freestanding mode, which is the default, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, structs by value, callbacks and C variadics are not lowered yet, and `native fn` declarations the backend has no stub for fail the build with a dedicated message.
 - A function's text representation differs between the engines: the VM renders a named function as `<fn name>` (`<native fn name>` for a host binding) while the AOT binary renders every function as `<fn>`, because the AOT closure object carries only code, arity and upvalue count and no name. This is a known parity gap (BACKLOG §6.22); `tests/freestanding_test.cpp` pins the AOT form and `tests/native_build_control_flow.oskl` avoids printing a bare function so the fixture agrees on both engines.
 - No UI library yet. Skia + SDL2 + declarative UI is planned for post-1.0.
 - No async/await, generics, full pattern matching, generators, or transactions. These are out of scope (see `DEVELOPMENT.md`).
