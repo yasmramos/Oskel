@@ -1475,7 +1475,19 @@ that the branch is reached by fall-through alone, so the re-test the VM would
 perform is never lost; a comparison whose result is reused afterwards stays
 unfused and correct. The same loop drops to about 320x the interpreter, within
 about 1.4x of the hand-written loop. The fusion rewrites *how* one opcode and its
-branch are emitted, so it is still 1:1 with the bytecode.
+branch are emitted; the bytecode still executes the same two opcodes, so the
+contract below holds.
+
+**What "1:1" means here.** The invariant is about the *bytecode*, not about the
+native instruction count: the JIT never adds, removes or merges a bytecode
+opcode, and a program's result never depends on which opcodes were compiled.
+The optimizer is free to change how an opcode (or an adjacent opcode plus its
+branch) is *emitted* — constant folding, strength reduction, compare-branch
+fusion are all peephole rewrites of the emission, and none of them introduces a
+superinstruction or a runtime specialization. This is why slice 3's fusion is
+still within the rule: it emits one `cmp; jcc` where the interpreter would
+execute an `EQ` then a `JMP_IF_FALSE`, but the two opcodes still run, and an
+unfused comparison (one whose result is reused) stays correct.
 
 Slice 4 (done) replaces the fixed per-slot register map with **web-based register
 allocation and copy coalescing**. The emitter used to tie a slot to a register by
@@ -1502,8 +1514,9 @@ opcodes run, so it is still 1:1 with the bytecode.
 Later slices widen the subset (floats, then strings, then the boxed value
 runtime, then calls and guards) and add the tiering policy (compile after a
 call threshold instead of on the first call), following LuaJIT as the
-reference. Everything stays 1:1 with the bytecode; the moment a design needs
-inline caching or specialization, it is out of scope (§6).
+reference. Everything stays 1:1 with the bytecode in the sense above; the
+moment a design needs inline caching or specialization, it is out of scope
+(§6).
 
 ### Post-1.0 — UI library
 
