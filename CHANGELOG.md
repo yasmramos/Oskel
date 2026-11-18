@@ -504,6 +504,23 @@ may change between minor versions.
   VM or compiler change: `bindgen` only writes the `extern "C"` the engine
   already accepts, and the end-to-end fixture is unchanged.
 
+- **AOT: silent memory corruption when a rendered collection crossed 64
+  bytes.** `oskel_sb_append_escaped` (the helper that renders a quoted string
+  into a collection's text) kept its loop index in `r13` and pushed/popped it
+  around the loop. `r13` is `kAotArenaCursor` — the arena's next-free pointer
+  (`include/native/entry.h`) — and the loop calls `oskel_sb_append`, which
+  *allocates* a fresh block once the builder outgrows its 64-byte initial
+  capacity. Two things then went wrong: the allocator read the clobbered `r13`,
+  and the closing `pop r13` rewound the cursor past blocks already handed out.
+  The symptom was silent corruption of `str()`/`repr()`/`print`/interpolation
+  output (a garbled line, or a crash) for any array or map of strings whose
+  rendering passed 64 bytes — nondeterministically, since it depended on the
+  arena layout. The loop index now lives in a caller-saved scratch (`r11`) and
+  is reloaded from its stack slot after every call. Covered by
+  `tests/native_build_string_repr.oskl`, which renders arrays and maps of
+  strings well past the initial capacity and is compared with the VM byte for
+  byte.
+
 - AOT: the remaining in-place and query array methods now work in a compiled
   binary: `shift`, `unshift`, `insert`, `removeAt`, `contains`, `indexOf` and
   `clear`. They bind like `push`/`pop` (the receiver goes into a shared cell and

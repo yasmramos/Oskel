@@ -487,6 +487,20 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_path.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # Regression for the string-builder corruption: `oskel_sb_append_escaped`
+    # kept its loop index in r13, the arena cursor (`kAotArenaCursor`, entry.h),
+    # and pushed/popped it around the allocating `oskel_sb_append`, so a
+    # collection whose rendered text crossed the builder's 64-byte initial
+    # capacity came out garbled. This fixture renders arrays and maps of strings
+    # well past that size; the harness compares the binary with the VM byte for
+    # byte, so the corruption cannot come back silently.
+    add_test(NAME oskel.build_binary_string_repr
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_string_repr"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_string_repr.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # An `extern "C"` symbol is a host binding the AOT backend cannot resolve
     # (the FFI lowering is PHASE 7f), so `oskel build` must fail with the
     # dedicated message and write no binary.

@@ -1,0 +1,50 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): rendering a collection
+// whose text crosses the string builder's initial capacity.
+//
+// The recursive repr (`oskel_repr_into`) renders every `print` and every `$str`
+// of a collection into an `AotStringBuilder` that starts at 64 bytes and grows
+// by allocating a fresh arena block. A quoted string goes through
+// `oskel_sb_append_escaped`, which walks the string byte by byte and calls the
+// allocating `oskel_sb_append` as it goes.
+//
+// That helper used to keep its loop index in r13, which is `kAotArenaCursor`
+// (entry.h): the arena's next-free pointer. Because it also pushed and popped
+// r13 around the loop, the pop rewound the cursor after the loop had already
+// grown the builder, so the next allocation handed out bytes that were still in
+// use. The symptom was silent memory corruption, only once the rendered text
+// passed 64 bytes and only when the collection held strings (the sole path
+// through the escaped appender): a truncated or garbled line, or a crash.
+//
+// The fixture renders arrays of strings that are comfortably past 64 bytes, so
+// a regression re-corrupts the output here instead of shipping. The output is
+// deterministic and the harness compares it with the VM's byte for byte.
+
+// 8 six-byte strings: the rendered array is well past the 64-byte initial
+// capacity, forcing the builder to grow while the escaped appender runs.
+let words = ["s0000", "s0001", "s0002", "s0003", "s0004", "s0005", "s0006", "s0007"];
+print("array =", words);
+print("interp = ${words}");
+print("concat =", "v=" + str(words));
+
+// A map whose keys are long strings: the keys go through the escaped appender
+// too, and the map form appends a key, a colon and a value per entry.
+var longKeys = {};
+var i = 0;
+while (i < 12) {
+  longKeys["key-" + str(i) + "-padding"] = "value-" + str(i);
+  i = i + 1;
+}
+print("map =", longKeys);
+
+// One string that on its own is longer than the initial capacity, quoted inside
+// an array, so the growth happens mid-string.
+let long = "abcdefghij" + "klmnopqrst" + "uvwxyz0123" + "456789ABCD" + "EFGHIJKLMN" + "OPQRSTUVWX" + "YZ";
+print("long =", [long]);
+print("longInterp = ${[long, long]}");
+
+// Nested: an array of arrays of strings, so the growth happens at several depths.
+print("nested =", [["alpha-alpha-alpha", "beta-beta-beta"], ["gamma-gamma-gamma"]]);
+
+// The escaped appender's other paths: quotes, backslashes and control bytes,
+// with enough text to cross the capacity.
+print("escapes =", ["a\"b\\c\nd\te", "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"]);
