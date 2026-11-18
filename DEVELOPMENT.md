@@ -1147,6 +1147,27 @@ Slices, each independently shippable:
       three are seeded into their global slots like the other builtins and are
       covered by `tests/freestanding_test.cpp` (the values and every failure
       path) and `tests/native_build_builtins.oskl` (the `oskel build` fixture).
+    - **7c.5c** (done) — error values. `error()`/`isError` were previously
+      unbound in AOT (`isError` returned a constant `false`), so `try`/`catch`
+      never caught and an error was not a value. The AOT runtime now has a real
+      `error` tag: an `AotError` header (`AotString* message` + `int64 code`)
+      over the arena. `error(message, code?)` mirrors the hosted builtin (the
+      message is a string taken verbatim or any other value through `$str`; the
+      optional code is an integer, `0` by default; one or two arguments, else the
+      wrong-arity error). The tag flows through every shared helper: `type`
+      reports `"error"`, `isError`/`$isError` see it (so `try` propagates and
+      `catch` recovers), `==` compares by message *and* code, `print`/`toString`
+      render the message alone and the recursive `repr` renders the
+      `error("message")` / `error("message", code)` debug form (the code only
+      when non-zero), `$str` interpolation renders the message, and
+      `err.message`/`err.code` read the fields (`oskel_member_get` gained the
+      two member-name islands; any other name is the "no such member" error).
+      No new opcode and no bytecode change -- it is a runtime value like the
+      others. Covered by `tests/native_build_error.oskl` (built and run against
+      the VM by `tests/build_binary.cmake`), which is what makes value-based
+      `try`/`catch` work in a native binary. `pcall` (backlog §6.4) and
+      catchable *runtime* errors (the AOT runtime has no unwinding) remain out
+      of scope.
     - **7c.6** (done) — variadic parameter packs. A function with a trailing
       `rest...` parameter was a lowering error ("variadic function",
       `PHASE 7c.3`); it now compiles. The child proto's prologue checks the
@@ -1489,7 +1510,19 @@ that the branch is reached by fall-through alone, so the re-test the VM would
 perform is never lost; a comparison whose result is reused afterwards stays
 unfused and correct. The same loop drops to about 320x the interpreter, within
 about 1.4x of the hand-written loop. The fusion rewrites *how* one opcode and its
-branch are emitted, so it is still 1:1 with the bytecode.
+branch are emitted; the bytecode still executes the same two opcodes, so the
+contract below holds.
+
+**What "1:1" means here.** The invariant is about the *bytecode*, not about the
+native instruction count: the JIT never adds, removes or merges a bytecode
+opcode, and a program's result never depends on which opcodes were compiled.
+The optimizer is free to change how an opcode (or an adjacent opcode plus its
+branch) is *emitted* — constant folding, strength reduction, compare-branch
+fusion are all peephole rewrites of the emission, and none of them introduces a
+superinstruction or a runtime specialization. This is why slice 3's fusion is
+still within the rule: it emits one `cmp; jcc` where the interpreter would
+execute an `EQ` then a `JMP_IF_FALSE`, but the two opcodes still run, and an
+unfused comparison (one whose result is reused) stays correct.
 
 Slice 4 (done) replaces the fixed per-slot register map with **web-based register
 allocation and copy coalescing**. The emitter used to tie a slot to a register by
@@ -1516,8 +1549,9 @@ opcodes run, so it is still 1:1 with the bytecode.
 Later slices widen the subset (floats, then strings, then the boxed value
 runtime, then calls and guards) and add the tiering policy (compile after a
 call threshold instead of on the first call), following LuaJIT as the
-reference. Everything stays 1:1 with the bytecode; the moment a design needs
-inline caching or specialization, it is out of scope (§6).
+reference. Everything stays 1:1 with the bytecode in the sense above; the
+moment a design needs inline caching or specialization, it is out of scope
+(§6).
 
 ### Post-1.0 — UI library
 
@@ -1555,7 +1589,7 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.4a, 7c.4b, 7c.4c, 7c.4d, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.5 done, scalar `extern "C"` resolves in the hosted backend, pointer/struct/callback/variadic still open)
-Phase 8: 🔶 in progress (JIT for the development VM, slices 1-3 done: integer leaf protos with CPU-register allocation, constant folding, strength reduction and compare-branch fusion)
+Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)
 
@@ -1656,7 +1690,7 @@ contains none of them.**
 | `myapp` | Native binary (Linux/macOS) | (GraalVM) `.exe` |
 | `myapp.exe` | Native binary (Windows) | (GraalVM) `.exe` |
 
-**`.oskpkg` format** (ZIP):
+**`.oskpkg` format** (ZIP) — **planned; not implemented in 0.1.0**:
 myapp.oskpkg
 ├── META-INF/MANIFEST.MF
 ├── bin/main.oskc
@@ -1665,7 +1699,10 @@ myapp.oskpkg
 └── README.md
 
 
-**`.oskc` format** (binary):
+**`.oskc` format** (binary) — **planned; not implemented in 0.1.0**. The compiler
+holds a `Bytecode` in memory and the AOT backend lowers it directly; nothing
+serializes it to disk yet, and no command writes or reads a `.oskc` file. The
+layout below is the target format, not the current behaviour:
 +--------+--------+--------+--------+
 | 'J' | 'O' | 'L' | 'C' | magic
 +--------+--------+--------+--------+
@@ -1689,7 +1726,8 @@ myapp.oskpkg
 +--------+--------+--------+--------+
 
 
-**Bytecode verification** (on `.oskc` load):
+**Bytecode verification** (on `.oskc` load) — **planned; not implemented in
+0.1.0** (there is no `.oskc` loader yet):
 - **Level 1 (structural)**: mandatory. Magic, version, ranges, valid opcodes,
   operands in range, checksum.
 - **Level 2 (semantic)**: optional. Jumps to valid instructions, registers

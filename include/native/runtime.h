@@ -128,10 +128,15 @@ struct AotRuntimeHandles {
   // The hidden helpers the compiler emits for PHASE 6.5 features. They use the
   // proto convention and are seeded into their global slots like `print`, so
   // each one is an ordinary call.
-  // `$isError` (try/catch) reports whether a value is an error; the AOT runtime
-  // has no error values yet, so it is always false and the success path of
-  // `try`/`x catch y` runs (a real failure still exits 70).
+  // `$isError` (try/catch) reports whether a value is an error. It reads the
+  // error tag, so a value built by `error(...)` (PHASE 7c.5c) is recognized and
+  // `try`/`x catch y` propagates/recovers exactly like the VM.
   CodeGen::Label isErrorBuiltin;   // AotValue oskel_builtin_is_error(AotValue* args, long argc, AotClosure* self)
+  // `error(message, code?)` (PHASE 7c.5c) builds an error value: a distinct
+  // runtime tag (`type(err) == "error"`) carrying a message and an integer code
+  // (0 by default). It mirrors the hosted `error` builtin, so `error("x")` is a
+  // value the AOT program can store, compare, render and catch.
+  CodeGen::Label errorBuiltin;     // AotValue oskel_builtin_error(AotValue* args, long argc, AotClosure* self)
   // `$nonNull` (`a!!`): returns the operand, or fails when it is nil.
   CodeGen::Label nonNullBuiltin;   // AotValue oskel_builtin_non_null(AotValue* args, long argc, AotClosure* self)
   // `$str` (string interpolation and computed keys): renders the operand to a
@@ -259,7 +264,7 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel()
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel()
   };
 }
 
