@@ -634,10 +634,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    were rewritten over `Cell` and `Function::upvalues`, the mechanism the VM
    actually uses, and the `envGcOps` table was removed from `value.cpp`.
 4. **[P2] Decided: keep it.** The JIT is on by default in the development
-   engine (`oskel`/REPL/`-e`; `--no-jit` disables it) and gives ~175x on the
-   integer leaf subset it covers (measured on a tight `while` loop). It is not
-   "unused": it ships in `oskel`. It stays a development tool and is never in
-   `oskelc`/`oskel build`. The remaining work is the later PHASE 8 slices
+   engine (`oskel`/REPL/`-e`; `--no-jit` disables it) and gives ~420x on the
+   integer leaf subset it covers (measured on a tight `while` loop, after the
+   slice-4 register allocation). It is not "unused": it ships in `oskel`. It
+   stays a development tool and is never in `oskelc`/`oskel build`. The
+   remaining work is the later PHASE 8 slices
    (floats, strings, the boxed runtime, calls), not a freeze.
 5. **[P2] [done]** `CHANGELOG.md` exists and follows Keep a Changelog; keep it
    updated before each tag (see `docs/RELEASING.md`).

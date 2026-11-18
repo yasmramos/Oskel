@@ -37,7 +37,7 @@ may change between minor versions.
 
 - **`docs/BACKLOG.md` reflects the tree.** The Env and parity items are marked
   done (VM/AOT parity already runs through `tests/build_binary.cmake`), the JIT
-  item is decided as *keep* (it ships on by default in `oskel` and gives ~175x
+  item is decided as *keep* (it ships on by default in `oskel` and gives ~420x
   on its integer leaf subset), and §6.22 plus `docs/language.md` §16 record the
   one known parity gap: a function renders as `<fn name>` in the VM but `<fn>`
   in the AOT binary, since the AOT closure object has no name field.
@@ -45,7 +45,7 @@ may change between minor versions.
 - **`docs/language.md` now states the real implementation status.** The
   reference claimed "collections (PHASE 6 done)" and "No JIT ... planned for
   PHASE 8+", both stale: PHASE 6.5/6.6/6.7 are complete on the development
-  engine and the JIT slices 1-3 ship in `oskel`. It also said the compiler
+  engine and the JIT slices 1-4 ship in `oskel`. It also said the compiler
   emits "40 opcodes" (it is 39, with 40 the budget ceiling), presented
   `oskelc` as if it existed (`oskel build` is the AOT entry point and `oskelc`
   is not part of 0.1.0), and described the AOT backend as lowering pointers and
