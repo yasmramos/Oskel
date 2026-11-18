@@ -115,6 +115,20 @@ may change between minor versions.
 
 ### Added
 
+- **`std.path`: filesystem paths.** A new standard-library module for joining,
+  splitting and normalising filesystem paths. A path is an ordinary string, not
+  a new type, so a result feeds the file builtins (`readFile`, `writeFile`,
+  `fileExists`) directly and nests, compares and interpolates like any other
+  string. The module is pure Oskel over the portable primitive surface and
+  offers `join`, `basename`, `dirname`, `extension`, `stem`, `withExtension`,
+  `withBasename`, `split`, `isAbsolute`/`isRelative`, `normalize` and
+  `relative`. The separator is `/` on every platform and a `\` is folded to `/`,
+  so the results are deterministic across Linux, macOS and Windows;
+  `normalize`/`relative` match `posixpath.normpath`/`relpath` exactly, with
+  three documented deviations elsewhere (`basename("a/b/")` is `b`,
+  `dirname("a")` is `.`, and `join("a", "/b")` is `a/b`). No new runtime type,
+  opcode or builtin; the VM and `oskel build` agree byte for byte.
+
 - **AOT error values** (PHASE 7c.5c). `error()` and `isError` were unbound in
   the AOT backend (`isError` returned a constant `false`), so value-based
   `try`/`catch` never caught in a native binary. `oskel build` now has a real

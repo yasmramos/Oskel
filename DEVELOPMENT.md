@@ -453,6 +453,20 @@ previous one.
   (the RTC's BCD/binary fields converted to a Unix timestamp in assembly) — so
   `std.datetime.now()`/`today()` work everywhere. See `docs/language.md` §12.4
   and `tests/bare_metal_test.cpp` (`test_qemu_wall_clock`).
+- **Standard library: `std.path`** — **done**: a pure-Oskel module for
+  filesystem paths. A path is an ordinary string, not a new type, so a result
+  feeds the file builtins directly and no new runtime type, opcode or builtin is
+  added. It offers `join`, `basename`, `dirname`, `extension`, `stem`,
+  `withExtension`, `withBasename`, `split`, `isAbsolute`/`isRelative`,
+  `normalize` and `relative`. The separator is `/` on every platform and a `\`
+  is folded to `/`, so the results are deterministic across Linux, macOS and
+  Windows; `normalize`/`relative` match `posixpath.normpath`/`relpath` exactly,
+  with three documented deviations elsewhere (`basename`, `dirname`, `join`).
+  The module is written over the portable primitive surface, avoiding the
+  collection/string methods and `pcall`/`error` the AOT backend does not
+  implement yet, so it behaves identically on the VM and under `oskel build`.
+  See `docs/language.md` §12.11/§18, `tests/57_std_path.oskl` and the AOT
+  fixture `tests/native_build_path.oskl`.
 
 ### PHASE 6.6 — FFI with C (1.0)
 

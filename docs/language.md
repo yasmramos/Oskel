@@ -2185,6 +2185,51 @@ consults a timezone database, so `toOffset`/`toUtc` are exact and a value is the
 same on every machine. The clock comes from the `time()` builtin (§12.4), which
 the AOT backend binds on every target.
 
+### 12.11 Paths
+
+`import std.path;` adds filesystem-path manipulation. A path is an ordinary
+string, not a new type, so a result feeds the file builtins (§12.6) directly and
+nests, compares and interpolates like any other string. The module is pure
+Oskel, so it runs identically on the VM and under `oskel build`.
+
+| Function | Description |
+| --- | --- |
+| `join(parts...)` | Joins the parts with `/`, dropping empty ones and collapsing the separators between them. |
+| `basename(p)` | The last component, with trailing separators ignored. |
+| `dirname(p)` | Everything up to the last separator (`.` for a bare name). |
+| `extension(p)` | The last component's extension, including the dot (`.gz` for `a.tar.gz`). |
+| `stem(p)` | The last component without its extension. |
+| `withExtension(p, ext)` | Replaces the extension; a leading dot in `ext` is optional. |
+| `withBasename(p, name)` | Replaces the last component. |
+| `split(p)` | The path as an array of components (the root is its own element). |
+| `isAbsolute(p)` / `isRelative(p)` | Whether the path starts with `/`. |
+| `normalize(p)` | Resolves `.` and `..` and collapses separators, lexically. |
+| `relative(from, to)` | The path that reaches `to` from `from`. |
+
+```oskl
+import std.path.*;
+
+print(join("a", "b", "c"));            // a/b/c
+print(join("/", "usr", "local", "bin")); // /usr/local/bin
+print(basename("/a/b/c.txt"));         // c.txt
+print(dirname("/a/b/c.txt"));          // /a/b
+print(extension("a.tar.gz"));          // .gz
+print(stem("/a/b/c.txt"));             // c
+print(split("/a/b"));                  // ["/", "a", "b"]
+print(normalize("/a/./b/../c"));       // /a/c
+print(relative("/a", "/a/b/c"));       // b/c
+```
+
+The separator is `/` on every platform, and a `\` is folded to `/` on the way
+in, so the module is deterministic and its results are the same on Linux, macOS
+and Windows. Three cases deviate from POSIX `posixpath`, all deliberately:
+`basename("a/b/")` is `b` (a trailing separator is ignored, as Rust's
+`Path::file_name` does, so `basename` and `dirname` stay inverse),
+`dirname("a")` is `.` (the parent of a bare name is the current directory), and
+`join("a", "/b")` is `a/b` (a separator between parts collapses rather than
+discarding the parts before it). `normalize` and `relative` match
+`posixpath.normpath`/`relpath` exactly.
+
 ---
 
 ## 13. Errors and diagnostics
@@ -2688,9 +2733,9 @@ print(std.math.sqrt(16));   // 4
 print(sqrt(25));            // 5
 ```
 
-The standard library ships `std.math` (§12.3), `std.json` (§12.9) and
-`std.datetime` (§12.10). All are ordinary modules, so the same four import
-forms apply:
+The standard library ships `std.math` (§12.3), `std.json` (§12.9),
+`std.datetime` (§12.10) and `std.path` (§12.11). All are ordinary modules, so
+the same four import forms apply:
 
 ```oskel
 import std.json;             // std.json.parse, std.json.stringify, ...
