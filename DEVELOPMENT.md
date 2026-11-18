@@ -1020,6 +1020,27 @@ Slices, each independently shippable:
       is untouched. Covered by `tests/lower_test.cpp`
       (`testExecArrayMethodsAlloc`), the freestanding `test_array_methods_alloc`
       (values and the error paths) and the `oskel build` fixture.
+    - **7c.3g** (done) — the bound map methods: `keys`, `values`, `entries`,
+      `has`, `get`, `set`, `delete`, `clear`, `merge` and `clone`. They are the
+      map twin of the array methods and bind the same way (the receiver captured
+      in a shared cell, the body reached through `oskel_call`), with ten
+      selectors (0..9) in `bindMapMethod`'s table and a shared
+      `emitLoadMapReceiver`. `keys`/`values`/`entries` materialise a fresh array
+      through `emitMapListMethod` + `emitArrayAlloc`: `keys` yields the key
+      strings, `values` the value slots and `entries` a two-element `[key,
+      value]` array per entry. `has`/`get`/`delete` share a one-string-key
+      preamble (`emitMapKeyQueryMethod`) and a linear `mapFind`; `set` upserts
+      and `merge` folds another map in (last writer wins), both returning the
+      receiver, and `delete`/`clear` mutate it in place. The list loop keeps its
+      state in stack slots, never in r13/r14 (the allocator's cursor and end),
+      because the entry filler allocates and an allocation clobbers every
+      caller-saved register. An unknown map member is `nil`, matching the hosted
+      `ops::memberGet`, which returns `Value()` for a map rather than failing
+      (arrays still fail with "value has no such member"). No new opcode and no
+      compiler change: the member form of `GETTABLE` plus `CALL` already carries
+      it, so the `.oskc` is untouched. Covered by the freestanding
+      `test_map_methods` (values, mutation and the error paths) and the
+      `oskel build` fixture `tests/native_build_map_methods.oskl`.
     - **7c.4a** (done) — the hidden `$nonNull` and `$isError` helpers. The
       compiler emits `$nonNull` for the non-null assertion `a!!` and `$isError`
       for `try` / `x catch y` (PHASE 6.5/6.7); the AOT backend had no binding
@@ -1674,7 +1695,7 @@ Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair, which `ITER` now yields directly, no new opcode and no helper call) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.4a-d, 7c.5a, 7c.5c, 7c.6, 7d, 7e, 7g done; 7c.5b — the remaining builtins — in progress; 7f — FFI in AOT — 7f.1-7f.6 done, scalar and `cstring`/`ptr` `extern "C"` resolve in the hosted backend, struct/callback/variadic still open)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.4a-d, 7c.5a, 7c.5c, 7c.6, 7d, 7e, 7g done; 7c.5b — the remaining builtins — in progress; 7f — FFI in AOT — 7f.1-7f.6 done, scalar and `cstring`/`ptr` `extern "C"` resolve in the hosted backend, struct/callback/variadic still open)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)

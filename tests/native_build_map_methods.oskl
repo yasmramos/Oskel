@@ -1,0 +1,82 @@
+// Fixture for `oskel build` (tests/build_binary.cmake).
+//
+// The bound map methods (PHASE 7c.3g), the map twin of the array methods. Like
+// `arr.push`, `m.<name>` captures its receiver in a closure, so the call
+// reaches a builtin that mutates or scans the same map; the backend used to
+// answer each with "value has no such member". This fixture is checked against
+// the VM, so both the return value and the mutation are pinned by a real
+// program.
+
+var m = {"a": 1, "b": 2, "c": 3};
+
+// The list methods: `keys`, `values` and `entries` each return a fresh array
+// and leave the receiver untouched. `entries` yields two-element `[key, value]`
+// arrays.
+print(m.keys());
+print(m.values());
+print(m.entries());
+print(m);
+
+// `has`, `get`: membership and lookup, with the optional default.
+print(m.has("a"));
+print(m.has("z"));
+print(m.get("a"));
+print(m.get("z"));
+print(m.get("z", 99));
+
+// `set` upserts and returns the receiver; `delete` removes and returns whether
+// the key was present.
+print(m.set("d", 4));
+print(m);
+print(m.delete("a"));
+print(m);
+print(m.delete("zz"));
+print(m);
+
+// `merge` folds another map into the receiver (last writer wins) and returns
+// the receiver; `clone` returns an independent copy.
+print(m.merge({"b": 20, "e": 5}));
+print(m);
+var c = m.clone();
+c.set("f", 6);
+print(c);
+print(m);
+
+// `length` still reads the live size.
+print(m.length);
+
+// An unknown member is nil (the hosted `ops::memberGet` returns `Value()` for a
+// map rather than failing), which is how `std.datetime` reads optional fields.
+print(m.nope);
+print(type(m.nope));
+
+// `clear` empties in place and returns the receiver.
+print(m.clear());
+print(m);
+print(m.length);
+
+// The methods are first-class: binding one captures the receiver, so the
+// detached closure still mutates the same map.
+var keys = m.keys;
+m.set("g", 7);
+print(keys());
+var set = m.set;
+set("h", 8);
+print(m);
+
+// Methods inside a loop, draining a map through its keys.
+var acc = {};
+var i = 0;
+while (i < 4) {
+  acc.set("k" + str(i), i * i);
+  i = i + 1;
+}
+print(acc);
+var ks = acc.keys();
+var j = 0;
+while (j < ks.length) {
+  acc.delete(ks[j]);
+  j = j + 1;
+}
+print(acc);
+print(acc.length);

@@ -251,6 +251,24 @@ struct AotRuntimeHandles {
   CodeGen::Label arrayConcatMethod;    // AotValue oskel_builtin_array_concat(...)
   CodeGen::Label arrayReversedMethod;  // AotValue oskel_builtin_array_reversed(...)
   CodeGen::Label arrayCloneMethod;     // AotValue oskel_builtin_array_clone(...)
+  // Bound map methods (PHASE 7c.3g). `m.<method>` on a map yields a closure
+  // that captured its receiver in one upvalue cell, exactly like the array
+  // methods above and the hosted `bindMap`. `bindMapMethod` builds that closure
+  // from the receiver (rdi:rsi) and a selector (rdx); the method bodies are
+  // ordinary builtins with the proto convention, so a `CALL` reaches them
+  // through `oskel_call`. `oskel_member_get` dispatches the ten names through a
+  // selector-indexed table.
+  CodeGen::Label bindMapMethod;    // AotValue oskel_bind_map_method(AotValue map, long which)
+  CodeGen::Label mapKeysMethod;    // AotValue oskel_builtin_map_keys(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label mapValuesMethod;  // AotValue oskel_builtin_map_values(...)
+  CodeGen::Label mapEntriesMethod; // AotValue oskel_builtin_map_entries(...)
+  CodeGen::Label mapHasMethod;     // AotValue oskel_builtin_map_has(...)
+  CodeGen::Label mapGetMethod;     // AotValue oskel_builtin_map_get(...)
+  CodeGen::Label mapSetMethod;     // AotValue oskel_builtin_map_set(...)
+  CodeGen::Label mapDeleteMethod;  // AotValue oskel_builtin_map_delete(...)
+  CodeGen::Label mapClearMethod;   // AotValue oskel_builtin_map_clear(...)
+  CodeGen::Label mapMergeMethod;   // AotValue oskel_builtin_map_merge(...)
+  CodeGen::Label mapCloneMethod;   // AotValue oskel_builtin_map_clone(...)
 };
 
 inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
@@ -276,7 +294,9 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel()};
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel()};
 }
 
 // The selector `oskel_compare` accepts: the low nibble of the x86-64 condition
