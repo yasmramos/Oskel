@@ -254,7 +254,7 @@ void testLetReassignment() {
   expectCompileError("let x = 10;\nx = 20;\n", "immutable reassignment");
   expectCompileError("let x = 10;\nx += 1;\n", "immutable compound assignment");
 
-  // Redeclaring with `var` lifts the restriction, exactly like `Env::define`.
+  // Redeclaring with `var` lifts the restriction.
   Bytecode bc = compileSource("let x = 10;\nvar x = 20;\nx = 30;\n");
   assert(!bc.code.empty());
 }

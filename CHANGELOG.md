@@ -9,7 +9,24 @@ may change between minor versions.
 
 ## [Unreleased]
 
+### Removed
+
+- **The unused `Env` scope chain and `Function::closure`.** The VM keeps locals
+  in reference-counted `Cell`s and `Function::upvalues`, so `Env` was never
+  constructed and `closure` was only ever assigned by the GC test. `src/env.h`
+  and `src/env.cpp` are deleted, the field is dropped from `Function`, and the
+  `envGcOps` table and the closure edge in the `value.cpp` function visitor go
+  with them. The three `gc_test.cpp` cases are rewritten over `Cell` and
+  `Function::upvalues`, which is what the VM actually uses.
+
 ### Changed
+
+- **`docs/BACKLOG.md` reflects the tree.** The Env and parity items are marked
+  done (VM/AOT parity already runs through `tests/build_binary.cmake`), the JIT
+  item is decided as *keep* (it ships on by default in `oskel` and gives ~175x
+  on its integer leaf subset), and §6.22 plus `docs/language.md` §16 record the
+  one known parity gap: a function renders as `<fn name>` in the VM but `<fn>`
+  in the AOT binary, since the AOT closure object has no name field.
 
 - **`docs/language.md` now states the real implementation status.** The
   reference claimed "collections (PHASE 6 done)" and "No JIT ... planned for
@@ -63,6 +80,15 @@ may change between minor versions.
   body identical to the interpreter.
 
 ### Added
+
+- **A VM/AOT parity fixture for `switch`, `defer` and `struct`.** The curated
+  parity list covered functions, collections, ranges, slices and builtins but
+  never exercised these three constructs, which the AOT backend lowers
+  correctly. `tests/native_build_control_flow.oskl`
+  (`oskel.build_binary_control_flow`) covers `switch` on an int, a string and a
+  range, `defer` in LIFO order across nested scopes, and `struct` with typed and
+  untyped fields, nesting, a struct return type and structural equality; the
+  CMake script asserts the VM and the binary agree byte for byte.
 
 - **`bindgen`, the C binding generator.** A standalone executable (built next to
   `oskel`, shipped in `bin/`, and *not* linked into the engine) that reads a C

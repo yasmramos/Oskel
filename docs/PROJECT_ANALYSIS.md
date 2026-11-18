@@ -22,7 +22,7 @@ tests and no CI).
 | Compiler AST→bytecode | PHASE 6.7 complete | `src/compiler.cpp` (2,853 L): literals, locals/globals, control flow, closures, collections, types, modules |
 | Register-based VM | PHASE 6 complete | `src/vm.cpp` (815 L); **39/40 opcodes** (`static_assert(kOpcodeCount <= 40)`) |
 | AST interpreter | **Retired** | no `src/interpreter.cpp`; the VM is the only engine |
-| Shared runtime | Working | `src/value.cpp`, `src/ops.cpp` (operators), `src/builtins.cpp` (1,524 L), `src/env.cpp`, `src/gc.cpp` |
+| Shared runtime | Working | `src/value.cpp`, `src/ops.cpp` (operators), `src/builtins.cpp` (1,524 L), `src/gc.cpp` |
 | AOT backend | PHASE 7 in progress (7a, 7b, 7c.0–7c.2) | `src/native/*` (codegen, lower, runtime, dtoa, elf, pe, arena, freestanding platform, entry) |
 | Tests | 50 `.oskl` + 100 error `.oskl` + 4 check `.oskl` + 9 examples + 12 C++ suites | `tests/`, `tests/errors/`, `tests/check/`, `examples/`, wired into CTest |
 | CI | Two workflows | `.github/workflows/{cmake-multi-platform,artifacts}.yml` (Linux, Windows, macOS) |

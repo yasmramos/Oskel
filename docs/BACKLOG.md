@@ -277,6 +277,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     length (via `oskel_utf8_len`) before the lookup; an out-of-range index still
     reports the error. Pinned by `tests/freestanding_test.cpp`
     (`test_negative_string_index`).
+22. **[P1]** VM/AOT divergence in a function's text representation: `repr`/`str`
+    of a named function is `<fn name>` in the VM (`<native fn name>` for a host
+    binding) but `<fn>` in the AOT binary, because the AOT closure object is
+    `(code, arity, upvalueCount)` with no name field. Fixing it means widening
+    the closure object and every site that builds one (`emitClosure`, the bound
+    array methods, the lowerer's capture stores) and threading the proto name
+    into the emitter. The AOT form is pinned by `tests/freestanding_test.cpp`;
+    the parity fixtures avoid printing a bare function until then.
 
 ---
 
@@ -380,16 +388,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    ignores a nested call. Document it and assert.
 3. **[P1]** `GcNode::track()` does not validate that the object is not already
    tracked (`link()` does).
-4. **[P1]** `Env` uses `weak_from_this().use_count()` for its refcount, which is
-   fragile if the object is not owned by a `make_shared`; the code assumes it.
-5. **[P1]** `GcNode::ops->pin` for `Env` uses `shared_from_this()`, which throws
-   if the `Env` is not owned by a `shared_ptr`.
-6. **[P1]** `gcCollect` does not handle objects created during collection: a
+4. **[P1]** `gcCollect` does not handle objects created during collection: a
    `clear` that creates an object moves `registryHead` and can invalidate the
    iterator; pins avoid it but there is no test.
-7. **[P2]** `gcCollectIfNeeded` under `OSKEL_GC_STRESS` collects at every safe
+5. **[P2]** `gcCollectIfNeeded` under `OSKEL_GC_STRESS` collects at every safe
    point but is not exercised by any test.
-8. **[P2]** `threshold` grows with `trackedCount` without bound.
+6. **[P2]** `threshold` grows with `trackedCount` without bound.
 
 ---
 
@@ -565,8 +569,16 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 19. Tests
 
-1. **[P0]** Add `parity_test.cpp` comparing VM and AOT on the same programs;
-   the divergences in §6 are only catchable this way.
+1. **[P0] [done]** VM/AOT parity exists: `tests/build_binary.cmake` runs each
+   `tests/native_build_*.oskl` fixture on both engines (the VM is the
+   reference) and asserts identical stdout and exit code, plus the static-link
+   check. The list is curated, not exhaustive: a sweep of `tests/*.oskl` shows
+   48 of them build in AOT and agree with the VM, while the rest either use
+   `pcall` (the documented 7f gap) or a collection/string method the AOT
+   backend does not implement. Widening the curated list to every agreeing
+   script is the remaining work; `tests/native_build_control_flow.oskl`
+   (registered as `oskel.build_binary_control_flow`) closes the `switch`/
+   `defer`/`struct` hole the earlier fixtures left.
 2. **[P0]** Add an AOT test that `try`/`catch` catches an error, `pcall`
    recovers, `error()` works and structural equality matches the VM.
 3. **[P1]** Add an AOT wrong-arity test.
@@ -606,11 +618,19 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 1. **[P1]** Add `clang-format` with a committed config and a check in CI.
 2. **[P1]** Add `-Werror` to the build (at least in CI) so warnings cannot
    accumulate.
-3. **[P1]** Decide the fate of `Env` (`src/env.h`/`src/env.cpp`): it is still
-   referenced from `value.*`; either use it or delete it.
-4. **[P2]** Decide the fate of the JIT: it is limited and unused in the
-   product. Freeze it behind a flag or extend it; do not leave it half-done.
-5. **[P2]** Add `CHANGELOG.md`.
+3. **[P1] Done.** `Env` (`src/env.h`/`src/env.cpp`) was deleted: the VM keeps
+   locals in reference-counted `Cell`s, so `Env` and `Function::closure` were
+   dead code kept only by `tests/gc_test.cpp`. The three `gc_test.cpp` cases
+   were rewritten over `Cell` and `Function::upvalues`, the mechanism the VM
+   actually uses, and the `envGcOps` table was removed from `value.cpp`.
+4. **[P2] Decided: keep it.** The JIT is on by default in the development
+   engine (`oskel`/REPL/`-e`; `--no-jit` disables it) and gives ~175x on the
+   integer leaf subset it covers (measured on a tight `while` loop). It is not
+   "unused": it ships in `oskel`. It stays a development tool and is never in
+   `oskelc`/`oskel build`. The remaining work is the later PHASE 8 slices
+   (floats, strings, the boxed runtime, calls), not a freeze.
+5. **[P2] [done]** `CHANGELOG.md` exists and follows Keep a Changelog; keep it
+   updated before each tag (see `docs/RELEASING.md`).
 6. **[P2]** Add `CONTRIBUTING.md` (the rules now live only in
    `DEVELOPMENT.md`/`AGENTS.md`).
 7. **[P2]** Add a `oskel.toml` for native dependencies.
