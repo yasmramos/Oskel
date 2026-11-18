@@ -235,6 +235,24 @@ int main() {
           "a pointer-to-function-pointer typedef is an opaque ptr");
   }
 
+  // The register thunks cover at most `kMaxExternArgs` eightbytes; a longer
+  // non-variadic signature would be rejected by the compiler, so it is skipped
+  // rather than emitted. A variadic is exempt (it goes through libffi).
+  {
+    const bindgen::Result result = bindgen::generate(
+        "int six(int a, int b, int c, int d, int e, int f);\n"
+        "int seven(int a, int b, int c, int d, int e, int f, int g);\n"
+        "void vlog(const char *fmt, ...);\n",
+        "t.h");
+    check(contains(result.text, "fn six(a: int32, b: int32, c: int32, d: int32, e: int32, f: int32): int32;"),
+          "a six-value signature is within the register budget");
+    check(contains(result.text, "// skipped: seven: passes 7 register-sized values"),
+          "a seven-value signature is skipped");
+    check(contains(result.text, "// fn vlog(fmt: cstring, ...): void;"),
+          "a variadic is exempt from the budget");
+    check(result.emitted == 1, "only the in-budget declaration is emitted");
+  }
+
   // A declaration named after an Oskel keyword cannot be bound.
   {
     const bindgen::Result result = bindgen::generate("int for(int x);\n", "t.h");

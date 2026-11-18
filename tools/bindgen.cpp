@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "ast.h"  // isKnownTypeName / isIntegerTypeName: the FFI vocabulary
+#include "ffi_types.h"  // kMaxExternArgs: the register budget the thunk enforces
 
 namespace {
 
@@ -871,6 +872,17 @@ class Bindgen {
     }
     if (!paramProblem.empty()) {
       skipped_.push_back(name + ": " + paramProblem);
+      return;
+    }
+    // The register thunks cover at most `kMaxExternArgs` eightbytes; the
+    // compiler rejects a longer non-variadic signature, so emitting it would
+    // produce a module `oskel -c` refuses. A variadic call goes through libffi
+    // and is exempt.
+    if (!variadic && params.size() > ffi::kMaxExternArgs) {
+      skipped_.push_back(
+          name + ": passes " + std::to_string(params.size()) +
+          " register-sized values, more than the " + std::to_string(ffi::kMaxExternArgs) +
+          " the FFI thunks cover");
       return;
     }
 

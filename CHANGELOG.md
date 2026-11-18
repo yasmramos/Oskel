@@ -160,6 +160,11 @@ may change between minor versions.
   node, parser rule, opcode, VM or compiler change: `bindgen` only writes the
   `extern "C"` the engine already accepts.
 
+- **`bindgen` respects the FFI register budget.** A non-variadic declaration
+  passing more than `kMaxExternArgs` (6) register-sized values is now skipped
+  with a reason instead of being emitted; the compiler rejects such a signature,
+  so the old output was a module `oskel -c` refused.
+
 - **`std.collections`: functional helpers over arrays.** A new standard-library
   module for mapping, filtering, folding, searching, reshaping, grouping and
   sorting. It offers `map`, `filter`, `reject`, `each`, `fold`, `sum`, `sumBy`,
