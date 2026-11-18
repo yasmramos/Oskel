@@ -343,3 +343,80 @@ the ceiling is a named constant and not a hard-coded loop count.
   Mitigation: the offset constants live in one place
   (`src/native/bare_metal.cpp:63-67`) and the test reads the same
   `kBMBssBytes` the emitter uses.
+
+---
+
+## 9. The keyboard slice (input)
+
+Status: **implemented** (same backend-only scope as the timer slice above).
+This is the "second thing" the timer section anticipated: the first device
+interrupt that carries *data* into the kernel, and the first builtin that reads
+the outside world for a value rather than printing to it.
+
+### 9.1 What it adds
+
+- **IRQ1 handler.** After the PIC remap IRQ1 is vector `0x21`. The handler
+  reads the scancode from the i8042 data port (`0x60`), tracks the two shift
+  keys, translates a *make* code to ASCII through one of two 128-byte tables
+  (unshifted and shifted), appends the character to a ring buffer and
+  acknowledges the PIC with the same EOI-then-`iretq` tail as the timer
+  handler. A *break* code (bit 7 set) only updates the shift state.
+- **PIC mask.** The master PIC is now masked with `0xFC` instead of `0xFE`,
+  unmasking IRQ1 alongside IRQ0. Nothing else changes: the slave stays masked.
+- **Ring buffer.** A 256-byte buffer with `head`/`tail` words, all in the
+  zeroed kernel-data page (`.bss`). The IRQ1 handler is the producer, the
+  `oskel_read` thunk the consumer, so a keystroke typed while the program is
+  busy is queued instead of lost. Keeping it in `.bss` means no data segment
+  and no relocation.
+- **`oskel_read` thunk** (bare-metal runtime). Fills a caller buffer with one
+  line and returns the byte count, consuming the newline. On an empty buffer it
+  `hlt`s (interrupts are enabled while the program runs) and wakes on the next
+  keystroke or timer tick.
+- **`input([prompt])` builtin.** The public name reads one line through
+  `oskel_read` and returns it as a string (an empty line is `""`, matching the
+  hosted `input`). It is seeded only for the bare-metal target: the shared
+  runtime references `entry.read` only under `hasInput`, and the other targets
+  keep `input` unresolved, so a program that calls it on Linux/Windows fails
+  the build (`exit 65`) exactly like any other unseeded builtin.
+
+### 9.2 Mandatory checklist (AGENTS.md)
+
+| Question | Answer |
+|---|---|
+| New lexer token? | No |
+| New AST node? | No |
+| New parser rule? | No |
+| New bytecode opcode? | No |
+| Opcode 1:1 or 1:2 ASM? | N/A — no new opcode |
+| New VM logic? | No |
+| New compiler logic? | No — `src/compiler.cpp` untouched |
+
+The slice is backend-only, plus one seeded builtin in the AOT runtime. The
+keyboard handler is prelude code, like the timer handler; writing handlers in
+Oskel stays a later language-surface question.
+
+### 9.3 Testing
+
+**Structural (always runs).** The existing `test_interrupt_setup_is_present`
+gains two checks: the master PIC mask `0xFC` to port `0x21` (the `mov dx, 0x21;
+mov al, 0xFC; out dx, al` byte sequence), and the presence of the scancode
+table (the unshifted `qwerty` row).
+
+**End-to-end (QEMU, gated by `OSKEL_REQUIRE_QEMU`).** Host-side key injection
+(QEMU monitor `sendkey`) does **not** reliably reach the guest, so the *guest*
+types: the test patches the preamble's `sti; call mainEntry` to first run a
+stub that queues scancodes through the i8042 (`0xD2` to port `0x64`, the
+scancode to port `0x60`; the controller raises IRQ1, and reading `0x60` in the
+handler clears the buffer for the next byte), then `jmp`s to `mainEntry`. The
+program calls `input("> ")` and prints the result; the test asserts the serial
+output is exactly `> got: hi\n` and the exit code is `0`. It is deterministic
+and host-independent.
+
+### 9.4 What it does not do
+
+No key repeat, no Caps Lock, no arrow keys, no Ctrl/Alt, no scan-code set 2
+(the default set 1 is what the i8042 delivers), no cursor editing in `input`
+(the line buffer is append-only), no `input` on the other targets. Those are
+later slices; this one proves the *input path* — device interrupt → handler →
+kernel buffer → builtin — end to end.
+

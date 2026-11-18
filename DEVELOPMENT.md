@@ -51,9 +51,8 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `module_resolver.cpp` | dotted module path | source file path | ✅ |
 | `vm.cpp` | `Bytecode*` | execution | ✅ |
 | `main.cpp` | CLI | full pipeline | ✅ (VM as dev engine, PHASE 4) |
-| `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slices 1-3 |
+| `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slices 1-4 |
 | `value.cpp` | `Value`, tagged union | shared runtime | ✅ |
-| `env.cpp` | `Env`, lexical scope chain | **unused** (see note) | ⚠️ |
 | `builtins.cpp` / `ops.cpp` | native builtins, shared operators | runtime library | ✅ |
 | `ffi.cpp` | `extern "C"` declarations | marshalling natives | ✅ PHASE 6.6 |
 | `diagnostic.cpp` | `CompileError`, `Warning`, `RuntimeError` | stderr output | ✅ |
@@ -70,25 +69,21 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `native/entry.cpp` | program entry label | `_start`/entry + prelude (Linux syscalls, Windows kernel32) | ✅ PHASE 7c.0/7e |
 | `native/bare_metal.cpp` | code + entry | multiboot ELF32/i386 kernel (bare-metal prelude + trampoline) | ✅ PHASE 7g |
 
-**Note on `env.cpp`.** It is the lexical scope chain of the retired AST
-interpreter. The VM keeps locals in reference-counted `Cell`s and never
-constructs an `Env`, and `Function::closure` (the only `Env` owner left in
-`value.h`) is never assigned, so `env.cpp` is dead code kept only by
-`tests/gc_test.cpp`. It is not part of the AST interpreter path (which is
-gone) nor of the VM; it can be deleted once `gc_test.cpp` drops it. The
-`functionGcOps` visitor in `value.cpp` still walks `closure`, so removing it
-is a small, self-contained cleanup.
-
 ### Toolchain binaries and the compiler boundary
 
-`oskel` ships as a single binary until PHASE 7d. After the split:
+`oskel` ships as a single binary today, and `oskel build` is the AOT entry
+point inside it. PHASE 7d wired that subcommand into the CLI; the split into a
+separate host compiler is still pending, so the two binaries below are the
+target of that split, not the current state:
 
 - `oskel` development engine (run, REPL, -c). Includes the VM and the JIT (the
   JIT uses the project's own `native/codegen.h` emitter, not AsmJIT).
 - `oskelc` host compiler (oskelc file.oskl -o app). Reads sources and
   writes the ELF with the project's own `native/codegen.cpp` and
-  `native/elf.cpp` (no AsmJIT, no ELFIO). Links against musl static.
-- `oskel build` thin alias over `oskelc`
+  `native/elf.cpp` (no AsmJIT, no ELFIO). Links against musl static. Planned;
+  not part of 0.1.0.
+- `oskel build` thin alias over `oskelc` (the goal; today it runs the AOT
+  backend in-process)
 
 A third, standalone binary ships alongside them: `bindgen`, the C binding
 generator (`docs/bindgen.md`). It reads a C header and writes an Oskel
@@ -338,7 +333,7 @@ previous one.
 - `in` for arrays, maps, strings and ranges
 - Retire the temporary `PRINT` opcode: from 6c/6e every `print` arity compiles
   to `CALL`, and the opcode is deleted at the 6f gate (§3.6)
-- Already in the tree: the shared `Value` and lexical `Env` (`value.cpp`, `env.cpp`) plus the cycle collector in `gc.cpp`. Slice 6a is done: top-level `fn` declarations, parameters, `return`, recursion and general calls compile and run on the VM. Slice 6b is done: `GETUPVAL`/`SETUPVAL`, upvalue descriptors, lambdas and closures that escape their defining scope (verified by `examples/closures.oskl` and `tests/09_lambdas.oskl`). The compiler still rejects collections and `for-in` with a `(Phase 6)` message; those land in 6c.
+- Already in the tree: the shared `Value` (`value.cpp`) plus the cycle collector in `gc.cpp`. Slice 6a is done: top-level `fn` declarations, parameters, `return`, recursion and general calls compile and run on the VM. Slice 6b is done: `GETUPVAL`/`SETUPVAL`, upvalue descriptors, lambdas and closures that escape their defining scope (verified by `examples/closures.oskl` and `tests/09_lambdas.oskl`). The compiler still rejects collections and `for-in` with a `(Phase 6)` message; those land in 6c.
 - Memory in the VM: closures that capture each other's variables, and tables that contain themselves (directly or through a closure stored in them), form cycles that reference counting cannot free. A `Cell` registers with the cycle collector when a closure captures it, and `Function` must report its `upvalues` (the captured cells) as well as `capturedGcNodes` from `visit`; a missing edge makes every cycle through a cell immortal. The VM runs `gcCollectIfNeeded()` at `CLOSURE` and `NEWTABLE`, the instructions that create the objects cycles are made of, so a program that never creates a closure is still collected. Regression tests: `testCapturedCellsAreNotRetainedByTheVM`, `testClosureCyclesAreCollected`, `testTableCyclesAreCollectedWithoutClosures` and `testClosureStoredInTheTableItCapturesIsCollected` in `tests/vm_test.cpp`; build it with `-DOSKEL_GC_STRESS` to collect at every safe point.
 - **6f done**: `PRINT` retired. Every `print` arity compiles to `CALL`. The
   opcode count is now 39/40.
@@ -1502,6 +1497,28 @@ perform is never lost; a comparison whose result is reused afterwards stays
 unfused and correct. The same loop drops to about 320x the interpreter, within
 about 1.4x of the hand-written loop. The fusion rewrites *how* one opcode and its
 branch are emitted, so it is still 1:1 with the bytecode.
+
+Slice 4 (done) replaces the fixed per-slot register map with **web-based register
+allocation and copy coalescing**. The emitter used to tie a slot to a register by
+index (`R0` to the first pool register, `R1` to the second, ...), so a temporary
+reused for two values forced a `mov` at each reuse and every `GETLOCAL`/
+`SETLOCAL` copied between the temporary's register and the local's. The emitter
+now resolves every read and write through a per-instruction allocation table
+(`readReg[i][slot]`/`writeReg[i][slot]`), and `allocateRegisters` fills it: it
+builds a *web* per slot (the definitions a single live use can observe, via
+reaching definitions unioned over the live points), interferes webs that are live
+at the same point, coalesces the copies that do not interfere (a `MOVE`, a local
+copy, or an in-place `s = s + x`) after dropping the spurious interference edge
+between a pure-copy web and its source, and colors the merged graph greedily over
+the seven-register pool. A web the pool cannot cover keeps its 16-byte stack
+slot, exactly like the old overflow path, so the code stays correct when the
+register pressure exceeds the pool. A liveness pass that mirrors the emitter's
+fold decisions also drops a definition no read observes (`deadDef`), which
+removes the constant a folded expression left behind. The integer loop falls from
+17 instructions to 9 (a hand-written `-O2` C++ loop is 7) and from 0.051s to
+0.039s, within about 1.08x of the hand-written loop and about 420x the
+interpreter. The allocation rewrites *where* a value lives, never *how many*
+opcodes run, so it is still 1:1 with the bytecode.
 
 Later slices widen the subset (floats, then strings, then the boxed value
 runtime, then calls and guards) and add the tiering policy (compile after a

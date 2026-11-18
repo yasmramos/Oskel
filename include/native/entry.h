@@ -28,11 +28,20 @@ struct RuntimeHandles {
   // bare metal -- because it is the one value the embedded runtime cannot
   // compute from memory.
   CodeGen::Label now;
+  // `long oskel_read(char* buf, long len)`: read one line into `buf` (the
+  // terminating newline is consumed, not stored) and return the byte count. It
+  // is the input counterpart to `write` and the only prelude-owned channel the
+  // `input` builtin reads through. Only the bare-metal prelude binds it -- it
+  // drains the IRQ1 keyboard ring buffer, blocking with `hlt` on an empty one --
+  // because the bare-metal slice is the one that gives the kernel a keyboard;
+  // the other preludes leave the label unbound, and the shared runtime never
+  // references it unless `input` was seeded (see `lowerToX64`).
+  CodeGen::Label read;
 };
 
 inline RuntimeHandles newRuntimeHandles(CodeGen& code) {
   return RuntimeHandles{code.newLabel(), code.newLabel(), code.newLabel(),
-                        code.newLabel()};
+                        code.newLabel(), code.newLabel()};
 }
 
 // The generated binary's bump arena (PHASE 7c.1c). `_start` maps a region and

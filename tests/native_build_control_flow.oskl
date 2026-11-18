@@ -1,0 +1,75 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): the control-flow and
+// data-shape constructs the AOT backend lowers but no earlier fixture
+// exercised -- `switch` (int, string and range cases), `defer` (LIFO order
+// across nested scopes) and `struct` (typed and untyped fields, nesting, a
+// struct return type, structural equality). Everything here stays on the
+// portable primitive surface, so the same program runs on the development VM
+// (as an ordinary script test) and compiles to a native binary, and the CMake
+// script asserts the two agree byte for byte.
+
+struct Point { x: int; y: int; }
+struct Line { a: Point; b: Point; }
+struct Pair { first; second; }
+
+fn classify(n: int): string {
+  switch (n) {
+    case 0: { return "zero"; }
+    case 1: case 2: { return "small"; }
+    case 10..=20: { return "teens"; }
+    default: { return "many"; }
+  }
+}
+
+fn nameOf(key: string): int {
+  switch (key) {
+    case "a": { return 1; }
+    case "b": { return 2; }
+    default: { return 0; }
+  }
+}
+
+fn origin(): Point {
+  return Point { x: 0, y: 0 };
+}
+
+fn trace() {
+  defer { print("defer outer"); }
+  print("body outer");
+  {
+    defer { print("defer inner"); }
+    print("body inner");
+  }
+}
+
+print("switch int =", classify(0), classify(2), classify(15), classify(99));
+print("switch str =", nameOf("a"), nameOf("b"), nameOf("z"));
+
+// A struct is a map at runtime: member access, `len`, `in`, `for-in` and
+// structural equality all agree between the engines.
+let p = Point { x: 3, y: 4 };
+print("struct =", p.x + p.y, len(p), "x" in p);
+print("struct repr =", p);
+
+// Field order does not matter and an untyped field accepts any value.
+let pair = Pair { second: "two", first: 1 };
+print("untyped =", pair.first, pair.second);
+
+// A struct nests, and a struct name is a valid return type.
+let line = Line { a: p, b: origin() };
+print("nested =", line.a.x, line.a.y, line.b.x, line.b.y);
+print("origin =", origin());
+
+// Structural equality: two distinct struct values with equal fields compare
+// equal, and nesting is compared field by field.
+print("eq =", Point { x: 1, y: 2 } == Point { x: 1, y: 2 });
+print("ne =", Point { x: 1, y: 2 } == Point { x: 1, y: 3 });
+print("eq nested =", Line { a: p, b: p } == Line { a: p, b: p });
+
+trace();
+
+// Slicing and the code-point builtins, checked here so the AOT string paths
+// that back `switch` on a string and `struct` field names are exercised.
+let s = "hello";
+print("slice =", s[1:4], s[0], s[::2]);
+print("codepoints =", ord("A"), chr(66));
+print("done");

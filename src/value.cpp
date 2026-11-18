@@ -1,7 +1,5 @@
 #include "value.h"
 
-#include "env.h"
-
 #include <cmath>
 #include <charconv>
 #include <utility>
@@ -502,12 +500,11 @@ void mapClear(GcNode& node) { static_cast<Map&>(node).clear(); }
 
 std::size_t functionRefCount(const GcNode& node) { return static_cast<const Function&>(node).refs; }
 
-// A function owns its defining scope, the cells it captured, and the objects its
-// native captured state keeps alive. Anything it owns that this does not report
-// looks like a reference from outside, which keeps cycles through it alive.
+// A function owns the cells it captured and the objects its native captured
+// state keeps alive. Anything it owns that this does not report looks like a
+// reference from outside, which keeps cycles through it alive.
 void functionVisit(const GcNode& node, GcNode::Visitor visitor, void* context) {
   const Function& function = static_cast<const Function&>(node);
-  if (function.closure) visitor(*function.closure, context);
   // Captured cells are shared between closures, so each one is a node of its own.
   // The VM tracks a cell as soon as a closure captures it.
   for (const CellPtr& cell : function.upvalues) {
@@ -520,7 +517,6 @@ void functionVisit(const GcNode& node, GcNode::Visitor visitor, void* context) {
 
 void functionClear(GcNode& node) {
   Function& function = static_cast<Function&>(node);
-  function.closure.reset();
   function.native = nullptr;
   function.upvalues.clear();
   function.capturedGcNodes.clear();
@@ -534,31 +530,10 @@ void cellVisit(const GcNode& node, GcNode::Visitor visitor, void* context) {
 
 void cellClear(GcNode& node) { static_cast<Cell&>(node).value = Value(); }
 
-// Environments are owned through std::shared_ptr, so their reference count is
-// the shared count. `parent` and every bound value are strong references.
-std::size_t envRefCount(const GcNode& node) {
-  return const_cast<Env&>(static_cast<const Env&>(node)).weak_from_this().use_count();
-}
-
-void envVisit(const GcNode& node, GcNode::Visitor visitor, void* context) {
-  const Env& env = static_cast<const Env&>(node);
-  if (env.parent) visitor(*env.parent, context);
-  for (const auto& entry : env.vars) gcVisit(entry.second.value, visitor, context);
-}
-
-void envClear(GcNode& node) {
-  Env& env = static_cast<Env&>(node);
-  env.vars.clear();
-  env.parent.reset();
-}
-
-std::shared_ptr<void> envPin(GcNode& node) { return static_cast<Env&>(node).shared_from_this(); }
-
 }  // namespace
 
 const GcNode::Ops arrayGcOps = {arrayRefCount, arrayVisit, arrayClear, pinObject<Array>};
 const GcNode::Ops mapGcOps = {mapRefCount, mapVisit, mapClear, pinObject<Map>};
 const GcNode::Ops functionGcOps = {functionRefCount, functionVisit, functionClear,
                                    pinObject<Function>};
-const GcNode::Ops envGcOps = {envRefCount, envVisit, envClear, envPin};
 const GcNode::Ops cellGcOps = {cellRefCount, cellVisit, cellClear, pinObject<Cell>};

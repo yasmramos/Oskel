@@ -404,6 +404,18 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_error.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `switch`, `defer` and `struct` lower in AOT but no earlier fixture
+    # exercised them: `switch` on an int, a string and a range, `defer` in LIFO
+    # order across nested scopes, and `struct` with typed/untyped fields,
+    # nesting, a struct return type and structural equality. All of it stays on
+    # the portable surface, so the VM and the binary must agree byte for byte.
+    add_test(NAME oskel.build_binary_control_flow
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_control_flow"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_control_flow.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # The link mode is a deployment choice, not language syntax (PHASE 7f.3).
     # `--mode freestanding` must behave exactly like the default (self-contained,
     # agrees with the VM), `--mode hosted` links against libc and must agree with

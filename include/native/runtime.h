@@ -220,6 +220,12 @@ struct AotRuntimeHandles {
   // outside world for a *value* rather than output, so it reads the `entry.now`
   // handle the target's prelude binds (syscall, libc, kernel32 or the CMOS RTC).
   CodeGen::Label timeBuiltin;      // AotValue oskel_builtin_time(AotValue* args, long argc, AotClosure* self)
+  // `input([prompt])`: reads one line from the keyboard and returns it as a
+  // string (nil on end of input). It reads through the `entry.read` handle,
+  // which only the bare-metal prelude binds -- the keyboard slice gives the
+  // kernel an input channel -- so it is seeded as a global for that target
+  // only (see `lowerToX64`). The other targets keep the AOT `input` unseeded.
+  CodeGen::Label inputBuiltin;     // AotValue oskel_builtin_input(AotValue* args, long argc, AotClosure* self)
   // Bound array methods (PHASE 7c.3c/7c.3e). `a.<method>` on an array yields a
   // closure that captured its receiver in one upvalue cell, exactly like the
   // hosted `bindArray`. `bindArrayMethod` builds that closure from the receiver
@@ -258,7 +264,7 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel()
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel()
   };
 }
 
@@ -336,7 +342,13 @@ struct AotExternThunk {
 // keep its formatting frame allocated across the call into libc's `write` (see
 // `emitPrintValueCore`). It is false for every freestanding target, whose image
 // then stays byte for byte what it was.
+//
+// `hasInput` is true only for the bare-metal target, the one whose prelude
+// binds `entry.read` (the keyboard). It makes `emitAotRuntime` emit the `input`
+// builtin body; every other target leaves it out, so its image never references
+// the unbound `entry.read` label. `lowerToX64` seeds the `input` global under
+// the same condition, so the body and its only caller appear together.
 void emitAotRuntime(CodeGen& code, const AotRuntimeHandles& handles,
                     const RuntimeHandles& entry,
                     const std::vector<AotExternThunk>* externThunks = nullptr,
-                    bool hosted = false);
+                    bool hosted = false, bool hasInput = false);
