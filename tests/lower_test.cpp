@@ -92,6 +92,29 @@ static void testImageIsSelfContained() {
   check(chunk.programEntry != chunk.processEntry, "the chunk and _start entries differ");
 }
 
+static void testMemSizeTargetGate() {
+  // `memSize()` is the bare-metal-only builtin: its value comes from the boot
+  // loader's memory map, which no hosted prelude provides. On a hosted target
+  // the lowerer names that limitation instead of leaving the generic "read but
+  // never assigned", so a program that calls it fails the build with a message
+  // that points at the target.
+  auto proto = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::HALT)},
+                         {Value(std::string("memSize"))}, 1);
+  check(loweringThrows(proto, "memSize() is only available on the bare-metal target"),
+        "memSize() on a hosted target names the bare-metal-only limitation");
+
+  // A user binding of the same name shadows the builtin, exactly like `print`:
+  // `var memSize = 5` lowers on every target, so the rejection must not fire.
+  auto shadow = makeProto({instr(OpCode::LOADK, 0, 0), instr(OpCode::SETGLOBAL, 0, 1),
+                           instr(OpCode::GETGLOBAL, 1, 1), instr(OpCode::HALT)},
+                          {Value(static_cast<int64_t>(5)), Value(std::string("memSize"))}, 2);
+  check(!lower(shadow).code.empty(), "a user binding named memSize lowers on a hosted target");
+
+  // On bare metal the builtin is seeded, so the plain read lowers.
+  LoweredChunk bare = lowerToX64(Target::bareMetalX64(), proto, CodeGen{});
+  check(!bare.code.empty(), "memSize() lowers on the bare-metal target");
+}
+
 // --- Error tests: the deferred opcodes must be rejected, not miscompiled ---
 
 static void testCollectionsLower() {
@@ -1188,6 +1211,7 @@ static void testExecCompiledCapture() {
 
 int main() {
   testImageIsSelfContained();
+  testMemSizeTargetGate();
   testCollectionsLower();
   testIterOperandsLower();
   testBadJumpTargetThrows();

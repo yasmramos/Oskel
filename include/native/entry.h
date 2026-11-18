@@ -37,11 +37,16 @@ struct RuntimeHandles {
   // the other preludes leave the label unbound, and the shared runtime never
   // references it unless `input` was seeded (see `lowerToX64`).
   CodeGen::Label read;
+  // `long oskel_mem_size(void)`: the usable RAM in bytes, or 0 when the boot
+  // loader gave no memory map. Only the bare-metal prelude binds it (from the
+  // multiboot map); the hosted targets leave it unbound and the lowerer rejects
+  // `memSize()` there instead of emitting a call to nil.
+  CodeGen::Label memSize;
 };
 
 inline RuntimeHandles newRuntimeHandles(CodeGen& code) {
   return RuntimeHandles{code.newLabel(), code.newLabel(), code.newLabel(),
-                        code.newLabel(), code.newLabel()};
+                        code.newLabel(), code.newLabel(), code.newLabel()};
 }
 
 // The generated binary's bump arena (PHASE 7c.1c). `_start` maps a region and

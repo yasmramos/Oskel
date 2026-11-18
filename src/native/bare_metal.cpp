@@ -205,6 +205,32 @@ constexpr std::uint64_t kKbBufferSize = 256;
 // select between the unshifted and shifted maps.
 constexpr std::uint64_t kKbShiftStateOffset =
     kBMKernelDataOffset + 0x110 + kKbBufferSize;
+// The second word of the kernel-data page: the physical address of the
+// `multiboot_info` structure the boot loader leaves in EBX. The 64-bit entry
+// point stores it here (EBX survives the trampoline untouched), and
+// `oskel_mem_size` reads it back. It stays 0 when a boot loader passes no
+// structure, which `memSize()` reports as 0 rather than a wrong number.
+constexpr std::uint64_t kBMKernelDataMultibootInfo = kBMKernelDataOffset + 8;
+
+// The `multiboot_info` fields `oskel_mem_size` reads, and the flags bits that
+// gate them (Multiboot 1 specification, "Machine state" / "Memory map").
+constexpr std::int64_t kMultibootInfoFlags = 0;
+constexpr std::int64_t kMultibootInfoMemLower = 4;   // KiB below 1 MiB
+constexpr std::int64_t kMultibootInfoMemUpper = 8;   // KiB above 1 MiB
+constexpr std::int64_t kMultibootInfoMmapLength = 44;
+constexpr std::int64_t kMultibootInfoMmapAddr = 48;
+constexpr std::uint32_t kMultibootInfoFlagMemory = 0x1;   // mem_lower/upper valid
+constexpr std::uint32_t kMultibootInfoFlagMmap = 0x40;    // mmap_* valid
+
+// The `multiboot_mmap_entry` layout: a leading `size` dword, then a 64-bit
+// `addr`, a 64-bit `len` and a 32-bit `type`. The next entry is `size + 4`
+// bytes on, because `size` counts the fields after itself. Type 1 is available
+// RAM.
+constexpr std::int64_t kMmapEntrySize = 0;
+constexpr std::int64_t kMmapEntryLen = 12;
+constexpr std::int64_t kMmapEntryType = 20;
+constexpr std::int64_t kMmapEntryHeaderBytes = 4;  // the `size` dword itself
+constexpr std::uint32_t kMmapTypeAvailable = 1;
 
 // Fixed offsets, relative to the trampoline's first byte, of the pieces the
 // trampoline addresses by absolute address. They are a property of the
@@ -697,6 +723,17 @@ std::uint64_t emitBareMetalPreamble(CodeGen& code, const RuntimeHandles& handles
     code.emitBytes(movEsp, sizeof movEsp);
   }
 
+  // The boot loader leaves the `multiboot_info` physical address in EBX and the
+  // magic 0x2BADB002 in EAX. The trampoline never touches EBX (it uses
+  // eax/ecx/edx/edi and the control registers), so EBX still holds the pointer
+  // here. Save it in the kernel-data page for `oskel_mem_size`; `movReg32`
+  // zero-extends into the full 64-bit register, and `multiboot_info` always
+  // lives below 4 GiB, so the low half is the whole address.
+  code.movReg32(X64Reg::Rax, X64Reg::Rbx);
+  code.movImm(X64Reg::Rcx,
+              static_cast<std::int64_t>(kBMDataBase + kBMKernelDataMultibootInfo));
+  code.movToMem(X64Reg::Rcx, 0, X64Reg::Rax);
+
   // Bring COM1 up before anything prints. QEMU's emulated 16550 works without
   // this, but a real chip powers up with interrupts masked, the divisor latch
   // in an unknown state and the FIFO off, so `oskel_write` would poll a
@@ -1098,6 +1135,76 @@ void emitBareMetalRuntime(CodeGen& code, const RuntimeHandles& handles) {
 
     code.movReg(X64Reg::Rsp, X64Reg::Rbp);
     code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
+  // --- long oskel_mem_size(void) ---
+  // The usable physical RAM in bytes, read from the `multiboot_info` structure
+  // the boot loader left in EBX (the entry point saved the pointer in the
+  // kernel-data page). When the map is present, sum the lengths of the type-1
+  // (available) entries -- a plain "last address" would count the reserved
+  // holes (VGA, ACPI, MMIO) as RAM. With no map, fall back to
+  // `(mem_lower + mem_upper) * 1024`; with neither, report 0 rather than a
+  // wrong number. Only caller-saved registers are used (rax/rcx/rdx/r8-r11), so
+  // the arena cursor and the global base (r13-r15) survive untouched.
+  code.bind(handles.memSize);
+  {
+    CodeGen::Label loop = code.newLabel();
+    CodeGen::Label next = code.newLabel();
+    CodeGen::Label sumDone = code.newLabel();
+    CodeGen::Label memLower = code.newLabel();
+    CodeGen::Label zero = code.newLabel();
+
+    // rax = the `multiboot_info` pointer (0 when the boot loader gave none).
+    code.movImm(X64Reg::R8,
+                static_cast<std::int64_t>(kBMDataBase + kBMKernelDataMultibootInfo));
+    code.movFromMem(X64Reg::Rax, X64Reg::R8, 0);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, zero);
+
+    code.movFromMem32(X64Reg::Rcx, X64Reg::Rax, kMultibootInfoFlags);
+    code.testImm32(X64Reg::Rcx, static_cast<std::int32_t>(kMultibootInfoFlagMmap));
+    code.jcc(Jcc::Eq, memLower);
+
+    // The map: r8 = cursor, r9 = end (addr + length), rdx = total bytes.
+    code.movFromMem32(X64Reg::R8, X64Reg::Rax, kMultibootInfoMmapAddr);
+    code.movFromMem32(X64Reg::R9, X64Reg::Rax, kMultibootInfoMmapLength);
+    code.addReg(X64Reg::R9, X64Reg::R8);
+    code.xorReg(X64Reg::Rdx, X64Reg::Rdx);
+
+    code.bind(loop);
+    code.cmpReg(X64Reg::R8, X64Reg::R9);
+    code.jcc(Jcc::Ae, sumDone);
+    code.movFromMem32(X64Reg::Rcx, X64Reg::R8, kMmapEntryType);
+    code.cmpImm32(X64Reg::Rcx, static_cast<std::int32_t>(kMmapTypeAvailable));
+    code.jcc(Jcc::Ne, next);
+    code.movFromMem(X64Reg::R10, X64Reg::R8, kMmapEntryLen);
+    code.addReg(X64Reg::Rdx, X64Reg::R10);
+    code.bind(next);
+    // Advance past this entry: `size` counts the fields after the size dword,
+    // so the next entry is `cursor + size + 4`.
+    code.movFromMem32(X64Reg::Rcx, X64Reg::R8, kMmapEntrySize);
+    code.addReg(X64Reg::R8, X64Reg::Rcx);
+    code.addImm32(X64Reg::R8, static_cast<std::int32_t>(kMmapEntryHeaderBytes));
+    code.jmp(loop);
+
+    code.bind(sumDone);
+    code.movReg(X64Reg::Rax, X64Reg::Rdx);
+    code.retInsn();
+
+    // No map, but `mem_lower`/`mem_upper` are valid: KiB -> bytes.
+    code.bind(memLower);
+    code.movFromMem32(X64Reg::Rcx, X64Reg::Rax, kMultibootInfoFlags);
+    code.testImm32(X64Reg::Rcx, static_cast<std::int32_t>(kMultibootInfoFlagMemory));
+    code.jcc(Jcc::Eq, zero);
+    code.movFromMem32(X64Reg::Rdx, X64Reg::Rax, kMultibootInfoMemUpper);
+    code.movFromMem32(X64Reg::Rax, X64Reg::Rax, kMultibootInfoMemLower);
+    code.addReg(X64Reg::Rax, X64Reg::Rdx);
+    code.shlImm8(X64Reg::Rax, 10);
+    code.retInsn();
+
+    code.bind(zero);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
     code.retInsn();
   }
 }

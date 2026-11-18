@@ -189,3 +189,23 @@ Platform& platformPosix() {
   static PlatformPosix instance;
   return instance;
 }
+
+// Total physical memory of the machine, in bytes, or 0 when it cannot be
+// determined. Windows reports it directly; on POSIX it is the number of
+// physical pages times the page size. Both are process-independent machine
+// properties, which is what `memSize()` means.
+std::uint64_t PlatformPosix::physicalMemory() const {
+#ifdef _WIN32
+  MEMORYSTATUSEX status;
+  status.dwLength = sizeof status;
+  if (GlobalMemoryStatusEx(&status)) {
+    return static_cast<std::uint64_t>(status.ullTotalPhys);
+  }
+  return 0;
+#else
+  long pages = ::sysconf(_SC_PHYS_PAGES);
+  long pageSize = ::sysconf(_SC_PAGE_SIZE);
+  if (pages <= 0 || pageSize <= 0) return 0;
+  return static_cast<std::uint64_t>(pages) * static_cast<std::uint64_t>(pageSize);
+#endif
+}

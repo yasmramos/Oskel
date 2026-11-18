@@ -6896,6 +6896,28 @@ void emitInputBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label readLabe
   cg.retInsn();
 }
 
+// `AotValue oskel_builtin_mem_size(AotValue* args, long argc, AotClosure* self)`:
+// `memSize()`, the usable physical RAM in bytes as an `int`. It reads the
+// `memSizeLabel` handle the bare-metal prelude binds (the multiboot map) and
+// tags the result as an integer. A boot loader that supplied no map leaves the
+// handle at 0, so `memSize()` is 0 rather than a wrong number.
+void emitMemSizeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label memSizeLabel,
+                        CodeGen::Label fail, const DataBlob& msgArgc) {
+  CodeGen::Label ok = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Eq, ok);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(ok);
+  cg.callLabel(memSizeLabel);      // rax = usable bytes
+  cg.movReg(Rdx, Rax);
+  cg.movImm(Rax, kTagInt);
+  epilogue(cg);
+}
+
 // `void oskel_sb_init(AotStringBuilder* sb, char* data, long capacity)`: start a
 // builder over a caller-owned buffer (`data`/`capacity`) with `length` zero. A
 // caller that renders a `print` value passes a stack buffer, so a small render
@@ -8064,7 +8086,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
 void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                     const RuntimeHandles& entry,
                     const std::vector<AotExternThunk>* externThunks, bool hosted,
-                    bool hasInput) {
+                    bool hasInput, bool bareMetal) {
   // Constant text, bound after all code so nothing falls through into it.
   std::vector<DataBlob> data;
   auto addText = [&](const char* text) {
@@ -8197,6 +8219,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgExitType = addText("oskel: exit() expects an integer argument\n");
   DataBlob msgTimeArgc = addText("oskel: time() expects 0 arguments\n");
   DataBlob msgInputArgc = addText("oskel: input() expects between 0 and 1 arguments\n");
+  DataBlob msgMemSizeArgc = addText("oskel: memSize() expects 0 arguments\n");
   // The scalar `extern "C"` thunks (PHASE 7f.5). A direct call is arity- and
   // type-checked at compile time, so these only fire through a first-class
   // reference (`var f = abs; f("x")`). The arity message is the shared one; the
@@ -8478,6 +8501,12 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   if (hasInput) {
     emitInputBuiltin(cg, handles.inputBuiltin, entry.read, handles.printValueRaw,
                      handles.alloc, fail, msgInputArgc, msgOom);
+  }
+  // `memSize()` is bare metal only: the handle comes from the multiboot map, and
+  // `lower.cpp` seeds the builtin only for `Os::Freestanding`, so no other target
+  // references the label.
+  if (bareMetal) {
+    emitMemSizeBuiltin(cg, handles.memSizeBuiltin, entry.memSize, fail, msgMemSizeArgc);
   }
   emitIntTextParser(cg, handles.intTextParser, fail, msgConvertInt);
   dtoa::emitDtoa(cg, dtoaHandles);

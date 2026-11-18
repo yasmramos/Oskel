@@ -84,6 +84,7 @@ struct StringPlatform final : Platform {
   void* alloc(std::size_t, std::size_t) override { return nullptr; }
   void dealloc(void*) override {}
   void* lookupSymbol(const char*) override { return nullptr; }
+  std::uint64_t physicalMemory() const override { return 0; }
 };
 
 std::string runAndCapture(const std::string& source) {
@@ -392,6 +393,49 @@ void testBuiltinIoUsesInjectedPlatform() {
 
   assert(platform.out == "1 2\na");
   assert(platform.err == "e\n");
+}
+
+// A Platform that reports a fixed amount of physical memory, so `memSize()`
+// can be asserted exactly instead of against whatever the test machine has.
+struct MemoryPlatform final : Platform {
+  std::uint64_t bytes = 0;
+  void write(int, const char*, std::size_t) override {}
+  void writeErr(const char*, std::size_t) override {}
+  void flush(int) override {}
+  std::size_t read(int, char*, std::size_t) override { return 0; }
+  int open(const char*, OpenMode) override { return kInvalidFd; }
+  void close(int) override {}
+  bool seek(int, std::int64_t, SeekOrigin) override { return false; }
+  [[noreturn]] void exit(int) override { std::abort(); }
+  void* alloc(std::size_t, std::size_t) override { return nullptr; }
+  void dealloc(void*) override {}
+  void* lookupSymbol(const char*) override { return nullptr; }
+  std::uint64_t physicalMemory() const override { return bytes; }
+};
+
+void testMemSizeReadsThePlatform() {
+  TEST_SCOPE();
+  // `memSize()` is the machine's RAM in bytes, read from the platform exactly
+  // like `time()` reads the clock. A fixed platform makes the value exact.
+  Bytecode bytecode = compileSource("let mib = memSize() / 1024 / 1024;\n");
+  MemoryPlatform platform;
+  platform.bytes = 16ull * 1024 * 1024 * 1024;  // 16 GiB
+  VM vm(platform);
+  registerBuiltins(vm);
+  vm.run(bytecode);
+
+  const Value& mib = requireGlobal(vm, "mib");
+  assert(mib.isInt() && mib.asInt() == 16 * 1024);
+
+  // A platform with no view of the machine reports 0, and `memSize()` is 0
+  // rather than a wrong number.
+  Bytecode zero = compileSource("let size = memSize();\n");
+  MemoryPlatform blank;
+  VM vm0(blank);
+  registerBuiltins(vm0);
+  vm0.run(zero);
+  const Value& size = requireGlobal(vm0, "size");
+  assert(size.isInt() && size.asInt() == 0);
 }
 
 void testDivisionByZero() {
@@ -1873,6 +1917,7 @@ struct SymbolPlatform final : Platform {
   [[noreturn]] void exit(int) override { std::abort(); }
   void* alloc(std::size_t, std::size_t) override { return nullptr; }
   void dealloc(void*) override {}
+  std::uint64_t physicalMemory() const override { return 0; }
   void* lookupSymbol(const char* name) override {
     const std::string symbol = name;
     if (symbol == "oskelTestAdd") return reinterpret_cast<void*>(&oskelTestAdd);
@@ -2553,6 +2598,7 @@ int main() {
   testPrint();
   testPrintUsesInjectedPlatform();
   testBuiltinIoUsesInjectedPlatform();
+  testMemSizeReadsThePlatform();
   testDivisionByZero();
   testModuloByZero();
   testUndefinedGlobal();

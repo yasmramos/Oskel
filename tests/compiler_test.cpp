@@ -935,6 +935,7 @@ class CapturingPlatform : public Platform {
   void* alloc(std::size_t, std::size_t) override { return nullptr; }
   void dealloc(void*) override {}
   void* lookupSymbol(const char*) override { return nullptr; }
+  std::uint64_t physicalMemory() const override { return 0; }
 
   std::string out;
 };
