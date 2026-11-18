@@ -119,6 +119,12 @@ class Compiler {
     return names;
   }
 
+  // The `class` names declared so far in the session, for the same reason as
+  // `structNames`: a class is erased to a plain constructor `fn`, so the parser
+  // only learns the name denotes a type if the REPL seeds it (see
+  // Parser::seedClassNames).
+  const std::unordered_set<std::string>& classNames() const { return classNames_; }
+
   // The warnings collected by the last compilation (PHASE 6.7.5). Warnings are
   // non-fatal: the program still runs. The CLI prints them to stderr; tests
   // inspect them. Cleared at the start of every compilation.
@@ -290,6 +296,13 @@ class Compiler {
   // bytecode, and a `Point { ... }` literal is checked against this table
   // before it is lowered to a plain map. Reset per chunk.
   std::unordered_map<std::string, std::vector<StructField>> structDefs_;
+
+  // Names of the `class` types declared so far (PHASE 6.8), keyed by name. A
+  // class is erased to a top-level constructor `fn`, so this set is the only
+  // record that a global name denotes a class; the REPL reads it to seed the
+  // next entry's parser. Session state, like `structDefs_`: it survives a REPL
+  // entry and is cleared only by `clearSession`.
+  std::unordered_set<std::string> classNames_;
 
   // Signature of every `native fn` declared so far (PHASE 6.5), keyed by name.
   // A native declaration emits no call to the compiler: it only records the
@@ -600,6 +613,7 @@ class Compiler {
     std::unordered_set<std::string> userGlobals;
     std::unordered_map<std::string, TypeRef> globalTypes;
     std::unordered_map<std::string, std::vector<StructField>> structDefs;
+    std::unordered_set<std::string> classNames;
     std::unordered_map<std::string, NativeSig> nativeSigs;
     std::unordered_map<std::string, std::string> externSignatures;
     std::unordered_set<std::string> mustUseGlobals;

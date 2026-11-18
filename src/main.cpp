@@ -530,6 +530,7 @@ bool handleCommand(VM &vm, Compiler &compiler, const std::string &command,
     try {
       Parser parser(lex(source), path);
       parser.seedStructNames(compiler.structNames());
+      parser.seedClassNames(compiler.classNames());
       Bytecode bytecode = compiler.compileLoaded(
           parser.parseProgram(), makeImportLoader(resolverFor(path, argv0)), path);
       for (const Warning &warning : parser.warnings())
@@ -621,6 +622,7 @@ void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, 
       try {
         Parser expressionParser(tokens, "<repl>");
         expressionParser.seedStructNames(compiler.structNames());
+        expressionParser.seedClassNames(compiler.classNames());
         auto expr = expressionParser.parseFullExpression();
         Bytecode bytecode = compiler.compileExpression(expr);
         Value value = vm.run(bytecode);
@@ -641,6 +643,7 @@ void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, 
     try {
       Parser parser(tokens, "<repl>");
       parser.seedStructNames(compiler.structNames());
+      parser.seedClassNames(compiler.classNames());
       program = parser.parseProgram();
       parseWarnings = parser.warnings();
     } catch (const CompileError &error) {
@@ -649,6 +652,7 @@ void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, 
         try {
           Parser parser(lex(buffer + ";"), "<repl>");
           parser.seedStructNames(compiler.structNames());
+          parser.seedClassNames(compiler.classNames());
           program = parser.parseProgram();
           parseWarnings = parser.warnings();
         } catch (const CompileError &retry) {

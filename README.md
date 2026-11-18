@@ -22,6 +22,7 @@ for language in languages {
 - First-class functions, recursion, `=>` lambdas (`x => x * 2`) and variadic `rest...` parameters.
 - Optional types and nullability: annotations (`let x: int = 5`), local inference, nullable `T?`, unions (`T | E`) and the null-safe expressions `?.`, `??` and `!!`.
 - `struct` declarations (data only, no methods) checked against their literal at compile time.
+- `class` declarations (fields plus methods): instantiating is calling the class name (`Point(3, 4)`, no `new`), `self` is explicit and there is no inheritance. A class is parser sugar over a map plus closures, so it runs identically on the VM and under `oskel build`.
 - String interpolation with `"${expression}"` and UTF-8 support.
 - Ordered arrays and maps that preserve insertion order, with `for k, v in map` key/value iteration.
 - Ascending and descending ranges: `1..5`, `0..=10`, `5..0`.
@@ -270,7 +271,7 @@ behave differently — under AOT. This is the exact split in 0.1.0.
 
 - Arithmetic, comparisons, logical and bitwise operators, control flow
   (`if`/`while`/`for`/`for-in`/`switch`), functions, closures, `defer`,
-  `struct`, ranges, slicing, string interpolation.
+  `struct`, `class`, ranges, slicing, string interpolation.
 - Arrays and maps (literals, indexing, `in`, `for-in`, printing, and `+` to
   concatenate two arrays).
 - The array methods `push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`,
@@ -389,7 +390,7 @@ Current limitations:
 
 - Dynamic typing. The product model is Lua's: source code is always compiled to bytecode and run on the VM. The CLI and the REPL both compile to bytecode and run on the register-based VM; the AST is never executed.
 - The development engine (`oskel`) also ships an **experimental JIT** for a narrow integer subset: a *leaf* function whose body only manipulates `nil`/`bool`/`int` is compiled to native x86-64 the first time it is called. A compile-time optimizer folds constants and applies them as machine immediates (`i * 2` becomes one `shl`), a comparison that only feeds the branch after it becomes `cmp; jcc`, and a web-based register allocator with copy coalescing gives each value its own register (a copy whose ends do not interfere disappears, and a slot only keeps its stack slot when the seven-register pool runs out), so a tight integer loop runs about 420x faster than the interpreter and within ~1.08x of a hand-written `-O2` C++ loop. Everything else keeps running on the interpreter, so results never change. It is a development-engine feature only: `oskel build` and the generated binary never contain it (`oskel --no-jit` disables it).
-- There are no classes, interfaces or inheritance; maps and closures replace them. A `struct` (data only, no methods) is a named map shape checked at compile time, not a class.
+- There are no interfaces or inheritance; maps and closures replace them. A `struct` (data only, no methods) is a named map shape checked at compile time. A `class` (fields plus methods, PHASE 6.8) is the method-carrying form: it is parser sugar over a map plus closures capturing an explicit `self`, instantiated by calling the class name (no `new`), with no inheritance.
 - There is no `try`/`catch` *statement* or catchable exceptions. Errors are values: `error(message, code?)` builds a first-class error value and `isError(value)` detects it. `pcall(fn, ...)` turns a raised runtime error into a `{ok, value, error}` map instead of aborting. Two operators work on error values: `try expr` propagates one to the caller (Rust's `?`) and `expr catch default` recovers locally (Zig's `catch`). `panic()` is for unrecoverable errors.
 - Modules use Java-style `import` (`import std.math;`, `import std.math.*;`, `import std.math as m;`, `import { sqrt } from std.math;`) with compile-time conflict detection for `.*` and a reserved `std.` prefix. There is no `require`; modules are loaded eagerly and a cyclic import is a compile error.
 - There is no `++`/`--` or default parameters. `switch` on literals and integer ranges is supported, with no fallthrough, and so is the post-test loop `do { ... } while (cond);`.

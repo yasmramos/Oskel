@@ -1,0 +1,4 @@
+// expect-exit: 65
+// A field and a method cannot share a name: both are keys of the instance map,
+// so one would silently overwrite the other.
+class Point { x: int; fn x() {} }

@@ -1,0 +1,119 @@
+// PHASE 6.8: `class` declarations.
+//
+// A class is sugar over the map-plus-closures idiom the language already has:
+// the parser rewrites it into an ordinary top-level constructor function that
+// builds the instance as a map, stores every method as a closure capturing
+// `self`, runs `init` and returns the instance. It therefore adds one token
+// (`class`) and no AST node, opcode, compiler or VM change, and the AOT backend
+// runs the desugared program with no backend work (see tests/native_build_classes.oskl).
+//
+// Instantiating is calling the class name (`Point(3, 4)`); there is no `new`.
+// `self` is explicit inside a method. There is no inheritance.
+
+class Point {
+  x: int;
+  y: int;
+
+  fn init(x: int, y: int) {
+    self.x = x;
+    self.y = y;
+  }
+
+  fn lenSquared(): int {
+    return self.x * self.x + self.y * self.y;
+  }
+
+  fn scaled(k: int): Point {
+    self.x = self.x * k;
+    self.y = self.y * k;
+    return self;
+  }
+}
+
+// The class name is the constructor: no `new`.
+let p = Point(3, 4);
+assertEq(p.x, 3);
+assertEq(p.y, 4);
+assertEq(p.lenSquared(), 25);
+
+// A method mutates the instance and may return it for chaining.
+p.scaled(2);
+assertEq(p.x, 6);
+assertEq(p.y, 8);
+assertEq(p.lenSquared(), 100);
+
+// The instance is a map at runtime, so the map surface works on it.
+assertEq(type(p), "map");
+assert("x" in p);
+assertEq(len(p), 5);  // x, y, init, lenSquared, scaled
+
+// A class name is a valid type annotation.
+let q: Point = Point(1, 1);
+assertEq(q.lenSquared(), 2);
+
+// A class declared later in the file is visible earlier, like a hoisted `fn`.
+fn origin() {
+  return Later(7);
+}
+class Later {
+  n: int;
+  fn init(n: int) { self.n = n; }
+}
+assertEq(origin().n, 7);
+
+// A class without `init`: the fields start nil and methods still work.
+class Counter {
+  n: int;
+  fn set(v: int) { self.n = v; }
+  fn get(): int { return self.n; }
+}
+let c = Counter();
+c.set(41);
+assertEq(c.get(), 41);
+
+// A method may call another method through `self`.
+class Acc {
+  total: int;
+  fn init() { self.total = 0; }
+  fn add(v: int) { self.total = self.total + v; return self.total; }
+  fn addTwice(v: int): int { return self.add(v) + self.add(v); }
+}
+let a = Acc();
+assertEq(a.addTwice(5), 15);  // add(5)->5, then add(5)->10; 5 + 10
+
+// Recursion through `self` works.
+class Fact {
+  fn fact(n: int): int {
+    if (n <= 1) { return 1; }
+    return n * self.fact(n - 1);
+  }
+}
+assertEq(Fact().fact(5), 120);
+
+// Two instances are independent.
+let p1 = Point(1, 2);
+let p2 = Point(10, 20);
+p1.scaled(10);
+assertEq(p1.x, 10);
+assertEq(p2.x, 10);
+assertEq(p2.y, 20);
+
+// Instances are values: they can be stored in a collection.
+let points = [Point(0, 0), Point(1, 1)];
+assertEq(points[1].lenSquared(), 2);
+
+// A class desugars to a top-level constructor `fn`, so its name is an ordinary
+// public module name: the qualified form reaches the constructor. A module can
+// keep the class private by exporting a factory instead (`modules.classes`).
+import modules.classes;
+assertEq(type(modules.classes.Point), "function");
+assertEq(modules.classes.Point(3, 4).lenSquared(), 25);
+assertEq(modules.classes.diagonal(5).lenSquared(), 50);
+
+// An instance is a map whose method values are closures, and two closures are
+// only equal by identity. Two instances therefore compare unequal even when
+// their fields match: the methods are distinct function values. (Their printed
+// form is identical, which is why the inequality is pinned explicitly.)
+assert(Point(1, 2) != Point(1, 2));
+
+print("classes ok");

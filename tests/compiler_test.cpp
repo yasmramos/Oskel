@@ -30,6 +30,20 @@ Bytecode compileSource(const std::string& source) {
   return compileProgram(program);
 }
 
+// Finds a proto by name anywhere in the tree (children are nested), so a test
+// can assert on a function's or a method's compiled form without knowing the
+// exact child index.
+const Bytecode* findProto(const Bytecode& root, const std::string& name) {
+  if (root.name == name) return &root;
+  for (const std::shared_ptr<Bytecode>& child : root.children) {
+    if (child) {
+      const Bytecode* found = findProto(*child, name);
+      if (found != nullptr) return found;
+    }
+  }
+  return nullptr;
+}
+
 void expectCompileError(const std::string& source, const char* what) {
   try {
     compileSource(source);
@@ -1106,6 +1120,79 @@ void testTypeMismatchErrors() {
   expectCompileError("let x: integer = 1;\n", "unknown type name");
 }
 
+void testClassSugar() {
+  // PHASE 6.8: a `class` is pure parser sugar. The parser rewrites it into the
+  // map-plus-closures idiom, so the instruction stream is exactly what the
+  // equivalent hand-written program produces: no new opcode, no special-case
+  // lowering. Only the child proto *names* differ (the parser names the method
+  // lambdas `Point.sum` for diagnostics), which is why this compares the
+  // instruction stream and not the whole `Bytecode`.
+  const std::string classSource =
+      "class Point {\n"
+      "  x: int;\n"
+      "  y: int;\n"
+      "  fn init(x: int, y: int) { self.x = x; self.y = y; }\n"
+      "  fn sum(): int { return self.x + self.y; }\n"
+      "}\n"
+      "let p = Point(3, 4);\n"
+      "print(p.sum());\n";
+  const std::string desugaredSource =
+      "fn Point(x: int, y: int) {\n"
+      "  let self = { x: nil, y: nil };\n"
+      "  self.init = (x: int, y: int) => { self.x = x; self.y = y; };\n"
+      "  self.sum = () => { return self.x + self.y; };\n"
+      "  self.init(x, y);\n"
+      "  return self;\n"
+      "}\n"
+      "let p = Point(3, 4);\n"
+      "print(p.sum());\n";
+
+  Bytecode fromClass = compileSource(classSource);
+  Bytecode fromDesugared = compileSource(desugaredSource);
+
+  // The top-level instruction stream is identical: the class declaration
+  // compiles to the same constructor binding the hand-written `fn` does.
+  assert(fromClass.code.size() == fromDesugared.code.size());
+  for (size_t i = 0; i < fromClass.code.size(); ++i) {
+    assert(fromClass.code[i].op == fromDesugared.code[i].op);
+    assert(fromClass.code[i].a == fromDesugared.code[i].a);
+    assert(fromClass.code[i].b == fromDesugared.code[i].b);
+    assert(fromClass.code[i].c == fromDesugared.code[i].c);
+  }
+  assert(fromClass.numRegisters == fromDesugared.numRegisters);
+
+  // The class name is the constructor proto; its parameters are `init`'s.
+  const Bytecode* ctor = findProto(fromClass, "Point");
+  assert(ctor != nullptr);
+  assert(ctor->numParams == 2);
+
+  // Every method is a named child proto (named for diagnostics); a user lambda
+  // stays `<anonymous>`, so the name never leaks a wrong attribution.
+  assert(findProto(fromClass, "Point.init") != nullptr);
+  assert(findProto(fromClass, "Point.sum") != nullptr);
+  assert(findProto(fromClass, "<anonymous>") == nullptr);
+
+  // A method's return annotation is erased like a function's: the body's
+  // instruction stream is identical with and without it.
+  Bytecode annotated = compileSource("class C { fn m(): int { return 1; } }\n");
+  Bytecode plain = compileSource("class C { fn m() { return 1; } }\n");
+  const Bytecode* annotatedM = findProto(annotated, "C.m");
+  const Bytecode* plainM = findProto(plain, "C.m");
+  assert(annotatedM != nullptr && plainM != nullptr);
+  assert(annotatedM->code.size() == plainM->code.size());
+
+  // A class and a struct may not share a name, in either order (a class name is
+  // a valid type annotation, so the two would be ambiguous).
+  expectCompileError("struct Point { x: int; }\nclass Point { y: int; }\n",
+                     "class after struct with the same name");
+  expectCompileError("class Point { y: int; }\nstruct Point { x: int; }\n",
+                     "struct after class with the same name");
+  expectCompileError("class Point { x: int; }\nclass Point { y: int; }\n",
+                     "duplicate class name");
+  expectCompileError("class C { self; }\n", "self as a class field");
+  expectCompileError("class C { x: Nope; }\n", "unknown field type in a class");
+}
+
 void testFloatLiteralRange() {
   // A representable subnormal is a valid literal: `strtod` reports ERANGE for
   // underflow too, but only a value outside the finite range is an error.
@@ -1715,6 +1802,7 @@ int main() {
   testDiagnosticSnippetLineEndings();
   testRuntimeTraceElision();
   testMustUse();
+  testClassSugar();
   testTypeMismatchErrors();
   testFloatLiteralRange();
   testIntegerLiteralAtInt64Min();

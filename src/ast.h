@@ -314,6 +314,15 @@ struct LambdaExpr {
   // yields nil. Named functions are declared with FnDeclStmt (`fn name() {}`).
   std::vector<Param> params;
   StmtPtr body;
+  // Optional debug name, used only for diagnostics (a proto's name). The
+  // parser sets it when it desugars a `class` method into a lambda, so a stack
+  // trace or an arity error names the method instead of `<anonymous>`. Empty
+  // for a lambda the user wrote, which keeps the existing `<anonymous>` name.
+  std::string name;
+  // Optional return annotation, empty for a lambda the user wrote (the lambda
+  // grammar has no `: ret` position). A `class` method carries its declared
+  // return type here, so the body's `return` is checked like a named `fn`.
+  TypeRef returnType;
 };
 
 using ExprNode =
@@ -383,6 +392,13 @@ struct FnDeclStmt {
   // one with the same named prefix (`printf(a: int)` is not `printf(a: int,
   // ...)`). Only a declaration inside an `extern "C"` block may set it.
   bool cVariadic = false;
+  // True when this declaration is the constructor a `class` desugared into. A
+  // class is erased to a plain `fn`, so this is the only way the compiler can
+  // tell which globals are class names; it records them so the REPL can accept
+  // a class name as a type annotation in a later entry (see
+  // `Compiler::classNames`). Compile-time metadata only; never reaches the
+  // bytecode.
+  bool isClassConstructor = false;
 };
 
 // `struct Point { x: int; y: int; }` (PHASE 6.5). A data-only type: no

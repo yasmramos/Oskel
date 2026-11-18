@@ -874,6 +874,7 @@ void Compiler::clearSession() {
   userGlobals_.clear();
   globalTypes_.clear();
   structDefs_.clear();
+  classNames_.clear();
   nativeSigs_.clear();
   externSignatures_.clear();
   mustUseGlobals_.clear();
@@ -988,6 +989,7 @@ Compiler::SessionSnapshot Compiler::snapshotSession() const {
   snapshot.userGlobals = userGlobals_;
   snapshot.globalTypes = globalTypes_;
   snapshot.structDefs = structDefs_;
+  snapshot.classNames = classNames_;
   snapshot.nativeSigs = nativeSigs_;
   snapshot.externSignatures = externSignatures_;
   snapshot.mustUseGlobals = mustUseGlobals_;
@@ -1004,6 +1006,7 @@ void Compiler::restoreSession(SessionSnapshot snapshot) {
   userGlobals_ = std::move(snapshot.userGlobals);
   globalTypes_ = std::move(snapshot.globalTypes);
   structDefs_ = std::move(snapshot.structDefs);
+  classNames_ = std::move(snapshot.classNames);
   nativeSigs_ = std::move(snapshot.nativeSigs);
   externSignatures_ = std::move(snapshot.externSignatures);
   mustUseGlobals_ = std::move(snapshot.mustUseGlobals);
@@ -1385,6 +1388,7 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   auto savedUserGlobals = std::move(userGlobals_);
   auto savedGlobalTypes = std::move(globalTypes_);
   auto savedStructDefs = std::move(structDefs_);
+  auto savedClassNames = std::move(classNames_);
   auto savedNativeSigs = std::move(nativeSigs_);
   auto savedMustUseGlobals = std::move(mustUseGlobals_);
   std::deque<FuncState> savedFuncStack = std::move(funcStack_);
@@ -1489,6 +1493,7 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   userGlobals_ = std::move(savedUserGlobals);
   globalTypes_ = std::move(savedGlobalTypes);
   structDefs_ = std::move(savedStructDefs);
+  classNames_ = std::move(savedClassNames);
   nativeSigs_ = std::move(savedNativeSigs);
   mustUseGlobals_ = std::move(savedMustUseGlobals);
   funcStack_ = std::move(savedFuncStack);
@@ -1874,6 +1879,12 @@ void Compiler::compileFnDecl(const FnDeclStmt& fn, int line, int col) {
     declareGlobal(fn.name, false);
     declareGlobalType(fn.name, TypeRef{"function", false});
     userGlobals_.insert(fn.name);
+    // A `class` desugared into this declaration: record the name so the REPL
+    // can accept it as a type annotation in a later entry (a class is erased,
+    // so the parser cannot tell otherwise).
+    if (fn.isClassConstructor) {
+      classNames_.insert(fn.name);
+    }
     // Keep the signature table in step with the binding that actually wins: a
     // native keeps its signature, any other global of the same name drops it.
     if (fn.isNative) {
@@ -2284,11 +2295,14 @@ int Compiler::compileFunctionProto(const std::string& name,
 int Compiler::compileLambda(const LambdaExpr& lambda, int line, int col) {
   // A lambda is an anonymous function value: compile its body as a child proto
   // and instantiate it with CLOSURE, exactly like a named declaration but
-  // without binding a name anywhere.
+  // without binding a name anywhere. A lambda the parser synthesized for a
+  // `class` method carries a name (for diagnostics) and its declared return
+  // type (so the body is checked like a named `fn`); a user lambda leaves both
+  // empty.
   currentLine_ = line;
   currentCol_ = col;
-  int child = compileFunctionProto("<anonymous>", lambda.params, lambda.body, line, col,
-                                   TypeRef{});
+  int child = compileFunctionProto(lambda.name.empty() ? "<anonymous>" : lambda.name, lambda.params,
+                                   lambda.body, line, col, lambda.returnType);
   int reg = allocReg();
   emit(OpCode::CLOSURE, reg, child);
   return reg;

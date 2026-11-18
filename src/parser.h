@@ -50,6 +50,14 @@ class Parser {
     structNames_.insert(names.begin(), names.end());
   }
 
+  // Makes the `class` names declared by earlier REPL entries visible to this
+  // parser, so a class name used as a type annotation in a later entry is still
+  // recognized (a class desugars to a top-level `fn`, so the parser has no
+  // other way to know the name denotes a type). A file parse never needs this.
+  void seedClassNames(const std::unordered_set<std::string>& names) {
+    classNames_.insert(names.begin(), names.end());
+  }
+
   const std::string& where() const { return where_; }
 
   // Non-fatal diagnostics raised while folding `const` initializers. An integer
@@ -85,6 +93,16 @@ class Parser {
   // redeclaration in the same file is caught while a name merely made visible
   // by the pre-scan is not mistaken for one.
   std::unordered_set<std::string> declaredStructs_;
+  // Names of the `class` types declared during this parse, for the same reason
+  // as `declaredStructs_`. A class name is a valid type annotation, so it is
+  // kept in `classNames_` (not `structNames_`); a class and a struct may still
+  // not share a name, and the two sets are checked against each other in both
+  // declaration orders.
+  std::unordered_set<std::string> declaredClasses_;
+  // Names of the `class` types visible as type annotations. Pre-scanned in
+  // `parseProgram` (like `structNames_`) so an annotation written before the
+  // declaration is accepted, and seeded by the REPL across entries.
+  std::unordered_set<std::string> classNames_;
   // True while parseProgram is running at statement level: top-level consts
   // are folded later in resolveTopLevelConsts (after the whole program was
   // parsed), so nested blocks keep folding eagerly during parsing.
@@ -152,6 +170,11 @@ class Parser {
   FnDeclStmt parseExternFnDecl();
   // `struct Name { field: T; ... }` (PHASE 6.5). A data-only declaration.
   StmtPtr parseStructDecl();
+  // `class Name { field: T; ...; fn method(...) { ... } }`. A class is sugar
+  // over the map-plus-closures idiom: the parser desugars it into an ordinary
+  // top-level constructor function, so no AST node, opcode, compiler or VM
+  // change is involved (see the definition).
+  StmtPtr parseClassDecl();
   // Body that follows a `=>`: a `{ ... }` block, or a single expression that
   // is desugared into a block holding one `return`. `arrow` is the `=>` token.
   StmtPtr parseFunctionBody(const Token& arrow);

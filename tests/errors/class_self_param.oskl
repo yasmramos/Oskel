@@ -1,0 +1,8 @@
+// expect-exit: 65
+// `self` is reserved inside a class body: it cannot name a parameter either,
+// because the desugaring binds `self` to the instance the methods capture.
+class Point {
+  x: int;
+  fn init(self: int) { self.x = self; }
+}
+let p = Point(1);
