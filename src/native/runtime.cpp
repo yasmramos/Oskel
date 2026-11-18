@@ -6232,6 +6232,86 @@ void emitTimeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label nowLabel,
   epilogue(cg);
 }
 
+// `AotValue oskel_builtin_input(AotValue* args, long argc, AotClosure* self)`:
+// the public `input`. It takes an optional prompt, writes it to stdout and then
+// reads one line through the `entry.read` handle, returning the line as a
+// string (nil when the read reports end of input). The read handle is bound by
+// the bare-metal prelude (the keyboard slice); the builtin is only seeded for
+// that target, so the other preludes never reference it.
+//
+// The line is read into a fixed 256-byte stack buffer -- the same size as the
+// kernel's keyboard ring buffer -- and copied into a fresh arena string, so the
+// result outlives the call. `read` consumes the newline and returns the byte
+// count, which may be zero for an empty line.
+void emitInputBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label readLabel,
+                      CodeGen::Label rawPrint, CodeGen::Label allocLabel,
+                      CodeGen::Label fail, const DataBlob& msgArgc,
+                      const DataBlob& msgOom) {
+  constexpr std::int64_t kBufferBytes = 256;
+  constexpr std::int64_t kBufferOffset = -272;  // rbp-relative, below rbx/r12
+  CodeGen::Label noPrompt = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, static_cast<std::int32_t>(kBufferBytes + 16));
+
+  // `input` takes at most one argument (the prompt).
+  CodeGen::Label arityOk = cg.newLabel();
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Le, arityOk);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(arityOk);
+  // Prompt: render args[0] with the raw printer (no newline), matching the
+  // hosted `input`'s `args[0].toString()`.
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Eq, noPrompt);
+  cg.movFromMem(Rsi, Rdi, 8);  // payload
+  cg.movFromMem(Rdi, Rdi, 0);  // tag
+  cg.callLabel(rawPrint);
+
+  cg.bind(noPrompt);
+  // read(buf, 256): rdi = &buf, rsi = 256. The keyboard has no end of input, so
+  // the count is the line's byte length and may be zero for an empty line --
+  // which becomes an empty string, exactly like the hosted `input`.
+  cg.leaMem(Rdi, Rbp, kBufferOffset);
+  cg.movImm(Rsi, kBufferBytes);
+  cg.callLabel(readLabel);
+
+  cg.movReg(R12, Rax);  // byte count
+  cg.movReg(Rdi, Rax);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
+  cg.callLabel(allocLabel);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rax, 0, R12);  // length word
+  cg.movReg(Rbx, Rax);
+  cg.movReg(Rdi, Rax);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
+  cg.leaMem(Rsi, Rbp, kBufferOffset);
+  cg.movReg(Rcx, R12);
+  cg.cld();
+  cg.repMovsb();
+  cg.movReg(Rdx, Rbx);
+  cg.movImm(Rax, kTagStr);
+  cg.jmp(done);
+
+  cg.bind(oom);
+  emitFailCall(cg, fail, msgOom);
+
+  cg.bind(done);
+  cg.addImm32(Rsp, static_cast<std::int32_t>(kBufferBytes + 16));
+  cg.pop(R12);
+  cg.pop(Rbx);
+  cg.movReg(Rsp, Rbp);
+  cg.pop(Rbp);
+  cg.retInsn();
+}
+
 // `void oskel_sb_init(AotStringBuilder* sb, char* data, long capacity)`: start a
 // builder over a caller-owned buffer (`data`/`capacity`) with `length` zero. A
 // caller that renders a `print` value passes a stack buffer, so a small render
@@ -7245,7 +7325,8 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
 
 void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                     const RuntimeHandles& entry,
-                    const std::vector<AotExternThunk>* externThunks, bool hosted) {
+                    const std::vector<AotExternThunk>* externThunks, bool hosted,
+                    bool hasInput) {
   // Constant text, bound after all code so nothing falls through into it.
   std::vector<DataBlob> data;
   auto addText = [&](const char* text) {
@@ -7366,6 +7447,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgExitArgc = addText("oskel: exit() expects between 0 and 1 arguments\n");
   DataBlob msgExitType = addText("oskel: exit() expects an integer argument\n");
   DataBlob msgTimeArgc = addText("oskel: time() expects 0 arguments\n");
+  DataBlob msgInputArgc = addText("oskel: input() expects between 0 and 1 arguments\n");
   // The scalar `extern "C"` thunks (PHASE 7f.5). A direct call is arity- and
   // type-checked at compile time, so these only fire through a first-class
   // reference (`var f = abs; f("x")`). The arity message is the shared one; the
@@ -7614,6 +7696,12 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                       msgAssertEqDefault, textExpected, textGot, msgOom);
   emitExitBuiltin(cg, handles.exitBuiltin, entry.exit, fail, msgExitArgc, msgExitType);
   emitTimeBuiltin(cg, handles.timeBuiltin, entry.now, fail, msgTimeArgc);
+  // `input` is the bare-metal keyboard builtin: only the prelude that binds
+  // `entry.read` may reference it (see `emitAotRuntime`'s `hasInput`).
+  if (hasInput) {
+    emitInputBuiltin(cg, handles.inputBuiltin, entry.read, handles.printValueRaw,
+                     handles.alloc, fail, msgInputArgc, msgOom);
+  }
   emitIntTextParser(cg, handles.intTextParser, fail, msgConvertInt);
   dtoa::emitDtoa(cg, dtoaHandles);
   parse_float::emitParseFloat(cg, parseFloatHandles, dtoaHandles);

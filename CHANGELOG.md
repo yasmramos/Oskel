@@ -81,6 +81,25 @@ may change between minor versions.
 
 ### Added
 
+- **Bare-metal keyboard input: the IRQ1 handler and the `input` builtin.** The
+  multiboot kernel now has a keyboard. After the PIC remap, IRQ1 is vector
+  `0x21`; the handler reads the scancode from the i8042 data port (`0x60`),
+  tracks the two shift keys, translates a set-1 *make* code to ASCII through a
+  pair of 128-byte tables and appends the character to a 256-byte ring buffer in
+  the zeroed kernel-data page. The master PIC is masked with `0xFC` (unmasking
+  IRQ1 alongside IRQ0), and the handler acknowledges the PIC and `iretq`s like
+  the timer handler. A new `oskel_read` thunk drains the buffer for the
+  `input([prompt])` builtin, which reads one line (blocking with `hlt` on an
+  empty buffer) and returns it as a string, an empty line included. `input` is
+  seeded only for the bare-metal target — the one whose prelude binds
+  `entry.read` — so on Linux and Windows the name stays unresolved and a
+  program that calls it fails the build with the usual unseeded-global error.
+  Backend-only: no token, AST node, parser rule, opcode, VM path or compiler
+  path changes (`docs/bare-metal-interrupts-design.md` §9). The end-to-end test
+  is deterministic and host-independent: the guest injects its own scancodes
+  through the i8042 (`0xD2`), because a QEMU-monitor `sendkey` does not reliably
+  reach the guest.
+
 - **A VM/AOT parity fixture for `switch`, `defer` and `struct`.** The curated
   parity list covered functions, collections, ranges, slices and builtins but
   never exercised these three constructs, which the AOT backend lowers
