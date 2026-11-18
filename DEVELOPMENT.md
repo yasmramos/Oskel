@@ -429,7 +429,7 @@ previous one.
   and `stringify` (compact or indented). The module is written over the portable
   primitive surface (indexing, slicing, `len`, `ord`/`chr`,
   `int`/`double`/`str`/`type`, `panic`, `for ... in`, closures), avoiding the
-  collection/string methods and `pcall`/`error` the AOT backend does not
+  collection/string methods and `pcall` the AOT backend does not
   implement yet, so it behaves identically on the VM and under `oskel build`.
   See `docs/language.md` §12.9/§18, `tests/55_std_json.oskl` and the AOT
   fixture `tests/native_build_json.oskl`.
@@ -440,7 +440,7 @@ previous one.
   `days_from_civil` algorithm, epoch conversion, calendar arithmetic,
   differences, components, a `strftime`-like `format` and ISO-8601
   `parse`/`iso`/`isValid`/`tryParse`. The module is written over the portable
-  primitive surface, avoiding the collection/string methods and `pcall`/`error`
+  primitive surface, avoiding the collection/string methods and `pcall`
   the AOT backend does not implement yet, so it behaves identically on the VM and
   under `oskel build`. See `docs/language.md` §12.10/§18,
   `tests/56_std_datetime.oskl` and the AOT fixture
@@ -463,7 +463,7 @@ previous one.
   Windows; `normalize`/`relative` match `posixpath.normpath`/`relpath` exactly,
   with three documented deviations elsewhere (`basename`, `dirname`, `join`).
   The module is written over the portable primitive surface, avoiding the
-  collection/string methods and `pcall`/`error` the AOT backend does not
+  collection/string methods and `pcall` the AOT backend does not
   implement yet, so it behaves identically on the VM and under `oskel build`.
   See `docs/language.md` §12.11/§18, `tests/57_std_path.oskl` and the AOT
   fixture `tests/native_build_path.oskl`.

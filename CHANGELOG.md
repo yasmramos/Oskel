@@ -30,7 +30,11 @@ may change between minor versions.
   raised runtime errors stay out, the latter because the AOT runtime has no
   unwinding. The row now says so. `DEVELOPMENT.md`'s Phase 7 status line also
   omitted the completed `7c.4a-d`, `7c.5a`, `7c.5c` and `7c.6` slices; it lists
-  them, and keeps `7c.5b` marked in progress as its section says.
+  them, and keeps `7c.5b` marked in progress as its section says. The same stale
+  claim survived in five module notes (`std/json.oskl`, `std/path.oskl`, and the
+  `std.json`/`std.datetime`/`std.path` bullets in `DEVELOPMENT.md`), which listed
+  `pcall`/`error` together as unimplemented in AOT; they now name only `pcall`,
+  which is what actually remains.
 
 - **The docs stop promising what the tree does not do.** `DEVELOPMENT.md` §8 now
   marks the `.oskc`/`.oskpkg` formats and their bytecode verification as
