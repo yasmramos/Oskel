@@ -7362,6 +7362,12 @@ constexpr X64Reg kIntArgRegs[] = {Rdi, Rsi, Rdx, Rcx, R8, R9};
 // needs a REX prefix.
 constexpr int XmmScratch = kXmmBase + 7;
 
+// The hosted engine caps a returned `cstring` scan at 16 MiB (`src/ffi.cpp`):
+// past the cap the C `const char *` contract is broken and the read stops with
+// a clear error instead of walking off the end of the buffer. The thunk matches
+// that bound so a hosted binary and the VM agree.
+constexpr std::int32_t kMaxCStringBytes = 1 << 24;
+
 // Normalizes the integer returned in `rax` to its declared width, exactly like
 // the hosted `wrapInteger`: a C `int` leaves the upper half of `rax` undefined,
 // so a `shl`/`sar` pair re-extends a narrow signed value and a mask zero-extends
@@ -7404,13 +7410,22 @@ void normalizeIntegerReturn(CodeGen& cg, const std::string& type) {
 // for an integer parameter and widened for a `double`; the return is normalized
 // to the declared width.
 void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fail,
-                     const DataBlob& msgArity, const DataBlob& msgType) {
+                     CodeGen::Label allocLabel, const DataBlob& msgArity,
+                     const DataBlob& msgType, const DataBlob& msgOom,
+                     const DataBlob& msgCStringTooLong) {
   CodeGen::Label arityOk = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
 
   cg.bind(thunk.label);
   prologue(cg);
   cg.push(Rbx);
-  cg.push(R12);
+  cg.push(R12);  // a callee-saved scratch: the `alloc`/`rep movsb` calls clobber rdi/rsi/rcx/r10/r11
+  // The integer arguments are staged here and loaded into their registers only
+  // just before the call, because marshalling a later pointer argument calls
+  // `alloc` and `rep movsb`, which clobber the argument registers. Six 8-byte
+  // slots keep the frame 16-byte aligned (48 is a multiple of 16).
+  constexpr std::int32_t kArgStageBytes = 6 * 8;
+  cg.subRegImm32(Rsp, kArgStageBytes);
   cg.movReg(Rbx, Rdi);  // args base; parameter i lives at [rbx - 16*i]
 
   // The thunk is the callee, so it checks its own arity, exactly like a user
@@ -7444,11 +7459,12 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         cg.bind(asNumber);
         cg.movFromMem(R11, Rbx, base + 8);
         cg.movqToXmm(XmmScratch, R11);
-        cg.cvttsd2si(kIntArgRegs[gpr], XmmScratch);
+        cg.cvttsd2si(R11, XmmScratch);
         cg.jmp(done);
         cg.bind(asIs);
-        cg.movFromMem(kIntArgRegs[gpr], Rbx, base + 8);
+        cg.movFromMem(R11, Rbx, base + 8);
         cg.bind(done);
+        cg.movToMem(Rsp, 8LL * gpr, R11);
         ++gpr;
         break;
       }
@@ -7501,13 +7517,59 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         ++sse;
         break;
       }
+      case ffi::ParamClass::Pointer: {
+        // A `cstring`/`ptr` crosses as a GPR holding a machine address. `nil`
+        // is C's NULL (0). A Oskel string is an `AotString` (a length then the
+        // bytes, *not* NUL-terminated), so it cannot be passed as-is: the thunk
+        // materialises a NUL-terminated copy in the arena and passes its
+        // address, exactly the `const char *` a C callee dereferences. A
+        // non-string value is not a pointer the AOT runtime can represent, so
+        // it fails like the hosted engine does.
+        CodeGen::Label isNil = cg.newLabel();
+        CodeGen::Label isStr = cg.newLabel();
+        CodeGen::Label staged = cg.newLabel();
+        cg.cmpImm32(R10, static_cast<std::int32_t>(kTagNil));
+        cg.jcc(Jcc::Eq, isNil);
+        cg.cmpImm32(R10, static_cast<std::int32_t>(kTagStr));
+        cg.jcc(Jcc::Eq, isStr);
+        emitFailCall(cg, fail, msgType);
+        cg.bind(isNil);
+        cg.xorReg(R11, R11);  // NULL
+        cg.jmp(staged);
+        cg.bind(isStr);
+        cg.movFromMem(R12, Rbx, base + 8);  // the AotString* (a length word)
+        cg.movFromMem(Rdi, R12, 0);         // the byte length
+        cg.addImm32(Rdi, 1);                // the bytes plus the terminating NUL
+        cg.callLabel(allocLabel);           // rax = the block (or null)
+        cg.testReg(Rax);
+        cg.jcc(Jcc::Eq, oom);
+        // Copy the bytes: dst = rax, src = the AotString's bytes, count = the
+        // length (reloaded from the header, which r12 still points at). `rep
+        // movsb` leaves rax (the block) untouched and advances rdi to its end,
+        // so the NUL goes right after the bytes.
+        cg.movReg(Rdi, Rax);
+        cg.movReg(Rsi, R12);
+        cg.addImm32(Rsi, static_cast<std::int32_t>(kAotStringHeaderSize));
+        cg.movFromMem(Rcx, R12, 0);
+        cg.repMovsb();
+        cg.movImmByteToMem(Rdi, 0, 0);  // the terminating NUL
+        cg.movReg(R11, Rax);
+        cg.bind(staged);
+        cg.movToMem(Rsp, 8LL * gpr, R11);
+        ++gpr;
+        break;
+      }
       default:
-        // A pointer, callback or struct parameter is not part of the scalar
-        // thunk; the lowerer rejects such a declaration before it reaches here.
+        // A callback or struct parameter is not part of this thunk; the lowerer
+        // rejects such a declaration before it reaches here.
         emitFailCall(cg, fail, msgType);
         break;
     }
   }
+
+  // Load the staged integer arguments into their registers now that every
+  // `alloc`/`rep movsb` has run. The SSE arguments are already in place.
+  for (int k = 0; k < gpr; ++k) cg.movFromMem(kIntArgRegs[k], Rsp, 8LL * k);
 
   cg.callExternal(thunk.symbol);
 
@@ -7534,6 +7596,49 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
       cg.movzx(Rdx, Rdx);
       cg.movImm(Rax, kTagBool);
       break;
+    case ffi::ReturnClass::CString: {
+      // A `const char *` comes back in `rax`. NULL is nil; otherwise the bytes
+      // are scanned to the NUL (with the hosted engine's 16 MiB cap) and copied
+      // into an `AotString`, which is the AOT representation of text.
+      CodeGen::Label null = cg.newLabel();
+      CodeGen::Label scanned = cg.newLabel();
+      CodeGen::Label scanLoop = cg.newLabel();
+      CodeGen::Label returned = cg.newLabel();
+      cg.testReg(Rax);
+      cg.jcc(Jcc::Eq, null);
+      cg.movReg(R12, Rax);      // the C string; r12 survives the `alloc`
+      cg.xorReg(Rcx, Rcx);      // the byte count
+      cg.bind(scanLoop);
+      // `movzxFromMem` takes a displacement, so index through a temporary base.
+      cg.movReg(R11, R12);
+      cg.addReg(R11, Rcx);
+      cg.movzxFromMem(R10, R11, 0);
+      cg.testReg(R10);
+      cg.jcc(Jcc::Eq, scanned);
+      cg.addImm32(Rcx, 1);
+      cg.cmpImm32(Rcx, static_cast<std::int32_t>(kMaxCStringBytes));
+      cg.jcc(Jcc::B, scanLoop);
+      emitFailCall(cg, fail, msgCStringTooLong);
+      cg.bind(scanned);
+      cg.movReg(Rdi, Rcx);
+      cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
+      cg.callLabel(allocLabel);
+      cg.testReg(Rax);
+      cg.jcc(Jcc::Eq, oom);
+      cg.movToMem(Rax, 0, Rcx);  // the AotString length
+      cg.movReg(Rdi, Rax);
+      cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
+      cg.movReg(Rsi, R12);
+      cg.repMovsb();             // copies rcx bytes (the scan left rcx = length)
+      cg.movReg(Rdx, Rax);
+      cg.movImm(Rax, kTagStr);
+      cg.jmp(returned);
+      cg.bind(null);
+      cg.movImm(Rax, kTagNil);
+      cg.xorReg(Rdx, Rdx);
+      cg.bind(returned);
+      break;
+    }
     default:  // Int
       normalizeIntegerReturn(cg, thunk.returnType);
       cg.movReg(Rdx, Rax);
@@ -7541,9 +7646,13 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
       break;
   }
 
+  cg.addImm32(Rsp, kArgStageBytes);
   cg.pop(R12);
   cg.pop(Rbx);
   epilogue(cg);
+
+  cg.bind(oom);
+  emitFailCall(cg, fail, msgOom);
 }
 
 }  // namespace
@@ -7686,6 +7795,14 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   if (externThunks != nullptr) {
     msgExternType = addText("oskel: argument type does not match the extern \"C\" declaration\n");
   }
+  // The returned-`cstring` scan cap message, hosted only, for the same
+  // byte-identity reason.
+  DataBlob msgCStringTooLong;
+  if (externThunks != nullptr) {
+    msgCStringTooLong = addText(
+        "oskel: a C function returned a 'cstring' longer than 16777216 bytes with no NUL "
+        "terminator; the host broke the `const char *` contract\n");
+  }
   CodeGen::Label fail = cg.newLabel();
   CodeGen::Label failDynamic = cg.newLabel();
   CodeGen::Label writeInt = cg.newLabel();
@@ -7805,7 +7922,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitArityError(cg, handles.arityError, fail, msgArity);
   if (externThunks != nullptr) {
     for (const AotExternThunk& thunk : *externThunks) {
-      emitExternThunk(cg, thunk, fail, msgArity, msgExternType);
+      emitExternThunk(cg, thunk, fail, handles.alloc, msgArity, msgExternType, msgOom,
+                      msgCStringTooLong);
     }
   }
   emitPrintStrEsc(cg, printStrEsc, entry.write, textQuote, textEscQuote,

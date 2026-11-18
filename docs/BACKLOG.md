@@ -268,6 +268,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     compiler (`$CC`, default `cc`, `-no-pie -lm`). The freestanding output is
     byte-identical to before. General `extern "C"` *marshalling* (a per-signature
     thunk) is still open (7f.5): the lowering still rejects an `extern "C"` read.
+    **Partial (7f.5)**: a *scalar* `extern "C"` signature (integer/bool/float/
+    double parameter or return) now resolves in the hosted mode — the lowerer
+    narrows it to an `AotExternThunk` (`ffi::ParamClass`/`ffi::ReturnClass` per
+    slot) and `emitExternThunk` marshals it and calls the symbol through a
+    linker-resolved relocation. **Partial (7f.6)**: a `cstring`/`ptr` parameter
+    and a `cstring` return now resolve too (a pointer argument materialises a
+    NUL-terminated arena copy; a `cstring` return is scanned back into an
+    `AotString`). An opaque `ptr` return, a struct, a callback and a C variadic
+    still reject the build.
 20. **[P0] [done]** VM/AOT divergence in string iteration: `emitIterNext`'s
     `str` branch built the character but fell through into the `range` block,
     which overwrote `rax:rdx` with the cursor index, so `for c in "abc"`
@@ -292,6 +301,19 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     array methods, the lowerer's capture stores) and threading the proto name
     into the emitter. The AOT form is pinned by `tests/freestanding_test.cpp`;
     the parity fixtures avoid printing a bare function until then.
+23. **[P1]** VM/AOT divergence in the value of a returned `cstring` (PHASE
+    7f.6). The hosted backend has no pointer tag in `AotTag` (and adding one
+    would touch every tag switch and break the freestanding byte-identity), so
+    `emitExternThunk` scans a returned `const char *` and boxes it as the
+    existing `Str`. `print` and `== nil` match the VM, but `type()` reports
+    `"string"` where the VM reports `"cstring"`, and the more permissive string
+    operations then accept it: `r == "llo"` is true in AOT and false in the VM
+    (a `cstring` compares as a handle), and `"x" + r` builds a string in AOT
+    where the VM raises "unsupported operand types". The scan cap (16 MiB, the
+    hosted engine's `kMaxCStringBytes`) also matches the VM. A real `AotTag::Ptr`
+    (with `ptr`/`cstring` in `type()`, handle equality and the pointer builtins)
+    removes the divergence; until then the parity fixtures avoid comparing a
+    returned `cstring` against a string.
 
 ---
 

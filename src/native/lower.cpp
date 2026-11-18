@@ -282,9 +282,7 @@ std::vector<AotExternThunk> collectExternThunks(const std::vector<const Bytecode
       bool scalar = true;
       for (const ffi::TypeSpec& param : symbol.paramTypes) {
         ffi::ParamClass cls = ffi::ParamClass::Int;
-        if (param.isStruct || param.isCallback ||
-            !ffi::classifyParam(param.scalarType, cls) ||
-            cls == ffi::ParamClass::Pointer) {
+        if (param.isStruct || param.isCallback || !ffi::classifyParam(param.scalarType, cls)) {
           scalar = false;
           break;
         }
@@ -294,8 +292,7 @@ std::vector<AotExternThunk> collectExternThunks(const std::vector<const Bytecode
       ffi::ReturnClass ret = ffi::ReturnClass::Int;
       if (symbol.returnType.isStruct ||
           !ffi::classifyReturn(symbol.returnType.scalarType, ret) ||
-          ret == ffi::ReturnClass::Ptr || ret == ffi::ReturnClass::CString ||
-          ret == ffi::ReturnClass::Struct) {
+          ret == ffi::ReturnClass::Ptr || ret == ffi::ReturnClass::Struct) {
         continue;
       }
       thunk.returns = ret;
