@@ -2004,6 +2004,7 @@ assertEq(sqrt(81), 9.0);
 | `seed(n)` | Reseeds the generator. |
 | `clock()` | Seconds elapsed since the process started (monotonic, for timing — not a date). |
 | `time()` | Seconds since the Unix epoch, UTC, as an `int` (the wall clock; see `std.datetime` in §12.10). |
+| `memSize()` | Total physical memory of the machine, in bytes, as an `int` (`0` when it cannot be determined). |
 
 `time()` reads the system wall clock. It is available on the development VM and
 under `oskel build` on every target: the AOT runtime binds it to a syscall on
@@ -2011,6 +2012,14 @@ Linux, `time(NULL)` in hosted mode, `GetSystemTimeAsFileTime` on Windows, and
 the CMOS real-time clock in a bare-metal kernel. `clock()` is monotonic (it
 measures elapsed time, not the date) and has no AOT binding, so a native build
 that calls it fails cleanly.
+
+`memSize()` reads the machine's RAM, the way `time()` reads its clock. On the
+development VM it comes from the platform (`sysconf` on POSIX, `GlobalMemoryStatusEx`
+on Windows) and is `0` on a platform with no view of the machine. Under
+`oskel build` it is **bare-metal only**: the `x86_64-freestanding-sysv` kernel
+reads the boot loader's multiboot memory map (the available entries summed), so
+a hosted target rejects a call with a message naming the target instead of
+emitting a binary that returns a wrong number.
 
 ### 12.5 Utilities
 

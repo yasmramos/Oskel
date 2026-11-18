@@ -9,6 +9,23 @@ may change between minor versions.
 
 ## [Unreleased]
 
+### Added
+
+- **Builtin `memSize()`: the machine's physical memory in bytes.** The RAM
+  analogue of `time()` — a property of the machine, not of the program. On the
+  development VM it comes from the platform (`sysconf(_SC_PHYS_PAGES)` on POSIX,
+  `GlobalMemoryStatusEx` on Windows, `0` on a platform with no view of the
+  machine). Under `oskel build` it is implemented for the bare-metal target
+  (`x86_64-freestanding-sysv`): the multiboot header now requests the memory
+  information, the prelude captures the multiboot info pointer from `EBX`, and
+  the generated `oskel_mem_size` sums the available entries of the boot loader's
+  memory map (falling back to `mem_lower`/`mem_upper`). On any hosted target the
+  lowerer rejects a call with a message naming the target instead of emitting a
+  binary that reads a nil handle; a user binding of the same name still shadows
+  the builtin, so `var memSize = 5` compiles on every target. Covered by
+  `tests/bare_metal_test.cpp` (a `-m 256M` boot asserting 255 MiB),
+  `tests/lower_test.cpp` and `tests/vm_test.cpp`.
+
 ### Removed
 
 - **The unused `Env` scope chain and `Function::closure`.** The VM keeps locals

@@ -979,6 +979,38 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   // unseeded builtin. This mirrors `emitAotRuntime`'s `hasInput`.
   const bool hasInput = target.os == Os::Freestanding;
   if (hasInput) builtins.emplace("input", rt.inputBuiltin);
+  // `memSize()` is bare metal only: its value comes from the multiboot map, and
+  // no hosted prelude binds the handle. Seed it for `Os::Freestanding` so the
+  // builtin resolves; on any other target, name it in the rejection so a program
+  // that calls it fails the build instead of emitting a call to a nil closure.
+  if (target.os == Os::Freestanding) {
+    builtins["memSize"] = rt.memSizeBuiltin;
+  } else {
+    // Name the limitation instead of leaving the generic "read but never
+    // assigned" from `collectGlobals`: `memSize()` is a real builtin, just not on
+    // this target. A user binding (`var memSize = 5`) shadows it exactly as it
+    // shadows `print`, so only a read with no assignment is the builtin; a
+    // shadowed name is left to the ordinary global path.
+    bool assigned = false;
+    bool read = false;
+    for (const Bytecode* p : protos) {
+      for (const Instruction& instr : p->code) {
+        if (instr.op != OpCode::GETGLOBAL && instr.op != OpCode::SETGLOBAL) continue;
+        const Value& name = p->constants.at(static_cast<std::size_t>(instr.b));
+        if (!name.isStr() || name.asStr() != "memSize") continue;
+        if (instr.op == OpCode::GETGLOBAL) {
+          read = true;
+        } else {
+          assigned = true;
+        }
+      }
+    }
+    if (read && !assigned) {
+      throw LoweringError(
+          "lowering: memSize() is only available on the bare-metal target "
+          "(x86_64-freestanding-sysv); it reads the multiboot memory map");
+    }
+  }
 
   // The scalar `extern "C"` surface, hosted only (PHASE 7f.5): each symbol gets
   // a marshalling thunk the chunk seeds as a `Func` into its global slot, so a
@@ -1168,7 +1200,8 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     startOffset = emitFreestandingRuntime(cg, entry, mainEntry);
   }
   emitAotRuntime(cg, rt, entry, externThunks.empty() ? nullptr : &externThunks,
-                 mode == LinkMode::Hosted, hasInput);
+                 mode == LinkMode::Hosted, hasInput,
+                 target.os == Os::Freestanding);
   // String constants last: their bytes are addressed by `lea` from the code
   // above, and no path falls through into them.
   emitStringConstants(cg, stringConstants);

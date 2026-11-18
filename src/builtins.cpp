@@ -1286,6 +1286,17 @@ void registerBuiltins(Runtime& in) {
     return Value(seconds);
   });
 
+  // Total physical memory of the machine, in bytes. Like `time()`, it is a
+  // property of the machine rather than of the program, so it comes from the
+  // platform and a platform with no view of the machine reports 0. The AOT
+  // backend has its own `memSize()` (bare metal only, from the boot loader's
+  // memory map), so a program that calls it agrees with the VM on the hosted
+  // engine and is rejected, not mis-compiled, elsewhere.
+  in.addNative("memSize", [](Runtime& in, Args args) -> Value {
+    need(in, "memSize", args, 0);
+    return Value(static_cast<int64_t>(in.platform().physicalMemory()));
+  });
+
   in.addNative("assert", [](Runtime& in, Args args) -> Value {
     needBetween(in, "assert", args, 1, 2);
     if (!args[0].truthy()) {

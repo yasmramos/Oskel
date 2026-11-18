@@ -1468,6 +1468,25 @@ Slices, each independently shippable:
     `CodeGen` gained six single-opcode primitives (`cli`, `sti`, `hlt`,
     `iretq`, `out dx, al`, `in al, dx`) plus `test al, imm8`, each byte-checked
     in `tests/codegen_test.cpp`.
+  - **7g.1** (done) — the `memSize()` builtin. It returns the machine's total
+    physical memory in bytes as an `int`, the RAM analogue of `time()`. On the
+    development VM it comes from the platform (`Platform::physicalMemory`:
+    `sysconf(_SC_PHYS_PAGES)` on POSIX, `GlobalMemoryStatusEx` on Windows, and
+    `0` for a platform with no view of the machine, so the value is never
+    invented). The AOT backend implements it for the bare-metal target only:
+    the multiboot header now sets flag bit 1 (`kMultibootFlagMemory`), the
+    prelude captures the multiboot info pointer that the boot loader passes in
+    `EBX`, and `oskel_mem_size` walks the memory map (`mmap_addr`/`mmap_length`)
+    summing the entries of type 1 (available), with the older
+    `mem_lower`/`mem_upper` fields as a fallback. On any hosted target the
+    lowerer rejects a call with `memSize() is only available on the bare-metal
+    target (x86_64-freestanding-sysv)` instead of emitting a binary that reads
+    a nil handle -- but only when the name is the builtin, so a user binding
+    (`var memSize = 5`) still shadows it exactly as it shadows `print`. Covered
+    by `tests/bare_metal_test.cpp` (`test_multiboot_requests_memory`,
+    `test_qemu_mem_size`, which boots `-m 256M` and asserts `255 MiB`),
+    `tests/lower_test.cpp` (`testMemSizeTargetGate`) and `tests/vm_test.cpp`
+    (`testMemSizeReadsThePlatform`).
 - Deferred: per-instruction type annotations for fast paths without dynamic
   dispatch (bridge toward the speculative work in
   `docs/ARCHITECTURE_ANALYSIS.md`); other targets (macOS via libc or stubs;

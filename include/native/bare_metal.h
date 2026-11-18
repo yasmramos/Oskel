@@ -38,11 +38,16 @@
 constexpr std::uint64_t kBMCodeBase = 0x100000;  // .text load address
 constexpr std::uint64_t kBMDataBase = 0x200000;  // .bss load address
 
-// The multiboot 1 header (magic, flags, checksum). Flags = 0 asks for a plain
-// ELF load with no extra information; the boot loader jumps to `e_entry` in
-// 32-bit protected mode.
+// The multiboot 1 header (magic, flags, checksum). The boot loader jumps to
+// `e_entry` in 32-bit protected mode with the magic 0x2BADB002 in EAX and the
+// physical address of `multiboot_info` in EBX.
 constexpr std::uint32_t kMultibootMagic = 0x1BADB002;
-constexpr std::uint32_t kMultibootFlags = 0x00000000;
+
+// Bit 1 of the header flags: "provide memory information". It asks the boot
+// loader to fill `mem_lower`/`mem_upper` and the `mmap` in `multiboot_info`,
+// which is what `memSize()` reads. The checksum is `-(magic + flags)`.
+constexpr std::uint32_t kMultibootFlagMemory = 0x00000002;
+constexpr std::uint32_t kMultibootFlags = kMultibootFlagMemory;
 
 // Offset of the 32-bit trampoline inside the code buffer: the 12-byte
 // multiboot header comes first (it must sit in the first 8 KiB of the file),
