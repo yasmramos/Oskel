@@ -982,6 +982,30 @@ Slices, each independently shippable:
       `tests/lower_test.cpp` (`testExecArrayMethodsInPlace`), the freestanding
       `test_array_methods_inplace` (values and the error paths) and the
       `oskel build` fixture.
+    - **7c.3f** (done) — the allocating array methods: `slice`, `concat`,
+      `reversed` and `clone`. Each returns a *new* array and leaves the receiver
+      untouched, so unlike 7c.3c/7c.3e they need to allocate a fresh
+      `AotArray` header plus its items block from the arena. The binding is the
+      same as the other methods (the receiver captured in a shared cell, the
+      body reached through `oskel_call`), with four new selectors (9..12) in
+      `bindArrayMethod`'s table. A shared `emitArrayAlloc` helper allocates the
+      header and the block once, sized to the exact item count, so no method
+      grows a block incrementally. `slice(start?, end?)` follows the hosted
+      `bindArray`: both bounds are optional (defaults `0` and the length), a
+      negative bound counts from the end, every bound is clamped to
+      `[0, length]` and `end < start` is raised to `start`. `concat(other)`
+      copies the receiver's items then `other`'s and fails with
+      "concat() expects an array" for a non-array. `reversed()` copies the
+      items in reverse; `clone()` copies them in order (a shallow copy, so the
+      copy shares any nested arrays, as in the VM). The methods read the
+      receiver through the same cell as the in-place ones, so a detached binder
+      (`var s = a.slice;`) still works. The emitters keep every live value in a
+      stack slot and never touch r13/r14 (the allocator's cursor and end), as
+      the other arena helpers do. No new opcode and no compiler change: the
+      member form of `GETTABLE` plus `CALL` already carries it, so the `.oskc`
+      is untouched. Covered by `tests/lower_test.cpp`
+      (`testExecArrayMethodsAlloc`), the freestanding `test_array_methods_alloc`
+      (values and the error paths) and the `oskel build` fixture.
     - **7c.4a** (done) — the hidden `$nonNull` and `$isError` helpers. The
       compiler emits `$nonNull` for the non-null assertion `a!!` and `$isError`
       for `try` / `x catch y` (PHASE 6.5/6.7); the AOT backend had no binding
@@ -1617,7 +1641,7 @@ Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair, which `ITER` now yields directly, no new opcode and no helper call) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.4a-d, 7c.5a, 7c.5c, 7c.6, 7d, 7e, 7g done; 7c.5b — the remaining builtins — in progress; 7f — FFI in AOT — 7f.1-7f.6 done, scalar and `cstring`/`ptr` `extern "C"` resolve in the hosted backend, struct/callback/variadic still open)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.4a-d, 7c.5a, 7c.5c, 7c.6, 7d, 7e, 7g done; 7c.5b — the remaining builtins — in progress; 7f — FFI in AOT — 7f.1-7f.6 done, scalar and `cstring`/`ptr` `extern "C"` resolve in the hosted backend, struct/callback/variadic still open)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)

@@ -356,6 +356,18 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods_inplace.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # The allocating array methods (PHASE 7c.3f): `slice`, `concat`, `reversed`
+    # and `clone`. Each returns a new array and leaves the receiver untouched,
+    # so the backend must allocate a fresh header plus items block. Checked
+    # against the VM, so the returned arrays and the receiver's immutability are
+    # pinned.
+    add_test(NAME oskel.build_binary_array_methods_alloc
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_array_methods_alloc"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods_alloc.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `**` with a float/double operand or a negative exponent (PHASE 7c.1d.2).
     # It used to lower only for int/int with a non-negative exponent; every
     # other numeric pair failed with the unsupported-operand error, so a program

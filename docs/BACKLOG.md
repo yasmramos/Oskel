@@ -183,11 +183,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 1. **[P0]** VM/AOT divergence in collection methods: the array methods bind in
    AOT (`push`/`pop` in PHASE 7c.3c, `shift`/`unshift`/`insert`/`removeAt`/
-   `contains`/`indexOf`/`clear` in PHASE 7c.3e), but the allocating array
-   methods (`slice`, `concat`, `clone`, `reversed`) and `map.keys`, `str.upper`,
-   and the rest of the string/map methods still work in the VM and fail in AOT
-   with "no such member". The binding mechanism (receiver captured in a closure
-   upvalue, method body reached through `oskel_call`) generalises to the rest.
+   `contains`/`indexOf`/`clear` in PHASE 7c.3e, and the allocating `slice`/
+   `concat`/`reversed`/`clone` in PHASE 7c.3f), but the callback-taking array
+   methods (`map`, `filter`, `reduce`, `each`, `find`, `any`, `all`, `sum`,
+   `sort`/`sorted`) and `map.keys`, `str.upper`, and the rest of the
+   string/map methods still work in the VM and fail in AOT with "no such
+   member". The binding mechanism (receiver captured in a closure upvalue,
+   method body reached through `oskel_call`) generalises to the rest; the
+   callback ones additionally need `oskel_call` on the argument closure.
 2. **[P0] [done]** VM/AOT divergence in structural equality: `[1,2] == [1,2]`
    is true in the VM (content) and false in AOT (identity). The equality helper
    in `oskel_compare` now descends into arrays and maps (equal length, equal

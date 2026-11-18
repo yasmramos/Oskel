@@ -895,6 +895,55 @@ static void testExecArrayMethodsInPlace() {
                  "compiled: a detached contains scans the receiver it captured");
 }
 
+// The allocating array methods (PHASE 7c.3f): `slice`, `concat`, `reversed` and
+// `clone`. Each returns a new array; the receiver is read only. These lock the
+// arena allocation path (a fresh header plus items block) and the shallow-copy
+// semantics against the VM.
+static void testExecArrayMethodsAlloc() {
+  // `slice` copies a range; both bounds are optional and clamped.
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.slice();"), {1, 2, 3},
+             "compiled: slice with no bounds copies the whole array");
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.slice(1);"), {2, 3},
+             "compiled: slice with a start");
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.slice(1, 2);"), {2},
+             "compiled: slice with a start and an end");
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.slice(-2);"), {2, 3},
+             "compiled: slice with a negative start counts from the end");
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.slice(3, 1);"), {},
+             "compiled: slice with end before start is empty");
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.slice(10);"), {},
+             "compiled: slice past the end is empty");
+  checkArray(compileAndRun("var a = [1, 2, 3]; a.slice(1); var r = a;"), {1, 2, 3},
+             "compiled: slice leaves the receiver unchanged");
+
+  // `concat` appends another array into a new one.
+  checkArray(compileAndRun("var a = [1, 2]; var r = a.concat([3, 4]);"), {1, 2, 3, 4},
+             "compiled: concat appends another array");
+  checkArray(compileAndRun("var a = [1, 2]; var r = a.concat([]);"), {1, 2},
+             "compiled: concat with an empty array copies the receiver");
+  checkArray(compileAndRun("var a = [1, 2]; a.concat([3]); var r = a;"), {1, 2},
+             "compiled: concat leaves the receiver unchanged");
+
+  // `reversed` returns a new array; `clone` returns a shallow copy.
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.reversed();"), {3, 2, 1},
+             "compiled: reversed returns the items in reverse order");
+  checkArray(compileAndRun("var a = [1, 2, 3]; a.reversed(); var r = a;"), {1, 2, 3},
+             "compiled: reversed leaves the receiver unchanged");
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.clone();"), {1, 2, 3},
+             "compiled: clone returns a copy of the items");
+  checkArray(compileAndRun("var a = [1]; var c = a.clone(); c.push(2); var r = a;"), {1},
+             "compiled: a write through the clone does not reach the receiver");
+  checkArray(compileAndRun("var a = [1]; var c = a.clone(); c.push(2); var r = c;"), {1, 2},
+             "compiled: the clone itself is mutated");
+
+  // The methods are first-class: a detached binder reads the receiver it
+  // captured.
+  checkArray(compileAndRun("var a = [1, 2, 3]; var s = a.slice; var r = s(1, 3);"), {2, 3},
+             "compiled: a detached slice reads the receiver it captured");
+  checkArray(compileAndRun("var a = [1, 2, 3]; var rv = a.reversed; var r = rv();"), {3, 2, 1},
+             "compiled: a detached reversed reads the receiver it captured");
+}
+
 static void testExecStringCompare() {
   auto mk = [](OpCode op, const std::string& x, const std::string& y) {
     return makeProto({instr(OpCode::LOADK, 0, 0), instr(OpCode::LOADK, 1, 1),
@@ -1174,6 +1223,7 @@ int main() {
   testExecArrayConcat();
   testExecArrayMethods();
   testExecArrayMethodsInPlace();
+  testExecArrayMethodsAlloc();
   testExecStringCompare();
   testExecGlobals();
   testExecLocals();
