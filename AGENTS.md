@@ -210,8 +210,25 @@ it as a caveat:
   diagnostic of its own; and an error inside an imported module is reported
   under the *root* file's name with the module's line and column, so the parser
   clamps a position that falls past the end of the open document instead of
-  dropping it. Keep `package.json` free of a `dependencies` block: the extension
-  ships as plain CommonJS.
+  dropping it. A third trap is the **unit**: the compiler counts its column in
+  UTF-8 bytes and a VS Code `Range` counts UTF-16 code units, so the two agree
+  only on ASCII — an accent or an emoji earlier in the line moves the squiggle
+  off the token by two positions either way. `byteColumnToUtf16` converts
+  against the document text, which is why `parseDiagnostics` takes the source as
+  well as the output; do not "simplify" it back to a bare column.
+- A programmatic `document.save()` fires `onDidSaveTextDocument`, and whether
+  that event arrives before or after the promise resolves is **not documented**.
+  A flag cleared in `finally` therefore suppresses it in one ordering only; in
+  the other, "Save and check" starts two compiler processes and the second kills
+  the first. `src/save-guard.js` counts the expected events instead, so the
+  ordering stops mattering, and a save that throws cancels its own expectation.
+  Both orderings are unit-tested — a stub that fires the event synchronously
+  only ever exercises the one that happens to work.
+- `check` is async and its callers are event handlers VS Code does not await, so
+  every entry point goes through `checkSafely`; otherwise a rejection is visible
+  only as an unhandled promise in the extension host log.
+- Keep `package.json` free of a `dependencies` block: the extension ships as
+  plain CommonJS.
 
 ## Release and artifacts
 
