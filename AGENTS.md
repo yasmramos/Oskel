@@ -212,8 +212,8 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
 - `oskelc` (the host compiler) is the second entry point over the same front
   end: `oskel` links the runtime on top of it (VM, JIT, builtins, FFI
   marshalling) and `oskelc` links the front end alone, so the shipped compiler
-  carries no interpreter. `OSKEL_RUNTIME_SOURCES` in `CMakeLists.txt` is the one
-  directory a file lives in decides which library it belongs to: `src/core/`
+  carries no interpreter. The directory a file lives in decides which library it
+  belongs to: `src/core/`
   (Value, cycle collector, platform layer), `src/frontend/` (lexer, parser,
   bytecode compiler, AOT backend) and `src/runtime/` (VM, JIT, builtins,
   operators, FFI marshalling). There is no hand-maintained list, so a new file
@@ -227,6 +227,20 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   **or in `liboskel_frontend.a`** — the archive matters because an unreferenced
   object never reaches the binary, so a binary-only check cannot see it.
   Every packaging format ships `oskelc` beside `oskel` and `bindgen`.
+- A check that reads the source tree must name the *basename* of the file it
+  wants, never a fixed `src/<name>.cpp` path, and must fail loudly when the file
+  is missing. `tests/check_vscode_grammar.cmake` reads the keyword table, the
+  type vocabulary, the builtin registry and `isAssignOp` out of the sources so
+  the grammar cannot drift; when the split moved those files it failed on all
+  eight runners with "missing src/lexer.cpp". The same trap sits in the include
+  guards: `check_compiler_boundary.cmake` matched a bare `vm[.]h`, which stops
+  matching the moment an include gains a directory prefix — it silently passed a
+  front-end file that included `runtime/builtins.h`. Both patterns now take an
+  optional directory prefix, and `runtime/runtime.h` is spelled with its
+  directory so `include/native/runtime.h` (the AOT freestanding runtime) stays
+  allowed. When you move a file, grep for its old path across `tests/`,
+  `CMakeLists.txt`, the build scripts and the workflows, then plant a violation
+  and watch the check fail before trusting it.
 - `bindgen` (the C binding generator, `docs/bindgen.md`) is a second executable
   shipped beside `oskel`. It is standalone — it links no engine code — and its
   sources live under `tools/`, outside the three `src/` globs, so it is never
