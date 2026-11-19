@@ -726,12 +726,19 @@ Design decisions, all enforced by the parser:
   seeds the instance map with the default expression instead of `nil`, so it is
   evaluated per instance and `init` may still override it.
 - **An `init` must set every non-nullable annotated field that has no default**
-  (PHASE 6.8.1). `Parser::collectSelfAssignments` walks `init`'s body collecting
+  (PHASE 6.8.1). `Parser::collectSelfWrites` walks `init`'s body collecting
   `self.<field> = ...` targets and reports a field it never reaches. The walk
   covers the nested statement forms (`if`, loops, `switch`, `defer`) and
   deliberately does not descend into a nested function or lambda, whose body runs
   later, if at all. The check is syntactic: it catches a forgotten field, not
   every path through `init`.
+- **Only `=` and `??=` count as setting a field** (PHASE 6.8.1). `??=` falls back
+  to its right operand when the field is still `nil`, so it initializes. Every
+  other compound *reads* the field first: `self.n += 1` on a field that is still
+  `nil` faults at run time, so counting it would pass the check and then crash
+  the constructor. `SelfWrites::readFirst` records those, and the diagnostic says
+  the field is only updated in place instead of claiming it was never assigned.
+  A compound on a field that *has* a default is fine.
 - **A method may be replaced, but only by a function of the declared arity**
   (PHASE 6.8.1). A method is a map key holding a closure, so a non-function
   value would make it silently uncallable and another arity would be a latent

@@ -42,13 +42,17 @@ may change between minor versions.
   assign every non-nullable annotated field that has no default, or the field
   would hold `nil` where the annotation promises a value; the check is
   syntactic, so an assignment inside an `if`, a loop or a `switch` counts and a
-  lambda body inside `init` does not. Replacing a declared method is allowed
+  lambda body inside `init` does not. Only `=` and `??=` count as setting a
+  field: every other compound reads the field first, so `self.n += 1` on a field
+  that is still `nil` is reported instead of crashing the constructor at run
+  time (a compound on a field that has a default is fine). Replacing a declared
+  method is allowed
   only with a function of the same arity, because a method body reads its
   parameters positionally. Assigning a name within two edits of a declared
   field is a **warning**, not an error: an instance is a map, so the key is
   really added, but the near miss is far more likely a typo than a deliberate
   new key. Covered by `tests/60_class_hardening.oskl`,
-  `tests/61_class_field_typo.oskl`, five `tests/errors/class_*.oskl` cases and
+  `tests/61_class_field_typo.oskl`, six `tests/errors/class_*.oskl` cases and
   the `oskel build` fixtures that pin VM/AOT parity.
 
 - **The class field-type check now reaches every statically known receiver.**
