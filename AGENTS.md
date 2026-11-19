@@ -143,8 +143,8 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
 - The grammar keeps its **own** keyword, type and builtin lists, because a
   TextMate grammar cannot read the compiler. `tests/check_vscode_grammar.cmake`
   (CTest `vscode_grammar`) derives the vocabulary from the single sources of
-  truth — `kKeywords` in `src/lexer.cpp`, the `name == "..."` type names in
-  `src/ast.h`, the `addNative` registry in `src/builtins.cpp` — and fails when
+  truth — `kKeywords` in `src/frontend/lexer.cpp`, the `name == "..."` type names in
+  `src/frontend/ast.h`, the `addNative` registry in `src/runtime/builtins.cpp` — and fails when
   the grammar misses a word, when a `#include` names a missing entry, or when
   the grammar highlights syntax the lexer never produces. Adding a keyword, a
   type or a builtin means updating `syntaxes/oskel.tmLanguage.json` in the same
@@ -152,8 +152,8 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   `cmake -DROOT=. -P tests/check_vscode_grammar.cmake` before opening the PR.
 - The same test owns the **operators**, and in both directions. It rebuilds the
   spelling of every operator from the `if (c1 == 'a' ...)` guard that returns it
-  in `src/lexer.cpp`, and it takes the assignment set from `isAssignOp` in
-  `src/parser.cpp`, so a new `x op= y` cannot reach the compiler while the
+  in `src/frontend/lexer.cpp`, and it takes the assignment set from `isAssignOp` in
+  `src/frontend/parser.cpp`, so a new `x op= y` cannot reach the compiler while the
   grammar stays silent. The grammar's own rules are reduced to literal spellings
   (character class, `\|`, lookahead, one line per key) before the comparison,
   and if that reduction finds fewer than 15 operators it fails rather than
@@ -260,7 +260,7 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   pulled into `oskel`; `nm build/oskel | grep bindgen` must stay empty. Every
   packaging format must ship it (`/usr/bin/bindgen`, `/usr/local/bin/bindgen`,
   `{app}\bin\bindgen.exe`) or the three platforms drift apart. It reuses
-  `isKnownTypeName`/`isIntegerTypeName` from `src/ast.h` so the vocabulary it
+  `isKnownTypeName`/`isIntegerTypeName` from `src/frontend/ast.h` so the vocabulary it
   emits cannot drift from the compiler's; keep that the single source of truth.
   It must never emit a declaration the compiler rejects — an unsupported type
   becomes a `// skipped:` comment, and a C variadic is written commented out.

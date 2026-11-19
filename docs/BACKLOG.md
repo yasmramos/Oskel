@@ -124,7 +124,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ---
 
-## 4. AST (`src/ast.h`)
+## 4. AST (`src/frontend/ast.h`)
 
 1. **[P1]** The iterative teardown (`collectExprChildren` + `collectStmtChildren`
    + the destructor) needs each new node added in three places; a miss is a
@@ -149,7 +149,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ---
 
-## 5. JIT (`src/jit.cpp`)
+## 5. JIT (`src/runtime/jit/jit.cpp`)
 
 1. **[P1]** The JIT compiles only `nil`/`bool`/`int`: no floats, strings,
    containers, `CALL`, `GETGLOBAL`/`SETGLOBAL`. It accelerates very little.
@@ -327,10 +327,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     nondeterministically. The index now lives in a caller-saved scratch (`r11`),
     reloaded from its slot after every call. Regression:
     `tests/native_build_string_repr.oskl`.
-
 ---
 
-## 7. FFI (`src/ffi.cpp`)
+## 7. FFI (`src/runtime/ffi.cpp`)
 
 1. ~~**[P1]** `extern "C"` does not support variadics; `printf` cannot be
    declared. Provide a way (or a documented reason it is out of scope).~~ **Done**:
@@ -431,7 +430,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ---
 
-## 8. GC (`src/gc.cpp`)
+## 8. GC (`src/core/gc.cpp`)
 
 1. **[P1]** `gcCollect` does not run at `SETTABLE`/`GETTABLE` safe points, only
    at `CLOSURE` and `NEWTABLE`; a loop that only mutates tables with cycles
@@ -449,7 +448,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ---
 
-## 9. Value (`src/value.cpp`, `src/core/value.h`)
+## 9. Value (`src/core/value.cpp`, `src/core/value.h`)
 
 1. **[P2]** `Value::equals` for `Array`/`Map` uses a `visited` vector with a
    linear scan, O(n²) for large cycles. Use a set.
@@ -475,7 +474,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ---
 
-## 10. Errors and diagnostics (`src/errors.h`, `src/diagnostic.cpp`)
+## 10. Errors and diagnostics (`src/core/errors.h`, `src/frontend/diagnostic.cpp`)
 
 1. **[P2]** `RuntimeError::stack` is a `vector<Frame>` copied on every raise; a
    deep stack trace copies O(n) per error.
@@ -519,7 +518,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 1. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
     two programs in the same process share state; correct in a REPL, document
     it.
-## 13. Ops (`src/ops.cpp`)
+## 13. Ops (`src/runtime/ops.cpp`)
 
 1. **[P1]** `unary` `Minus` on `INT64_MIN` wraps to `INT64_MIN` while the
    compiler's const folding warns; the runtime does not warn. Make the runtime
