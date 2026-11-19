@@ -13,6 +13,13 @@
 // file name is greedy up to the last `:<line>:<col>:` triple because a Windows
 // path holds a colon of its own (`C:\src\a.oskl:3:7: ...`).
 //
+// The compiler counts its column in **UTF-8 bytes**, but a VS Code `Range`
+// counts UTF-16 code units. They agree only while the line is ASCII: `aññ`
+// before the error moves the byte column two ahead of the character the author
+// sees, and an emoji moves it two the other way (4 bytes, 2 units). The header's
+// column is therefore converted against the document text, which the caller
+// already has.
+//
 // This module deliberately does not import `vscode`: it is pure text in, plain
 // objects out, so `node --test` can exercise it without a running editor.
 
@@ -33,24 +40,61 @@ function clamp(position, lengths) {
   return { line, column };
 }
 
-function lineLengthsOf(source) {
-  return source.split('\n').map((text) => (text.endsWith('\r') ? text.length - 1 : text.length));
+function linesOf(source) {
+  return source.split('\n');
+}
+
+function lineLengthsOf(lines) {
+  return lines.map((text) => (text.endsWith('\r') ? text.length - 1 : text.length));
+}
+
+function utf8Length(codePoint) {
+  if (codePoint < 0x80) return 1;
+  if (codePoint < 0x800) return 2;
+  if (codePoint < 0x10000) return 3;
+  return 4;
+}
+
+// 1-based UTF-8 byte column -> 1-based UTF-16 column on that line. A byte that
+// lands inside a multi-byte character snaps back to the character's first unit,
+// so the squiggle covers the character rather than splitting a surrogate pair.
+function byteColumnToUtf16(lineText, byteColumn) {
+  const target = byteColumn - 1;
+  let bytes = 0;
+  let units = 0;
+  while (units < lineText.length) {
+    const codePoint = lineText.codePointAt(units);
+    const width = utf8Length(codePoint);
+    if (bytes + width > target) break;
+    bytes += width;
+    units += codePoint > 0xffff ? 2 : 1;
+  }
+  return units + 1;
 }
 
 // `parseDiagnostics` returns `{ line, column, severity, message }` with both
 // positions 1-based, which is what the compiler reports and what VS Code's
 // `Range` does not use — the caller subtracts one.
 function parseDiagnostics(output, source) {
-  const lengths = lineLengthsOf(source);
+  const lines = linesOf(source);
+  const lengths = lineLengthsOf(lines);
   const found = [];
   for (const raw of String(output).split(/\r?\n/)) {
     const match = HEADER.exec(raw);
     if (!match) continue;
     const [, , lineText, columnText, kind, message] = match;
-    const position = clamp(
-      { line: Number(lineText), column: Number(columnText) },
-      lengths
-    );
+    const line = Number(lineText);
+    const text = lines[line - 1];
+    // A line the document does not have (an error inside an imported module)
+    // cannot be converted, so `clamp` brings it into range instead.
+    const column =
+      text === undefined
+        ? Number(columnText)
+        : byteColumnToUtf16(
+            text.endsWith('\r') ? text.slice(0, -1) : text,
+            Number(columnText)
+          );
+    const position = clamp({ line, column }, lengths);
     found.push({
       line: position.line,
       column: position.column,
@@ -71,4 +115,4 @@ function messageForFailure(output, exitCode) {
   return text.split(/\r?\n/)[0].trim();
 }
 
-module.exports = { parseDiagnostics, messageForFailure, clamp, HEADER };
+module.exports = { parseDiagnostics, messageForFailure, clamp, byteColumnToUtf16, HEADER };
