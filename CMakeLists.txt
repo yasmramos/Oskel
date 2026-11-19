@@ -336,6 +336,17 @@ if(BUILD_TESTING)
       "-DFRONTEND_ARCHIVE=$<TARGET_FILE:oskel_frontend>"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_oskelc_no_vm.cmake")
 
+  # --- Every builtin exists in both engines ---
+  # A builtin registered by `registerBuiltins` but not seeded into the AOT chunk
+  # runs in the VM and fails `oskel build`. Each engine is self-consistent, so
+  # only a check that reads both registries can see the gap (AGENTS.md: "VM/AOT
+  # parity is part of every feature"). The names that are VM-only on purpose are
+  # listed in the script and tracked in BACKLOG §6 item 25.
+  add_test(NAME builtin_parity
+    COMMAND ${CMAKE_COMMAND}
+      -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_builtin_parity.cmake")
+
   # --- Version consistency: `oskel --version` matches the declared version ---
   add_test(NAME version_consistency
     COMMAND ${CMAKE_COMMAND}
