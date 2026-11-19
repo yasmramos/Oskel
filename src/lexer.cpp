@@ -562,21 +562,26 @@ class Lexer {
         return make(Tok::Bang, 1);
       case '<':
         if (c1 == '=') return make(Tok::LtEq, 2);
+        if (c1 == '<' && c2 == '=') return make(Tok::ShlEq, 3);
         if (c1 == '<') return make(Tok::Shl, 2);
         return make(Tok::Lt, 1);
       case '>':
         if (c1 == '=') return make(Tok::GtEq, 2);
+        if (c1 == '>' && c2 == '=') return make(Tok::ShrEq, 3);
         if (c1 == '>') return make(Tok::Shr, 2);
         return make(Tok::Gt, 1);
       case '&':
         if (c1 == '&' && c2 == '=') return make(Tok::AmpAmpEq, 3);
         if (c1 == '&') return make(Tok::AmpAmp, 2);
+        if (c1 == '=') return make(Tok::AmpEq, 2);
         return make(Tok::Amp, 1);
       case '|':
         if (c1 == '|' && c2 == '=') return make(Tok::PipePipeEq, 3);
         if (c1 == '|') return make(Tok::PipePipe, 2);
+        if (c1 == '=') return make(Tok::PipeEq, 2);
         return make(Tok::Pipe, 1);
       case '^':
+        if (c1 == '=') return make(Tok::CaretEq, 2);
         return make(Tok::Caret, 1);
       case '@':
         return make(Tok::At, 1);

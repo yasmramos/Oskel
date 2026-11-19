@@ -68,6 +68,44 @@ assertEq(obj.count, 2);
 obj["count"] *= 5;
 assertEq(obj.count, 10);
 
+// Compound bitwise assignment: the same read/operate/write-back shape as
+// `+=`, lowering to the existing BAND/BOR/BXOR/SHL/SHR opcodes.
+var bits = 6; // 0b110
+bits &= 3;    // 0b010
+assertEq(bits, 2);
+bits |= 8; // 0b1010
+assertEq(bits, 10);
+bits ^= 1; // 0b1011
+assertEq(bits, 11);
+bits <<= 2; // 0b101100
+assertEq(bits, 44);
+bits >>= 1; // 0b10110
+assertEq(bits, 22);
+
+var bitArr = [12, 4];
+bitArr[0] &= 10;
+bitArr[1] <<= 1;
+assertEq(bitArr, [8, 8]);
+
+var bitMap = {n: 12};
+bitMap.n &= 10;
+assertEq(bitMap.n, 8);
+bitMap["n"] >>= 1;
+assertEq(bitMap.n, 4);
+
+fn maskByte(v) {
+  v ^= 255;
+  return v;
+}
+assertEq(maskByte(1), 254);
+
+// Like the other compound forms, `x op= v` is an expression yielding the
+// target's final value.
+var shiftTarget = 3;
+let shifted = (shiftTarget <<= 2);
+assertEq(shiftTarget, 12);
+assertEq(shifted, 12);
+
 // Assignment is right-associative and yields its value.
 var a = 0;
 var b = 0;

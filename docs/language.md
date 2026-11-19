@@ -1129,7 +1129,7 @@ From highest to lowest precedence:
 | 15 | `??` | left |
 | 16 | `catch` | left |
 | 17 | `?:` | right |
-| 18 | `=` `+=` `-=` `*=` `/=` `%=` `**=` `&&=` `\|\|=` `??=` | right |
+| 18 | `=` `+=` `-=` `*=` `/=` `%=` `**=` `&=` `\|=` `^=` `<<=` `>>=` `&&=` `\|\|=` `??=` | right |
 
 Notes:
 
@@ -1229,6 +1229,9 @@ assertEq(256 >> 3, 32);
 assertEq(~0, -1);
 ```
 
+Each bitwise operator also has a compound form (`&=`, `|=`, `^=`, `<<=`,
+`>>=`); see section 5.9.
+
 ### 5.7 Membership
 
 The `in` operator tests membership:
@@ -1309,7 +1312,17 @@ x *= 2;
 x /= 2;
 x %= 3;
 x **= 2;
+x &= 0xF0;
+x |= 0x0F;
+x ^= 0xFF;
+x <<= 2;
+x >>= 1;
 ```
+
+The bitwise compounds are the `&`, `|`, `^`, `<<` and `>>` operators in
+assignment form: `x &= y` is exactly `x = x & y`, so they accept only `int`
+operands and a shift count between 0 and 63, and they lower to the existing
+`BAND`/`BOR`/`BXOR`/`SHL`/`SHR` opcodes (no new opcode).
 
 They also work on indexes and members:
 
@@ -1317,10 +1330,11 @@ They also work on indexes and members:
 let data = [1, 2];
 data[0] += 10;
 data[0] *= 2;
+data[0] <<= 1;
 
 let person = {age: 36};
 person.age += 1;
-person["age"] *= 2;
+person["age"] &= 0x7F;
 ```
 
 The logical operators have a compound form too. Each one short-circuits exactly

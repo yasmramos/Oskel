@@ -1,0 +1,45 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): the compound bitwise
+// assignments `&=`, `|=`, `^=`, `<<=` and `>>=`. They add no opcode -- the
+// compiler lowers each one to `GET; op; SET` over the existing BAND/BOR/BXOR/
+// SHL/SHR -- so the AOT backend must agree with the development VM byte for
+// byte, on a variable, an index and a member target.
+//
+// Everything here stays on the portable primitive surface, so the same program
+// also runs on the VM as an ordinary script test, which is the reference.
+
+var bits = 6; // 0b110
+bits &= 3;    // 0b010
+print(bits);
+bits |= 8; // 0b1010
+print(bits);
+bits ^= 1; // 0b1011
+print(bits);
+bits <<= 2; // 0b101100
+print(bits);
+bits >>= 1; // 0b10110
+print(bits);
+
+var arr = [12, 4];
+arr[0] &= 10;
+arr[1] <<= 1;
+print(arr);
+
+var m = {n: 12};
+m.n &= 10;
+print(m.n);
+m["n"] >>= 1;
+print(m.n);
+
+// A compound bitwise assignment is an expression and yields the new value.
+let shifted = (bits <<= 1);
+print(shifted);
+print(bits);
+
+// The operand rules are the binary operator's: `int` only, and a shift count
+// between 0 and 63.
+var seven = 7;
+seven >>= 1;
+print(seven);
+var one = 1;
+one <<= 63;
+print(one);

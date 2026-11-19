@@ -224,6 +224,21 @@ bool compoundOpCode(Tok op, OpCode& out) {
     case Tok::StarStarEq:
       out = OpCode::POW;
       return true;
+    case Tok::AmpEq:
+      out = OpCode::BAND;
+      return true;
+    case Tok::PipeEq:
+      out = OpCode::BOR;
+      return true;
+    case Tok::CaretEq:
+      out = OpCode::BXOR;
+      return true;
+    case Tok::ShlEq:
+      out = OpCode::SHL;
+      return true;
+    case Tok::ShrEq:
+      out = OpCode::SHR;
+      return true;
     default:
       return false;
   }

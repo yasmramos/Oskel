@@ -95,6 +95,11 @@ enum class Tok {
   SlashEq,
   PercentEq,
   StarStarEq,
+  AmpEq,
+  PipeEq,
+  CaretEq,
+  ShlEq,
+  ShrEq,
   Eof
 };
 

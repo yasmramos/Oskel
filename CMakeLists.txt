@@ -496,6 +496,18 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_builtins.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # Compound bitwise assignment (`&=`, `|=`, `^=`, `<<=`, `>>=`): no new
+    # opcode, only the existing BAND/BOR/BXOR/SHL/SHR behind the `GET; op; SET`
+    # shape the arithmetic compounds already use. The fixture covers a
+    # variable, an index and a member target and the expression value, so the
+    # binary must agree with the VM byte for byte.
+    add_test(NAME oskel.build_binary_compound_ops
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_compound_ops"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_compound_ops.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # Error values (PHASE 7c.5c): `error(message, code?)`, `isError`, `type`,
     # `.message`/`.code`, structural equality, `print`/`repr` and interpolation
     # must agree with the VM. This is what makes value-based `try`/`catch` work
