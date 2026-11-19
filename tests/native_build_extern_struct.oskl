@@ -1,0 +1,45 @@
+// Struct-by-value `extern "C"` marshalling in the hosted AOT backend
+// (PHASE 7f.7). The fixture resolves only real libc/libm names, so it runs
+// wherever the host links them, exactly like `31_ffi_struct.oskl`.
+//
+// It covers both directions and both register classes:
+//   - `div`/`ldiv` return a struct (INTEGER eightbytes, `rax` then `rdx`),
+//   - `cabs` takes a struct by value (`double complex` is two SSE eightbytes,
+//     `xmm0` then `xmm1`).
+
+struct DivResult {
+  quot: int32;
+  rem: int32;
+}
+struct LDivResult {
+  quot: int64;
+  rem: int64;
+}
+struct Complex {
+  re: double;
+  im: double;
+}
+extern "C" {
+  fn div(numerator: int, denominator: int): DivResult;
+  fn ldiv(numerator: int64, denominator: int64): LDivResult;
+  fn cabs(z: Complex): double;
+}
+
+let d = div(17, 5);
+assertEq(d.quot, 3);
+assertEq(d.rem, 2);
+
+let l = ldiv(100, 7);
+assertEq(l.quot, 14);
+assertEq(l.rem, 2);
+
+// `cabs(3 + 4i)` is 5: the struct argument arrives as the two doubles it
+// declares, in the SSE registers the ABI assigns them.
+let z = {re: 3.0, im: 4.0};
+assertEq(cabs(z), 5.0);
+
+// A returned struct is a map, so it composes with everything a map supports.
+assertEq(type(d), "map");
+assert("quot" in d);
+
+print("ffi struct by value ok");

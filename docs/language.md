@@ -553,12 +553,14 @@ back wholly in `rax`, a `{double; double}` in `xmm0`/`xmm1`, and a mixed
 eightbytes and passed in the registers the ABI assigns it, so the callee reads
 back the exact bytes of the struct.
 
-Only structs of **16 bytes or fewer** are supported (the register case). A
-larger struct is passed in memory, a shape the register marshalling cannot
-express, so the declaration is rejected at compile time with a clear message
-instead of a wrong call. A struct field must be an FFI scalar type (an integer,
-`float`/`double`, `ptr`/`cstring` or `bool`); a nested struct field is rejected
-for the same reason.
+A struct of **more than 16 bytes** is class MEMORY: it is passed in the outgoing
+stack-argument area and returned through a hidden `sret` buffer the caller
+supplies in `rdi` (which shifts every integer argument one register along). The
+development engine expresses both directions through `libffi`, so a class-MEMORY
+struct needs libffi and the System V AMD64 ABI; elsewhere the declaration is
+rejected at compile time with a clear message instead of a wrong call. A struct
+field must be an FFI scalar type (an integer, `float`/`double`, `ptr`/`cstring`
+or `bool`); a nested struct field is rejected.
 
 Structs by value are **System V AMD64 only**. The register classification above
 is the System V ABI's; the Microsoft x64 ABI (Windows) passes a struct larger
@@ -2938,7 +2940,7 @@ features of this release.
 - No `++`, `--` or default parameters. A trailing `rest...` parameter makes a function variadic (see §7.1). `switch` on literals and ranges is supported (see §6.10), and so is the post-test loop `do { ... } while (cond);` (see §6.4).
 - Optional types and nullability are implemented for declarations and expressions (PHASE 6.5). Type annotations (`let x: int = 5`), local inference, the nullable `T?` annotation, and the null-safe expressions `?.`, `??` and `!!` are checked at compile time. `struct` is implemented (see §4.7) and so is `native fn` (see §7.6), the typed declaration of a host-provided function.
 - FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the System V AMD64 ABI without `libffi` for scalars and structs by value. A `fn(P...): R` parameter is a callback: the development engine builds a `libffi` closure that re-enters the VM (its `R` may be a scalar or a struct by value). A trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...): int`), which applies the C default argument promotions and goes through `libffi`; like a class-MEMORY struct it needs the System V AMD64 ABI plus `libffi`, and is rejected at compile time elsewhere.
-- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.5 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux x86-64 only), where the program is linked against libc; the freestanding mode, which is the default, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, structs by value, callbacks and C variadics are not lowered yet, and `native fn` declarations the backend has no stub for fail the build with a dedicated message.
+- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.7 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux x86-64 only), where the program is linked against libc; the freestanding mode, which is the default, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — both register-class and class-MEMORY — are lowered (7f.6, 7f.7); callbacks and C variadics are not, and `native fn` declarations the backend has no stub for fail the build with a dedicated message.
 - A function's text representation differs between the engines: the VM renders a named function as `<fn name>` (`<native fn name>` for a host binding) while the AOT binary renders every function as `<fn>`, because the AOT closure object carries only code, arity and upvalue count and no name. This is a known parity gap (BACKLOG §6.22); `tests/freestanding_test.cpp` pins the AOT form and `tests/native_build_control_flow.oskl` avoids printing a bare function so the fixture agrees on both engines.
 - No UI library yet. Skia + SDL2 + declarative UI is planned for post-1.0.
 - No async/await, generics, full pattern matching, generators, or transactions. These are out of scope (see `DEVELOPMENT.md`).

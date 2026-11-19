@@ -571,21 +571,42 @@ previous one.
   passed in the registers the ABI assigns them (an INTEGER eightbyte as an
   `int64_t`, an SSE eightbyte as a `double`, both bit-for-bit), so the callee
   reads back the exact bytes; a struct return is captured through a fixed POD
-  whose members land in `rax`/`rdx`/`xmm0`/`xmm1` and rebuilt as a map. Only
-  structs of **16 bytes or fewer** are supported: a larger one is class MEMORY
-  (passed on the stack), which the register thunks cannot express, so the
-  declaration is rejected at compile time, as is a nested (non-scalar) field.
-  No new opcode and no compiler-side ABI logic: the layout is the single source
-  of truth in `ffi_types.h`, shared by the compiler and the runtime across the
-  §2 boundary. Struct-by-value is **System V AMD64 only**: the register
-  classification is that ABI's, and the Microsoft x64 ABI (Windows) passes a
-  struct larger than 8 bytes through a hidden pointer instead, a shape the
-  register thunks cannot express. Off System V the compiler rejects the
-  declaration (`kStructByValueSupported` in `ffi_types.h`; the CMake capability
+  whose members land in `rax`/`rdx`/`xmm0`/`xmm1` and rebuilt as a map. A
+  nested (non-scalar) field is rejected. No new opcode and no compiler-side ABI
+  logic: the layout is the single source of truth in `ffi_types.h`, shared by
+  the compiler and the runtime across the §2 boundary. Struct-by-value is
+  **System V AMD64 only**: the register classification is that ABI's, and the
+  Microsoft x64 ABI (Windows) passes a struct larger than 8 bytes through a
+  hidden pointer instead. Off System V the compiler rejects the declaration
+  (`kStructByValueSupported` in `ffi_types.h`; the CMake capability
   `OSKEL_FFI_STRUCT_BY_VALUE` skips the script test), so a Windows build fails
   cleanly at compile time instead of crashing at the call. Scalars stay portable
   because the call is a typed function pointer. See `docs/language.md` §4.6 and
   `tests/31_ffi_struct.oskl`.
+- **Class-MEMORY structs by value (done, PHASE 7f.7)** — a struct larger than
+  two eightbytes (more than 16 bytes) is class MEMORY: it travels in the
+  outgoing stack-argument area and is returned through a hidden `sret` buffer the
+  caller supplies in `rdi`, which shifts every integer argument one register
+  along. The development engine expresses both directions through `libffi`
+  (`kMemoryStructsSupported`, so it needs libffi + System V AMD64; elsewhere the
+  declaration is rejected at compile time). The hosted AOT backend expresses
+  them in its register thunks: a MEMORY argument is written field by field
+  straight into the outgoing area, the `sret` pointer is staged with the other
+  integer arguments, and the returned bytes are read back out of the buffer and
+  boxed into a map, exactly like a register-class return. The thunk frame keeps
+  the outgoing area, the `sret` buffer, the register-class staging buffers and
+  the integer staging slots in disjoint regions so nothing overlaps. Each field
+  is boxed from the `AotMap` and back: an integer field is normalized to its
+  declared width, a `float` field is narrowed to binary32 on the way out and
+  widened on the way back, a `cstring` field is NUL-terminated in the arena on
+  the way out and copied into an `AotString` on the way back (NULL is nil, and
+  `type()` reports `"string"` for a non-NULL one -- the same documented VM/AOT
+  divergence as a `cstring` scalar return, BACKLOG §6 item 23), and a `ptr`
+  field boxes a NULL as nil and any other address as the integer it is. See
+  `tests/native_build_extern_struct.oskl` (registers) and
+  `tests/native_build_extern_memory_struct.oskl` (MEMORY, with
+  `tests/hosted/memory_struct_helper.c`, which also covers the narrow,
+  mixed-class, `ptr` and `cstring` field cases).
 - **Callbacks (done)** — a parameter typed `fn(P...): R` is a C function
   pointer. `fn` is a keyword, so `parseTypeAnnotation` reads the signature
   before the ordinary type-name path; the parameters are scalar FFI names and
@@ -1841,7 +1862,7 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.4a-d, 7c.5a, 7c.5c, 7c.6, 7d, 7e, 7g done; 7c.5b — the remaining builtins — in progress; 7f — FFI in AOT — 7f.1-7f.6 done, scalar and `cstring`/`ptr` `extern "C"` resolve in the hosted backend, struct/callback/variadic still open)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.4a-d, 7c.5a, 7c.5c, 7c.6, 7d, 7e, 7g done; 7c.5b — the remaining builtins — in progress; 7f — FFI in AOT — 7f.1-7f.7 done, scalar, `cstring`/`ptr` and struct-by-value `extern "C"` (register and class-MEMORY) resolve in the hosted backend, callback/variadic still open)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)

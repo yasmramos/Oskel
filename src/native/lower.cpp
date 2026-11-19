@@ -256,20 +256,23 @@ struct GlobalSlots {
   int count = 0;
 };
 
-// Narrows the compiler's `extern "C"` declarations to the scalar thunks the
-// hosted backend resolves through the system linker (PHASE 7f.5).
+// Narrows the compiler's `extern "C"` declarations to the thunks the hosted
+// backend resolves through the system linker (PHASE 7f.5, structs in 7f.7).
 //
 // The compiler records the full ABI signature on each `ExternSymbol`; a thunk
-// only needs the register classes, so this walks every proto's externs and, for
-// a scalar signature (no pointer, struct, callback or C variadic), produces one
-// `AotExternThunk`. A non-scalar signature is left out: `collectGlobals` then
-// rejects it exactly as before, so the unsupported shapes keep their clean build
-// error instead of compiling to a thunk that would marshal the wrong registers.
+// needs the flattened register classes, so this walks every proto's externs and
+// produces one `AotExternThunk` per symbol whose every parameter and return is
+// expressible: a scalar, or a struct that fits in two eightbytes (a class-MEMORY
+// struct is still stack-passed, so it stays 7f work). A callback, an opaque
+// pointer return or a C variadic is left out: `collectGlobals` then rejects it
+// exactly as before, so the unsupported shapes keep their clean build error
+// instead of compiling to a thunk that would marshal the wrong registers.
 //
 // Deduplicated by symbol name: several protos may declare the same C function
 // (`std.math` and a user block both naming `abs`), and one thunk serves all of
 // them, seeded into the single global slot the name resolves to.
-std::vector<AotExternThunk> collectExternThunks(const std::vector<const Bytecode*>& protos,
+std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
+                                                const std::vector<const Bytecode*>& protos,
                                                 std::unordered_set<std::string>& resolved) {
   std::vector<AotExternThunk> thunks;
   std::unordered_set<std::string> seen;
@@ -279,24 +282,91 @@ std::vector<AotExternThunk> collectExternThunks(const std::vector<const Bytecode
       if (symbol.variadic) continue;
       AotExternThunk thunk;
       thunk.symbol = symbol.name;
-      bool scalar = true;
-      for (const ffi::TypeSpec& param : symbol.paramTypes) {
-        ffi::ParamClass cls = ffi::ParamClass::Int;
-        if (param.isStruct || param.isCallback || !ffi::classifyParam(param.scalarType, cls)) {
-          scalar = false;
+      thunk.arity = symbol.paramTypes.size();
+      bool supported = true;
+      const int argCount = static_cast<int>(symbol.paramTypes.size());
+      for (int arg = 0; arg < argCount; ++arg) {
+        const ffi::TypeSpec& param = symbol.paramTypes[static_cast<std::size_t>(arg)];
+        if (param.isCallback) {
+          supported = false;
           break;
         }
-        thunk.params.push_back(cls);
+        if (param.isStruct) {
+          ffi::StructLayout layout;
+          std::string reason;
+          if (!ffi::buildStructLayout(param.fields, layout, reason)) {
+            supported = false;
+            break;
+          }
+          const int index = static_cast<int>(thunk.structs.size());
+          AotStructLayout entry;
+          entry.layout = layout;
+          for (std::size_t f = 0; f < layout.fields.size(); ++f) {
+            entry.fieldNameLabels.push_back(cg.newLabel());
+          }
+          if (layout.isMemory) {
+            // Class MEMORY: the whole struct travels in the outgoing stack
+            // argument area, 8-byte aligned, after every earlier stack argument.
+            thunk.stackArgBytes = (thunk.stackArgBytes + 7) / 8 * 8;
+            AotStackArg stacked;
+            stacked.structIndex = index;
+            stacked.argIndex = arg;
+            stacked.offset = thunk.stackArgBytes;
+            thunk.stackArgBytes += static_cast<std::int64_t>(layout.size);
+            thunk.stackArgs.push_back(stacked);
+          } else {
+            entry.bufSlot = index;
+            for (int e = 0; e < layout.eightbyteCount; ++e) {
+              AotThunkParam flat;
+              flat.cls = layout.eightbyte[e] == 'S' ? ffi::ParamClass::Double : ffi::ParamClass::Int;
+              flat.argIndex = arg;
+              flat.eightbyte = e;
+              flat.structIndex = index;
+              thunk.params.push_back(flat);
+            }
+          }
+          thunk.structs.push_back(std::move(entry));
+          continue;
+        }
+        ffi::ParamClass cls = ffi::ParamClass::Int;
+        if (!ffi::classifyParam(param.scalarType, cls)) {
+          supported = false;
+          break;
+        }
+        AotThunkParam flat;
+        flat.cls = cls;
+        flat.argIndex = arg;
+        thunk.params.push_back(flat);
       }
-      if (!scalar) continue;
-      ffi::ReturnClass ret = ffi::ReturnClass::Int;
-      if (symbol.returnType.isStruct ||
-          !ffi::classifyReturn(symbol.returnType.scalarType, ret) ||
-          ret == ffi::ReturnClass::Ptr || ret == ffi::ReturnClass::Struct) {
-        continue;
+      if (!supported) continue;
+      if (symbol.returnType.isStruct) {
+        ffi::StructLayout layout;
+        std::string reason;
+        if (!ffi::buildStructLayout(symbol.returnType.fields, layout, reason)) {
+          continue;
+        }
+        const int index = static_cast<int>(thunk.structs.size());
+        AotStructLayout entry;
+        entry.layout = layout;
+        for (std::size_t f = 0; f < layout.fields.size(); ++f) {
+          entry.fieldNameLabels.push_back(cg.newLabel());
+        }
+        thunk.structs.push_back(std::move(entry));
+        thunk.returnStructIndex = index;
+        thunk.returns = ffi::ReturnClass::Struct;
+        thunk.returnType = "";
+        // A class-MEMORY return goes through a hidden `sret` buffer instead of
+        // the return registers.
+        if (layout.isMemory) thunk.returnMemoryBytes = static_cast<std::int64_t>(layout.size);
+      } else {
+        ffi::ReturnClass ret = ffi::ReturnClass::Int;
+        if (!ffi::classifyReturn(symbol.returnType.scalarType, ret) ||
+            ret == ffi::ReturnClass::Ptr || ret == ffi::ReturnClass::Struct) {
+          continue;
+        }
+        thunk.returns = ret;
+        thunk.returnType = symbol.returnType.scalarType;
       }
-      thunk.returns = ret;
-      thunk.returnType = symbol.returnType.scalarType;
       resolved.insert(symbol.name);
       thunks.push_back(std::move(thunk));
     }
@@ -1022,7 +1092,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   std::vector<AotExternThunk> externThunks;
   std::unordered_set<std::string> resolvedExterns;
   if (mode == LinkMode::Hosted) {
-    externThunks = collectExternThunks(protos, resolvedExterns);
+    externThunks = collectExternThunks(cg, protos, resolvedExterns);
     for (AotExternThunk& thunk : externThunks) thunk.label = cg.newLabel();
   }
 
