@@ -20,7 +20,20 @@ struct PairD {
   a: double;
   b: double;
 }
+struct FlagFloatInt {
+  flag: int8;
+  f: float;
+  n: int32;
+}
+struct PointerInt {
+  p: ptr;
+  n: int32;
+}
 extern "C" {
+  fn oskelTestFlagFloatInt(s: FlagFloatInt): int32;
+  fn oskelTestMakeFlagFloatInt(flag: int8, f: float, n: int32): FlagFloatInt;
+  fn oskelTestPointerIsNull(s: PointerInt): int32;
+  fn oskelTestMakeNullPointer(n: int32): PointerInt;
   fn oskelTestSumTriple(t: Triple): int64;
   fn oskelTestSumTripleD(t: TripleD): double;
   fn oskelTestMakeTriple(a: int64, b: int64, c: int64): Triple;
@@ -52,6 +65,19 @@ assertEq(oskelTestScalarThenTriple(1000, {a: 1, b: 2, c: 3}), 1006);
 assertEq(oskelTestTwoTriples({a: 1, b: 2, c: 3}, {a: 10, b: 20, c: 30}), 66);
 assertEq(oskelTestTriplePairScalar({a: 1, b: 2, c: 3}, {a: 0.5, b: 0.25}, 100), 106.75);
 assertEq(oskelTestSixThenTriple(1, 2, 3, 4, 5, 6, {a: 10, b: 20, c: 30}), 81);
+
+// Narrow and mixed-class fields, and a `float` narrowed back to binary32.
+assertEq(oskelTestFlagFloatInt({flag: 1, f: float(2.5), n: 10}), 13);
+let ffs = oskelTestMakeFlagFloatInt(1, float(2.5), 10);
+assertEq(ffs.flag, 1);
+assertEq(ffs.f, 2.5);
+assertEq(ffs.n, 10);
+
+// A pointer field: `nil` is C's NULL and a NULL read back boxes as nil.
+assertEq(oskelTestPointerIsNull({p: nil, n: 42}), 42);
+let ps = oskelTestMakeNullPointer(7);
+assertEq(ps.n, 7);
+assertEq(type(ps.p), "nil");
 
 // A returned class-MEMORY struct is a map, like a register-class one.
 assertEq(type(t), "map");

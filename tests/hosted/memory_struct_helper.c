@@ -56,3 +56,36 @@ int64_t oskelTestSixThenTriple(int64_t a, int64_t b, int64_t c, int64_t d, int64
                                int64_t f, Triple t) {
   return a + b + c + d + e + f + t.a + t.b + t.c;
 }
+
+/* A struct whose fields are narrower than an eightbyte and of mixed classes:
+ * the marshalling must place each at its own offset and width, and a `float`
+ * field is boxed as binary64 on the Oskel side, so it has to be narrowed back
+ * to binary32 on the way out. */
+typedef struct {
+  int8_t flag;
+  float f;
+  int32_t n;
+} FlagFloatInt;
+
+int32_t oskelTestFlagFloatInt(FlagFloatInt s) {
+  return (s.flag ? 1 : 0) + (int32_t)s.f + s.n;
+}
+
+FlagFloatInt oskelTestMakeFlagFloatInt(int8_t flag, float f, int32_t n) {
+  FlagFloatInt s = {flag, f, n};
+  return s;
+}
+
+/* A pointer field: `nil` must arrive as C's NULL, and a NULL read back must box
+ * as nil. */
+typedef struct {
+  void *p;
+  int32_t n;
+} PointerInt;
+
+int32_t oskelTestPointerIsNull(PointerInt s) { return s.p == 0 ? s.n : -1; }
+
+PointerInt oskelTestMakeNullPointer(int32_t n) {
+  PointerInt s = {0, n};
+  return s;
+}

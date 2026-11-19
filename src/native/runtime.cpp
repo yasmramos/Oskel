@@ -8595,6 +8595,23 @@ void emitStructReturn(CodeGen& cg, const AotStructLayout& ret, std::int64_t bufD
     } else if (cls == ffi::ParamClass::Double) {
       cg.movFromMem(Rdx, Rbp, fieldOffset);
       cg.movImm(Rax, kTagDouble);
+    } else if (cls == ffi::ParamClass::Pointer) {
+      // A pointer field has no AOT representation of its own, so a NULL (the
+      // only value a program can construct, since the backend lowers no `ptr`
+      // return) boxes as nil, exactly like the hosted engine's NULL. A non-null
+      // address is surfaced as the integer it is, rather than invented into a
+      // handle the runtime could not dereference.
+      CodeGen::Label isNull = cg.newLabel();
+      CodeGen::Label boxed = cg.newLabel();
+      cg.movFromMem(Rdx, Rbp, fieldOffset);
+      cg.testReg(Rdx);
+      cg.jcc(Jcc::Eq, isNull);
+      cg.movImm(Rax, kTagInt);
+      cg.jmp(boxed);
+      cg.bind(isNull);
+      cg.xorReg(Rdx, Rdx);
+      cg.movImm(Rax, kTagNil);
+      cg.bind(boxed);
     } else {
       // An integer family field (or a pointer, which the AOT runtime has no
       // handle for and reports as its address). Load exactly the field's bytes,
