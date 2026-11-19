@@ -1,11 +1,17 @@
 # Keeps the extension's diagnostic parser honest.
 #
 # `editors/vscode/src/diagnostics.js` turns the compiler's stderr into
-# diagnostics, and the extension has no other logic: a wrong regex here is a
-# wrong squiggle in the editor, on a line the author will read as the compiler's
-# word. `test/diagnostics.test.js` drives it with the real stderr captured from
-# `oskel -c`, so a change in the compiler's output shape fails the suite instead
-# of silently producing no diagnostics.
+# diagnostics, and a wrong regex there is a wrong squiggle in the editor, on a
+# line the author will read as the compiler's word. `test/diagnostics.test.js`
+# drives it with the real stderr captured from `oskel -c`, so a change in the
+# compiler's output shape fails the suite instead of silently producing no
+# diagnostics.
+#
+# `src/save-guard.js` keeps a programmatic save from starting a second check.
+# Whether `onDidSaveTextDocument` arrives before or after `document.save()`
+# resolves is not documented, so both orderings are tested
+# (`test/save-guard.test.js`); a flag cleared in `finally` would pass one and
+# leak a duplicate compiler process in the other.
 #
 # The parser does not import `vscode`, which is what makes this runnable without
 # an editor: the test is plain `node --test`. `node --check` also covers
@@ -26,7 +32,10 @@ get_filename_component(ROOT "${ROOT}" ABSOLUTE)
 
 set(extension_dir "${ROOT}/editors/vscode")
 set(test_file "${extension_dir}/test/diagnostics.test.js")
-foreach(required "${test_file}" "${extension_dir}/src/diagnostics.js" "${extension_dir}/extension.js")
+set(guard_test "${extension_dir}/test/save-guard.test.js")
+foreach(required "${test_file}" "${guard_test}"
+        "${extension_dir}/src/diagnostics.js" "${extension_dir}/src/save-guard.js"
+        "${extension_dir}/extension.js")
   if(NOT EXISTS "${required}")
     message(FATAL_ERROR "check_vscode_diagnostics.cmake: missing ${required}")
   endif()
@@ -50,7 +59,7 @@ if(NOT check_exit EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND "${OSKEL_NODE}" --test "${test_file}"
+  COMMAND "${OSKEL_NODE}" --test "${test_file}" "${guard_test}"
   WORKING_DIRECTORY "${extension_dir}"
   RESULT_VARIABLE test_exit
   OUTPUT_VARIABLE test_out
@@ -61,4 +70,4 @@ if(NOT test_exit EQUAL 0)
 endif()
 
 string(REGEX MATCH "pass ([0-9]+)" passed "${test_out}")
-message(STATUS "VS Code diagnostics: ${CMAKE_MATCH_1} parser tests passed")
+message(STATUS "VS Code diagnostics: ${CMAKE_MATCH_1} unit tests passed")
