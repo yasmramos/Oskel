@@ -3,14 +3,14 @@
 // Sources in, a native image out. It links the lexer, the parser, the bytecode
 // compiler and the AOT backend, and never the VM or the JIT, so the shipped
 // compiler carries no interpreter. The pipeline itself is `buildBinary` in
-// `src/cli.cpp`, the same function `oskel build` calls, so the two cannot
+// `src/frontend/cli.cpp`, the same function `oskel build` calls, so the two cannot
 // diverge in what they emit.
 
 #include <iostream>
 #include <string>
 #include <vector>
 
-#include "cli_internal.h"
+#include "frontend/cli_internal.h"
 #include "native/target.h"
 #include "version.h"
 

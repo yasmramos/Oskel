@@ -10,7 +10,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ---
 
-## 1. VM (`src/vm.cpp`)
+## 1. VM (`src/runtime/vm.cpp`)
 
 1. **[P1] [done]** `ITER` over a map yielded only the key; `for k, v` then did
    a `$mapValue` lookup per iteration. `ITER` now takes two extra operands
@@ -37,7 +37,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ---
 
-## 2. Parser (`src/parser.cpp`)
+## 2. Parser (`src/frontend/parser.cpp`)
 
 1. ~~**[P0]** `resolveTopLevelConsts` builds `reordered` but it is identical to
    the input: the hoisting the comment promises is not implemented, and the
@@ -74,7 +74,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ---
 
-## 3. Compiler (`src/compiler.cpp`)
+## 3. Compiler (`src/frontend/compiler.cpp`)
 
 1. **[P1]** `checkAssignable` and `assignError` duplicate logic; a change in
    one can be missed in the other. Unify the path.
@@ -179,7 +179,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ---
 
-## 6. AOT backend (`src/native/lower.cpp`, `src/native/runtime.cpp`)
+## 6. AOT backend (`src/frontend/native/lower.cpp`, `src/frontend/native/runtime.cpp`)
 
 1. **[P0]** VM/AOT divergence in collection methods: the array methods bind in
    AOT (`push`/`pop` in PHASE 7c.3c, `shift`/`unshift`/`insert`/`removeAt`/
@@ -449,7 +449,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ---
 
-## 9. Value (`src/value.cpp`, `src/value.h`)
+## 9. Value (`src/value.cpp`, `src/core/value.h`)
 
 1. **[P2]** `Value::equals` for `Array`/`Map` uses a `visited` vector with a
    linear scan, O(n²) for large cycles. Use a set.
@@ -491,7 +491,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ---
 
-## 11. Lexer (`src/lexer.cpp`)
+## 11. Lexer (`src/frontend/lexer.cpp`)
 
 1. **[P1]** `normalizeNewlines` rewrites the whole source before lexing, so
    `col` counts the normalized source, not the original (`\r\n` is 2 bytes but
@@ -514,7 +514,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ---
 
-## 12. Builtins (`src/builtins.cpp`)
+## 12. Builtins (`src/runtime/builtins.cpp`)
 
 1. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
     two programs in the same process share state; correct in a REPL, document
@@ -544,7 +544,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ---
 
-## 14. dtoa (`src/native/dtoa.cpp`)
+## 14. dtoa (`src/frontend/native/dtoa.cpp`)
 
 1. **[P1]** No NaN/Inf tests; the special path in `emitFormatDouble` is
    uncovered.
@@ -562,7 +562,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ---
 
-## 15. Codegen (`src/native/codegen.cpp`)
+## 15. Codegen (`src/frontend/native/codegen.cpp`)
 
 1. **[P2]** No execution test for `testAhImm8`, `fldM64`/`fstpM64`/`fprem`/
    `fnstswAx` (`test_x87` covers them byte-exactly only).
@@ -573,7 +573,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ---
 
-## 16. ELF and PE emitters (`src/native/elf.cpp`, `src/native/pe.cpp`)
+## 16. ELF and PE emitters (`src/frontend/native/elf.cpp`, `src/frontend/native/pe.cpp`)
 
 1. **[P1]** `buildStaticElf` never receives `rodata` (always `{}`); either use
    it or drop the parameter.
@@ -588,7 +588,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ---
 
-## 17. Arena (`src/native/arena.cpp`)
+## 17. Arena (`src/frontend/native/arena.cpp`)
 
 1. **[P1]** `Arena::allocate` returns null for `alignment == 0` or a
    non-power-of-two alignment; callers must know. Return an explicit error.

@@ -1,6 +1,6 @@
 # Proves that `oskelc` and `oskel build` are one compiler, not two.
 #
-# Both entry points call `runBuildCommand` in `src/cli.cpp`, and this test is
+# Both entry points call `runBuildCommand` in `src/frontend/cli.cpp`, and this test is
 # what keeps it that way: the same source is compiled by each, the two images
 # must be byte for byte identical, and the `oskelc` image must agree with the
 # development VM's output. A drift in the flags, the defaults, the module

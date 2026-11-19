@@ -4,7 +4,7 @@
 #include <vector>
 
 #include "compiler.h"
-#include "module_resolver.h"
+#include "frontend/module_resolver.h"
 #include "native/target.h"
 
 // Shared plumbing for the two entry points of the toolchain.

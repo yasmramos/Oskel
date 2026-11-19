@@ -5,10 +5,10 @@
 #include <utility>
 #include <vector>
 
-#include "errors.h"
-#include "lexer.h"
+#include "core/errors.h"
+#include "core/value.h"
+#include "frontend/lexer.h"
 #include "platform.h"
-#include "value.h"
 
 // Engine interface shared by the AST interpreter (PHASE 2) and the bytecode
 // VM (PHASE 3-6).

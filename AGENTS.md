@@ -126,12 +126,63 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   parameter is still PHASE 7f work.
 - Windows code paths can be exercised locally without a Windows host: build the
   engine with `x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude -Isrc -static
-  -o /tmp/win/oskel.exe src/*.cpp src/native/*.cpp src/jit/*.cpp` and run it
+  -o /tmp/win/oskel.exe src/main.cpp src/core/*.cpp src/frontend/*.cpp
+  src/frontend/native/*.cpp src/runtime/*.cpp src/runtime/jit/*.cpp` and run it
   under Wine (`WINEPREFIX=$HOME/.wine-oskel wine /tmp/win/oskel.exe ...`). The
   `tests/*.oskl` suite runs there too. This is how `lookupSymbol` (kernel32) and
   the PE image were checked before CI. CI still gates the merge, since Wine is
   not Windows: a green Wine run is a signal, not a substitute for the
   `windows-latest` job.
+
+## The VS Code extension
+
+- `editors/vscode` holds a dependency-free extension (language id, TextMate
+  grammar, `language-configuration.json`, `snippets/oskel.json`, and
+  `extension.js` for diagnostics). It has no npm dependency and no build step;
+  `vsce package` in that folder is how CI produces the `.vsix`.
+- The grammar keeps its **own** keyword, type and builtin lists, because a
+  TextMate grammar cannot read the compiler. `tests/check_vscode_grammar.cmake`
+  (CTest `vscode_grammar`) derives the vocabulary from the single sources of
+  truth — `kKeywords` in `src/lexer.cpp`, the `name == "..."` type names in
+  `src/ast.h`, the `addNative` registry in `src/builtins.cpp` — and fails when
+  the grammar misses a word, when a `#include` names a missing entry, or when
+  the grammar highlights syntax the lexer never produces. Adding a keyword, a
+  type or a builtin means updating `syntaxes/oskel.tmLanguage.json` in the same
+  change; the test names the missing word, so run
+  `cmake -DROOT=. -P tests/check_vscode_grammar.cmake` before opening the PR.
+- The same test owns the **operators**, and in both directions. It rebuilds the
+  spelling of every operator from the `if (c1 == 'a' ...)` guard that returns it
+  in `src/lexer.cpp`, and it takes the assignment set from `isAssignOp` in
+  `src/parser.cpp`, so a new `x op= y` cannot reach the compiler while the
+  grammar stays silent. The grammar's own rules are reduced to literal spellings
+  (character class, `\|`, lookahead, one line per key) before the comparison,
+  and if that reduction finds fewer than 15 operators it fails rather than
+  passing on an empty set. This is how the compound bitwise forms were caught:
+  `&=`, `|=`, `^=`, `<<=` and `>>=` shipped in the compiler while the grammar
+  still called them invalid.
+- `tests/check_vscode_snippets.cmake` (CTest `vscode_snippets`) expands each
+  snippet the way VS Code does and compiles the result with `oskel -c`, wrapped
+  in the context the construct needs (a method in a class, `defer` in a
+  function). A snippet that emits invalid Oskel fails the suite; four did while
+  the check was written — `defer` with a bare statement instead of a block, a
+  `switch` whose `case` label was an identifier instead of a literal, and two
+  with an empty expression body.
+- `$`-prefixed builtins (`$str`, `$slice`, `$range`, `$isError`, `$nonNull`)
+  are compiler-private: Oskel source cannot spell them, so the grammar must not
+  offer them and the test skips them on purpose.
+- **Diagnostics** are the compiler's own, not a language server's. On save (and
+  on `Oskel: Check file`) `extension.js` runs `oskel -c <file>` and turns its
+  stderr into a `DiagnosticCollection`; `src/diagnostics.js` does the parsing and
+  imports no `vscode`, which is why `node --test` can cover it
+  (`tests/check_vscode_diagnostics.cmake`, CTest `vscode_diagnostics`, skipped
+  where Node is absent). Two traps: the binary must be `oskel`, because
+  `oskelc -c` is not implemented and exits 64 — a stale path there would look
+  like "no problems", so a non-zero exit with nothing parsed becomes a
+  diagnostic of its own; and an error inside an imported module is reported
+  under the *root* file's name with the module's line and column, so the parser
+  clamps a position that falls past the end of the open document instead of
+  dropping it. Keep `package.json` free of a `dependencies` block: the extension
+  ships as plain CommonJS.
 
 ## Release and artifacts
 
@@ -174,20 +225,38 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
 - `oskelc` (the host compiler) is the second entry point over the same front
   end: `oskel` links the runtime on top of it (VM, JIT, builtins, FFI
   marshalling) and `oskelc` links the front end alone, so the shipped compiler
-  carries no interpreter. `OSKEL_RUNTIME_SOURCES` in `CMakeLists.txt` is the one
-  list that decides which sources are runtime; `build.sh` and `build.bat` keep
-  the same split, and the configure step fails when the list names a file that
-  does not exist. `oskel build` and `oskelc` both call `runBuildCommand` in
-  `src/cli.cpp`, so they cannot drift: `tests/oskelc_parity.cmake` compares the
-  two images byte for byte and against the VM's output, and
+  carries no interpreter. The directory a file lives in decides which library it
+  belongs to: `src/core/`
+  (Value, cycle collector, platform layer), `src/frontend/` (lexer, parser,
+  bytecode compiler, AOT backend) and `src/runtime/` (VM, JIT, builtins,
+  operators, FFI marshalling). There is no hand-maintained list, so a new file
+  cannot silently default to the front end; the configure step refuses a `.cpp`
+  dropped straight into `src/`. `build.sh` and `build.bat` glob the same three
+  directories. `oskel build` and `oskelc` both call `runBuildCommand` in
+  `src/frontend/cli.cpp`, so they cannot drift: `tests/oskelc_parity.cmake`
+  compares the two images byte for byte and against the VM's output, and
   `tests/check_oskelc_no_vm.cmake` fails when `nm` finds `VM::`, `jitCompile`,
-  `Jit::`, `registerBuiltins`, `ops::binary` or `Runtime::fail` in the compiler. Adding a
-  runtime source means adding it to that list; adding a front-end source needs
-  no edit (the boundary test receives the exact front-end list from CMake).
+  `Jit::`, `registerBuiltins`, `ops::binary` or `Runtime::fail` in the compiler
+  **or in `liboskel_frontend.a`** — the archive matters because an unreferenced
+  object never reaches the binary, so a binary-only check cannot see it.
   Every packaging format ships `oskelc` beside `oskel` and `bindgen`.
+- A check that reads the source tree must name the *basename* of the file it
+  wants, never a fixed `src/<name>.cpp` path, and must fail loudly when the file
+  is missing. `tests/check_vscode_grammar.cmake` reads the keyword table, the
+  type vocabulary, the builtin registry and `isAssignOp` out of the sources so
+  the grammar cannot drift; when the split moved those files it failed on all
+  eight runners with "missing src/lexer.cpp". The same trap sits in the include
+  guards: `check_compiler_boundary.cmake` matched a bare `vm[.]h`, which stops
+  matching the moment an include gains a directory prefix — it silently passed a
+  front-end file that included `runtime/builtins.h`. Both patterns now take an
+  optional directory prefix, and `runtime/runtime.h` is spelled with its
+  directory so `include/native/runtime.h` (the AOT freestanding runtime) stays
+  allowed. When you move a file, grep for its old path across `tests/`,
+  `CMakeLists.txt`, the build scripts and the workflows, then plant a violation
+  and watch the check fail before trusting it.
 - `bindgen` (the C binding generator, `docs/bindgen.md`) is a second executable
   shipped beside `oskel`. It is standalone — it links no engine code — and its
-  sources live under `tools/`, *outside* the `src/*.cpp` glob, so it is never
+  sources live under `tools/`, outside the three `src/` globs, so it is never
   pulled into `oskel`; `nm build/oskel | grep bindgen` must stay empty. Every
   packaging format must ship it (`/usr/bin/bindgen`, `/usr/local/bin/bindgen`,
   `{app}\bin\bindgen.exe`) or the three platforms drift apart. It reuses

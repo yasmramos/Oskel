@@ -10,9 +10,9 @@
 #include <unordered_set>
 #include <vector>
 
-#include "ast.h"
 #include "bytecode.h"
-#include "errors.h"
+#include "core/errors.h"
+#include "frontend/ast.h"
 
 // Signature of a `native fn`/`extern "C"` declaration (PHASE 6.5), keyed by
 // name. A native declaration emits no call to the compiler: it only records the

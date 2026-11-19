@@ -50,7 +50,7 @@ Oskel-specific guardrails (DEVELOPMENT.md §3, §6). Delete if not relevant.
 
 ### Architecture
 
-- [ ] §2 toolchain boundary respected: `src/compiler.*` and `src/native/*` do not
+- [ ] §2 toolchain boundary respected: `src/frontend/compiler.*` and `src/frontend/native/*` do not
       include `interpreter.h` or `vm.h` (`tests/check_compiler_boundary.cmake`)
 - [ ] §3 bytecode contract unchanged, or the change is explained above
 - [ ] §5 rule 10 no side owners added to the cycle collector (`gc.cpp`)

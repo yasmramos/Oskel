@@ -11,10 +11,10 @@
 #include <string>
 
 #include "compiler.h"
-#include "lexer.h"
-#include "module_resolver.h"
-#include "parser.h"
-#include "util.h"
+#include "core/util.h"
+#include "frontend/lexer.h"
+#include "frontend/module_resolver.h"
+#include "frontend/parser.h"
 #include "vm.h"
 
 namespace {

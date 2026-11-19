@@ -3,9 +3,9 @@
 #include <string>
 
 #include "compiler.h"
-#include "lexer.h"
-#include "parser.h"
-#include "value.h"
+#include "core/value.h"
+#include "frontend/lexer.h"
+#include "frontend/parser.h"
 #include "vm.h"
 
 static int g_failures = 0;

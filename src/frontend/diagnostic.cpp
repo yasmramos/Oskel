@@ -1,10 +1,10 @@
-#include "diagnostic.h"
+#include "frontend/diagnostic.h"
 
 #include <algorithm>
 #include <string>
 
+#include "core/value.h"
 #include "platform.h"
-#include "value.h"
 
 namespace {
 

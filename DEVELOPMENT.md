@@ -44,42 +44,45 @@ bytecode that later turns out to be impossible to compile efficiently).
 
 | Module | Input | Output | Status |
 |--------|-------|--------|--------|
-| `lexer.cpp` | source text | `Token[]` | ✅ |
-| `parser.cpp` | `Token[]` | `Node*` (AST) | ✅ |
-| `bytecode.cpp` | `Bytecode` | basic operations | ✅ |
-| `compiler.cpp` | `Node*` | `Bytecode*` | ✅ |
-| `module_resolver.cpp` | dotted module path | source file path | ✅ |
-| `vm.cpp` | `Bytecode*` | execution | ✅ |
+| `core/value.cpp` | `Value`, tagged union | shared vocabulary | ✅ |
+| `core/gc.cpp` | tracked `GcNode`s | cycle reclamation | ✅ |
+| `core/platform_posix.cpp` | `Platform` ops (dev engine) | libc-backed I/O | ✅ |
+| `frontend/lexer.cpp` | source text | `Token[]` | ✅ |
+| `frontend/parser.cpp` | `Token[]` | `Node*` (AST) | ✅ |
+| `frontend/bytecode.cpp` | `Bytecode` | basic operations | ✅ |
+| `frontend/compiler.cpp` | `Node*` | `Bytecode*` | ✅ |
+| `frontend/module_resolver.cpp` | dotted module path | source file path | ✅ |
+| `frontend/diagnostic.cpp` | `CompileError`, `Warning`, `RuntimeError` | stderr output | ✅ |
+| `frontend/cli.cpp` | shared CLI plumbing | module resolution, `std/` lookup, AOT pipeline | ✅ |
+| `frontend/native/codegen.cpp` | x86-64 instructions | machine-code bytes | ✅ PHASE 7a/7b |
+| `frontend/native/lower.cpp` | bytecode | x86-64 (boxed `Value`) | ✅ PHASE 7c.3 (all opcodes) |
+| `frontend/native/runtime.cpp` | boxed values | runtime helpers as machine code | ✅ PHASE 7c.3 |
+| `frontend/native/dtoa.cpp` | float/double | shortest round-trip text | ✅ PHASE 7c.1b |
+| `frontend/native/elf.cpp` | text + rodata | static ELF64 bytes | ✅ |
+| `frontend/native/pe.cpp` | text + rdata | static PE32+ bytes (imports) | ✅ PHASE 7e |
+| `frontend/native/arena.cpp` | block + size | aligned allocations | ✅ PHASE 7c.0 |
+| `frontend/native/platform_freestanding.cpp` | `Platform` ops | direct Linux syscalls | ✅ PHASE 7c.0 |
+| `frontend/native/entry.cpp` | program entry label | `_start`/entry + prelude (Linux syscalls, Windows kernel32) | ✅ PHASE 7c.0/7e |
+| `frontend/native/bare_metal.cpp` | code + entry | multiboot ELF32/i386 kernel (bare-metal prelude + trampoline) | ✅ PHASE 7g |
+| `runtime/vm.cpp` | `Bytecode*` | execution | ✅ |
+| `runtime/builtins.cpp` / `runtime/ops.cpp` | native builtins, shared operators | runtime library | ✅ |
+| `runtime/ffi.cpp` | `extern "C"` declarations | marshalling natives | ✅ PHASE 6.6 |
+| `runtime/jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slices 1-4 |
 | `main.cpp` | CLI | full pipeline | ✅ (VM as dev engine, PHASE 4) |
 | `oskelc.cpp` | CLI | full pipeline, AOT only | ✅ (host compiler, no VM) |
-| `cli.cpp` | shared CLI plumbing | module resolution, `std/` lookup, AOT pipeline | ✅ |
-| `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slices 1-4 |
-| `value.cpp` | `Value`, tagged union | shared runtime | ✅ |
-| `builtins.cpp` / `ops.cpp` | native builtins, shared operators | runtime library | ✅ |
-| `ffi.cpp` | `extern "C"` declarations | marshalling natives | ✅ PHASE 6.6 |
-| `diagnostic.cpp` | `CompileError`, `Warning`, `RuntimeError` | stderr output | ✅ |
-| `gc.cpp` | tracked `GcNode`s | cycle reclamation | ✅ |
-| `platform_posix.cpp` | `Platform` ops (dev engine) | libc-backed I/O | ✅ |
-| `native/codegen.cpp` | x86-64 instructions | machine-code bytes | ✅ PHASE 7a/7b |
-| `native/lower.cpp` | bytecode | x86-64 (boxed `Value`) | ✅ PHASE 7c.3 (all opcodes) |
-| `native/runtime.cpp` | boxed values | runtime helpers as machine code | ✅ PHASE 7c.3 |
-| `native/dtoa.cpp` | float/double | shortest round-trip text | ✅ PHASE 7c.1b |
-| `native/elf.cpp` | text + rodata | static ELF64 bytes | ✅ |
-| `native/pe.cpp` | text + rdata | static PE32+ bytes (imports) | ✅ PHASE 7e |
-| `native/arena.cpp` | block + size | aligned allocations | ✅ PHASE 7c.0 |
-| `native/platform_freestanding.cpp` | `Platform` ops | direct Linux syscalls | ✅ PHASE 7c.0 |
-| `native/entry.cpp` | program entry label | `_start`/entry + prelude (Linux syscalls, Windows kernel32) | ✅ PHASE 7c.0/7e |
-| `native/bare_metal.cpp` | code + entry | multiboot ELF32/i386 kernel (bare-metal prelude + trampoline) | ✅ PHASE 7g |
 
 ### Toolchain binaries and the compiler boundary
 
-Two binaries share one front end. The engine's sources split in two, and the
-split is what the products are:
+Two binaries share one front end. The engine's sources live in three directories
+and **the directory a file lives in is its classification** — there is no
+hand-maintained list to forget:
 
-- **front end** (`oskel_frontend`): lexer, parser, bytecode compiler, module
-  resolver, diagnostics, `value`/`gc`, the platform layer and the whole AOT
-  backend (`src/native/*`). A compiler needs exactly this.
-- **runtime** (`oskel_lib`, on top of the front end): `vm.cpp`, `ops.cpp`,
+- **`src/core/`** (shared, no engine state): `Value`, the cycle collector, the
+  platform layer, `util.h` and `errors.h`. Both binaries need it.
+- **`src/frontend/`** (`oskel_frontend`, on top of core): lexer, parser,
+  bytecode compiler, module resolver, diagnostics, the shared CLI and the whole
+  AOT backend (`src/frontend/native/*`). A compiler needs exactly this.
+- **`src/runtime/`** (`oskel_lib`, on top of the front end): `vm.cpp`, `ops.cpp`,
   `builtins.cpp`, `ffi.cpp`, `unicode_case.cpp` and `jit/jit.cpp`.
 
 The binaries:
@@ -87,13 +90,13 @@ The binaries:
 - `oskel` development engine (run, REPL, -c, `build`). Links the runtime on top
   of the front end, so it can interpret. Includes the JIT (the JIT uses the
   project's own `native/codegen.h` emitter, not AsmJIT).
-- `oskelc` host compiler (`oskelc file.oskl -o app`). Links the front end
+- `oskelc` host compiler (`oskelc file.oskl -o app`). Links core + front end
   alone, so the shipped compiler carries no VM, no JIT and no builtins. Reads
   sources and writes the ELF with the project's own `native/codegen.cpp` and
   `native/elf.cpp` (no AsmJIT, no ELFIO).
 - `oskel build` is a thin alias: both commands call `runBuildCommand` in
-  `src/cli.cpp`, so their flags, defaults, diagnostics and exit codes cannot
-  drift. `oskelc` is the same AOT pipeline with a shorter command line.
+  `src/frontend/cli.cpp`, so their flags, defaults, diagnostics and exit codes
+  cannot drift. `oskelc` is the same AOT pipeline with a shorter command line.
 
 `oskelc` has no bytecode serializer yet, so `-c` (`.oskc`) and `-pkg`
 (`.oskpkg`) are refused by name with exit 64 instead of being read as a typo.
@@ -103,21 +106,32 @@ A third, standalone binary ships alongside them: `bindgen`, the C binding
 generator (`docs/bindgen.md`). It reads a C header and writes an Oskel
 `extern "C"` module. It is a pure text transformation, so it does not link
 `oskel_lib` (or the runtime, the compiler, the VM or libffi): its sources live
-under `tools/` and are deliberately outside the `src/*.cpp` glob that builds the
-engine, so it can be built and shipped on its own.
+under `tools/`, outside the three `src/` globs that build the engine, so it can
+be built and shipped on its own.
 
-Boundary rule: src/compiler.* and src/native/* must not include
-interpreter.h, vm.h or jit/jit.h; and no source `oskelc` links may include
-vm.h, jit/jit.h, builtins.h, ops.h, ffi_marshal.h or libffi. Enforced twice:
-`tests/check_compiler_boundary.cmake` checks the include graph of the whole
-front end (CMake passes the exact `OSKEL_FRONTEND_SOURCES` list, so a new
-front-end file is checked automatically), and `tests/check_oskelc_no_vm.cmake`
-checks the *link* — `nm` must not show `VM::`, `jitCompile`, `Jit::`,
-`registerBuiltins`, `ops::binary` or `Runtime::fail` in the `oskelc` binary. The link check is what
-catches a runtime dependency that arrives through a header without naming
-`vm.h`. `OSKEL_RUNTIME_SOURCES` in `CMakeLists.txt` is the one list that decides
-what is runtime; the configure step fails when it names a file that does not
-exist, so a rename cannot silently move a runtime source into `oskelc`.
+Boundary rule: no source in `src/frontend/` may include `vm.h`, `jit/jit.h`,
+`builtins.h`, `ops.h`, `ffi_marshal.h` or libffi, and `src/frontend/compiler.*`
+plus `src/frontend/native/*` must also stay clear of `interpreter.h`. Enforced
+three times, because each check sees something the others cannot:
+
+1. `tests/check_compiler_boundary.cmake` walks the include graph of every source
+   `oskelc` compiles (CMake passes the exact `OSKEL_CORE_SOURCES` +
+   `OSKEL_FRONTEND_SOURCES` list, so a new front-end file is checked
+   automatically).
+2. `tests/check_oskelc_no_vm.cmake` checks the **archive**, not just the binary:
+   `nm` must not show `VM::`, `jitCompile`, `Jit::`, `registerBuiltins`,
+   `ops::binary` or `Runtime::fail` in either `oskelc` or
+   `liboskel_frontend.a`. The binary alone is not enough — a static library only
+   pulls in the objects a reference needs, so an unreferenced runtime object
+   sits in the archive without ever reaching the executable, and `nm oskelc`
+   stays clean while the compiler's input is dirty.
+3. The configure step refuses a `.cpp` dropped straight into `src/`: every
+   source must be in one of the three directories, so the classification is
+   never skipped by default.
+
+All three exist because the previous single list was only checked in one
+direction: it failed when a listed runtime source did not exist, but a new
+runtime source that nobody listed silently defaulted to the front end.
 
 ---
 

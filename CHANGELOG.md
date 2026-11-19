@@ -11,6 +11,24 @@ may change between minor versions.
 
 ### Added
 
+- **The VS Code extension reports the compiler's diagnostics.** Saving an
+  `.oskl` file now runs `oskel -c` and publishes the result as editor
+  diagnostics, so a type error is a squiggle on the line that caused it instead
+  of a message in a terminal. `Oskel: Check file` runs the same check on demand
+  and `Oskel: Clear diagnostics` clears the Problems panel; three settings
+  (`oskel.check.enable`, `oskel.check.onSave`, `oskel.check.path`) control it.
+  There is no language server: the compiler already prints
+  `file:line:col: severity: message` and exits 65, which is what a
+  `DiagnosticCollection` needs, and a check costs about 2 ms. The binary is
+  `oskel`, not `oskelc`, whose `-c` is not implemented — a non-zero exit with
+  nothing parsed becomes a diagnostic of its own rather than a silent "no
+  problems". An error inside an imported module is reported under the root
+  file's name with the module's line and column, so a position past the end of
+  the open document is clamped instead of dropped. `src/diagnostics.js` holds
+  the parser and imports no `vscode`, so `node --test` covers it
+  (`tests/check_vscode_diagnostics.cmake`, CTest `vscode_diagnostics`), with
+  real compiler output as fixtures.
+
 - **Compound bitwise assignment: `&=`, `|=`, `^=`, `<<=` and `>>=`.** The
   assignment operators had an arithmetic form (`+=`, `-=`, `*=`, `/=`, `%=`,
   `**=`) and a short-circuiting logical form (`&&=`, `||=`, `??=`), but the
@@ -26,6 +44,21 @@ may change between minor versions.
   `tests/compiler_test.cpp` pins the emitted shape (`GETGLOBAL; LOADK; op;
   SETGLOBAL`).
 
+- **The VS Code extension gains snippets, editor defaults and a drift test.**
+  The grammar was only a highlighter; the extension now also ships 26 snippets
+  (`fn`, `class`, `struct`, `switch`, `extern "C"`, `@MustUse`, the three
+  `import` forms, `catch`, `defer`, ...), a `snippets` contribution, and
+  per-language editor defaults (`[oskel]`: two spaces, no indentation guessing,
+  bracket-pair guides). `language-configuration.json` gained the indentation
+  rules (a line opening `{`/`(`/`[` indents, a closing bracket dedents) and
+  block-comment continuation, so pressing Enter inside `/* ... */` keeps the
+  comment. `tests/check_vscode_grammar.cmake` (CTest `vscode_grammar`) derives
+  the keyword, type, builtin and operator vocabulary from `src/lexer.cpp`,
+  `src/ast.h`, `src/builtins.cpp` and `isAssignOp` in `src/parser.cpp`, and
+  `tests/check_vscode_snippets.cmake` (CTest `vscode_snippets`) expands every
+  snippet and compiles it with `oskel -c`, so neither the grammar nor the
+  snippets can drift from the compiler again.
+
 - **`oskelc`, the host compiler, split out of `oskel`.** The toolchain now
   builds two binaries from one front end: `oskel` (the development engine: run,
   REPL, `-c`, `build`) links the runtime on top of it, and `oskelc` links the
@@ -34,15 +67,35 @@ may change between minor versions.
   `runBuildCommand` in the new `src/cli.cpp`, so their flags, defaults,
   diagnostics and exit codes cannot drift, and the emitted image is byte for
   byte identical (`tests/oskelc_parity.cmake`). The sources are split by
-  `OSKEL_RUNTIME_SOURCES` in `CMakeLists.txt` (`vm`, `ops`, `builtins`, `ffi`,
-  `unicode_case`, `jit/jit`); the configure step fails if that list names a file
-  that does not exist. Two guards keep the boundary: the include graph of every
-  front-end source (`tests/check_compiler_boundary.cmake`, which CMake now feeds
-  the exact source list) and the link itself (`tests/check_oskelc_no_vm.cmake`:
-  `nm` must show no `VM::`, `jitCompile`, `Jit::`, `registerBuiltins`,
-  `ops::binary` or `Runtime::fail`). `oskelc` ships in every package beside `oskel` and
-  `bindgen`. `-c` (`.oskc`) and `-pkg` (`.oskpkg`) are refused by name with
-  exit 64 until a bytecode serializer exists.
+  directory (see the entry below); three guards keep the boundary: the include
+  graph of every front-end source (`tests/check_compiler_boundary.cmake`, which
+  CMake feeds the exact source list), the archive `oskelc` links
+  (`tests/check_oskelc_no_vm.cmake`: `nm` must show no `VM::`, `jitCompile`,
+  `Jit::`, `registerBuiltins`, `ops::binary` or `Runtime::fail` in either the
+  binary or `liboskel_frontend.a`) and the configure step, which refuses a
+  source outside the three directories. `oskelc` ships in every package beside
+  `oskel` and `bindgen`. `-c` (`.oskc`) and `-pkg` (`.oskpkg`) are refused by
+  name with exit 64 until a bytecode serializer exists.
+
+- **The engine's sources are split into `src/core/`, `src/frontend/` and
+  `src/runtime/`, and the boundary is enforced in both directions.** The
+  toolchain boundary used to be a hand-maintained `OSKEL_RUNTIME_SOURCES` list
+  whose check only ran one way: it failed when a listed runtime file did not
+  exist, but a new runtime file that nobody listed silently defaulted to the
+  front end and was linked into `oskelc`. The directory a file lives in is now
+  its classification — `core` (Value, cycle collector, platform layer),
+  `frontend` (lexer, parser, bytecode compiler, AOT backend) and `runtime` (VM,
+  JIT, builtins, operators, FFI marshalling) — so there is no list to forget,
+  and the configure step fails on a `.cpp` dropped straight into `src/`.
+  `src/native/` moved to `src/frontend/native/`, and every include now names its
+  directory (`core/value.h`, `runtime/vm.h`, ...), which removes the silent
+  resolution order that let `value.h` and `native/value.h` both answer to the
+  same spelling. The `nm` check now inspects `liboskel_frontend.a` as well as
+  the binary: a static library only pulls in the objects a reference needs, so
+  an unreferenced runtime object never reaches `oskelc` and a binary-only check
+  could not see it. `build.sh`, `build.bat` and the `tests/run_*.sh` scripts
+  glob the same three directories. No behaviour changes; the emitted images stay
+  byte for byte identical.
 
 - **`bindgen` translates a `struct` by value and a C `enum` (PHASE 6.6).** A
   header that declares `struct Point { int x; int y; };` and
@@ -127,6 +180,17 @@ may change between minor versions.
   `tests/lower_test.cpp` and `tests/vm_test.cpp`.
 
 ### Fixed
+
+- **The VS Code grammar highlighted syntax the language does not have and
+  missed three real builtins.** `0x10`, `0b1010` and `0o17` were split into `0`
+  and a name, because the decimal rule ran first; the lexer accepts all three
+  prefixes. `time`, `memSize` and `args` were builtins the grammar never
+  highlighted, `@MustUse` and `self` were plain text, and a struct literal
+  (`Point { x: 1 }`) or a constructor call (`Point(3, 4)`) did not name a type.
+  In the other direction the grammar advertised `===`, `!==` and `->`, none of
+  which the lexer produces, so a file using them looked valid and failed to
+  compile. The auto-closing pair for `/*` also inserted a space (`" */"`), and
+  there was no indentation rule at all.
 
 - **`bindgen` no longer emits a declaration the compiler rejects on a
   non-System V ABI.** The tool promises that every declaration it writes as

@@ -3,8 +3,10 @@
   "name": "Oskel",
   "scopeName": "source.oskl",
   "fileTypes": ["oskl"],
+  "firstLineMatch": "^#!.*\\boskel\\b",
   "patterns": [
     { "include": "#comments" },
+    { "include": "#attributes" },
     { "include": "#imports" },
     { "include": "#declarations" },
     { "include": "#keywords" },
@@ -12,6 +14,7 @@
     { "include": "#numbers" },
     { "include": "#strings" },
     { "include": "#builtins" },
+    { "include": "#self" },
     { "include": "#types" },
     { "include": "#functions" },
     { "include": "#operators" },
@@ -25,12 +28,27 @@
           "match": "//.*$"
         },
         {
+          "comment": "Block comments nest, as in the lexer: `/* a /* b */ c */` is one comment.",
           "name": "comment.block.oskl",
           "begin": "/\\*",
           "end": "\\*/",
           "beginCaptures": { "0": { "name": "punctuation.definition.comment.begin.oskl" } },
           "endCaptures": { "0": { "name": "punctuation.definition.comment.end.oskl" } },
           "patterns": [{ "include": "#comments" }]
+        }
+      ]
+    },
+
+    "attributes": {
+      "patterns": [
+        {
+          "comment": "`@MustUse` (PHASE 6.7.5). It is the only attribute, but an unknown one is highlighted too so the compiler's error reads naturally.",
+          "name": "meta.attribute.oskl",
+          "match": "(@)([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "punctuation.definition.attribute.oskl" },
+            "2": { "name": "storage.modifier.attribute.oskl" }
+          }
         }
       ]
     },
@@ -85,7 +103,7 @@
           }
         },
         {
-          "comment": "`fn name(...)` — the name only; parameters are matched elsewhere",
+          "comment": "`fn name(...)` - the name only; parameters are matched elsewhere",
           "name": "meta.function.oskl",
           "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
           "captures": {
@@ -131,6 +149,19 @@
 
     "numbers": {
       "patterns": [
+        {
+          "comment": "`0x1F`, `0b1010`, `0o17` with `_` separators, as the lexer accepts them. These come before the decimal rule, which would otherwise split `0x10` into `0` and the name `x10`.",
+          "name": "constant.numeric.integer.hex.oskl",
+          "match": "\\b0[xX][0-9A-Fa-f][0-9A-Fa-f_]*"
+        },
+        {
+          "name": "constant.numeric.integer.binary.oskl",
+          "match": "\\b0[bB][01][01_]*"
+        },
+        {
+          "name": "constant.numeric.integer.octal.oskl",
+          "match": "\\b0[oO][0-7][0-7_]*"
+        },
         {
           "comment": "Float/double with optional exponent and `f`/`F` suffix; `_` separators allowed.",
           "name": "constant.numeric.float.oskl",
@@ -181,6 +212,7 @@
         { "include": "#constants" },
         { "include": "#numbers" },
         { "include": "#builtins" },
+        { "include": "#self" },
         { "include": "#types" },
         { "include": "#functions" },
         { "include": "#operators" },
@@ -201,6 +233,16 @@
       ]
     },
 
+    "self": {
+      "patterns": [
+        {
+          "comment": "`self` is not a keyword: it is an ordinary identifier the compiler resolves inside a class (PHASE 6.8).",
+          "name": "variable.language.self.oskl",
+          "match": "\\bself\\b"
+        }
+      ]
+    },
+
     "types": {
       "patterns": [
         {
@@ -209,7 +251,7 @@
           "match": "\\?(?=\\s*(?:[=,)\\]};]|$))"
         },
         {
-          "comment": "Primitive and FFI scalar type names, plus the `fn(...)` callback type head.",
+          "comment": "The scalar vocabulary of `isKnownTypeName` (src/ast.h), plus the `fn(...)` callback head, which the parser reads as a type.",
           "name": "support.type.primitive.oskl",
           "match": "\\b(?:bool|int|float|double|string|error|array|map|function|range|void|any|ptr|cstring|int8|int16|int32|int64|uint8|uint16|uint32|uint64|uint|size_t)\\b"
         },
@@ -217,6 +259,11 @@
           "comment": "A user type used as an annotation: `let p: Point = ...`.",
           "name": "entity.name.type.oskl",
           "match": "(?<=:\\s*)[A-Z][A-Za-z0-9_]*\\b"
+        },
+        {
+          "comment": "A struct literal (`Point { x: 1 }`) or a class construction (`Point(3, 4)`): both name a type, and both are capitalised by convention.",
+          "name": "entity.name.type.oskl",
+          "match": "\\b[A-Z][A-Za-z0-9_]*(?=\\s*[{(])"
         }
       ]
     },
@@ -224,9 +271,9 @@
     "builtins": {
       "patterns": [
         {
-          "comment": "Standard library / host builtins when used as a call.",
+          "comment": "Every `addNative` name in src/builtins.cpp. `tests/check_vscode_grammar.cmake` fails when this list and the compiler drift apart.",
           "name": "support.function.builtin.oskl",
-          "match": "\\b(?:print|eprint|input|len|type|repr|str|int|float|double|bool|error|isError|panic|pcall|assert|assertEq|range|chr|ord|sqrt|pow|exp|log|sin|cos|tan|ceil|floor|round|random|seed|clock|exit|cstring|cstr|ptrToInt|intToPtr|byteLen|loadByte|storeByte|readFile|writeFile|fileExists|write|free|buffer)\\b(?=\\s*\\()"
+          "match": "\\b(?:print|write|eprint|input|len|type|repr|str|int|float|double|bool|error|isError|panic|pcall|assert|assertEq|range|chr|ord|sqrt|pow|exp|log|sin|cos|tan|ceil|floor|round|random|seed|clock|time|memSize|exit|args|cstring|cstr|ptrToInt|intToPtr|byteLen|loadByte|storeByte|readFile|writeFile|fileExists|free|buffer)\\b(?=\\s*\\()"
         }
       ]
     },
@@ -244,17 +291,18 @@
     "operators": {
       "patterns": [
         {
+          "comment": "Compound assignment, including the bitwise forms (`x &= 3`).",
           "name": "keyword.operator.assignment.compound.oskl",
           "match": "\\*\\*=|<<=|>>=|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|&&=|\\|\\|=|\\?\\?="
         },
         {
-          "comment": "Shifts before comparison so `a << b` is one token, not two `<`. `<<=`/`>>=` are already consumed above.",
+          "comment": "Shifts before comparison so `a << b` is one token, not two `<`. `<<=`/`>>=` are consumed above.",
           "name": "keyword.operator.bitwise.oskl",
           "match": "<<(?!=)|>>(?!=)"
         },
         {
           "name": "keyword.operator.comparison.oskl",
-          "match": "===|!==|==|!=|<=|>=|<|>"
+          "match": "==|!=|<=|>=|<|>"
         },
         {
           "name": "keyword.operator.null.oskl",
@@ -275,11 +323,12 @@
         },
         {
           "name": "keyword.operator.assignment.oskl",
-          "match": "=(?!=)"
+          "match": "=(?![=>])"
         },
         {
+          "comment": "`=>` starts a lambda or an expression body. There is no `->` in Oskel.",
           "name": "keyword.operator.arrow.oskl",
-          "match": "=>|->"
+          "match": "=>"
         }
       ]
     },

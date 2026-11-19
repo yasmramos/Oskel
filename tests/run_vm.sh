@@ -25,10 +25,9 @@ fi
 # `oskel` entry point. The list is detected, never written by hand, so it cannot
 # drift when a source is added or removed.
 sources=""
-for src in src/*.cpp src/native/*.cpp; do
-    if [ "$src" != "src/main.cpp" ]; then
-        sources="$sources $src"
-    fi
+for src in src/core/*.cpp src/frontend/*.cpp src/frontend/native/*.cpp \
+           src/runtime/*.cpp src/runtime/jit/*.cpp; do
+    sources="$sources $src"
 done
 
 # shellcheck disable=SC2086

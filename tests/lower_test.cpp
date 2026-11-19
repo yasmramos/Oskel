@@ -19,12 +19,12 @@
 
 #include "bytecode.h"
 #include "compiler.h"
-#include "lexer.h"
+#include "frontend/lexer.h"
+#include "frontend/parser.h"
 #include "native/codegen.h"
 #include "native/lower.h"
 #include "native/target.h"
 #include "native/value.h"
-#include "parser.h"
 
 #if defined(__linux__) && defined(__x86_64__)
 #define LOWER_EXEC_TESTS 1

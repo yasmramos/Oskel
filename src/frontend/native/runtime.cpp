@@ -3025,7 +3025,7 @@ void emitStrEq(CodeGen& cg, CodeGen::Label label) {
 // call reaches one of these bodies through `oskel_call`. Every body follows the
 // proto convention `AotValue entry(AotValue* args, long argc, AotClosure* self)`
 // and reads its receiver from the captured cell in `self`, exactly like the
-// array bodies. All ten mirror the hosted `bindMap` (src/builtins.cpp).
+// array bodies. All ten mirror the hosted `bindMap` (src/runtime/builtins.cpp).
 
 // A `keys`/`values`/`entries` body that materialises a new array of `count`
 // items. `emitFill` writes item `i` from the map's entry block; it may read the

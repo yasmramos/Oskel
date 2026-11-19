@@ -6,8 +6,8 @@ them, and receiving a periodic timer tick.
 
 Scope: the bare-metal x86-64 (multiboot) target only
 (`--target x86_64-freestanding-sysv`). It touches `include/native/codegen.h`,
-`src/native/codegen.cpp`, `include/native/bare_metal.h`,
-`src/native/bare_metal.cpp` and `tests/bare_metal_test.cpp`. It changes no
+`src/frontend/native/codegen.cpp`, `include/native/bare_metal.h`,
+`src/frontend/native/bare_metal.cpp` and `tests/bare_metal_test.cpp`. It changes no
 token, node, parser rule, opcode, VM path or compiler path.
 
 Non-goals: `asm!`, `#[naked]`/`#[interrupt]`, `--no-runtime`, a scheduler,
@@ -20,18 +20,18 @@ every one of them depends on it.
 ## 1. The gap
 
 The bare-metal prelude installs an IDT (`emitIdt`,
-`src/native/bare_metal.cpp:185`) whose 256 gates all point at a handler that
+`src/frontend/native/bare_metal.cpp:185`) whose 256 gates all point at a handler that
 prints `oskel: cpu exception 0xVV rip=0x...` and halts
-(`src/native/bare_metal.cpp:200-228`). Three facts make that an *exception*
+(`src/frontend/native/bare_metal.cpp:200-228`). Three facts make that an *exception*
 reporter and not an *interrupt* service:
 
 1. **No return path.** The handler ends in a `cli; hlt` loop
-   (`src/native/bare_metal.cpp:221-228`); there is no `iretq`, so the frame the
+   (`src/frontend/native/bare_metal.cpp:221-228`); there is no `iretq`, so the frame the
    CPU pushed is never unwound and nothing resumes.
 2. **Interrupts are never enabled.** The 32-bit trampoline opens with `cli`
-   (`src/native/bare_metal.cpp:90`) and nothing ever executes `sti`: the
+   (`src/frontend/native/bare_metal.cpp:90`) and nothing ever executes `sti`: the
    `CodeGen` has no `sti` primitive, and no byte `0xFB` is emitted as an
-   instruction anywhere in `src/native/`.
+   instruction anywhere in `src/frontend/native/`.
 3. **The PIC is not remapped.** The 8259 PIC powers up mapping IRQ0-IRQ7 onto
    vectors 0x08-0x0F, which collide with the CPU's own exceptions (#DF at 8,
    #TS at 10, ...). Without a remap, enabling IRQ0 delivers a spurious-looking
@@ -88,7 +88,7 @@ on every tick before it.
 | New bytecode opcode? | **No.** The 39-opcode set is untouched. |
 | Opcode 1:1 or 1:2 ASM? | **N/A** — no opcode is added. |
 | New VM logic? | **No.** The VM never runs the bare-metal prelude. |
-| New compiler logic? | **No.** `src/compiler.cpp` is untouched. |
+| New compiler logic? | **No.** `src/frontend/compiler.cpp` is untouched. |
 
 This is a backend-only change: two new `CodeGen` primitives (each one
 instruction) and a rewrite of the bare-metal prelude's interrupt setup.
@@ -109,7 +109,7 @@ The dispatch is by vector, in the stub:
 - Vector 0x20 jumps to `irqHandler` (new).
 
 `emitIdt` already creates one stub per vector
-(`src/native/bare_metal.cpp:187-234`); the change is one conditional in that
+(`src/frontend/native/bare_metal.cpp:187-234`); the change is one conditional in that
 loop. This keeps a device interrupt from ever being confused with a fault: a
 `#PF` still halts with a trace.
 
@@ -141,11 +141,11 @@ to be 16-byte aligned, so the handler must save and restore it around the
 `call` into the runtime's `oskel_write`. See D7.)
 
 The interrupt gate clears IF on entry (gate type 0x8E is an *interrupt* gate,
-`src/native/bare_metal.cpp:27`), so the handler cannot be preempted by another
+`src/frontend/native/bare_metal.cpp:27`), so the handler cannot be preempted by another
 interrupt and needs no re-entrancy guard.
 
 No TSS and no IST are configured (`gate[4] = 0x00`,
-`src/native/bare_metal.cpp:254`), so the handler runs on the interrupted
+`src/frontend/native/bare_metal.cpp:254`), so the handler runs on the interrupted
 stack. That is correct for a single-stack kernel and keeps the slice small; a
 per-interrupt stack is later work, not this slice.
 
@@ -174,26 +174,26 @@ The prelude sequence, in this order (each step depends on the previous):
    set. Only the timer is enabled; the rest of the devices stay quiet until a
    driver exists.
 4. **Install the IDT** (already done today, `code.lidtRipLabel`,
-   `src/native/bare_metal.cpp:384`).
+   `src/frontend/native/bare_metal.cpp:384`).
 5. **`sti`.** Enabling interrupts is the *last* step before the program runs,
    so no interrupt can arrive while the IDT or the PIC is half-configured.
 
 `sti` sits immediately before `call programEntry`
-(`src/native/bare_metal.cpp:386`).
+(`src/frontend/native/bare_metal.cpp:386`).
 
 ### D5 — The tick counter lives in `.bss`, and `.bss` grows for it
 
 The handler needs a place to count ticks, and the image has no writable data
 segment today: `.bss` is page tables (`0x0000-0x2FFF`), a 16 KiB stack
 (`0x3000-0x6FFF`) and the arena from `0x7000` up
-(`src/native/bare_metal.cpp:63-67`). The arena starts exactly at the stack
+(`src/frontend/native/bare_metal.cpp:63-67`). The arena starts exactly at the stack
 top, so there is no free word.
 
 Decision: reserve one 4 KiB **kernel-data page** at offset `0x3000`, move the
 stack to `0x4000-0x7FFF` and the arena to `0x8000`. The tick counter is a
 64-bit word at the start of that page. `kBMBssBytes`
 (`include/native/bare_metal.h:54`) grows by `0x1000` and
-`kBMStackTopOffset`/`kBMArenaOffset` (`src/native/bare_metal.cpp:66-67`) shift
+`kBMStackTopOffset`/`kBMArenaOffset` (`src/frontend/native/bare_metal.cpp:66-67`) shift
 with it. The structural test's `.bss` size assertion
 (`tests/bare_metal_test.cpp:129`) is updated in the same commit, so the ELF
 segment and the emitter never disagree.
@@ -201,7 +201,7 @@ segment and the emitter never disagree.
 ### D6 — Two new `CodeGen` primitives, each 1:1
 
 `outDxAl`/`inDxAl` already reach any PIC or PIT port (`out dx, al` /
-`in al, dx`, `src/native/codegen.cpp:868-870`), so port I/O needs nothing new.
+`in al, dx`, `src/frontend/native/codegen.cpp:868-870`), so port I/O needs nothing new.
 Two instructions are missing:
 
 | Primitive | Encoding | Notes |
@@ -218,7 +218,7 @@ checks (`tests/codegen_test.cpp:91-97`).
 
 The tick handler increments the `.bss` counter on every tick and returns. It is
 silent until the tick ceiling, where it writes one line to COM1 through the
-existing `handles.write` thunk (`oskel_write`, `src/native/bare_metal.cpp:406`)
+existing `handles.write` thunk (`oskel_write`, `src/frontend/native/bare_metal.cpp:406`)
 and exits. A per-tick write would interleave with the program's own output (see
 the revision note in §2); the counter is the mechanism, the ceiling line is the
 observable.
@@ -341,7 +341,7 @@ the ceiling is a named constant and not a hard-coded loop count.
 - **`.bss` layout drift.** Moving the stack and the arena can break the
   structural test or the loader if the two are not updated together.
   Mitigation: the offset constants live in one place
-  (`src/native/bare_metal.cpp:63-67`) and the test reads the same
+  (`src/frontend/native/bare_metal.cpp:63-67`) and the test reads the same
   `kBMBssBytes` the emitter uses.
 
 ---
@@ -389,7 +389,7 @@ the outside world for a value rather than printing to it.
 | New bytecode opcode? | No |
 | Opcode 1:1 or 1:2 ASM? | N/A — no new opcode |
 | New VM logic? | No |
-| New compiler logic? | No — `src/compiler.cpp` untouched |
+| New compiler logic? | No — `src/frontend/compiler.cpp` untouched |
 
 The slice is backend-only, plus one seeded builtin in the AOT runtime. The
 keyboard handler is prelude code, like the timer handler; writing handlers in

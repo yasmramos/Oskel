@@ -25,12 +25,12 @@
 
 #include "bytecode.h"
 #include "compiler.h"
-#include "lexer.h"
+#include "frontend/lexer.h"
+#include "frontend/parser.h"
 #include "native/bare_metal.h"
 #include "native/codegen.h"
 #include "native/lower.h"
 #include "native/target.h"
-#include "parser.h"
 
 static int g_failures = 0;
 
