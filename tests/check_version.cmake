@@ -4,9 +4,12 @@
 # the compiled binary really prints the header value, so a hard-coded literal
 # creeping back into `src/main.cpp` fails the suite instead of shipping.
 #
-# Registered by CMakeLists.txt; expects:
-#   -DOSKEL_EXE=<path to the oskel executable>
+# Registered by CMakeLists.txt for both binaries; expects:
+#   -DOSKEL_EXE=<path to the executable>
 #   -DOSKEL_EXPECTED_VERSION=<x.y.z>
+#
+# `oskelc --version` prints `Oskel <version>` too: the version is a property of
+# the toolchain, and `include/version.h` is its only source for both binaries.
 
 if(NOT DEFINED OSKEL_EXE OR NOT DEFINED OSKEL_EXPECTED_VERSION)
   message(FATAL_ERROR "check_version.cmake requires OSKEL_EXE and OSKEL_EXPECTED_VERSION")
@@ -27,6 +30,6 @@ string(STRIP "${version_out}" version_out)
 
 if(NOT version_out STREQUAL "Oskel ${OSKEL_EXPECTED_VERSION}")
   message(FATAL_ERROR
-    "`oskel --version` printed '${version_out}', expected "
+    "`--version` printed '${version_out}', expected "
     "'Oskel ${OSKEL_EXPECTED_VERSION}'; the binary and CMakeLists.txt disagree")
 endif()
