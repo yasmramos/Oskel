@@ -1,7 +1,7 @@
 {
   "name": "oskel",
   "displayName": "Oskel",
-  "description": "Oskel language support for VS Code: syntax highlighting, editor configuration and snippets (.oskl).",
+  "description": "Oskel language support for VS Code: syntax highlighting, editor configuration, snippets and compiler diagnostics (.oskl).",
   "version": "0.1.0",
   "publisher": "oskel-lang",
   "license": "MIT",
@@ -13,8 +13,10 @@
   "engines": {
     "vscode": "^1.60.0"
   },
-  "categories": ["Programming Languages"],
-  "keywords": ["oskel", "language", "syntax", "highlighting", "snippets"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:oskel"],
+  "categories": ["Programming Languages", "Linters"],
+  "keywords": ["oskel", "language", "syntax", "highlighting", "snippets", "diagnostics"],
   "contributes": {
     "languages": [
       {
@@ -44,6 +46,50 @@
         "editor.detectIndentation": false,
         "editor.guides.bracketPairs": true,
         "editor.comments.insertSpace": true
+      }
+    },
+    "commands": [
+      {
+        "command": "oskel.checkFile",
+        "title": "Check file",
+        "category": "Oskel"
+      },
+      {
+        "command": "oskel.clearDiagnostics",
+        "title": "Clear diagnostics",
+        "category": "Oskel"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "oskel.checkFile",
+          "when": "editorLangId == oskel"
+        },
+        {
+          "command": "oskel.clearDiagnostics",
+          "when": "editorLangId == oskel"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Oskel",
+      "properties": {
+        "oskel.check.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Report compiler errors and warnings as editor diagnostics."
+        },
+        "oskel.check.onSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run the compiler in check mode every time an Oskel file is saved."
+        },
+        "oskel.check.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the 'oskel' compiler. Empty uses the one on PATH; a relative path resolves against the first workspace folder. 'oskelc' has no check mode."
+        }
       }
     }
   }

@@ -137,9 +137,9 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
 ## The VS Code extension
 
 - `editors/vscode` holds a dependency-free extension (language id, TextMate
-  grammar, `language-configuration.json`, `snippets/oskel.json`). It has no
-  runtime code, so it needs no build step; `vsce package` in that folder is how
-  CI produces the `.vsix`.
+  grammar, `language-configuration.json`, `snippets/oskel.json`, and
+  `extension.js` for diagnostics). It has no npm dependency and no build step;
+  `vsce package` in that folder is how CI produces the `.vsix`.
 - The grammar keeps its **own** keyword, type and builtin lists, because a
   TextMate grammar cannot read the compiler. `tests/check_vscode_grammar.cmake`
   (CTest `vscode_grammar`) derives the vocabulary from the single sources of
@@ -170,6 +170,19 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
 - `$`-prefixed builtins (`$str`, `$slice`, `$range`, `$isError`, `$nonNull`)
   are compiler-private: Oskel source cannot spell them, so the grammar must not
   offer them and the test skips them on purpose.
+- **Diagnostics** are the compiler's own, not a language server's. On save (and
+  on `Oskel: Check file`) `extension.js` runs `oskel -c <file>` and turns its
+  stderr into a `DiagnosticCollection`; `src/diagnostics.js` does the parsing and
+  imports no `vscode`, which is why `node --test` can cover it
+  (`tests/check_vscode_diagnostics.cmake`, CTest `vscode_diagnostics`, skipped
+  where Node is absent). Two traps: the binary must be `oskel`, because
+  `oskelc -c` is not implemented and exits 64 — a stale path there would look
+  like "no problems", so a non-zero exit with nothing parsed becomes a
+  diagnostic of its own; and an error inside an imported module is reported
+  under the *root* file's name with the module's line and column, so the parser
+  clamps a position that falls past the end of the open document instead of
+  dropping it. Keep `package.json` free of a `dependencies` block: the extension
+  ships as plain CommonJS.
 
 ## Release and artifacts
 

@@ -11,6 +11,24 @@ may change between minor versions.
 
 ### Added
 
+- **The VS Code extension reports the compiler's diagnostics.** Saving an
+  `.oskl` file now runs `oskel -c` and publishes the result as editor
+  diagnostics, so a type error is a squiggle on the line that caused it instead
+  of a message in a terminal. `Oskel: Check file` runs the same check on demand
+  and `Oskel: Clear diagnostics` clears the Problems panel; three settings
+  (`oskel.check.enable`, `oskel.check.onSave`, `oskel.check.path`) control it.
+  There is no language server: the compiler already prints
+  `file:line:col: severity: message` and exits 65, which is what a
+  `DiagnosticCollection` needs, and a check costs about 2 ms. The binary is
+  `oskel`, not `oskelc`, whose `-c` is not implemented — a non-zero exit with
+  nothing parsed becomes a diagnostic of its own rather than a silent "no
+  problems". An error inside an imported module is reported under the root
+  file's name with the module's line and column, so a position past the end of
+  the open document is clamped instead of dropped. `src/diagnostics.js` holds
+  the parser and imports no `vscode`, so `node --test` covers it
+  (`tests/check_vscode_diagnostics.cmake`, CTest `vscode_diagnostics`), with
+  real compiler output as fixtures.
+
 - **Compound bitwise assignment: `&=`, `|=`, `^=`, `<<=` and `>>=`.** The
   assignment operators had an arithmetic form (`+=`, `-=`, `*=`, `/=`, `%=`,
   `**=`) and a short-circuiting logical form (`&&=`, `||=`, `??=`), but the

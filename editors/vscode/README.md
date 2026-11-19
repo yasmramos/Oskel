@@ -1,11 +1,12 @@
 # Oskel for VS Code
 
 Language support for the [Oskel](../..) programming language (`.oskl`):
-syntax highlighting, editor configuration and snippets.
+syntax highlighting, editor configuration, snippets and compiler diagnostics.
 
-This is a small, dependency-free extension: it contributes a language id, a
-TextMate grammar, an editor configuration and a snippet file. It has no runtime
-code, so it loads instantly and needs no build step.
+This is a small, dependency-free extension: a language id, a TextMate grammar,
+an editor configuration, a snippet file and one CommonJS file that runs the
+compiler in check mode. No bundler and no runtime dependency; the only thing it
+needs is the `oskel` binary, and only for diagnostics.
 
 ## What it highlights
 
@@ -33,6 +34,50 @@ code, so it loads instantly and needs no build step.
 
 Syntax the language does **not** have is deliberately not highlighted: Oskel has
 no `===`, no `!==`, no `->`, and no `<<=`, `>>=`, `&=`, `|=` or `^=`.
+
+## Diagnostics
+
+Saving an `.oskl` file runs the compiler in check mode (`oskel -c`) and shows
+what it reports as editor diagnostics, so a type error is a squiggle on the line
+that caused it instead of a message in a terminal:
+
+```
+bad.oskl:3:7: error: cannot assign 'string' to 'int' in 'x'
+```
+
+becomes an error at line 3, column 7, sourced as `oskel` in the Problems panel.
+Warnings are shown as warnings (an unused `@MustUse` result, for example). A
+check costs about 2 ms, so one per save is free.
+
+There is no language server: the compiler already prints `file:line:col: severity:
+message` and exits 65, which is everything a diagnostic needs. Hover, completion
+and go-to-definition are not provided.
+
+### Settings
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `oskel.check.enable` | `true` | Report diagnostics at all. |
+| `oskel.check.onSave` | `true` | Check on every save. |
+| `oskel.check.path` | `""` | The compiler. Empty means the `oskel` on `PATH`; a relative path is resolved against the first workspace folder. |
+
+### Commands
+
+| Command | What it does |
+| --- | --- |
+| `Oskel: Check file` | Check the active file now. |
+| `Oskel: Clear diagnostics` | Clear the Problems panel for Oskel. |
+
+### What the compiler cannot tell you
+
+`oskelc` is **not** usable here: its `-c` is not implemented, and it exits 64
+with "not implemented yet". The extension runs `oskel`, the development engine.
+
+An error inside an imported module is reported by the compiler under the *root*
+file's name with the module's line and column, so the position can point past
+the end of the file you have open. The diagnostic is clamped to a line that
+exists and the message keeps the module's name (`in module 'std.math': ...`), so
+nothing is lost except the exact column.
 
 ## Editor configuration
 
@@ -94,10 +139,13 @@ code --install-extension oskel-0.1.0.vsix
 
 | File | Purpose |
 | --- | --- |
-| `package.json` | Extension manifest: language id, file extension, grammar, snippets, editor defaults. |
+| `package.json` | Extension manifest: language id, file extension, grammar, snippets, editor defaults, commands, settings. |
 | `language-configuration.json` | Comments, brackets, auto-closing pairs, indentation, folding. |
 | `syntaxes/oskel.tmLanguage.json` | The TextMate grammar. |
 | `snippets/oskel.json` | The snippets above. |
+| `extension.js` | Runs `oskel -c` on save and publishes the diagnostics. |
+| `src/diagnostics.js` | Parses the compiler's stderr into positions. No `vscode` import, so it is unit-tested. |
+| `test/diagnostics.test.js` | `node --test` over that parser, with real compiler output as fixtures. |
 
 ## Keeping it in step with the compiler
 
@@ -116,3 +164,14 @@ cmake -DROOT=. -P tests/check_vscode_grammar.cmake
 When the language gains a keyword, a type or a builtin, update
 `syntaxes/oskel.tmLanguage.json` in the same change; the test names the missing
 word.
+
+The diagnostic parser is checked the same way, and for the same reason: it
+depends on the compiler's output shape, so `tests/check_vscode_diagnostics.cmake`
+drives it with the real stderr. Run it alone with:
+
+```sh
+cmake -DROOT=. -P tests/check_vscode_diagnostics.cmake
+```
+
+It skips when `node` is absent, since Node is not a build dependency of the
+engine.
