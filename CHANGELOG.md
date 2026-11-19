@@ -11,6 +11,21 @@ may change between minor versions.
 
 ### Added
 
+- **Compound bitwise assignment: `&=`, `|=`, `^=`, `<<=` and `>>=`.** The
+  assignment operators had an arithmetic form (`+=`, `-=`, `*=`, `/=`, `%=`,
+  `**=`) and a short-circuiting logical form (`&&=`, `||=`, `??=`), but the
+  five bitwise operators had none, so `x &= 3` failed in the parser with
+  "expected an expression, found '='" while the shipped VS Code grammar already
+  highlighted it. `x op= y` now means exactly `x = x op y` on a variable, an
+  index or a member target: it reuses `AssignExpr` with a new token, emits no
+  new opcode (the compiler maps each token to the existing `BAND`/`BOR`/`BXOR`/
+  `SHL`/`SHR`, so the budget stays 39/40) and inherits the binary operator's
+  rules — `int` operands only, shift count 0..63. The AOT backend already lowers
+  those five opcodes, so the feature is in the VM and in `oskel build` at once;
+  `tests/native_build_compound_ops.oskl` pins the parity and
+  `tests/compiler_test.cpp` pins the emitted shape (`GETGLOBAL; LOADK; op;
+  SETGLOBAL`).
+
 - **Builtin `memSize()`: the machine's physical memory in bytes.** The RAM
   analogue of `time()` — a property of the machine, not of the program. On the
   development VM it comes from the platform (`sysconf(_SC_PHYS_PAGES)` on POSIX,

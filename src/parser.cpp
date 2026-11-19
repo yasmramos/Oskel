@@ -250,6 +250,11 @@ bool isAssignOp(Tok type) {
     case Tok::SlashEq:
     case Tok::PercentEq:
     case Tok::StarStarEq:
+    case Tok::AmpEq:
+    case Tok::PipeEq:
+    case Tok::CaretEq:
+    case Tok::ShlEq:
+    case Tok::ShrEq:
     case Tok::AmpAmpEq:
     case Tok::PipePipeEq:
     case Tok::QuestionQuestionEq:
