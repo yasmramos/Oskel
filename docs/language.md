@@ -941,11 +941,65 @@ A method returns with `return` like any function; `return self;` makes the call
 chainable (`p.scaled(2).scaled(2)`). A method may call another through `self`
 (`self.bump()`) and may recurse through `self`.
 
+**Field defaults.** A field may carry a default (`n: int = 5;`). The desugaring
+seeds the instance map with it instead of `nil`, so a constant field needs no
+line in `init`:
+
+```oskel
+class Config {
+  port: int = 8080;
+  host: string = "localhost";
+  fn init() {}
+}
+print(Config().port);   // 8080
+```
+
+A default is evaluated per instance, so mutating one instance never leaks into
+the next. `init` still runs after the defaults and may override them.
+
+**Every non-nullable annotated field must end up set.** When a class declares
+`init`, the parser checks that every field whose annotation is present and not
+nullable is either given a default or assigned as `self.<field> = ...` somewhere
+in `init`'s body. A forgotten field would otherwise leave `nil` in a slot the
+annotation says is never nil, and the first read would fault far from the
+declaration:
+
+```oskel
+class Config {
+  host: string;
+  timeout: int;          // error: 'init' never assigns it
+  fn init(host: string) { self.host = host; }
+}
+```
+
+The check is syntactic: it catches a forgotten field, not every path through
+`init`. An assignment inside an `if`, a loop or a `switch` counts, and so does a
+nullable field left `nil` on purpose. A lambda body inside `init` does **not**
+count, because it runs later, if at all — write the field's default instead.
+
+A method is a key of the instance map, so it can be **replaced**, but only by a
+function of the declared arity: a method body reads its parameters positionally,
+so another arity would be a latent crash. A non-function value is rejected for
+the same reason (the method would silently stop being callable):
+
+```oskel
+class Counter {
+  n: int;
+  fn init() { self.n = 0; }
+  fn get(): int { return self.n; }
+}
+let c = Counter();
+c.get = () => 42;      // ok: a function of the declared arity
+c.get = 5;             // error: a method is a function
+c.get = (a) => a;      // error: must take 0 parameters, got 1
+```
+
 A method's parameter and return annotations are checked like any function's, and
 so is a **field** annotation. An assignment to `self.field` inside a method, or
 to `instance.field` through a binding whose type is known (an annotated binding
-like `let p: Point = ...`, or a plain `let p = Point(...)`, whose type the
-constructor call gives), is checked against the field's declared type with the
+like `let p: Point = ...`, a plain `let p = Point(...)` whose type the
+constructor call gives, a call to a function with a declared return type, or a
+field of another instance), is checked against the field's declared type with the
 same rule as every other annotation:
 
 ```oskel
@@ -963,10 +1017,26 @@ method's `self`, so its field writes are checked against the same class. Three
 cases stay unchecked, by design:
 
 - a field declared without an annotation (`x;`) has no type to enforce;
-- a key the class never declared (`p.added = ...`) is a plain map key, because
-  an instance is a map and the map surface stays open;
+- a receiver whose type is not known statically — an element of an array or a
+  map, or a parameter with no annotation — stays untyped, as everywhere else;
 - a compound assignment (`self.x += 1`) has a result type the compiler does not
   track statically.
+
+Writing a key the class never declared (`p.added = ...`) is allowed, because an
+instance is a map and the map surface stays open. A name within two edits of a
+declared field is far more likely a typo than a deliberate new key — the typo
+would add a field while every read of the real one keeps returning its old value
+— so it is reported as a **warning** and the program still runs:
+
+```oskl
+class Counter {
+  count: int;
+  fn init() { self.count = 0; }
+}
+let c = Counter();
+c.cont = 5;    // warning: 'cont' is not a field of class 'Counter'
+               //          (did you mean 'count'?); the assignment adds a new key
+```
 
 The declared type name itself is validated as a known type (or a declared
 struct/class) at parse time.
@@ -980,7 +1050,11 @@ struct/class) at parse time.
   name (both are keys of the instance map, so one would overwrite the other);
 - the reserved name `self` used as a field, a method or a parameter;
 - an `init` with a variadic parameter (the constructor forwards its arguments
-  one by one, so it cannot pass the collected array).
+  one by one, so it cannot pass the collected array);
+- an `init` that never assigns a non-nullable annotated field which has no
+  default (see above);
+- an assignment that replaces a method with a non-function, or with a function
+  of the wrong arity.
 
 A class name is a valid type annotation, and — like a hoisted `fn` — a class
 declared later in the file is visible earlier:

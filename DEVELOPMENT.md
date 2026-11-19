@@ -722,6 +722,28 @@ Design decisions, all enforced by the parser:
 - **Rejected at parse time:** a nested class (not top level), a duplicate class
   name, a class/`struct` name collision, a duplicate field or method, a field
   and a method sharing a name, `self` as a member name, and a variadic `init`.
+- **A field may carry a default** (`n: int = 5;`, PHASE 6.8.1). The desugaring
+  seeds the instance map with the default expression instead of `nil`, so it is
+  evaluated per instance and `init` may still override it.
+- **An `init` must set every non-nullable annotated field that has no default**
+  (PHASE 6.8.1). `Parser::collectSelfAssignments` walks `init`'s body collecting
+  `self.<field> = ...` targets and reports a field it never reaches. The walk
+  covers the nested statement forms (`if`, loops, `switch`, `defer`) and
+  deliberately does not descend into a nested function or lambda, whose body runs
+  later, if at all. The check is syntactic: it catches a forgotten field, not
+  every path through `init`.
+- **A method may be replaced, but only by a function of the declared arity**
+  (PHASE 6.8.1). A method is a map key holding a closure, so a non-function
+  value would make it silently uncallable and another arity would be a latent
+  crash (the body reads its parameters positionally). A lambda written at the
+  assignment site is checked directly, including its parameter types; any other
+  value only has to be known to be a function. A receiver of unknown type stays
+  unchecked, as everywhere else.
+- **A field name within two edits of a declared one is a warning** (PHASE 6.8.1).
+  An instance is a map, so writing a new key is allowed and must keep working;
+  but a near miss silently adds a field while every read of the real one keeps
+  returning its old value, so `Compiler::checkFieldAssign` reports it through
+  `Compiler::warn` and the program still runs.
 
 Consequences of the desugaring, documented so they are not surprises:
 
@@ -736,18 +758,25 @@ Consequences of the desugaring, documented so they are not surprises:
   exports a plain constructor function instead.
 - A **field** annotation is enforced on assignment, like a `struct` literal's
   field: `self.field = value` inside a method and `instance.field = value`
-  through a typed binding are checked against it (`Compiler::checkFieldAssign`).
-  The declared type is carried to the compiler on the constructor declaration
-  (`FnDeclStmt::classFields`) and on each method lambda (`LambdaExpr::ownerClass`),
-  which is what types `self`; a lambda written *inside* a method inherits that
-  owner, because it captures the same `self`. Three cases stay unchecked: an
-  unannotated field, a key the class never declared (an instance is a map, so its
-  surface stays open), and a compound assignment (`self.x += 1`), whose result
-  type is not tracked statically.
+  through a receiver whose type is known statically are checked against it
+  (`Compiler::checkFieldAssign`). The declared type is carried to the compiler on
+  the constructor declaration (`FnDeclStmt::classFields`) and on each method
+  lambda (`LambdaExpr::ownerClass`), which is what types `self`; a lambda written
+  *inside* a method inherits that owner, because it captures the same `self`. A
+  receiver is statically known when it is an annotated binding, a constructor
+  call, a call to a function with a declared return type, or a field of another
+  statically known instance (`inferExprType`, PHASE 6.8.1). Three cases stay
+  unchecked: an unannotated field, a receiver whose type is not known statically
+  (an array or map element, an unannotated parameter or function), and a
+  compound assignment (`self.x += 1`), whose result type is not tracked
+  statically.
 - `class` is a **reserved word** from 0.1.0 on.
 
 Tested by `tests/58_classes.oskl` (VM), the `tests/errors/class_*.oskl` cases
-(parse-time rejections) and `tests/native_build_classes.oskl` (the AOT parity
+(parse-time rejections), `tests/60_class_hardening.oskl` and
+`tests/61_class_field_typo.oskl` (the PHASE 6.8.1 surface, registered as
+`oskel.build_binary_class_hardening` for the AOT parity check) and
+`tests/native_build_classes.oskl` (the AOT parity
 fixture, registered as `oskel.build_binary_classes`, which asserts the native
 binary prints byte for byte what the VM prints).
 
