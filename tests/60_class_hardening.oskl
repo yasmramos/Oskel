@@ -1,0 +1,149 @@
+// PHASE 6.8.1: hardening of `class` declarations.
+//
+// A class stays sugar over the map-plus-closures idiom (no AST node, no opcode,
+// no engine code), so everything here is checked by the compiler and runs
+// identically on the VM and under `oskel build`.
+
+// A field default (`x: int = 5;`) seeds the instance map, so a constant field
+// needs no `init` line.
+class Defaults {
+  n: int = 5;
+  label: string = "def";
+  fn init() {}
+}
+let d = Defaults();
+assertEq(d.n, 5);
+assertEq(d.label, "def");
+
+// A default is per instance: mutating one instance never leaks into the next.
+d.n = 9;
+assertEq(d.n, 9);
+assertEq(Defaults().n, 5);
+
+// `init` still overrides a default, and a field without one starts nil.
+class WithInit {
+  a: int = 1;
+  b: int;
+  fn init(b: int) { self.b = b; }
+}
+let w = WithInit(7);
+assertEq(w.a, 1);
+assertEq(w.b, 7);
+
+// A default may be any expression the field could be assigned.
+class ExprDefault {
+  total: int = 2 + 3 * 4;
+  tags: array = ["a", "b"];
+}
+let e = ExprDefault();
+assertEq(e.total, 14);
+assertEq(len(e.tags), 2);
+
+// A declared method can be replaced, but only by a function of the same arity:
+// a method body reads its parameters positionally, so another arity would be a
+// latent crash. A valid replacement keeps the instance usable.
+class Replaceable {
+  n: int;
+  fn init() { self.n = 1; }
+  fn get(): int { return self.n; }
+}
+let r = Replaceable();
+assertEq(r.get(), 1);
+r.get = () => 42;
+assertEq(r.get(), 42);
+
+// A replacement may read the instance it is stored on.
+let r2 = Replaceable();
+r2.n = 5;
+r2.get = () => 0;
+assertEq(r2.get(), 0);
+
+// A class with `init` may leave a nullable field nil on purpose.
+class Maybe {
+  maybe: int?;
+  fn init() {}
+}
+assertEq(Maybe().maybe, nil);
+
+// A non-nullable field assigned in `init` under a branch is accepted: the check
+// is syntactic, it catches a forgotten field, not every path.
+class Branchy {
+  n: int;
+  fn init(flag: bool) {
+    if (flag) { self.n = 1; } else { self.n = 2; }
+  }
+}
+assertEq(Branchy(true).n, 1);
+assertEq(Branchy(false).n, 2);
+
+// A braceless branch body inside `init` counts too (the repo allows them).
+class Braceless {
+  n: int;
+  fn init(v: int) {
+    if (v > 0) self.n = 1;
+    else self.n = 2;
+  }
+}
+assertEq(Braceless(1).n, 1);
+assertEq(Braceless(-1).n, 2);
+
+// A field assigned in a loop or a switch inside `init` counts too.
+class Loopy {
+  n: int;
+  fn init() {
+    for i in 0..3 { self.n = i; }
+  }
+}
+assertEq(Loopy().n, 2);
+
+class Switched {
+  n: int;
+  fn init(v: int) {
+    switch (v) {
+      case 1: { self.n = 10; }
+      default: { self.n = 20; }
+    }
+  }
+}
+assertEq(Switched(1).n, 10);
+assertEq(Switched(9).n, 20);
+
+// A field assigned through a lambda inside `init` does NOT count: the lambda
+// body runs later, if at all. That class is written with a default instead.
+class Deferred {
+  n: int = 0;
+  fn init() {
+    let later = () => { self.n = 1; };
+    later();
+  }
+}
+assertEq(Deferred().n, 1);
+
+// The receiver's type may come from a call with a declared return type, or from
+// a field of another instance: both are statically known, so the field's
+// annotation applies. (The rejected forms live in tests/errors/.)
+class Box {
+  n: int;
+  fn init() { self.n = 1; }
+}
+fn makeBox(): Box { return Box(); }
+let viaCall = makeBox();
+viaCall.n = 3;
+assertEq(viaCall.n, 3);
+
+class Holder {
+  box: Box;
+  fn init() { self.box = Box(); }
+}
+let h = Holder();
+h.box.n = 4;
+assertEq(h.box.n, 4);
+
+// A function without a return annotation stays untyped, so its result is not
+// checked: the language is untyped by default and inference never rejects.
+fn untyped() { return Box(); }
+let loose = untyped();
+loose.n = 5;
+assertEq(loose.n, 5);
+
+print("class hardening ok");

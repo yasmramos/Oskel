@@ -1,0 +1,15 @@
+// expect-exit: 65
+// A class that declares `init` promises its non-nullable fields are set: the
+// instance map starts with `nil` there, so a forgotten field would leave `nil`
+// in a slot the annotation says is never nil. Giving the field a default or
+// assigning it in `init` is the fix.
+class Config {
+  host: string;
+  port: int = 8080;
+  timeout: int;
+  fn init(host: string) {
+    self.host = host;
+  }
+}
+let c = Config("localhost");
+print(c.host, c.port);

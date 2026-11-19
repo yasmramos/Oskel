@@ -1,0 +1,14 @@
+// expect-exit: 65
+// A field of a statically known instance has the field's declared type, so a
+// chained write is checked exactly like a direct one: `outer.inner` is a `Box`,
+// which makes `outer.inner.n = "text"` an assignment of a string to an int.
+class Box {
+  n: int;
+  fn init() { self.n = 1; }
+}
+class Outer {
+  inner: Box;
+  fn init() { self.inner = Box(); }
+}
+let o = Outer();
+o.inner.n = "text";
