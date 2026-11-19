@@ -147,6 +147,27 @@ may change between minor versions.
 
 ### Added
 
+- **`bindgen` reads function-pointer declarators and calling conventions.**
+  Three shapes a sweep over real headers (glibc, Windows-style SDK headers)
+  turned up. A **calling convention** (`__stdcall`, `__cdecl`, `__fastcall`,
+  `WINAPI`, `CALLBACK`, ...) ended the specifier list, so the whole declaration
+  vanished with no skip report; it is now dropped like any other qualifier, and
+  skipped inside a callback declarator (`int (WINAPI *cb)(int)`), where it used
+  to become the parameter's name. A **pointer to a callback**
+  (`int (**pp)(int)`, `int (*arr[4])(int)`, `cb_t *pcb` on a callback typedef)
+  was spelled `fn(P...): R`, claiming the engine can call something it only
+  passes through; it is an opaque `ptr`, as the pointer semantics require. And a
+  function type with **redundant parentheses** (`int (cb)(int)`), which C
+  adjusts to a function pointer exactly like `int cb(int)`, was skipped while
+  its unparenthesized twin was generated.
+
+- **`bindgen` never drops a declaration in silence.** A declaration prefixed by
+  a **function-like macro** (`MY_API(int) f(void)`) vanished without a trace:
+  without a preprocessor the argument may be the return type, so the tool now
+  reports it as a skip and points at `cc -E` instead of guessing. A declaration
+  whose **type the tool cannot resolve** (`Foo (*fp)(void);`) vanished the same
+  way and is now reported too, under a best-effort declarator name.
+
 - **`bindgen` translates a callback parameter.** A C function-pointer parameter
   becomes the Oskel `fn(P...): R` the engine accepts as a parameter (PHASE 6.6),
   in all three C spellings: the inline declarator (`int (*cmp)(const void *,

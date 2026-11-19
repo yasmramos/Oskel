@@ -35,3 +35,10 @@ API struct Point make_point(int x, int y);
 API int apply(int (*cb)(int), int n);
 API int (*signal(int sig, void (*func)(int)))(int);
 API void log_msg(const char *fmt, ...);
+
+/* A pointer to a callback, an array of callbacks and a calling convention are
+ * all translatable: the first two are opaque `ptr`, the convention is dropped. */
+API int atexit(void (**pp)(void));
+API void reg(int (WINAPI *cb)(int));
+typedef int (CALLBACK *handler_t)(int);
+API void deliver(handler_t h);
