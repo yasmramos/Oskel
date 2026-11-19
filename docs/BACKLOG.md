@@ -327,6 +327,36 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     nondeterministically. The index now lives in a caller-saved scratch (`r11`),
     reloaded from its slot after every call. Regression:
     `tests/native_build_string_repr.oskl`.
+25. **[P1]** Seventeen builtins exist in the development engine and are not
+    seeded by the AOT backend, so a program that calls one fails `oskel build`
+    with "global 'X' is read but never assigned" (exit 65) while the VM runs it.
+    `tests/check_builtin_parity.cmake` enumerates the set from both sides, so a
+    new builtin cannot be added to one engine alone; the names that are VM-only
+    on purpose are listed there and here. Grouped by what blocks each one:
+    - **Needs a host capability the freestanding image has no binding for**:
+      `readFile`, `writeFile`, `fileExists` (file system), `clock` (a monotonic
+      clock; `time()` is bound, `clock()` is not), `random`/`seed` (the hosted
+      generator is `std::mt19937_64`), `args` (the process argument vector).
+      A freestanding image has no files and no argv, so these need a curated
+      binding per target, exactly like `time()` got one.
+    - **Needs to call an arbitrary value and recover from a raised error**:
+      `pcall`. Value-based `try`/`catch` already works in AOT (PHASE 7c.5c):
+      `try e` and `e catch d` are `isError` + a jump, and they need no
+      unwinding. `pcall` is different: it calls a function the program chose at
+      run time and must catch a `panic` raised *inside* it, and the AOT runtime
+      reports a failure by writing to stderr and exiting. It therefore needs a
+      non-local return in the call ABI, not a builtin. It is the most valuable
+      of the seventeen: a program that cannot recover from a raised error can
+      only recover from an error it was handed.
+    - **Raw memory intrinsics**: `buffer`, `loadByte`, `storeByte`, `intToPtr`,
+      `ptrToInt`, `free`, `byteLen`, `cstr`, `cstring`. These exist so a
+      development program can talk to `extern "C"` code through libffi; in AOT
+      the pointer marshalling is done by the thunk (PHASE 7f.6), so the
+      intrinsics have no consumer there. They are the least urgent, but they
+      must still fail cleanly rather than diverge.
+    None of these is a silent divergence — each one fails the build — but they
+    are the reason 7c.5b cannot be called complete for the language as a whole.
+
 ---
 
 ## 7. FFI (`src/runtime/ffi.cpp`)

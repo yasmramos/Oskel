@@ -269,6 +269,20 @@ it as a caveat:
   **or in `liboskel_frontend.a`** — the archive matters because an unreferenced
   object never reaches the binary, so a binary-only check cannot see it.
   Every packaging format ships `oskelc` beside `oskel` and `bindgen`.
+- **A builtin must exist in both engines.** `tests/check_builtin_parity.cmake`
+  reads `addNative(...)` out of `src/runtime/builtins.cpp` and the `builtins`
+  map out of `src/frontend/native/lower.cpp` and compares the name sets. Each
+  engine is self-consistent, so a builtin only the VM has is invisible to every
+  other test: it runs in `oskel` and fails `oskel build` with "global 'X' is
+  read but never assigned". The names that are VM-only on purpose live in a list
+  in that script and in BACKLOG §6 item 25; the check also fails when a listed
+  exception stops being one, because a stale exception hides the next real gap.
+  Seventeen are VM-only today (files, `clock`, `random`/`seed`, `args`, `pcall`,
+  and the raw-memory intrinsics). `pcall` is the one that matters most, and not
+  because `try`/`catch` needs it — value-based `try`/`catch` already works in
+  AOT. `pcall` is the only way to recover from a `panic` raised inside a
+  function chosen at run time, and the AOT runtime reports a failure by exiting,
+  so it needs a non-local return in the call ABI.
 - A check that reads the source tree must name the *basename* of the file it
   wants, never a fixed `src/<name>.cpp` path, and must fail loudly when the file
   is missing. `tests/check_vscode_grammar.cmake` reads the keyword table, the
