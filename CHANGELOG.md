@@ -111,6 +111,34 @@ may change between minor versions.
   `tests/bare_metal_test.cpp` (a `-m 256M` boot asserting 255 MiB),
   `tests/lower_test.cpp` and `tests/vm_test.cpp`.
 
+### Fixed
+
+- **`bindgen` no longer emits a declaration the compiler rejects on a
+  non-System V ABI.** The tool promises that every declaration it writes as
+  active code compiles, and three shapes broke that promise — all of them on
+  Windows and macOS, which is why only the `windows-latest` job caught it. The
+  register budget was counted in *parameters* while the compiler counts
+  *eightbytes*, so `struct Q { double x; double y; }` plus five scalars came out
+  as six parameters and seven eightbytes, and the generated module failed
+  `oskel -c` with "may pass at most 6 register-sized values". A struct by value
+  was emitted regardless of the target ABI, although `OSKEL_FFI_STRUCT_BY_VALUE`
+  is true only on System V AMD64 without Windows. A struct inside a callback was
+  emitted even though the compiler always rejects it. The fix removes the
+  duplicated rules instead of patching each one: `ffi::validateSignature` and
+  `ffi::validateTypeSpec` take an `ffi::AbiCapabilities` (this build's by
+  default, `ffi::kFullAbiCapabilities` for "is the shape in the vocabulary at
+  all?") and `bindgen` asks twice — a shape the vocabulary cannot express is
+  skipped with the compiler's own reason, while one only some builds can
+  marshal is written commented out, which is how a variadic was already
+  handled. A fourth divergence went with them: an anonymous
+  `struct { int x; }` inline in a signature has no name to spell and used to be
+  emitted as a scalar `int32`; it is now skipped. Covered by new
+  `tests/bindgen_test.cpp` cases (the eightbyte budget, the anonymous struct)
+  and by making the existing struct-by-value and variadic assertions
+  ABI-aware, so the suite is green on both a System V and a Microsoft x64
+  build; the end-to-end test still feeds the generated module to `oskel -c`,
+  which is the property that actually failed.
+
 ### Removed
 
 - **The unused `Env` scope chain and `Function::closure`.** The VM keeps locals

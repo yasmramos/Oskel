@@ -111,7 +111,8 @@ callback that returns a struct by value is skipped as well.
 
 A callback *parameter* may take a struct by value only if that struct is itself
 declarable, for the same reason a function signature may: the layout has to be
-known.
+known. The engine's callback vocabulary accepts only scalars, so such a
+declaration is skipped (the compiler's own reason is quoted).
 
 ### Structs
 
@@ -202,9 +203,13 @@ as active code. The current skips are:
   function (`R (*f(...))(P...)`), **taking another callback**, **variadic**, or
   **returning a struct by value**. A callback *parameter* is generated.
 - a signature passing more than **six register-sized values** (the
-  `kMaxExternArgs` bound the FFI thunks enforce). The compiler rejects a longer
-  non-variadic `extern` declaration, so the generator skips it instead of
-  emitting a module `oskel -c` would refuse.
+  `kMaxExternArgs` bound the FFI thunks enforce). The bound counts *eightbytes*,
+  not parameters, so a 16-byte struct spends two of the six; counting parameters
+  would emit a module `oskel -c` refuses. The compiler decides, and the tool
+  quotes its message.
+- an **anonymous `struct { ... }`** written inline in a signature
+  (`int g(struct { int x; } p);`). It has no name to spell, and falling back to
+  the empty spelling would pass the struct by value as a scalar `int32`.
 - `long double` and any type the tool cannot resolve to the vocabulary.
 - a function whose name is a **reserved Oskel keyword** (`for`, `struct`, ...),
   which cannot be a binding name.
@@ -228,9 +233,27 @@ supporting build:
 
 ```oskel
 extern "C" {
-  // fn printf(fmt: cstring, ...): int32;  // needs libffi and the System V AMD64 ABI
+  // fn printf(fmt: cstring, ...): int32;  // a variadic 'extern "C"' declaration needs libffi and the System V AMD64 ABI, which this build does not have
 }
 ```
+
+The same rule covers **a struct by value** on a build whose marshalling is not
+the System V AMD64 ABI (the Microsoft x64 ABI passes a struct through a hidden
+pointer, which the register thunks cannot express). The declaration is written
+commented out rather than skipped, because the shape *is* in the vocabulary —
+only this build cannot carry it:
+
+```oskel
+extern "C" {
+  // fn make_point(x: int32, y: int32): Point;  // a struct cannot cross the C boundary by value on this target: ...
+}
+```
+
+The reason after `//` is the compiler's own message, not a second guess: the
+tool asks `ffi::validateSignature` twice, once with every ABI capability on
+(is the shape in the vocabulary at all?) and once with this build's (can this
+build marshal it?). The first answer decides skipped versus commented out, so
+the tool cannot drift from the compiler it targets.
 
 ## The preprocessor is not run
 

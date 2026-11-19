@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "bindgen.h"
+#include "ffi_types.h"  // the ABI capabilities that decide commented vs emitted
 
 static int g_failures = 0;
 
@@ -126,12 +127,26 @@ int main() {
         "void takes_cb(int (*cb)(int), int n);\n",
         "t.h");
     check(contains(result.text, "struct Point {"), "a bindable struct is declared");
-    check(contains(result.text, "fn make(x: int32, y: int32): Point;"),
-          "a struct-by-value return is emitted with its struct name");
+    // A struct by value is in the vocabulary everywhere, but only a build whose
+    // marshalling implements the System V AMD64 ABI can carry it: elsewhere the
+    // tool writes the signature commented out instead of emitting a module the
+    // compiler refuses (the end-to-end test feeds the output back to `oskel -c`).
+    if (ffi::kStructByValueSupported) {
+      check(contains(result.text, "fn make(x: int32, y: int32): Point;"),
+            "a struct-by-value return is emitted with its struct name");
+      check(result.emitted == 2, "the struct and the callback declarations are emitted");
+      check(result.commented == 0, "nothing is commented out on a System V build");
+    } else {
+      check(contains(result.text, "// fn make(x: int32, y: int32): Point;"),
+            "a struct-by-value return is commented out where the ABI cannot carry it");
+      check(contains(result.text, "cannot cross the C boundary by value"),
+            "the reason is the compiler's own, not a second guess");
+      check(result.emitted == 1, "only the callback declaration is emitted");
+      check(result.commented == 1, "the struct-by-value declaration is counted as commented");
+    }
     check(contains(result.text, "// skipped: weird:"), "a long double is skipped");
     check(contains(result.text, "fn takes_cb(cb: fn(int32): int32, n: int32): void;"),
           "a callback parameter is generated as `fn(P...): R`");
-    check(result.emitted == 2, "the struct and the callback declarations are emitted");
     check(result.structs == 1, "the declared struct is counted");
     check(result.skipped == 1, "only the long double is skipped");
   }
@@ -277,6 +292,21 @@ int main() {
     check(result.skipped == 3, "the three rejected shapes are counted");
   }
 
+  // A struct by value inside a callback: the callback vocabulary is scalar-only,
+  // so the compiler rejects the declaration however the struct is laid out. The
+  // tool must quote that reason instead of emitting the callback.
+  {
+    const bindgen::Result result = bindgen::generate(
+        "struct P { int x; int y; };\n"
+        "void takes_cb(void (*cb)(struct P), int n);\n",
+        "t.h");
+    check(contains(result.text, "// skipped: takes_cb: callback parameter type 'P' "
+                                "cannot cross the C boundary"),
+          "a struct inside a callback is reported with the compiler's reason");
+    check(!contains(result.text, "fn takes_cb("), "the rejected callback is not emitted");
+    check(result.emitted == 0, "nothing is emitted for the rejected declaration");
+  }
+
   // A pointer *to* a function pointer (a second `*`) and an array of function
   // pointers are opaque pointers, not callbacks: the FFI passes them as `ptr`.
   // The same holds when the callback comes from a `typedef`.
@@ -400,11 +430,47 @@ int main() {
         "t.h");
     check(contains(result.text, "fn six(a: int32, b: int32, c: int32, d: int32, e: int32, f: int32): int32;"),
           "a six-value signature is within the register budget");
-    check(contains(result.text, "// skipped: seven: passes 7 register-sized values"),
+    check(contains(result.text, "// skipped: seven: an 'extern' function may pass at most 6 "
+                                "register-sized values"),
           "a seven-value signature is skipped");
     check(contains(result.text, "// fn vlog(fmt: cstring, ...): void;"),
           "a variadic is exempt from the budget");
+    if (ffi::kCVariadicSupported) {
+      check(!contains(result.text, "// fn vlog"), "a variadic is emitted on a libffi build");
+    }
     check(result.emitted == 1, "only the in-budget declaration is emitted");
+  }
+
+  // The budget is on eightbytes, not parameters: a 16-byte struct spends two,
+  // so five scalars plus it is seven and over the six the thunks cover. Counting
+  // parameters instead would emit a signature `oskel -c` rejects.
+  {
+    const bindgen::Result result = bindgen::generate(
+        "struct Q { double x; double y; };\n"
+        "int five(int a, int b, int c, int d, int e, struct Q q);\n"
+        "int four(int a, int b, int c, int d, struct Q q);\n",
+        "t.h");
+    check(contains(result.text, "// skipped: five: an 'extern' function may pass at most 6 "
+                                "register-sized values"),
+          "a struct's eightbytes count toward the budget");
+    check(contains(result.text, "fn four(a: int32, b: int32, c: int32, d: int32, q: Q): int32;") ||
+              contains(result.text, "// fn four(a: int32, b: int32, c: int32, d: int32, q: Q): int32;"),
+          "four scalars plus a 16-byte struct is exactly six");
+  }
+
+  // An anonymous `struct { ... }` inline has no name a signature could spell:
+  // falling back to the empty spelling would pass it as a scalar `int32`.
+  {
+    const bindgen::Result result = bindgen::generate(
+        "int g(struct { int x; } p);\n"
+        "struct { int y; } h(void);\n",
+        "t.h");
+    check(contains(result.text, "// skipped: g: parameter type an anonymous 'struct'"),
+          "an anonymous struct parameter is reported");
+    check(contains(result.text, "// skipped: h: return type an anonymous 'struct'"),
+          "an anonymous struct return is reported");
+    check(!contains(result.text, "fn g(p: int32)"), "an anonymous struct is never a scalar");
+    check(result.emitted == 0, "neither anonymous-struct declaration is emitted");
   }
 
   // A declaration named after an Oskel keyword cannot be bound.
