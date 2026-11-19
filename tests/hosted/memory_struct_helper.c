@@ -110,3 +110,30 @@ CStringInt oskelTestMakeNullCString(void) {
 }
 
 int32_t oskelTestCStringLength(CStringInt c) { return (int32_t)strlen(c.s) + c.n; }
+
+/* Padding and odd sizes: a class-MEMORY struct whose last field does not fill
+ * its final eightbyte, and a register-class struct smaller than one eightbyte.
+ * A wrong span would copy the wrong bytes or leave the padding uninitialised. */
+typedef struct {
+  int8_t a;
+  double b;
+  int32_t c;
+} Padded;
+
+typedef struct {
+  int8_t a, b, c;
+} ThreeBytes;
+
+int32_t oskelTestPadded(Padded s) { return s.a + (int32_t)s.b + s.c; }
+
+Padded oskelTestMakePadded(int8_t a, double b, int32_t c) {
+  Padded s = {a, b, c};
+  return s;
+}
+
+int32_t oskelTestThreeBytes(ThreeBytes s) { return s.a + s.b + s.c; }
+
+ThreeBytes oskelTestMakeThreeBytes(void) {
+  ThreeBytes s = {1, 2, 3};
+  return s;
+}

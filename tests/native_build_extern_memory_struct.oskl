@@ -33,6 +33,16 @@ struct CStringInt {
   s: cstring;
   n: int32;
 }
+struct Padded {
+  a: int8;
+  b: double;
+  c: int32;
+}
+struct ThreeBytes {
+  a: int8;
+  b: int8;
+  c: int8;
+}
 extern "C" {
   fn oskelTestFlagFloatInt(s: FlagFloatInt): int32;
   fn oskelTestMakeFlagFloatInt(flag: int8, f: float, n: int32): FlagFloatInt;
@@ -41,6 +51,10 @@ extern "C" {
   fn oskelTestMakeCString(): CStringInt;
   fn oskelTestMakeNullCString(): CStringInt;
   fn oskelTestCStringLength(c: CStringInt): int32;
+  fn oskelTestPadded(s: Padded): int32;
+  fn oskelTestMakePadded(a: int8, b: double, c: int32): Padded;
+  fn oskelTestThreeBytes(s: ThreeBytes): int32;
+  fn oskelTestMakeThreeBytes(): ThreeBytes;
   fn oskelTestSumTriple(t: Triple): int64;
   fn oskelTestSumTripleD(t: TripleD): double;
   fn oskelTestMakeTriple(a: int64, b: int64, c: int64): Triple;
@@ -98,6 +112,19 @@ assertEq(oskelTestCStringLength({s: "abc", n: 4}), 7);
 let nullCs = oskelTestMakeNullCString();
 assertEq(type(nullCs.s), "nil");
 assertEq(nullCs.n, 9);
+
+// Padding and odd sizes: the trailing bytes of the last eightbyte must be
+// zero-filled, and a struct smaller than one eightbyte still round-trips.
+assertEq(oskelTestPadded({a: 1, b: 2.5, c: 10}), 13);
+let padded = oskelTestMakePadded(1, 2.5, 10);
+assertEq(padded.a, 1);
+assertEq(padded.b, 2.5);
+assertEq(padded.c, 10);
+assertEq(oskelTestThreeBytes({a: 1, b: 2, c: 3}), 6);
+let three = oskelTestMakeThreeBytes();
+assertEq(three.a, 1);
+assertEq(three.b, 2);
+assertEq(three.c, 3);
 
 // A returned class-MEMORY struct is a map, like a register-class one.
 assertEq(type(t), "map");
