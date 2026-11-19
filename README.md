@@ -88,15 +88,39 @@ cmake --build build-cmake
 
 ### Manual build
 
+The sources split in two: the **front end** (lexer, parser, bytecode compiler,
+AOT backend) and the **runtime** (VM, JIT, builtins, FFI marshalling). `oskel`
+needs both; `oskelc` needs only the front end.
+
 ```sh
-g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskel src/*.cpp src/native/*.cpp src/jit/*.cpp
+# the development engine (VM + REPL + AOT)
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskel \
+    src/main.cpp $(ls src/*.cpp src/native/*.cpp | grep -v 'main.cpp\|oskelc.cpp\|vm.cpp\|ops.cpp\|builtins.cpp\|ffi.cpp\|unicode_case.cpp\|jit/jit.cpp') \
+    src/vm.cpp src/ops.cpp src/builtins.cpp src/ffi.cpp src/unicode_case.cpp src/jit/jit.cpp
+
+# the host compiler (AOT only, no interpreter)
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskelc \
+    src/oskelc.cpp $(ls src/*.cpp src/native/*.cpp | grep -v 'main.cpp\|oskelc.cpp\|vm.cpp\|ops.cpp\|builtins.cpp\|ffi.cpp\|unicode_case.cpp\|jit/jit.cpp')
 ```
 
-On Windows, with `cmd.exe`:
+`./build.sh` and `build.bat` run both commands for you, and `CMakeLists.txt`
+builds both targets.
 
-```bat
-g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build\oskel.exe src\*.cpp src\native\*.cpp src\jit\*.cpp
+### oskelc (the host compiler)
+
+`oskelc` is the same compiler as `oskel build`, with a shorter command line. It
+links the front end only, so the shipped compiler carries no VM, no JIT and no
+builtins:
+
+```sh
+./build/oskelc examples/hello.oskl -o hello
+./hello
 ```
+
+Both entry points call the same pipeline (`src/cli.cpp`), so the flags, the
+defaults, the diagnostics and the exit codes are identical and the emitted image
+is byte for byte the same. `-c` (a `.oskc` bytecode image) and `-pkg` (a
+`.oskpkg`) are not implemented yet and are refused by name with exit 64.
 
 ### bindgen (the C binding generator)
 
@@ -126,6 +150,7 @@ oskel <file.oskl>          runs a script
 oskel -e "<code>"          runs code from the command line
 oskel -c <file.oskl>       compiles the script without running it
 oskel build <file.oskl>    compiles the script to a native binary (AOT)
+oskelc <file.oskl>         the same compiler without the interpreter
 ```
 
 Options:
@@ -136,7 +161,10 @@ Options:
 | `-v`, `--version` | Shows the version. |
 | `-e`, `--eval <code>` | Runs the given code. |
 | `-c`, `--check` | Compiles without running; reports syntax, type and import errors. |
-| `-o`, `--output <file>` | Output path for `build` (default: the script's base name). |
+| `-o`, `--output <file>` | Output path for `build`/`oskelc` (default: the script's base name). |
+| `--target <name>` | Build target for `build`/`oskelc` (default: the host). |
+| `--mode <name>` | Link mode for `build`/`oskelc` (default: `freestanding`). |
+| `--no-jit` | Disables the JIT (development engine only). |
 | `--` | Marks the end of the options; the next argument is the file. |
 
 Arguments that follow the file (or the `-e` code) are passed to the script and can be read with `args()`:

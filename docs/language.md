@@ -8,7 +8,7 @@ This guide describes the syntax and semantics of Oskel as implemented by the com
 
 The language surface this reference documents is implemented on the development engine (`oskel`) in full. The native (AOT) backend and the JIT lag behind it, and the gaps are listed in §16:
 
-| Area | Development engine (`oskel`) | AOT backend (`oskel build`) |
+| Area | Development engine (`oskel`) | AOT backend (`oskelc` / `oskel build`) |
 | --- | --- | --- |
 | Language core: functions, closures, control flow, collections | ✅ | ✅ (subset the lowerer covers) |
 | Types, nullability, `struct`, `class`, variadics, `import`, `switch`, `defer` (PHASE 6.5/6.8) | ✅ | ✅ (all are compile-time; `struct`/`class` are erased, `switch`/`defer` lower to existing opcodes) |
@@ -54,7 +54,7 @@ A Oskel program is a UTF-8 text file (extension `.oskl`). The pipeline is:
 3. **Compiler**: translates the AST to bytecode (39 opcodes today, register-based, under a hard budget of 40).
 4. **VM**: executes the bytecode.
 
-The AST is never executed: the `oskel` executable compiles source to bytecode and runs it on the register-based VM. The compiler and the VM implement the whole language surface this reference documents — functions, closures and control flow, collections, the type system with nullability, `struct` and `class` (PHASE 6.5/6.8), FFI with C (PHASE 6.6) and error values with `pcall`, `try`/`catch`, unions and `@MustUse` (PHASE 6.7). The AOT backend (PHASE 7) compiles a subset of the same programs to a native binary through `oskel build`; §16 lists the constructs it does not yet lower.
+The AST is never executed: the `oskel` executable compiles source to bytecode and runs it on the register-based VM. The compiler and the VM implement the whole language surface this reference documents — functions, closures and control flow, collections, the type system with nullability, `struct` and `class` (PHASE 6.5/6.8), FFI with C (PHASE 6.6) and error values with `pcall`, `try`/`catch`, unions and `@MustUse` (PHASE 6.7). The AOT backend (PHASE 7) compiles a subset of the same programs to a native binary through `oskelc` (also reachable as `oskel build`); §16 lists the constructs it does not yet lower.
 
 The program runs from top to bottom in the global scope. Simple statements end with `;`. Statements with a block (`if`, `while`, `for`, `fn`) close with `}` and optionally accept a `;` after it.
 
@@ -2780,6 +2780,7 @@ oskel <file.oskl>          runs a script
 oskel -e "<code>"          runs code from the command line
 oskel -c <file.oskl>       compiles the script without running it
 oskel build <file.oskl>    compiles the script to a native binary (AOT)
+oskelc <file.oskl>         the same compiler without the interpreter
 ```
 
 | Option | Description |
@@ -2788,7 +2789,10 @@ oskel build <file.oskl>    compiles the script to a native binary (AOT)
 | `-v`, `--version` | Version. |
 | `-e`, `--eval <code>` | Code to run. The remaining arguments go to the script. |
 | `-c`, `--check` | Compiles without running; reports syntax, type and import errors. |
-| `-o`, `--output <file>` | Output path for `build` (default: the script's base name). |
+| `-o`, `--output <file>` | Output path for `build`/`oskelc` (default: the script's base name). |
+| `--target <name>` | Build target for `build`/`oskelc` (default: the host). |
+| `--mode <name>` | Link mode for `build`/`oskelc` (default: `freestanding`). |
+| `--no-jit` | Disables the JIT (development engine only). |
 | `--` | End of options; the next argument is the file. |
 
 Options must come before the file. Everything after the file is considered an argument of the script and is obtained with `args()`.
@@ -2842,8 +2846,7 @@ compiles either way):
   dynamic dependencies.
 - `--mode hosted` links the compiled program against the host C library, so an
   `extern "C"` symbol resolves to the real C function at link time. This is the
-  mode that makes FFI work, and the mode the planned `oskelc` host compiler is
-  documented to emit. It needs a C toolchain at build time and produces a binary
+  mode that makes FFI work, and the mode `oskelc` emits. It needs a C toolchain at build time and produces a binary
   that *does* depend on libc, so it is not freestanding. The emitter wraps the
   program in a relocatable object and the host C compiler (`$CC`, default `cc`)
   links it against libc; the entry prelude reaches the system through libc
@@ -2876,15 +2879,38 @@ parameter binds an ordinary array of the extras, built by the runtime's
 `oskel_pack_rest`, so a program using them behaves the same on the VM and in the
 static binary.
 
+### `oskelc`: the host compiler
+
+`oskelc` is the same compiler behind a shorter command line. It links the lexer,
+the parser, the bytecode compiler and the AOT backend, and never the VM, the JIT
+or the builtins, so the compiler you ship carries no interpreter
+(`DEVELOPMENT.md` §2, toolchain boundary). Both entry points call the same
+pipeline, so the flags, the defaults, the diagnostics and the exit codes are the
+same; the emitted image is byte for byte identical.
+
+```sh
+oskelc app.oskl -o app                     # freestanding (default)
+oskelc app.oskl --mode hosted -o app       # links libc (FFI)
+oskelc app.oskl --target x86_64-windows-win64 -o app.exe
+```
+
+`oskel` keeps `oskel build` as a thin alias, so an existing command line keeps
+working and the two cannot drift:
+
+```sh
+oskel build app.oskl -o app                # the same binary as `oskelc`
+```
+
 **Planned (a later release)**:
 
 ```sh
-oskelc <file.oskl> -o app      compiles to a native binary (AOT, musl static)
 oskelc <file.oskl> -c          compiles to bytecode (.oskc)
 oskelc -pkg ... -o app.oskpkg  packages a .oskpkg
 ```
 
-`oskelc` is a planned separate host compiler: it reads sources and writes the ELF, so it links libc, and the freestanding part is what it emits, not the compiler itself. It is **not** part of 0.1.0 — `oskel build` is the AOT entry point today, and it is not yet a thin alias over `oskelc` (the split in `DEVELOPMENT.md` §2 is the target, not the current state). There is also no `.oskc` serializer in the tree yet, so `-c` and `-pkg` are future work.
+There is no `.oskc` serializer in the tree yet, so `-c` and `-pkg` are refused
+by name with exit 64 rather than read as a typo. They are future work, not
+features of this release.
 
 ---
 

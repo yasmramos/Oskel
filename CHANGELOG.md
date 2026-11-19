@@ -11,6 +11,24 @@ may change between minor versions.
 
 ### Added
 
+- **`oskelc`, the host compiler, split out of `oskel`.** The toolchain now
+  builds two binaries from one front end: `oskel` (the development engine: run,
+  REPL, `-c`, `build`) links the runtime on top of it, and `oskelc` links the
+  front end alone, so the compiler you ship carries no VM, no JIT and no
+  builtins. `oskel build` stays as a thin alias: both entry points call
+  `runBuildCommand` in the new `src/cli.cpp`, so their flags, defaults,
+  diagnostics and exit codes cannot drift, and the emitted image is byte for
+  byte identical (`tests/oskelc_parity.cmake`). The sources are split by
+  `OSKEL_RUNTIME_SOURCES` in `CMakeLists.txt` (`vm`, `ops`, `builtins`, `ffi`,
+  `unicode_case`, `jit/jit`); the configure step fails if that list names a file
+  that does not exist. Two guards keep the boundary: the include graph of every
+  front-end source (`tests/check_compiler_boundary.cmake`, which CMake now feeds
+  the exact source list) and the link itself (`tests/check_oskelc_no_vm.cmake`:
+  `nm` must show no `VM::`, `jitCompile`, `Jit::`, `registerBuiltins`,
+  `ops::binary` or `Runtime::fail`). `oskelc` ships in every package beside `oskel` and
+  `bindgen`. `-c` (`.oskc`) and `-pkg` (`.oskpkg`) are refused by name with
+  exit 64 until a bytecode serializer exists.
+
 - **`bindgen` translates a `struct` by value and a C `enum` (PHASE 6.6).** A
   header that declares `struct Point { int x; int y; };` and
   `struct Point make_point(int x, int y);` now produces the matching
