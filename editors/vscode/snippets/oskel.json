@@ -1,0 +1,149 @@
+{
+  "Function declaration": {
+    "prefix": ["fn"],
+    "body": ["fn ${1:name}(${2})${3: : ${4:int}} {", "\t$0", "}"],
+    "description": "A named function. The return annotation is optional."
+  },
+  "Function with expression body": {
+    "prefix": ["fnx"],
+    "body": ["fn ${1:name}(${2})${3: : ${4:int}} => ${0:0};"],
+    "description": "A function whose body is a single expression."
+  },
+  "Lambda": {
+    "prefix": ["lambda"],
+    "body": ["${1:x} => ${0:x}"],
+    "description": "An arrow lambda: `x => x * 2`."
+  },
+  "Struct declaration": {
+    "prefix": ["struct"],
+    "body": ["struct ${1:Name} {", "\t${2:field}: ${3:int};", "}"],
+    "description": "A data-only struct declaration."
+  },
+  "Class declaration": {
+    "prefix": ["class"],
+    "body": [
+      "class ${1:Name} {",
+      "\t${2:field}: ${3:int};",
+      "",
+      "\tfn init(${2:field}: ${3:int}) {",
+      "\t\tself.${2:field} = ${2:field};",
+      "\t}",
+      "}"
+    ],
+    "description": "A class: fields plus methods, instantiated by calling the class name."
+  },
+  "Method": {
+    "prefix": ["method"],
+    "body": ["fn ${1:name}(${2})${3: : ${4:int}} {", "\t$0", "}"],
+    "description": "A method inside a class body."
+  },
+  "Variable declaration": {
+    "prefix": ["let", "var"],
+    "body": ["let ${1:name} = ${2:value};"],
+    "description": "An immutable binding. Use `var` for a mutable one and `const` for a compile-time constant."
+  },
+  "If statement": {
+    "prefix": ["if"],
+    "body": ["if (${1:condition}) {", "\t$0", "}"],
+    "description": "An if statement."
+  },
+  "If / else": {
+    "prefix": ["ife"],
+    "body": ["if (${1:condition}) {", "\t${2}", "} else {", "\t$0", "}"],
+    "description": "An if/else statement."
+  },
+  "While loop": {
+    "prefix": ["while"],
+    "body": ["while (${1:condition}) {", "\t$0", "}"],
+    "description": "A while loop."
+  },
+  "Do/while loop": {
+    "prefix": ["do"],
+    "body": ["do {", "\t$0", "} while (${1:condition});"],
+    "description": "A do/while loop: the body runs at least once."
+  },
+  "For-in loop": {
+    "prefix": ["forin"],
+    "body": ["for ${1:item} in ${2:items} {", "\t$0", "}"],
+    "description": "Iterate an array, a map, a string or a range."
+  },
+  "For-in over a map": {
+    "prefix": ["forinmap"],
+    "body": ["for ${1:key}, ${2:value} in ${3:map} {", "\t$0", "}"],
+    "description": "Iterate a map's keys and values in insertion order."
+  },
+  "Classic for loop": {
+    "prefix": ["for"],
+    "body": ["for (var ${1:i} = 0; ${1:i} < ${2:n}; ${1:i} += 1) {", "\t$0", "}"],
+    "description": "A C-style for loop."
+  },
+  "Switch": {
+    "prefix": ["switch"],
+    "body": [
+      "switch (${1:subject}) {",
+      "\tcase ${2:0}: {",
+      "\t\t$0",
+      "\t}",
+      "\tdefault: {",
+      "\t\t",
+      "\t}",
+      "}"
+    ],
+    "description": "A switch over literals and ranges. There is no fallthrough."
+  },
+  "Import module": {
+    "prefix": ["import"],
+    "body": ["import ${1:std.math};"],
+    "description": "A Java-style import. Qualified access is `std.math.pow`."
+  },
+  "Import wildcard": {
+    "prefix": ["import*"],
+    "body": ["import ${1:std.math}.*;"],
+    "description": "Import every export into the current scope."
+  },
+  "Import selective": {
+    "prefix": ["importfrom"],
+    "body": ["import { ${1:pow} } from ${2:std.math};"],
+    "description": "Import selected names only."
+  },
+  "Extern C block": {
+    "prefix": ["extern"],
+    "body": ["extern \"C\" {", "\tfn ${1:name}(${2}): ${3:int};", "}"],
+    "description": "Declare C functions the runtime binds by name."
+  },
+  "Native function": {
+    "prefix": ["native"],
+    "body": ["native fn ${1:name}(${2}): ${3:int};"],
+    "description": "A host binding: the engine provides the implementation."
+  },
+  "Must-use function": {
+    "prefix": ["mustuse"],
+    "body": ["@MustUse", "fn ${1:name}(${2})${3: : ${4:int}} {", "\t$0", "}"],
+    "description": "The caller must use the result; discarding it warns."
+  },
+  "Error and catch": {
+    "prefix": ["catch"],
+    "body": ["${1:expr} catch ${0:fallback}"],
+    "description": "Local recovery: yields the fallback when the value is an error."
+  },
+  "Try propagation": {
+    "prefix": ["try"],
+    "body": ["let ${1:value} = try ${0:expr};"],
+    "description": "Return the error from the enclosing function when the value is one."
+  },
+  "Defer": {
+    "prefix": ["defer"],
+    "body": ["defer {", "\t$0", "}"],
+    "description": "Run the statement when the enclosing block exits."
+  },
+  "Print interpolation": {
+    "prefix": ["print"],
+    "body": ["print(\"${1:label}: \\${${2:value}}\");"],
+    "description": "Print with string interpolation."
+  },
+  "Assert equal": {
+    "prefix": ["assertEq"],
+    "body": ["assertEq(${1:actual}, ${2:expected});"],
+    "description": "Assert two values are equal."
+  }
+}

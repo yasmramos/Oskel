@@ -26,6 +26,21 @@ may change between minor versions.
   `tests/compiler_test.cpp` pins the emitted shape (`GETGLOBAL; LOADK; op;
   SETGLOBAL`).
 
+- **The VS Code extension gains snippets, editor defaults and a drift test.**
+  The grammar was only a highlighter; the extension now also ships 26 snippets
+  (`fn`, `class`, `struct`, `switch`, `extern "C"`, `@MustUse`, the three
+  `import` forms, `catch`, `defer`, ...), a `snippets` contribution, and
+  per-language editor defaults (`[oskel]`: two spaces, no indentation guessing,
+  bracket-pair guides). `language-configuration.json` gained the indentation
+  rules (a line opening `{`/`(`/`[` indents, a closing bracket dedents) and
+  block-comment continuation, so pressing Enter inside `/* ... */` keeps the
+  comment. `tests/check_vscode_grammar.cmake` (CTest `vscode_grammar`) derives
+  the keyword, type, builtin and operator vocabulary from `src/lexer.cpp`,
+  `src/ast.h`, `src/builtins.cpp` and `isAssignOp` in `src/parser.cpp`, and
+  `tests/check_vscode_snippets.cmake` (CTest `vscode_snippets`) expands every
+  snippet and compiles it with `oskel -c`, so neither the grammar nor the
+  snippets can drift from the compiler again.
+
 - **`oskelc`, the host compiler, split out of `oskel`.** The toolchain now
   builds two binaries from one front end: `oskel` (the development engine: run,
   REPL, `-c`, `build`) links the runtime on top of it, and `oskelc` links the
@@ -147,6 +162,17 @@ may change between minor versions.
   `tests/lower_test.cpp` and `tests/vm_test.cpp`.
 
 ### Fixed
+
+- **The VS Code grammar highlighted syntax the language does not have and
+  missed three real builtins.** `0x10`, `0b1010` and `0o17` were split into `0`
+  and a name, because the decimal rule ran first; the lexer accepts all three
+  prefixes. `time`, `memSize` and `args` were builtins the grammar never
+  highlighted, `@MustUse` and `self` were plain text, and a struct literal
+  (`Point { x: 1 }`) or a constructor call (`Point(3, 4)`) did not name a type.
+  In the other direction the grammar advertised `===`, `!==` and `->`, none of
+  which the lexer produces, so a file using them looked valid and failed to
+  compile. The auto-closing pair for `/*` also inserted a space (`" */"`), and
+  there was no indentation rule at all.
 
 - **`bindgen` no longer emits a declaration the compiler rejects on a
   non-System V ABI.** The tool promises that every declaration it writes as

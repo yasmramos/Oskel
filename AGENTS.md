@@ -134,6 +134,43 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   not Windows: a green Wine run is a signal, not a substitute for the
   `windows-latest` job.
 
+## The VS Code extension
+
+- `editors/vscode` holds a dependency-free extension (language id, TextMate
+  grammar, `language-configuration.json`, `snippets/oskel.json`). It has no
+  runtime code, so it needs no build step; `vsce package` in that folder is how
+  CI produces the `.vsix`.
+- The grammar keeps its **own** keyword, type and builtin lists, because a
+  TextMate grammar cannot read the compiler. `tests/check_vscode_grammar.cmake`
+  (CTest `vscode_grammar`) derives the vocabulary from the single sources of
+  truth — `kKeywords` in `src/lexer.cpp`, the `name == "..."` type names in
+  `src/ast.h`, the `addNative` registry in `src/builtins.cpp` — and fails when
+  the grammar misses a word, when a `#include` names a missing entry, or when
+  the grammar highlights syntax the lexer never produces. Adding a keyword, a
+  type or a builtin means updating `syntaxes/oskel.tmLanguage.json` in the same
+  change; the test names the missing word, so run
+  `cmake -DROOT=. -P tests/check_vscode_grammar.cmake` before opening the PR.
+- The same test owns the **operators**, and in both directions. It rebuilds the
+  spelling of every operator from the `if (c1 == 'a' ...)` guard that returns it
+  in `src/lexer.cpp`, and it takes the assignment set from `isAssignOp` in
+  `src/parser.cpp`, so a new `x op= y` cannot reach the compiler while the
+  grammar stays silent. The grammar's own rules are reduced to literal spellings
+  (character class, `\|`, lookahead, one line per key) before the comparison,
+  and if that reduction finds fewer than 15 operators it fails rather than
+  passing on an empty set. This is how the compound bitwise forms were caught:
+  `&=`, `|=`, `^=`, `<<=` and `>>=` shipped in the compiler while the grammar
+  still called them invalid.
+- `tests/check_vscode_snippets.cmake` (CTest `vscode_snippets`) expands each
+  snippet the way VS Code does and compiles the result with `oskel -c`, wrapped
+  in the context the construct needs (a method in a class, `defer` in a
+  function). A snippet that emits invalid Oskel fails the suite; four did while
+  the check was written — `defer` with a bare statement instead of a block, a
+  `switch` whose `case` label was an identifier instead of a literal, and two
+  with an empty expression body.
+- `$`-prefixed builtins (`$str`, `$slice`, `$range`, `$isError`, `$nonNull`)
+  are compiler-private: Oskel source cannot spell them, so the grammar must not
+  offer them and the test skips them on purpose.
+
 ## Release and artifacts
 
 - The maintainer checklist lives in `docs/RELEASING.md`; the release notes live

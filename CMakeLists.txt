@@ -290,6 +290,28 @@ if(BUILD_TESTING)
       "-DFRONTEND_SOURCES=${OSKEL_CORE_SOURCES};${OSKEL_FRONTEND_SOURCES}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compiler_boundary.cmake")
 
+  # --- The VS Code extension matches the language ---
+  # The grammar keeps its own keyword/type/builtin lists, so it rots whenever the
+  # language grows a word. The check derives the vocabulary from the lexer, the
+  # type names in `ast.h` and the builtin registry, and also rejects syntax the
+  # lexer never produces. It reads the repository only, so it runs everywhere.
+  add_test(NAME vscode_grammar
+    COMMAND ${CMAKE_COMMAND}
+      -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_vscode_grammar.cmake")
+
+  # --- The VS Code snippets compile ---
+  # The grammar check proves the extension does not highlight a word the
+  # language lacks; this one proves the snippets do not emit one. Each body is
+  # expanded the way VS Code expands it and fed to the compiler with `-c`, so a
+  # snippet that drifts (a `defer` without a block, a `case` label that is not a
+  # literal) fails the suite instead of shipping.
+  add_test(NAME vscode_snippets
+    COMMAND ${CMAKE_COMMAND}
+      -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+      -DOSKEL=$<TARGET_FILE:oskel>
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_vscode_snippets.cmake")
+
   # --- `oskelc` links no interpreter ---
   # The include graph is checked above; this one checks the *archive* `oskelc`
   # links, not the linked binary: an unreferenced runtime object sitting in
