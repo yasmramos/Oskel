@@ -62,6 +62,17 @@ may change between minor versions.
   writes no binary. A receiver whose type is genuinely unknown (an element of an
   array or a map, an unannotated parameter or function) stays unchecked, since
   the language is untyped by default.
+- **Structs by value across `extern "C"` in the hosted AOT backend (PHASE
+  7f.7).** A `struct` parameter or return now resolves through `oskel build
+  --mode hosted` in both System V ABI classes. A struct of 16 bytes or fewer is
+  flattened to its eightbytes and travels in registers; a larger one is class
+  MEMORY, passed in the outgoing stack-argument area and returned through a
+  hidden `sret` buffer in `rdi`. The thunk reads each field out of the `AotMap`
+  the program holds and rebuilds a returned struct into a fresh map, so a struct
+  behaves the same on the VM and in a hosted binary. The development engine
+  gained the class-MEMORY half too (through `libffi`, so it needs libffi and the
+  System V AMD64 ABI). Covered by `tests/native_build_extern_struct.oskl`,
+  `tests/native_build_extern_memory_struct.oskl` and `tests/vm_test.cpp`.
 
 - **Builtin `memSize()`: the machine's physical memory in bytes.** The RAM
   analogue of `time()` — a property of the machine, not of the program. On the
