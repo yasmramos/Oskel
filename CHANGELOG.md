@@ -11,6 +11,36 @@ may change between minor versions.
 
 ### Added
 
+- **`class` hardening: field defaults, the `init` completeness check, method
+  reassignment rules and a typo warning (PHASE 6.8.1).** A `class` stays pure
+  sugar over the map-plus-closures idiom, so every check below lives in the
+  parser or the compiler and the AOT backend inherits it unchanged. A field may
+  now carry a default (`n: int = 5;`), which the desugaring seeds into the
+  instance map instead of `nil`, per instance. A class that declares `init` must
+  assign every non-nullable annotated field that has no default, or the field
+  would hold `nil` where the annotation promises a value; the check is
+  syntactic, so an assignment inside an `if`, a loop or a `switch` counts and a
+  lambda body inside `init` does not. Replacing a declared method is allowed
+  only with a function of the same arity, because a method body reads its
+  parameters positionally. Assigning a name within two edits of a declared
+  field is a **warning**, not an error: an instance is a map, so the key is
+  really added, but the near miss is far more likely a typo than a deliberate
+  new key. Covered by `tests/60_class_hardening.oskl`,
+  `tests/61_class_field_typo.oskl`, five `tests/errors/class_*.oskl` cases and
+  the `oskel build` fixtures that pin VM/AOT parity.
+
+- **The class field-type check now reaches every statically known receiver.**
+  `checkFieldAssign` could only see a direct `let p = Point(...)`; a call to a
+  function with a declared return type (`let b = make(); b.n = "text"`) and a
+  field of another instance (`o.inner.n = "text"`) fell through untyped even
+  though both types are known at compile time. `inferExprType` now returns the
+  declared return type of a user function and the declared type of a member of a
+  statically known struct or class, so those writes are checked like a direct
+  one, with the same message and the same exit 65 under `oskel build`, which
+  writes no binary. A receiver whose type is genuinely unknown (an element of an
+  array or a map, an unannotated parameter or function) stays unchecked, since
+  the language is untyped by default.
+
 - **Builtin `memSize()`: the machine's physical memory in bytes.** The RAM
   analogue of `time()` — a property of the machine, not of the program. On the
   development VM it comes from the platform (`sysconf(_SC_PHYS_PAGES)` on POSIX,

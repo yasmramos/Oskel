@@ -1,0 +1,32 @@
+// PHASE 6.8.1: a mistyped field assignment on a class instance is a warning,
+// not an error.
+//
+// A class instance is a map, so adding a new key is allowed and the assignment
+// still runs. But a name within two edits of a declared field is far more
+// likely a typo than a deliberate new key: the typo silently adds a field while
+// every read of the real one keeps returning its old value. The compiler warns
+// on stderr and the program exits 0, exactly like the `@MustUse` warning.
+
+class Counter {
+  count: int;
+  fn init() { self.count = 0; }
+  fn bump() { self.count = self.count + 1; }
+}
+
+// `cont` is one edit from `count`: warned about, and it really does add a key.
+let c = Counter();
+c.cont = 5;
+assertEq(c.count, 0);
+assertEq(c.cont, 5);
+assertEq(len(c), 4);
+
+// A deliberate new key far from every declared field is not a typo: no warning.
+c.visits = 1;
+assertEq(c.visits, 1);
+
+// A correctly spelled field is a plain assignment: no warning.
+c.count = 7;
+c.bump();
+assertEq(c.count, 8);
+
+print("class field typo ok");
