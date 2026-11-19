@@ -1,4 +1,4 @@
-// Tests for the cycle collector (src/gc.h).
+// Tests for the cycle collector (src/core/gc.h).
 // They count tracked objects instead of measuring memory, so the results are
 // deterministic and independent of the allocator.
 
