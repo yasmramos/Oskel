@@ -294,9 +294,7 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
         if (param.isStruct) {
           ffi::StructLayout layout;
           std::string reason;
-          // A class-MEMORY struct is passed on the stack, which the register
-          // thunks cannot express; it stays 7f work.
-          if (!ffi::buildStructLayout(param.fields, layout, reason) || layout.isMemory) {
+          if (!ffi::buildStructLayout(param.fields, layout, reason)) {
             supported = false;
             break;
           }
@@ -306,15 +304,28 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
           for (std::size_t f = 0; f < layout.fields.size(); ++f) {
             entry.fieldNameLabels.push_back(cg.newLabel());
           }
-          thunk.structs.push_back(std::move(entry));
-          for (int e = 0; e < layout.eightbyteCount; ++e) {
-            AotThunkParam flat;
-            flat.cls = layout.eightbyte[e] == 'S' ? ffi::ParamClass::Double : ffi::ParamClass::Int;
-            flat.argIndex = arg;
-            flat.eightbyte = e;
-            flat.structIndex = index;
-            thunk.params.push_back(flat);
+          if (layout.isMemory) {
+            // Class MEMORY: the whole struct travels in the outgoing stack
+            // argument area, 8-byte aligned, after every earlier stack argument.
+            thunk.stackArgBytes = (thunk.stackArgBytes + 7) / 8 * 8;
+            AotStackArg stacked;
+            stacked.structIndex = index;
+            stacked.argIndex = arg;
+            stacked.offset = thunk.stackArgBytes;
+            thunk.stackArgBytes += static_cast<std::int64_t>(layout.size);
+            thunk.stackArgs.push_back(stacked);
+          } else {
+            entry.bufSlot = index;
+            for (int e = 0; e < layout.eightbyteCount; ++e) {
+              AotThunkParam flat;
+              flat.cls = layout.eightbyte[e] == 'S' ? ffi::ParamClass::Double : ffi::ParamClass::Int;
+              flat.argIndex = arg;
+              flat.eightbyte = e;
+              flat.structIndex = index;
+              thunk.params.push_back(flat);
+            }
           }
+          thunk.structs.push_back(std::move(entry));
           continue;
         }
         ffi::ParamClass cls = ffi::ParamClass::Int;
@@ -331,7 +342,7 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
       if (symbol.returnType.isStruct) {
         ffi::StructLayout layout;
         std::string reason;
-        if (!ffi::buildStructLayout(symbol.returnType.fields, layout, reason) || layout.isMemory) {
+        if (!ffi::buildStructLayout(symbol.returnType.fields, layout, reason)) {
           continue;
         }
         const int index = static_cast<int>(thunk.structs.size());
@@ -344,6 +355,9 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
         thunk.returnStructIndex = index;
         thunk.returns = ffi::ReturnClass::Struct;
         thunk.returnType = "";
+        // A class-MEMORY return goes through a hidden `sret` buffer instead of
+        // the return registers.
+        if (layout.isMemory) thunk.returnMemoryBytes = static_cast<std::int64_t>(layout.size);
       } else {
         ffi::ReturnClass ret = ffi::ReturnClass::Int;
         if (!ffi::classifyReturn(symbol.returnType.scalarType, ret) ||

@@ -1,0 +1,60 @@
+// Class-MEMORY struct-by-value `extern "C"` marshalling (PHASE 7f.7).
+//
+// A struct larger than two eightbytes does not travel in registers: it is
+// passed in the outgoing stack-argument area and returned through a hidden
+// `sret` pointer the caller supplies in `rdi`. The functions come from
+// `tests/hosted/memory_struct_helper.c`, because no libc symbol exercises this
+// shape; `tests/build_hosted_memory_struct.cmake` compiles and links it.
+
+struct Triple {
+  a: int64;
+  b: int64;
+  c: int64;
+}
+struct TripleD {
+  x: double;
+  y: double;
+  z: double;
+}
+struct PairD {
+  a: double;
+  b: double;
+}
+extern "C" {
+  fn oskelTestSumTriple(t: Triple): int64;
+  fn oskelTestSumTripleD(t: TripleD): double;
+  fn oskelTestMakeTriple(a: int64, b: int64, c: int64): Triple;
+  fn oskelTestMakeTripleD(x: double, y: double, z: double): TripleD;
+  fn oskelTestScalarThenTriple(x: int64, t: Triple): int64;
+  fn oskelTestTwoTriples(t: Triple, u: Triple): int64;
+  fn oskelTestTriplePairScalar(t: Triple, p: PairD, k: int64): double;
+  fn oskelTestSixThenTriple(a: int64, b: int64, c: int64, d: int64, e: int64, f: int64,
+                            t: Triple): int64;
+}
+
+// A stack-passed struct argument, integer and floating point.
+assertEq(oskelTestSumTriple({a: 1, b: 2, c: 3}), 6);
+assertEq(oskelTestSumTripleD({x: 1.5, y: 2.5, z: 3.0}), 7.0);
+
+// An `sret` return: the fields must arrive exactly.
+let t = oskelTestMakeTriple(10, 20, 30);
+assertEq(t.a, 10);
+assertEq(t.b, 20);
+assertEq(t.c, 30);
+
+let d = oskelTestMakeTripleD(1.5, 2.5, 3.5);
+assertEq(d.x, 1.5);
+assertEq(d.y, 2.5);
+assertEq(d.z, 3.5);
+
+// The outgoing area and the register arguments must not disturb each other.
+assertEq(oskelTestScalarThenTriple(1000, {a: 1, b: 2, c: 3}), 1006);
+assertEq(oskelTestTwoTriples({a: 1, b: 2, c: 3}, {a: 10, b: 20, c: 30}), 66);
+assertEq(oskelTestTriplePairScalar({a: 1, b: 2, c: 3}, {a: 0.5, b: 0.25}, 100), 106.75);
+assertEq(oskelTestSixThenTriple(1, 2, 3, 4, 5, 6, {a: 10, b: 20, c: 30}), 81);
+
+// A returned class-MEMORY struct is a map, like a register-class one.
+assertEq(type(t), "map");
+assert("a" in t);
+
+print("ffi memory struct ok");

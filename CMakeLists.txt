@@ -473,6 +473,16 @@ if(BUILD_TESTING)
           "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_struct.oskl"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+      # A class-MEMORY struct (larger than two eightbytes) is stack-passed and
+      # `sret`-returned, a shape no libc symbol exercises: the fixture links a
+      # small C helper of its own.
+      add_test(NAME oskel.build_hosted_extern_memory_struct
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_memory_struct"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_memory_struct.oskl"
+          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/memory_struct_helper.c"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_memory_struct.cmake")
     endif()
     # `std.json` is plain Oskel over the portable primitive surface, so it must
     # build to a native binary and agree with the VM. The fixture is the guard
@@ -651,6 +661,12 @@ if(BUILD_TESTING)
     # Struct-by-value FFI needs the System V AMD64 ABI; see the capability above.
     if((name STREQUAL "31_ffi_struct" OR name STREQUAL "native_build_extern_struct") AND
        NOT OSKEL_FFI_STRUCT_BY_VALUE)
+      continue()
+    endif()
+    # The class-MEMORY fixture binds functions from `tests/hosted/`, which the
+    # VM cannot resolve (its host registry knows libc, not the test helper). It
+    # is covered end-to-end by `oskel.build_hosted_extern_memory_struct`.
+    if(name STREQUAL "native_build_extern_memory_struct")
       continue()
     endif()
     # `native_build_extern` is an input for `tests/build_error.cmake`. It also

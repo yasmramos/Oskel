@@ -8503,15 +8503,20 @@ void normalizeIntegerReturn(CodeGen& cg, const std::string& type) {
 // width and reloading is simpler -- and correct for a mixed INTEGER/SSE struct
 // -- than assembling every eightbyte from its fields in registers.
 //
-// `argSlot` is the argument's frame offset (`[rbx + argSlot]`). Each field is
-// read with `oskel_member_get`, exactly like `obj.field`, so the read matches
-// the VM's. A missing field yields nil, which the width stores turn into zero
-// bytes, the same zero-fill the hosted `writeStructBytes` starts from.
+// `argSlot` is the argument's frame offset (`[rbx + argSlot]`) and `bufDisp` the
+// displacement of the destination, relative to `rbp` for a register-class
+// struct's staging buffer or to `rsp` for a class-MEMORY struct's place in the
+// outgoing argument area. Each field is read with `oskel_member_get`, exactly
+// like `obj.field`, so the read matches the VM's. A missing field yields nil,
+// which the width stores turn into zero bytes, the same zero-fill the hosted
+// `writeStructBytes` starts from.
 void emitStructArgBytes(CodeGen& cg, const AotStructLayout& arg, std::int64_t argSlot,
-                        std::int64_t bufDisp, CodeGen::Label memberGet) {
+                        X64Reg bufBase, std::int64_t bufDisp, CodeGen::Label memberGet) {
   // Zero the buffer first: the padding a C compiler leaves between fields is
-  // part of the value the callee may copy.
-  for (std::int64_t w = 0; w < 16; w += 8) cg.movImmToMem(Rbp, bufDisp + w, 0);
+  // part of the value the callee may copy. A class-MEMORY struct is larger than
+  // the 16-byte register-class buffers, so the span comes from the layout.
+  const std::int64_t span = (static_cast<std::int64_t>(arg.layout.size) + 7) / 8 * 8;
+  for (std::int64_t w = 0; w < span; w += 8) cg.movImmToMem(bufBase, bufDisp + w, 0);
 
   const ffi::StructLayout& layout = arg.layout;
   for (std::size_t k = 0; k < layout.fields.size(); ++k) {
@@ -8533,18 +8538,18 @@ void emitStructArgBytes(CodeGen& cg, const AotStructLayout& arg, std::int64_t ar
       cg.movqFromXmm(Rdx, XmmScratch);
     }
     if (size == 1) {
-      cg.movByteToMem(Rbp, bufDisp + fieldOffset, Rdx);
+      cg.movByteToMem(bufBase, bufDisp + fieldOffset, Rdx);
     } else if (size == 2) {
       // No 16-bit store exists (the backend's narrow forms are 8 and 32 bits),
       // so the two bytes go out one at a time; a single 32-bit store could spill
       // into the next field.
-      cg.movByteToMem(Rbp, bufDisp + fieldOffset, Rdx);
+      cg.movByteToMem(bufBase, bufDisp + fieldOffset, Rdx);
       cg.shrImm8(Rdx, 8);
-      cg.movByteToMem(Rbp, bufDisp + fieldOffset + 1, Rdx);
+      cg.movByteToMem(bufBase, bufDisp + fieldOffset + 1, Rdx);
     } else if (size == 4) {
-      cg.movToMem32(Rbp, bufDisp + fieldOffset, Rdx);
+      cg.movToMem32(bufBase, bufDisp + fieldOffset, Rdx);
     } else {
-      cg.movToMem(Rbp, bufDisp + fieldOffset, Rdx);
+      cg.movToMem(bufBase, bufDisp + fieldOffset, Rdx);
     }
   }
 }
@@ -8665,16 +8670,24 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   // `alloc` and `rep movsb`, which clobber the argument registers. Six 8-byte
   // slots keep the frame 16-byte aligned (48 is a multiple of 16).
   constexpr std::int32_t kArgStageBytes = 6 * 8;
-  // One 16-byte buffer per by-value struct (at most six, since a signature is
-  // bounded by six eightbytes and every struct contributes at least one). They
-  // sit above the staging slots and are addressed from `rbp`, since the staging
-  // slots are `rsp`-relative. Both regions are multiples of 16, so `rsp` stays
-  // 16-byte aligned at the call.
+  // One 16-byte buffer per register-class struct (at most six, since a signature
+  // is bounded by six eightbytes and every struct contributes at least one).
   constexpr std::int32_t kStructBufSlots = 6;
   constexpr std::int32_t kStructBufBytes = 16 * kStructBufSlots;
-  constexpr std::int64_t kStructBufBase =
-      -static_cast<std::int64_t>(16 + kArgStageBytes + kStructBufBytes) + kArgStageBytes;
-  cg.subRegImm32(Rsp, kArgStageBytes + kStructBufBytes);
+  // The frame below `rbp` is laid out top to bottom as: the staging slots, the
+  // register-class struct buffers, the `sret` buffer, and finally the outgoing
+  // stack-argument area. Only the last is addressed from `rsp` (it must be the
+  // lowest part, where the callee reads its stack arguments); everything else is
+  // `rbp`-relative, so the two never overlap.
+  constexpr std::int64_t kStageBase = -static_cast<std::int64_t>(16 + kArgStageBytes);
+  constexpr std::int64_t kStructBufBase = kStageBase - kStructBufBytes;
+  const std::int64_t sretBytes =
+      thunk.returnMemoryBytes > 0 ? (thunk.returnMemoryBytes + 15) / 16 * 16 : 0;
+  const std::int64_t sretBase = kStructBufBase - sretBytes;
+  const std::int64_t stackArgsBytes = (thunk.stackArgBytes + 15) / 16 * 16;
+  // A multiple of 16 in every term, so `rsp` stays 16-byte aligned at the call.
+  const std::int64_t frameBytes = kArgStageBytes + kStructBufBytes + sretBytes + stackArgsBytes;
+  cg.subRegImm32(Rsp, static_cast<std::int32_t>(frameBytes));
   cg.movReg(Rbx, Rdi);  // args base; argument i lives at [rbx - 16*i]
 
   // The thunk is the callee, so it checks its own arity, exactly like a user
@@ -8692,13 +8705,27 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   // reuses them.
   for (const AotThunkParam& param : thunk.params) {
     if (param.structIndex >= 0 && param.eightbyte == 0) {
-      emitStructArgBytes(cg, thunk.structs[static_cast<std::size_t>(param.structIndex)],
-                         -16LL * param.argIndex,
-                         kStructBufBase + 16LL * param.structIndex, memberGet);
+      const AotStructLayout& arg = thunk.structs[static_cast<std::size_t>(param.structIndex)];
+      emitStructArgBytes(cg, arg, -16LL * param.argIndex, Rbp,
+                         kStructBufBase + 16LL * arg.bufSlot, memberGet);
     }
   }
+  // A class-MEMORY argument is written straight into the outgoing stack area,
+  // which is `rsp`-relative and already reserved by the frame.
+  for (const AotStackArg& stacked : thunk.stackArgs) {
+    emitStructArgBytes(cg, thunk.structs[static_cast<std::size_t>(stacked.structIndex)],
+                       -16LL * stacked.argIndex, Rsp, stacked.offset, memberGet);
+  }
 
+  // A class-MEMORY return consumes `rdi` for the hidden buffer pointer, so the
+  // integer arguments start one register later. The pointer is staged with the
+  // other integer arguments and loaded just before the call, like them.
   int gpr = 0;
+  if (thunk.returnMemoryBytes > 0) {
+    cg.leaMem(R11, Rbp, sretBase);
+    cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
+    ++gpr;
+  }
   int sse = 0;
   for (std::size_t i = 0; i < thunk.params.size(); ++i) {
     const AotThunkParam& param = thunk.params[i];
@@ -8706,13 +8733,16 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
       // One eightbyte of a struct: load it whole out of the buffer the pre-pass
       // filled. An INTEGER eightbyte stages like a scalar GPR argument, an SSE
       // one goes straight to its xmm register.
-      const std::int64_t off = kStructBufBase + 16LL * param.structIndex + 8LL * param.eightbyte;
+      const std::int64_t off =
+          kStructBufBase +
+          16LL * thunk.structs[static_cast<std::size_t>(param.structIndex)].bufSlot +
+          8LL * param.eightbyte;
       cg.movFromMem(R11, Rbp, off);
       if (param.cls == ffi::ParamClass::Double) {
         cg.movqToXmm(kXmmBase + sse, R11);
         ++sse;
       } else {
-        cg.movToMem(Rsp, 8LL * gpr, R11);
+        cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
         ++gpr;
       }
       continue;
@@ -8742,7 +8772,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         cg.bind(asIs);
         cg.movFromMem(R11, Rbx, base + 8);
         cg.bind(done);
-        cg.movToMem(Rsp, 8LL * gpr, R11);
+        cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
         ++gpr;
         break;
       }
@@ -8833,7 +8863,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         cg.movImmByteToMem(Rdi, 0, 0);  // the terminating NUL
         cg.movReg(R11, Rax);
         cg.bind(staged);
-        cg.movToMem(Rsp, 8LL * gpr, R11);
+        cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
         ++gpr;
         break;
       }
@@ -8847,7 +8877,8 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
 
   // Load the staged integer arguments into their registers now that every
   // `alloc`/`rep movsb` has run. The SSE arguments are already in place.
-  for (int k = 0; k < gpr; ++k) cg.movFromMem(kIntArgRegs[k], Rsp, 8LL * k);
+  for (int k = 0; k < gpr; ++k)
+    cg.movFromMem(kIntArgRegs[k], Rbp, kStageBase + 8LL * k);
 
   cg.callExternal(thunk.symbol);
 
@@ -8855,9 +8886,12 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   // (`rax`/`rdx` and `xmm0`/`xmm1`), so it is rebuilt into a map and the scalar
   // switch below never sees it.
   if (thunk.returnStructIndex >= 0) {
+    // A register-class struct is in the return registers; a class-MEMORY one was
+    // written by the callee into the `sret` buffer.
     emitStructReturn(cg, thunk.structs[static_cast<std::size_t>(thunk.returnStructIndex)],
-                     kStructBufBase, tableNew, memberSet);
-    cg.addImm32(Rsp, kArgStageBytes + kStructBufBytes);
+                     thunk.returnMemoryBytes > 0 ? sretBase : kStructBufBase, tableNew,
+                     memberSet);
+    cg.addImm32(Rsp, static_cast<std::int32_t>(frameBytes));
     cg.pop(R12);
     cg.pop(Rbx);
     epilogue(cg);
@@ -8939,7 +8973,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
       break;
   }
 
-  cg.addImm32(Rsp, kArgStageBytes + kStructBufBytes);
+  cg.addImm32(Rsp, static_cast<std::int32_t>(frameBytes));
   cg.pop(R12);
   cg.pop(Rbx);
   epilogue(cg);

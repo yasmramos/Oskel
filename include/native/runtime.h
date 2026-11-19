@@ -368,9 +368,22 @@ struct AotThunkParam {
 // the names to read a field out of the `AotMap` the program holds and to write a
 // returned field back into a fresh one. `ffi::StructLayout` is the layout the
 // compiler and the hosted engine share, so no ABI logic lives here.
+//
+// `bufSlot` is the thunk frame's 16-byte staging buffer for a register-class
+// struct (-1 for a class-MEMORY one, which lives in the outgoing stack-argument
+// area instead).
 struct AotStructLayout {
   ffi::StructLayout layout;
   std::vector<CodeGen::Label> fieldNameLabels;  // parallel to `layout.fields`
+  int bufSlot = -1;
+};
+
+// A class-MEMORY struct argument: it travels in the outgoing stack-argument
+// area at `offset` bytes past the call's `rsp`, in declaration order.
+struct AotStackArg {
+  int structIndex = -1;
+  int argIndex = 0;
+  std::int64_t offset = 0;
 };
 
 struct AotExternThunk {
@@ -391,6 +404,14 @@ struct AotExternThunk {
   // return. Empty for a scalar-only signature.
   std::vector<AotStructLayout> structs;
   int returnStructIndex = -1;  // `structs` entry a struct return rebuilds
+  // The class-MEMORY arguments, in declaration order, and the size of the
+  // outgoing stack-argument area they occupy (0 when there are none).
+  std::vector<AotStackArg> stackArgs;
+  std::int64_t stackArgBytes = 0;
+  // The size of a class-MEMORY return (0 for none). Such a return does not come
+  // back in registers: the caller passes a hidden buffer pointer in `rdi`
+  // (`sret`), which also shifts every integer argument one register along.
+  std::int64_t returnMemoryBytes = 0;
 };
 
 // Appends every runtime helper to `code` and binds `handles`. `entry` comes
