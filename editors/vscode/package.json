@@ -1,7 +1,7 @@
 {
   "name": "oskel",
   "displayName": "Oskel",
-  "description": "Syntax highlighting for the Oskel programming language (.oskl).",
+  "description": "Oskel language support for VS Code: syntax highlighting, editor configuration and snippets (.oskl).",
   "version": "0.1.0",
   "publisher": "oskel-lang",
   "license": "MIT",
@@ -14,7 +14,7 @@
     "vscode": "^1.60.0"
   },
   "categories": ["Programming Languages"],
-  "keywords": ["oskel", "language", "syntax", "highlighting"],
+  "keywords": ["oskel", "language", "syntax", "highlighting", "snippets"],
   "contributes": {
     "languages": [
       {
@@ -30,6 +30,21 @@
         "scopeName": "source.oskl",
         "path": "./syntaxes/oskel.tmLanguage.json"
       }
-    ]
+    ],
+    "snippets": [
+      {
+        "language": "oskel",
+        "path": "./snippets/oskel.json"
+      }
+    ],
+    "configurationDefaults": {
+      "[oskel]": {
+        "editor.insertSpaces": true,
+        "editor.tabSize": 2,
+        "editor.detectIndentation": false,
+        "editor.guides.bracketPairs": true,
+        "editor.comments.insertSpace": true
+      }
+    }
   }
 }
