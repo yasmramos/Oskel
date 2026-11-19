@@ -464,6 +464,15 @@ if(BUILD_TESTING)
           "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted.oskl"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+      # A struct crossing the boundary by value (PHASE 7f.7) goes through the
+      # same thunk machinery, so the hosted binary must agree with the VM there
+      # too: `div`/`ldiv` return one and `cabs` takes one.
+      add_test(NAME oskel.build_hosted_extern_struct
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_struct"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_struct.oskl"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
     endif()
     # `std.json` is plain Oskel over the portable primitive surface, so it must
     # build to a native binary and agree with the VM. The fixture is the guard
@@ -640,7 +649,8 @@ if(BUILD_TESTING)
       continue()
     endif()
     # Struct-by-value FFI needs the System V AMD64 ABI; see the capability above.
-    if(name STREQUAL "31_ffi_struct" AND NOT OSKEL_FFI_STRUCT_BY_VALUE)
+    if((name STREQUAL "31_ffi_struct" OR name STREQUAL "native_build_extern_struct") AND
+       NOT OSKEL_FFI_STRUCT_BY_VALUE)
       continue()
     endif()
     # `native_build_extern` is an input for `tests/build_error.cmake`. It also
