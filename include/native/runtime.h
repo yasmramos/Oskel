@@ -349,17 +349,69 @@ enum class AotShiftOp : std::int64_t {
 // A `cstring` return is narrowed (the thunk scans the `const char *` into an
 // `AotString`); an opaque `ptr` return is left out, because the AOT runtime has
 // no representation for a handle it must never dereference.
+// One flattened parameter, in System V argument order. A scalar is one entry in
+// the register class the ABI assigns it; a struct contributes one entry per
+// eightbyte, an INTEGER eightbyte travelling as a plain integer and an SSE one
+// as a double. `argIndex` is the declared argument the entry came from (several
+// entries share it when they are the eightbytes of one struct) and `eightbyte`
+// is the entry's position inside that struct (-1 for a scalar). `structIndex`
+// names the `structs` entry (-1 for a scalar).
+struct AotThunkParam {
+  ffi::ParamClass cls = ffi::ParamClass::Int;
+  int argIndex = 0;
+  int eightbyte = -1;
+  int structIndex = -1;
+};
+
+// One by-value struct in a thunk's signature: its C layout plus one data-island
+// label per field, holding the field's name as a raw `AotString`. The thunk uses
+// the names to read a field out of the `AotMap` the program holds and to write a
+// returned field back into a fresh one. `ffi::StructLayout` is the layout the
+// compiler and the hosted engine share, so no ABI logic lives here.
+//
+// `bufSlot` is the thunk frame's 16-byte staging buffer for a register-class
+// struct (-1 for a class-MEMORY one, which lives in the outgoing stack-argument
+// area instead).
+struct AotStructLayout {
+  ffi::StructLayout layout;
+  std::vector<CodeGen::Label> fieldNameLabels;  // parallel to `layout.fields`
+  int bufSlot = -1;
+};
+
+// A class-MEMORY struct argument: it travels in the outgoing stack-argument
+// area at `offset` bytes past the call's `rsp`, in declaration order.
+struct AotStackArg {
+  int structIndex = -1;
+  int argIndex = 0;
+  std::int64_t offset = 0;
+};
+
 struct AotExternThunk {
   // Bound by `emitAotRuntime` to the thunk's entry, so the caller can seed it
   // into the symbol's global slot before the body is emitted (a forward
   // reference, exactly like a builtin's code label).
   CodeGen::Label label;
   std::string symbol;                  // the C symbol, e.g. "abs"
-  std::vector<ffi::ParamClass> params; // one class per parameter, in order
+  // The declared parameters, one per argument (a struct is one entry here, not
+  // one per eightbyte): the thunk's arity check counts these.
+  std::size_t arity = 0;
+  std::vector<AotThunkParam> params;   // flattened to eightbytes, in ABI order
   ffi::ReturnClass returns = ffi::ReturnClass::Int;
   // The declared spellings, read only to truncate the returned integer to its
   // width (a C `int` leaves the upper half of `rax` undefined).
   std::string returnType;
+  // The by-value structs the signature needs: one entry per struct parameter or
+  // return. Empty for a scalar-only signature.
+  std::vector<AotStructLayout> structs;
+  int returnStructIndex = -1;  // `structs` entry a struct return rebuilds
+  // The class-MEMORY arguments, in declaration order, and the size of the
+  // outgoing stack-argument area they occupy (0 when there are none).
+  std::vector<AotStackArg> stackArgs;
+  std::int64_t stackArgBytes = 0;
+  // The size of a class-MEMORY return (0 for none). Such a return does not come
+  // back in registers: the caller passes a hidden buffer pointer in `rdi`
+  // (`sret`), which also shifts every integer argument one register along.
+  std::int64_t returnMemoryBytes = 0;
 };
 
 // Appends every runtime helper to `code` and binds `handles`. `entry` comes

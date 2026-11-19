@@ -264,6 +264,40 @@ void testCompoundAssignment() {
   assert(bc.code[6].op == OpCode::HALT);
 }
 
+void testCompoundBitwiseAssignment() {
+  // `x op= v` for the bitwise operators lowers to the existing BAND/BOR/BXOR/
+  // SHL/SHR opcodes, so the bytecode is exactly `x = x op v`: GETGLOBAL,
+  // LOADK, op, SETGLOBAL. No new opcode (the budget stays 39/40).
+  struct Case {
+    const char* source;
+    OpCode expected;
+  };
+  const Case cases[] = {
+      {"var x = 6;\nx &= 3;\n", OpCode::BAND},
+      {"var x = 6;\nx |= 3;\n", OpCode::BOR},
+      {"var x = 6;\nx ^= 3;\n", OpCode::BXOR},
+      {"var x = 6;\nx <<= 3;\n", OpCode::SHL},
+      {"var x = 6;\nx >>= 3;\n", OpCode::SHR},
+  };
+  for (const Case& testCase : cases) {
+    Bytecode bc = compileSource(testCase.source);
+    // LOADK, SETGLOBAL, GETGLOBAL, LOADK, op, SETGLOBAL, HALT
+    assert(bc.code.size() == 7);
+    assert(bc.code[2].op == OpCode::GETGLOBAL);
+    assert(bc.code[3].op == OpCode::LOADK);
+    assert(bc.code[4].op == testCase.expected);
+    assert(bc.code[4].a == 0 && bc.code[4].b == 0 && bc.code[4].c == 1);
+    assert(bc.code[5].op == OpCode::SETGLOBAL);
+    assert(bc.code[6].op == OpCode::HALT);
+  }
+
+  // A compound bitwise assignment to an immutable binding is rejected, like
+  // every other compound form.
+  expectCompileError("let x = 1;\nx &= 2;\n", "immutable compound bitwise assignment");
+  expectCompileError("{ let x = 1; x <<= 2; }\n",
+                     "local immutable compound bitwise assignment");
+}
+
 void testLetReassignment() {
   expectCompileError("let x = 10;\nx = 20;\n", "immutable reassignment");
   expectCompileError("let x = 10;\nx += 1;\n", "immutable compound assignment");
@@ -1801,6 +1835,7 @@ int main() {
   testComparisons();
   testUnaryOperators();
   testCompoundAssignment();
+  testCompoundBitwiseAssignment();
   testLetReassignment();
   testAssignment();
   testConstantDeduplication();

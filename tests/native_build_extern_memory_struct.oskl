@@ -1,0 +1,133 @@
+// Class-MEMORY struct-by-value `extern "C"` marshalling (PHASE 7f.7).
+//
+// A struct larger than two eightbytes does not travel in registers: it is
+// passed in the outgoing stack-argument area and returned through a hidden
+// `sret` pointer the caller supplies in `rdi`. The functions come from
+// `tests/hosted/memory_struct_helper.c`, because no libc symbol exercises this
+// shape; `tests/build_hosted_memory_struct.cmake` compiles and links it.
+
+struct Triple {
+  a: int64;
+  b: int64;
+  c: int64;
+}
+struct TripleD {
+  x: double;
+  y: double;
+  z: double;
+}
+struct PairD {
+  a: double;
+  b: double;
+}
+struct FlagFloatInt {
+  flag: int8;
+  f: float;
+  n: int32;
+}
+struct PointerInt {
+  p: ptr;
+  n: int32;
+}
+struct CStringInt {
+  s: cstring;
+  n: int32;
+}
+struct Padded {
+  a: int8;
+  b: double;
+  c: int32;
+}
+struct ThreeBytes {
+  a: int8;
+  b: int8;
+  c: int8;
+}
+extern "C" {
+  fn oskelTestFlagFloatInt(s: FlagFloatInt): int32;
+  fn oskelTestMakeFlagFloatInt(flag: int8, f: float, n: int32): FlagFloatInt;
+  fn oskelTestPointerIsNull(s: PointerInt): int32;
+  fn oskelTestMakeNullPointer(n: int32): PointerInt;
+  fn oskelTestMakeCString(): CStringInt;
+  fn oskelTestMakeNullCString(): CStringInt;
+  fn oskelTestCStringLength(c: CStringInt): int32;
+  fn oskelTestPadded(s: Padded): int32;
+  fn oskelTestMakePadded(a: int8, b: double, c: int32): Padded;
+  fn oskelTestThreeBytes(s: ThreeBytes): int32;
+  fn oskelTestMakeThreeBytes(): ThreeBytes;
+  fn oskelTestSumTriple(t: Triple): int64;
+  fn oskelTestSumTripleD(t: TripleD): double;
+  fn oskelTestMakeTriple(a: int64, b: int64, c: int64): Triple;
+  fn oskelTestMakeTripleD(x: double, y: double, z: double): TripleD;
+  fn oskelTestScalarThenTriple(x: int64, t: Triple): int64;
+  fn oskelTestTwoTriples(t: Triple, u: Triple): int64;
+  fn oskelTestTriplePairScalar(t: Triple, p: PairD, k: int64): double;
+  fn oskelTestSixThenTriple(a: int64, b: int64, c: int64, d: int64, e: int64, f: int64,
+                            t: Triple): int64;
+}
+
+// A stack-passed struct argument, integer and floating point.
+assertEq(oskelTestSumTriple({a: 1, b: 2, c: 3}), 6);
+assertEq(oskelTestSumTripleD({x: 1.5, y: 2.5, z: 3.0}), 7.0);
+
+// An `sret` return: the fields must arrive exactly.
+let t = oskelTestMakeTriple(10, 20, 30);
+assertEq(t.a, 10);
+assertEq(t.b, 20);
+assertEq(t.c, 30);
+
+let d = oskelTestMakeTripleD(1.5, 2.5, 3.5);
+assertEq(d.x, 1.5);
+assertEq(d.y, 2.5);
+assertEq(d.z, 3.5);
+
+// The outgoing area and the register arguments must not disturb each other.
+assertEq(oskelTestScalarThenTriple(1000, {a: 1, b: 2, c: 3}), 1006);
+assertEq(oskelTestTwoTriples({a: 1, b: 2, c: 3}, {a: 10, b: 20, c: 30}), 66);
+assertEq(oskelTestTriplePairScalar({a: 1, b: 2, c: 3}, {a: 0.5, b: 0.25}, 100), 106.75);
+assertEq(oskelTestSixThenTriple(1, 2, 3, 4, 5, 6, {a: 10, b: 20, c: 30}), 81);
+
+// Narrow and mixed-class fields, and a `float` narrowed back to binary32.
+assertEq(oskelTestFlagFloatInt({flag: 1, f: float(2.5), n: 10}), 13);
+let ffs = oskelTestMakeFlagFloatInt(1, float(2.5), 10);
+assertEq(ffs.flag, 1);
+assertEq(ffs.f, 2.5);
+assertEq(ffs.n, 10);
+
+// A pointer field: `nil` is C's NULL and a NULL read back boxes as nil.
+assertEq(oskelTestPointerIsNull({p: nil, n: 42}), 42);
+let ps = oskelTestMakeNullPointer(7);
+assertEq(ps.n, 7);
+assertEq(type(ps.p), "nil");
+
+// A `cstring` field: C hands back a `const char *`, which the backend copies
+// into a Oskel string; a NULL field becomes nil. `type()` reports "string" for
+// a non-NULL one -- the documented VM/AOT divergence (BACKLOG §6 item 23), the
+// same as a `cstring` scalar return.
+let cs = oskelTestMakeCString();
+assertEq(cs.s, "hi");
+assertEq(cs.n, 5);
+assertEq(type(cs.s), "string");
+assertEq(oskelTestCStringLength({s: "abc", n: 4}), 7);
+let nullCs = oskelTestMakeNullCString();
+assertEq(type(nullCs.s), "nil");
+assertEq(nullCs.n, 9);
+
+// Padding and odd sizes: the trailing bytes of the last eightbyte must be
+// zero-filled, and a struct smaller than one eightbyte still round-trips.
+assertEq(oskelTestPadded({a: 1, b: 2.5, c: 10}), 13);
+let padded = oskelTestMakePadded(1, 2.5, 10);
+assertEq(padded.a, 1);
+assertEq(padded.b, 2.5);
+assertEq(padded.c, 10);
+assertEq(oskelTestThreeBytes({a: 1, b: 2, c: 3}), 6);
+let three = oskelTestMakeThreeBytes();
+assertEq(three.a, 1);
+assertEq(three.b, 2);
+assertEq(three.c, 3);
+
+// A returned class-MEMORY struct is a map, like a register-class one.
+assertEq(type(t), "map");
+assert("a" in t);
+
+print("ffi memory struct ok");

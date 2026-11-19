@@ -8,7 +8,7 @@ This guide describes the syntax and semantics of Oskel as implemented by the com
 
 The language surface this reference documents is implemented on the development engine (`oskel`) in full. The native (AOT) backend and the JIT lag behind it, and the gaps are listed in §16:
 
-| Area | Development engine (`oskel`) | AOT backend (`oskel build`) |
+| Area | Development engine (`oskel`) | AOT backend (`oskelc` / `oskel build`) |
 | --- | --- | --- |
 | Language core: functions, closures, control flow, collections | ✅ | ✅ (subset the lowerer covers) |
 | Types, nullability, `struct`, `class`, variadics, `import`, `switch`, `defer` (PHASE 6.5/6.8) | ✅ | ✅ (all are compile-time; `struct`/`class` are erased, `switch`/`defer` lower to existing opcodes) |
@@ -54,7 +54,7 @@ A Oskel program is a UTF-8 text file (extension `.oskl`). The pipeline is:
 3. **Compiler**: translates the AST to bytecode (39 opcodes today, register-based, under a hard budget of 40).
 4. **VM**: executes the bytecode.
 
-The AST is never executed: the `oskel` executable compiles source to bytecode and runs it on the register-based VM. The compiler and the VM implement the whole language surface this reference documents — functions, closures and control flow, collections, the type system with nullability, `struct` and `class` (PHASE 6.5/6.8), FFI with C (PHASE 6.6) and error values with `pcall`, `try`/`catch`, unions and `@MustUse` (PHASE 6.7). The AOT backend (PHASE 7) compiles a subset of the same programs to a native binary through `oskel build`; §16 lists the constructs it does not yet lower.
+The AST is never executed: the `oskel` executable compiles source to bytecode and runs it on the register-based VM. The compiler and the VM implement the whole language surface this reference documents — functions, closures and control flow, collections, the type system with nullability, `struct` and `class` (PHASE 6.5/6.8), FFI with C (PHASE 6.6) and error values with `pcall`, `try`/`catch`, unions and `@MustUse` (PHASE 6.7). The AOT backend (PHASE 7) compiles a subset of the same programs to a native binary through `oskelc` (also reachable as `oskel build`); §16 lists the constructs it does not yet lower.
 
 The program runs from top to bottom in the global scope. Simple statements end with `;`. Statements with a block (`if`, `while`, `for`, `fn`) close with `}` and optionally accept a `;` after it.
 
@@ -553,12 +553,14 @@ back wholly in `rax`, a `{double; double}` in `xmm0`/`xmm1`, and a mixed
 eightbytes and passed in the registers the ABI assigns it, so the callee reads
 back the exact bytes of the struct.
 
-Only structs of **16 bytes or fewer** are supported (the register case). A
-larger struct is passed in memory, a shape the register marshalling cannot
-express, so the declaration is rejected at compile time with a clear message
-instead of a wrong call. A struct field must be an FFI scalar type (an integer,
-`float`/`double`, `ptr`/`cstring` or `bool`); a nested struct field is rejected
-for the same reason.
+A struct of **more than 16 bytes** is class MEMORY: it is passed in the outgoing
+stack-argument area and returned through a hidden `sret` buffer the caller
+supplies in `rdi` (which shifts every integer argument one register along). The
+development engine expresses both directions through `libffi`, so a class-MEMORY
+struct needs libffi and the System V AMD64 ABI; elsewhere the declaration is
+rejected at compile time with a clear message instead of a wrong call. A struct
+field must be an FFI scalar type (an integer, `float`/`double`, `ptr`/`cstring`
+or `bool`); a nested struct field is rejected.
 
 Structs by value are **System V AMD64 only**. The register classification above
 is the System V ABI's; the Microsoft x64 ABI (Windows) passes a struct larger
@@ -972,6 +974,20 @@ class Config {
 }
 ```
 
+A plain `=` and `??=` count as setting the field, because `??=` falls back to its
+right operand when the field is still `nil`. Every other compound does **not**:
+`self.n += 1` reads the field before writing it, so on an unset field it faults
+on `nil` — the check reports it rather than letting the constructor crash:
+
+```oskel
+class Counter {
+  n: int;
+  fn init() { self.n += 1; }   // error: reads the field before writing it
+}
+```
+
+Give such a field a default (`n: int = 0;`) and the compound is fine.
+
 The check is syntactic: it catches a forgotten field, not every path through
 `init`. An assignment inside an `if`, a loop or a `switch` counts, and so does a
 nullable field left `nil` on purpose. A lambda body inside `init` does **not**
@@ -1113,7 +1129,7 @@ From highest to lowest precedence:
 | 15 | `??` | left |
 | 16 | `catch` | left |
 | 17 | `?:` | right |
-| 18 | `=` `+=` `-=` `*=` `/=` `%=` `**=` `&&=` `\|\|=` `??=` | right |
+| 18 | `=` `+=` `-=` `*=` `/=` `%=` `**=` `&=` `\|=` `^=` `<<=` `>>=` `&&=` `\|\|=` `??=` | right |
 
 Notes:
 
@@ -1213,6 +1229,9 @@ assertEq(256 >> 3, 32);
 assertEq(~0, -1);
 ```
 
+Each bitwise operator also has a compound form (`&=`, `|=`, `^=`, `<<=`,
+`>>=`); see section 5.9.
+
 ### 5.7 Membership
 
 The `in` operator tests membership:
@@ -1293,7 +1312,17 @@ x *= 2;
 x /= 2;
 x %= 3;
 x **= 2;
+x &= 0xF0;
+x |= 0x0F;
+x ^= 0xFF;
+x <<= 2;
+x >>= 1;
 ```
+
+The bitwise compounds are the `&`, `|`, `^`, `<<` and `>>` operators in
+assignment form: `x &= y` is exactly `x = x & y`, so they accept only `int`
+operands and a shift count between 0 and 63, and they lower to the existing
+`BAND`/`BOR`/`BXOR`/`SHL`/`SHR` opcodes (no new opcode).
 
 They also work on indexes and members:
 
@@ -1301,10 +1330,11 @@ They also work on indexes and members:
 let data = [1, 2];
 data[0] += 10;
 data[0] *= 2;
+data[0] <<= 1;
 
 let person = {age: 36};
 person.age += 1;
-person["age"] *= 2;
+person["age"] &= 0x7F;
 ```
 
 The logical operators have a compound form too. Each one short-circuits exactly
@@ -2780,6 +2810,7 @@ oskel <file.oskl>          runs a script
 oskel -e "<code>"          runs code from the command line
 oskel -c <file.oskl>       compiles the script without running it
 oskel build <file.oskl>    compiles the script to a native binary (AOT)
+oskelc <file.oskl>         the same compiler without the interpreter
 ```
 
 | Option | Description |
@@ -2788,7 +2819,10 @@ oskel build <file.oskl>    compiles the script to a native binary (AOT)
 | `-v`, `--version` | Version. |
 | `-e`, `--eval <code>` | Code to run. The remaining arguments go to the script. |
 | `-c`, `--check` | Compiles without running; reports syntax, type and import errors. |
-| `-o`, `--output <file>` | Output path for `build` (default: the script's base name). |
+| `-o`, `--output <file>` | Output path for `build`/`oskelc` (default: the script's base name). |
+| `--target <name>` | Build target for `build`/`oskelc` (default: the host). |
+| `--mode <name>` | Link mode for `build`/`oskelc` (default: `freestanding`). |
+| `--no-jit` | Disables the JIT (development engine only). |
 | `--` | End of options; the next argument is the file. |
 
 Options must come before the file. Everything after the file is considered an argument of the script and is obtained with `args()`.
@@ -2842,8 +2876,7 @@ compiles either way):
   dynamic dependencies.
 - `--mode hosted` links the compiled program against the host C library, so an
   `extern "C"` symbol resolves to the real C function at link time. This is the
-  mode that makes FFI work, and the mode the planned `oskelc` host compiler is
-  documented to emit. It needs a C toolchain at build time and produces a binary
+  mode that makes FFI work, and the mode `oskelc` emits. It needs a C toolchain at build time and produces a binary
   that *does* depend on libc, so it is not freestanding. The emitter wraps the
   program in a relocatable object and the host C compiler (`$CC`, default `cc`)
   links it against libc; the entry prelude reaches the system through libc
@@ -2876,15 +2909,38 @@ parameter binds an ordinary array of the extras, built by the runtime's
 `oskel_pack_rest`, so a program using them behaves the same on the VM and in the
 static binary.
 
+### `oskelc`: the host compiler
+
+`oskelc` is the same compiler behind a shorter command line. It links the lexer,
+the parser, the bytecode compiler and the AOT backend, and never the VM, the JIT
+or the builtins, so the compiler you ship carries no interpreter
+(`DEVELOPMENT.md` §2, toolchain boundary). Both entry points call the same
+pipeline, so the flags, the defaults, the diagnostics and the exit codes are the
+same; the emitted image is byte for byte identical.
+
+```sh
+oskelc app.oskl -o app                     # freestanding (default)
+oskelc app.oskl --mode hosted -o app       # links libc (FFI)
+oskelc app.oskl --target x86_64-windows-win64 -o app.exe
+```
+
+`oskel` keeps `oskel build` as a thin alias, so an existing command line keeps
+working and the two cannot drift:
+
+```sh
+oskel build app.oskl -o app                # the same binary as `oskelc`
+```
+
 **Planned (a later release)**:
 
 ```sh
-oskelc <file.oskl> -o app      compiles to a native binary (AOT, musl static)
 oskelc <file.oskl> -c          compiles to bytecode (.oskc)
 oskelc -pkg ... -o app.oskpkg  packages a .oskpkg
 ```
 
-`oskelc` is a planned separate host compiler: it reads sources and writes the ELF, so it links libc, and the freestanding part is what it emits, not the compiler itself. It is **not** part of 0.1.0 — `oskel build` is the AOT entry point today, and it is not yet a thin alias over `oskelc` (the split in `DEVELOPMENT.md` §2 is the target, not the current state). There is also no `.oskc` serializer in the tree yet, so `-c` and `-pkg` are future work.
+There is no `.oskc` serializer in the tree yet, so `-c` and `-pkg` are refused
+by name with exit 64 rather than read as a typo. They are future work, not
+features of this release.
 
 ---
 
@@ -2898,7 +2954,7 @@ oskelc -pkg ... -o app.oskpkg  packages a .oskpkg
 - No `++`, `--` or default parameters. A trailing `rest...` parameter makes a function variadic (see §7.1). `switch` on literals and ranges is supported (see §6.10), and so is the post-test loop `do { ... } while (cond);` (see §6.4).
 - Optional types and nullability are implemented for declarations and expressions (PHASE 6.5). Type annotations (`let x: int = 5`), local inference, the nullable `T?` annotation, and the null-safe expressions `?.`, `??` and `!!` are checked at compile time. `struct` is implemented (see §4.7) and so is `native fn` (see §7.6), the typed declaration of a host-provided function.
 - FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the System V AMD64 ABI without `libffi` for scalars and structs by value. A `fn(P...): R` parameter is a callback: the development engine builds a `libffi` closure that re-enters the VM (its `R` may be a scalar or a struct by value). A trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...): int`), which applies the C default argument promotions and goes through `libffi`; like a class-MEMORY struct it needs the System V AMD64 ABI plus `libffi`, and is rejected at compile time elsewhere.
-- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.5 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux x86-64 only), where the program is linked against libc; the freestanding mode, which is the default, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, structs by value, callbacks and C variadics are not lowered yet, and `native fn` declarations the backend has no stub for fail the build with a dedicated message.
+- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.7 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux x86-64 only), where the program is linked against libc; the freestanding mode, which is the default, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — both register-class and class-MEMORY — are lowered (7f.6, 7f.7); callbacks and C variadics are not, and `native fn` declarations the backend has no stub for fail the build with a dedicated message.
 - A function's text representation differs between the engines: the VM renders a named function as `<fn name>` (`<native fn name>` for a host binding) while the AOT binary renders every function as `<fn>`, because the AOT closure object carries only code, arity and upvalue count and no name. This is a known parity gap (BACKLOG §6.22); `tests/freestanding_test.cpp` pins the AOT form and `tests/native_build_control_flow.oskl` avoids printing a bare function so the fixture agrees on both engines.
 - No UI library yet. Skia + SDL2 + declarative UI is planned for post-1.0.
 - No async/await, generics, full pattern matching, generators, or transactions. These are out of scope (see `DEVELOPMENT.md`).

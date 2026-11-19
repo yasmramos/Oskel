@@ -250,6 +250,11 @@ bool isAssignOp(Tok type) {
     case Tok::SlashEq:
     case Tok::PercentEq:
     case Tok::StarStarEq:
+    case Tok::AmpEq:
+    case Tok::PipeEq:
+    case Tok::CaretEq:
+    case Tok::ShlEq:
+    case Tok::ShrEq:
     case Tok::AmpAmpEq:
     case Tok::PipePipeEq:
     case Tok::QuestionQuestionEq:
@@ -982,63 +987,79 @@ StmtPtr Parser::parseFunctionBody(const Token& arrow) {
 // inheritance. Because the desugared form is plain Oskel, the VM and the AOT
 // backend run it identically with no backend work (docs/language.md §4.8).
 
-// Collects every `self.<field> = ...` target written anywhere in `stmt`, so a
-// class can tell whether `init` assigned a field (PHASE 6.8.1). A nested
+// What `init` does to the `self.<field>` targets it writes. `initialized` holds
+// the fields written without reading them first; `readFirst` holds the ones a
+// compound operator reads before writing (`self.n += 1` on a field that is
+// still `nil` faults), which therefore do not initialize the instance. A nested
 // function or lambda is not entered: its body runs later, if at all, so an
-// assignment there does not initialize the instance being constructed.
-static void collectSelfAssignmentsInto(const Stmt& stmt, std::unordered_set<std::string>& out) {
+// assignment there does not initialize the instance being constructed
+// (PHASE 6.8.1).
+struct SelfWrites {
+  std::unordered_set<std::string> initialized;
+  std::unordered_set<std::string> readFirst;
+};
+
+// `??=` initializes: it falls back to its right operand when the left is nil,
+// so it tolerates an unset field. Every other compound reads the previous value
+// first and needs one.
+static bool initializesField(Tok op) { return op == Tok::Eq || op == Tok::QuestionQuestionEq; }
+
+static void collectSelfWritesInto(const Stmt& stmt, SelfWrites& out) {
   if (const auto* exprStmt = std::get_if<ExprStmt>(&stmt.node)) {
     if (const auto* assign = std::get_if<AssignExpr>(&exprStmt->expr->node)) {
       if (const auto* member = std::get_if<MemberExpr>(&assign->target->node)) {
         if (const auto* self = std::get_if<VariableExpr>(&member->object->node)) {
-          if (self->name == "self") out.insert(member->name);
+          if (self->name == "self") {
+            auto& set = initializesField(assign->op) ? out.initialized : out.readFirst;
+            set.insert(member->name);
+          }
         }
       }
     }
     return;
   }
   if (const auto* block = std::get_if<BlockStmt>(&stmt.node)) {
-    for (const StmtPtr& child : block->stmts) collectSelfAssignmentsInto(*child, out);
+    for (const StmtPtr& child : block->stmts) collectSelfWritesInto(*child, out);
     return;
   }
   if (const auto* branch = std::get_if<IfStmt>(&stmt.node)) {
-    collectSelfAssignmentsInto(*branch->thenBranch, out);
-    if (branch->elseBranch) collectSelfAssignmentsInto(*branch->elseBranch, out);
+    collectSelfWritesInto(*branch->thenBranch, out);
+    if (branch->elseBranch) collectSelfWritesInto(*branch->elseBranch, out);
     return;
   }
   if (const auto* loop = std::get_if<WhileStmt>(&stmt.node)) {
-    collectSelfAssignmentsInto(*loop->body, out);
+    collectSelfWritesInto(*loop->body, out);
     return;
   }
   if (const auto* loop = std::get_if<DoWhileStmt>(&stmt.node)) {
-    collectSelfAssignmentsInto(*loop->body, out);
+    collectSelfWritesInto(*loop->body, out);
     return;
   }
   if (const auto* loop = std::get_if<ForStmt>(&stmt.node)) {
-    if (loop->init) collectSelfAssignmentsInto(*loop->init, out);
-    collectSelfAssignmentsInto(*loop->body, out);
+    if (loop->init) collectSelfWritesInto(*loop->init, out);
+    collectSelfWritesInto(*loop->body, out);
     return;
   }
   if (const auto* loop = std::get_if<ForInStmt>(&stmt.node)) {
-    collectSelfAssignmentsInto(*loop->body, out);
+    collectSelfWritesInto(*loop->body, out);
     return;
   }
   if (const auto* sw = std::get_if<SwitchStmt>(&stmt.node)) {
     for (const SwitchCase& branch : sw->cases) {
-      if (branch.body) collectSelfAssignmentsInto(*branch.body, out);
+      if (branch.body) collectSelfWritesInto(*branch.body, out);
     }
-    if (sw->defaultBody) collectSelfAssignmentsInto(*sw->defaultBody, out);
+    if (sw->defaultBody) collectSelfWritesInto(*sw->defaultBody, out);
     return;
   }
   if (const auto* deferred = std::get_if<DeferStmt>(&stmt.node)) {
     // A deferred block runs when the scope exits, which is still inside `init`.
-    collectSelfAssignmentsInto(*deferred->body, out);
+    collectSelfWritesInto(*deferred->body, out);
   }
 }
 
-static std::unordered_set<std::string> collectSelfAssignments(const Stmt& stmt) {
-  std::unordered_set<std::string> out;
-  collectSelfAssignmentsInto(stmt, out);
+static SelfWrites collectSelfWrites(const Stmt& stmt) {
+  SelfWrites out;
+  collectSelfWritesInto(stmt, out);
   return out;
 }
 
@@ -1166,16 +1187,24 @@ StmtPtr Parser::parseClassDecl() {
     // one under a branch that may not run — so it catches the forgotten field,
     // not every path. A class without `init` is left alone: its fields start
     // `nil` by design (documented), and `init` is what opts into the contract.
-    std::unordered_set<std::string> assigned = collectSelfAssignments(*init->body);
+    SelfWrites writes = collectSelfWrites(*init->body);
     for (const StructField& field : fields) {
       if (!field.type.isPresent() || field.type.nullable || field.type.isUnion()) continue;
       if (field.initializer) continue;
-      if (assigned.count(field.name) != 0) continue;
+      if (writes.initialized.count(field.name) != 0) continue;
+      const std::string tail = "'" + field.name + ": " + field.type.name +
+                               " = ...') or assign 'self." + field.name + "' in 'init'";
+      if (writes.readFirst.count(field.name) != 0) {
+        throw CompileError{"field '" + field.name + "' of class '" + name.lexeme +
+                               "' is declared '" + field.type.name +
+                               "' but 'init' only updates it in place, and a compound "
+                               "assignment reads the field first, so it is still nil; give it a "
+                               "default (" + tail,
+                           field.line, field.col};
+      }
       throw CompileError{"field '" + field.name + "' of class '" + name.lexeme +
                              "' is declared '" + field.type.name +
-                             "' but 'init' never assigns it; give it a default "
-                             "('" + field.name + ": " + field.type.name + " = ...') or assign "
-                             "'self." + field.name + "' in 'init'",
+                             "' but 'init' never assigns it; give it a default (" + tail,
                          field.line, field.col};
     }
   }

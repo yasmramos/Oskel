@@ -8496,7 +8496,269 @@ void normalizeIntegerReturn(CodeGen& cg, const std::string& type) {
   }
 }
 
-// Emits the marshalling thunk for one scalar `extern "C"` symbol (PHASE 7f.5).
+// Builds the C bytes of one by-value struct argument in a stack buffer at
+// `[rbp + bufDisp]`, reading each field out of the `AotMap` the argument holds.
+// The buffer is then reloaded as whole eightbytes, which is why it exists: the
+// fields are narrower than an eightbyte and overlap, so staging each at its own
+// width and reloading is simpler -- and correct for a mixed INTEGER/SSE struct
+// -- than assembling every eightbyte from its fields in registers.
+//
+// `argSlot` is the argument's frame offset (`[rbx + argSlot]`) and `bufDisp` the
+// displacement of the destination, relative to `rbp` for a register-class
+// struct's staging buffer or to `rsp` for a class-MEMORY struct's place in the
+// outgoing argument area. Each field is read with `oskel_member_get`, exactly
+// like `obj.field`, so the read matches the VM's. A missing field yields nil,
+// which the width stores turn into zero bytes, the same zero-fill the hosted
+// `writeStructBytes` starts from.
+void emitStructArgBytes(CodeGen& cg, const AotStructLayout& arg, std::int64_t argSlot,
+                        X64Reg bufBase, std::int64_t bufDisp, CodeGen::Label memberGet,
+                        CodeGen::Label oom, CodeGen::Label allocLabel, CodeGen::Label fail,
+                        const DataBlob& msgType) {
+  // Zero the buffer first: the padding a C compiler leaves between fields is
+  // part of the value the callee may copy. A class-MEMORY struct is larger than
+  // the 16-byte register-class buffers, so the span comes from the layout.
+  const std::int64_t span = (static_cast<std::int64_t>(arg.layout.size) + 7) / 8 * 8;
+  for (std::int64_t w = 0; w < span; w += 8) cg.movImmToMem(bufBase, bufDisp + w, 0);
+
+  const ffi::StructLayout& layout = arg.layout;
+  for (std::size_t k = 0; k < layout.fields.size(); ++k) {
+    const std::int64_t fieldOffset = static_cast<std::int64_t>(layout.offsets[k]);
+    // rdi:rsi = the struct value (the map), rdx:rcx = the field name.
+    cg.movFromMem(Rdi, Rbx, argSlot);
+    cg.movFromMem(Rsi, Rbx, argSlot + 8);
+    cg.movImm(Rdx, static_cast<std::int64_t>(AotTag::Str));
+    cg.leaRipLabel(Rcx, arg.fieldNameLabels[k]);
+    cg.callLabel(memberGet);
+    // A missing field is a nil, and the hosted engine rejects it by name; a
+    // zero-filled field would be a silently wrong call, so fail here too. A
+    // pointer or `cstring` field may legitimately be nil (C's NULL), which its
+    // own branch below handles.
+    if (layout.classes[k] != ffi::ParamClass::Pointer &&
+        !ffi::isFfiCStringTypeName(layout.fields[k].type)) {
+      CodeGen::Label present = cg.newLabel();
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagNil));
+      cg.jcc(Jcc::Ne, present);
+      emitFailCall(cg, fail, msgType);
+      cg.bind(present);
+    }
+    // The field's boxed value is in rax (tag) / rdx (payload). Store its bytes
+    // at the field's offset and width. A `float` field is boxed as binary64, so
+    // it is narrowed back to binary32 first; every other class is a bit pattern
+    // or an integer whose low bytes are the C representation.
+    const std::size_t size = layout.sizes[k];
+    if (ffi::isFfiCStringTypeName(layout.fields[k].type)) {
+      // An `AotString` is a length then the bytes, with no NUL, so its address
+      // is not a `const char *`. Materialise a terminated copy in the arena,
+      // exactly like a scalar `cstring` argument; `nil` stays NULL.
+      CodeGen::Label isNil = cg.newLabel();
+      CodeGen::Label isStr = cg.newLabel();
+      CodeGen::Label staged = cg.newLabel();
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagNil));
+      cg.jcc(Jcc::Eq, isNil);
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+      cg.jcc(Jcc::Eq, isStr);
+      emitFailCall(cg, fail, msgType);
+      cg.bind(isNil);
+      cg.xorReg(Rdx, Rdx);
+      cg.jmp(staged);
+      cg.bind(isStr);
+      cg.movReg(R12, Rdx);            // the AotString*
+      cg.movFromMem(Rdi, R12, 0);     // the byte length
+      cg.addImm32(Rdi, 1);            // plus the terminating NUL
+      cg.callLabel(allocLabel);
+      cg.testReg(Rax);
+      cg.jcc(Jcc::Eq, oom);
+      cg.movReg(R11, Rax);            // the block, kept across `rep movsb`
+      cg.movReg(Rdi, Rax);
+      cg.movReg(Rsi, R12);
+      cg.addImm32(Rsi, static_cast<std::int32_t>(kAotStringHeaderSize));
+      cg.movFromMem(Rcx, R12, 0);
+      cg.repMovsb();
+      cg.movImmByteToMem(Rdi, 0, 0);  // the terminating NUL
+      cg.movReg(Rdx, R11);
+      cg.bind(staged);
+    }
+    if (layout.classes[k] == ffi::ParamClass::Float) {
+      cg.movqToXmm(XmmScratch, Rdx);
+      cg.cvtsd2ss(XmmScratch, XmmScratch);
+      cg.movqFromXmm(Rdx, XmmScratch);
+    }
+    if (size == 1) {
+      cg.movByteToMem(bufBase, bufDisp + fieldOffset, Rdx);
+    } else if (size == 2) {
+      // No 16-bit store exists (the backend's narrow forms are 8 and 32 bits),
+      // so the two bytes go out one at a time; a single 32-bit store could spill
+      // into the next field.
+      cg.movByteToMem(bufBase, bufDisp + fieldOffset, Rdx);
+      cg.shrImm8(Rdx, 8);
+      cg.movByteToMem(bufBase, bufDisp + fieldOffset + 1, Rdx);
+    } else if (size == 4) {
+      cg.movToMem32(bufBase, bufDisp + fieldOffset, Rdx);
+    } else {
+      cg.movToMem(bufBase, bufDisp + fieldOffset, Rdx);
+    }
+  }
+}
+
+// Boxes a C string address held in `addrReg` (an `AotString`, or nil for NULL).
+// The bytes are scanned to the NUL with the hosted engine's 16 MiB cap and
+// copied into the arena, exactly as a `cstring` scalar return is. Leaves the
+// boxed value in rax:rdx. `oom` is the thunk's out-of-memory label.
+void emitCStringBox(CodeGen& cg, X64Reg addrReg, CodeGen::Label oom,
+                    CodeGen::Label allocLabel, CodeGen::Label fail,
+                    const DataBlob& msgCStringTooLong) {
+  CodeGen::Label null = cg.newLabel();
+  CodeGen::Label scanned = cg.newLabel();
+  CodeGen::Label scanLoop = cg.newLabel();
+  CodeGen::Label returned = cg.newLabel();
+  cg.testReg(addrReg);
+  cg.jcc(Jcc::Eq, null);
+  // `rbx` is dead once the C call has returned (the caller reloads the map from
+  // `r12`), so it holds the C string across the `alloc`; `r12` must survive
+  // because a struct return keeps the map there.
+  cg.movReg(Rbx, addrReg);
+  cg.xorReg(Rcx, Rcx);      // the byte count
+  cg.bind(scanLoop);
+  // `movzxFromMem` takes a displacement, so index through a temporary base.
+  cg.movReg(R11, Rbx);
+  cg.addReg(R11, Rcx);
+  cg.movzxFromMem(R10, R11, 0);
+  cg.testReg(R10);
+  cg.jcc(Jcc::Eq, scanned);
+  cg.addImm32(Rcx, 1);
+  cg.cmpImm32(Rcx, static_cast<std::int32_t>(kMaxCStringBytes));
+  cg.jcc(Jcc::B, scanLoop);
+  emitFailCall(cg, fail, msgCStringTooLong);
+  cg.bind(scanned);
+  cg.movReg(Rdi, Rcx);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
+  cg.callLabel(allocLabel);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rax, 0, Rcx);  // the AotString length
+  cg.movReg(Rdi, Rax);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
+  cg.movReg(Rsi, Rbx);
+  cg.repMovsb();             // copies rcx bytes (the scan left rcx = length)
+  cg.movReg(Rdx, Rax);
+  cg.movImm(Rax, kTagStr);
+  cg.jmp(returned);
+  cg.bind(null);
+  cg.movImm(Rax, kTagNil);
+  cg.xorReg(Rdx, Rdx);
+  cg.bind(returned);
+}
+
+// Rebuilds the `AotMap` of a struct returned by value. The eightbytes come back
+// in the registers their class assigns: an INTEGER eightbyte in `rax` then
+// `rdx`, an SSE one in `xmm0` then `xmm1`. They are stashed in a stack buffer
+// first, then each field is read at its offset, boxed exactly as the hosted
+// `readStructField` does, and written into a fresh map.
+void emitStructReturn(CodeGen& cg, const AotStructLayout& ret, std::int64_t bufDisp,
+                      CodeGen::Label tableNew, CodeGen::Label memberSet,
+                      CodeGen::Label oom, CodeGen::Label allocLabel, CodeGen::Label fail,
+                      const DataBlob& msgCStringTooLong) {
+  const ffi::StructLayout& layout = ret.layout;
+  int intReg = 0;
+  int sseReg = 0;
+  for (int e = 0; e < layout.eightbyteCount; ++e) {
+    const std::int64_t off = bufDisp + 8LL * e;
+    if (layout.eightbyte[e] == 'S') {
+      cg.movqFromXmm(R11, kXmmBase + sseReg);
+      cg.movToMem(Rbp, off, R11);
+      ++sseReg;
+    } else {
+      cg.movToMem(Rbp, off, intReg == 0 ? Rax : Rdx);
+      ++intReg;
+    }
+  }
+
+  cg.movImm(Rdi, 1);  // a map, not an array
+  cg.callLabel(tableNew);
+  cg.movReg(R12, Rdx);  // the AotMap*, kept across the memberSet calls
+
+  for (std::size_t k = 0; k < layout.fields.size(); ++k) {
+    const std::string& type = layout.fields[k].type;
+    const std::int64_t fieldOffset = bufDisp + static_cast<std::int64_t>(layout.offsets[k]);
+    const std::size_t size = layout.sizes[k];
+    const ffi::ParamClass cls = layout.classes[k];
+
+    if (cls == ffi::ParamClass::Float) {
+      cg.movFromMem32(Rax, Rbp, fieldOffset);
+      cg.movqToXmm(XmmScratch, Rax);
+      cg.cvtss2sd(XmmScratch, XmmScratch);  // binary32 -> binary64
+      cg.movqFromXmm(Rdx, XmmScratch);
+      cg.movImm(Rax, kTagFloat);
+    } else if (cls == ffi::ParamClass::Double) {
+      cg.movFromMem(Rdx, Rbp, fieldOffset);
+      cg.movImm(Rax, kTagDouble);
+    } else if (ffi::isFfiCStringTypeName(type)) {
+      // A `cstring` field is a `const char *`: the hosted engine copies it into
+      // a Oskel string (NULL becomes nil), so the AOT backend must too. A raw
+      // address here would be a silently wrong value, not a representation.
+      cg.movFromMem(Rax, Rbp, fieldOffset);
+      emitCStringBox(cg, Rax, oom, allocLabel, fail, msgCStringTooLong);
+    } else if (cls == ffi::ParamClass::Pointer) {
+      // A pointer field has no AOT representation of its own, so a NULL (the
+      // only value a program can construct, since the backend lowers no `ptr`
+      // return) boxes as nil, exactly like the hosted engine's NULL. A non-null
+      // address is surfaced as the integer it is, rather than invented into a
+      // handle the runtime could not dereference.
+      CodeGen::Label isNull = cg.newLabel();
+      CodeGen::Label boxed = cg.newLabel();
+      cg.movFromMem(Rdx, Rbp, fieldOffset);
+      cg.testReg(Rdx);
+      cg.jcc(Jcc::Eq, isNull);
+      cg.movImm(Rax, kTagInt);
+      cg.jmp(boxed);
+      cg.bind(isNull);
+      cg.xorReg(Rdx, Rdx);
+      cg.movImm(Rax, kTagNil);
+      cg.bind(boxed);
+    } else {
+      // An integer family field (or a pointer, which the AOT runtime has no
+      // handle for and reports as its address). Load exactly the field's bytes,
+      // then normalize to the declared width like a scalar return.
+      if (size == 1) {
+        cg.movzxFromMem(Rax, Rbp, fieldOffset);
+      } else if (size == 2) {
+        cg.movFromMem32(Rax, Rbp, fieldOffset);
+        cg.andImm32(Rax, 0xffff);
+      } else if (size == 4) {
+        cg.movFromMem32(Rax, Rbp, fieldOffset);
+      } else {
+        cg.movFromMem(Rax, Rbp, fieldOffset);
+      }
+      if (type == "bool") {
+        cg.andImm32(Rax, 0xff);
+        cg.testReg(Rax);
+        cg.setcc(Jcc::Ne, Rdx);
+        cg.movzx(Rdx, Rdx);
+        cg.movImm(Rax, kTagBool);
+      } else {
+        normalizeIntegerReturn(cg, type);
+        cg.movReg(Rdx, Rax);
+        cg.movImm(Rax, kTagInt);
+      }
+    }
+
+    // oskel_member_set(map, name, value): rdi:rsi the map, rdx:rcx the name,
+    // r8:r9 the boxed field. The value is in rax:rdx, so it moves to r8:r9
+    // before the name overwrites rdx:rcx.
+    cg.movReg(R8, Rax);
+    cg.movReg(R9, Rdx);
+    cg.movImm(Rdi, kTagMap);
+    cg.movReg(Rsi, R12);
+    cg.movImm(Rdx, static_cast<std::int64_t>(AotTag::Str));
+    cg.leaRipLabel(Rcx, ret.fieldNameLabels[k]);
+    cg.callLabel(memberSet);
+  }
+
+  cg.movImm(Rax, kTagMap);
+  cg.movReg(Rdx, R12);
+}
+
+// Emits the marshalling thunk for one `extern "C"` symbol (PHASE 7f.5, 7f.7).
 // It has the lowering's own function shape `AotValue thunk(AotValue* args, long
 // argc, AotClosure* self)`, so it drops into the `oskel_call` dispatch exactly
 // like a user function or a seeded builtin: the chunk seeds it as a `Func` in
@@ -8512,9 +8774,10 @@ void normalizeIntegerReturn(CodeGen& cg, const std::string& type) {
 // for an integer parameter and widened for a `double`; the return is normalized
 // to the declared width.
 void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fail,
-                     CodeGen::Label allocLabel, const DataBlob& msgArity,
-                     const DataBlob& msgType, const DataBlob& msgOom,
-                     const DataBlob& msgCStringTooLong) {
+                     CodeGen::Label allocLabel, CodeGen::Label memberGet,
+                     CodeGen::Label tableNew, CodeGen::Label memberSet,
+                     const DataBlob& msgArity, const DataBlob& msgType,
+                     const DataBlob& msgOom, const DataBlob& msgCStringTooLong) {
   CodeGen::Label arityOk = cg.newLabel();
   CodeGen::Label oom = cg.newLabel();
 
@@ -8527,23 +8790,88 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   // `alloc` and `rep movsb`, which clobber the argument registers. Six 8-byte
   // slots keep the frame 16-byte aligned (48 is a multiple of 16).
   constexpr std::int32_t kArgStageBytes = 6 * 8;
-  cg.subRegImm32(Rsp, kArgStageBytes);
-  cg.movReg(Rbx, Rdi);  // args base; parameter i lives at [rbx - 16*i]
+  // One 16-byte buffer per register-class struct (at most six, since a signature
+  // is bounded by six eightbytes and every struct contributes at least one).
+  constexpr std::int32_t kStructBufSlots = 6;
+  constexpr std::int32_t kStructBufBytes = 16 * kStructBufSlots;
+  // The frame below `rbp` is laid out top to bottom as: the staging slots, the
+  // register-class struct buffers, the `sret` buffer, and finally the outgoing
+  // stack-argument area. Only the last is addressed from `rsp` (it must be the
+  // lowest part, where the callee reads its stack arguments); everything else is
+  // `rbp`-relative, so the two never overlap.
+  constexpr std::int64_t kStageBase = -static_cast<std::int64_t>(16 + kArgStageBytes);
+  constexpr std::int64_t kStructBufBase = kStageBase - kStructBufBytes;
+  const std::int64_t sretBytes =
+      thunk.returnMemoryBytes > 0 ? (thunk.returnMemoryBytes + 15) / 16 * 16 : 0;
+  const std::int64_t sretBase = kStructBufBase - sretBytes;
+  const std::int64_t stackArgsBytes = (thunk.stackArgBytes + 15) / 16 * 16;
+  // A multiple of 16 in every term, so `rsp` stays 16-byte aligned at the call.
+  const std::int64_t frameBytes = kArgStageBytes + kStructBufBytes + sretBytes + stackArgsBytes;
+  cg.subRegImm32(Rsp, static_cast<std::int32_t>(frameBytes));
+  cg.movReg(Rbx, Rdi);  // args base; argument i lives at [rbx - 16*i]
 
   // The thunk is the callee, so it checks its own arity, exactly like a user
   // function's prologue. A direct call is already arity-checked at compile time,
   // so this only fires through a first-class reference (`var f = abs; f(1, 2)`).
-  cg.cmpImm32(Rsi, static_cast<std::int32_t>(thunk.params.size()));
+  cg.cmpImm32(Rsi, static_cast<std::int32_t>(thunk.arity));
   cg.jcc(Jcc::Eq, arityOk);
   emitFailCall(cg, fail, msgArity);
   cg.bind(arityOk);
 
+  // Build every struct argument's bytes first: each field read calls
+  // `oskel_member_get`, which clobbers the argument registers and the xmm
+  // registers, so nothing may be live in them yet. The buffers are dead once
+  // the loop below has loaded the eightbytes, which is why the return path
+  // reuses them.
+  for (const AotThunkParam& param : thunk.params) {
+    if (param.structIndex >= 0 && param.eightbyte == 0) {
+      const AotStructLayout& arg = thunk.structs[static_cast<std::size_t>(param.structIndex)];
+      emitStructArgBytes(cg, arg, -16LL * param.argIndex, Rbp,
+                         kStructBufBase + 16LL * arg.bufSlot, memberGet, oom, allocLabel,
+                         fail, msgType);
+    }
+  }
+  // A class-MEMORY argument is written straight into the outgoing stack area,
+  // which is `rsp`-relative and already reserved by the frame.
+  for (const AotStackArg& stacked : thunk.stackArgs) {
+    emitStructArgBytes(cg, thunk.structs[static_cast<std::size_t>(stacked.structIndex)],
+                       -16LL * stacked.argIndex, Rsp, stacked.offset, memberGet, oom, allocLabel,
+                       fail, msgType);
+  }
+
+  // A class-MEMORY return consumes `rdi` for the hidden buffer pointer, so the
+  // integer arguments start one register later. The pointer is staged with the
+  // other integer arguments and loaded just before the call, like them.
   int gpr = 0;
+  if (thunk.returnMemoryBytes > 0) {
+    cg.leaMem(R11, Rbp, sretBase);
+    cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
+    ++gpr;
+  }
   int sse = 0;
   for (std::size_t i = 0; i < thunk.params.size(); ++i) {
-    const std::int64_t base = -16LL * static_cast<std::int64_t>(i);
+    const AotThunkParam& param = thunk.params[i];
+    if (param.structIndex >= 0) {
+      // One eightbyte of a struct: load it whole out of the buffer the pre-pass
+      // filled. An INTEGER eightbyte stages like a scalar GPR argument, an SSE
+      // one goes straight to its xmm register.
+      const std::int64_t off =
+          kStructBufBase +
+          16LL * thunk.structs[static_cast<std::size_t>(param.structIndex)].bufSlot +
+          8LL * param.eightbyte;
+      cg.movFromMem(R11, Rbp, off);
+      if (param.cls == ffi::ParamClass::Double) {
+        cg.movqToXmm(kXmmBase + sse, R11);
+        ++sse;
+      } else {
+        cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
+        ++gpr;
+      }
+      continue;
+    }
+    const std::int64_t base = -16LL * param.argIndex;
     cg.movFromMem(R10, Rbx, base);  // the value's tag
-    switch (thunk.params[i]) {
+    switch (param.cls) {
       case ffi::ParamClass::Int: {
         // A bool (payload 0/1), an int, or a number (truncated toward zero).
         CodeGen::Label asIs = cg.newLabel();
@@ -8566,7 +8894,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         cg.bind(asIs);
         cg.movFromMem(R11, Rbx, base + 8);
         cg.bind(done);
-        cg.movToMem(Rsp, 8LL * gpr, R11);
+        cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
         ++gpr;
         break;
       }
@@ -8657,7 +8985,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         cg.movImmByteToMem(Rdi, 0, 0);  // the terminating NUL
         cg.movReg(R11, Rax);
         cg.bind(staged);
-        cg.movToMem(Rsp, 8LL * gpr, R11);
+        cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
         ++gpr;
         break;
       }
@@ -8671,9 +8999,28 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
 
   // Load the staged integer arguments into their registers now that every
   // `alloc`/`rep movsb` has run. The SSE arguments are already in place.
-  for (int k = 0; k < gpr; ++k) cg.movFromMem(kIntArgRegs[k], Rsp, 8LL * k);
+  for (int k = 0; k < gpr; ++k)
+    cg.movFromMem(kIntArgRegs[k], Rbp, kStageBase + 8LL * k);
 
   cg.callExternal(thunk.symbol);
+
+  // A struct return comes back in the registers its eightbyte classes assign
+  // (`rax`/`rdx` and `xmm0`/`xmm1`), so it is rebuilt into a map and the scalar
+  // switch below never sees it.
+  if (thunk.returnStructIndex >= 0) {
+    // A register-class struct is in the return registers; a class-MEMORY one was
+    // written by the callee into the `sret` buffer.
+    emitStructReturn(cg, thunk.structs[static_cast<std::size_t>(thunk.returnStructIndex)],
+                     thunk.returnMemoryBytes > 0 ? sretBase : kStructBufBase, tableNew,
+                     memberSet, oom, allocLabel, fail, msgCStringTooLong);
+    cg.addImm32(Rsp, static_cast<std::int32_t>(frameBytes));
+    cg.pop(R12);
+    cg.pop(Rbx);
+    epilogue(cg);
+    cg.bind(oom);
+    emitFailCall(cg, fail, msgOom);
+    return;
+  }
 
   // Box the C result: the integer family comes back in `rax` and is normalized
   // to its declared width, a float/double in `xmm0`. A `void` returns nil.
@@ -8698,49 +9045,10 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
       cg.movzx(Rdx, Rdx);
       cg.movImm(Rax, kTagBool);
       break;
-    case ffi::ReturnClass::CString: {
-      // A `const char *` comes back in `rax`. NULL is nil; otherwise the bytes
-      // are scanned to the NUL (with the hosted engine's 16 MiB cap) and copied
-      // into an `AotString`, which is the AOT representation of text.
-      CodeGen::Label null = cg.newLabel();
-      CodeGen::Label scanned = cg.newLabel();
-      CodeGen::Label scanLoop = cg.newLabel();
-      CodeGen::Label returned = cg.newLabel();
-      cg.testReg(Rax);
-      cg.jcc(Jcc::Eq, null);
-      cg.movReg(R12, Rax);      // the C string; r12 survives the `alloc`
-      cg.xorReg(Rcx, Rcx);      // the byte count
-      cg.bind(scanLoop);
-      // `movzxFromMem` takes a displacement, so index through a temporary base.
-      cg.movReg(R11, R12);
-      cg.addReg(R11, Rcx);
-      cg.movzxFromMem(R10, R11, 0);
-      cg.testReg(R10);
-      cg.jcc(Jcc::Eq, scanned);
-      cg.addImm32(Rcx, 1);
-      cg.cmpImm32(Rcx, static_cast<std::int32_t>(kMaxCStringBytes));
-      cg.jcc(Jcc::B, scanLoop);
-      emitFailCall(cg, fail, msgCStringTooLong);
-      cg.bind(scanned);
-      cg.movReg(Rdi, Rcx);
-      cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
-      cg.callLabel(allocLabel);
-      cg.testReg(Rax);
-      cg.jcc(Jcc::Eq, oom);
-      cg.movToMem(Rax, 0, Rcx);  // the AotString length
-      cg.movReg(Rdi, Rax);
-      cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
-      cg.movReg(Rsi, R12);
-      cg.repMovsb();             // copies rcx bytes (the scan left rcx = length)
-      cg.movReg(Rdx, Rax);
-      cg.movImm(Rax, kTagStr);
-      cg.jmp(returned);
-      cg.bind(null);
-      cg.movImm(Rax, kTagNil);
-      cg.xorReg(Rdx, Rdx);
-      cg.bind(returned);
+    case ffi::ReturnClass::CString:
+      // A `const char *` comes back in `rax`.
+      emitCStringBox(cg, Rax, oom, allocLabel, fail, msgCStringTooLong);
       break;
-    }
     default:  // Int
       normalizeIntegerReturn(cg, thunk.returnType);
       cg.movReg(Rdx, Rax);
@@ -8748,7 +9056,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
       break;
   }
 
-  cg.addImm32(Rsp, kArgStageBytes);
+  cg.addImm32(Rsp, static_cast<std::int32_t>(frameBytes));
   cg.pop(R12);
   cg.pop(Rbx);
   epilogue(cg);
@@ -9113,8 +9421,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitArityError(cg, handles.arityError, fail, msgArity);
   if (externThunks != nullptr) {
     for (const AotExternThunk& thunk : *externThunks) {
-      emitExternThunk(cg, thunk, fail, handles.alloc, msgArity, msgExternType, msgOom,
-                      msgCStringTooLong);
+      emitExternThunk(cg, thunk, fail, handles.alloc, handles.memberGet, handles.tableNew,
+                      handles.memberSet, msgArity, msgExternType, msgOom, msgCStringTooLong);
     }
   }
   emitPrintStrEsc(cg, printStrEsc, entry.write, textQuote, textEscQuote,
@@ -9308,6 +9616,24 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x07\x00\x00\x00\x00\x00\x00\x00" "message"), 15);
   cg.bind(env.codeConst);
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x04\x00\x00\x00\x00\x00\x00\x00" "code"), 12);
+
+  // The field names of every by-value struct in an `extern "C"` signature
+  // (PHASE 7f.7), each a raw `AotString` the thunk uses as a map key. They are
+  // emitted here, with the other data islands, because the thunk's `lea` fixups
+  // were emitted long before.
+  if (externThunks != nullptr) {
+    for (const AotExternThunk& thunk : *externThunks) {
+      for (const AotStructLayout& layout : thunk.structs) {
+        for (std::size_t k = 0; k < layout.fieldNameLabels.size(); ++k) {
+          cg.bind(layout.fieldNameLabels[k]);
+          const std::uint64_t length = layout.layout.fields[k].name.size();
+          cg.emitBytes(reinterpret_cast<const std::uint8_t*>(&length), sizeof length);
+          cg.emitBytes(reinterpret_cast<const std::uint8_t*>(layout.layout.fields[k].name.data()),
+                       layout.layout.fields[k].name.size());
+        }
+      }
+    }
+  }
 
   // Data islands last: every code path above ends in `ret` or `ud2`, so
   // control never reaches them, and their addresses are already referenced by

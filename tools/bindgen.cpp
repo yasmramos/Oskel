@@ -2,13 +2,15 @@
 
 #include <cctype>
 #include <cstddef>
+#include <cstdlib>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include "ast.h"  // isKnownTypeName / isIntegerTypeName: the FFI vocabulary
-#include "ffi_types.h"  // kMaxExternArgs: the register budget the thunk enforces
+#include "ffi_types.h"  // the FFI vocabulary and layout: the single source of truth
+                         // this tool validates a signature against
 
 namespace {
 
@@ -162,7 +164,38 @@ struct Base {
   bool isCallback = false;
   std::vector<std::string> callbackParams;
   std::string callbackReturn;  // "void" for a callback that returns nothing
+
+  // A struct by value: the name the Oskel `struct` declaration gets, and its
+  // fields. `oskel` carries that name, so a parameter/return spells it like any
+  // other FFI type name. `anonymousStruct` marks a `typedef struct { ... } X`
+  // whose body has no tag: the typedef declarator names it a moment later.
+  std::vector<ffi::FfiField> fields;
+  bool anonymousStruct = false;
 };
+
+// The compiler's view of a parsed type, so a generated signature can be
+// validated by `ffi::validateSignature` instead of by rules this tool would
+// otherwise have to keep in step with the compiler's by hand. `fallback` is the
+// spelling the emitter uses when the type resolved to nothing (`int32` for a
+// parameter, `void` for a return), so the validator is asked about exactly the
+// text that goes into the module -- validating a different spelling would make
+// the check an approximation of the emission rather than a check on it.
+ffi::TypeSpec specOf(const Base& base, const char* fallback) {
+  ffi::TypeSpec spec;
+  if (base.isCallback) {
+    spec.isCallback = true;
+    spec.callbackParams = base.callbackParams;
+    spec.callbackReturn = base.callbackReturn;
+    return spec;
+  }
+  if (base.kind == Base::Kind::Struct) {
+    spec.isStruct = true;
+    spec.fields = base.fields;
+    return spec;
+  }
+  spec.scalarType = base.oskel.empty() ? fallback : base.oskel;
+  return spec;
+}
 
 // The Oskel spelling of a callback type: `fn(P...): R`.
 std::string callbackSpelling(const Base& cb) {
@@ -359,6 +392,14 @@ class Bindgen {
     bool isSigned = false;
     bool isStructTag = false;
     std::string word;  // the base word (a builtin keyword, a typedef, or "")
+    // `struct`/`union`: the body when the declaration defines one. An anonymous
+    // body has no tag, so the typedef declarator is what names it.
+    std::vector<ffi::FfiField> structFields;
+    bool hasStructBody = false;
+    std::string structProblem;
+    // `enum`: an enum is an `int` at the ABI, so it maps to `int32` (BACKLOG
+    // §7.10). Its members become module constants.
+    bool isEnumTag = false;
   };
 
   // Whether `word` is a type word the tool understands: a C type keyword, a
@@ -453,13 +494,48 @@ class Bindgen {
         continue;
       }
       if (t.text == "struct" || t.text == "union" || t.text == "enum") {
+        const std::string tagKeyword = t.text;
         advance();
         std::string tag;
         if (check(TokKind::Ident)) tag = advance().text;
+        if (tagKeyword == "enum") {
+          // A C enum is an `int` at the ABI, so the declaration maps to `int32`
+          // and its members become module constants (BACKLOG §7.10).
+          spec.isEnumTag = true;
+          spec.word = tag.empty() ? "enum" : "enum " + tag;
+          if (checkPunct("{")) parseEnumBody();
+          continue;
+        }
         spec.isStructTag = true;
-        spec.word = t.text + (tag.empty() ? "" : " " + tag);
-        // A definition (`struct X { ... }`) is consumed here; a bare tag stays.
-        if (checkPunct("{")) skipBraces();
+        spec.word = tagKeyword + (tag.empty() ? "" : " " + tag);
+        if (checkPunct("{")) {
+          // A definition: read the body so the layout is known. A union is a
+          // memory layout with overlapping members, which Oskel's `struct` (a
+          // map of whole scalars) cannot express, so it is recorded as a
+          // problem rather than silently mis-laid-out.
+          if (tagKeyword == "union") {
+            skipBraces();
+            spec.hasStructBody = true;
+            spec.structProblem =
+                "a C union is a memory layout with overlapping members, which the Oskel "
+                "`struct` (a map of whole scalars) cannot express";
+          } else {
+            parseStructBody(spec.structFields, spec.structProblem);
+            spec.hasStructBody = true;
+          }
+          // Recorded even with a problem: a later bare reference must report the
+          // real reason instead of "definition not in this header".
+          recordStruct(tag, spec.structFields, spec.structProblem);
+        } else if (!tag.empty()) {
+          // A bare `struct X` reference: reuse a body read earlier in the file,
+          // so a declaration that follows its definition still resolves.
+          auto known = structTags_.find(tag);
+          if (known != structTags_.end()) {
+            spec.hasStructBody = true;
+            spec.structFields = known->second.fields;
+            spec.structProblem = known->second.problem;
+          }
+        }
         continue;
       }
       if (spec.word.empty()) {
@@ -495,14 +571,187 @@ class Bindgen {
     return spec;
   }
 
+  // What the header said about a `struct`/`union` tag. A body with a field the
+  // vocabulary cannot express is recorded with its problem, so a later bare
+  // reference reports the real reason instead of "definition not in this
+  // header".
+  struct StructInfo {
+    std::vector<ffi::FfiField> fields;
+    std::string problem;
+    bool defined = false;
+  };
+
+  // One member of a C `enum`, emitted as a module constant.
+  struct EnumConstant {
+    std::string name;
+    long long value = 0;
+  };
+
+  // The C tag of a `struct`/`union` specifier (`struct Point` -> "Point"), or
+  // "" for an anonymous body.
+  static std::string structNameOf(const Spec& spec) {
+    static const std::string keyword = "struct ";
+    if (spec.word.compare(0, keyword.size(), keyword) == 0) {
+      return spec.word.substr(keyword.size());
+    }
+    return "";  // a bare `struct` (an anonymous body)
+  }
+
+  // Records a struct's layout once, so a later bare `struct X` reference reuses
+  // it and the emitted module declares it exactly once. Only a struct that can
+  // actually be declared is queued for emission.
+  void recordStruct(const std::string& name, const std::vector<ffi::FfiField>& fields,
+                    const std::string& problem) {
+    if (name.empty()) return;
+    if (structTags_.count(name) != 0) return;
+    StructInfo info;
+    info.fields = fields;
+    info.problem = problem;
+    info.defined = true;
+    // The layout is the same one the runtime builds, so a body it rejects (a
+    // nested struct, an empty struct) is never emitted as a declarable type.
+    if (info.problem.empty()) {
+      ffi::StructLayout layout;
+      std::string reason;
+      if (!ffi::buildStructLayout(fields, layout, reason)) info.problem = reason;
+    }
+    const bool declarable = info.problem.empty();
+    structTags_[name] = std::move(info);
+    if (declarable) structOrder_.push_back(name);
+  }
+
+  // Reads a `{ field; ... }` body into the FFI field list. The caller has not
+  // consumed the `{`. A field the vocabulary cannot express (a nested struct, an
+  // array, a bitfield) makes the whole struct unbindable: the layout would be
+  // wrong, so the declaration must be reported instead of mistranslated.
+  void parseStructBody(std::vector<ffi::FfiField>& out, std::string& problem) {
+    advance();  // `{`
+    while (!check(TokKind::Eof) && !checkPunct("}")) {
+      if (checkPunct(";")) {
+        advance();
+        continue;
+      }
+      Base fieldType = parsePointers(baseFromSpec(parseSpecifiers()));
+      std::string name;
+      if (check(TokKind::Ident)) name = advance().text;
+      // An array member (`char name[32]`) is a buffer, not a scalar: the layout
+      // is not expressible.
+      if (checkPunct("[")) {
+        skipBrackets();
+        if (problem.empty()) {
+          problem = "an array field ('" + name +
+                    "') is not expressible in the Oskel `struct`, whose fields are whole scalars";
+        }
+      }
+      // A bitfield (`int a : 3`) is an intra-struct packing detail.
+      if (checkPunct(":")) {
+        while (!check(TokKind::Eof) && !checkPunct(";") && !checkPunct(",")) advance();
+        if (problem.empty()) {
+          problem = "a bitfield ('" + name +
+                    "') is not expressible in the Oskel `struct`, whose fields are whole scalars "
+                    "at natural alignment";
+        }
+      }
+      // Multiple declarators (`int a, b;`) share the base type.
+      for (;;) {
+        if (!fieldType.ok && problem.empty()) {
+          problem = "field '" + name + "': " + quoteReason(fieldType);
+        } else if (fieldType.ok && problem.empty()) {
+          ffi::FfiField field;
+          field.name = name;
+          field.type = fieldType.oskel;
+          out.push_back(std::move(field));
+        }
+        if (matchPunct(",")) {
+          if (check(TokKind::Ident)) name = advance().text;
+          continue;
+        }
+        break;
+      }
+      if (!matchPunct(";")) {
+        // A malformed body: stop at the closing brace rather than run away.
+        while (!check(TokKind::Eof) && !checkPunct(";") && !checkPunct("}")) advance();
+        matchPunct(";");
+      }
+    }
+    matchPunct("}");
+  }
+
+  // Reads `{ NAME [= value], ... }` and records each member as a module
+  // constant. The caller has not consumed the `{`.
+  void parseEnumBody() {
+    advance();  // `{`
+    long long next = 0;
+    while (!check(TokKind::Eof) && !checkPunct("}")) {
+      if (!check(TokKind::Ident)) {
+        advance();
+        continue;
+      }
+      const std::string name = advance().text;
+      long long value = next;
+      if (matchPunct("=")) {
+        // The value is an integer constant expression; only a plain decimal,
+        // hex or octal literal is evaluated, which is what a real header uses.
+        // Anything else is left to the next member's implicit value.
+        bool negate = matchPunct("-");
+        if (check(TokKind::Number)) {
+          const std::string text = advance().text;
+          char* end = nullptr;
+          const long long parsed = std::strtoll(text.c_str(), &end, 0);
+          if (end != nullptr && *end == '\0') value = negate ? -parsed : parsed;
+        } else {
+          while (!check(TokKind::Eof) && !checkPunct(",") && !checkPunct("}")) advance();
+        }
+      }
+      next = value + 1;
+      enumConstants_.push_back({name, value});
+      if (!matchPunct(",")) break;
+    }
+    matchPunct("}");
+  }
+
   // Turns a specifier list into a `Base`.
   Base baseFromSpec(const Spec& spec) {
     Base base;
     base.spelling = spec.word;
+    if (spec.isEnumTag) {
+      // An enum is an `int` at the ABI (BACKLOG §7.10), so `int32` is the exact
+      // spelling; the members travel as module constants.
+      base.kind = Base::Kind::Int;
+      base.oskel = "int32";
+      base.spelling = spec.word;
+      return base;
+    }
     if (spec.isStructTag) {
       base.kind = Base::Kind::Struct;
-      base.ok = false;
-      base.reason = "'" + spec.word + "' crosses by value";
+      base.spelling = spec.word;
+      if (!spec.structProblem.empty()) {
+        base.ok = false;
+        base.reason = "'" + spec.word + "': " + spec.structProblem;
+        return base;
+      }
+      if (!spec.hasStructBody) {
+        base.ok = false;
+        base.reason = "'" + spec.word +
+                      "' is used by value but its definition is not in this header, so its "
+                      "layout is unknown";
+        return base;
+      }
+      // The Oskel `struct` name: the C tag. An anonymous body
+      // (`typedef struct { ... } div_t`) has no tag, so the typedef declarator
+      // names it a moment later (`parseTypedef`); until then it is marked
+      // anonymous so a use without an alias can be reported instead of emitted.
+      const std::string name = structNameOf(spec);
+      if (name.empty()) {
+        base.ok = true;
+        base.anonymousStruct = true;
+        base.fields = spec.structFields;
+        return base;
+      }
+      base.ok = true;
+      base.oskel = name;
+      base.fields = spec.structFields;
+      recordStruct(name, spec.structFields, spec.structProblem);
       return base;
     }
     const std::string& w = spec.word;
@@ -794,6 +1043,15 @@ class Bindgen {
       } else {
         declarator = parsePointers(base);
         if (check(TokKind::Ident)) name = advance().text;
+        // An anonymous struct body (`typedef struct { ... } div_t;`) is named by
+        // this declarator: without an alias the shape could not be spelled in
+        // Oskel at all.
+        if (declarator.anonymousStruct && !name.empty()) {
+          declarator.anonymousStruct = false;
+          declarator.oskel = name;
+          declarator.spelling = "struct " + name;
+          recordStruct(name, declarator.fields, "");
+        }
         // An array suffix decays to a pointer.
         while (checkPunct("[")) {
           skipBrackets();
@@ -890,6 +1148,10 @@ class Bindgen {
     Spec spec = parseSpecifiers();
     Base base = baseFromSpec(spec);
     Base returnType = parsePointers(base);
+    if (returnType.anonymousStruct) {
+      returnType.ok = false;
+      returnType.reason = "an anonymous 'struct' has no name to spell in a signature";
+    }
 
     // A declaration that is not a plain `name(` is a variable, a function
     // pointer, or something else slice 1 does not bind: skip it. A *declaration*
@@ -971,15 +1233,22 @@ class Bindgen {
       skipped_.push_back(name + ": " + paramProblem);
       return;
     }
-    // The register thunks cover at most `kMaxExternArgs` eightbytes; the
-    // compiler rejects a longer non-variadic signature, so emitting it would
-    // produce a module `oskel -c` refuses. A variadic call goes through libffi
-    // and is exempt.
-    if (!variadic && params.size() > ffi::kMaxExternArgs) {
-      skipped_.push_back(
-          name + ": passes " + std::to_string(params.size()) +
-          " register-sized values, more than the " + std::to_string(ffi::kMaxExternArgs) +
-          " the FFI thunks cover");
+    // Whether the signature can cross the C boundary is the compiler's call, so
+    // the tool asks `ffi::validateSignature` instead of re-implementing the
+    // rules (the register budget counts eightbytes, not parameters, and a
+    // struct's availability depends on the target ABI). Asking twice is what
+    // separates the two outcomes: a shape the *vocabulary* cannot express is
+    // skipped with its reason, while one this *build* cannot marshal is written
+    // commented out, so the module compiles here and the real signature stays
+    // there to uncomment on a build that supports it.
+    std::vector<ffi::TypeSpec> paramSpecs;
+    paramSpecs.reserve(params.size());
+    for (const Param& param : params) paramSpecs.push_back(param.spec);
+    const ffi::TypeSpec returnSpec = specOf(returnType, "void");
+    const std::string vocabularyProblem =
+        ffi::validateSignature(paramSpecs, returnSpec, variadic, ffi::kFullAbiCapabilities);
+    if (!vocabularyProblem.empty()) {
+      skipped_.push_back(name + ": " + vocabularyProblem);
       return;
     }
 
@@ -989,6 +1258,7 @@ class Bindgen {
     fn.variadic = variadic;
     fn.returnType = returnType.oskel.empty() ? "void" : returnType.oskel;
     fn.line = nameToken.line;
+    fn.commentedNote = ffi::validateSignature(paramSpecs, returnSpec, variadic);
 
     auto existing = emittedNames_.find(name);
     if (existing != emittedNames_.end()) {
@@ -996,13 +1266,16 @@ class Bindgen {
       return;
     }
     emittedNames_.insert(name);
-    if (variadic) ++commentedVariadics_;
+    if (!fn.commentedNote.empty()) ++commentedDeclarations_;
     functions_.push_back(std::move(fn));
   }
 
   struct Param {
     std::string name;
     std::string type;
+    // The same type as the compiler's FFI sees it, so a signature is checked
+    // by `ffi::validateSignature` instead of by rules the tool re-implements.
+    ffi::TypeSpec spec;
   };
   struct Function {
     std::string name;
@@ -1010,6 +1283,11 @@ class Bindgen {
     bool variadic = false;
     std::string returnType;
     int line = 0;
+    // Empty for a declaration this build can marshal. Otherwise the reason it
+    // is written commented out: the vocabulary can express it, this build
+    // cannot (a variadic, a MEMORY struct, a struct by value on a non-System V
+    // ABI), so the real signature is there to uncomment on a build that can.
+    std::string commentedNote;
   };
 
   void parseParamList(std::vector<Param>& out, bool& variadic, std::string& problem) {
@@ -1099,6 +1377,13 @@ class Bindgen {
           base.callbackReturn.clear();
         }
       }
+      if (base.anonymousStruct) {
+        // `struct { int x; }` inline has no name, so a signature has nothing to
+        // spell; emitting `int32` (the empty-`oskel` fallback) would silently
+        // pass the struct by value as a scalar.
+        base.ok = false;
+        base.reason = "an anonymous 'struct' has no name to spell in a signature";
+      }
       if (!base.ok && problem.empty()) {
         problem = "parameter type " + quoteReason(base);
       }
@@ -1106,6 +1391,7 @@ class Bindgen {
       param.type = base.isCallback
                        ? callbackSpelling(base)
                        : (base.oskel.empty() ? "int32" : base.oskel);
+      param.spec = specOf(base, "int32");
       out.push_back(std::move(param));
       ++index;
       if (matchPunct(",")) continue;
@@ -1131,14 +1417,44 @@ class Bindgen {
     text += "// through `Platform::lookupSymbol`.\n";
     text += "\n";
 
+    // Structs first: a signature may spell one by value, so the declaration has
+    // to be in scope before the `extern "C"` block reads it.
+    for (const std::string& name : structOrder_) {
+      const std::vector<ffi::FfiField>& fields = structTags_[name].fields;
+      text += "struct ";
+      text += name;
+      text += " {\n";
+      for (const ffi::FfiField& field : fields) {
+        text += "  ";
+        text += field.name;
+        text += ": ";
+        text += field.type;
+        text += ";\n";
+      }
+      text += "}\n\n";
+    }
+
+    // An enum is an `int` at the ABI; its members are module constants so the
+    // program can name them.
+    for (const auto& constant : enumConstants_) {
+      text += "let ";
+      text += constant.name;
+      text += " = ";
+      text += std::to_string(constant.value);
+      text += ";\n";
+    }
+    if (!enumConstants_.empty()) text += "\n";
+
     text += "extern \"C\" {\n";
     for (const Function& fn : functions_) {
-      // A variadic declaration is written commented out: it needs libffi and
-      // the System V AMD64 ABI, and a build without both rejects the
-      // declaration at compile time. Commented, the module still compiles, and
-      // the signature is right there to uncomment on a supporting build.
-      const bool isVariadic = fn.variadic;
-      text += isVariadic ? "  // " : "  ";
+      // A declaration this build cannot marshal is written commented out: the
+      // compiler rejects it at compile time (a variadic needs libffi and the
+      // System V AMD64 ABI; a struct by value needs that ABI too), so
+      // commenting it keeps the module compiling here while the real signature
+      // stays there to uncomment on a build that supports it. The note is the
+      // compiler's own reason, not a second guess.
+      const bool isCommented = !fn.commentedNote.empty();
+      text += isCommented ? "  // " : "  ";
       text += "fn ";
       text += fn.name;
       text += "(";
@@ -1155,8 +1471,8 @@ class Bindgen {
       text += "): ";
       text += fn.returnType;
       text += ";";
-      if (isVariadic) {
-        text += "  // needs libffi and the System V AMD64 ABI";
+      if (isCommented) {
+        text += "  // " + fn.commentedNote;
       }
       text += "\n";
     }
@@ -1167,9 +1483,11 @@ class Bindgen {
     }
     text += "}\n";
 
-    result_.emitted = static_cast<int>(functions_.size()) - commentedVariadics_;
+    result_.emitted = static_cast<int>(functions_.size()) - commentedDeclarations_;
     result_.skipped = static_cast<int>(skipped_.size());
-    result_.commented = commentedVariadics_;
+    result_.commented = commentedDeclarations_;
+    result_.structs = static_cast<int>(structOrder_.size());
+    result_.constants = static_cast<int>(enumConstants_.size());
   }
 
   static std::string quoteReason(const Base& base) {
@@ -1193,7 +1511,15 @@ class Bindgen {
   std::vector<Function> functions_;
   std::vector<std::string> skipped_;
   std::unordered_set<std::string> emittedNames_;
-  int commentedVariadics_ = 0;
+  // Declarations written commented out because this build cannot marshal them.
+  int commentedDeclarations_ = 0;
+  // The structs the header defined, keyed by tag, plus the order they were
+  // defined in (so the emitted module reads like the header). Only a struct
+  // whose layout the runtime accepts is queued in `structOrder_`.
+  std::unordered_map<std::string, StructInfo> structTags_;
+  std::vector<std::string> structOrder_;
+  // The `enum` members, in declaration order, as module constants.
+  std::vector<EnumConstant> enumConstants_;
   bindgen::Result result_;
 };
 
