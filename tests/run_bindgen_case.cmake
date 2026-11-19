@@ -37,12 +37,14 @@ if(NOT bindgen_stdout STREQUAL "")
   message(FATAL_ERROR
     "bindgen wrote to stdout despite -o\n--- stdout ---\n${bindgen_stdout}")
 endif()
-# The fixture has two skipped declarations (a struct by value, a callback
-# returned) and one commented
-# variadic, so the summary must mention both.
-if(NOT bindgen_stderr MATCHES "skipped" OR NOT bindgen_stderr MATCHES "variadic")
+# The fixture declares structs and enum members, and reports the shapes it
+# cannot express (a union, an array field, a nested struct, a bitfield, a
+# returned callback) plus one commented variadic. The summary has to mention
+# every group, or a regression in one of them would go unnoticed.
+if(NOT bindgen_stderr MATCHES "skipped" OR NOT bindgen_stderr MATCHES "commented out"
+   OR NOT bindgen_stderr MATCHES "struct\\(s\\)" OR NOT bindgen_stderr MATCHES "enum constant\\(s\\)")
   message(FATAL_ERROR
-    "the bindgen summary does not report the skipped/commented counts:\n"
+    "the bindgen summary does not report every group (skipped/commented/structs/constants):\n"
     "--- stderr ---\n${bindgen_stderr}")
 endif()
 
@@ -106,6 +108,38 @@ endif()
 if(generated_text MATCHES "WINAPI: " OR generated_text MATCHES "CALLBACK: ")
   message(FATAL_ERROR
     "a calling convention leaked into the generated parameter names:\n${generated_text}")
+endif()
+# The structs reach the module before the `extern "C"` block, and a signature
+# spells one by value.
+if(NOT generated_text MATCHES "struct Point \\{")
+  message(FATAL_ERROR "the generated module does not declare struct Point:\n${generated_text}")
+endif()
+if(NOT generated_text MATCHES "fn make_point\\(x: int32, y: int32\\): Point;")
+  message(FATAL_ERROR
+    "a struct-by-value return was not emitted with its struct name:\n${generated_text}")
+endif()
+# An anonymous body is named by its typedef, and the signature uses that name.
+if(NOT generated_text MATCHES "struct div_t \\{")
+  message(FATAL_ERROR
+    "an anonymous struct was not named by its typedef:\n${generated_text}")
+endif()
+if(NOT generated_text MATCHES "fn div\\(num: int32, denom: int32\\): div_t;")
+  message(FATAL_ERROR
+    "the typedef-named struct is not spelled in the signature:\n${generated_text}")
+endif()
+# An enum is an `int` at the ABI and its members are module constants.
+if(NOT generated_text MATCHES "let GREEN = 5;")
+  message(FATAL_ERROR "the enum members are not module constants:\n${generated_text}")
+endif()
+if(NOT generated_text MATCHES "fn pick_color\\(seed: int32\\): int32;")
+  message(FATAL_ERROR "an enum-typed declaration is not int32:\n${generated_text}")
+endif()
+# A body the Oskel `struct` cannot lay out is reported, never declared with a
+# wrong layout: the declaration, not the `// skipped:` comment that names it.
+if(generated_text MATCHES "\nstruct Value \\{" OR generated_text MATCHES "\nstruct Named \\{"
+   OR generated_text MATCHES "\nstruct Nested \\{" OR generated_text MATCHES "\nstruct Bits \\{")
+  message(FATAL_ERROR
+    "the generated module declares a struct whose layout cannot be expressed:\n${generated_text}")
 endif()
 
 # --- 4. Usage errors use the toolchain's exit codes ---

@@ -120,9 +120,11 @@ int main(int argc, char** argv) {
   // incomplete. The count goes to stderr to keep stdout a clean module.
   if (result.skipped > 0 || result.commented > 0) {
     std::cerr << "bindgen: generated " << result.emitted << " declaration(s)";
+    if (result.structs > 0) std::cerr << ", " << result.structs << " struct(s)";
+    if (result.constants > 0) std::cerr << ", " << result.constants << " enum constant(s)";
     if (result.commented > 0) {
       std::cerr << ", " << result.commented
-                << " variadic commented out (needs libffi)";
+                << " commented out (needs libffi)";
     }
     if (result.skipped > 0) {
       std::cerr << ", skipped " << result.skipped << " (see the '// skipped:' comments)";

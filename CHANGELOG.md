@@ -11,6 +11,28 @@ may change between minor versions.
 
 ### Added
 
+- **`bindgen` translates a `struct` by value and a C `enum` (PHASE 6.6).** A
+  header that declares `struct Point { int x; int y; };` and
+  `struct Point make_point(int x, int y);` now produces the matching
+  `struct Point { x: int32; y: int32; }` before the `extern "C"` block plus
+  `fn make_point(x: int32, y: int32): Point;`, so a struct crosses the boundary
+  by value instead of being skipped. An anonymous body
+  (`typedef struct { int quot; int rem; } div_t;`) takes the typedef's name,
+  which is the only name the header gives it. The layout is validated with
+  `ffi::buildStructLayout`, the same check the runtime applies, so a body Oskel
+  cannot represent — a union, an array field, a bitfield, a nested struct — is
+  reported as `// skipped:` with its real reason and never emitted with a wrong
+  layout; a body the runtime rejects is not queued for emission at all. A C
+  `enum` is an `int` at the ABI (BACKLOG §7.10), so a declaration that mentions
+  one maps to `int32` and the members become module constants (`let GREEN = 5;`),
+  which is what lets a program name them. `bindgen::Result` gained `structs`
+  and `constants`, and the CLI summary reports both. Covered by four new
+  `tests/bindgen_test.cpp` cases and the extended
+  `tests/bindgen/sample.h` fixture, whose output is fed back to `oskel -c` by
+  `tests/run_bindgen_case.cmake`. Verified end to end against libc: the
+  generated `div_t div(int, int)` returns the right quotient and remainder and
+  the enum constants print `5` and `6`.
+
 - **`class` hardening: field defaults, the `init` completeness check, method
   reassignment rules and a typo warning (PHASE 6.8.1).** A `class` stays pure
   sugar over the map-plus-closures idiom, so every check below lives in the
