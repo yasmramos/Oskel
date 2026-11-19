@@ -6,9 +6,9 @@
 # `0x10` was split into `0` and a name. This test derives the vocabulary from the
 # single sources of truth and fails when the grammar misses one of them:
 #
-#   keywords - the `kKeywords` table in src/lexer.cpp
-#   types    - the `name == "..."` vocabulary in src/ast.h
-#   builtins - the `addNative("...")` names in src/builtins.cpp
+#   keywords - the `kKeywords` table in src/frontend/lexer.cpp
+#   types    - the `name == "..."` vocabulary in src/frontend/ast.h
+#   builtins - the `addNative("...")` names in src/runtime/builtins.cpp
 #
 # It also rejects syntax the compiler does not have (highlighting an operator
 # the lexer never produces advertises a program that cannot compile) and a
@@ -28,9 +28,9 @@ foreach(required
     "${extension}/package.json"
     "${extension}/language-configuration.json"
     "${extension}/snippets/oskel.json"
-    "${ROOT}/src/lexer.cpp"
-    "${ROOT}/src/ast.h"
-    "${ROOT}/src/builtins.cpp")
+    "${ROOT}/src/frontend/lexer.cpp"
+    "${ROOT}/src/frontend/ast.h"
+    "${ROOT}/src/runtime/builtins.cpp")
   if(NOT EXISTS "${required}")
     message(FATAL_ERROR "check_vscode_grammar.cmake: missing ${required}")
   endif()
@@ -58,33 +58,33 @@ macro(expect_highlighted word source)
 endmacro()
 
 # --- keywords: the lexer's own table ---------------------------------------
-file(READ "${ROOT}/src/lexer.cpp" lexer_source)
+file(READ "${ROOT}/src/frontend/lexer.cpp" lexer_source)
 string(REGEX MATCHALL "\"[a-z_]+\"[ \t]*,[ \t]*Tok::" keyword_entries "${lexer_source}")
 set(keyword_count 0)
 foreach(entry IN LISTS keyword_entries)
   string(REGEX REPLACE "\"([a-z_]+)\".*" "\\1" word "${entry}")
   math(EXPR keyword_count "${keyword_count} + 1")
-  expect_highlighted("${word}" "keyword in src/lexer.cpp")
+  expect_highlighted("${word}" "keyword in src/frontend/lexer.cpp")
 endforeach()
 if(keyword_count LESS 20)
-  list(APPEND problems "  only ${keyword_count} keywords found in src/lexer.cpp; the table moved")
+  list(APPEND problems "  only ${keyword_count} keywords found in src/frontend/lexer.cpp; the table moved")
 endif()
 
-# --- types: the scalar vocabulary in src/ast.h -----------------------------
-file(READ "${ROOT}/src/ast.h" ast_source)
+# --- types: the scalar vocabulary in src/frontend/ast.h -----------------------------
+file(READ "${ROOT}/src/frontend/ast.h" ast_source)
 string(REGEX MATCHALL "name == \"[a-z0-9_]+\"" type_entries "${ast_source}")
 set(type_count 0)
 foreach(entry IN LISTS type_entries)
   string(REGEX REPLACE "name == \"([a-z0-9_]+)\"" "\\1" word "${entry}")
   math(EXPR type_count "${type_count} + 1")
-  expect_highlighted("${word}" "type in src/ast.h")
+  expect_highlighted("${word}" "type in src/frontend/ast.h")
 endforeach()
 if(type_count LESS 20)
-  list(APPEND problems "  only ${type_count} type names found in src/ast.h; the vocabulary moved")
+  list(APPEND problems "  only ${type_count} type names found in src/frontend/ast.h; the vocabulary moved")
 endif()
 
 # --- builtins: every `addNative` name -------------------------------------
-file(READ "${ROOT}/src/builtins.cpp" builtins_source)
+file(READ "${ROOT}/src/runtime/builtins.cpp" builtins_source)
 string(REGEX MATCHALL "addNative\\(\"[^\"]+\"" native_entries "${builtins_source}")
 set(builtin_count 0)
 foreach(entry IN LISTS native_entries)
@@ -96,10 +96,10 @@ foreach(entry IN LISTS native_entries)
     continue()
   endif()
   math(EXPR builtin_count "${builtin_count} + 1")
-  expect_highlighted("${name}" "builtin in src/builtins.cpp")
+  expect_highlighted("${name}" "builtin in src/runtime/builtins.cpp")
 endforeach()
 if(builtin_count LESS 40)
-  list(APPEND problems "  only ${builtin_count} builtins found in src/builtins.cpp; the registry moved")
+  list(APPEND problems "  only ${builtin_count} builtins found in src/runtime/builtins.cpp; the registry moved")
 endif()
 
 # --- operators: derived from the lexer's `switch (c)` ----------------------
@@ -112,11 +112,11 @@ endif()
 # that returns it, so the check reads the lexer rather than a copy of its list.
 # `string(FIND ... <start>)` needs CMake 3.20 and the project supports 3.15, so
 # the switch is walked by chopping the head off the string as it goes.
-file(READ "${ROOT}/src/lexer.cpp" lexer_ops)
+file(READ "${ROOT}/src/frontend/lexer.cpp" lexer_ops)
 
-# `isAssignOp` in src/parser.cpp is the exact list of assignment tokens, so a
+# `isAssignOp` in src/frontend/parser.cpp is the exact list of assignment tokens, so a
 # suffix test is not needed: `EqEq` and `LtEq` are comparisons, not assignments.
-file(READ "${ROOT}/src/parser.cpp" parser_source)
+file(READ "${ROOT}/src/frontend/parser.cpp" parser_source)
 string(REGEX MATCH "bool isAssignOp\\(Tok type\\) \\{[^}]*\\}" assign_op_body "${parser_source}")
 string(REGEX MATCHALL "case Tok::[A-Za-z]+" assign_cases "${assign_op_body}")
 set(assign_tokens "")
@@ -126,7 +126,7 @@ foreach(assign_case IN LISTS assign_cases)
 endforeach()
 list(LENGTH assign_tokens assign_token_count)
 if(assign_token_count LESS 10)
-  list(APPEND problems "  only ${assign_token_count} assignment tokens found in isAssignOp (src/parser.cpp); it moved")
+  list(APPEND problems "  only ${assign_token_count} assignment tokens found in isAssignOp (src/frontend/parser.cpp); it moved")
 endif()
 
 set(producible "")
@@ -190,7 +190,7 @@ list(REMOVE_DUPLICATES producible)
 list(REMOVE_DUPLICATES assignments)
 list(LENGTH producible producible_count)
 if(producible_count LESS 20)
-  list(APPEND problems "  only ${producible_count} operator spellings found in src/lexer.cpp; the switch moved")
+  list(APPEND problems "  only ${producible_count} operator spellings found in src/frontend/lexer.cpp; the switch moved")
 endif()
 
 # The operators the grammar highlights, read from the `match` value of every
@@ -316,7 +316,7 @@ endif()
 # Direction 1: the grammar must not highlight an operator the lexer lacks.
 foreach(operator IN LISTS grammar_operators)
   if(NOT operator IN_LIST producible)
-    list(APPEND problems "  the grammar highlights '${operator}' as an operator, but src/lexer.cpp never produces it")
+    list(APPEND problems "  the grammar highlights '${operator}' as an operator, but src/frontend/lexer.cpp never produces it")
   endif()
 endforeach()
 

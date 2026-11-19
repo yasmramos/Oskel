@@ -88,19 +88,21 @@ cmake --build build-cmake
 
 ### Manual build
 
-The sources split in two: the **front end** (lexer, parser, bytecode compiler,
-AOT backend) and the **runtime** (VM, JIT, builtins, FFI marshalling). `oskel`
-needs both; `oskelc` needs only the front end.
+The sources split in three, and the directory a file lives in is its
+classification: **core** (`Value`, the cycle collector, the platform layer),
+**front end** (lexer, parser, bytecode compiler, AOT backend) and **runtime**
+(VM, JIT, builtins, FFI marshalling). `oskel` needs all three; `oskelc` needs
+core plus the front end.
 
 ```sh
 # the development engine (VM + REPL + AOT)
 g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskel \
-    src/main.cpp $(ls src/*.cpp src/native/*.cpp | grep -v 'main.cpp\|oskelc.cpp\|vm.cpp\|ops.cpp\|builtins.cpp\|ffi.cpp\|unicode_case.cpp\|jit/jit.cpp') \
-    src/vm.cpp src/ops.cpp src/builtins.cpp src/ffi.cpp src/unicode_case.cpp src/jit/jit.cpp
+    src/main.cpp src/core/*.cpp src/frontend/*.cpp src/frontend/native/*.cpp \
+    src/runtime/*.cpp src/runtime/jit/*.cpp
 
 # the host compiler (AOT only, no interpreter)
 g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskelc \
-    src/oskelc.cpp $(ls src/*.cpp src/native/*.cpp | grep -v 'main.cpp\|oskelc.cpp\|vm.cpp\|ops.cpp\|builtins.cpp\|ffi.cpp\|unicode_case.cpp\|jit/jit.cpp')
+    src/oskelc.cpp src/core/*.cpp src/frontend/*.cpp src/frontend/native/*.cpp
 ```
 
 `./build.sh` and `build.bat` run both commands for you, and `CMakeLists.txt`
@@ -117,7 +119,7 @@ builtins:
 ./hello
 ```
 
-Both entry points call the same pipeline (`src/cli.cpp`), so the flags, the
+Both entry points call the same pipeline (`src/frontend/cli.cpp`), so the flags, the
 defaults, the diagnostics and the exit codes are identical and the emitted image
 is byte for byte the same. `-c` (a `.oskc` bytecode image) and `-pkg` (a
 `.oskpkg`) are not implemented yet and are refused by name with exit 64.

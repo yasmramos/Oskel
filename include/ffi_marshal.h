@@ -3,9 +3,9 @@
 #include <string>
 #include <vector>
 
+#include "core/value.h"
 #include "ffi_types.h"
-#include "runtime.h"
-#include "value.h"
+#include "runtime/runtime.h"
 
 // Runtime half of the `extern "C"` FFI (PHASE 6.6).
 //

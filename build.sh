@@ -24,25 +24,23 @@ CXXFLAGS=${CXXFLAGS:--O2}
 
 mkdir -p build
 
-# The engine's sources split in two, exactly as CMakeLists.txt splits them:
+# The engine's sources split in three, exactly as CMakeLists.txt splits them.
+# The directory a file lives in is its classification, so a new file needs no
+# edit here (and no edit to CMake, which globs the same directories):
 #
+#   core       - Value, the cycle collector, the platform layer. Shared.
 #   front end  - lexer, parser, bytecode compiler and the AOT backend. `oskelc`
-#                links only these, so the shipped compiler carries no
+#                links core + front end, so the shipped compiler carries no
 #                interpreter (DEVELOPMENT.md §2, toolchain boundary).
 #   runtime    - the VM, the operators, the builtins, the FFI marshalling, the
 #                case tables and the JIT. Only `oskel` links these.
-#
-# Every other .cpp under src/ belongs to the front end, so a new file needs no
-# edit here (CMake uses GLOB_RECURSE for the same reason).
-RUNTIME_SOURCES="src/vm.cpp src/ops.cpp src/builtins.cpp src/ffi.cpp src/unicode_case.cpp src/jit/jit.cpp"
 FRONTEND_SOURCES=""
-for source in src/*.cpp src/native/*.cpp; do
-    case "$source" in
-        src/main.cpp|src/oskelc.cpp|src/vm.cpp|src/ops.cpp|src/builtins.cpp|src/ffi.cpp|src/unicode_case.cpp|src/jit/jit.cpp)
-            continue
-            ;;
-    esac
+for source in src/core/*.cpp src/frontend/*.cpp src/frontend/native/*.cpp; do
     FRONTEND_SOURCES="$FRONTEND_SOURCES $source"
+done
+RUNTIME_SOURCES=""
+for source in src/runtime/*.cpp src/runtime/jit/*.cpp; do
+    RUNTIME_SOURCES="$RUNTIME_SOURCES $source"
 done
 
 # shellcheck disable=SC2086

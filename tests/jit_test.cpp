@@ -14,14 +14,14 @@
 
 #include "bytecode.h"
 #include "compiler.h"
+#include "core/value.h"
+#include "frontend/lexer.h"
+#include "frontend/parser.h"
 #include "jit/jit.h"
-#include "lexer.h"
-#include "parser.h"
-#include "value.h"
 #include "vm.h"
 
 // The JIT emits x86-64 for the System V ABI and maps it with `mmap`, so it only
-// runs on Linux x86-64 (`jitHostSupported` in `src/jit/jit.cpp`). On any other
+// runs on Linux x86-64 (`jitHostSupported` in `src/runtime/jit/jit.cpp`). On any other
 // host `jitCompile` returns nullptr and the VM keeps interpreting, so the
 // differential checks have nothing to compare against. Like `codegen_test`,
 // `lower_test` and `freestanding_test`, the suite is skipped there.

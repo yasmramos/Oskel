@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "bytecode.h"
-#include "value.h"
+#include "core/value.h"
 
 // Just-in-time compiler for the development engine.
 //

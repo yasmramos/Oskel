@@ -1,4 +1,4 @@
-#include "cli_internal.h"
+#include "frontend/cli_internal.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -16,12 +16,14 @@
 #include <unistd.h>
 #endif
 
-#include "ast.h"
 #include "compiler.h"
-#include "diagnostic.h"
-#include "errors.h"
-#include "lexer.h"
-#include "module_resolver.h"
+#include "core/errors.h"
+#include "core/util.h"
+#include "frontend/ast.h"
+#include "frontend/diagnostic.h"
+#include "frontend/lexer.h"
+#include "frontend/module_resolver.h"
+#include "frontend/parser.h"
 #include "native/bare_metal.h"
 #include "native/codegen.h"
 #include "native/elf.h"
@@ -29,9 +31,7 @@
 #include "native/object.h"
 #include "native/pe.h"
 #include "native/target.h"
-#include "parser.h"
 #include "platform.h"
-#include "util.h"
 #include "version.h"
 
 const char *kVersion = OSKEL_VERSION;

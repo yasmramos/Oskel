@@ -16,9 +16,9 @@
 #include <vector>
 
 #include "compiler.h"
-#include "diagnostic.h"
-#include "lexer.h"
-#include "parser.h"
+#include "frontend/diagnostic.h"
+#include "frontend/lexer.h"
+#include "frontend/parser.h"
 #include "platform.h"
 
 namespace {

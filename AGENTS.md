@@ -126,7 +126,8 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   parameter is still PHASE 7f work.
 - Windows code paths can be exercised locally without a Windows host: build the
   engine with `x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude -Isrc -static
-  -o /tmp/win/oskel.exe src/*.cpp src/native/*.cpp src/jit/*.cpp` and run it
+  -o /tmp/win/oskel.exe src/main.cpp src/core/*.cpp src/frontend/*.cpp
+  src/frontend/native/*.cpp src/runtime/*.cpp src/runtime/jit/*.cpp` and run it
   under Wine (`WINEPREFIX=$HOME/.wine-oskel wine /tmp/win/oskel.exe ...`). The
   `tests/*.oskl` suite runs there too. This is how `lookupSymbol` (kernel32) and
   the PE image were checked before CI. CI still gates the merge, since Wine is
@@ -212,19 +213,23 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   end: `oskel` links the runtime on top of it (VM, JIT, builtins, FFI
   marshalling) and `oskelc` links the front end alone, so the shipped compiler
   carries no interpreter. `OSKEL_RUNTIME_SOURCES` in `CMakeLists.txt` is the one
-  list that decides which sources are runtime; `build.sh` and `build.bat` keep
-  the same split, and the configure step fails when the list names a file that
-  does not exist. `oskel build` and `oskelc` both call `runBuildCommand` in
-  `src/cli.cpp`, so they cannot drift: `tests/oskelc_parity.cmake` compares the
-  two images byte for byte and against the VM's output, and
+  directory a file lives in decides which library it belongs to: `src/core/`
+  (Value, cycle collector, platform layer), `src/frontend/` (lexer, parser,
+  bytecode compiler, AOT backend) and `src/runtime/` (VM, JIT, builtins,
+  operators, FFI marshalling). There is no hand-maintained list, so a new file
+  cannot silently default to the front end; the configure step refuses a `.cpp`
+  dropped straight into `src/`. `build.sh` and `build.bat` glob the same three
+  directories. `oskel build` and `oskelc` both call `runBuildCommand` in
+  `src/frontend/cli.cpp`, so they cannot drift: `tests/oskelc_parity.cmake`
+  compares the two images byte for byte and against the VM's output, and
   `tests/check_oskelc_no_vm.cmake` fails when `nm` finds `VM::`, `jitCompile`,
-  `Jit::`, `registerBuiltins`, `ops::binary` or `Runtime::fail` in the compiler. Adding a
-  runtime source means adding it to that list; adding a front-end source needs
-  no edit (the boundary test receives the exact front-end list from CMake).
+  `Jit::`, `registerBuiltins`, `ops::binary` or `Runtime::fail` in the compiler
+  **or in `liboskel_frontend.a`** — the archive matters because an unreferenced
+  object never reaches the binary, so a binary-only check cannot see it.
   Every packaging format ships `oskelc` beside `oskel` and `bindgen`.
 - `bindgen` (the C binding generator, `docs/bindgen.md`) is a second executable
   shipped beside `oskel`. It is standalone — it links no engine code — and its
-  sources live under `tools/`, *outside* the `src/*.cpp` glob, so it is never
+  sources live under `tools/`, outside the three `src/` globs, so it is never
   pulled into `oskel`; `nm build/oskel | grep bindgen` must stay empty. Every
   packaging format must ship it (`/usr/bin/bindgen`, `/usr/local/bin/bindgen`,
   `{app}\bin\bindgen.exe`) or the three platforms drift apart. It reuses

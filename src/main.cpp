@@ -2,7 +2,7 @@
 //
 // This binary owns the VM and the JIT. It runs scripts, hosts the REPL and
 // offers `-c`; `oskel build` stays as a thin alias over the AOT command in
-// `src/cli.cpp`, which `oskelc` drives directly. Everything the two binaries
+// `src/frontend/cli.cpp`, which `oskelc` drives directly. Everything the two binaries
 // share (module resolution, the standard library, the AOT pipeline) lives
 // there, so the split is a second `main`, not a fork.
 #include <algorithm>
@@ -17,14 +17,14 @@
 #include <windows.h>
 #endif
 
-#include "ast.h"
-#include "builtins.h"
-#include "cli_internal.h"
 #include "compiler.h"
-#include "diagnostic.h"
-#include "lexer.h"
-#include "parser.h"
-#include "util.h"
+#include "core/util.h"
+#include "frontend/ast.h"
+#include "frontend/cli_internal.h"
+#include "frontend/diagnostic.h"
+#include "frontend/lexer.h"
+#include "frontend/parser.h"
+#include "runtime/builtins.h"
 #include "version.h"
 #include "vm.h"
 

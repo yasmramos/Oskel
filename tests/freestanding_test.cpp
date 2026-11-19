@@ -20,15 +20,15 @@
 
 #include "bytecode.h"
 #include "compiler.h"
-#include "lexer.h"
+#include "frontend/lexer.h"
+#include "frontend/parser.h"
 #include "native/arena.h"
-#include "native/entry.h"
 #include "native/elf.h"
+#include "native/entry.h"
 #include "native/lower.h"
 #include "native/platform_freestanding.h"
 #include "native/runtime.h"
 #include "native/value.h"
-#include "parser.h"
 
 static int g_failures = 0;
 

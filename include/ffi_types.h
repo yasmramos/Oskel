@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "ast.h"
+#include "frontend/ast.h"
 
 // The FFI type vocabulary, classified for the System V AMD64 ABI (PHASE 6.6).
 //
@@ -12,7 +12,7 @@
 // it to validate an `extern "C"` signature and reject one the marshalling
 // cannot honour, and the runtime uses the same tables to build the call. That
 // keeps a single source of truth while respecting the toolchain boundary
-// (DEVELOPMENT.md §2: `src/compiler.*` must not pull in the VM or the interpreter).
+// (DEVELOPMENT.md §2: `src/frontend/compiler.*` must not pull in the VM or the interpreter).
 //
 // The ABI passes every integer and pointer in a general-purpose register and
 // every floating-point value in an SSE register, so a declaration only needs

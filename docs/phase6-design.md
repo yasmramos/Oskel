@@ -78,13 +78,13 @@ Decisions taken while implementing 6a, superseding the text below:
 
 | Fact | Evidence |
 |------|----------|
-| The compiler emits one flat chunk | `Compiler::compile`, `src/compiler.cpp:256` |
-| Locals are already heap `Cell`s | `DECLLOCAL` in `src/vm.cpp:365`, `struct Cell` in `src/value.h:366` |
-| `Function` is AST + native today | `src/value.h:394` (`body`, `closure`, `native`) |
+| The compiler emits one flat chunk | `Compiler::compile`, `src/frontend/compiler.cpp:256` |
+| Locals are already heap `Cell`s | `DECLLOCAL` in `src/runtime/vm.cpp:365`, `struct Cell` in `src/core/value.h:366` |
+| `Function` is AST + native today | `src/core/value.h:394` (`body`, `closure`, `native`) |
 | The interpreter resolves names at call time through `Env` | `Env::find`, `src/interpreter.h:62` |
-| Builtins only re-enter user code in two places | `invoke` and the sort comparator, `src/builtins.cpp:77` and `:110` |
-| Two copies of the arithmetic semantics | `src/interpreter.cpp:58`, `src/vm.cpp:39` |
-| The VM reports errors without line/column or stack | `failRuntime`, `src/vm.cpp:14` |
+| Builtins only re-enter user code in two places | `invoke` and the sort comparator, `src/runtime/builtins.cpp:77` and `:110` |
+| Two copies of the arithmetic semantics | `src/interpreter.cpp:58`, `src/runtime/vm.cpp:39` |
+| The VM reports errors without line/column or stack | `failRuntime`, `src/runtime/vm.cpp:14` |
 | 35 opcodes today | `include/bytecode.h:14` |
 
 ## 2. Decisions

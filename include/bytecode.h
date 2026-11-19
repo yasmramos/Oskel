@@ -6,8 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "core/value.h"
 #include "ffi_types.h"
-#include "value.h"
 
 // <windows.h> defines `IN` as a macro (the input-control parameter annotation),
 // which would rewrite the `OpCode::IN` enumerator below. The bytecode header is

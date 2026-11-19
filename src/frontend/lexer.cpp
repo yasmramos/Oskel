@@ -1,6 +1,6 @@
-#include "lexer.h"
+#include "frontend/lexer.h"
 
-#include "value.h"
+#include "core/value.h"
 
 #include <cctype>
 #include <cerrno>
