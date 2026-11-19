@@ -8529,6 +8529,18 @@ void emitStructArgBytes(CodeGen& cg, const AotStructLayout& arg, std::int64_t ar
     cg.movImm(Rdx, static_cast<std::int64_t>(AotTag::Str));
     cg.leaRipLabel(Rcx, arg.fieldNameLabels[k]);
     cg.callLabel(memberGet);
+    // A missing field is a nil, and the hosted engine rejects it by name; a
+    // zero-filled field would be a silently wrong call, so fail here too. A
+    // pointer or `cstring` field may legitimately be nil (C's NULL), which its
+    // own branch below handles.
+    if (layout.classes[k] != ffi::ParamClass::Pointer &&
+        !ffi::isFfiCStringTypeName(layout.fields[k].type)) {
+      CodeGen::Label present = cg.newLabel();
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagNil));
+      cg.jcc(Jcc::Ne, present);
+      emitFailCall(cg, fail, msgType);
+      cg.bind(present);
+    }
     // The field's boxed value is in rax (tag) / rdx (payload). Store its bytes
     // at the field's offset and width. A `float` field is boxed as binary64, so
     // it is narrowed back to binary32 first; every other class is a bit pattern
