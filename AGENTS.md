@@ -17,6 +17,35 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
 - Before opening the PR: build clean and the full CTest suite green
   (`ctest` in the build directory).
 
+### A pull request is not finished until it is mergeable
+
+Creating the PR is the middle of the task, not the end. Before reporting a PR as
+done, check all of the following, and fix what is not true rather than reporting
+it as a caveat:
+
+- **`mergeable` is true and `mergeable_state` is `clean`.** Read it back from the
+  API (`GET /repos/{owner}/{repo}/pulls/{n}`) — `gh pr view` and the tool that
+  creates the PR both report the state as computed *before* the last push, and
+  GitHub needs a moment to recompute after a push, so re-read until the field is
+  no longer `null`. A `dirty` state means a conflict with `develop`: merge
+  `develop` in, resolve it, re-run the suite, push. A `behind` state means the
+  branch needs the base merged in. Never open a PR and leave it conflicting.
+- **The base is `develop`**, never `main` (only a release targets `main`).
+- **Every CI job is green**, not just the one you expected to break. Read each
+  failing job's log and name the real cause. A red job that is infrastructure
+  (a registry 503, a runner image change) is re-run once and then reported as
+  infrastructure, with the evidence — never as "probably flaky".
+- **The suite is green *on the merge commit*.** CI tests `develop` merged with
+  the branch, so a file another PR added after you branched is already in the
+  tree CI builds. Run `git fetch && git merge origin/develop` locally and run
+  `ctest` before pushing, or a hard-coded path in someone else's new test will
+  fail all eight runners (that is exactly how `vscode_grammar` broke).
+- **When several PRs are open at once, open them in dependency order and
+  re-check the earlier ones after the later ones land.** A later PR that touches
+  the same lines makes an earlier one `dirty` without any push to it. Re-read
+  every open PR's `mergeable` at the end of the session, not only the one just
+  created.
+
 ## Response language
 
 - Reply to the user in **Spanish**. All repository artifacts (code, comments,
