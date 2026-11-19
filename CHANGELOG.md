@@ -33,7 +33,11 @@ may change between minor versions.
   flag in `finally`, because the event's ordering relative to `document.save()`
   resolving is not documented and a flag suppresses only one of the two; and a
   failing check is reported to the user instead of becoming an unhandled
-  promise in the extension host log.
+  promise in the extension host log. The compiler counts its column in UTF-8
+  **bytes** while a `Range` counts UTF-16 units, so the two disagree on any
+  line with an accent or an emoji before the error; the column is converted
+  against the document text, which is why `parseDiagnostics` takes the source
+  as well as the output.
 
 - **Compound bitwise assignment: `&=`, `|=`, `^=`, `<<=` and `>>=`.** The
   assignment operators had an arithmetic form (`+=`, `-=`, `*=`, `/=`, `%=`,
