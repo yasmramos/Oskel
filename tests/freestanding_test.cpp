@@ -481,6 +481,116 @@ static void test_array_methods_inplace() {
         "removeAt out of range reports the range error");
 }
 
+// The allocating array methods (PHASE 7c.3f): `slice`, `concat`, `reversed` and
+// `clone`. Each allocates a fresh array from the arena and leaves the receiver
+// untouched, so this exercises the arena allocation path under the real `_start`
+// and pins the return values against the VM.
+static void test_array_methods_alloc() {
+  Bytecode proto = compileSource(
+      "var a = [1, 2, 3, 4, 5];\n"
+      "print(a.slice());\n"
+      "print(a.slice(1, 3));\n"
+      "print(a.slice(-2));\n"
+      "print(a.concat([6, 7]));\n"
+      "print(a.reversed());\n"
+      "var c = a.clone();\n"
+      "c.push(9);\n"
+      "print(c);\n"
+      "print(a);\n");
+  RunResult result = buildAndRun("/tmp/oskel_array_methods_alloc", proto);
+  std::string expected =
+      "[1, 2, 3, 4, 5]\n"
+      "[2, 3]\n"
+      "[4, 5]\n"
+      "[1, 2, 3, 4, 5, 6, 7]\n"
+      "[5, 4, 3, 2, 1]\n"
+      "[1, 2, 3, 4, 5, 9]\n"
+      "[1, 2, 3, 4, 5]\n";
+  check(result.output == expected, "a compiled program runs the allocating array methods");
+  check(result.exitCode == 0, "a program using the allocating array methods exits 0");
+
+  Bytecode badArity = compileSource("var a = [1];\nprint(a.concat());\n");
+  RunResult arity = buildAndRun("/tmp/oskel_array_methods_alloc_arity", badArity);
+  check(arity.exitCode == 70, "a wrong-arity allocating array method exits 70");
+  check(arity.output.find("concat() expects 1 argument") != std::string::npos,
+        "a wrong-arity allocating array method reports the arity error");
+
+  Bytecode badType = compileSource("var a = [1];\nprint(a.concat(5));\n");
+  RunResult type = buildAndRun("/tmp/oskel_array_methods_alloc_type", badType);
+  check(type.exitCode == 70, "concat of a non-array exits 70");
+  check(type.output.find("concat() expects an array") != std::string::npos,
+        "concat of a non-array reports the type error");
+
+  Bytecode badStart = compileSource("var a = [1];\nprint(a.slice(\"x\"));\n");
+  RunResult start = buildAndRun("/tmp/oskel_array_methods_alloc_start", badStart);
+  check(start.exitCode == 70, "slice with a non-integer start exits 70");
+  check(start.output.find("slice() expects an integer start") != std::string::npos,
+        "slice with a non-integer start reports the type error");
+}
+
+// The bound map methods (PHASE 7c.3g): `keys`, `values`, `entries`, `has`,
+// `get`, `set`, `delete`, `clear`, `merge` and `clone`. Each binds like the
+// array methods -- the receiver is captured in an upvalue -- so a call mutates
+// or scans the same map. Before this slice the backend answered every one of
+// them with "value has no such member". The error paths (bad arity, a non-string
+// key, a non-map `merge`) must report the message and exit 70.
+static void test_map_methods() {
+  Bytecode proto = compileSource(
+      "var m = {\"a\": 1, \"b\": 2, \"c\": 3};\n"
+      "print(m.keys());\n"
+      "print(m.values());\n"
+      "print(m.entries());\n"
+      "print(m.has(\"a\"), m.has(\"z\"));\n"
+      "print(m.get(\"a\"), m.get(\"z\"), m.get(\"z\", 99));\n"
+      "print(m.set(\"d\", 4));\n"
+      "print(m.delete(\"a\"), m);\n"
+      "print(m.merge({\"b\": 20, \"e\": 5}));\n"
+      "print(m.length);\n"
+      "var c = m.clone();\n"
+      "c.set(\"f\", 6);\n"
+      "print(c);\n"
+      "print(m);\n"
+      "print(m.clear(), m);\n"
+      "var keys = m.keys;\n"
+      "m.set(\"g\", 7);\n"
+      "print(keys());\n");
+  RunResult result = buildAndRun("/tmp/oskel_map_methods", proto);
+  std::string expected =
+      "[\"a\", \"b\", \"c\"]\n"
+      "[1, 2, 3]\n"
+      "[[\"a\", 1], [\"b\", 2], [\"c\", 3]]\n"
+      "true false\n"
+      "1 nil 99\n"
+      "{\"a\": 1, \"b\": 2, \"c\": 3, \"d\": 4}\n"
+      "true {\"b\": 2, \"c\": 3, \"d\": 4}\n"
+      "{\"b\": 20, \"c\": 3, \"d\": 4, \"e\": 5}\n"
+      "4\n"
+      "{\"b\": 20, \"c\": 3, \"d\": 4, \"e\": 5, \"f\": 6}\n"
+      "{\"b\": 20, \"c\": 3, \"d\": 4, \"e\": 5}\n"
+      "{} {}\n"
+      "[\"g\"]\n";
+  check(result.output == expected, "a compiled program runs the bound map methods");
+  check(result.exitCode == 0, "a program using the bound map methods exits 0");
+
+  Bytecode badArity = compileSource("var m = {};\nprint(m.has());\n");
+  RunResult arity = buildAndRun("/tmp/oskel_map_methods_arity", badArity);
+  check(arity.exitCode == 70, "a wrong-arity map method exits 70");
+  check(arity.output.find("has() expects 1 argument") != std::string::npos,
+        "a wrong-arity map method reports the arity error");
+
+  Bytecode badType = compileSource("var m = {};\nprint(m.get(5));\n");
+  RunResult type = buildAndRun("/tmp/oskel_map_methods_type", badType);
+  check(type.exitCode == 70, "a non-string map key exits 70");
+  check(type.output.find("get() expects a string key") != std::string::npos,
+        "a non-string map key reports the type error");
+
+  Bytecode badMerge = compileSource("var m = {};\nprint(m.merge(5));\n");
+  RunResult merge = buildAndRun("/tmp/oskel_map_methods_merge", badMerge);
+  check(merge.exitCode == 70, "merge of a non-map exits 70");
+  check(merge.output.find("merge() expects a map") != std::string::npos,
+        "merge of a non-map reports the type error");
+}
+
 // The hidden helpers for PHASE 6.5 features that lower to a call (PHASE 7c.4a):
 // `$nonNull` (`a!!`) and `$isError` (`try` / `x catch y`). Before this slice the
 // backend rejected both with `global '$nonNull'/'$isError' is read but never
@@ -1911,6 +2021,8 @@ int main() {
   test_builtin_print();
   test_collections();
   test_array_methods_inplace();
+  test_array_methods_alloc();
+  test_map_methods();
   test_negative_string_index();
   test_hidden_helpers();
   test_hidden_helpers_non_null_failure();

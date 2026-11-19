@@ -9,6 +9,23 @@ may change between minor versions.
 
 ## [Unreleased]
 
+### Added
+
+- **Builtin `memSize()`: the machine's physical memory in bytes.** The RAM
+  analogue of `time()` — a property of the machine, not of the program. On the
+  development VM it comes from the platform (`sysconf(_SC_PHYS_PAGES)` on POSIX,
+  `GlobalMemoryStatusEx` on Windows, `0` on a platform with no view of the
+  machine). Under `oskel build` it is implemented for the bare-metal target
+  (`x86_64-freestanding-sysv`): the multiboot header now requests the memory
+  information, the prelude captures the multiboot info pointer from `EBX`, and
+  the generated `oskel_mem_size` sums the available entries of the boot loader's
+  memory map (falling back to `mem_lower`/`mem_upper`). On any hosted target the
+  lowerer rejects a call with a message naming the target instead of emitting a
+  binary that reads a nil handle; a user binding of the same name still shadows
+  the builtin, so `var memSize = 5` compiles on every target. Covered by
+  `tests/bare_metal_test.cpp` (a `-m 256M` boot asserting 255 MiB),
+  `tests/lower_test.cpp` and `tests/vm_test.cpp`.
+
 ### Removed
 
 - **The unused `Env` scope chain and `Function::closure`.** The VM keeps locals
@@ -20,6 +37,21 @@ may change between minor versions.
   `Function::upvalues`, which is what the VM actually uses.
 
 ### Changed
+
+- **The status table and the phase line catch up to the AOT error values
+  (PHASE 7c.5c).** `docs/language.md` still said `pcall`/`error` "and real error
+  catching do not" lower, which the 7c.5c work made false: `error` values and
+  value-based `try`/`catch` now behave identically on the VM and under `oskel
+  build` (`error`, `isError`, `type`, `.message`/`.code`, equality, `print`,
+  `repr`, interpolation, `catch` recovering a returned error). Only `pcall` and
+  raised runtime errors stay out, the latter because the AOT runtime has no
+  unwinding. The row now says so. `DEVELOPMENT.md`'s Phase 7 status line also
+  omitted the completed `7c.4a-d`, `7c.5a`, `7c.5c` and `7c.6` slices; it lists
+  them, and keeps `7c.5b` marked in progress as its section says. The same stale
+  claim survived in five module notes (`std/json.oskl`, `std/path.oskl`, and the
+  `std.json`/`std.datetime`/`std.path` bullets in `DEVELOPMENT.md`), which listed
+  `pcall`/`error` together as unimplemented in AOT; they now name only `pcall`,
+  which is what actually remains.
 
 - **The docs stop promising what the tree does not do.** `DEVELOPMENT.md` §8 now
   marks the `.oskc`/`.oskpkg` formats and their bytecode verification as
@@ -115,6 +147,39 @@ may change between minor versions.
 
 ### Added
 
+- **`bindgen` translates a callback parameter.** A C function-pointer parameter
+  becomes the Oskel `fn(P...): R` the engine accepts as a parameter (PHASE 6.6),
+  in all three C spellings: the inline declarator (`int (*cmp)(const void *,
+  const void *)`), the function *type* (`int cmp(int, int)`, which C adjusts to
+  a pointer) and a function-pointer `typedef` used as a type. This unblocks the
+  common C APIs — `qsort`, `atexit`, `signal`, `pthread_create` — that were
+  skipped wholesale before. The shapes the vocabulary does not accept stay
+  skipped with a reason: a callback *returned* by a function, one that takes
+  another callback, a variadic callback, and a callback returning a struct by
+  value. A pointer *to* a function pointer stays an opaque `ptr`. No token, AST
+  node, parser rule, opcode, VM or compiler change: `bindgen` only writes the
+  `extern "C"` the engine already accepts.
+
+- **`bindgen` respects the FFI register budget.** A non-variadic declaration
+  passing more than `kMaxExternArgs` (6) register-sized values is now skipped
+  with a reason instead of being emitted; the compiler rejects such a signature,
+  so the old output was a module `oskel -c` refused.
+
+- **`std.collections`: functional helpers over arrays.** A new standard-library
+  module for mapping, filtering, folding, searching, reshaping, grouping and
+  sorting. It offers `map`, `filter`, `reject`, `each`, `fold`, `sum`, `sumBy`,
+  `minimum`/`maximum`, `minBy`/`maxBy`, `count`, `find`/`findIndex`,
+  `any`/`all`/`none`, `take`/`drop`, `partition`, `chunk`, `zip`, `flatten`,
+  `reverse`, `unique`/`uniqueBy`, `groupBy`, `countBy` and
+  `sort`/`sortBy`/`sortByKey`. Every function returns a new array or map and
+  never mutates its input; `sort` is a stable merge sort. The module exists
+  because the array methods (`xs.map(f)`, `xs.sort()`, ...) are VM-only today:
+  the AOT backend does not bind them, so `oskel build` compiles a call and the
+  binary fails at run time with `value has no such member` (BACKLOG §6 item 1).
+  These are the same operations over the portable primitive surface, so they
+  behave identically on the VM and under `oskel build`. No new runtime type,
+  opcode or builtin.
+
 - **`std.path`: filesystem paths.** A new standard-library module for joining,
   splitting and normalising filesystem paths. A path is an ordinary string, not
   a new type, so a result feeds the file builtins (`readFile`, `writeFile`,
@@ -128,6 +193,24 @@ may change between minor versions.
   three documented deviations elsewhere (`basename("a/b/")` is `b`,
   `dirname("a")` is `.`, and `join("a", "/b")` is `a/b`). No new runtime type,
   opcode or builtin; the VM and `oskel build` agree byte for byte.
+
+- **AOT allocating array methods** (PHASE 7c.3f). The bound array methods
+  `slice`, `concat`, `reversed` and `clone` were unbound in the AOT backend, so
+  a native binary answered each with "value has no such member". They now bind
+  like the in-place methods (`push`/`pop` in PHASE 7c.3c,
+  `shift`/`unshift`/`insert`/`removeAt`/`contains`/`indexOf`/`clear` in PHASE
+  7c.3e): the receiver goes into a shared cell, the method is an `AotClosure`
+  over that one upvalue, and the body is reached through `oskel_call`. Each
+  returns a *new* array and leaves the receiver untouched, so a shared
+  `emitArrayAlloc` helper allocates a fresh `AotArray` header plus its items
+  block once, sized to the exact item count. `slice(start?, end?)` follows the
+  hosted binder (optional bounds, a negative bound counts from the end, every
+  bound clamped and `end < start` raised to `start`), `concat(other)` appends
+  another array (a non-array fails with "concat() expects an array"),
+  `reversed()` copies the items in reverse and `clone()` copies them in order
+  (a shallow copy). No new opcode and no compiler change: the member form of
+  `GETTABLE` plus `CALL` already carries it, so the `.oskc` is untouched. The
+  failure paths report the hosted messages and exit 70.
 
 - **AOT error values** (PHASE 7c.5c). `error()` and `isError` were unbound in
   the AOT backend (`isError` returned a constant `false`), so value-based
@@ -438,6 +521,38 @@ may change between minor versions.
   dead code (kept only by `tests/gc_test.cpp`).
 
 ### Fixed
+
+- **`bindgen` no longer drops a declaration in silence.** A function returning
+  a function pointer (`int (*signal(int, void (*)(int)))(int);`) vanished
+  without a `// skipped:` comment and without being counted, which broke the
+  tool's "never silently mis-translate" contract; it is now reported as a
+  callback the vocabulary cannot express, while a function-pointer *variable*
+  (`int (*fp)(void);`) stays silently ignored, since it is not a function. Two
+  malformed diagnostics are corrected as well: the skip reasons read as noun
+  phrases (`'cb_t' is not expressible in the FFI vocabulary (callbacks are not
+  generated)`, `'MyType' is not a known type`) instead of concatenating a
+  sentence fragment after `parameter type `, and a type the vocabulary does not
+  know *after a modifier* (`unsigned __int64 x`) is now reported instead of
+  discarding the whole declaration. No token, AST node, parser rule, opcode,
+  VM or compiler change: `bindgen` only writes the `extern "C"` the engine
+  already accepts, and the end-to-end fixture is unchanged.
+
+- **AOT: silent memory corruption when a rendered collection crossed 64
+  bytes.** `oskel_sb_append_escaped` (the helper that renders a quoted string
+  into a collection's text) kept its loop index in `r13` and pushed/popped it
+  around the loop. `r13` is `kAotArenaCursor` — the arena's next-free pointer
+  (`include/native/entry.h`) — and the loop calls `oskel_sb_append`, which
+  *allocates* a fresh block once the builder outgrows its 64-byte initial
+  capacity. Two things then went wrong: the allocator read the clobbered `r13`,
+  and the closing `pop r13` rewound the cursor past blocks already handed out.
+  The symptom was silent corruption of `str()`/`repr()`/`print`/interpolation
+  output (a garbled line, or a crash) for any array or map of strings whose
+  rendering passed 64 bytes — nondeterministically, since it depended on the
+  arena layout. The loop index now lives in a caller-saved scratch (`r11`) and
+  is reloaded from its stack slot after every call. Covered by
+  `tests/native_build_string_repr.oskl`, which renders arrays and maps of
+  strings well past the initial capacity and is compared with the VM byte for
+  byte.
 
 - AOT: the remaining in-place and query array methods now work in a compiled
   binary: `shift`, `unshift`, `insert`, `removeAt`, `contains`, `indexOf` and

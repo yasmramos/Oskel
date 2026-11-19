@@ -92,6 +92,29 @@ static void testImageIsSelfContained() {
   check(chunk.programEntry != chunk.processEntry, "the chunk and _start entries differ");
 }
 
+static void testMemSizeTargetGate() {
+  // `memSize()` is the bare-metal-only builtin: its value comes from the boot
+  // loader's memory map, which no hosted prelude provides. On a hosted target
+  // the lowerer names that limitation instead of leaving the generic "read but
+  // never assigned", so a program that calls it fails the build with a message
+  // that points at the target.
+  auto proto = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::HALT)},
+                         {Value(std::string("memSize"))}, 1);
+  check(loweringThrows(proto, "memSize() is only available on the bare-metal target"),
+        "memSize() on a hosted target names the bare-metal-only limitation");
+
+  // A user binding of the same name shadows the builtin, exactly like `print`:
+  // `var memSize = 5` lowers on every target, so the rejection must not fire.
+  auto shadow = makeProto({instr(OpCode::LOADK, 0, 0), instr(OpCode::SETGLOBAL, 0, 1),
+                           instr(OpCode::GETGLOBAL, 1, 1), instr(OpCode::HALT)},
+                          {Value(static_cast<int64_t>(5)), Value(std::string("memSize"))}, 2);
+  check(!lower(shadow).code.empty(), "a user binding named memSize lowers on a hosted target");
+
+  // On bare metal the builtin is seeded, so the plain read lowers.
+  LoweredChunk bare = lowerToX64(Target::bareMetalX64(), proto, CodeGen{});
+  check(!bare.code.empty(), "memSize() lowers on the bare-metal target");
+}
+
 // --- Error tests: the deferred opcodes must be rejected, not miscompiled ---
 
 static void testCollectionsLower() {
@@ -895,6 +918,55 @@ static void testExecArrayMethodsInPlace() {
                  "compiled: a detached contains scans the receiver it captured");
 }
 
+// The allocating array methods (PHASE 7c.3f): `slice`, `concat`, `reversed` and
+// `clone`. Each returns a new array; the receiver is read only. These lock the
+// arena allocation path (a fresh header plus items block) and the shallow-copy
+// semantics against the VM.
+static void testExecArrayMethodsAlloc() {
+  // `slice` copies a range; both bounds are optional and clamped.
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.slice();"), {1, 2, 3},
+             "compiled: slice with no bounds copies the whole array");
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.slice(1);"), {2, 3},
+             "compiled: slice with a start");
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.slice(1, 2);"), {2},
+             "compiled: slice with a start and an end");
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.slice(-2);"), {2, 3},
+             "compiled: slice with a negative start counts from the end");
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.slice(3, 1);"), {},
+             "compiled: slice with end before start is empty");
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.slice(10);"), {},
+             "compiled: slice past the end is empty");
+  checkArray(compileAndRun("var a = [1, 2, 3]; a.slice(1); var r = a;"), {1, 2, 3},
+             "compiled: slice leaves the receiver unchanged");
+
+  // `concat` appends another array into a new one.
+  checkArray(compileAndRun("var a = [1, 2]; var r = a.concat([3, 4]);"), {1, 2, 3, 4},
+             "compiled: concat appends another array");
+  checkArray(compileAndRun("var a = [1, 2]; var r = a.concat([]);"), {1, 2},
+             "compiled: concat with an empty array copies the receiver");
+  checkArray(compileAndRun("var a = [1, 2]; a.concat([3]); var r = a;"), {1, 2},
+             "compiled: concat leaves the receiver unchanged");
+
+  // `reversed` returns a new array; `clone` returns a shallow copy.
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.reversed();"), {3, 2, 1},
+             "compiled: reversed returns the items in reverse order");
+  checkArray(compileAndRun("var a = [1, 2, 3]; a.reversed(); var r = a;"), {1, 2, 3},
+             "compiled: reversed leaves the receiver unchanged");
+  checkArray(compileAndRun("var a = [1, 2, 3]; var r = a.clone();"), {1, 2, 3},
+             "compiled: clone returns a copy of the items");
+  checkArray(compileAndRun("var a = [1]; var c = a.clone(); c.push(2); var r = a;"), {1},
+             "compiled: a write through the clone does not reach the receiver");
+  checkArray(compileAndRun("var a = [1]; var c = a.clone(); c.push(2); var r = c;"), {1, 2},
+             "compiled: the clone itself is mutated");
+
+  // The methods are first-class: a detached binder reads the receiver it
+  // captured.
+  checkArray(compileAndRun("var a = [1, 2, 3]; var s = a.slice; var r = s(1, 3);"), {2, 3},
+             "compiled: a detached slice reads the receiver it captured");
+  checkArray(compileAndRun("var a = [1, 2, 3]; var rv = a.reversed; var r = rv();"), {3, 2, 1},
+             "compiled: a detached reversed reads the receiver it captured");
+}
+
 static void testExecStringCompare() {
   auto mk = [](OpCode op, const std::string& x, const std::string& y) {
     return makeProto({instr(OpCode::LOADK, 0, 0), instr(OpCode::LOADK, 1, 1),
@@ -1139,6 +1211,7 @@ static void testExecCompiledCapture() {
 
 int main() {
   testImageIsSelfContained();
+  testMemSizeTargetGate();
   testCollectionsLower();
   testIterOperandsLower();
   testBadJumpTargetThrows();
@@ -1174,6 +1247,7 @@ int main() {
   testExecArrayConcat();
   testExecArrayMethods();
   testExecArrayMethodsInPlace();
+  testExecArrayMethodsAlloc();
   testExecStringCompare();
   testExecGlobals();
   testExecLocals();

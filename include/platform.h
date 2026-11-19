@@ -91,6 +91,14 @@ class Platform {
   // returns nullptr. The caller turns nullptr into a clear runtime error, so a
   // program never silently calls a wrong address.
   virtual void* lookupSymbol(const char* name) = 0;
+
+  // Total physical memory of the machine, in bytes, or 0 when it cannot be
+  // determined. It is what the `memSize()` builtin returns in the hosted
+  // engine: the analogue of `time()`, reading a property of the machine rather
+  // than of the program. A platform with no view of the machine (the
+  // freestanding shim, whose real value comes from the boot loader instead)
+  // returns 0, and `memSize()` reports 0 rather than a wrong number.
+  virtual std::uint64_t physicalMemory() const = 0;
 };
 
 // The development engine's implementation (libc and the C++ standard library

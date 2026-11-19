@@ -267,6 +267,22 @@ static void test_interrupt_setup_is_present() {
         "the image carries the scancode-to-ASCII table");
 }
 
+// The multiboot header must request the memory information the `memSize()`
+// builtin reads: bit 1 of the header flags (`kMultibootFlagMemory`). Without it
+// a compliant boot loader leaves `mem_lower`/`mem_upper` and the `mmap` empty,
+// and `memSize()` would report 0. This pins the flag at the source, so a future
+// edit that drops it fails here rather than at run time in the guest.
+static void test_multiboot_requests_memory() {
+  Image image = buildImage("print(\"hi\");\n");
+  constexpr std::size_t kCodeFileOffset = 0x1000;
+  const std::uint32_t flags = read32(image.elf, kCodeFileOffset + 4);
+  check((flags & kMultibootFlagMemory) != 0,
+        "the multiboot header requests the memory information");
+  const std::uint32_t checksum = read32(image.elf, kCodeFileOffset + 8);
+  check(static_cast<std::uint32_t>(kMultibootMagic + flags + checksum) == 0,
+        "the checksum still sums to zero with the memory flag set");
+}
+
 // ------------------------------------------------------------ QEMU end to end
 
 // CI sets `OSKEL_REQUIRE_QEMU` on the runners, where the package is installed
@@ -371,13 +387,16 @@ struct BootResult {
   bool booted = false;
 };
 
-static BootResult boot(const std::string& path) {
+static BootResult boot(const std::string& path, const std::string& memory = "") {
   const std::string serial = path + ".serial";
   std::remove(serial.c_str());
   std::string command = "qemu-system-x86_64 -kernel " + quote(path) + " -serial " +
                         quote("file:" + serial) + " -display none -no-reboot" +
-                        " -device isa-debug-exit,iobase=0x501,iosize=0x04" +
-                        " > " + kNullDevice + " 2>&1";
+                        " -device isa-debug-exit,iobase=0x501,iosize=0x04";
+  // An explicit `-m` fixes the machine's RAM, so a `memSize()` test can assert
+  // an exact value instead of whatever the emulator defaults to.
+  if (!memory.empty()) command += std::string(" -m ") + memory;
+  command += std::string(" > ") + kNullDevice + " 2>&1";
   int status = std::system(command.c_str());
 
   BootResult result;
@@ -469,6 +488,32 @@ static void test_qemu_wall_clock() {
           ("the RTC clock agrees with the host [" + std::to_string(guest) + " vs " +
            std::to_string(before) + ".." + std::to_string(after) + "]").c_str());
   }
+}
+
+static void test_qemu_mem_size() {
+  // `memSize()` reads the boot loader's memory map. Boot with an explicit `-m`
+  // and assert the guest sees essentially that much: QEMU's map marks a small
+  // hole (VGA, the 0xE0000 ROM window) reserved, so the sum of the available
+  // entries is a little under the nominal size -- 255 MiB for `-m 256`. A
+  // regression that read the map wrong (a wrong stride, the wrong type test, a
+  // `mem_upper`-only fallback) lands nowhere near this.
+  const std::string source =
+      "print(\"mib =\", memSize() / 1024 / 1024);\n"
+      "print(\"nonzero =\", memSize() > 0);\n";
+  Image image = buildImage(source);
+  const std::string path = tempPath("oskel_bare_metal_memsize.elf");
+  writeFile(path, image.elf);
+
+  BootResult result = boot(path, "256M");
+  check(result.booted, "the memSize image boots and reaches the exit port");
+
+  // Exactly 255 MiB: 256 MiB minus the 1 MiB the map reserves for the BIOS/VGA
+  // window. Asserting the exact value, not a range, is what makes this a real
+  // test of the map walk rather than of "some large number".
+  const std::string expected = "mib = 255\nnonzero = true\n";
+  check(result.output == expected,
+        ("memSize() reports the booted RAM [" + result.output + "]").c_str());
+  check(result.exitCode == 0, "the memSize program exits with code 0");
 }
 
 static void test_qemu_float_arithmetic() {
@@ -661,11 +706,13 @@ int main() {
   test_rejects_wrong_target();
   test_idt_is_present();
   test_interrupt_setup_is_present();
+  test_multiboot_requests_memory();
 
 #ifdef BARE_METAL_QEMU_TESTS
   if (haveQemu()) {
     test_qemu_boot();
     test_qemu_wall_clock();
+    test_qemu_mem_size();
     test_qemu_float_arithmetic();
     test_qemu_fault_reports();
     test_qemu_keyboard();

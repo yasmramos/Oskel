@@ -356,6 +356,30 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods_inplace.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # The allocating array methods (PHASE 7c.3f): `slice`, `concat`, `reversed`
+    # and `clone`. Each returns a new array and leaves the receiver untouched,
+    # so the backend must allocate a fresh header plus items block. Checked
+    # against the VM, so the returned arrays and the receiver's immutability are
+    # pinned.
+    add_test(NAME oskel.build_binary_array_methods_alloc
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_array_methods_alloc"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods_alloc.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The bound map methods (PHASE 7c.3g), the map twin of the array methods
+    # above. Same binding mechanism as `arr.push`, so the receiver is captured
+    # and the call mutates or scans it; the backend used to answer each with
+    # "value has no such member". Checked against the VM, so both the return
+    # value and the mutation are pinned.
+    add_test(NAME oskel.build_binary_map_methods
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_map_methods"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_map_methods.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `**` with a float/double operand or a negative exponent (PHASE 7c.1d.2).
     # It used to lower only for int/int with a non-negative exponent; every
     # other numeric pair failed with the unsupported-operand error, so a program
@@ -473,6 +497,32 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_TEST_NAME=oskel.build_binary_path"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_path.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `std.collections` exists because the AOT backend does not bind the array
+    # methods yet (docs/BACKLOG.md §6 item 1); it is plain Oskel over the
+    # portable primitive surface, so it must build to a native binary and agree
+    # with the VM. The fixture is the guard that keeps the module off the
+    # methods, `pcall`/`error` and the rest of the AOT gaps.
+    add_test(NAME oskel.build_binary_collections
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_collections"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_collections.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # Regression for the string-builder corruption: `oskel_sb_append_escaped`
+    # kept its loop index in r13, the arena cursor (`kAotArenaCursor`, entry.h),
+    # and pushed/popped it around the allocating `oskel_sb_append`, so a
+    # collection whose rendered text crossed the builder's 64-byte initial
+    # capacity came out garbled. This fixture renders arrays and maps of strings
+    # well past that size; the harness compares the binary with the VM byte for
+    # byte, so the corruption cannot come back silently.
+    add_test(NAME oskel.build_binary_string_repr
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_string_repr"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_string_repr.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
     # An `extern "C"` symbol is a host binding the AOT backend cannot resolve

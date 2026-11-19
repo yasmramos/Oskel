@@ -197,8 +197,35 @@ user:
 - Does the opcode map to 1:1 or 1:2 ASM instructions? → yes/no (if 1:3+, redesign)
 - Do I need new logic in the VM? → which one
 - Do I need new logic in the compiler? → which one
+- Does the feature need AOT support, or is it VM-only? → the AOT backend
+  (PHASE 7) is a first-class target, not an afterthought
 
 Without this checklist complete and approved, **do not proceed to code**.
+
+### VM/AOT parity is part of every feature
+
+Every new feature lands in the **VM and the AOT backend in the same change**.
+The development engine (`oskel`) and a compiled binary (`oskel build`) are two
+front ends of one language; a feature that works only in the VM is unfinished,
+and a feature that works only in AOT is a bug. Concretely:
+
+- A new opcode, builtin or standard-library entry is lowered by the AOT backend
+  in the same commit (or, when the backend genuinely cannot support it yet, it
+  must **fail cleanly** with a dedicated message and exit 65 — never emit a
+  mis-compiled binary and never silently diverge).
+- A new standard-library module is written over the portable primitive surface
+  so it runs identically on both, unless it deliberately needs a VM-only
+  builtin; in that case the gap is recorded in `docs/BACKLOG.md` §6 and the
+  module avoids it.
+- The tests prove the parity: an AOT fixture (`tests/native_build_*.oskl`,
+  built and run by `tests/build_binary.cmake`) compares the compiled output with
+  the VM byte for byte, so a divergence cannot ship silently.
+- Known VM/AOT divergences live in `docs/BACKLOG.md` §6 and shrink over time;
+  do not add a new one without an entry and a reason.
+
+When the feature does break AOT parity, the same change must add the AOT
+support (or the clean failure and its fixture). Leaving it for later is not an
+option.
 
 ---
 

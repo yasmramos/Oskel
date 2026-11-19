@@ -183,11 +183,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 1. **[P0]** VM/AOT divergence in collection methods: the array methods bind in
    AOT (`push`/`pop` in PHASE 7c.3c, `shift`/`unshift`/`insert`/`removeAt`/
-   `contains`/`indexOf`/`clear` in PHASE 7c.3e), but the allocating array
-   methods (`slice`, `concat`, `clone`, `reversed`) and `map.keys`, `str.upper`,
-   and the rest of the string/map methods still work in the VM and fail in AOT
-   with "no such member". The binding mechanism (receiver captured in a closure
-   upvalue, method body reached through `oskel_call`) generalises to the rest.
+   `contains`/`indexOf`/`clear` in PHASE 7c.3e, and the allocating `slice`/
+   `concat`/`reversed`/`clone` in PHASE 7c.3f), but the callback-taking array
+   methods (`map`, `filter`, `reduce`, `each`, `find`, `any`, `all`, `sum`,
+   `sort`/`sorted`) and `map.keys`, `str.upper`, and the rest of the
+   string/map methods still work in the VM and fail in AOT with "no such
+   member". The binding mechanism (receiver captured in a closure upvalue,
+   method body reached through `oskel_call`) generalises to the rest; the
+   callback ones additionally need `oskel_call` on the argument closure.
 2. **[P0] [done]** VM/AOT divergence in structural equality: `[1,2] == [1,2]`
    is true in the VM (content) and false in AOT (identity). The equality helper
    in `oskel_compare` now descends into arrays and maps (equal length, equal
@@ -314,6 +317,16 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     (with `ptr`/`cstring` in `type()`, handle equality and the pointer builtins)
     removes the divergence; until then the parity fixtures avoid comparing a
     returned `cstring` against a string.
+24. **[P0] [done]** Silent memory corruption when a rendered collection crossed
+    the string builder's 64-byte initial capacity. `oskel_sb_append_escaped`
+    kept its loop index in `r13` and pushed/popped it around the loop; `r13` is
+    `kAotArenaCursor` (entry.h) and the loop calls the allocating
+    `oskel_sb_append`, so the allocator read a clobbered cursor and the closing
+    pop rewound it past live blocks. `str()`/`repr()`/`print`/interpolation of
+    any array or map of strings past 64 bytes came out garbled or crashed,
+    nondeterministically. The index now lives in a caller-saved scratch (`r11`),
+    reloaded from its slot after every call. Regression:
+    `tests/native_build_string_repr.oskl`.
 
 ---
 

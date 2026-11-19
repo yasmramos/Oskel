@@ -1,10 +1,11 @@
 /* A representative C header for the bindgen end-to-end test.
  *
  * It mixes the shapes the generator must translate (scalars, pointers,
- * `cstring`, typedefs, a variadic) with the ones it must skip (a struct by
- * value, a callback), so the generated module exercises both the `fn` lines and
- * the `// skipped:` comments. The end-to-end runner feeds the output back to
- * `oskel -c`, which is what proves the tool and the compiler agree.
+ * `cstring`, typedefs, a callback, a variadic) with the ones it must skip (a
+ * struct by value, a callback returned by value), so the generated module
+ * exercises both the `fn` lines and the `// skipped:` comments. The end-to-end
+ * runner feeds the output back to `oskel -c`, which is what proves the tool and
+ * the compiler agree.
  */
 
 #include <stddef.h>
@@ -28,7 +29,9 @@ API int crc32(const void *data, unsigned len);
 API _Bool is_ready(int id);
 API char *strdup(const char *s);
 
-/* The shapes slice 1 does not generate: */
+/* A callback parameter is translated to `fn(P...): R`; the shapes it cannot
+ * express stay commented out: a struct by value and a callback returned. */
 API struct Point make_point(int x, int y);
 API int apply(int (*cb)(int), int n);
+API int (*signal(int sig, void (*func)(int)))(int);
 API void log_msg(const char *fmt, ...);

@@ -226,6 +226,12 @@ struct AotRuntimeHandles {
   // kernel an input channel -- so it is seeded as a global for that target
   // only (see `lowerToX64`). The other targets keep the AOT `input` unseeded.
   CodeGen::Label inputBuiltin;     // AotValue oskel_builtin_input(AotValue* args, long argc, AotClosure* self)
+  // `memSize()` (usable RAM, bare metal only): takes no argument and returns the
+  // bytes of available physical memory as an `int`, read from the `entry.memSize`
+  // handle the bare-metal prelude binds (the multiboot map). The hosted targets
+  // have no such handle, so `lower.cpp` seeds this builtin only for
+  // `Os::Freestanding` and rejects `memSize()` elsewhere by name.
+  CodeGen::Label memSizeBuiltin;   // AotValue oskel_builtin_mem_size(AotValue* args, long argc, AotClosure* self)
   // Bound array methods (PHASE 7c.3c/7c.3e). `a.<method>` on an array yields a
   // closure that captured its receiver in one upvalue cell, exactly like the
   // hosted `bindArray`. `bindArrayMethod` builds that closure from the receiver
@@ -241,6 +247,28 @@ struct AotRuntimeHandles {
   CodeGen::Label arrayContainsMethod;  // AotValue oskel_builtin_array_contains(...)
   CodeGen::Label arrayIndexOfMethod;   // AotValue oskel_builtin_array_index_of(...)
   CodeGen::Label arrayClearMethod;     // AotValue oskel_builtin_array_clear(...)
+  CodeGen::Label arraySliceMethod;     // AotValue oskel_builtin_array_slice(...)
+  CodeGen::Label arrayConcatMethod;    // AotValue oskel_builtin_array_concat(...)
+  CodeGen::Label arrayReversedMethod;  // AotValue oskel_builtin_array_reversed(...)
+  CodeGen::Label arrayCloneMethod;     // AotValue oskel_builtin_array_clone(...)
+  // Bound map methods (PHASE 7c.3g). `m.<method>` on a map yields a closure
+  // that captured its receiver in one upvalue cell, exactly like the array
+  // methods above and the hosted `bindMap`. `bindMapMethod` builds that closure
+  // from the receiver (rdi:rsi) and a selector (rdx); the method bodies are
+  // ordinary builtins with the proto convention, so a `CALL` reaches them
+  // through `oskel_call`. `oskel_member_get` dispatches the ten names through a
+  // selector-indexed table.
+  CodeGen::Label bindMapMethod;    // AotValue oskel_bind_map_method(AotValue map, long which)
+  CodeGen::Label mapKeysMethod;    // AotValue oskel_builtin_map_keys(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label mapValuesMethod;  // AotValue oskel_builtin_map_values(...)
+  CodeGen::Label mapEntriesMethod; // AotValue oskel_builtin_map_entries(...)
+  CodeGen::Label mapHasMethod;     // AotValue oskel_builtin_map_has(...)
+  CodeGen::Label mapGetMethod;     // AotValue oskel_builtin_map_get(...)
+  CodeGen::Label mapSetMethod;     // AotValue oskel_builtin_map_set(...)
+  CodeGen::Label mapDeleteMethod;  // AotValue oskel_builtin_map_delete(...)
+  CodeGen::Label mapClearMethod;   // AotValue oskel_builtin_map_clear(...)
+  CodeGen::Label mapMergeMethod;   // AotValue oskel_builtin_map_merge(...)
+  CodeGen::Label mapCloneMethod;   // AotValue oskel_builtin_map_clone(...)
 };
 
 inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
@@ -264,8 +292,11 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel()
-  };
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel()};
 }
 
 // The selector `oskel_compare` accepts: the low nibble of the x86-64 condition
@@ -351,7 +382,11 @@ struct AotExternThunk {
 // builtin body; every other target leaves it out, so its image never references
 // the unbound `entry.read` label. `lowerToX64` seeds the `input` global under
 // the same condition, so the body and its only caller appear together.
+//
+// `bareMetal` emits the `memSize()` builtin, which reads the `entry.memSize`
+// handle only the bare-metal prelude binds. It is false for every other target,
+// so their runtime is unchanged.
 void emitAotRuntime(CodeGen& code, const AotRuntimeHandles& handles,
                     const RuntimeHandles& entry,
                     const std::vector<AotExternThunk>* externThunks = nullptr,
-                    bool hosted = false, bool hasInput = false);
+                    bool hosted = false, bool hasInput = false, bool bareMetal = false);

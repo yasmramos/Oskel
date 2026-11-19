@@ -19,7 +19,7 @@
 // slicing, `len`, `ord`/`chr`, `str`, `panic`, `for ... in`, closures), so it
 // behaves identically on the development VM and under `oskel build` on every
 // AOT target. It deliberately avoids the collection and string methods
-// (`.split`, `.join`, ...) and the `pcall`/`error` builtins, which the AOT
+// (`.split`, `.join`, ...) and the `pcall` builtin, which the AOT
 // backend does not implement yet (DEVELOPMENT.md PHASE 7f).
 //
 // Deviations from POSIX `posixpath`, all deliberate:

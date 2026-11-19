@@ -1,0 +1,90 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): `std.collections` under
+// the AOT backend.
+//
+// `std.collections` is written in plain Oskel over the portable primitive
+// surface (indexing, slicing, `len`, `str`, `panic`, `for ... in`, closures),
+// and it exists precisely because the AOT backend does not bind the array
+// methods yet (`docs/BACKLOG.md` §6 item 1). This fixture is the guard that
+// keeps it that way: it must build to a native binary and agree with the
+// development VM byte for byte, so a future edit that reaches for `xs.map(...)`,
+// a string method or `pcall`/`error` breaks the build here rather than shipping
+// a binary that dies with "value has no such member".
+//
+// Every line is deterministic and prints a value (the harness compares stdout),
+// so the fixture never relies on an assertion alone.
+
+import std.collections;
+import std.collections.*;
+import std.collections as c;
+import { sort, groupBy } from std.collections;
+
+let nums = [5, 3, 8, 1, 9, 2, 8, 1];
+
+// --- mapping and filtering --------------------------------------------------
+
+print("map =", map(nums, x => x * 2));
+print("filter =", filter(nums, x => x > 4));
+print("reject =", reject(nums, x => x > 4));
+print("each =", each([1, 2, 3], x => x));
+
+// --- folding and aggregation ------------------------------------------------
+
+print("fold =", fold([1, 2, 3, 4], (acc, x) => acc + x, 0));
+print("sum =", sum(nums), sumBy(nums, x => x * 10));
+print("minimum =", minimum(nums), minimum([]));
+print("maximum =", maximum(nums), maximum([]));
+print("minBy =", minBy(["ccc", "a", "bb"], s => len(s)));
+print("maxBy =", maxBy(["ccc", "a", "bb"], s => len(s)));
+print("count =", count(nums, x => x > 4));
+
+// --- searching --------------------------------------------------------------
+
+print("find =", find(nums, x => x > 6), find(nums, x => x > 100));
+print("findIndex =", findIndex(nums, x => x == 8), findIndex(nums, x => x == 100));
+print("any =", any(nums, x => x > 8), any(nums, x => x > 100));
+print("all =", all(nums, x => x > 0), all(nums, x => x > 1));
+print("none =", none(nums, x => x > 100), none(nums, x => x > 8));
+
+// --- reshaping --------------------------------------------------------------
+
+print("take =", take(nums, 3), take(nums, 100), take(nums, -1));
+print("drop =", drop(nums, 3), drop(nums, 100), drop(nums, -1));
+print("partition =", partition(nums, x => x % 2 == 0));
+print("chunk =", chunk(nums, 3));
+print("zip =", zip([1, 2, 3], ["a", "b"]));
+print("flatten =", flatten([[1, 2], [3], [], [4, 5]]));
+print("reverse =", reverse(nums));
+print("unique =", unique(nums));
+print("uniqueBy =", uniqueBy(nums, x => x % 3));
+
+// --- grouping ---------------------------------------------------------------
+
+print("groupBy =", groupBy(nums, x => x % 3));
+print("countBy =", countBy(nums, x => x % 3));
+print("groupByStr =", groupBy(["a", "bb", "c", "dd"], s => len(s)));
+
+// --- sorting ----------------------------------------------------------------
+
+print("sort =", sort(nums));
+print("sortBy =", sortBy(nums, (a, b) => a > b));
+print("sortByKey =", sortByKey(["bbb", "a", "cc", "dddd"], s => len(s)));
+print("sortStr =", sort(["pear", "apple", "fig"]));
+print("stable =", sortBy([[1, "a"], [1, "b"], [0, "c"]], (p, q) => p[0] < q[0]));
+// A larger array, so every merge pass runs and the output is long enough to
+// catch an off-by-one.
+var big = [];
+var i = 0;
+while (i < 40) {
+  big[len(big)] = (i * 17) % 40;
+  i = i + 1;
+}
+print("sortBig =", sort(big));
+
+// --- import forms and composition -------------------------------------------
+
+print("qualified =", c.sum([1, 2, 3]), c.reverse([1, 2]));
+print("selective =", sort([2, 1]), groupBy([1, 2, 3, 4], x => x % 2));
+// The helpers chain without an intermediate variable.
+print("chain =", take(sortBy(unique(nums), (a, b) => a > b), 3));
+// The input is never mutated.
+print("input =", nums);

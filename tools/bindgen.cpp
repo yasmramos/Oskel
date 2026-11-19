@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "ast.h"  // isKnownTypeName / isIntegerTypeName: the FFI vocabulary
+#include "ffi_types.h"  // kMaxExternArgs: the register budget the thunk enforces
 
 namespace {
 
@@ -156,7 +157,24 @@ struct Base {
   std::string spelling; // the C spelling, for a diagnostic
   bool ok = true;       // false when the vocabulary cannot express the type
   std::string reason;   // why, when `ok` is false
+  // A callback: a C function pointer (`R (*)(P...)`), whose Oskel spelling is
+  // `fn(P...): R`. `callbackParams`/`callbackReturn` hold the Oskel FFI names.
+  bool isCallback = false;
+  std::vector<std::string> callbackParams;
+  std::string callbackReturn;  // "void" for a callback that returns nothing
 };
+
+// The Oskel spelling of a callback type: `fn(P...): R`.
+std::string callbackSpelling(const Base& cb) {
+  std::string s = "fn(";
+  for (std::size_t i = 0; i < cb.callbackParams.size(); ++i) {
+    if (i != 0) s += ", ";
+    s += cb.callbackParams[i];
+  }
+  s += "): ";
+  s += cb.callbackReturn.empty() ? "void" : cb.callbackReturn;
+  return s;
+}
 
 // The C words that never change the type on their own: storage classes and
 // qualifiers the FFI vocabulary ignores.
@@ -411,8 +429,18 @@ class Bindgen {
             advance();
             continue;
           }
-          // After a modifier, a word that is not a type name is the declarator
-          // itself: `unsigned len` is `unsigned int len`, not a type `len`.
+          // After a modifier, a word that is not a type name is usually the
+          // declarator itself: `unsigned len` is `unsigned int len`, not a
+          // type `len`. But `unsigned __int64 x` (a spelling the vocabulary
+          // does not know) has the unknown word as the *type*, told apart by a
+          // declarator or a `*` right after it. Record it so the type check
+          // reports it, instead of dropping the whole declaration in silence.
+          if (haveModifiers && (peek(1).kind == TokKind::Ident ||
+                                (peek(1).kind == TokKind::Punct && peek(1).text == "*"))) {
+            spec.word = t.text;
+            advance();
+            continue;
+          }
           if (haveModifiers) break;
         }
         spec.word = t.text;
@@ -431,7 +459,7 @@ class Bindgen {
     if (spec.isStructTag) {
       base.kind = Base::Kind::Struct;
       base.ok = false;
-      base.reason = "struct/union/enum '" + spec.word + "' crosses by value";
+      base.reason = "'" + spec.word + "' crosses by value";
       return base;
     }
     const std::string& w = spec.word;
@@ -510,7 +538,7 @@ class Bindgen {
       return base;
     }
     base.ok = false;
-    base.reason = "unknown type '" + w + "'";
+    base.reason = "'" + w + "' is not a known type";
     return base;
   }
 
@@ -554,6 +582,134 @@ class Bindgen {
     return base;
   }
 
+  // Whether the `(` at the cursor opens a function-pointer declarator
+  // (`( * name )`), told apart from another parenthesized declarator by a `*`
+  // before the closing `)`.
+  bool looksLikeFunctionPointer() const {
+    if (!checkPunct("(")) return false;
+    for (std::size_t a = 1;; ++a) {
+      const Token& t = peek(a);
+      if (t.kind == TokKind::Eof) return false;
+      if (t.kind == TokKind::Punct && t.text == ")") return false;
+      if (t.kind == TokKind::Punct && t.text == "*") return true;
+    }
+  }
+
+  // Starts a callback from its already-parsed return type, applying the FFI
+  // rules the engine enforces: `void` and the scalar returns are accepted, a
+  // struct-by-value or a callback return is not.
+  Base callbackFromReturn(const Base& returnBase) {
+    Base cb;
+    cb.isCallback = true;
+    if (!returnBase.ok) {
+      cb.ok = false;
+      cb.reason = returnBase.reason;
+    } else if (returnBase.isCallback) {
+      cb.ok = false;
+      cb.reason = "a callback cannot return a callback";
+    } else if (returnBase.kind == Base::Kind::Void) {
+      cb.callbackReturn = "void";
+    } else if (returnBase.kind == Base::Kind::Struct) {
+      cb.ok = false;
+      cb.reason = "a callback returning a struct by value is not generated yet";
+    } else {
+      cb.callbackReturn = returnBase.oskel.empty() ? "int32" : returnBase.oskel;
+    }
+    return cb;
+  }
+
+  // Parses a callback's parameter list `( P, P, ... )`, filling `cb`. The
+  // engine's callback signature carries only scalar parameters: a nested
+  // callback, a struct by value or a C variadic is marked not-ok with a reason.
+  void parseCallbackParams(Base& cb) {
+    if (!checkPunct("(")) return;
+    advance();  // the parameter list
+    if (checkIdent("void") && peek(1).kind == TokKind::Punct && peek(1).text == ")") {
+      advance();  // `(void)` means no parameters
+    } else if (!checkPunct(")")) {
+      for (;;) {
+        if (check(TokKind::Ellipsis)) {
+          if (cb.ok) {
+            cb.ok = false;
+            cb.reason = "a C variadic callback is not expressible in the FFI vocabulary";
+          }
+          advance();
+          break;
+        }
+        Base p = parsePointers(baseFromSpec(parseSpecifiers()));
+        if (checkPunct("(")) {
+          if (cb.ok) {
+            cb.ok = false;
+            cb.reason =
+                "a callback that takes a callback is not expressible in the FFI vocabulary";
+          }
+          skipParens();
+        } else if (checkPunct("[")) {
+          while (checkPunct("[")) skipBrackets();
+          p.ok = true;
+          p.kind = Base::Kind::Unknown;
+          p.oskel = "ptr";
+        }
+        if (check(TokKind::Ident)) advance();  // an optional parameter name
+        if (!p.ok && cb.ok) {
+          cb.ok = false;
+          cb.reason = p.reason.empty()
+                          ? std::string("a callback parameter type is not expressible in the FFI vocabulary")
+                          : p.reason;
+        }
+        if (cb.ok) cb.callbackParams.push_back(p.oskel.empty() ? "int32" : p.oskel);
+        if (!matchPunct(",")) break;
+      }
+    }
+    if (checkPunct(")")) advance();
+    if (cb.ok) cb.spelling = callbackSpelling(cb);
+  }
+
+  // Parses a C function-pointer declarator `( * name? ) ( params )` into a
+  // callback `Base` whose Oskel spelling is `fn(P...): R`. `returnBase` is the
+  // already-parsed return type; the cursor is on the `(` that opens the
+  // declarator, and `name` receives the declarator's name (empty for an
+  // abstract declarator).
+  //
+  // Exactly one `*` with no array suffix is a function pointer, which the FFI
+  // takes as a callback. More than one `*` (`int (**pp)(int)`) or an array of
+  // function pointers (`int (*arr[4])(int)`) is a *pointer to* a function
+  // pointer, which the vocabulary passes as an opaque `ptr`, so it is returned
+  // as one.
+  Base parseCallbackDeclarator(const Base& returnBase, std::string& name) {
+    int stars = 0;
+    advance();  // `(`
+    for (;;) {
+      if (matchPunct("*")) {
+        ++stars;
+        continue;
+      }
+      if (checkIdent("const") || checkIdent("volatile") || checkIdent("restrict")) {
+        advance();
+        continue;
+      }
+      break;
+    }
+    if (check(TokKind::Ident)) name = advance().text;
+    bool isArray = false;
+    while (checkPunct("[")) {
+      skipBrackets();
+      isArray = true;
+    }
+    if (checkPunct(")")) advance();
+    if (stars != 1 || isArray) {
+      Base ptr;
+      ptr.kind = Base::Kind::Unknown;
+      ptr.ok = true;
+      ptr.oskel = "ptr";
+      ptr.spelling = "void *";
+      return ptr;
+    }
+    Base cb = callbackFromReturn(returnBase);
+    parseCallbackParams(cb);
+    return cb;
+  }
+
   // ---------------------------------------------------------------- typedef
 
   void parseTypedef() {
@@ -564,11 +720,13 @@ class Bindgen {
     for (;;) {
       Base declarator = base;
       std::string name;
-      if (checkPunct("(")) {
+      if (checkPunct("(") && looksLikeFunctionPointer()) {
         // A function-pointer typedef: `typedef int (*cb)(int);`. The name sits
-        // inside the parentheses (`(*cb)`), so it is read from there; slice 1
-        // does not generate callbacks, so the alias is recorded as unsupported
-        // rather than silently mis-typed.
+        // inside the parentheses (`(*cb)`); the alias is recorded as a callback
+        // so a parameter typed with it becomes `fn(P...): R`.
+        declarator = parseCallbackDeclarator(base, name);
+      } else if (checkPunct("(")) {
+        // Another parenthesized declarator: not a shape the tool binds.
         advance();  // `(`
         while (matchPunct("*")) {
         }
@@ -577,7 +735,10 @@ class Bindgen {
         if (checkPunct("(")) skipParens();  // the parameter list
         declarator.ok = false;
         declarator.kind = Base::Kind::Unknown;
-        declarator.reason = "a function-pointer typedef is not in the FFI vocabulary";
+        declarator.reason =
+            (name.empty() ? std::string("a parenthesized typedef")
+                          : "'" + name + "'") +
+            " is not expressible in the FFI vocabulary";
       } else {
         declarator = parsePointers(base);
         if (check(TokKind::Ident)) name = advance().text;
@@ -644,6 +805,27 @@ class Bindgen {
     // A declaration that is not a plain `name(` is a variable, a function
     // pointer, or something else slice 1 does not bind: skip it.
     if (!check(TokKind::Ident)) {
+      // A `(` here opens a parenthesized declarator. Two shapes matter: a
+      // function-pointer *variable* (`int (*fp)(void);`) is not a binding and
+      // is skipped in silence, while a *function returning* a function pointer
+      // (`int (*signal(int, void (*)(int)))(int);`) is a declaration the FFI
+      // vocabulary cannot express and must be reported, never dropped in
+      // silence. They are told apart by what follows the name inside the
+      // parentheses: a `(` begins a parameter list (a function), a `)` closes
+      // the declarator (a variable).
+      if (checkPunct("(")) {
+        std::size_t ahead = 1;
+        while (peek(ahead).kind == TokKind::Punct && peek(ahead).text == "*") ++ahead;
+        if (peek(ahead).kind == TokKind::Ident &&
+            peek(ahead + 1).kind == TokKind::Punct && peek(ahead + 1).text == "(") {
+          const std::string innerName = peek(ahead).text;
+          skipToSemicolon();
+          skipped_.push_back(innerName +
+                             ": returns a callback, which the FFI vocabulary does "
+                             "not accept as a return type");
+          return;
+        }
+      }
       skipToSemicolon();
       return;
     }
@@ -682,8 +864,25 @@ class Bindgen {
       skipped_.push_back(name + ": return type " + quoteReason(returnType));
       return;
     }
+    if (returnType.isCallback) {
+      skipped_.push_back(name +
+                         ": returns a callback, which the FFI vocabulary does not "
+                         "accept as a return type");
+      return;
+    }
     if (!paramProblem.empty()) {
       skipped_.push_back(name + ": " + paramProblem);
+      return;
+    }
+    // The register thunks cover at most `kMaxExternArgs` eightbytes; the
+    // compiler rejects a longer non-variadic signature, so emitting it would
+    // produce a module `oskel -c` refuses. A variadic call goes through libffi
+    // and is exempt.
+    if (!variadic && params.size() > ffi::kMaxExternArgs) {
+      skipped_.push_back(
+          name + ": passes " + std::to_string(params.size()) +
+          " register-sized values, more than the " + std::to_string(ffi::kMaxExternArgs) +
+          " the FFI thunks cover");
       return;
     }
 
@@ -737,29 +936,51 @@ class Bindgen {
       }
       Param param;
       Base base = parsePointers(baseFromSpec(parseSpecifiers()));
-      if (checkPunct("(")) {
-        // A function pointer parameter: a callback, which slice 1 does not
-        // generate.
-        if (problem.empty()) {
-          problem = "a callback parameter ('fn(...)') is not generated yet";
+      bool callbackDeclarator = false;
+      if (checkPunct("(") && looksLikeFunctionPointer()) {
+        // A function-pointer parameter: a callback the engine accepts as
+        // `fn(P...): R` (PHASE 6.6).
+        std::string cbName;
+        base = parseCallbackDeclarator(base, cbName);
+        callbackDeclarator = true;
+        if (!base.ok && problem.empty()) {
+          problem = base.reason.empty() ? std::string("a callback parameter is not expressible in the FFI vocabulary")
+                                        : base.reason;
         }
+        if (!cbName.empty()) param.name = cbName;
+      } else if (checkPunct("(")) {
+        // A parenthesized declarator that is not a function pointer: not a
+        // shape the tool binds.
+        if (problem.empty()) problem = "a parenthesized declarator is not generated yet";
         skipParens();
       }
-      std::string name;
-      if (check(TokKind::Ident)) name = advance().text;
-      // An array parameter decays to a pointer: `int values[]` is `int *`.
-      if (checkPunct("[")) {
-        while (checkPunct("[")) skipBrackets();
-        base.ok = true;
-        base.kind = Base::Kind::Unknown;
-        base.oskel = "ptr";
+      if (!callbackDeclarator) {
+        if (check(TokKind::Ident)) param.name = advance().text;
+        // A *function-type* parameter, `void takes(int foo(int));`, is adjusted
+        // by C to a function pointer: it is the same callback shape with the
+        // name before the parameter list.
+        if (checkPunct("(") && !base.isCallback) {
+          Base cb = callbackFromReturn(base);
+          parseCallbackParams(cb);
+          base = cb;
+          callbackDeclarator = true;
+          if (!base.ok && problem.empty()) problem = base.reason;
+        }
+        // An array parameter decays to a pointer: `int values[]` is `int *`.
+        if (checkPunct("[")) {
+          while (checkPunct("[")) skipBrackets();
+          base.ok = true;
+          base.kind = Base::Kind::Unknown;
+          base.oskel = "ptr";
+        }
       }
       if (!base.ok && problem.empty()) {
         problem = "parameter type " + quoteReason(base);
       }
-      if (name.empty()) name = "a" + std::to_string(index);
-      param.name = name;
-      param.type = base.oskel.empty() ? "int32" : base.oskel;
+      if (param.name.empty()) param.name = "a" + std::to_string(index);
+      param.type = base.isCallback
+                       ? callbackSpelling(base)
+                       : (base.oskel.empty() ? "int32" : base.oskel);
       out.push_back(std::move(param));
       ++index;
       if (matchPunct(",")) continue;
@@ -827,7 +1048,8 @@ class Bindgen {
   }
 
   static std::string quoteReason(const Base& base) {
-    return base.reason.empty() ? std::string("is not in the FFI vocabulary") : base.reason;
+    return base.reason.empty() ? std::string("is not expressible in the FFI vocabulary")
+                               : base.reason;
   }
 
   static bool isOskelKeyword(const std::string& name) {

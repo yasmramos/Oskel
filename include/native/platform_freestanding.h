@@ -47,6 +47,11 @@ class PlatformFreestanding final : public Platform {
   // the caller report a clear error instead of calling a wrong address.
   void* lookupSymbol(const char* name) override;
 
+  // The freestanding shim has no view of the machine: the real value comes from
+  // the boot loader's memory map, which the generated `oskel_mem_size` reads.
+  // Returning 0 keeps `memSize()` honest here instead of inventing a number.
+  std::uint64_t physicalMemory() const override { return 0; }
+
  private:
   // Lazily maps the backing region and bumps within it.
   std::uint8_t* cursor_ = nullptr;

@@ -29,4 +29,6 @@ class PlatformPosix final : public Platform {
   void dealloc(void* pointer) override;
 
   void* lookupSymbol(const char* name) override;
+
+  std::uint64_t physicalMemory() const override;
 };

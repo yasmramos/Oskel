@@ -23,8 +23,8 @@
 // (indexing, slicing, `len`, `ord`/`chr`, `int`/`double`/`str`/`type`, `panic`,
 // `for ... in`, closures), so it behaves identically on the development VM and
 // under `oskel build` (the AOT backend). It deliberately avoids the collection
-// and string methods (`.split`, `.map`, `.join`, ...) and the `pcall`/`error`
-// builtins, which the AOT backend does not implement yet (DEVELOPMENT.md PHASE
+// and string methods (`.split`, `.map`, `.join`, ...) and the `pcall`
+// builtin, which the AOT backend does not implement yet (DEVELOPMENT.md PHASE
 // 7f and the backlog), so importing it never breaks a native build.
 
 // --- scanning state ---------------------------------------------------------
