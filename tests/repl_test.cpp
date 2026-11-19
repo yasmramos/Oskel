@@ -151,6 +151,29 @@ static void testSessionClassPersists() {
         "a class annotation from an earlier entry resolves later");
 }
 
+static void testClassFieldTypePersistsAcrossEntries() {
+  // The field annotations travel with the class, so an entry that assigns a
+  // wrong-typed value to a field is rejected even though the class was declared
+  // in an earlier entry: the session keeps `classDefs_` alongside `classNames_`.
+  ReplSession session;
+  session.entry(
+      "class Point {\n"
+      "  x: int;\n"
+      "  fn init() { self.x = 0; }\n"
+      "}\n");
+  bool rejected = false;
+  try {
+    session.entry("let p = Point();\np.x = \"not an int\";");
+  } catch (const CompileError&) {
+    rejected = true;
+  }
+  check(rejected, "a field type from an earlier entry is enforced in a later one");
+  // A correct write in the later entry still goes through.
+  session.entry("let q = Point();\nq.x = 5;");
+  check(session.fieldInt("q", "x") == 5,
+        "a correctly typed field write in a later entry still compiles");
+}
+
 static void testFailedEntryDoesNotPoisonSession() {
   // A definition is committed only when its entry compiles. An entry that
   // imports a module and then fails must not leave that import marked as bound,
@@ -375,6 +398,7 @@ int main() {
   testSessionRedefinitionStillWorks();
   testSessionStructPersists();
   testSessionClassPersists();
+  testClassFieldTypePersistsAcrossEntries();
   testFailedEntryDoesNotPoisonSession();
   testSessionIsPerCompiler();
   testClearSessionForgets();

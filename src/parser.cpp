@@ -1116,6 +1116,7 @@ StmtPtr Parser::parseClassDecl() {
     lambda.body = method.body;
     lambda.name = name.lexeme + "." + method.name;
     lambda.returnType = method.returnType;
+    lambda.ownerClass = name.lexeme;
     ExprPtr target = makeExpr(
         MemberExpr{makeExpr(VariableExpr{"self"}, method.line, method.col), method.name, false},
         method.line, method.col);
@@ -1155,6 +1156,7 @@ StmtPtr Parser::parseClassDecl() {
   // what `let p: Point = Point(3, 4)` needs.
   constructor.body = makeStmt(BlockStmt{std::move(body)}, keyword.line, keyword.col);
   constructor.isClassConstructor = true;
+  constructor.classFields = fields;
 
   classNames_.insert(name.lexeme);
   declaredClasses_.insert(name.lexeme);

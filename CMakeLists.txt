@@ -536,6 +536,17 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_classes.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # The field-type check runs in the compiler, so `oskel build` rejects a
+    # mistyped field assignment exactly as the VM does, with the same message
+    # and exit 65, and writes no binary (PHASE 6.8).
+    add_test(NAME oskel.build_class_field_type_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_class_field_type_error"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/errors/class_field_type_self.oskl"
+        "-DEXPECTED_MESSAGE=cannot assign 'string' to 'int' in field 'x' of class 'Point'"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+
     # An `extern "C"` symbol is a host binding the AOT backend cannot resolve
     # (the FFI lowering is PHASE 7f), so `oskel build` must fail with the
     # dedicated message and write no binary.

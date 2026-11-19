@@ -941,11 +941,35 @@ A method returns with `return` like any function; `return self;` makes the call
 chainable (`p.scaled(2).scaled(2)`). A method may call another through `self`
 (`self.bump()`) and may recurse through `self`.
 
-A method's parameter and return annotations are checked like any function's. A
-**field** annotation is *advisory*: it names the type for the reader and for
-tooling, but an assignment to `self.field` is an ordinary map assignment, so the
-compiler does not enforce it (unlike a `struct` field, whose literal is checked).
-The annotation is still validated as a known type name.
+A method's parameter and return annotations are checked like any function's, and
+so is a **field** annotation. An assignment to `self.field` inside a method, or
+to `instance.field` through a binding whose type is known (an annotated binding
+like `let p: Point = ...`, or a plain `let p = Point(...)`, whose type the
+constructor call gives), is checked against the field's declared type with the
+same rule as every other annotation:
+
+```oskel
+class Point {
+  x: int;
+  fn init() { self.x = "oops"; }   // error: cannot assign 'string' to 'int'
+}
+let p: Point = Point();
+p.x = "oops";                      // error: same rule through the binding
+```
+
+The check is compile-time metadata only, so it never changes the emitted code
+and the AOT backend inherits it. A lambda written inside a method captures that
+method's `self`, so its field writes are checked against the same class. Three
+cases stay unchecked, by design:
+
+- a field declared without an annotation (`x;`) has no type to enforce;
+- a key the class never declared (`p.added = ...`) is a plain map key, because
+  an instance is a map and the map surface stays open;
+- a compound assignment (`self.x += 1`) has a result type the compiler does not
+  track statically.
+
+The declared type name itself is validated as a known type (or a declared
+struct/class) at parse time.
 
 **Compile-time checks.** The parser rejects, before any bytecode is produced:
 

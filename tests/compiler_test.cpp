@@ -1191,6 +1191,43 @@ void testClassSugar() {
                      "duplicate class name");
   expectCompileError("class C { self; }\n", "self as a class field");
   expectCompileError("class C { x: Nope; }\n", "unknown field type in a class");
+
+  // A field annotation is enforced on assignment, like a struct literal's
+  // field. `self.field = value` is checked inside a method...
+  expectCompileError("class P {\n  x: int;\n  fn init() { self.x = \"s\"; }\n}\n",
+                     "wrong type assigned to a field of self");
+  // ...and `instance.field = value` through a binding that names the class,
+  // whether the binding is annotated or inferred from the constructor call.
+  expectCompileError("class P { x: int; }\nlet p = P();\np.x = \"s\";\n",
+                     "wrong type assigned to a field through an inferred binding");
+  expectCompileError("class P { x: int; }\nlet p: P = P();\np.x = \"s\";\n",
+                     "wrong type assigned to a field through an annotated binding");
+  // A correct write of every accepted shape compiles, and an unannotated field
+  // accepts any value (its type is not declared).
+  expectCompiles(
+      "class P {\n  x: int;\n  ratio: double;\n  free;\n  fn init() {\n"
+      "    self.x = 1;\n    self.ratio = 2;\n    self.free = \"any\";\n"
+      "  }\n}\nlet p = P();\np.x = 3;\np.ratio = 1.5;\np.free = nil;\n");
+  // A class instance is a map, so a key the class never declared can be added;
+  // that is not a declared field, so no type is known and no check applies.
+  expectCompiles("class P { x: int; }\nlet p = P();\np.extra = \"later\";\n");
+  // A local `self` the user declares shadows the method's instance, so the
+  // field check must not fire against the class shape.
+  expectCompiles(
+      "class P {\n  x: int;\n  fn f() { let self = {x: \"s\"}; self.x = \"t\"; }\n}\n");
+  // A lambda written inside a method captures that method's `self`, so it
+  // inherits the owner class and its field writes are checked too.
+  expectCompileError(
+      "class P {\n  x: int;\n  fn f() { let g = () => { self.x = \"s\"; }; g(); }\n}\n",
+      "wrong type assigned to a field of self from a nested lambda");
+  expectCompiles(
+      "class P {\n  x: int;\n  fn f() { let g = () => { self.x = 1; }; g(); }\n}\n");
+  // A lambda that declares its own `self` parameter shadows the method's
+  // instance, so its field write is that parameter's, not the class's.
+  expectCompiles(
+      "class P {\n  x: int;\n  fn f() { let g = (self) => { self.x = \"s\"; }; g({x: 1}); }\n}\n");
+  // A plain map has no declared field type at all.
+  expectCompiles("var m = {a: 1};\nm.a = \"text\";\n");
 }
 
 void testFloatLiteralRange() {

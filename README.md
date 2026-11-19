@@ -22,7 +22,7 @@ for language in languages {
 - First-class functions, recursion, `=>` lambdas (`x => x * 2`) and variadic `rest...` parameters.
 - Optional types and nullability: annotations (`let x: int = 5`), local inference, nullable `T?`, unions (`T | E`) and the null-safe expressions `?.`, `??` and `!!`.
 - `struct` declarations (data only, no methods) checked against their literal at compile time.
-- `class` declarations (fields plus methods): instantiating is calling the class name (`Point(3, 4)`, no `new`), `self` is explicit and there is no inheritance. A class is parser sugar over a map plus closures, so it runs identically on the VM and under `oskel build`.
+- `class` declarations (fields plus methods): instantiating is calling the class name (`Point(3, 4)`, no `new`), `self` is explicit and there is no inheritance. A class is parser sugar over a map plus closures, so it runs identically on the VM and under `oskel build`. Field and method annotations are checked at compile time.
 - String interpolation with `"${expression}"` and UTF-8 support.
 - Ordered arrays and maps that preserve insertion order, with `for k, v in map` key/value iteration.
 - Ascending and descending ranges: `1..5`, `0..=10`, `5..0`.

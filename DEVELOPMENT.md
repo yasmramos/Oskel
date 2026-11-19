@@ -734,10 +734,16 @@ Consequences of the desugaring, documented so they are not surprises:
   form and the value is a `function`. (A `struct` name, by contrast, is not a
   value and stays local to its file.) A module that wants the class private
   exports a plain constructor function instead.
-- A **field** annotation is advisory: `self.field = value` is an ordinary map
-  assignment, so the compiler does not enforce the declared field type (a method's
-  parameter and return annotations *are* checked). The annotation is still
-  validated as a known type name.
+- A **field** annotation is enforced on assignment, like a `struct` literal's
+  field: `self.field = value` inside a method and `instance.field = value`
+  through a typed binding are checked against it (`Compiler::checkFieldAssign`).
+  The declared type is carried to the compiler on the constructor declaration
+  (`FnDeclStmt::classFields`) and on each method lambda (`LambdaExpr::ownerClass`),
+  which is what types `self`; a lambda written *inside* a method inherits that
+  owner, because it captures the same `self`. Three cases stay unchecked: an
+  unannotated field, a key the class never declared (an instance is a map, so its
+  surface stays open), and a compound assignment (`self.x += 1`), whose result
+  type is not tracked statically.
 - `class` is a **reserved word** from 0.1.0 on.
 
 Tested by `tests/58_classes.oskl` (VM), the `tests/errors/class_*.oskl` cases

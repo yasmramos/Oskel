@@ -323,6 +323,11 @@ struct LambdaExpr {
   // grammar has no `: ret` position). A `class` method carries its declared
   // return type here, so the body's `return` is checked like a named `fn`.
   TypeRef returnType;
+  // The class a `class` method belongs to, empty for a lambda the user wrote.
+  // The compiler uses it to type the `self` a method captures, so an assignment
+  // to `self.field` is checked against the field's annotation. Compile-time
+  // metadata only; never reaches the bytecode.
+  std::string ownerClass;
 };
 
 using ExprNode =
@@ -399,6 +404,12 @@ struct FnDeclStmt {
   // `Compiler::classNames`). Compile-time metadata only; never reaches the
   // bytecode.
   bool isClassConstructor = false;
+  // The declared fields of the class this declaration constructs, empty for an
+  // ordinary `fn`. The compiler records them so an assignment to `self.field`
+  // (or to a field of a typed instance) is checked against the field's
+  // annotation, exactly like a struct literal's values. Compile-time metadata
+  // only; never reaches the bytecode.
+  std::vector<StructField> classFields{};
 };
 
 // `struct Point { x: int; y: int; }` (PHASE 6.5). A data-only type: no

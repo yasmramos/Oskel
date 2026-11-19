@@ -304,6 +304,18 @@ class Compiler {
   // entry and is cleared only by `clearSession`.
   std::unordered_set<std::string> classNames_;
 
+  // Declared fields of every class, keyed by class name (PHASE 6.8). A class is
+  // erased to a constructor `fn`, but its field annotations still describe the
+  // instance, so the compiler keeps them to check `self.field = value` inside a
+  // method and `instance.field = value` through a typed binding. Session state,
+  // like `structDefs_`.
+  std::unordered_map<std::string, std::vector<StructField>> classDefs_;
+
+  // The class whose method body is being compiled, empty outside one. A method
+  // is a closure capturing `self`, so this is what types `self` for the field
+  // checks; it is saved and restored around every proto.
+  std::string currentOwnerClass_;
+
   // Signature of every `native fn` declared so far (PHASE 6.5), keyed by name.
   // A native declaration emits no call to the compiler: it only records the
   // signature so a call can be checked (arity and argument types) and so the
@@ -344,6 +356,14 @@ class Compiler {
   // `_ = f();` is an assignment, not a bare call, so it acknowledges the
   // discard and never reaches this check.
   void checkDiscardedCall(const Expr& expr);
+
+  // Checks `object.field = value` against the field's annotation when the
+  // object's type is known (PHASE 6.8). A class instance is a map at run time,
+  // so without this a mistyped field assignment would go unnoticed; the struct
+  // literal already gets the same check. Only a class field is known, so an
+  // ordinary map assignment is left alone, as is a compound assignment whose
+  // result type is not tracked statically.
+  void checkFieldAssign(const MemberExpr& member, const AssignExpr& assign);
 
   // Declared return type of the function currently being compiled, checked
   // against every `return` value. Empty means "unannotated".
@@ -552,6 +572,11 @@ class Compiler {
   // the shape even when the declaration appears later in the file.
   void registerStructDecls(const BlockStmt& block);
   void compileStructDecl(const StructDeclStmt& decl, int line, int col);
+  // Registers the fields of every `class` declared directly in `block`, so a
+  // hoisted method body (compiled before the constructor's own declaration is
+  // reached) already knows the shape it assigns into. Like `registerStructDecls`
+  // this is metadata only and emits nothing.
+  void registerClassDecls(const BlockStmt& block);
   // Registers every `native fn` declared directly in `block` before anything
   // else in it is compiled, so a hoisted function that calls one is checked
   // against its signature. It also descends into `extern "C"` blocks: their
@@ -614,6 +639,7 @@ class Compiler {
     std::unordered_map<std::string, TypeRef> globalTypes;
     std::unordered_map<std::string, std::vector<StructField>> structDefs;
     std::unordered_set<std::string> classNames;
+    std::unordered_map<std::string, std::vector<StructField>> classDefs;
     std::unordered_map<std::string, NativeSig> nativeSigs;
     std::unordered_map<std::string, std::string> externSignatures;
     std::unordered_set<std::string> mustUseGlobals;
@@ -642,9 +668,11 @@ class Compiler {
   // index in `bc_.children`. The parent compiler state is saved and restored.
   // `returnType` is the declared return annotation, checked against every
   // `return` (PHASE 6.5); an empty TypeRef means "unannotated".
+  // `ownerClass` names the class a method body belongs to, so `self` is typed
+  // inside it; empty for an ordinary function.
   int compileFunctionProto(const std::string& name, const std::vector<Param>& params,
-                           const StmtPtr& body, int line, int col,
-                           const TypeRef& returnType);
+                           const StmtPtr& body, int line, int col, const TypeRef& returnType,
+                           const std::string& ownerClass = std::string());
 
   // Compiles a module's top-level statements into `bc_` (bindings stay
   // frame-local) and returns its public surface as a table. Called by

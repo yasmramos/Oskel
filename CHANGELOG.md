@@ -198,8 +198,12 @@ may change between minor versions.
   sharing a name, `self` as a member name, and a variadic `init`. An instance is a
   map at runtime (`type(p)` is `"map"`), and two instances compare unequal even
   with identical fields because their method entries are distinct closures. A
-  field annotation is advisory (a method's parameter and return annotations are
-  checked). `class` is now a reserved word.
+  field annotation is enforced on assignment, like a `struct` literal's field:
+  `self.field = value` inside a method and `instance.field = value` through a
+  typed binding (annotated, or inferred from the constructor call) are checked
+  against it, at compile time, so the AOT backend inherits the same diagnostics.
+  An unannotated field, a key the class never declared and a compound assignment
+  stay unchecked. `class` is now a reserved word.
 
 
 - **`std.path`: filesystem paths.** A new standard-library module for joining,

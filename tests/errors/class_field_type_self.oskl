@@ -1,0 +1,8 @@
+// expect-exit: 65
+// A field's annotation is enforced on assignment, not only in `init`: an
+// assignment to `self.field` is checked against the declared type.
+class Point {
+  x: int;
+  fn init() { self.x = "not an int"; }
+}
+Point();

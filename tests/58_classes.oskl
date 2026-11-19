@@ -116,4 +116,57 @@ assertEq(modules.classes.diagonal(5).lenSquared(), 50);
 // form is identical, which is why the inequality is pinned explicitly.)
 assert(Point(1, 2) != Point(1, 2));
 
+// A field annotation is enforced on assignment, exactly like a `struct`
+// literal's field: the compiler checks `self.field = value` inside a method
+// and `instance.field = value` through a typed binding. The checks are
+// compile-time metadata, so the emitted code is unchanged and the AOT backend
+// inherits them (see tests/native_build_classes.oskl).
+class Typed {
+  n: int;
+  label: string;
+  fn init() { self.n = 1; self.label = "one"; }
+  fn bump() { self.n = self.n + 1; }  // a correctly typed write still compiles
+  fn setBoth(v: int, s: string) { self.n = v; self.label = s; }
+}
+let t = Typed();
+assertEq(t.n, 1);
+t.bump();
+assertEq(t.n, 2);
+t.setBoth(7, "seven");
+assertEq(t.n, 7);
+assertEq(t.label, "seven");
+
+// The annotation accepts what the type system allows elsewhere: an int widens
+// to a double field, and a field with no annotation stays untyped (any value).
+class Mixed {
+  ratio: double;
+  anything;
+}
+let m = Mixed();
+m.ratio = 2;
+assertEq(m.ratio, 2.0);
+m.anything = "free-form";
+m.anything = 42;
+assertEq(m.anything, 42);
+
+// A class instance is a map, so a key the class never declared can still be
+// added (unlike a struct literal, which must name every declared field).
+m.added = "later";
+assertEq(m.added, "later");
+
+// A lambda written inside a method captures that method's `self`, so a field
+// write there is checked against the same annotation.
+class Nested {
+  n: int;
+  fn init() { self.n = 1; }
+  fn bumpTwice() {
+    let bump = () => { self.n = self.n + 1; };
+    bump();
+    bump();
+  }
+}
+let n = Nested();
+n.bumpTwice();
+assertEq(n.n, 3);
+
 print("classes ok");

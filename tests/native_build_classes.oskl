@@ -65,3 +65,31 @@ let p1 = Point(1, 2);
 let p2 = Point(10, 20);
 p1.scaled(10);
 print(p1.x, p2.x, p2.y);
+
+// A field annotation is enforced on assignment by the compiler, not by the
+// backend, so the AOT path inherits the same diagnostics and the emitted
+// binary is unchanged. The correctly typed writes below must build.
+class Typed {
+  n: int;
+  label: string;
+  fn init() { self.n = 1; self.label = "one"; }
+  fn bump() { self.n = self.n + 1; }
+}
+let t = Typed();
+t.bump();
+print(t.n, t.label);
+
+// A lambda inside a method captures the method's `self`, so its field write is
+// checked against the same annotation and the desugared program stays portable.
+class Nested {
+  n: int;
+  fn init() { self.n = 1; }
+  fn bumpTwice() {
+    let bump = () => { self.n = self.n + 1; };
+    bump();
+    bump();
+  }
+}
+let nb = Nested();
+nb.bumpTwice();
+print(nb.n);
