@@ -571,6 +571,13 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/errors/class_uninitialized_field.oskl"
         "-DEXPECTED_MESSAGE=field 'timeout' of class 'Config' is declared 'int' but 'init' never assigns it"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+    add_test(NAME oskel.build_class_compound_init_field_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_class_compound_init_field_error"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/errors/class_compound_init_field.oskl"
+        "-DEXPECTED_MESSAGE=field 'n' of class 'Counter' is declared 'int' but 'init' only updates it in place"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
 
     # The hardened `class` surface must stay on the portable primitive surface,
     # so this fixture proves field defaults, method replacement and the

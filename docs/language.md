@@ -972,6 +972,20 @@ class Config {
 }
 ```
 
+A plain `=` and `??=` count as setting the field, because `??=` falls back to its
+right operand when the field is still `nil`. Every other compound does **not**:
+`self.n += 1` reads the field before writing it, so on an unset field it faults
+on `nil` — the check reports it rather than letting the constructor crash:
+
+```oskel
+class Counter {
+  n: int;
+  fn init() { self.n += 1; }   // error: reads the field before writing it
+}
+```
+
+Give such a field a default (`n: int = 0;`) and the compound is fine.
+
 The check is syntactic: it catches a forgotten field, not every path through
 `init`. An assignment inside an `if`, a loop or a `switch` counts, and so does a
 nullable field left `nil` on purpose. A lambda body inside `init` does **not**

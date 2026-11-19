@@ -87,6 +87,21 @@ class Braceless {
 assertEq(Braceless(1).n, 1);
 assertEq(Braceless(-1).n, 2);
 
+// `??=` initializes (it tolerates nil) and a compound assignment works on a
+// field that already has a default. Only a compound on an unset field is
+// rejected: it reads the field first (tests/errors/class_compound_init_field).
+class Fallback {
+  n: int;
+  fn init() { self.n ??= 7; }
+}
+assertEq(Fallback().n, 7);
+
+class Bumped {
+  n: int = 5;
+  fn init() { self.n += 1; }
+}
+assertEq(Bumped().n, 6);
+
 // A field assigned in a loop or a switch inside `init` counts too.
 class Loopy {
   n: int;
