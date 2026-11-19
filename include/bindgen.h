@@ -21,10 +21,15 @@
 // something the compiler would reject.
 //
 // A declaration this *build* cannot marshal -- a C variadic, which needs libffi
-// and the System V AMD64 ABI -- is written commented out: the module compiles
+// and the System V AMD64 ABI, or a struct by value on an ABI whose register
+// thunks cannot express it -- is written commented out: the module compiles
 // everywhere and the real signature is there to uncomment on a build that
-// supports it. A struct whose layout `ffi::buildStructLayout` rejects is not
-// commented out but reported as skipped, because no build could accept it.
+// supports it. Both questions are put to the compiler's own
+// `ffi::validateSignature`, asked once with every ABI capability on (is the
+// shape in the vocabulary at all?) and once with this build's (can this build
+// marshal it?), so the tool cannot drift from the compiler. A struct whose
+// layout `ffi::buildStructLayout` rejects is reported as skipped instead,
+// because no build could accept it.
 namespace bindgen {
 
 // The generated module and a small tally the CLI reports on stderr.
@@ -38,10 +43,12 @@ struct Result {
   // FFI vocabulary, which the tool reports instead of mis-translating.
   int skipped = 0;
   // Number of declarations emitted *commented out* because this build cannot
-  // marshal them: a C variadic (`...`) needs libffi and the System V AMD64 ABI,
-  // and the compiler rejects the declaration outright on a build without both,
-  // so the tool writes the real signature as a comment: the module compiles
-  // everywhere, and the user uncomments it on a build that supports it.
+  // marshal them: a C variadic needs libffi and the System V AMD64 ABI, and a
+  // struct by value needs that ABI too, so the compiler rejects the declaration
+  // outright on a build without them. The tool writes the real signature as a
+  // comment with the compiler's own reason: the module compiles everywhere, and
+  // the user uncomments it on a build that supports it. A declaration the
+  // *vocabulary* cannot express at all is counted as `skipped`, not here.
   int commented = 0;
   // Number of `struct` declarations emitted before the `extern "C"` block.
   int structs = 0;

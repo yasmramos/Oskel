@@ -9,7 +9,8 @@
 #include <vector>
 
 #include "ast.h"  // isKnownTypeName / isIntegerTypeName: the FFI vocabulary
-#include "ffi_types.h"  // kMaxExternArgs, and the single source of truth for a struct's layout
+#include "ffi_types.h"  // the FFI vocabulary and layout: the single source of truth
+                         // this tool validates a signature against
 
 namespace {
 
@@ -171,6 +172,30 @@ struct Base {
   std::vector<ffi::FfiField> fields;
   bool anonymousStruct = false;
 };
+
+// The compiler's view of a parsed type, so a generated signature can be
+// validated by `ffi::validateSignature` instead of by rules this tool would
+// otherwise have to keep in step with the compiler's by hand. `fallback` is the
+// spelling the emitter uses when the type resolved to nothing (`int32` for a
+// parameter, `void` for a return), so the validator is asked about exactly the
+// text that goes into the module -- validating a different spelling would make
+// the check an approximation of the emission rather than a check on it.
+ffi::TypeSpec specOf(const Base& base, const char* fallback) {
+  ffi::TypeSpec spec;
+  if (base.isCallback) {
+    spec.isCallback = true;
+    spec.callbackParams = base.callbackParams;
+    spec.callbackReturn = base.callbackReturn;
+    return spec;
+  }
+  if (base.kind == Base::Kind::Struct) {
+    spec.isStruct = true;
+    spec.fields = base.fields;
+    return spec;
+  }
+  spec.scalarType = base.oskel.empty() ? fallback : base.oskel;
+  return spec;
+}
 
 // The Oskel spelling of a callback type: `fn(P...): R`.
 std::string callbackSpelling(const Base& cb) {
@@ -1123,6 +1148,10 @@ class Bindgen {
     Spec spec = parseSpecifiers();
     Base base = baseFromSpec(spec);
     Base returnType = parsePointers(base);
+    if (returnType.anonymousStruct) {
+      returnType.ok = false;
+      returnType.reason = "an anonymous 'struct' has no name to spell in a signature";
+    }
 
     // A declaration that is not a plain `name(` is a variable, a function
     // pointer, or something else slice 1 does not bind: skip it. A *declaration*
@@ -1204,15 +1233,22 @@ class Bindgen {
       skipped_.push_back(name + ": " + paramProblem);
       return;
     }
-    // The register thunks cover at most `kMaxExternArgs` eightbytes; the
-    // compiler rejects a longer non-variadic signature, so emitting it would
-    // produce a module `oskel -c` refuses. A variadic call goes through libffi
-    // and is exempt.
-    if (!variadic && params.size() > ffi::kMaxExternArgs) {
-      skipped_.push_back(
-          name + ": passes " + std::to_string(params.size()) +
-          " register-sized values, more than the " + std::to_string(ffi::kMaxExternArgs) +
-          " the FFI thunks cover");
+    // Whether the signature can cross the C boundary is the compiler's call, so
+    // the tool asks `ffi::validateSignature` instead of re-implementing the
+    // rules (the register budget counts eightbytes, not parameters, and a
+    // struct's availability depends on the target ABI). Asking twice is what
+    // separates the two outcomes: a shape the *vocabulary* cannot express is
+    // skipped with its reason, while one this *build* cannot marshal is written
+    // commented out, so the module compiles here and the real signature stays
+    // there to uncomment on a build that supports it.
+    std::vector<ffi::TypeSpec> paramSpecs;
+    paramSpecs.reserve(params.size());
+    for (const Param& param : params) paramSpecs.push_back(param.spec);
+    const ffi::TypeSpec returnSpec = specOf(returnType, "void");
+    const std::string vocabularyProblem =
+        ffi::validateSignature(paramSpecs, returnSpec, variadic, ffi::kFullAbiCapabilities);
+    if (!vocabularyProblem.empty()) {
+      skipped_.push_back(name + ": " + vocabularyProblem);
       return;
     }
 
@@ -1222,6 +1258,7 @@ class Bindgen {
     fn.variadic = variadic;
     fn.returnType = returnType.oskel.empty() ? "void" : returnType.oskel;
     fn.line = nameToken.line;
+    fn.commentedNote = ffi::validateSignature(paramSpecs, returnSpec, variadic);
 
     auto existing = emittedNames_.find(name);
     if (existing != emittedNames_.end()) {
@@ -1229,13 +1266,16 @@ class Bindgen {
       return;
     }
     emittedNames_.insert(name);
-    if (variadic) ++commentedVariadics_;
+    if (!fn.commentedNote.empty()) ++commentedDeclarations_;
     functions_.push_back(std::move(fn));
   }
 
   struct Param {
     std::string name;
     std::string type;
+    // The same type as the compiler's FFI sees it, so a signature is checked
+    // by `ffi::validateSignature` instead of by rules the tool re-implements.
+    ffi::TypeSpec spec;
   };
   struct Function {
     std::string name;
@@ -1243,6 +1283,11 @@ class Bindgen {
     bool variadic = false;
     std::string returnType;
     int line = 0;
+    // Empty for a declaration this build can marshal. Otherwise the reason it
+    // is written commented out: the vocabulary can express it, this build
+    // cannot (a variadic, a MEMORY struct, a struct by value on a non-System V
+    // ABI), so the real signature is there to uncomment on a build that can.
+    std::string commentedNote;
   };
 
   void parseParamList(std::vector<Param>& out, bool& variadic, std::string& problem) {
@@ -1332,6 +1377,13 @@ class Bindgen {
           base.callbackReturn.clear();
         }
       }
+      if (base.anonymousStruct) {
+        // `struct { int x; }` inline has no name, so a signature has nothing to
+        // spell; emitting `int32` (the empty-`oskel` fallback) would silently
+        // pass the struct by value as a scalar.
+        base.ok = false;
+        base.reason = "an anonymous 'struct' has no name to spell in a signature";
+      }
       if (!base.ok && problem.empty()) {
         problem = "parameter type " + quoteReason(base);
       }
@@ -1339,6 +1391,7 @@ class Bindgen {
       param.type = base.isCallback
                        ? callbackSpelling(base)
                        : (base.oskel.empty() ? "int32" : base.oskel);
+      param.spec = specOf(base, "int32");
       out.push_back(std::move(param));
       ++index;
       if (matchPunct(",")) continue;
@@ -1394,12 +1447,14 @@ class Bindgen {
 
     text += "extern \"C\" {\n";
     for (const Function& fn : functions_) {
-      // A variadic declaration is written commented out: it needs libffi and
-      // the System V AMD64 ABI, and a build without both rejects the
-      // declaration at compile time. Commented, the module still compiles, and
-      // the signature is right there to uncomment on a supporting build.
-      const bool isVariadic = fn.variadic;
-      text += isVariadic ? "  // " : "  ";
+      // A declaration this build cannot marshal is written commented out: the
+      // compiler rejects it at compile time (a variadic needs libffi and the
+      // System V AMD64 ABI; a struct by value needs that ABI too), so
+      // commenting it keeps the module compiling here while the real signature
+      // stays there to uncomment on a build that supports it. The note is the
+      // compiler's own reason, not a second guess.
+      const bool isCommented = !fn.commentedNote.empty();
+      text += isCommented ? "  // " : "  ";
       text += "fn ";
       text += fn.name;
       text += "(";
@@ -1416,8 +1471,8 @@ class Bindgen {
       text += "): ";
       text += fn.returnType;
       text += ";";
-      if (isVariadic) {
-        text += "  // needs libffi and the System V AMD64 ABI";
+      if (isCommented) {
+        text += "  // " + fn.commentedNote;
       }
       text += "\n";
     }
@@ -1428,9 +1483,9 @@ class Bindgen {
     }
     text += "}\n";
 
-    result_.emitted = static_cast<int>(functions_.size()) - commentedVariadics_;
+    result_.emitted = static_cast<int>(functions_.size()) - commentedDeclarations_;
     result_.skipped = static_cast<int>(skipped_.size());
-    result_.commented = commentedVariadics_;
+    result_.commented = commentedDeclarations_;
     result_.structs = static_cast<int>(structOrder_.size());
     result_.constants = static_cast<int>(enumConstants_.size());
   }
@@ -1456,7 +1511,8 @@ class Bindgen {
   std::vector<Function> functions_;
   std::vector<std::string> skipped_;
   std::unordered_set<std::string> emittedNames_;
-  int commentedVariadics_ = 0;
+  // Declarations written commented out because this build cannot marshal them.
+  int commentedDeclarations_ = 0;
   // The structs the header defined, keyed by tag, plus the order they were
   // defined in (so the emitted module reads like the header). Only a struct
   // whose layout the runtime accepts is queued in `structOrder_`.

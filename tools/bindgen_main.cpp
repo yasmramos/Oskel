@@ -124,7 +124,7 @@ int main(int argc, char** argv) {
     if (result.constants > 0) std::cerr << ", " << result.constants << " enum constant(s)";
     if (result.commented > 0) {
       std::cerr << ", " << result.commented
-                << " commented out (needs libffi)";
+                << " commented out (this build cannot marshal it)";
     }
     if (result.skipped > 0) {
       std::cerr << ", skipped " << result.skipped << " (see the '// skipped:' comments)";

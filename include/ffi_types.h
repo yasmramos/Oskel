@@ -107,6 +107,22 @@ constexpr bool kCVariadicSupported = OSKEL_FFI_VARIADIC != 0;
 
 constexpr bool kMemoryStructsSupported = OSKEL_FFI_MEMORY_STRUCTS != 0;
 
+// The optional ABI capabilities of a build, bundled so a caller can ask the
+// same validation twice: once for this build, and once with every capability
+// on. A rejection by the first and an acceptance by the second means the
+// *vocabulary* can express the shape but this build cannot marshal it, which is
+// the difference between skipping a declaration and writing it commented out
+// (`bindgen` draws exactly that line). The defaults are this build's.
+struct AbiCapabilities {
+  bool structByValue = kStructByValueSupported;
+  bool memoryStructs = kMemoryStructsSupported;
+  bool variadic = kCVariadicSupported;
+};
+
+// Every optional capability on: what a build with libffi on the System V AMD64
+// ABI accepts.
+inline constexpr AbiCapabilities kFullAbiCapabilities{true, true, true};
+
 // One field of a struct crossing the C boundary. `type` is an FFI scalar type
 // name (the same vocabulary as a parameter annotation); a nested struct is not
 // a scalar and is rejected by `buildStructLayout`.
@@ -338,7 +354,12 @@ inline StructShape structShapeOf(const StructLayout& layout) {
 // honour. Returns an empty string when the type is fine, or a message naming
 // the problem. A scalar goes through `classifyParam`/`classifyReturn`; a struct
 // must have a layout `buildStructLayout` accepts.
-inline std::string validateTypeSpec(const TypeSpec& spec, bool isReturn) {
+//
+// `caps` is the ABI this check is asked about. The default is this build; pass
+// `kFullAbiCapabilities` to ask whether the vocabulary can express the shape at
+// all, ignoring what this particular build can marshal.
+inline std::string validateTypeSpec(const TypeSpec& spec, bool isReturn,
+                                    const AbiCapabilities& caps = AbiCapabilities{}) {
   if (spec.isCallback) {
     // A callback is a C function pointer. It crosses the ABI as one GPR, so it
     // is only meaningful as a parameter: a C function that *returns* a
@@ -360,13 +381,13 @@ inline std::string validateTypeSpec(const TypeSpec& spec, bool isReturn) {
       std::string reason;
       if (!buildStructLayout(spec.callbackReturnFields, layout, reason)) return reason;
       if (layout.isMemory) {
-        if (!kMemoryStructsSupported) {
+        if (!caps.memoryStructs) {
           return "a callback returning a struct of " + std::to_string(layout.size) +
                  " bytes is class MEMORY (> 16 bytes: passed on the stack, returned through a "
                  "hidden pointer), which this build does not support: it needs the System V AMD64 "
                  "ABI and libffi in the development engine";
         }
-      } else if (!kStructByValueSupported) {
+      } else if (!caps.structByValue) {
         return "a callback cannot return a struct by value on this target: the marshalling "
                "implements the System V AMD64 ABI only";
       }
@@ -401,7 +422,7 @@ inline std::string validateTypeSpec(const TypeSpec& spec, bool isReturn) {
     // A struct larger than 16 bytes is class MEMORY (passed on the stack,
     // returned through a hidden `sret` pointer). Only the libffi-backed
     // marshalling expresses that; the register thunks cannot.
-    if (!kMemoryStructsSupported) {
+    if (!caps.memoryStructs) {
       return "a struct of " + std::to_string(layout.size) +
              " bytes is class MEMORY (> 16 bytes: passed on the stack, returned through a hidden "
              "pointer), which this build does not support: it needs the System V AMD64 ABI and "
@@ -409,7 +430,7 @@ inline std::string validateTypeSpec(const TypeSpec& spec, bool isReturn) {
     }
     return "";
   }
-  if (!kStructByValueSupported) {
+  if (!caps.structByValue) {
     return "a struct cannot cross the C boundary by value on this target: the register "
            "marshalling implements the System V AMD64 ABI only (the Microsoft x64 ABI passes "
            "a struct larger than 8 bytes through a hidden pointer)";
@@ -484,10 +505,15 @@ inline std::string canonicalSignature(const std::vector<TypeSpec>& params,
 //
 // `variadic` is true for a C variadic (`fn printf(fmt: cstring, ...): int`).
 // Such a declaration always goes through `libffi` (the register thunks cannot
-// express a variable argument list), so it needs `kCVariadicSupported` and is
+// express a variable argument list), so it needs `caps.variadic` and is
 // not bound by the register budget below; its return must be a scalar.
+//
+// `caps` is the ABI this check is asked about; the default is this build. Pass
+// `kFullAbiCapabilities` to ask whether the vocabulary can express the
+// signature at all.
 inline std::string validateSignature(const std::vector<TypeSpec>& params,
-                                     const TypeSpec& returnType, bool variadic = false) {
+                                     const TypeSpec& returnType, bool variadic = false,
+                                     const AbiCapabilities& caps = AbiCapabilities{}) {
   // The bound is on flattened eightbytes, not parameters: a struct contributes
   // one per 8 bytes it spans. Keeping the total at or below the number of
   // general-purpose argument registers guarantees every eightbyte lands in a
@@ -507,11 +533,11 @@ inline std::string validateSignature(const std::vector<TypeSpec>& params,
     } else {
       eightbytes += 1;
     }
-    std::string problem = validateTypeSpec(spec, /*isReturn=*/false);
+    std::string problem = validateTypeSpec(spec, /*isReturn=*/false, caps);
     if (!problem.empty()) return problem;
   }
   if (variadic) {
-    if (!kCVariadicSupported) {
+    if (!caps.variadic) {
       return "a variadic 'extern \"C\"' declaration needs libffi and the System V AMD64 ABI, "
              "which this build does not have";
     }
@@ -523,13 +549,13 @@ inline std::string validateSignature(const std::vector<TypeSpec>& params,
     if (returnType.isStruct) {
       return "a variadic 'extern \"C\"' function must return a scalar";
     }
-    return validateTypeSpec(returnType, /*isReturn=*/true);
+    return validateTypeSpec(returnType, /*isReturn=*/true, caps);
   }
   if (eightbytes > kMaxExternArgs) {
     return "an 'extern' function may pass at most " + std::to_string(kMaxExternArgs) +
            " register-sized values (a struct counts one per 8 bytes)";
   }
-  return validateTypeSpec(returnType, /*isReturn=*/true);
+  return validateTypeSpec(returnType, /*isReturn=*/true, caps);
 }
 
 }  // namespace ffi
