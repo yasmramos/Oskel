@@ -1,30 +1,71 @@
 # Oskel for VS Code
 
-Syntax highlighting for the [Oskel](../..) programming language (`.oskl`).
+Language support for the [Oskel](../..) programming language (`.oskl`):
+syntax highlighting, editor configuration and snippets.
 
 This is a small, dependency-free extension: it contributes a language id, a
-TextMate grammar and an editor configuration. It has no runtime code, so it
-loads instantly and needs no build step.
+TextMate grammar, an editor configuration and a snippet file. It has no runtime
+code, so it loads instantly and needs no build step.
 
 ## What it highlights
 
-- Keywords: `let`, `var`, `const`, `fn`, `struct`, `native`, `extern`,
-  `import`, `if`, `else`, `while`, `for`, `in`, `switch`, `case`, `default`,
-  `try`, `catch`, `defer`, `break`, `continue`, `return`.
+- Keywords: `let`, `var`, `const`, `fn`, `struct`, `class`, `native`, `extern`,
+  `import`, `if`, `else`, `while`, `do`, `for`, `in`, `switch`, `case`,
+  `default`, `try`, `catch`, `defer`, `break`, `continue`, `return`.
 - Constants: `true`, `false`, `nil`.
 - Types: the primitive and FFI vocabulary (`int`, `float`, `double`, `string`,
-  `bool`, `array`, `map`, `error`, `range`, `ptr`, `cstring`, `size_t`, the
-  fixed-width integers, ...), the nullable marker `T?` and a user type in an
-  annotation (`let p: Point`).
-- Numbers: integers, doubles, `f`/`F` floats and `_` separators.
+  `bool`, `array`, `map`, `error`, `range`, `void`, `any`, `ptr`, `cstring`,
+  `size_t`, the fixed-width integers, ...), the nullable marker `T?`, a user
+  type in an annotation (`let p: Point`) and a struct literal or constructor
+  call (`Point { x: 1 }`, `Point(3, 4)`).
+- Numbers: integers, doubles, `f`/`F` floats, `_` separators and the `0x`/`0b`/
+  `0o` prefixes.
 - Strings with `\n`, `\t`, `\xNN`, `\uNNNN` escapes and `${ ... }`
   interpolation (the embedded expression is highlighted as Oskel).
 - Comments: `//` and nestable `/* ... */`.
 - Imports: `import std.math;`, `import a.b.*;`, `import a.b as m;` and
   `import { x, y } from a.b;`.
-- `extern "C" { fn ... }`, `extern fn ...;` and `native fn ...;` declarations.
-- Builtins (`print`, `len`, `sqrt`, `error`, `pcall`, ...) and calls.
-- Operators, including `**`, `??`, `?.`, `!!`, `..`, `...`, `=>`.
+- `@MustUse`, `extern "C" { fn ... }`, `extern fn ...;` and `native fn ...;`.
+- Builtins (`print`, `len`, `sqrt`, `time`, `memSize`, `args`, ...) and calls.
+- `self` inside a class method.
+- Operators, including `**`, `??`, `?.`, `!!`, `..`, `..=`, `...`, `=>` and the
+  compound assignments the language actually has.
+
+Syntax the language does **not** have is deliberately not highlighted: Oskel has
+no `===`, no `!==`, no `->`, and no `<<=`, `>>=`, `&=`, `|=` or `^=`.
+
+## Editor configuration
+
+`language-configuration.json` supplies the comment tokens, the bracket pairs,
+the auto-closing pairs (including `/* */`), the indentation rules (a line that
+opens `{`, `(` or `[` indents the next one, and a closing bracket dedents) and
+the `// region` folding markers.
+
+`package.json` also sets per-language editor defaults: two-space indentation,
+`insertSpaces`, no indentation guessing, bracket-pair guides and a space after
+`//`. These apply only to `.oskl` files and can be overridden per workspace.
+
+## Snippets
+
+Type a prefix and press `Tab` in an `.oskl` file:
+
+| Prefix | Expands to |
+| --- | --- |
+| `fn` | a named function |
+| `fnx` | a function with an expression body |
+| `lambda` | `x => x * 2` |
+| `struct` | a struct declaration |
+| `class` | a class with a field and `init` |
+| `method` | a method inside a class |
+| `let` / `var` | a variable declaration |
+| `if`, `ife`, `while`, `do`, `for`, `forin`, `forinmap` | control flow |
+| `switch` | a switch with a `case` and a `default` |
+| `import`, `import*`, `importfrom` | the three import forms |
+| `extern` | an `extern "C"` block |
+| `native` | a `native fn` declaration |
+| `mustuse` | an `@MustUse` function |
+| `catch`, `try`, `defer` | error handling and `defer` |
+| `print`, `assertEq` | the common builtin calls |
 
 ## Install (development)
 
@@ -53,12 +94,25 @@ code --install-extension oskel-0.1.0.vsix
 
 | File | Purpose |
 | --- | --- |
-| `package.json` | Extension manifest: language id, file extension, grammar. |
-| `language-configuration.json` | Comments, brackets, auto-closing pairs, folding. |
+| `package.json` | Extension manifest: language id, file extension, grammar, snippets, editor defaults. |
+| `language-configuration.json` | Comments, brackets, auto-closing pairs, indentation, folding. |
 | `syntaxes/oskel.tmLanguage.json` | The TextMate grammar. |
+| `snippets/oskel.json` | The snippets above. |
 
-## Notes
+## Keeping it in step with the compiler
 
-The grammar is intentionally standalone: it keeps its own keyword/type/builtin
-lists rather than reading them from the compiler. When the language gains a
-keyword or a builtin, update `syntaxes/oskel.tmLanguage.json` in the same change.
+The grammar keeps its own keyword, type and builtin lists, because a TextMate
+grammar cannot read the compiler at run time. Those lists are derived from a
+single source of truth per vocabulary — the `kKeywords` table in
+`src/lexer.cpp`, the type names in `src/ast.h` and the `addNative` registry in
+`src/builtins.cpp` — and `tests/check_vscode_grammar.cmake` fails the CTest
+suite when the grammar misses a word or highlights syntax the lexer never
+produces. Run it alone with:
+
+```sh
+cmake -DROOT=. -P tests/check_vscode_grammar.cmake
+```
+
+When the language gains a keyword, a type or a builtin, update
+`syntaxes/oskel.tmLanguage.json` in the same change; the test names the missing
+word.
