@@ -310,6 +310,18 @@ if(BUILD_TESTING)
       -DOSKEL=$<TARGET_FILE:oskel>
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_vscode_snippets.cmake")
 
+  # --- The VS Code extension reports the compiler's own diagnostics ---
+  # `editors/vscode` is no longer declaration-only: on save it runs `oskel -c`
+  # and publishes the output as editor diagnostics. The parser that turns the
+  # compiler's stderr into a range is pure text in, plain objects out (it does
+  # not import `vscode`), so `node --test` drives it without an editor, and
+  # `node --check` covers the file that does import it. Node is not a build
+  # dependency of the engine, so the check skips where it is absent.
+  add_test(NAME vscode_diagnostics
+    COMMAND ${CMAKE_COMMAND}
+      -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_vscode_diagnostics.cmake")
+
   # --- `oskelc` links no interpreter ---
   # The include graph is checked above; this one checks the link, so a source
   # that pulls the VM in without an `#include "vm.h"` (through a helper header)
