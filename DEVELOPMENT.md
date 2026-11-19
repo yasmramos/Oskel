@@ -571,10 +571,18 @@ previous one.
   integer arguments, and the returned bytes are read back out of the buffer and
   boxed into a map, exactly like a register-class return. The thunk frame keeps
   the outgoing area, the `sret` buffer, the register-class staging buffers and
-  the integer staging slots in disjoint regions so nothing overlaps. See
+  the integer staging slots in disjoint regions so nothing overlaps. Each field
+  is boxed from the `AotMap` and back: an integer field is normalized to its
+  declared width, a `float` field is narrowed to binary32 on the way out and
+  widened on the way back, a `cstring` field is NUL-terminated in the arena on
+  the way out and copied into an `AotString` on the way back (NULL is nil, and
+  `type()` reports `"string"` for a non-NULL one -- the same documented VM/AOT
+  divergence as a `cstring` scalar return, BACKLOG §6 item 23), and a `ptr`
+  field boxes a NULL as nil and any other address as the integer it is. See
   `tests/native_build_extern_struct.oskl` (registers) and
   `tests/native_build_extern_memory_struct.oskl` (MEMORY, with
-  `tests/hosted/memory_struct_helper.c`).
+  `tests/hosted/memory_struct_helper.c`, which also covers the narrow,
+  mixed-class, `ptr` and `cstring` field cases).
 - **Callbacks (done)** — a parameter typed `fn(P...): R` is a C function
   pointer. `fn` is a keyword, so `parseTypeAnnotation` reads the signature
   before the ordinary type-name path; the parameters are scalar FFI names and

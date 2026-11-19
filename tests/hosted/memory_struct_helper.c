@@ -6,6 +6,7 @@
  * not the arithmetic. */
 
 #include <stdint.h>
+#include <string.h>
 
 typedef struct {
   int64_t a, b, c;
@@ -89,3 +90,23 @@ PointerInt oskelTestMakeNullPointer(int32_t n) {
   PointerInt s = {0, n};
   return s;
 }
+
+/* A `cstring` field. A Oskel string is a length then the bytes, with no NUL, so
+ * the marshalling must hand C a terminated copy and copy a returned C string
+ * back into a Oskel string. */
+typedef struct {
+  const char *s;
+  int32_t n;
+} CStringInt;
+
+CStringInt oskelTestMakeCString(void) {
+  CStringInt r = {"hi", 5};
+  return r;
+}
+
+CStringInt oskelTestMakeNullCString(void) {
+  CStringInt r = {0, 9};
+  return r;
+}
+
+int32_t oskelTestCStringLength(CStringInt c) { return (int32_t)strlen(c.s) + c.n; }

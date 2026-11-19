@@ -8511,7 +8511,9 @@ void normalizeIntegerReturn(CodeGen& cg, const std::string& type) {
 // which the width stores turn into zero bytes, the same zero-fill the hosted
 // `writeStructBytes` starts from.
 void emitStructArgBytes(CodeGen& cg, const AotStructLayout& arg, std::int64_t argSlot,
-                        X64Reg bufBase, std::int64_t bufDisp, CodeGen::Label memberGet) {
+                        X64Reg bufBase, std::int64_t bufDisp, CodeGen::Label memberGet,
+                        CodeGen::Label oom, CodeGen::Label allocLabel, CodeGen::Label fail,
+                        const DataBlob& msgType) {
   // Zero the buffer first: the padding a C compiler leaves between fields is
   // part of the value the callee may copy. A class-MEMORY struct is larger than
   // the 16-byte register-class buffers, so the span comes from the layout.
@@ -8532,6 +8534,38 @@ void emitStructArgBytes(CodeGen& cg, const AotStructLayout& arg, std::int64_t ar
     // it is narrowed back to binary32 first; every other class is a bit pattern
     // or an integer whose low bytes are the C representation.
     const std::size_t size = layout.sizes[k];
+    if (ffi::isFfiCStringTypeName(layout.fields[k].type)) {
+      // An `AotString` is a length then the bytes, with no NUL, so its address
+      // is not a `const char *`. Materialise a terminated copy in the arena,
+      // exactly like a scalar `cstring` argument; `nil` stays NULL.
+      CodeGen::Label isNil = cg.newLabel();
+      CodeGen::Label isStr = cg.newLabel();
+      CodeGen::Label staged = cg.newLabel();
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagNil));
+      cg.jcc(Jcc::Eq, isNil);
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+      cg.jcc(Jcc::Eq, isStr);
+      emitFailCall(cg, fail, msgType);
+      cg.bind(isNil);
+      cg.xorReg(Rdx, Rdx);
+      cg.jmp(staged);
+      cg.bind(isStr);
+      cg.movReg(R12, Rdx);            // the AotString*
+      cg.movFromMem(Rdi, R12, 0);     // the byte length
+      cg.addImm32(Rdi, 1);            // plus the terminating NUL
+      cg.callLabel(allocLabel);
+      cg.testReg(Rax);
+      cg.jcc(Jcc::Eq, oom);
+      cg.movReg(R11, Rax);            // the block, kept across `rep movsb`
+      cg.movReg(Rdi, Rax);
+      cg.movReg(Rsi, R12);
+      cg.addImm32(Rsi, static_cast<std::int32_t>(kAotStringHeaderSize));
+      cg.movFromMem(Rcx, R12, 0);
+      cg.repMovsb();
+      cg.movImmByteToMem(Rdi, 0, 0);  // the terminating NUL
+      cg.movReg(Rdx, R11);
+      cg.bind(staged);
+    }
     if (layout.classes[k] == ffi::ParamClass::Float) {
       cg.movqToXmm(XmmScratch, Rdx);
       cg.cvtsd2ss(XmmScratch, XmmScratch);
@@ -8554,13 +8588,64 @@ void emitStructArgBytes(CodeGen& cg, const AotStructLayout& arg, std::int64_t ar
   }
 }
 
+// Boxes a C string address held in `addrReg` (an `AotString`, or nil for NULL).
+// The bytes are scanned to the NUL with the hosted engine's 16 MiB cap and
+// copied into the arena, exactly as a `cstring` scalar return is. Leaves the
+// boxed value in rax:rdx. `oom` is the thunk's out-of-memory label.
+void emitCStringBox(CodeGen& cg, X64Reg addrReg, CodeGen::Label oom,
+                    CodeGen::Label allocLabel, CodeGen::Label fail,
+                    const DataBlob& msgCStringTooLong) {
+  CodeGen::Label null = cg.newLabel();
+  CodeGen::Label scanned = cg.newLabel();
+  CodeGen::Label scanLoop = cg.newLabel();
+  CodeGen::Label returned = cg.newLabel();
+  cg.testReg(addrReg);
+  cg.jcc(Jcc::Eq, null);
+  // `rbx` is dead once the C call has returned (the caller reloads the map from
+  // `r12`), so it holds the C string across the `alloc`; `r12` must survive
+  // because a struct return keeps the map there.
+  cg.movReg(Rbx, addrReg);
+  cg.xorReg(Rcx, Rcx);      // the byte count
+  cg.bind(scanLoop);
+  // `movzxFromMem` takes a displacement, so index through a temporary base.
+  cg.movReg(R11, Rbx);
+  cg.addReg(R11, Rcx);
+  cg.movzxFromMem(R10, R11, 0);
+  cg.testReg(R10);
+  cg.jcc(Jcc::Eq, scanned);
+  cg.addImm32(Rcx, 1);
+  cg.cmpImm32(Rcx, static_cast<std::int32_t>(kMaxCStringBytes));
+  cg.jcc(Jcc::B, scanLoop);
+  emitFailCall(cg, fail, msgCStringTooLong);
+  cg.bind(scanned);
+  cg.movReg(Rdi, Rcx);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
+  cg.callLabel(allocLabel);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rax, 0, Rcx);  // the AotString length
+  cg.movReg(Rdi, Rax);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
+  cg.movReg(Rsi, Rbx);
+  cg.repMovsb();             // copies rcx bytes (the scan left rcx = length)
+  cg.movReg(Rdx, Rax);
+  cg.movImm(Rax, kTagStr);
+  cg.jmp(returned);
+  cg.bind(null);
+  cg.movImm(Rax, kTagNil);
+  cg.xorReg(Rdx, Rdx);
+  cg.bind(returned);
+}
+
 // Rebuilds the `AotMap` of a struct returned by value. The eightbytes come back
 // in the registers their class assigns: an INTEGER eightbyte in `rax` then
 // `rdx`, an SSE one in `xmm0` then `xmm1`. They are stashed in a stack buffer
 // first, then each field is read at its offset, boxed exactly as the hosted
 // `readStructField` does, and written into a fresh map.
 void emitStructReturn(CodeGen& cg, const AotStructLayout& ret, std::int64_t bufDisp,
-                      CodeGen::Label tableNew, CodeGen::Label memberSet) {
+                      CodeGen::Label tableNew, CodeGen::Label memberSet,
+                      CodeGen::Label oom, CodeGen::Label allocLabel, CodeGen::Label fail,
+                      const DataBlob& msgCStringTooLong) {
   const ffi::StructLayout& layout = ret.layout;
   int intReg = 0;
   int sseReg = 0;
@@ -8595,6 +8680,12 @@ void emitStructReturn(CodeGen& cg, const AotStructLayout& ret, std::int64_t bufD
     } else if (cls == ffi::ParamClass::Double) {
       cg.movFromMem(Rdx, Rbp, fieldOffset);
       cg.movImm(Rax, kTagDouble);
+    } else if (ffi::isFfiCStringTypeName(type)) {
+      // A `cstring` field is a `const char *`: the hosted engine copies it into
+      // a Oskel string (NULL becomes nil), so the AOT backend must too. A raw
+      // address here would be a silently wrong value, not a representation.
+      cg.movFromMem(Rax, Rbp, fieldOffset);
+      emitCStringBox(cg, Rax, oom, allocLabel, fail, msgCStringTooLong);
     } else if (cls == ffi::ParamClass::Pointer) {
       // A pointer field has no AOT representation of its own, so a NULL (the
       // only value a program can construct, since the backend lowers no `ptr`
@@ -8724,14 +8815,16 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     if (param.structIndex >= 0 && param.eightbyte == 0) {
       const AotStructLayout& arg = thunk.structs[static_cast<std::size_t>(param.structIndex)];
       emitStructArgBytes(cg, arg, -16LL * param.argIndex, Rbp,
-                         kStructBufBase + 16LL * arg.bufSlot, memberGet);
+                         kStructBufBase + 16LL * arg.bufSlot, memberGet, oom, allocLabel,
+                         fail, msgType);
     }
   }
   // A class-MEMORY argument is written straight into the outgoing stack area,
   // which is `rsp`-relative and already reserved by the frame.
   for (const AotStackArg& stacked : thunk.stackArgs) {
     emitStructArgBytes(cg, thunk.structs[static_cast<std::size_t>(stacked.structIndex)],
-                       -16LL * stacked.argIndex, Rsp, stacked.offset, memberGet);
+                       -16LL * stacked.argIndex, Rsp, stacked.offset, memberGet, oom, allocLabel,
+                       fail, msgType);
   }
 
   // A class-MEMORY return consumes `rdi` for the hidden buffer pointer, so the
@@ -8907,7 +9000,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     // written by the callee into the `sret` buffer.
     emitStructReturn(cg, thunk.structs[static_cast<std::size_t>(thunk.returnStructIndex)],
                      thunk.returnMemoryBytes > 0 ? sretBase : kStructBufBase, tableNew,
-                     memberSet);
+                     memberSet, oom, allocLabel, fail, msgCStringTooLong);
     cg.addImm32(Rsp, static_cast<std::int32_t>(frameBytes));
     cg.pop(R12);
     cg.pop(Rbx);
@@ -8940,49 +9033,10 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
       cg.movzx(Rdx, Rdx);
       cg.movImm(Rax, kTagBool);
       break;
-    case ffi::ReturnClass::CString: {
-      // A `const char *` comes back in `rax`. NULL is nil; otherwise the bytes
-      // are scanned to the NUL (with the hosted engine's 16 MiB cap) and copied
-      // into an `AotString`, which is the AOT representation of text.
-      CodeGen::Label null = cg.newLabel();
-      CodeGen::Label scanned = cg.newLabel();
-      CodeGen::Label scanLoop = cg.newLabel();
-      CodeGen::Label returned = cg.newLabel();
-      cg.testReg(Rax);
-      cg.jcc(Jcc::Eq, null);
-      cg.movReg(R12, Rax);      // the C string; r12 survives the `alloc`
-      cg.xorReg(Rcx, Rcx);      // the byte count
-      cg.bind(scanLoop);
-      // `movzxFromMem` takes a displacement, so index through a temporary base.
-      cg.movReg(R11, R12);
-      cg.addReg(R11, Rcx);
-      cg.movzxFromMem(R10, R11, 0);
-      cg.testReg(R10);
-      cg.jcc(Jcc::Eq, scanned);
-      cg.addImm32(Rcx, 1);
-      cg.cmpImm32(Rcx, static_cast<std::int32_t>(kMaxCStringBytes));
-      cg.jcc(Jcc::B, scanLoop);
-      emitFailCall(cg, fail, msgCStringTooLong);
-      cg.bind(scanned);
-      cg.movReg(Rdi, Rcx);
-      cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
-      cg.callLabel(allocLabel);
-      cg.testReg(Rax);
-      cg.jcc(Jcc::Eq, oom);
-      cg.movToMem(Rax, 0, Rcx);  // the AotString length
-      cg.movReg(Rdi, Rax);
-      cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
-      cg.movReg(Rsi, R12);
-      cg.repMovsb();             // copies rcx bytes (the scan left rcx = length)
-      cg.movReg(Rdx, Rax);
-      cg.movImm(Rax, kTagStr);
-      cg.jmp(returned);
-      cg.bind(null);
-      cg.movImm(Rax, kTagNil);
-      cg.xorReg(Rdx, Rdx);
-      cg.bind(returned);
+    case ffi::ReturnClass::CString:
+      // A `const char *` comes back in `rax`.
+      emitCStringBox(cg, Rax, oom, allocLabel, fail, msgCStringTooLong);
       break;
-    }
     default:  // Int
       normalizeIntegerReturn(cg, thunk.returnType);
       cg.movReg(Rdx, Rax);

@@ -29,11 +29,18 @@ struct PointerInt {
   p: ptr;
   n: int32;
 }
+struct CStringInt {
+  s: cstring;
+  n: int32;
+}
 extern "C" {
   fn oskelTestFlagFloatInt(s: FlagFloatInt): int32;
   fn oskelTestMakeFlagFloatInt(flag: int8, f: float, n: int32): FlagFloatInt;
   fn oskelTestPointerIsNull(s: PointerInt): int32;
   fn oskelTestMakeNullPointer(n: int32): PointerInt;
+  fn oskelTestMakeCString(): CStringInt;
+  fn oskelTestMakeNullCString(): CStringInt;
+  fn oskelTestCStringLength(c: CStringInt): int32;
   fn oskelTestSumTriple(t: Triple): int64;
   fn oskelTestSumTripleD(t: TripleD): double;
   fn oskelTestMakeTriple(a: int64, b: int64, c: int64): Triple;
@@ -78,6 +85,19 @@ assertEq(oskelTestPointerIsNull({p: nil, n: 42}), 42);
 let ps = oskelTestMakeNullPointer(7);
 assertEq(ps.n, 7);
 assertEq(type(ps.p), "nil");
+
+// A `cstring` field: C hands back a `const char *`, which the backend copies
+// into a Oskel string; a NULL field becomes nil. `type()` reports "string" for
+// a non-NULL one -- the documented VM/AOT divergence (BACKLOG §6 item 23), the
+// same as a `cstring` scalar return.
+let cs = oskelTestMakeCString();
+assertEq(cs.s, "hi");
+assertEq(cs.n, 5);
+assertEq(type(cs.s), "string");
+assertEq(oskelTestCStringLength({s: "abc", n: 4}), 7);
+let nullCs = oskelTestMakeNullCString();
+assertEq(type(nullCs.s), "nil");
+assertEq(nullCs.n, 9);
 
 // A returned class-MEMORY struct is a map, like a register-class one.
 assertEq(type(t), "map");
