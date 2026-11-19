@@ -256,6 +256,14 @@ struct GlobalSlots {
   int count = 0;
 };
 
+// The name of the hidden global that holds the `mt19937_64` state for
+// `random()`/`seed()` (PHASE 7c.5b.6). The state is 312 words plus a cursor, so
+// it lives in the global table (which the arena backs) rather than in a
+// register: the image has no writable data segment, and a callee-saved register
+// would have to be reserved across every helper. The name cannot collide with a
+// program's, because the lexer rejects `$` in an identifier.
+constexpr const char* kAotRandomStateGlobal = "$randomState";
+
 // Narrows the compiler's `extern "C"` declarations to the thunks the hosted
 // backend resolves through the system linker (PHASE 7f.5, structs in 7f.7).
 //
@@ -1049,6 +1057,13 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   // unseeded builtin. This mirrors `emitAotRuntime`'s `hasInput`.
   const bool hasInput = target.os == Os::Freestanding;
   if (hasInput) builtins.emplace("input", rt.inputBuiltin);
+  // `random()`/`seed()` (PHASE 7c.5b.6) work on every target: the generator is
+  // emitted in machine code and its state lives in the arena, so no host and no
+  // syscall is involved. Both are seeded unconditionally; `emitAotRuntime` emits
+  // the generator only when `randomStateSlot` is set below, so a program that
+  // never draws carries none of it.
+  builtins.emplace("random", rt.randomBuiltin);
+  builtins.emplace("seed", rt.seedBuiltin);
   // `memSize()` is bare metal only: its value comes from the multiboot map, and
   // no hosted prelude binds the handle. Seed it for `Os::Freestanding` so the
   // builtin resolves; on any other target, name it in the rejection so a program
@@ -1096,7 +1111,19 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     for (AotExternThunk& thunk : externThunks) thunk.label = cg.newLabel();
   }
 
-  const GlobalSlots globals = collectGlobals(protos, builtins, resolvedExterns);
+  GlobalSlots globals = collectGlobals(protos, builtins, resolvedExterns);
+
+  // `random()`/`seed()` keep their generator state in a hidden global (PHASE
+  // 7c.5b.6): the image has no writable data segment, and the state is 2504
+  // bytes, too large to thread through registers. `collectGlobals` pre-assigns a
+  // builtin's slot only when the program reads it, so a name here means the
+  // program actually draws. Reserving the slot only in that case keeps a program
+  // that never calls `random`/`seed` byte for byte what it was.
+  int randomStateSlot = -1;
+  if (globals.slotOfName.count("random") != 0 || globals.slotOfName.count("seed") != 0) {
+    randomStateSlot = globals.count++;
+    globals.slotOfName[kAotRandomStateGlobal] = randomStateSlot;
+  }
 
   const std::uint64_t chunkOffset = cg.offset();
 
@@ -1271,7 +1298,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   }
   emitAotRuntime(cg, rt, entry, externThunks.empty() ? nullptr : &externThunks,
                  mode == LinkMode::Hosted, hasInput,
-                 target.os == Os::Freestanding);
+                 target.os == Os::Freestanding, randomStateSlot);
   // String constants last: their bytes are addressed by `lea` from the code
   // above, and no path falls through into them.
   emitStringConstants(cg, stringConstants);

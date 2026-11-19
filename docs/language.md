@@ -2272,6 +2272,19 @@ assertEq(sqrt(81), 9.0);
 | `time()` | Seconds since the Unix epoch, UTC, as an `int` (the wall clock; see `std.datetime` in §12.10). |
 | `memSize()` | Total physical memory of the machine, in bytes, as an `int` (`0` when it cannot be determined). |
 
+`random()` draws from `mt19937_64`, whose bit stream the C++ standard fully
+specifies. Both engines therefore apply the same stated reductions — the top 53
+bits over 2^53 for `random()`, `next() % span` for the integer forms — so a
+native binary reproduces the development VM's sequence exactly (the
+`tests/native_build_random.oskl` fixture compares the two). The generator is
+emitted in machine code by the AOT backend, with its 312-word state in a hidden
+global backed by the arena.
+
+Two runs agree only after the same `seed(n)` call: the VM seeds from the
+platform's entropy source and a native binary from the standard's default seed
+(5489), because an image has no entropy source and a fixture must be
+reproducible. A program that needs a fixed stream calls `seed(n)` first.
+
 `time()` reads the system wall clock. It is available on the development VM and
 under `oskel build` on every target: the AOT runtime binds it to a syscall on
 Linux, `time(NULL)` in hosted mode, `GetSystemTimeAsFileTime` on Windows, and

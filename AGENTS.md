@@ -153,6 +153,28 @@ it as a caveat:
   the MEMORY class (the latter links `tests/hosted/memory_struct_helper.c`,
   because no libc symbol exercises that shape). A callback or C variadic
   parameter is still PHASE 7f work.
+- A builtin whose argument window the AOT backend walks by hand has to read
+  `args[i]` **downward**: `slotOffset` is `-16 * (index + 1)`, so `args[1]` sits
+  16 bytes *below* `args[0]` (`-16` tag, `-8` payload), not at `+16`/`+24`. A
+  `+16` read passes a smoke test whenever the two arguments happen to be equal
+  and fails as "bound must be positive" otherwise — `random(low, high)` was
+  shipped with exactly that bug.
+- `random`/`seed` are AOT-backed (PHASE 7g): `mt19937_64` is emitted as machine
+  code, so a native binary reproduces the VM's stream after the same `seed(n)`.
+  Three rules keep it correct, and each was a real bug first: only `rbx` and
+  `r12` survive the runtime calls (never `r13`/`r14`/`r15` — the arena cursor
+  and the global base live there); every helper keeps `rsp` 16-byte aligned at
+  its `call`s, including a thunk that just forwards; and `divUnsigned` leaves the
+  remainder in `rdx`, so an integer draw adds the low bound to `rdx` rather than
+  reloading the quotient. The 312-word state is a hidden global the lowerer
+  reserves only when the program mentions `random`/`seed`, so a program that
+  does not keeps its byte-for-byte binary. `tests/native_build_random.oskl`
+  compares VM and native output line for line. The argument-error messages
+  (`bound must be positive`, `needs an upper bound greater than the lower bound`,
+  `expects between 0 and 2 arguments`, `expects an integer argument`) are
+  matched to the VM's but cannot go in that fixture: a raised runtime error is
+  not a value, so `try`/`catch` does not capture it and `build_binary.cmake`
+  requires exit 0 from both engines.
 - Windows code paths can be exercised locally without a Windows host: build the
   engine with `x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude -Isrc -static
   -o /tmp/win/oskel.exe src/main.cpp src/core/*.cpp src/frontend/*.cpp

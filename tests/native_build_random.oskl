@@ -1,0 +1,76 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): `random()`/`seed()`
+// under the AOT backend.
+//
+// The generator is `mt19937_64`, whose bit stream the C++ standard fully
+// specifies, and both engines apply the same two reduction formulas (the top 53
+// bits over 2^53 for `random()`, `next() % span` for the integer forms). So a
+// native binary must print exactly what the development VM prints, and the
+// build harness compares the two byte for byte.
+//
+// Every stream here is reseeded first: the VM seeds from `std::random_device`
+// and a native binary from the standard's default seed, so only a seeded
+// sequence is reproducible. That difference is documented in BACKLOG §6 item 25
+// and is the one thing this fixture deliberately does not compare.
+
+// --- the three arities, each reseeded so the sequence is fixed -------------
+seed(42);
+var i = 0;
+while (i < 4) {
+  print(random());
+  i = i + 1;
+}
+
+seed(42);
+var j = 0;
+while (j < 4) {
+  print(random(100));
+  j = j + 1;
+}
+
+seed(7);
+var k = 0;
+while (k < 4) {
+  print(random(10, 20));
+  k = k + 1;
+}
+
+// --- a reseed restarts the stream ------------------------------------------
+seed(42);
+var first = random();
+seed(42);
+var again = random();
+print(first == again);
+
+// --- bounds hold ------------------------------------------------------------
+seed(1234);
+var lo = 99;
+var hi = -1;
+var n = 0;
+while (n < 200) {
+  var r = random(5, 9);
+  if (r < lo) { lo = r; }
+  if (r > hi) { hi = r; }
+  n = n + 1;
+}
+print(lo);
+print(hi);
+print(lo >= 5);
+print(hi < 9);
+
+// --- a one-argument draw stays in [0, high) ---------------------------------
+seed(99);
+var bad = 0;
+var m = 0;
+while (m < 200) {
+  var r = random(3);
+  if (r < 0) { bad = bad + 1; }
+  if (r >= 3) { bad = bad + 1; }
+  m = m + 1;
+}
+print(bad);
+
+// --- the value is an int, and a double draw is a double ---------------------
+seed(5);
+print(type(random(10)));
+seed(5);
+print(type(random()));
