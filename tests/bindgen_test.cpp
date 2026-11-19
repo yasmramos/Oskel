@@ -220,12 +220,19 @@ int main() {
 
   // A pointer *to* a function pointer (a second `*`) and an array of function
   // pointers are opaque pointers, not callbacks: the FFI passes them as `ptr`.
+  // The same holds when the callback comes from a `typedef`.
   {
     const bindgen::Result result = bindgen::generate(
         "void takes_pp(int (**pp)(int));\n"
         "void takes_arr(int (*arr[4])(int));\n"
         "typedef int (**ppcb_t)(int);\n"
-        "int reg(ppcb_t p);\n",
+        "int reg(ppcb_t p);\n"
+        "typedef int (*cb_t)(int);\n"
+        "void takes_pcb(cb_t *pcb);\n"
+        "void takes_cb_arr(cb_t cbs[4]);\n"
+        "void takes_ppcb(cb_t **ppcb);\n"
+        "void takes_const_pcb(const cb_t *pcb);\n"
+        "void takes_cb(cb_t cb);\n",
         "t.h");
     check(contains(result.text, "fn takes_pp(pp: ptr): void;"),
           "a pointer to a function pointer is an opaque ptr");
@@ -233,6 +240,62 @@ int main() {
           "an array of function pointers is an opaque ptr");
     check(contains(result.text, "fn reg(p: ptr): int32;"),
           "a pointer-to-function-pointer typedef is an opaque ptr");
+    check(contains(result.text, "fn takes_pcb(pcb: ptr): void;"),
+          "a pointer to a callback typedef is an opaque ptr");
+    check(contains(result.text, "fn takes_cb_arr(cbs: ptr): void;"),
+          "an array of callback typedefs decays to an opaque ptr");
+    check(contains(result.text, "fn takes_ppcb(ppcb: ptr): void;"),
+          "a pointer to a pointer to a callback typedef is an opaque ptr");
+    check(contains(result.text, "fn takes_const_pcb(pcb: ptr): void;"),
+          "a const-qualified pointer to a callback typedef is an opaque ptr");
+    check(contains(result.text, "fn takes_cb(cb: fn(int32): int32): void;"),
+          "the callback typedef itself is still a callback");
+  }
+
+  // A function *type* parameter with redundant parentheses is the same type as
+  // the unparenthesized form: C adjusts `int (cb)(int)` and `int cb(int)` alike
+  // to a function pointer, so both are callbacks.
+  {
+    const bindgen::Result result = bindgen::generate(
+        "void paren(int (cb)(int));\n"
+        "void paren_void(int (cb)(void));\n"
+        "void plain(int cb(int));\n",
+        "t.h");
+    check(contains(result.text, "fn paren(cb: fn(int32): int32): void;"),
+          "a parenthesized function-type parameter is a callback");
+    check(contains(result.text, "fn paren_void(cb: fn(): int32): void;"),
+          "a parenthesized function type with `(void)` takes no parameters");
+    check(contains(result.text, "fn plain(cb: fn(int32): int32): void;"),
+          "the unparenthesized form stays a callback");
+  }
+
+  // A calling convention is dropped, not treated as the parameter's name, and
+  // it must not end the specifier list: a declaration carrying one is still
+  // emitted, never dropped in silence.
+  {
+    const bindgen::Result result = bindgen::generate(
+        "int __stdcall f1(int a);\n"
+        "int __cdecl f2(int a);\n"
+        "int __fastcall f3(int a);\n"
+        "int WINAPI f4(int a);\n"
+        "void reg1(int (WINAPI *cb)(int));\n"
+        "void reg2(void (CALLBACK *cb)(void));\n"
+        "typedef void (CALLBACK *handler_t)(int);\n"
+        "void reg3(handler_t h);\n",
+        "t.h");
+    check(contains(result.text, "fn f1(a: int32): int32;"), "__stdcall is dropped, not the parameter name");
+    check(contains(result.text, "fn f2(a: int32): int32;"), "__cdecl is dropped");
+    check(contains(result.text, "fn f3(a: int32): int32;"), "__fastcall is dropped");
+    check(contains(result.text, "fn f4(a: int32): int32;"), "a WINAPI macro is dropped");
+    check(contains(result.text, "fn reg1(cb: fn(int32): int32): void;"),
+          "a calling convention inside a callback declarator is dropped");
+    check(contains(result.text, "fn reg2(cb: fn(): void): void;"),
+          "a CALLBACK convention inside a callback declarator is dropped");
+    check(contains(result.text, "fn reg3(h: fn(int32): void): void;"),
+          "a callback typedef carrying a convention is still a callback");
+    check(!contains(result.text, "WINAPI:"), "the convention never becomes a parameter name");
+    check(!contains(result.text, "CALLBACK:"), "the convention never becomes a parameter name");
+    check(result.skipped == 0, "no declaration carrying a convention is dropped");
   }
 
   // The register thunks cover at most `kMaxExternArgs` eightbytes; a longer

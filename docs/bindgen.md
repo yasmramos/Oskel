@@ -76,24 +76,31 @@ like this:
 | `char *` | `cstring` | a NUL-terminated string |
 | `T[N]`, `T[]` | `ptr` | an array parameter decays |
 | `R (*)(P...)` | `fn(P...): R` | a callback parameter (see below) |
+| `R (**)(P...)`, `R (*[N])(P...)` | `ptr` | a pointer *to* a callback is opaque |
 | `int8_t` … `uint64_t`, `size_t`, `intptr_t`, `uintptr_t`, `ptrdiff_t` | the matching FFI name | recognized without reading `<stdint.h>` |
 
 A `typedef` the header itself declares is resolved, including through pointers,
 arrays and function pointers. Qualifiers (`const`, `volatile`, `restrict`),
-storage classes (`static`, `extern`, `inline`) and attributes
-(`__attribute__((...))`, `__declspec(...)`) are dropped.
+storage classes (`static`, `extern`, `inline`), attributes
+(`__attribute__((...))`, `__declspec(...)`) and calling conventions
+(`__stdcall`, `__cdecl`, `WINAPI`, `CALLBACK`, ...) are dropped.
 
 ### Callbacks
 
 A C function-pointer parameter becomes a Oskel callback, the `fn(P...): R` the
-engine accepts as a parameter (PHASE 6.6). The declarator is written three ways
-in C and all three are recognized:
+engine accepts as a parameter (PHASE 6.6). The declarator is written four ways
+in C and all four are recognized:
 
 | C | Oskel |
 |---|-------|
 | `void qsort(..., int (*cmp)(const void *, const void *));` | `cmp: fn(ptr, ptr): int32` |
 | `void takes_fn(int cmp(int, int));` (a function *type*) | `cmp: fn(int32, int32): int32` |
+| `void takes_fn(int (cmp)(int));` (redundant parentheses) | `cmp: fn(int32): int32` |
 | `typedef void (*sighandler_t)(int);` then `sighandler_t h` | `h: fn(int32): void` |
+
+A *pointer* to a callback is not a callback: `int (**pp)(int)`, `int (*arr[4])(int)`
+and `cb_t *pcb` are all an opaque `ptr`, because the engine passes them through
+without ever calling them.
 
 The engine's vocabulary bounds a callback: it may only be a **parameter** (a
 function *returning* a callback is skipped), its parameters must be scalars (a
