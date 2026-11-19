@@ -1,0 +1,6 @@
+// expect-exit: 65
+// A struct and a class may not share a name: a class name is also a valid type
+// annotation, so the two would be ambiguous. This is the mirror of
+// class_struct_name_clash.oskl and must be rejected in both orders.
+class Point { y: int; }
+struct Point { x: int; }

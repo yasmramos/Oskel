@@ -44,8 +44,9 @@ struct ReplSession {
   // Parses and compiles one entry, then runs it. A compile error propagates.
   Value entry(const std::string& source) {
     Parser parser(lex(source), "<repl>");
-    // The REPL hands the session's struct names to each entry's parser.
+    // The REPL hands the session's struct and class names to each entry's parser.
     parser.seedStructNames(compiler.structNames());
+    parser.seedClassNames(compiler.classNames());
     Bytecode bytecode = compiler.compileRepl(parser.parseProgram());
     return vm.run(bytecode);
   }
@@ -57,6 +58,7 @@ struct ReplSession {
                  Compiler::ImportLoader loader = Compiler::ImportLoader{}) {
     Parser parser(lex(source), "<load>");
     parser.seedStructNames(compiler.structNames());
+    parser.seedClassNames(compiler.classNames());
     Bytecode bytecode = compiler.compileLoaded(parser.parseProgram(), std::move(loader), "<load>");
     return vm.run(bytecode);
   }
@@ -126,6 +128,50 @@ static void testSessionStructPersists() {
   session.entry("let q: Point = Point { x: 7, y: 8 };");
   check(session.fieldInt("q", "y") == 8,
         "a struct annotation from an earlier entry resolves later");
+}
+
+static void testSessionClassPersists() {
+  // A `class` declared in one entry must still be instantiable and usable as
+  // an annotation in a later entry. A class desugars to a top-level
+  // constructor `fn`, so the session keeps the name in `classNames_` and the
+  // REPL seeds it, exactly like a struct name.
+  ReplSession session;
+  session.entry(
+      "class Point {\n"
+      "  x: int;\n"
+      "  y: int;\n"
+      "  fn init(x: int, y: int) { self.x = x; self.y = y; }\n"
+      "  fn sum(): int { return self.x + self.y; }\n"
+      "}\n");
+  session.entry("let p: Point = Point(3, 4);");
+  check(session.fieldInt("p", "x") == 3,
+        "a class instance from an earlier entry resolves later");
+  session.entry("var total = p.sum();");
+  check(session.globalInt("total") == 7,
+        "a class annotation from an earlier entry resolves later");
+}
+
+static void testClassFieldTypePersistsAcrossEntries() {
+  // The field annotations travel with the class, so an entry that assigns a
+  // wrong-typed value to a field is rejected even though the class was declared
+  // in an earlier entry: the session keeps `classDefs_` alongside `classNames_`.
+  ReplSession session;
+  session.entry(
+      "class Point {\n"
+      "  x: int;\n"
+      "  fn init() { self.x = 0; }\n"
+      "}\n");
+  bool rejected = false;
+  try {
+    session.entry("let p = Point();\np.x = \"not an int\";");
+  } catch (const CompileError&) {
+    rejected = true;
+  }
+  check(rejected, "a field type from an earlier entry is enforced in a later one");
+  // A correct write in the later entry still goes through.
+  session.entry("let q = Point();\nq.x = 5;");
+  check(session.fieldInt("q", "x") == 5,
+        "a correctly typed field write in a later entry still compiles");
 }
 
 static void testFailedEntryDoesNotPoisonSession() {
@@ -227,6 +273,18 @@ static void testLoadSeesSessionStructs() {
   session.loadFile("struct Vec { x: int; y: int; }");
   session.entry("let v = Vec { x: 1, y: 2 };");
   check(session.fieldInt("v", "x") == 1, "a struct from a loaded file reaches later entries");
+}
+
+static void testLoadSeesSessionClasses() {
+  // A class declared by an earlier entry is instantiable in the file, and a
+  // class declared by the file is instantiable by a later entry.
+  ReplSession session;
+  session.entry("class Point { x: int; fn init(x: int) { self.x = x; } }");
+  session.loadFile("let p = Point(3);");
+  check(session.fieldInt("p", "x") == 3, "a loaded file sees the session's classes");
+  session.loadFile("class Vec { x: int; fn init(x: int) { self.x = x; } }");
+  session.entry("let v: Vec = Vec(1);");
+  check(session.fieldInt("v", "x") == 1, "a class from a loaded file reaches later entries");
 }
 
 static void testLoadSharesModuleCache() {
@@ -339,12 +397,15 @@ int main() {
   testSessionTypePersists();
   testSessionRedefinitionStillWorks();
   testSessionStructPersists();
+  testSessionClassPersists();
+  testClassFieldTypePersistsAcrossEntries();
   testFailedEntryDoesNotPoisonSession();
   testSessionIsPerCompiler();
   testClearSessionForgets();
   testLoadMergesSessionState();
   testLoadSeesSessionTypes();
   testLoadSeesSessionStructs();
+  testLoadSeesSessionClasses();
   testLoadSharesModuleCache();
   testFailedLoadDoesNotPoisonSession();
   if (g_failures != 0) {

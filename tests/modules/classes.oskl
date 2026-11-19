@@ -1,0 +1,18 @@
+// Fixture for tests/58_classes.oskl: a class declared in a module (PHASE 6.8).
+//
+// A class desugars to a top-level constructor `fn`, so its name is an ordinary
+// public module name: the qualified form `modules.classes.Point(...)` calls the
+// constructor. This is unlike a `struct`, whose name is not a value and stays
+// local to its file. A module that wants the class private exports a factory.
+
+class Point {
+  x: int;
+  y: int;
+  fn init(x: int, y: int) { self.x = x; self.y = y; }
+  fn lenSquared(): int { return self.x * self.x + self.y * self.y; }
+}
+
+// A private helper (leading `_`) that the public factory uses.
+fn _hidden(x: int) { return Point(x, x); }
+
+fn diagonal(x: int) { return _hidden(x); }

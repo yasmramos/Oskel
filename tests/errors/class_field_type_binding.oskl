@@ -1,0 +1,7 @@
+// expect-exit: 65
+// The same check applies through a typed binding: `p` is a `Point`, so a value
+// of the wrong type cannot be stored in its `x` field. `let p = Point();` is
+// enough, because a constructor call has the class's type.
+class Point { x: int; }
+let p = Point();
+p.x = "not an int";

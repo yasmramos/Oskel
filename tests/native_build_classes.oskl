@@ -1,0 +1,95 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): `class` under the AOT
+// backend (PHASE 6.8).
+//
+// A class is sugar the parser erases into plain Oskel (a map plus closures
+// capturing `self`), so the AOT backend lowers it with no backend work. This
+// fixture proves the desugared program builds to a native binary and agrees
+// with the development VM byte for byte, and it guards the feature against a
+// future edit that would give it a construct the AOT backend cannot lower.
+
+class Point {
+  x: int;
+  y: int;
+
+  fn init(x: int, y: int) {
+    self.x = x;
+    self.y = y;
+  }
+
+  fn lenSquared(): int {
+    return self.x * self.x + self.y * self.y;
+  }
+
+  fn scaled(k: int): Point {
+    self.x = self.x * k;
+    self.y = self.y * k;
+    return self;
+  }
+}
+
+let p = Point(3, 4);
+print(p.x, p.y, p.lenSquared());
+p.scaled(2);
+print(p.x, p.y, p.lenSquared());
+print(type(p));
+
+// A class without `init`; fields start nil.
+class Counter {
+  n: int;
+  fn set(v: int) { self.n = v; }
+  fn get(): int { return self.n; }
+}
+let c = Counter();
+c.set(41);
+print(c.get());
+
+// A method calling another method through `self`, and recursion through `self`.
+class Acc {
+  total: int;
+  fn init() { self.total = 0; }
+  fn add(v: int) { self.total = self.total + v; return self.total; }
+  fn addTwice(v: int): int { return self.add(v) + self.add(v); }
+}
+print(Acc().addTwice(5));
+
+class Fact {
+  fn fact(n: int): int {
+    if (n <= 1) { return 1; }
+    return n * self.fact(n - 1);
+  }
+}
+print(Fact().fact(5));
+
+// Two instances are independent.
+let p1 = Point(1, 2);
+let p2 = Point(10, 20);
+p1.scaled(10);
+print(p1.x, p2.x, p2.y);
+
+// A field annotation is enforced on assignment by the compiler, not by the
+// backend, so the AOT path inherits the same diagnostics and the emitted
+// binary is unchanged. The correctly typed writes below must build.
+class Typed {
+  n: int;
+  label: string;
+  fn init() { self.n = 1; self.label = "one"; }
+  fn bump() { self.n = self.n + 1; }
+}
+let t = Typed();
+t.bump();
+print(t.n, t.label);
+
+// A lambda inside a method captures the method's `self`, so its field write is
+// checked against the same annotation and the desugared program stays portable.
+class Nested {
+  n: int;
+  fn init() { self.n = 1; }
+  fn bumpTwice() {
+    let bump = () => { self.n = self.n + 1; };
+    bump();
+    bump();
+  }
+}
+let nb = Nested();
+nb.bumpTwice();
+print(nb.n);

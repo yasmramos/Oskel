@@ -180,6 +180,32 @@ may change between minor versions.
   behave identically on the VM and under `oskel build`. No new runtime type,
   opcode or builtin.
 
+- **`class`: named shapes with methods** (PHASE 6.8). A `class` declares fields
+  and methods; instantiating is calling the class name (`Point(3, 4)`, no
+  `new`), `self` is explicit inside a method, and there is no inheritance. The
+  feature is **pure parser sugar**: the declaration is rewritten into an ordinary
+  top-level constructor function that builds the instance as a map (each field a
+  key, starting `nil`), assigns every method as a closure capturing `self`, runs
+  the optional `init` (whose parameters are the constructor's) and returns the
+  instance. It therefore adds one token (`class`) and no AST node, opcode,
+  compiler path or VM logic, and the desugared program is plain Oskel the AOT
+  backend already lowers — `class` behaves identically on the VM and in an
+  `oskel build` binary with zero backend work (`tests/58_classes.oskl`,
+  `tests/native_build_classes.oskl`). A class name is a valid type annotation
+  (pre-scanned like a `struct`, and seeded across REPL entries). Rejected at
+  parse time: a nested class, a duplicate class name, a class/`struct` name
+  collision (in either order), a duplicate field or method, a field and a method
+  sharing a name, `self` as a member name, and a variadic `init`. An instance is a
+  map at runtime (`type(p)` is `"map"`), and two instances compare unequal even
+  with identical fields because their method entries are distinct closures. A
+  field annotation is enforced on assignment, like a `struct` literal's field:
+  `self.field = value` inside a method and `instance.field = value` through a
+  typed binding (annotated, or inferred from the constructor call) are checked
+  against it, at compile time, so the AOT backend inherits the same diagnostics.
+  An unannotated field, a key the class never declared and a compound assignment
+  stay unchecked. `class` is now a reserved word.
+
+
 - **`std.path`: filesystem paths.** A new standard-library module for joining,
   splitting and normalising filesystem paths. A path is an ordinary string, not
   a new type, so a result feeds the file builtins (`readFile`, `writeFile`,

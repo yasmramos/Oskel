@@ -1,0 +1,4 @@
+// expect-exit: 65
+// `self` is the receiver the desugaring binds; a field, a method or a parameter
+// may not reuse the name.
+class Point { self: int; }
