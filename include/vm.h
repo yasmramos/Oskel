@@ -8,10 +8,10 @@
 #include <vector>
 
 #include "bytecode.h"
-#include "builtins.h"
+#include "core/value.h"
 #include "jit/jit.h"
-#include "runtime.h"
-#include "value.h"
+#include "runtime/builtins.h"
+#include "runtime/runtime.h"
 
 // Register-based virtual machine (PHASE 3-6).
 //

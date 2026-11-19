@@ -1,11 +1,11 @@
-#include "ops.h"
+#include "runtime/ops.h"
 
 #include <cmath>
 #include <cstdint>
 #include <string>
 
-#include "builtins.h"
-#include "runtime.h"
+#include "runtime/builtins.h"
+#include "runtime/runtime.h"
 
 namespace ops {
 namespace {

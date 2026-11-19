@@ -7,8 +7,8 @@
 #include <variant>
 #include <vector>
 
-#include "lexer.h"
-#include "value.h"
+#include "core/value.h"
+#include "frontend/lexer.h"
 
 struct Expr;
 struct Stmt;

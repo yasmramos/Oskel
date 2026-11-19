@@ -29,9 +29,9 @@ if(MSVC)
   set(OSKEL_WARNINGS /W4)
   # Match the 8 MiB main-thread stack Linux and macOS give by default. The
   # recursive-descent parser and the compiler's AST walk each hold a DepthGuard
-  # (see src/parser.cpp and src/compiler.cpp) sized for that budget; Windows'
-  # 1 MiB default would let a deeply nested source overflow the stack before
-  # the guard fires, turning a clean compile error into a crash.
+  # (see src/frontend/parser.cpp and src/frontend/compiler.cpp) sized for that
+  # budget; Windows' 1 MiB default would let a deeply nested source overflow the
+  # stack before the guard fires, turning a clean compile error into a crash.
   set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /STACK:8388608")
 else()
   set(OSKEL_WARNINGS -Wall -Wextra)
@@ -45,50 +45,51 @@ if(OSKEL_GC_STRESS)
 endif()
 
 # --------------------------------------------------------------------------- sources
-# Every .cpp under src/ is picked up automatically; the file is then sorted into
-# the front end (lexer, parser, bytecode compiler, AOT backend) or the runtime
-# (VM, JIT, builtins). The split is what makes `oskelc` possible: the compiler
-# links only the front end, so the shipped compiler cannot reach an interpreter
-# (DEVELOPMENT.md §2, toolchain boundary).
-file(GLOB_RECURSE OSKEL_ALL_SOURCES CONFIGURE_DEPENDS
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
-)
+# The engine is split across three directories, and the directory a file lives
+# in *is* its classification — there is no hand-maintained list to forget:
+#
+#   src/core/      shared vocabulary with no engine state: Value, the cycle
+#                  collector, diagnostics plumbing, the platform layer.
+#   src/frontend/  everything a compiler needs: lexer, parser, bytecode
+#                  compiler, module resolver and the whole AOT backend.
+#   src/runtime/   the interpreter: VM, JIT, builtins, operators, FFI marshalling.
+#
+# `oskelc` links core + frontend and never runtime, so the shipped compiler
+# cannot carry an interpreter (DEVELOPMENT.md §2, toolchain boundary).
+file(GLOB_RECURSE OSKEL_CORE_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/core/*.cpp")
+file(GLOB_RECURSE OSKEL_FRONTEND_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/frontend/*.cpp")
+file(GLOB_RECURSE OSKEL_RUNTIME_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/*.cpp")
 
 # The two entry points are not part of either library.
 set(OSKEL_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 set(OSKEL_COMPILER_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/src/oskelc.cpp")
-list(REMOVE_ITEM OSKEL_ALL_SOURCES "${OSKEL_MAIN}" "${OSKEL_COMPILER_MAIN}")
 
-# The runtime half: the VM, the JIT, the builtins and the FFI marshalling. These
-# are the only sources `oskel` adds on top of the front end, and the only ones
-# `oskelc` must never link.
-set(OSKEL_RUNTIME_SOURCES
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/vm.cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/ops.cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/builtins.cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi.cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_case.cpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/jit/jit.cpp"
-)
-set(OSKEL_FRONTEND_SOURCES ${OSKEL_ALL_SOURCES})
-list(REMOVE_ITEM OSKEL_FRONTEND_SOURCES ${OSKEL_RUNTIME_SOURCES})
-
-# Configure-time guard: a new runtime source that is not listed above would
-# silently slip into `oskelc`. The list is exhaustive, so the check is exact.
-foreach(runtime_source IN LISTS OSKEL_RUNTIME_SOURCES)
-  list(FIND OSKEL_ALL_SOURCES "${runtime_source}" found)
-  if(found EQUAL -1)
-    message(FATAL_ERROR
-      "OSKEL_RUNTIME_SOURCES names '${runtime_source}', which does not exist; "
-      "update the list when a runtime source is renamed")
-  endif()
-endforeach()
+# Configure-time guard, the inverse of the old one: a `.cpp` dropped straight
+# into `src/` belongs to no library and would be compiled by nothing, or — worse
+# — could be added to the front end by accident. Every source must be in one of
+# the three directories, so the classification cannot be skipped.
+file(GLOB OSKEL_STRAY_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+list(REMOVE_ITEM OSKEL_STRAY_SOURCES "${OSKEL_MAIN}" "${OSKEL_COMPILER_MAIN}")
+if(OSKEL_STRAY_SOURCES)
+  foreach(stray IN LISTS OSKEL_STRAY_SOURCES)
+    file(RELATIVE_PATH shown "${CMAKE_CURRENT_SOURCE_DIR}" "${stray}")
+    message(SEND_ERROR
+      "'${shown}' is not in src/core, src/frontend or src/runtime; move it into "
+      "the directory that matches what it is (DEVELOPMENT.md §2)")
+  endforeach()
+  message(FATAL_ERROR
+    "every source under src/ must be classified by its directory")
+endif()
 
 # --------------------------------------------------------------------------- library
-# Two static libraries: the front end (everything a compiler needs) and the
-# runtime on top of it. `oskel_lib` keeps its name for the tests, which drive
-# the VM; `oskelc` links `oskel_frontend` alone.
-add_library(oskel_frontend STATIC ${OSKEL_FRONTEND_SOURCES})
+# Two static libraries: the front end (core + compiler, everything a compiler
+# needs) and the runtime on top of it. `oskel_lib` keeps its name for the tests,
+# which drive the VM; `oskelc` links `oskel_frontend` alone.
+add_library(oskel_frontend STATIC ${OSKEL_CORE_SOURCES} ${OSKEL_FRONTEND_SOURCES})
 target_include_directories(oskel_frontend PUBLIC src include)
 target_compile_options(oskel_frontend PRIVATE ${OSKEL_WARNINGS})
 # `Platform::lookupSymbol` resolves `extern "C"` declarations with `dlsym`
@@ -186,8 +187,8 @@ install(TARGETS oskel oskelc RUNTIME DESTINATION bin)
 # The binding generator: a C header in, an Oskel `extern "C"` module out. It is
 # a standalone executable that does not link the engine's runtime (it only
 # writes text), so it can be built and shipped on its own. Its sources live
-# under `tools/` and are deliberately *not* part of `OSKEL_ALL_SOURCES` (that
-# glob is `src/*.cpp`), so the generator never ends up inside `oskel`.
+# under `tools/`, outside the three `src/` globs, so the generator never ends up
+# inside `oskel`.
 add_library(bindgen_lib STATIC "${CMAKE_CURRENT_SOURCE_DIR}/tools/bindgen.cpp")
 target_include_directories(bindgen_lib PUBLIC include src)
 target_compile_options(bindgen_lib PRIVATE ${OSKEL_WARNINGS})
@@ -282,19 +283,23 @@ if(BUILD_TESTING)
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_repl_case.cmake")
 
   # --- Compiler boundary check (DEVELOPMENT.md toolchain boundary) ---
+  # Every source `oskelc` compiles: core plus front end.
   add_test(NAME compiler_boundary
     COMMAND ${CMAKE_COMMAND}
       -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
-      "-DFRONTEND_SOURCES=${OSKEL_FRONTEND_SOURCES}"
+      "-DFRONTEND_SOURCES=${OSKEL_CORE_SOURCES};${OSKEL_FRONTEND_SOURCES}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compiler_boundary.cmake")
 
   # --- `oskelc` links no interpreter ---
-  # The include graph is checked above; this one checks the link, so a source
-  # that pulls the VM in without an `#include "vm.h"` (through a helper header)
-  # still fails. `nm` is a POSIX tool, so the test is skipped where it is absent.
+  # The include graph is checked above; this one checks the *archive* `oskelc`
+  # links, not the linked binary: an unreferenced runtime object sitting in
+  # `liboskel_frontend.a` never reaches the executable, so a symbol check on the
+  # binary cannot see it. `nm` is a POSIX tool, so the test is skipped where it
+  # is absent.
   add_test(NAME oskelc_has_no_vm
     COMMAND ${CMAKE_COMMAND}
       "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+      "-DFRONTEND_ARCHIVE=$<TARGET_FILE:oskel_frontend>"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_oskelc_no_vm.cmake")
 
   # --- Version consistency: `oskel --version` matches the declared version ---

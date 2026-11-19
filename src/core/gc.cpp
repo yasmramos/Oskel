@@ -1,4 +1,4 @@
-#include "gc.h"
+#include "core/gc.h"
 
 #include <algorithm>
 #include <vector>

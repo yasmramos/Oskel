@@ -1,14 +1,15 @@
 # Fails when the compiler's front end reaches the interpreter.
 #
-# `oskelc` links only the front end (lexer, parser, bytecode compiler, AOT
+# `oskelc` links only the front end (core + lexer, parser, bytecode compiler, AOT
 # backend) and must never carry the VM, the JIT or the builtins: the product is
 # an AOT compiler, and a compiler that can interpret is both a size problem and
 # the GraalVM pitfall DEVELOPMENT.md §3 warns about.
 #
-# The first pass checks the include graph of `src/compiler.*` and `src/native/*`
-# (the rule that made the split a second `main`). The second pass, when
-# `FRONTEND_SOURCES` is provided, checks every source `oskelc` actually links, so
-# a front-end file that pulls in `vm.h` through a helper header is caught too.
+# The first pass checks the include graph of `src/frontend/compiler.*` and
+# `src/frontend/native/*` (the rule that made the split a second `main`). The
+# second pass, when `FRONTEND_SOURCES` is provided, checks every source `oskelc`
+# actually links, so a front-end file that pulls in `vm.h` through a helper
+# header is caught too.
 #
 # Usage: cmake -DROOT=<repository root> -P tests/check_compiler_boundary.cmake
 #        cmake -DROOT=<root> "-DFRONTEND_SOURCES=<a;b;c>" -P ...
@@ -18,16 +19,24 @@ if(NOT DEFINED ROOT)
 endif()
 
 file(GLOB boundary_files
-  "${ROOT}/src/compiler.cpp"
-  "${ROOT}/src/compiler.h"
+  "${ROOT}/src/frontend/compiler.cpp"
+  "${ROOT}/src/frontend/compiler.h"
   "${ROOT}/include/compiler.h"
-  "${ROOT}/src/native/*.cpp"
-  "${ROOT}/src/native/*.h"
+  "${ROOT}/src/frontend/native/*.cpp"
+  "${ROOT}/src/frontend/native/*.h"
   "${ROOT}/include/native/*.h"
 )
 
+# The patterns match the *basename* of the include, not the whole spelling: the
+# headers are now qualified by directory (`runtime/vm.h`, `frontend/lexer.h`), so
+# an anchored `vm[.]h` would silently stop matching the moment a path gained a
+# prefix — the exact failure mode a boundary check exists to prevent.
+# `(.*/)?` is an optional directory prefix: it makes `vm.h`, `runtime/vm.h`
+# and any future `x/vm.h` all match. It cannot be `(^|/)`, because `^` anchors to
+# the start of the whole line and the include pattern has already consumed the
+# opening quote, so `^` can never match where the path begins.
 # `[.]` keeps the regex readable: no escaping of the dot inside CMake strings.
-set(forbidden "interpreter[.]h|vm[.]h|jit/jit[.]h")
+set(forbidden "(.*/)?(interpreter|vm|jit/jit)[.]h")
 # The compiler and the native backend must also stay clear of the FFI *runtime*
 # half. `ffi_types.h` is the shared, dependency-free source of truth and is
 # allowed; `ffi_marshal.h` pulls in `runtime.h`/`value.h`, and `ffi.cpp` is the
@@ -35,10 +44,15 @@ set(forbidden "interpreter[.]h|vm[.]h|jit/jit[.]h")
 # dependency (DEVELOPMENT.md §5.1/§6): the AOT backend lowers callbacks to compile-time
 # stubs and must never link it, so the include must not be reachable from the
 # compiler or the native backend.
-set(forbidden_ffi "ffi_marshal[.]h|ffi[.]h|libffi")
+set(forbidden_ffi "(.*/)?ffi_marshal[.]h|(.*/)?ffi[.]h|libffi")
 
 # What the front end as a whole may not reach: the runtime half of the engine.
-set(forbidden_frontend "vm[.]h|jit/jit[.]h|builtins[.]h|ops[.]h|ffi_marshal[.]h|libffi")
+# `runtime[.]h` is spelled with its directory on purpose: `include/native/runtime.h`
+# is the AOT freestanding runtime, which the backend must and does include, and a
+# bare `(.*/)?runtime[.]h` would flag it. The interpreter's header is only ever
+# reached as `runtime/runtime.h`.
+set(forbidden_frontend
+  "(.*/)?(vm|jit/jit|builtins|ops|ffi_marshal)[.]h|(.*/)?runtime/runtime[.]h|libffi")
 
 set(violations "")
 foreach(file IN LISTS boundary_files)

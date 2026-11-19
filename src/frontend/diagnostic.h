@@ -2,7 +2,7 @@
 
 #include <string>
 
-#include "errors.h"
+#include "core/errors.h"
 #include "platform.h"
 
 // `platform` defaults to the development implementation so existing call sites

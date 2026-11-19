@@ -8,7 +8,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "ast.h"  // isKnownTypeName / isIntegerTypeName: the FFI vocabulary
+#include "frontend/ast.h"  // isKnownTypeName / isIntegerTypeName: the FFI vocabulary
 #include "ffi_types.h"  // the FFI vocabulary and layout: the single source of truth
                          // this tool validates a signature against
 

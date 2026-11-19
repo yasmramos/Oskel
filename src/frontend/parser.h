@@ -5,8 +5,8 @@
 #include <unordered_set>
 #include <vector>
 
-#include "ast.h"
-#include "lexer.h"
+#include "frontend/ast.h"
+#include "frontend/lexer.h"
 
 class Parser {
  public:

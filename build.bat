@@ -4,21 +4,19 @@ cd /d "%~dp0"
 
 if not exist build mkdir build
 
-rem The engine's sources split in two, exactly as CMakeLists.txt and build.sh
-rem split them: the front end (lexer, parser, bytecode compiler, AOT backend)
-rem and the runtime (VM, operators, builtins, FFI marshalling, case tables,
-rem JIT). `oskelc` links only the front end, so the shipped compiler carries no
-rem interpreter (DEVELOPMENT.md section 2, toolchain boundary).
-set "RUNTIME_SOURCES=src\vm.cpp src\ops.cpp src\builtins.cpp src\ffi.cpp src\unicode_case.cpp src\jit\jit.cpp"
+rem The engine's sources split in three, exactly as CMakeLists.txt and build.sh
+rem split them, and the directory a file lives in is its classification: core
+rem (Value, cycle collector, platform layer), front end (lexer, parser, bytecode
+rem compiler, AOT backend) and runtime (VM, operators, builtins, FFI marshalling,
+rem case tables, JIT). `oskelc` links core + front end, so the shipped compiler
+rem carries no interpreter (DEVELOPMENT.md section 2, toolchain boundary).
 set "FRONTEND_SOURCES="
-for %%f in (src\*.cpp src\native\*.cpp) do (
-    set "IS_RUNTIME="
-    for %%r in (%RUNTIME_SOURCES%) do (
-        if /i "%%f"=="%%r" set "IS_RUNTIME=1"
-    )
-    if not defined IS_RUNTIME if /i not "%%f"=="src\main.cpp" if /i not "%%f"=="src\oskelc.cpp" (
-        set "FRONTEND_SOURCES=!FRONTEND_SOURCES! %%f"
-    )
+for %%f in (src\core\*.cpp src\frontend\*.cpp src\frontend\native\*.cpp) do (
+    set "FRONTEND_SOURCES=!FRONTEND_SOURCES! %%f"
+)
+set "RUNTIME_SOURCES="
+for %%f in (src\runtime\*.cpp src\runtime\jit\*.cpp) do (
+    set "RUNTIME_SOURCES=!RUNTIME_SOURCES! %%f"
 )
 
 g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build\oskel.exe src\main.cpp !FRONTEND_SOURCES! %RUNTIME_SOURCES%

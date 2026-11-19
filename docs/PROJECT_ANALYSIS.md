@@ -4,7 +4,7 @@ Date: 2026-11-08 · Branch: `develop` · Language version: **0.1.0**
 
 This analysis reflects the **actual code in the repository** (about 12,300
 lines of engine C++ under `src/` and `include/`, plus about 6,300 lines for the
-AOT backend under `src/native/` and `include/native/`). The project mirrors the
+AOT backend under `src/frontend/native/` and `include/native/`). The project mirrors the
 Lua / LuaJIT pipeline: `source → lexer → parser → AST → compiler →
 register-based bytecode → VM`, with an AOT backend in progress (PHASE 7).
 
@@ -18,12 +18,12 @@ tests and no CI).
 
 | Area | Status | Evidence |
 |------|--------|----------|
-| Lexer / Parser / AST | Working, tested | `src/lexer.cpp`, `src/parser.cpp` (1,742 L), `src/ast.h` |
-| Compiler AST→bytecode | PHASE 6.7 complete | `src/compiler.cpp` (2,853 L): literals, locals/globals, control flow, closures, collections, types, modules |
-| Register-based VM | PHASE 6 complete | `src/vm.cpp` (815 L); **39/40 opcodes** (`static_assert(kOpcodeCount <= 40)`) |
+| Lexer / Parser / AST | Working, tested | `src/frontend/lexer.cpp`, `src/frontend/parser.cpp` (1,742 L), `src/ast.h` |
+| Compiler AST→bytecode | PHASE 6.7 complete | `src/frontend/compiler.cpp` (2,853 L): literals, locals/globals, control flow, closures, collections, types, modules |
+| Register-based VM | PHASE 6 complete | `src/runtime/vm.cpp` (815 L); **39/40 opcodes** (`static_assert(kOpcodeCount <= 40)`) |
 | AST interpreter | **Retired** | no `src/interpreter.cpp`; the VM is the only engine |
-| Shared runtime | Working | `src/value.cpp`, `src/ops.cpp` (operators), `src/builtins.cpp` (1,524 L), `src/gc.cpp` |
-| AOT backend | PHASE 7 in progress (7a, 7b, 7c.0–7c.2) | `src/native/*` (codegen, lower, runtime, dtoa, elf, pe, arena, freestanding platform, entry) |
+| Shared runtime | Working | `src/value.cpp`, `src/ops.cpp` (operators), `src/runtime/builtins.cpp` (1,524 L), `src/gc.cpp` |
+| AOT backend | PHASE 7 in progress (7a, 7b, 7c.0–7c.2) | `src/frontend/native/*` (codegen, lower, runtime, dtoa, elf, pe, arena, freestanding platform, entry) |
 | Tests | 50 `.oskl` + 100 error `.oskl` + 4 check `.oskl` + 9 examples + 12 C++ suites | `tests/`, `tests/errors/`, `tests/check/`, `examples/`, wired into CTest |
 | CI | Two workflows | `.github/workflows/{cmake-multi-platform,artifacts}.yml` (Linux, Windows, macOS) |
 

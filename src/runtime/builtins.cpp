@@ -1,4 +1,4 @@
-#include "builtins.h"
+#include "runtime/builtins.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -11,9 +11,9 @@
 #include <string>
 #include <vector>
 
-#include "runtime.h"
+#include "core/util.h"
+#include "runtime/runtime.h"
 #include "unicode_case.h"
-#include "util.h"
 
 using Args = std::vector<Value>&;
 namespace {

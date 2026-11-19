@@ -16,9 +16,9 @@
 #include <string>
 #include <vector>
 
-#include "gc.h"
+#include "core/gc.h"
+#include "core/value.h"
 #include "unicode_case.h"
-#include "value.h"
 
 namespace {
 

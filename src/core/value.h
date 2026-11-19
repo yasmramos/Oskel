@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-#include "gc.h"
+#include "core/gc.h"
 
 class Runtime;
 struct Bytecode;

@@ -21,7 +21,7 @@
 #endif
 
 #include "bindgen.h"
-#include "util.h"
+#include "core/util.h"
 #include "version.h"
 
 namespace {

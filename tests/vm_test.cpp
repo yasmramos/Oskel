@@ -18,12 +18,12 @@
 #include <string>
 #include <utility>
 
-#include "builtins.h"
 #include "compiler.h"
 #include "ffi_marshal.h"
-#include "lexer.h"
-#include "ops.h"
-#include "parser.h"
+#include "frontend/lexer.h"
+#include "frontend/parser.h"
+#include "runtime/builtins.h"
+#include "runtime/ops.h"
 #include "vm.h"
 
 namespace {

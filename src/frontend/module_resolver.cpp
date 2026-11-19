@@ -1,8 +1,8 @@
-#include "module_resolver.h"
+#include "frontend/module_resolver.h"
 
 #include <fstream>
 
-#include "util.h"
+#include "core/util.h"
 
 namespace {
 

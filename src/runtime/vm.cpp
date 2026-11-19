@@ -6,8 +6,8 @@
 #include <unordered_set>
 #include <utility>
 
-#include "ops.h"
 #include "ffi_marshal.h"
+#include "runtime/ops.h"
 
 // ---------------------------------------------------------------- diagnostics
 

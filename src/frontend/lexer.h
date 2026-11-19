@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "errors.h"
+#include "core/errors.h"
 
 enum class Tok {
   // literals and names

@@ -1,4 +1,4 @@
-#include "parser.h"
+#include "frontend/parser.h"
 
 #include <algorithm>
 #include <cmath>
@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 
-#include "errors.h"
+#include "core/errors.h"
 
 namespace {
 

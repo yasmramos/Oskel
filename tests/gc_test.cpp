@@ -12,8 +12,8 @@
 #include <cstdio>
 #include <memory>
 
-#include "gc.h"
-#include "value.h"
+#include "core/gc.h"
+#include "core/value.h"
 
 namespace {
 
