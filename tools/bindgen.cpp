@@ -391,6 +391,35 @@ class Bindgen {
            next.text == "short" || next.text == "long";
   }
 
+  // A *function-like* macro used as a declaration prefix: `MY_API(int) f2(int);`.
+  // Without a preprocessor the argument is as likely to be the return type as
+  // decoration, so the declaration cannot be translated honestly. It is
+  // reported as a skip rather than guessed at or dropped in silence.
+  bool looksLikeFunctionLikeMacro(const std::string& word) const {
+    if (isKnownTypeWord(word) || peek(1).kind != TokKind::Punct || peek(1).text != "(") {
+      return false;
+    }
+    // `__attribute__((...))` and friends are annotations, not macros: they are
+    // consumed by `skipAnnotations`, so they never reach the specifier list.
+    if (word == "__attribute__" || word == "__attribute" || word == "__declspec" ||
+        word == "__extension__" || word == "_CRTIMP") {
+      return false;
+    }
+    int depth = 0;
+    for (std::size_t a = 1;; ++a) {
+      const Token& t = peek(a);
+      if (t.kind == TokKind::Eof) return false;
+      if (t.kind == TokKind::Punct && t.text == "(") {
+        ++depth;
+        continue;
+      }
+      if (t.kind == TokKind::Punct && t.text == ")") {
+        if (--depth == 0) return peek(a + 1).kind == TokKind::Ident;
+        continue;
+      }
+    }
+  }
+
   // Reads a declaration specifier list: qualifiers/storage are consumed and
   // dropped, and the base type word is recorded.
   Spec parseSpecifiers() {
@@ -790,6 +819,33 @@ class Bindgen {
     }
   }
 
+  // The declared name, best-effort, for a skip message: the last identifier on
+  // the declaration's first line that is neither a keyword nor a type word
+  // (`Foo (*fp)(void);` reports `fp`, not `void`). A declarator the tool cannot
+  // parse still has to be reported under *some* name.
+  std::string declaratorName() const {
+    const int line = peek().kind == TokKind::Eof ? 0 : peek().line;
+    std::string name;
+    bool sawStar = false;
+    for (std::size_t a = 0;; ++a) {
+      const Token& t = peek(a);
+      if (t.kind == TokKind::Eof) break;
+      if (t.line != line) break;
+      if (t.kind == TokKind::Punct && t.text == ";") break;
+      if (t.kind == TokKind::Punct && t.text == "*") {
+        sawStar = true;
+        continue;
+      }
+      if (t.kind != TokKind::Ident) continue;
+      if (isIgnoredSpecifier(t.text) || t.text == "void" || isKnownTypeWord(t.text)) continue;
+      // Inside a parenthesized declarator the first identifier after the `*` is
+      // the declarator's name.
+      name = t.text;
+      if (sawStar) break;
+    }
+    return name.empty() ? std::string("(unnamed)") : name;
+  }
+
   void skipToSemicolon() {
     int parenDepth = 0;
     int braceDepth = 0;
@@ -821,13 +877,31 @@ class Bindgen {
   // ------------------------------------------------ function declarations
 
   void parseFunctionOrVariable() {
+    // A function-like macro prefix is undecidable without a preprocessor: the
+    // argument may be the return type (`MY_API(int) f(void);`). Report it
+    // instead of guessing or dropping the declaration in silence.
+    if (check(TokKind::Ident) && looksLikeFunctionLikeMacro(peek().text)) {
+      const std::string macro = peek().text;
+      skipToSemicolon();
+      skipped_.push_back("(declaration prefixed by '" + macro +
+                         "(...)', which the tool cannot expand; preprocess the header)");
+      return;
+    }
     Spec spec = parseSpecifiers();
     Base base = baseFromSpec(spec);
     Base returnType = parsePointers(base);
 
     // A declaration that is not a plain `name(` is a variable, a function
-    // pointer, or something else slice 1 does not bind: skip it.
+    // pointer, or something else slice 1 does not bind: skip it. A *declaration*
+    // whose type the tool could not resolve is still reported, never dropped in
+    // silence -- that is the defect this tool exists not to have.
     if (!check(TokKind::Ident)) {
+      if (!returnType.ok && !spec.isStructTag) {
+        std::string name = declaratorName();
+        skipToSemicolon();
+        skipped_.push_back(name + ": return type " + quoteReason(returnType));
+        return;
+      }
       // A `(` here opens a parenthesized declarator. Two shapes matter: a
       // function-pointer *variable* (`int (*fp)(void);`) is not a binding and
       // is skipped in silence, while a *function returning* a function pointer

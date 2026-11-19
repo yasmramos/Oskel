@@ -298,6 +298,38 @@ int main() {
     check(result.skipped == 0, "no declaration carrying a convention is dropped");
   }
 
+  // A declaration is never dropped in silence. A function-like macro prefix is
+  // reported (the tool has no preprocessor to expand it), and a declaration
+  // whose type it cannot resolve is reported too -- both used to vanish.
+  {
+    const bindgen::Result result = bindgen::generate(
+        "#define MY_API(type) type\n"
+        "MY_API(int) f2(int a);\n"
+        "Foo (*fp)(void);\n"
+        "Foo plain(int a);\n",
+        "t.h");
+    check(contains(result.text, "skipped:"), "a skipped declaration is reported");
+    check(result.text.find("MY_API") != std::string::npos,
+          "a function-like macro prefix is reported, not dropped in silence");
+    check(contains(result.text, "preprocess"),
+          "the macro skip tells the reader what to do");
+    check(contains(result.text, "is not a known type"),
+          "an unresolvable type is reported");
+    check(result.skipped == 3, "each undecidable declaration is counted");
+  }
+
+  // A tag declaration (`enum E { ... };`) is not a function: it is consumed
+  // without being reported as a skipped binding.
+  {
+    const bindgen::Result result = bindgen::generate(
+        "enum Color { RED, GREEN };\n"
+        "union U { int i; float f; };\n"
+        "int f(enum Color *c);\n",
+        "t.h");
+    check(contains(result.text, "fn f(c: ptr): int32;"), "a pointer to an enum is a ptr");
+    check(result.skipped == 0, "a tag declaration is not reported as a skipped binding");
+  }
+
   // The register thunks cover at most `kMaxExternArgs` eightbytes; a longer
   // non-variadic signature would be rejected by the compiler, so it is skipped
   // rather than emitted. A variadic is exempt (it goes through libffi).

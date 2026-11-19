@@ -117,6 +117,10 @@ as active code. The current skips are:
 - a **struct/union/enum by value** (a parameter or a return). Passing an
   aggregate across the C boundary is not in the slice-1 scope; a pointer to one
   is a `ptr`.
+- a declaration prefixed by a **function-like macro** (`MY_API(int) f(void);`).
+  Without a preprocessor the argument may be the return type or mere
+  decoration, so the tool reports the declaration instead of guessing. Run the
+  header through `cc -E` first to translate it.
 - a callback used where the engine does not accept one: **returned** by a
   function (`R (*f(...))(P...)`), **taking another callback**, **variadic**, or
   **returning a struct by value**. A callback *parameter* is generated.

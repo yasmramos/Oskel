@@ -161,6 +161,13 @@ may change between minor versions.
   adjusts to a function pointer exactly like `int cb(int)`, was skipped while
   its unparenthesized twin was generated.
 
+- **`bindgen` never drops a declaration in silence.** A declaration prefixed by
+  a **function-like macro** (`MY_API(int) f(void)`) vanished without a trace:
+  without a preprocessor the argument may be the return type, so the tool now
+  reports it as a skip and points at `cc -E` instead of guessing. A declaration
+  whose **type the tool cannot resolve** (`Foo (*fp)(void);`) vanished the same
+  way and is now reported too, under a best-effort declarator name.
+
 - **`bindgen` translates a callback parameter.** A C function-pointer parameter
   becomes the Oskel `fn(P...): R` the engine accepts as a parameter (PHASE 6.6),
   in all three C spellings: the inline declarator (`int (*cmp)(const void *,
