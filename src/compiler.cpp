@@ -775,6 +775,123 @@ void Compiler::checkDiscardedCall(const Expr& expr) {
        expr.line, expr.col);
 }
 
+void Compiler::checkFieldAssign(const MemberExpr& member, const AssignExpr& assign) {
+  if (assign.op != Tok::Eq) return;  // compound results are not tracked statically
+  if (!member.object) return;
+  // Only a class field has a declared type. The receiver's type has to be known
+  // statically: a local or global binding with an annotation, `self` inside a
+  // method, or a constructor call.
+  TypeRef objectType = inferExprType(*member.object);
+  if (!objectType.isPresent() || objectType.nullable || objectType.isUnion()) return;
+  auto found = classDefs_.find(objectType.name);
+  if (found == classDefs_.end()) return;
+  for (const StructField& field : found->second) {
+    if (field.name != member.name) continue;
+    if (field.type.isPresent()) {
+      checkAssignable(inferExprType(*assign.value), field.type,
+                      "field '" + member.name + "' of class '" + objectType.name + "'",
+                      assign.value->line, assign.value->col);
+    }
+    return;
+  }
+  // A method is a map field holding a closure, so an assignment would otherwise
+  // replace it with any value and the method would vanish in silence. The
+  // replacement must be a function of the declared arity: a method's body reads
+  // its parameters positionally, so a different count is a latent crash.
+  auto methods = classMethodDefs_.find(objectType.name);
+  if (methods == classMethodDefs_.end()) return;
+  for (const ClassMethodSig& method : methods->second) {
+    if (method.name != member.name) continue;
+    checkMethodReassign(objectType.name, method, assign);
+    return;
+  }
+  // Not a declared field: a class instance is a map, so adding a new key is
+  // allowed (unlike a struct literal, which must name every declared field).
+  // A name close to a declared one is far more likely a typo than a deliberate
+  // new key, and the typo would silently add a field while every read of the
+  // real one keeps returning its old value, so it is reported as a warning.
+  std::string closest = closestDeclaredName(member.name, found->second);
+  if (!closest.empty()) {
+    warn("'" + member.name + "' is not a field of class '" + objectType.name +
+             "' (did you mean '" + closest + "'?); the assignment adds a new key",
+         assign.target->line, assign.target->col);
+  }
+}
+
+std::string Compiler::closestDeclaredName(const std::string& name,
+                                          const std::vector<StructField>& fields) {
+  std::string best;
+  size_t bestDistance = 0;
+  for (const StructField& field : fields) {
+    const size_t distance = editDistance(name, field.name);
+    // Only a near miss is worth reporting: two edits apart at most, and never
+    // the name itself (which the caller already ruled out as a field).
+    if (distance == 0 || distance > 2) continue;
+    if (best.empty() || distance < bestDistance) {
+      best = field.name;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+size_t Compiler::editDistance(const std::string& a, const std::string& b) {
+  std::vector<size_t> previous(b.size() + 1);
+  std::vector<size_t> current(b.size() + 1);
+  for (size_t j = 0; j <= b.size(); ++j) previous[j] = j;
+  for (size_t i = 1; i <= a.size(); ++i) {
+    current[0] = i;
+    for (size_t j = 1; j <= b.size(); ++j) {
+      const size_t cost = a[i - 1] == b[j - 1] ? 0 : 1;
+      current[j] = std::min({previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost});
+    }
+    previous.swap(current);
+  }
+  return previous[b.size()];
+}
+
+void Compiler::checkMethodReassign(const std::string& className, const ClassMethodSig& method,
+                                  const AssignExpr& assign) {
+  const std::string context = "method '" + method.name + "' of class '" + className + "'";
+  // A lambda written at the assignment site is checked directly: its arity is
+  // known even though its type is not, and a method body reads its parameters
+  // positionally.
+  if (const auto* lambda = std::get_if<LambdaExpr>(&assign.value->node)) {
+    checkMethodArity(method, lambda->params, assign.value->line, assign.value->col, context);
+    for (size_t i = 0; i < lambda->params.size() && i < method.params.size(); ++i) {
+      if (!method.params[i].type.isPresent() || !lambda->params[i].type.isPresent()) continue;
+      checkAssignable(lambda->params[i].type, method.params[i].type,
+                      "parameter " + std::to_string(i + 1) + " of " + context,
+                      assign.value->line, assign.value->col);
+    }
+    return;
+  }
+  // Any other value has to be a function. An unknown type stays accepted: the
+  // language is untyped by default, so only a positively known non-function is
+  // rejected.
+  TypeRef valueType = inferExprType(*assign.value);
+  if (!valueType.isPresent() || valueType.nullable || valueType.isUnion()) return;
+  if (valueType.name == "function") return;
+  fail("cannot assign '" + describeType(valueType) + "' to " + context +
+           ": a method is a function and would stop being callable",
+       assign.value->line, assign.value->col);
+}
+
+void Compiler::checkMethodArity(const ClassMethodSig& method, const std::vector<Param>& params,
+                                int line, int col, const std::string& context) {
+  const bool variadic = !method.params.empty() && method.params.back().variadic;
+  const size_t required = method.params.size() - (variadic ? 1 : 0);
+  const bool lambdaVariadic = !params.empty() && params.back().variadic;
+  const size_t given = params.size() - (lambdaVariadic ? 1 : 0);
+  const bool ok = variadic ? (given >= required || lambdaVariadic)
+                           : (given == required && !lambdaVariadic);
+  if (ok) return;
+  fail("a replacement for " + context + " must take " + std::to_string(required) +
+           (variadic ? " or more" : "") + " parameter" + (required == 1 ? "" : "s") + ", got " +
+           std::to_string(given),
+       line, col);
+}
+
 TypeRef Compiler::inferExprType(const Expr& expr) const {
   DepthGuard guard(*this);
   if (const auto* literal = std::get_if<LiteralExpr>(&expr.node)) {
@@ -786,6 +903,15 @@ TypeRef Compiler::inferExprType(const Expr& expr) const {
   if (const auto* variable = std::get_if<VariableExpr>(&expr.node)) {
     LocalVar local;
     if (resolveLocal(variable->name, local)) return local.type;
+    // Inside a method `self` is the instance, captured from the constructor's
+    // own `self` binding. It resolves as an upvalue, not as a local of this
+    // frame, so the local lookup above misses it; typing it here is what lets
+    // `self.field = value` be checked against the field's annotation. A local
+    // `self` the user declared in this frame wins (the lookup above), and a
+    // global of that name is never what a method's `self` refers to.
+    if (variable->name == "self" && !currentOwnerClass_.empty()) {
+      return TypeRef{currentOwnerClass_, false};
+    }
     TypeRef global;
     if (lookupGlobalType(variable->name, global)) return global;
     return TypeRef{};
@@ -835,9 +961,45 @@ TypeRef Compiler::inferExprType(const Expr& expr) const {
   if (const auto* call = std::get_if<CallExpr>(&expr.node)) {
     if (const auto* callee = std::get_if<VariableExpr>(&call->callee->node)) {
       if (const NativeSig* sig = nativeSigFor(callee->name)) return sig->returnType;
+      // Calling a class name runs its constructor, so the result is an instance
+      // of that class (PHASE 6.8). A local of the same name shadows the class,
+      // so the binding wins and the call stays untyped, like any other call to
+      // a value of unknown type.
+      LocalVar local;
+      if (classNames_.count(callee->name) != 0 && !resolveLocal(callee->name, local)) {
+        return TypeRef{callee->name, false};
+      }
+      // A user function with a declared return type gives the call a type, so
+      // `let c = make(); c.field = ...` is checked against the field's
+      // annotation. An unannotated function stays unknown.
+      auto returns = functionReturnTypes_.find(callee->name);
+      if (returns != functionReturnTypes_.end() && !resolveLocal(callee->name, local)) {
+        return returns->second;
+      }
+    }
+  }
+  // A field of a statically known instance has the field's declared type, so a
+  // chained write (`d.inner.n = ...`) is checked like a direct one.
+  if (const auto* member = std::get_if<MemberExpr>(&expr.node)) {
+    if (member->safe) return TypeRef{};
+    TypeRef objectType = inferExprType(*member->object);
+    if (!objectType.isPresent() || objectType.nullable || objectType.isUnion()) return TypeRef{};
+    if (const auto* fields = lookupAggregateFields(objectType.name)) {
+      for (const StructField& field : *fields) {
+        if (field.name == member->name) return field.type;
+      }
     }
   }
   return TypeRef{};  // any other shape: unknown, so no check
+}
+
+// The declared fields of a struct or class, or null when `name` is neither.
+const std::vector<StructField>* Compiler::lookupAggregateFields(const std::string& name) const {
+  auto structFound = structDefs_.find(name);
+  if (structFound != structDefs_.end()) return &structFound->second;
+  auto classFound = classDefs_.find(name);
+  if (classFound != classDefs_.end()) return &classFound->second;
+  return nullptr;
 }
 
 // -------------------------------------------------------------------- program
@@ -855,6 +1017,7 @@ void Compiler::resetChunk(const std::string& name) {
   funcStack_.clear();
   currentUpvalueNames_.clear();
   currentReturnType_ = TypeRef{};
+  currentOwnerClass_.clear();
   lastWasConditionalReturn_ = false;
   predeclaredLetSlots_.clear();
   predeclaredFnSlots_.clear();
@@ -874,7 +1037,11 @@ void Compiler::clearSession() {
   userGlobals_.clear();
   globalTypes_.clear();
   structDefs_.clear();
+  classNames_.clear();
+  classDefs_.clear();
+  classMethodDefs_.clear();
   nativeSigs_.clear();
+  functionReturnTypes_.clear();
   externSignatures_.clear();
   mustUseGlobals_.clear();
   loadedModules_.clear();
@@ -904,6 +1071,7 @@ Bytecode Compiler::compileTopLevelBody(const StmtPtr& program) {
     // Register the struct shapes first so a hoisted function (compiled next)
     // can already build a literal.
     registerStructDecls(*block);
+    registerClassDecls(*block);
     // Register native signatures too: a hoisted function may call one and must
     // be checked against its signature.
     registerNativeDecls(*block);
@@ -988,6 +1156,10 @@ Compiler::SessionSnapshot Compiler::snapshotSession() const {
   snapshot.userGlobals = userGlobals_;
   snapshot.globalTypes = globalTypes_;
   snapshot.structDefs = structDefs_;
+  snapshot.classNames = classNames_;
+  snapshot.classDefs = classDefs_;
+  snapshot.classMethodDefs = classMethodDefs_;
+  snapshot.functionReturnTypes = functionReturnTypes_;
   snapshot.nativeSigs = nativeSigs_;
   snapshot.externSignatures = externSignatures_;
   snapshot.mustUseGlobals = mustUseGlobals_;
@@ -1004,6 +1176,10 @@ void Compiler::restoreSession(SessionSnapshot snapshot) {
   userGlobals_ = std::move(snapshot.userGlobals);
   globalTypes_ = std::move(snapshot.globalTypes);
   structDefs_ = std::move(snapshot.structDefs);
+  classNames_ = std::move(snapshot.classNames);
+  classDefs_ = std::move(snapshot.classDefs);
+  classMethodDefs_ = std::move(snapshot.classMethodDefs);
+  functionReturnTypes_ = std::move(snapshot.functionReturnTypes);
   nativeSigs_ = std::move(snapshot.nativeSigs);
   externSignatures_ = std::move(snapshot.externSignatures);
   mustUseGlobals_ = std::move(snapshot.mustUseGlobals);
@@ -1049,6 +1225,7 @@ Bytecode Compiler::compileReplEntry(const StmtPtr& program) {
   } else {
     // Register struct shapes first, then hoist top-level function declarations.
     registerStructDecls(*block);
+    registerClassDecls(*block);
     registerNativeDecls(*block);
     registerMustUseDecls(*block);
     registerImportBindings(*block);
@@ -1096,6 +1273,7 @@ void Compiler::compileBlockBody(const BlockStmt& block) {
   // before compiling anything: a hoisted function that builds a literal must
   // already see them.
   registerStructDecls(block);
+  registerClassDecls(block);
   registerNativeDecls(block);
   registerMustUseDecls(block);
   // Register the module binding paths before hoisting, so a hoisted function
@@ -1319,8 +1497,10 @@ void Compiler::compileLet(const LetStmt& s) {
     declareGlobalType(s.name, declared);
     userGlobals_.insert(s.name);
     // A global binding replaces a `native fn` of the same name, so its
-    // signature no longer applies to calls of the name.
+    // signature no longer applies to calls of the name. The same goes for a
+    // user function's declared return type.
     nativeSigs_.erase(s.name);
+    functionReturnTypes_.erase(s.name);
     // The binding is no longer the `@MustUse` function it may have shadowed.
     mustUseGlobals_.erase(s.name);
   } else {
@@ -1385,6 +1565,10 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   auto savedUserGlobals = std::move(userGlobals_);
   auto savedGlobalTypes = std::move(globalTypes_);
   auto savedStructDefs = std::move(structDefs_);
+  auto savedClassNames = std::move(classNames_);
+  auto savedClassDefs = std::move(classDefs_);
+  auto savedClassMethodDefs = std::move(classMethodDefs_);
+  auto savedFunctionReturnTypes = std::move(functionReturnTypes_);
   auto savedNativeSigs = std::move(nativeSigs_);
   auto savedMustUseGlobals = std::move(mustUseGlobals_);
   std::deque<FuncState> savedFuncStack = std::move(funcStack_);
@@ -1421,6 +1605,7 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   globalTypes_.clear();
   structDefs_.clear();
   nativeSigs_.clear();
+  functionReturnTypes_.clear();
   mustUseGlobals_.clear();
   namespaces_.clear();
   importedNames_.clear();
@@ -1489,6 +1674,10 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   userGlobals_ = std::move(savedUserGlobals);
   globalTypes_ = std::move(savedGlobalTypes);
   structDefs_ = std::move(savedStructDefs);
+  classNames_ = std::move(savedClassNames);
+  classDefs_ = std::move(savedClassDefs);
+  classMethodDefs_ = std::move(savedClassMethodDefs);
+  functionReturnTypes_ = std::move(savedFunctionReturnTypes);
   nativeSigs_ = std::move(savedNativeSigs);
   mustUseGlobals_ = std::move(savedMustUseGlobals);
   funcStack_ = std::move(savedFuncStack);
@@ -1874,11 +2063,25 @@ void Compiler::compileFnDecl(const FnDeclStmt& fn, int line, int col) {
     declareGlobal(fn.name, false);
     declareGlobalType(fn.name, TypeRef{"function", false});
     userGlobals_.insert(fn.name);
+    // A `class` desugared into this declaration: record the name so the REPL
+    // can accept it as a type annotation in a later entry (a class is erased,
+    // so the parser cannot tell otherwise).
+    if (fn.isClassConstructor) {
+      classNames_.insert(fn.name);
+    }
     // Keep the signature table in step with the binding that actually wins: a
     // native keeps its signature, any other global of the same name drops it.
     if (fn.isNative) {
       nativeSigs_[fn.name] = NativeSig{fn.params, fn.returnType, fn.mustUse, fn.cVariadic};
+      // A native's type is its declared signature; the call path above already
+      // covers it, so the user-function table must not shadow that.
+      functionReturnTypes_.erase(fn.name);
     } else {
+      if (fn.returnType.isPresent()) {
+        functionReturnTypes_[fn.name] = fn.returnType;
+      } else {
+        functionReturnTypes_.erase(fn.name);
+      }
       nativeSigs_.erase(fn.name);
     }
     // `@MustUse` (PHASE 6.7.5) is tracked separately from the signature: a
@@ -1954,6 +2157,23 @@ void Compiler::registerStructDecls(const BlockStmt& block) {
     if (!child) continue;
     if (const auto* decl = std::get_if<StructDeclStmt>(&child->node)) {
       structDefs_[decl->name] = decl->fields;
+    }
+  }
+}
+
+// Registers every `class` declared directly in `block` before anything else in
+// it is compiled. A class is erased to a constructor `fn`, so the declaration
+// that carries the fields is that `fn`; recording the shape here means a
+// method body compiled as part of the hoisting pass already sees it.
+void Compiler::registerClassDecls(const BlockStmt& block) {
+  for (const auto& child : block.stmts) {
+    if (!child) continue;
+    if (const auto* fn = std::get_if<FnDeclStmt>(&child->node)) {
+      if (fn->isClassConstructor) {
+        classDefs_[fn->name] = fn->classFields;
+        classMethodDefs_[fn->name] = fn->classMethods;
+        classNames_.insert(fn->name);
+      }
     }
   }
 }
@@ -2162,7 +2382,8 @@ void Compiler::compileReturn(const ReturnStmt& stmt) {
 
 int Compiler::compileFunctionProto(const std::string& name,
                                    const std::vector<Param>& params, const StmtPtr& body,
-                                   int line, int col, const TypeRef& returnType) {
+                                   int line, int col, const TypeRef& returnType,
+                                   const std::string& ownerClass) {
   // Save the parent chunk and its compilation state. Functions are compiled
   // into their own proto with fresh registers, locals, scopes and loops.
   Bytecode parent = std::move(bc_);
@@ -2178,6 +2399,7 @@ int Compiler::compileFunctionProto(const std::string& name,
   const int parentCol = currentCol_;
   const bool parentInFunction = inFunction_;
   const TypeRef parentReturnType = currentReturnType_;
+  const std::string parentOwnerClass = std::move(currentOwnerClass_);
 
   bc_ = Bytecode{};
   bc_.name = name;
@@ -2226,6 +2448,7 @@ int Compiler::compileFunctionProto(const std::string& name,
     declareLocal(param.name, false, bindingType);
   }
   currentReturnType_ = returnType;
+  currentOwnerClass_ = ownerClass;
 
   // Incoming arguments already sit in R0 .. R(n-1), so the prologue only has
   // to box each one into its cell. Afterwards the registers are reusable.
@@ -2275,6 +2498,7 @@ int Compiler::compileFunctionProto(const std::string& name,
   currentCol_ = savedParent.col;
   inFunction_ = savedParent.inFunction;
   currentReturnType_ = parentReturnType;
+  currentOwnerClass_ = std::move(parentOwnerClass);
 
   int index = static_cast<int>(bc_.children.size());
   bc_.children.push_back(std::make_shared<Bytecode>(std::move(proto)));
@@ -2284,11 +2508,20 @@ int Compiler::compileFunctionProto(const std::string& name,
 int Compiler::compileLambda(const LambdaExpr& lambda, int line, int col) {
   // A lambda is an anonymous function value: compile its body as a child proto
   // and instantiate it with CLOSURE, exactly like a named declaration but
-  // without binding a name anywhere.
+  // without binding a name anywhere. A lambda the parser synthesized for a
+  // `class` method carries a name (for diagnostics) and its declared return
+  // type (so the body is checked like a named `fn`); a user lambda leaves both
+  // empty.
   currentLine_ = line;
   currentCol_ = col;
-  int child = compileFunctionProto("<anonymous>", lambda.params, lambda.body, line, col,
-                                   TypeRef{});
+  // A lambda written inside a method body captures that method's `self`, so it
+  // inherits the owner class and its field writes are checked too. A lambda the
+  // parser synthesized for a class method carries the class itself. The value is
+  // copied: `compileFunctionProto` moves `currentOwnerClass_` into its saved
+  // frame, which would dangle a reference into it.
+  const std::string owner = lambda.ownerClass.empty() ? currentOwnerClass_ : lambda.ownerClass;
+  int child = compileFunctionProto(lambda.name.empty() ? "<anonymous>" : lambda.name, lambda.params,
+                                   lambda.body, line, col, lambda.returnType, owner);
   int reg = allocReg();
   emit(OpCode::CLOSURE, reg, child);
   return reg;
@@ -2752,6 +2985,7 @@ int Compiler::compileAssign(const AssignExpr& assign, int line, int col) {
     object = compileExpr(*index->object);
     key = compileExpr(*index->index);
   } else if (const auto* member = std::get_if<MemberExpr>(&assign.target->node)) {
+    checkFieldAssign(*member, assign);
     object = compileExpr(*member->object);
     key = -addString(member->name) - 1;  // constant member name
   } else {

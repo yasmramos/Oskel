@@ -130,6 +130,13 @@ StmtPtr Parser::parseProgram() {
     if (tokens_[i].type == Tok::Struct && tokens_[i + 1].type == Tok::Ident) {
       structNames_.insert(tokens_[i + 1].lexeme);
     }
+    // A `class` name is visible to the whole module too, so an annotation
+    // written before the declaration is still accepted. It is kept apart from
+    // `structNames_` so `Name { ... }` stays a struct literal only for a real
+    // `struct` (a class is instantiated by calling its name, not with braces).
+    if (tokens_[i].type == Tok::Class && tokens_[i + 1].type == Tok::Ident) {
+      classNames_.insert(tokens_[i + 1].lexeme);
+    }
   }
   std::vector<StmtPtr> statements;
   int line = peek().line;
@@ -353,6 +360,7 @@ StmtPtr Parser::parseStatement() {
   if (match(Tok::Native)) return parseNativeDecl();
   if (match(Tok::Extern)) return parseExternDecl();
   if (match(Tok::Struct)) return parseStructDecl();
+  if (match(Tok::Class)) return parseClassDecl();
   if (match(Tok::If)) return parseIf();
   if (match(Tok::While)) return parseWhile();
   if (match(Tok::Do)) return parseDoWhile();
@@ -488,7 +496,10 @@ TypeRef Parser::parseTypeAlternative(bool allowVoid) {
                        typeName.col};
   }
   // A struct name is a valid annotation too (PHASE 6.5): `let p: Point = ...`.
-  if (!isKnownTypeName(type.name) && structNames_.count(type.name) == 0) {
+  // A class name is also a valid annotation (it denotes the map an instance is),
+  // so the same lookup covers both.
+  if (!isKnownTypeName(type.name) && structNames_.count(type.name) == 0 &&
+      classNames_.count(type.name) == 0) {
     error(typeName, "unknown type name");
   }
   if (match(Tok::Question)) type.nullable = true;
@@ -909,6 +920,10 @@ StmtPtr Parser::parseStructDecl() {
   if (declaredStructs_.count(name.lexeme) != 0) {
     throw CompileError{"struct '" + name.lexeme + "' is already declared", name.line, name.col};
   }
+  if (declaredClasses_.count(name.lexeme) != 0) {
+    throw CompileError{"'" + name.lexeme + "' is already declared as a class", name.line,
+                       name.col};
+  }
   consume(Tok::LBrace, "expected '{' to start the struct body");
 
   StructDeclStmt decl;
@@ -925,6 +940,8 @@ StmtPtr Parser::parseStructDecl() {
     }
     StructField entry;
     entry.name = field.lexeme;
+    entry.line = field.line;
+    entry.col = field.col;
     entry.type = parseTypeAnnotation();
     decl.fields.push_back(std::move(entry));
     if (!match(Tok::Semicolon) && !check(Tok::RBrace)) {
@@ -945,6 +962,307 @@ StmtPtr Parser::parseFunctionBody(const Token& arrow) {
   std::vector<StmtPtr> statements;
   statements.push_back(makeStmt(ReturnStmt{std::move(result)}, arrow.line, arrow.col));
   return makeStmt(BlockStmt{std::move(statements)}, arrow.line, arrow.col);
+}
+
+// `class Name { field: T; ...; fn method(params): ret { ... } }`.
+//
+// A class is sugar over the map-plus-closures idiom the language already has,
+// so it adds one token (`class`), no AST node, no opcode and no engine code.
+// The parser rewrites the declaration into an ordinary top-level constructor
+// function that
+//
+//   1. builds the instance as a map whose keys are the fields (each nil),
+//   2. stores every method as a closure capturing `self` (explicit `self`),
+//   3. runs `init` when present, forwarding the constructor arguments,
+//   4. returns the instance.
+//
+// Instantiating is calling the class name (`Point(3, 4)`); there is no `new`.
+// The `init` method's parameters are the constructor's parameters, so the
+// arity the caller writes is the arity `init` declares. There is no
+// inheritance. Because the desugared form is plain Oskel, the VM and the AOT
+// backend run it identically with no backend work (docs/language.md §4.8).
+
+// Collects every `self.<field> = ...` target written anywhere in `stmt`, so a
+// class can tell whether `init` assigned a field (PHASE 6.8.1). A nested
+// function or lambda is not entered: its body runs later, if at all, so an
+// assignment there does not initialize the instance being constructed.
+static void collectSelfAssignmentsInto(const Stmt& stmt, std::unordered_set<std::string>& out) {
+  if (const auto* exprStmt = std::get_if<ExprStmt>(&stmt.node)) {
+    if (const auto* assign = std::get_if<AssignExpr>(&exprStmt->expr->node)) {
+      if (const auto* member = std::get_if<MemberExpr>(&assign->target->node)) {
+        if (const auto* self = std::get_if<VariableExpr>(&member->object->node)) {
+          if (self->name == "self") out.insert(member->name);
+        }
+      }
+    }
+    return;
+  }
+  if (const auto* block = std::get_if<BlockStmt>(&stmt.node)) {
+    for (const StmtPtr& child : block->stmts) collectSelfAssignmentsInto(*child, out);
+    return;
+  }
+  if (const auto* branch = std::get_if<IfStmt>(&stmt.node)) {
+    collectSelfAssignmentsInto(*branch->thenBranch, out);
+    if (branch->elseBranch) collectSelfAssignmentsInto(*branch->elseBranch, out);
+    return;
+  }
+  if (const auto* loop = std::get_if<WhileStmt>(&stmt.node)) {
+    collectSelfAssignmentsInto(*loop->body, out);
+    return;
+  }
+  if (const auto* loop = std::get_if<DoWhileStmt>(&stmt.node)) {
+    collectSelfAssignmentsInto(*loop->body, out);
+    return;
+  }
+  if (const auto* loop = std::get_if<ForStmt>(&stmt.node)) {
+    if (loop->init) collectSelfAssignmentsInto(*loop->init, out);
+    collectSelfAssignmentsInto(*loop->body, out);
+    return;
+  }
+  if (const auto* loop = std::get_if<ForInStmt>(&stmt.node)) {
+    collectSelfAssignmentsInto(*loop->body, out);
+    return;
+  }
+  if (const auto* sw = std::get_if<SwitchStmt>(&stmt.node)) {
+    for (const SwitchCase& branch : sw->cases) {
+      if (branch.body) collectSelfAssignmentsInto(*branch.body, out);
+    }
+    if (sw->defaultBody) collectSelfAssignmentsInto(*sw->defaultBody, out);
+    return;
+  }
+  if (const auto* deferred = std::get_if<DeferStmt>(&stmt.node)) {
+    // A deferred block runs when the scope exits, which is still inside `init`.
+    collectSelfAssignmentsInto(*deferred->body, out);
+  }
+}
+
+static std::unordered_set<std::string> collectSelfAssignments(const Stmt& stmt) {
+  std::unordered_set<std::string> out;
+  collectSelfAssignmentsInto(stmt, out);
+  return out;
+}
+
+StmtPtr Parser::parseClassDecl() {
+  const Token& keyword = previous();
+  if (nestingDepth_ > 0) {
+    // Like `struct`, a class is module-level metadata.
+    throw CompileError{"'class' is only allowed at the top level of a module", keyword.line,
+                       keyword.col};
+  }
+  const Token& name = consume(Tok::Ident, "expected a class name");
+  if (declaredClasses_.count(name.lexeme) != 0) {
+    throw CompileError{"class '" + name.lexeme + "' is already declared", name.line, name.col};
+  }
+  if (declaredStructs_.count(name.lexeme) != 0) {
+    throw CompileError{"'" + name.lexeme + "' is already declared as a struct", name.line,
+                       name.col};
+  }
+  consume(Tok::LBrace, "expected '{' to start the class body");
+
+  struct Method {
+    std::string name;
+    std::vector<Param> params;
+    TypeRef returnType;
+    StmtPtr body;
+    int line;
+    int col;
+  };
+  std::vector<StructField> fields;
+  std::vector<Method> methods;
+  std::unordered_set<std::string> seenFields;
+  std::unordered_set<std::string> seenMethods;
+
+  while (!check(Tok::RBrace)) {
+    if (check(Tok::Eof)) error(peek(), "expected '}' to close the class body");
+    if (match(Tok::Semicolon)) continue;  // stray separators are harmless
+    if (match(Tok::Fn)) {
+      const Token& methodName = consume(Tok::Ident, "expected a method name");
+      if (methodName.lexeme == "self") {
+        error(methodName, "'self' is reserved inside a class");
+      }
+      if (!seenMethods.insert(methodName.lexeme).second) {
+        throw CompileError{
+            "duplicate method '" + methodName.lexeme + "' in class '" + name.lexeme + "'",
+            methodName.line, methodName.col};
+      }
+      Method method;
+      method.name = methodName.lexeme;
+      method.line = methodName.line;
+      method.col = methodName.col;
+      method.params = parseParams();
+      for (const Param& param : method.params) {
+        if (param.name == "self") error(methodName, "'self' is reserved inside a class");
+      }
+      method.returnType = parseTypeAnnotation(/*allowVoid=*/true);
+      if (check(Tok::Arrow)) {
+        const Token& arrow = advance();
+        const bool isBlock = check(Tok::LBrace);
+        method.body = parseFunctionBody(arrow);
+        if (isBlock) {
+          match(Tok::Semicolon);
+        } else {
+          consume(Tok::Semicolon, "expected ';' after the method body");
+        }
+      } else {
+        method.body = parseBlock();
+        match(Tok::Semicolon);
+      }
+      methods.push_back(std::move(method));
+      continue;
+    }
+    const Token& field = consume(Tok::Ident, "expected a field or a method in the class body");
+    if (field.lexeme == "self") error(field, "'self' is reserved inside a class");
+    if (!seenFields.insert(field.lexeme).second) {
+      throw CompileError{
+          "duplicate field '" + field.lexeme + "' in class '" + name.lexeme + "'", field.line,
+          field.col};
+    }
+    StructField entry;
+    entry.name = field.lexeme;
+    entry.line = field.line;
+    entry.col = field.col;
+    entry.type = parseTypeAnnotation();
+    // `x: int = 5;` (PHASE 6.8.1): an optional default, so a field that never
+    // changes does not need an `init` line. The parser only records it; the
+    // desugaring below writes it into the instance map instead of `nil`.
+    if (match(Tok::Eq)) entry.initializer = parseExpression();
+    fields.push_back(std::move(entry));
+    if (!match(Tok::Semicolon) && !check(Tok::RBrace)) {
+      error(peek(), "expected ';' or '}' after the class field");
+    }
+  }
+  consume(Tok::RBrace, "expected '}' to close the class body");
+  match(Tok::Semicolon);
+
+  // A field and a method cannot share a name: both are keys of the same map, so
+  // one would silently overwrite the other.
+  for (const Method& method : methods) {
+    if (seenFields.count(method.name) != 0) {
+      throw CompileError{"'" + method.name + "' is both a field and a method of class '" +
+                             name.lexeme + "'",
+                         method.line, method.col};
+    }
+  }
+
+  // `init` defines the constructor: its parameters are the ones the caller
+  // writes after the class name. A variadic `init` cannot be forwarded (the
+  // constructor would pass the collected array as a single argument), so it is
+  // rejected rather than silently mis-called.
+  const Method* init = nullptr;
+  for (const Method& method : methods) {
+    if (method.name == "init") init = &method;
+  }
+  if (init != nullptr) {
+    for (const Param& param : init->params) {
+      if (param.variadic) {
+        error(keyword, "'init' cannot take a variadic parameter: the constructor forwards its "
+                       "arguments one by one");
+      }
+    }
+    // A field with a non-nullable annotation and no default must be assigned by
+    // `init`: the instance starts with `nil` there, so forgetting one leaves a
+    // `nil` inside a slot the annotation says is never nil (PHASE 6.8.1). The
+    // scan is syntactic — it accepts an assignment anywhere in `init`, including
+    // one under a branch that may not run — so it catches the forgotten field,
+    // not every path. A class without `init` is left alone: its fields start
+    // `nil` by design (documented), and `init` is what opts into the contract.
+    std::unordered_set<std::string> assigned = collectSelfAssignments(*init->body);
+    for (const StructField& field : fields) {
+      if (!field.type.isPresent() || field.type.nullable || field.type.isUnion()) continue;
+      if (field.initializer) continue;
+      if (assigned.count(field.name) != 0) continue;
+      throw CompileError{"field '" + field.name + "' of class '" + name.lexeme +
+                             "' is declared '" + field.type.name +
+                             "' but 'init' never assigns it; give it a default "
+                             "('" + field.name + ": " + field.type.name + " = ...') or assign "
+                             "'self." + field.name + "' in 'init'",
+                         field.line, field.col};
+    }
+  }
+
+  std::vector<StmtPtr> body;
+  // 1. `let self = { field: <default>, ... };`. A field with a declared default
+  //    starts with it; the rest start `nil` and `init` fills them.
+  {
+    MapExpr map;
+    for (const StructField& field : fields) {
+      MapEntry entry;
+      entry.literalKey = field.name;
+      if (field.initializer) {
+        entry.value = field.initializer;
+      } else {
+        entry.value = makeExpr(LiteralExpr{Value()}, keyword.line, keyword.col);
+      }
+      map.entries.push_back(std::move(entry));
+    }
+    LetStmt binding;
+    binding.name = "self";
+    binding.kind = Tok::Let;
+    binding.init = makeExpr(std::move(map), keyword.line, keyword.col);
+    body.push_back(makeStmt(std::move(binding), keyword.line, keyword.col));
+  }
+  // 2. `self.method = (params): ret => { ... };` for every method. The lambda
+  //    captures `self`, which is why the receiver is explicit in the body.
+  for (const Method& method : methods) {
+    LambdaExpr lambda;
+    lambda.params = method.params;
+    lambda.body = method.body;
+    lambda.name = name.lexeme + "." + method.name;
+    lambda.returnType = method.returnType;
+    lambda.ownerClass = name.lexeme;
+    ExprPtr target = makeExpr(
+        MemberExpr{makeExpr(VariableExpr{"self"}, method.line, method.col), method.name, false},
+        method.line, method.col);
+    AssignExpr assign;
+    assign.target = std::move(target);
+    assign.op = Tok::Eq;
+    assign.value = makeExpr(std::move(lambda), method.line, method.col);
+    assign.opLine = method.line;
+    assign.opCol = method.col;
+    body.push_back(
+        makeStmt(ExprStmt{makeExpr(std::move(assign), method.line, method.col)}, method.line,
+                 method.col));
+  }
+  // 3. `self.init(<constructor arguments>);`
+  if (init != nullptr) {
+    CallExpr call;
+    call.callee = makeExpr(
+        MemberExpr{makeExpr(VariableExpr{"self"}, keyword.line, keyword.col), "init", false},
+        keyword.line, keyword.col);
+    for (const Param& param : init->params) {
+      call.args.push_back(makeExpr(VariableExpr{param.name}, keyword.line, keyword.col));
+    }
+    body.push_back(makeStmt(ExprStmt{makeExpr(std::move(call), keyword.line, keyword.col)},
+                            keyword.line, keyword.col));
+  }
+  // 4. `return self;`
+  body.push_back(makeStmt(
+      ReturnStmt{makeExpr(VariableExpr{"self"}, keyword.line, keyword.col)}, keyword.line,
+      keyword.col));
+
+  FnDeclStmt constructor;
+  constructor.name = name.lexeme;
+  if (init != nullptr) constructor.params = init->params;
+  // The constructor's return type is left open: the instance is a map at run
+  // time, so a declared `: Point` would ask the type checker to equate the two.
+  // The class name stays a valid *annotation* (the parser accepts it), which is
+  // what `let p: Point = Point(3, 4)` needs.
+  constructor.body = makeStmt(BlockStmt{std::move(body)}, keyword.line, keyword.col);
+  constructor.isClassConstructor = true;
+  constructor.classFields = fields;
+  // The method signatures ride along so the compiler can reject an assignment
+  // that would replace a method with a value of the wrong shape (PHASE 6.8.1).
+  for (const Method& method : methods) {
+    ClassMethodSig sig;
+    sig.name = method.name;
+    sig.params = method.params;
+    sig.returnType = method.returnType;
+    constructor.classMethods.push_back(std::move(sig));
+  }
+
+  classNames_.insert(name.lexeme);
+  declaredClasses_.insert(name.lexeme);
+  return makeStmt(std::move(constructor), keyword.line, keyword.col);
 }
 
 bool Parser::atLambda() const {
@@ -987,7 +1305,10 @@ ExprPtr Parser::parseLambda() {
   }
   const Token& arrow = consume(Tok::Arrow, "expected '=>' after the lambda parameters");
   auto body = parseFunctionBody(arrow);
-  return makeExpr(LambdaExpr{std::move(params), std::move(body)}, first.line, first.col);
+  LambdaExpr lambda;
+  lambda.params = std::move(params);
+  lambda.body = std::move(body);
+  return makeExpr(std::move(lambda), first.line, first.col);
 }
 
 std::vector<Param> Parser::parseParams(bool allowBareEllipsis, bool* outCVariadic) {

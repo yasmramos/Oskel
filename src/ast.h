@@ -187,6 +187,14 @@ struct MapExpr {
 struct StructField {
   std::string name;
   TypeRef type;
+  // `x: int = 5;` on a class field (PHASE 6.8.1): the default the instance map
+  // starts with instead of `nil`. Null for a struct field, which is always
+  // supplied by the literal. Compile-time metadata only.
+  ExprPtr initializer;
+  // Position of the field's name, so a diagnostic about the field points at it
+  // (PHASE 6.8.1).
+  int line = 1;
+  int col = 1;
 };
 
 // One entry of a struct literal (`Point { x: 1, y: 2 }`). The field name is
@@ -314,6 +322,20 @@ struct LambdaExpr {
   // yields nil. Named functions are declared with FnDeclStmt (`fn name() {}`).
   std::vector<Param> params;
   StmtPtr body;
+  // Optional debug name, used only for diagnostics (a proto's name). The
+  // parser sets it when it desugars a `class` method into a lambda, so a stack
+  // trace or an arity error names the method instead of `<anonymous>`. Empty
+  // for a lambda the user wrote, which keeps the existing `<anonymous>` name.
+  std::string name;
+  // Optional return annotation, empty for a lambda the user wrote (the lambda
+  // grammar has no `: ret` position). A `class` method carries its declared
+  // return type here, so the body's `return` is checked like a named `fn`.
+  TypeRef returnType;
+  // The class a `class` method belongs to, empty for a lambda the user wrote.
+  // The compiler uses it to type the `self` a method captures, so an assignment
+  // to `self.field` is checked against the field's annotation. Compile-time
+  // metadata only; never reaches the bytecode.
+  std::string ownerClass;
 };
 
 using ExprNode =
@@ -358,6 +380,17 @@ struct LetStmt {
   Tok kind = Tok::Var;        // Var | Let | Const
 };
 
+// A `class` method's declared signature (PHASE 6.8.1). A method is stored in
+// the instance map as a field holding a closure, so the compiler keeps the
+// signature to reject an assignment that would replace it with a value of the
+// wrong shape (`p.get = 5`) — otherwise the method disappears in silence and
+// the failure surfaces only at the next call. Compile-time metadata only.
+struct ClassMethodSig {
+  std::string name;
+  std::vector<Param> params;
+  TypeRef returnType;
+};
+
 struct FnDeclStmt {
   // `body` follows the same convention as LambdaExpr::body: always a
   // BlockStmt. A function whose body has no ReturnStmt (or a bare `return;`)
@@ -383,6 +416,24 @@ struct FnDeclStmt {
   // one with the same named prefix (`printf(a: int)` is not `printf(a: int,
   // ...)`). Only a declaration inside an `extern "C"` block may set it.
   bool cVariadic = false;
+  // True when this declaration is the constructor a `class` desugared into. A
+  // class is erased to a plain `fn`, so this is the only way the compiler can
+  // tell which globals are class names; it records them so the REPL can accept
+  // a class name as a type annotation in a later entry (see
+  // `Compiler::classNames`). Compile-time metadata only; never reaches the
+  // bytecode.
+  bool isClassConstructor = false;
+  // The declared fields of the class this declaration constructs, empty for an
+  // ordinary `fn`. The compiler records them so an assignment to `self.field`
+  // (or to a field of a typed instance) is checked against the field's
+  // annotation, exactly like a struct literal's values. Compile-time metadata
+  // only; never reaches the bytecode.
+  std::vector<StructField> classFields{};
+  // The declared signature of every method of the class this declaration
+  // constructs, empty for an ordinary `fn`. A method is a field holding a
+  // closure, so without this an assignment could replace it with any value and
+  // the method would vanish without a diagnostic (PHASE 6.8.1).
+  std::vector<ClassMethodSig> classMethods{};
 };
 
 // `struct Point { x: int; y: int; }` (PHASE 6.5). A data-only type: no

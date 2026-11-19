@@ -1,0 +1,8 @@
+// expect-exit: 65
+// `self` is reserved inside a class body: it cannot name a method either, since
+// every method is stored on the instance map next to the receiver `self`.
+class Point {
+  x: int;
+  fn self() { return self.x; }
+}
+let p = Point();

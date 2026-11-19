@@ -1,0 +1,9 @@
+// expect-exit: 65
+// `init` cannot be variadic: the desugared constructor forwards its arguments
+// to `init` one by one, so it cannot pass the collected array as a single
+// argument. A variadic `init` is rejected rather than silently mis-called.
+class Point {
+  x: int;
+  fn init(x: int, rest...) { self.x = x; }
+}
+let p = Point(1, 2, 3);

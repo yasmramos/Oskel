@@ -525,6 +525,63 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_string_repr.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # A `class` (PHASE 6.8) is sugar the parser erases into a map plus closures
+    # capturing `self`, so the AOT backend lowers it with no backend work. The
+    # fixture is the guard that keeps the desugaring on the portable primitive
+    # surface, so `class` stays identical on the VM and in a native binary.
+    add_test(NAME oskel.build_binary_classes
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_classes"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_classes.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The field-type check runs in the compiler, so `oskel build` rejects a
+    # mistyped field assignment exactly as the VM does, with the same message
+    # and exit 65, and writes no binary (PHASE 6.8).
+    add_test(NAME oskel.build_class_field_type_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_class_field_type_error"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/errors/class_field_type_self.oskl"
+        "-DEXPECTED_MESSAGE=cannot assign 'string' to 'int' in field 'x' of class 'Point'"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+
+    # A method reassignment and the forgotten-field check both live in the
+    # compiler, so `oskel build` rejects them exactly as the VM does, with the
+    # same message and exit 65, and writes no binary (PHASE 6.8.1).
+    add_test(NAME oskel.build_class_method_reassign_type_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_class_method_reassign_type_error"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/errors/class_method_reassign_type.oskl"
+        "-DEXPECTED_MESSAGE=cannot assign 'int' to method 'get' of class 'Point'"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+    add_test(NAME oskel.build_class_method_reassign_arity_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_class_method_reassign_arity_error"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/errors/class_method_reassign_arity.oskl"
+        "-DEXPECTED_MESSAGE=a replacement for method 'get' of class 'Point' must take 0 parameters, got 1"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+    add_test(NAME oskel.build_class_uninitialized_field_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_class_uninitialized_field_error"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/errors/class_uninitialized_field.oskl"
+        "-DEXPECTED_MESSAGE=field 'timeout' of class 'Config' is declared 'int' but 'init' never assigns it"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+
+    # The hardened `class` surface must stay on the portable primitive surface,
+    # so this fixture proves field defaults, method replacement and the
+    # initializer check all build and agree with the VM (PHASE 6.8.1).
+    add_test(NAME oskel.build_binary_class_hardening
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_class_hardening"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/60_class_hardening.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # An `extern "C"` symbol is a host binding the AOT backend cannot resolve
     # (the FFI lowering is PHASE 7f), so `oskel build` must fail with the
     # dedicated message and write no binary.

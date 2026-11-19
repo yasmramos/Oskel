@@ -666,6 +666,120 @@ Slices, each independently shippable:
   still runs. Tested by `tests/35_must_use.oskl`, the `unknown_attribute` and
   `attribute_before_let` error cases and `testMustUse` in `compiler_test.cpp`.
 
+### PHASE 6.8 — `class` (sugar over the map-plus-closures idiom) ✅
+
+A `class` is a named shape **with methods**, and it is **pure parser sugar**:
+the parser rewrites the declaration into an ordinary top-level constructor
+function, so a class adds no AST node, no opcode, no compiler path and no VM
+logic. This is what keeps it inside the "no VM-only features" rule (§3): the
+desugared program is plain Oskel that the AOT backend already lowers, so the
+feature is identical on the VM and in a native binary with zero backend work.
+
+The desugaring of
+
+```oskel
+class Point {
+  x: int;
+  y: int;
+  fn init(x: int, y: int) { self.x = x; self.y = y; }
+  fn lenSquared(): int { return self.x * self.x + self.y * self.y; }
+}
+```
+
+is the equivalent of
+
+```oskel
+fn Point(x: int, y: int) {
+  let self = { x: nil, y: nil };
+  self.init = (x: int, y: int) => { self.x = x; self.y = y; };
+  self.lenSquared = () => { return self.x * self.x + self.y * self.y; };
+  self.init(x, y);
+  return self;
+}
+```
+
+A method's declared return type rides on the desugared lambda (a lambda the
+user writes has no return-annotation position), so the body's `return` is still
+checked.
+
+Design decisions, all enforced by the parser:
+
+- **No `new`.** The class name *is* the constructor (`Point(3, 4)`), and the
+  class name is a value of type `function`.
+- **Explicit `self`.** A method reaches its receiver through `self`; the name is
+  reserved inside a class body (a field, a method or a parameter may not use it).
+- **No inheritance.** There is no `extends`, no `super` and no base class;
+  composition is how one class reuses another.
+- **`init` is optional** and defines the constructor's parameters. A variadic
+  `init` is rejected (the constructor forwards its arguments one by one). Without
+  `init` the constructor takes no arguments and the fields keep their initial
+  `nil`.
+- **A class name is a valid type annotation.** `classNames_` is pre-scanned in
+  `parseProgram` (like `structNames_`) so an annotation written before the
+  declaration is accepted, and the compiler records the name of every desugared
+  constructor (`FnDeclStmt::isClassConstructor` → `Compiler::classNames_`) so
+  the REPL seeds it across entries (`Parser::seedClassNames`).
+- **Rejected at parse time:** a nested class (not top level), a duplicate class
+  name, a class/`struct` name collision, a duplicate field or method, a field
+  and a method sharing a name, `self` as a member name, and a variadic `init`.
+- **A field may carry a default** (`n: int = 5;`, PHASE 6.8.1). The desugaring
+  seeds the instance map with the default expression instead of `nil`, so it is
+  evaluated per instance and `init` may still override it.
+- **An `init` must set every non-nullable annotated field that has no default**
+  (PHASE 6.8.1). `Parser::collectSelfAssignments` walks `init`'s body collecting
+  `self.<field> = ...` targets and reports a field it never reaches. The walk
+  covers the nested statement forms (`if`, loops, `switch`, `defer`) and
+  deliberately does not descend into a nested function or lambda, whose body runs
+  later, if at all. The check is syntactic: it catches a forgotten field, not
+  every path through `init`.
+- **A method may be replaced, but only by a function of the declared arity**
+  (PHASE 6.8.1). A method is a map key holding a closure, so a non-function
+  value would make it silently uncallable and another arity would be a latent
+  crash (the body reads its parameters positionally). A lambda written at the
+  assignment site is checked directly, including its parameter types; any other
+  value only has to be known to be a function. A receiver of unknown type stays
+  unchecked, as everywhere else.
+- **A field name within two edits of a declared one is a warning** (PHASE 6.8.1).
+  An instance is a map, so writing a new key is allowed and must keep working;
+  but a near miss silently adds a field while every read of the real one keeps
+  returning its old value, so `Compiler::checkFieldAssign` reports it through
+  `Compiler::warn` and the program still runs.
+
+Consequences of the desugaring, documented so they are not surprises:
+
+- An instance **is a map at runtime** (`type(p)` is `"map"`), so the map surface
+  applies (`in`, `len`, `for ... in`, indexing, nesting, collections).
+- Two instances compare **unequal** even with identical fields, because their
+  method entries are distinct closures and closures compare by identity (§3.2).
+- A class name **is** a module's public name, because a class desugars to a
+  top-level constructor `fn`: `geom.Point(3, 4)` reaches it through the qualified
+  form and the value is a `function`. (A `struct` name, by contrast, is not a
+  value and stays local to its file.) A module that wants the class private
+  exports a plain constructor function instead.
+- A **field** annotation is enforced on assignment, like a `struct` literal's
+  field: `self.field = value` inside a method and `instance.field = value`
+  through a receiver whose type is known statically are checked against it
+  (`Compiler::checkFieldAssign`). The declared type is carried to the compiler on
+  the constructor declaration (`FnDeclStmt::classFields`) and on each method
+  lambda (`LambdaExpr::ownerClass`), which is what types `self`; a lambda written
+  *inside* a method inherits that owner, because it captures the same `self`. A
+  receiver is statically known when it is an annotated binding, a constructor
+  call, a call to a function with a declared return type, or a field of another
+  statically known instance (`inferExprType`, PHASE 6.8.1). Three cases stay
+  unchecked: an unannotated field, a receiver whose type is not known statically
+  (an array or map element, an unannotated parameter or function), and a
+  compound assignment (`self.x += 1`), whose result type is not tracked
+  statically.
+- `class` is a **reserved word** from 0.1.0 on.
+
+Tested by `tests/58_classes.oskl` (VM), the `tests/errors/class_*.oskl` cases
+(parse-time rejections), `tests/60_class_hardening.oskl` and
+`tests/61_class_field_typo.oskl` (the PHASE 6.8.1 surface, registered as
+`oskel.build_binary_class_hardening` for the AOT parity check) and
+`tests/native_build_classes.oskl` (the AOT parity
+fixture, registered as `oskel.build_binary_classes`, which asserts the native
+binary prints byte for byte what the VM prints).
+
 ### PHASE 7 — Bytecode → native backend (AOT, freestanding) 🔶 in progress
 - New module `src/native/` + `include/native/`: lowering of every opcode to
   x86-64 following the bytecode → native lowering table of §3.
@@ -1695,6 +1809,7 @@ Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair, which `ITER` now yields directly, no new opcode and no helper call) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged)
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
+Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.4a-d, 7c.5a, 7c.5c, 7c.6, 7d, 7e, 7g done; 7c.5b — the remaining builtins — in progress; 7f — FFI in AOT — 7f.1-7f.6 done, scalar and `cstring`/`ptr` `extern "C"` resolve in the hosted backend, struct/callback/variadic still open)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
@@ -1725,7 +1840,7 @@ and is no longer in the tree.
 2. **Names**: `camelCase` for functions, variables and members (private data
    members end with `_`), `PascalCase` for types, `UPPER_CASE` for opcodes
    and constants.
-3. **Structures**: `struct` for data, `enum class` for opcodes.
+3. **Structures**: `struct` for data, `class` for data plus methods (sugar over a map plus closures), `enum class` for opcodes.
 4. **Memory**: RAII and standard containers (`std::vector`, `std::string`);
    no `malloc`/`free`.
 5. **Errors**: diagnostic structs with line/column; the CLI prints them to

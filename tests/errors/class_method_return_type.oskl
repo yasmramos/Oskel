@@ -1,0 +1,7 @@
+// expect-exit: 65
+// A method cannot return a value of the wrong type either; this pins that the
+// field check did not replace the return check.
+class Point {
+  x: int;
+  fn bad(): int { return "not an int"; }
+}

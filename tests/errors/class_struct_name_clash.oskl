@@ -1,0 +1,5 @@
+// expect-exit: 65
+// A class and a struct may not share a name: a class name is also a valid type
+// annotation, so the two would be ambiguous.
+struct Point { x: int; }
+class Point { y: int; }

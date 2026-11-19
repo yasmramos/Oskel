@@ -176,14 +176,28 @@ std::string callbackSpelling(const Base& cb) {
   return s;
 }
 
+// The words that select a calling convention. They carry no type information
+// the FFI needs (its own `extern "C"` fixes how arguments travel), but they sit
+// between the `(` and the `*` of a declarator, so they must be skipped there
+// rather than mistaken for the declarator's name.
+bool isCallingConvention(const std::string& w) {
+  return w == "__stdcall" || w == "__cdecl" || w == "__fastcall" || w == "__thiscall" ||
+         w == "__vectorcall" || w == "_stdcall" || w == "_cdecl" || w == "WINAPI" ||
+         w == "APIENTRY" || w == "CALLBACK" || w == "PASCAL" || w == "NTAPI" ||
+         w == "STDMETHODCALLTYPE";
+}
+
 // The C words that never change the type on their own: storage classes and
-// qualifiers the FFI vocabulary ignores.
+// qualifiers the FFI vocabulary ignores. A calling convention is one of them:
+// it selects how the arguments travel, which the FFI's own `extern "C"` already
+// fixes, so the word is dropped rather than ending the specifier list (which
+// would drop the whole declaration in silence).
 bool isIgnoredSpecifier(const std::string& w) {
   return w == "const" || w == "volatile" || w == "restrict" || w == "__restrict" ||
          w == "__restrict__" || w == "extern" || w == "static" || w == "inline" ||
          w == "__inline" || w == "__inline__" || w == "register" || w == "auto" ||
          w == "_Noreturn" || w == "__forceinline" || w == "__const" || w == "__volatile__" ||
-         w == "_Atomic";
+         w == "_Atomic" || isCallingConvention(w);
 }
 
 // A fixed-width or standard typedef name recognized without seeing `<stdint.h>`
@@ -377,6 +391,35 @@ class Bindgen {
            next.text == "short" || next.text == "long";
   }
 
+  // A *function-like* macro used as a declaration prefix: `MY_API(int) f2(int);`.
+  // Without a preprocessor the argument is as likely to be the return type as
+  // decoration, so the declaration cannot be translated honestly. It is
+  // reported as a skip rather than guessed at or dropped in silence.
+  bool looksLikeFunctionLikeMacro(const std::string& word) const {
+    if (isKnownTypeWord(word) || peek(1).kind != TokKind::Punct || peek(1).text != "(") {
+      return false;
+    }
+    // `__attribute__((...))` and friends are annotations, not macros: they are
+    // consumed by `skipAnnotations`, so they never reach the specifier list.
+    if (word == "__attribute__" || word == "__attribute" || word == "__declspec" ||
+        word == "__extension__" || word == "_CRTIMP") {
+      return false;
+    }
+    int depth = 0;
+    for (std::size_t a = 1;; ++a) {
+      const Token& t = peek(a);
+      if (t.kind == TokKind::Eof) return false;
+      if (t.kind == TokKind::Punct && t.text == "(") {
+        ++depth;
+        continue;
+      }
+      if (t.kind == TokKind::Punct && t.text == ")") {
+        if (--depth == 0) return peek(a + 1).kind == TokKind::Ident;
+        continue;
+      }
+    }
+  }
+
   // Reads a declaration specifier list: qualifiers/storage are consumed and
   // dropped, and the base type word is recorded.
   Spec parseSpecifiers() {
@@ -560,6 +603,14 @@ class Bindgen {
       break;
     }
     if (stars == 0) return base;
+    // A pointer *to* a callback (`cb_t *pcb`) is not a callback: the FFI
+    // carries it as an opaque handle, so the callback spelling must not leak
+    // into the emitted type.
+    if (base.isCallback) {
+      base.isCallback = false;
+      base.callbackParams.clear();
+      base.callbackReturn.clear();
+    }
     if (base.kind == Base::Kind::Void) {
       base.kind = Base::Kind::Unknown;
       base.ok = true;
@@ -684,7 +735,8 @@ class Bindgen {
         ++stars;
         continue;
       }
-      if (checkIdent("const") || checkIdent("volatile") || checkIdent("restrict")) {
+      if (checkIdent("const") || checkIdent("volatile") || checkIdent("restrict") ||
+          (check(TokKind::Ident) && isCallingConvention(peek().text))) {
         advance();
         continue;
       }
@@ -767,6 +819,33 @@ class Bindgen {
     }
   }
 
+  // The declared name, best-effort, for a skip message: the last identifier on
+  // the declaration's first line that is neither a keyword nor a type word
+  // (`Foo (*fp)(void);` reports `fp`, not `void`). A declarator the tool cannot
+  // parse still has to be reported under *some* name.
+  std::string declaratorName() const {
+    const int line = peek().kind == TokKind::Eof ? 0 : peek().line;
+    std::string name;
+    bool sawStar = false;
+    for (std::size_t a = 0;; ++a) {
+      const Token& t = peek(a);
+      if (t.kind == TokKind::Eof) break;
+      if (t.line != line) break;
+      if (t.kind == TokKind::Punct && t.text == ";") break;
+      if (t.kind == TokKind::Punct && t.text == "*") {
+        sawStar = true;
+        continue;
+      }
+      if (t.kind != TokKind::Ident) continue;
+      if (isIgnoredSpecifier(t.text) || t.text == "void" || isKnownTypeWord(t.text)) continue;
+      // Inside a parenthesized declarator the first identifier after the `*` is
+      // the declarator's name.
+      name = t.text;
+      if (sawStar) break;
+    }
+    return name.empty() ? std::string("(unnamed)") : name;
+  }
+
   void skipToSemicolon() {
     int parenDepth = 0;
     int braceDepth = 0;
@@ -798,13 +877,31 @@ class Bindgen {
   // ------------------------------------------------ function declarations
 
   void parseFunctionOrVariable() {
+    // A function-like macro prefix is undecidable without a preprocessor: the
+    // argument may be the return type (`MY_API(int) f(void);`). Report it
+    // instead of guessing or dropping the declaration in silence.
+    if (check(TokKind::Ident) && looksLikeFunctionLikeMacro(peek().text)) {
+      const std::string macro = peek().text;
+      skipToSemicolon();
+      skipped_.push_back("(declaration prefixed by '" + macro +
+                         "(...)', which the tool cannot expand; preprocess the header)");
+      return;
+    }
     Spec spec = parseSpecifiers();
     Base base = baseFromSpec(spec);
     Base returnType = parsePointers(base);
 
     // A declaration that is not a plain `name(` is a variable, a function
-    // pointer, or something else slice 1 does not bind: skip it.
+    // pointer, or something else slice 1 does not bind: skip it. A *declaration*
+    // whose type the tool could not resolve is still reported, never dropped in
+    // silence -- that is the defect this tool exists not to have.
     if (!check(TokKind::Ident)) {
+      if (!returnType.ok && !spec.isStructTag) {
+        std::string name = declaratorName();
+        skipToSemicolon();
+        skipped_.push_back(name + ": return type " + quoteReason(returnType));
+        return;
+      }
       // A `(` here opens a parenthesized declarator. Two shapes matter: a
       // function-pointer *variable* (`int (*fp)(void);`) is not a binding and
       // is skipped in silence, while a *function returning* a function pointer
@@ -949,10 +1046,33 @@ class Bindgen {
         }
         if (!cbName.empty()) param.name = cbName;
       } else if (checkPunct("(")) {
-        // A parenthesized declarator that is not a function pointer: not a
-        // shape the tool binds.
-        if (problem.empty()) problem = "a parenthesized declarator is not generated yet";
-        skipParens();
+        // A parenthesized declarator without a `*` is a function *type* whose
+        // parentheses are redundant: `int (cb)(int)` is `int cb(int)`, which C
+        // adjusts to a function pointer exactly like the unparenthesized form.
+        std::size_t ahead = 1;
+        while (peek(ahead).kind == TokKind::Ident &&
+               (peek(ahead).text == "const" || peek(ahead).text == "volatile" ||
+                peek(ahead).text == "restrict")) {
+          ++ahead;
+        }
+        const bool namedFunctionType =
+            peek(ahead).kind == TokKind::Ident &&
+            peek(ahead + 1).kind == TokKind::Punct && peek(ahead + 1).text == ")" &&
+            peek(ahead + 2).kind == TokKind::Punct && peek(ahead + 2).text == "(";
+        if (namedFunctionType) {
+          advance();  // `(`
+          param.name = advance().text;
+          advance();  // `)`
+          Base cb = callbackFromReturn(base);
+          parseCallbackParams(cb);
+          base = cb;
+          callbackDeclarator = true;
+          if (!base.ok && problem.empty()) problem = base.reason;
+        } else {
+          // Another parenthesized declarator: not a shape the tool binds.
+          if (problem.empty()) problem = "a parenthesized declarator is not generated yet";
+          skipParens();
+        }
       }
       if (!callbackDeclarator) {
         if (check(TokKind::Ident)) param.name = advance().text;
@@ -966,12 +1086,17 @@ class Bindgen {
           callbackDeclarator = true;
           if (!base.ok && problem.empty()) problem = base.reason;
         }
-        // An array parameter decays to a pointer: `int values[]` is `int *`.
+        // An array parameter decays to a pointer: `int values[]` is `int *`,
+        // and an array of callbacks decays to a pointer to a callback, which is
+        // an opaque handle, not a callback.
         if (checkPunct("[")) {
           while (checkPunct("[")) skipBrackets();
           base.ok = true;
           base.kind = Base::Kind::Unknown;
           base.oskel = "ptr";
+          base.isCallback = false;
+          base.callbackParams.clear();
+          base.callbackReturn.clear();
         }
       }
       if (!base.ok && problem.empty()) {

@@ -1,0 +1,4 @@
+// expect-exit: 65
+// A class name may be declared only once.
+class Point { x: int; }
+class Point { y: int; }

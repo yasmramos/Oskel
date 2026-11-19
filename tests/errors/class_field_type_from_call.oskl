@@ -1,0 +1,11 @@
+// expect-exit: 65
+// A class field is checked when its receiver's type is known statically. A call
+// to a function with a declared return type is such a receiver: the instance
+// comes back from `make()`, so `c.n = "text"` is rejected like a direct write.
+class Box {
+  n: int;
+  fn init() { self.n = 1; }
+}
+fn make(): Box { return Box(); }
+let b = make();
+b.n = "text";

@@ -11,6 +11,36 @@ may change between minor versions.
 
 ### Added
 
+- **`class` hardening: field defaults, the `init` completeness check, method
+  reassignment rules and a typo warning (PHASE 6.8.1).** A `class` stays pure
+  sugar over the map-plus-closures idiom, so every check below lives in the
+  parser or the compiler and the AOT backend inherits it unchanged. A field may
+  now carry a default (`n: int = 5;`), which the desugaring seeds into the
+  instance map instead of `nil`, per instance. A class that declares `init` must
+  assign every non-nullable annotated field that has no default, or the field
+  would hold `nil` where the annotation promises a value; the check is
+  syntactic, so an assignment inside an `if`, a loop or a `switch` counts and a
+  lambda body inside `init` does not. Replacing a declared method is allowed
+  only with a function of the same arity, because a method body reads its
+  parameters positionally. Assigning a name within two edits of a declared
+  field is a **warning**, not an error: an instance is a map, so the key is
+  really added, but the near miss is far more likely a typo than a deliberate
+  new key. Covered by `tests/60_class_hardening.oskl`,
+  `tests/61_class_field_typo.oskl`, five `tests/errors/class_*.oskl` cases and
+  the `oskel build` fixtures that pin VM/AOT parity.
+
+- **The class field-type check now reaches every statically known receiver.**
+  `checkFieldAssign` could only see a direct `let p = Point(...)`; a call to a
+  function with a declared return type (`let b = make(); b.n = "text"`) and a
+  field of another instance (`o.inner.n = "text"`) fell through untyped even
+  though both types are known at compile time. `inferExprType` now returns the
+  declared return type of a user function and the declared type of a member of a
+  statically known struct or class, so those writes are checked like a direct
+  one, with the same message and the same exit 65 under `oskel build`, which
+  writes no binary. A receiver whose type is genuinely unknown (an element of an
+  array or a map, an unannotated parameter or function) stays unchecked, since
+  the language is untyped by default.
+
 - **Builtin `memSize()`: the machine's physical memory in bytes.** The RAM
   analogue of `time()` — a property of the machine, not of the program. On the
   development VM it comes from the platform (`sysconf(_SC_PHYS_PAGES)` on POSIX,
@@ -147,6 +177,27 @@ may change between minor versions.
 
 ### Added
 
+- **`bindgen` reads function-pointer declarators and calling conventions.**
+  Three shapes a sweep over real headers (glibc, Windows-style SDK headers)
+  turned up. A **calling convention** (`__stdcall`, `__cdecl`, `__fastcall`,
+  `WINAPI`, `CALLBACK`, ...) ended the specifier list, so the whole declaration
+  vanished with no skip report; it is now dropped like any other qualifier, and
+  skipped inside a callback declarator (`int (WINAPI *cb)(int)`), where it used
+  to become the parameter's name. A **pointer to a callback**
+  (`int (**pp)(int)`, `int (*arr[4])(int)`, `cb_t *pcb` on a callback typedef)
+  was spelled `fn(P...): R`, claiming the engine can call something it only
+  passes through; it is an opaque `ptr`, as the pointer semantics require. And a
+  function type with **redundant parentheses** (`int (cb)(int)`), which C
+  adjusts to a function pointer exactly like `int cb(int)`, was skipped while
+  its unparenthesized twin was generated.
+
+- **`bindgen` never drops a declaration in silence.** A declaration prefixed by
+  a **function-like macro** (`MY_API(int) f(void)`) vanished without a trace:
+  without a preprocessor the argument may be the return type, so the tool now
+  reports it as a skip and points at `cc -E` instead of guessing. A declaration
+  whose **type the tool cannot resolve** (`Foo (*fp)(void);`) vanished the same
+  way and is now reported too, under a best-effort declarator name.
+
 - **`bindgen` translates a callback parameter.** A C function-pointer parameter
   becomes the Oskel `fn(P...): R` the engine accepts as a parameter (PHASE 6.6),
   in all three C spellings: the inline declarator (`int (*cmp)(const void *,
@@ -179,6 +230,32 @@ may change between minor versions.
   These are the same operations over the portable primitive surface, so they
   behave identically on the VM and under `oskel build`. No new runtime type,
   opcode or builtin.
+
+- **`class`: named shapes with methods** (PHASE 6.8). A `class` declares fields
+  and methods; instantiating is calling the class name (`Point(3, 4)`, no
+  `new`), `self` is explicit inside a method, and there is no inheritance. The
+  feature is **pure parser sugar**: the declaration is rewritten into an ordinary
+  top-level constructor function that builds the instance as a map (each field a
+  key, starting `nil`), assigns every method as a closure capturing `self`, runs
+  the optional `init` (whose parameters are the constructor's) and returns the
+  instance. It therefore adds one token (`class`) and no AST node, opcode,
+  compiler path or VM logic, and the desugared program is plain Oskel the AOT
+  backend already lowers — `class` behaves identically on the VM and in an
+  `oskel build` binary with zero backend work (`tests/58_classes.oskl`,
+  `tests/native_build_classes.oskl`). A class name is a valid type annotation
+  (pre-scanned like a `struct`, and seeded across REPL entries). Rejected at
+  parse time: a nested class, a duplicate class name, a class/`struct` name
+  collision (in either order), a duplicate field or method, a field and a method
+  sharing a name, `self` as a member name, and a variadic `init`. An instance is a
+  map at runtime (`type(p)` is `"map"`), and two instances compare unequal even
+  with identical fields because their method entries are distinct closures. A
+  field annotation is enforced on assignment, like a `struct` literal's field:
+  `self.field = value` inside a method and `instance.field = value` through a
+  typed binding (annotated, or inferred from the constructor call) are checked
+  against it, at compile time, so the AOT backend inherits the same diagnostics.
+  An unannotated field, a key the class never declared and a compound assignment
+  stay unchecked. `class` is now a reserved word.
+
 
 - **`std.path`: filesystem paths.** A new standard-library module for joining,
   splitting and normalising filesystem paths. A path is an ordinary string, not

@@ -1,0 +1,12 @@
+// expect-exit: 65
+// A method is a map field holding a closure, so assigning a non-function would
+// silently make it uncallable. The compiler rejects the assignment instead of
+// letting the call fail at run time.
+class Point {
+  x: int;
+  fn init() { self.x = 1; }
+  fn get(): int { return self.x; }
+}
+let p = Point();
+p.get = 5;
+print(p.get());

@@ -37,7 +37,8 @@ if(NOT bindgen_stdout STREQUAL "")
   message(FATAL_ERROR
     "bindgen wrote to stdout despite -o\n--- stdout ---\n${bindgen_stdout}")
 endif()
-# The fixture has one skipped declaration (the callback) and one commented
+# The fixture has two skipped declarations (a struct by value, a callback
+# returned) and one commented
 # variadic, so the summary must mention both.
 if(NOT bindgen_stderr MATCHES "skipped" OR NOT bindgen_stderr MATCHES "variadic")
   message(FATAL_ERROR
@@ -87,6 +88,24 @@ file(READ "${generated}" generated_text)
 # A non-empty generated module: the fixture is not silently empty.
 if(NOT generated_text MATCHES "fn strlen")
   message(FATAL_ERROR "the generated module does not declare strlen:\n${generated_text}")
+endif()
+# A pointer to a callback is an opaque handle, never `fn(...)`.
+if(NOT generated_text MATCHES "fn atexit\\(pp: ptr\\)")
+  message(FATAL_ERROR
+    "a pointer to a callback was not emitted as an opaque ptr:\n${generated_text}")
+endif()
+# A calling convention is dropped, not taken as the parameter's name.
+if(NOT generated_text MATCHES "fn reg\\(cb: fn\\(int32\\): int32\\): void;")
+  message(FATAL_ERROR
+    "a calling convention inside a callback declarator was mishandled:\n${generated_text}")
+endif()
+if(NOT generated_text MATCHES "fn deliver\\(h: fn\\(int32\\): int32\\): void;")
+  message(FATAL_ERROR
+    "a callback typedef carrying a convention was not a callback:\n${generated_text}")
+endif()
+if(generated_text MATCHES "WINAPI: " OR generated_text MATCHES "CALLBACK: ")
+  message(FATAL_ERROR
+    "a calling convention leaked into the generated parameter names:\n${generated_text}")
 endif()
 
 # --- 4. Usage errors use the toolchain's exit codes ---

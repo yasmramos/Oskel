@@ -30,6 +30,20 @@ Bytecode compileSource(const std::string& source) {
   return compileProgram(program);
 }
 
+// Finds a proto by name anywhere in the tree (children are nested), so a test
+// can assert on a function's or a method's compiled form without knowing the
+// exact child index.
+const Bytecode* findProto(const Bytecode& root, const std::string& name) {
+  if (root.name == name) return &root;
+  for (const std::shared_ptr<Bytecode>& child : root.children) {
+    if (child) {
+      const Bytecode* found = findProto(*child, name);
+      if (found != nullptr) return found;
+    }
+  }
+  return nullptr;
+}
+
 void expectCompileError(const std::string& source, const char* what) {
   try {
     compileSource(source);
@@ -1106,6 +1120,116 @@ void testTypeMismatchErrors() {
   expectCompileError("let x: integer = 1;\n", "unknown type name");
 }
 
+void testClassSugar() {
+  // PHASE 6.8: a `class` is pure parser sugar. The parser rewrites it into the
+  // map-plus-closures idiom, so the instruction stream is exactly what the
+  // equivalent hand-written program produces: no new opcode, no special-case
+  // lowering. Only the child proto *names* differ (the parser names the method
+  // lambdas `Point.sum` for diagnostics), which is why this compares the
+  // instruction stream and not the whole `Bytecode`.
+  const std::string classSource =
+      "class Point {\n"
+      "  x: int;\n"
+      "  y: int;\n"
+      "  fn init(x: int, y: int) { self.x = x; self.y = y; }\n"
+      "  fn sum(): int { return self.x + self.y; }\n"
+      "}\n"
+      "let p = Point(3, 4);\n"
+      "print(p.sum());\n";
+  const std::string desugaredSource =
+      "fn Point(x: int, y: int) {\n"
+      "  let self = { x: nil, y: nil };\n"
+      "  self.init = (x: int, y: int) => { self.x = x; self.y = y; };\n"
+      "  self.sum = () => { return self.x + self.y; };\n"
+      "  self.init(x, y);\n"
+      "  return self;\n"
+      "}\n"
+      "let p = Point(3, 4);\n"
+      "print(p.sum());\n";
+
+  Bytecode fromClass = compileSource(classSource);
+  Bytecode fromDesugared = compileSource(desugaredSource);
+
+  // The top-level instruction stream is identical: the class declaration
+  // compiles to the same constructor binding the hand-written `fn` does.
+  assert(fromClass.code.size() == fromDesugared.code.size());
+  for (size_t i = 0; i < fromClass.code.size(); ++i) {
+    assert(fromClass.code[i].op == fromDesugared.code[i].op);
+    assert(fromClass.code[i].a == fromDesugared.code[i].a);
+    assert(fromClass.code[i].b == fromDesugared.code[i].b);
+    assert(fromClass.code[i].c == fromDesugared.code[i].c);
+  }
+  assert(fromClass.numRegisters == fromDesugared.numRegisters);
+
+  // The class name is the constructor proto; its parameters are `init`'s.
+  const Bytecode* ctor = findProto(fromClass, "Point");
+  assert(ctor != nullptr);
+  assert(ctor->numParams == 2);
+
+  // Every method is a named child proto (named for diagnostics); a user lambda
+  // stays `<anonymous>`, so the name never leaks a wrong attribution.
+  assert(findProto(fromClass, "Point.init") != nullptr);
+  assert(findProto(fromClass, "Point.sum") != nullptr);
+  assert(findProto(fromClass, "<anonymous>") == nullptr);
+
+  // A method's return annotation is erased like a function's: the body's
+  // instruction stream is identical with and without it.
+  Bytecode annotated = compileSource("class C { fn m(): int { return 1; } }\n");
+  Bytecode plain = compileSource("class C { fn m() { return 1; } }\n");
+  const Bytecode* annotatedM = findProto(annotated, "C.m");
+  const Bytecode* plainM = findProto(plain, "C.m");
+  assert(annotatedM != nullptr && plainM != nullptr);
+  assert(annotatedM->code.size() == plainM->code.size());
+
+  // A class and a struct may not share a name, in either order (a class name is
+  // a valid type annotation, so the two would be ambiguous).
+  expectCompileError("struct Point { x: int; }\nclass Point { y: int; }\n",
+                     "class after struct with the same name");
+  expectCompileError("class Point { y: int; }\nstruct Point { x: int; }\n",
+                     "struct after class with the same name");
+  expectCompileError("class Point { x: int; }\nclass Point { y: int; }\n",
+                     "duplicate class name");
+  expectCompileError("class C { self; }\n", "self as a class field");
+  expectCompileError("class C { x: Nope; }\n", "unknown field type in a class");
+
+  // A field annotation is enforced on assignment, like a struct literal's
+  // field. `self.field = value` is checked inside a method...
+  expectCompileError("class P {\n  x: int;\n  fn init() { self.x = \"s\"; }\n}\n",
+                     "wrong type assigned to a field of self");
+  // ...and `instance.field = value` through a binding that names the class,
+  // whether the binding is annotated or inferred from the constructor call.
+  expectCompileError("class P { x: int; }\nlet p = P();\np.x = \"s\";\n",
+                     "wrong type assigned to a field through an inferred binding");
+  expectCompileError("class P { x: int; }\nlet p: P = P();\np.x = \"s\";\n",
+                     "wrong type assigned to a field through an annotated binding");
+  // A correct write of every accepted shape compiles, and an unannotated field
+  // accepts any value (its type is not declared).
+  expectCompiles(
+      "class P {\n  x: int;\n  ratio: double;\n  free;\n  fn init() {\n"
+      "    self.x = 1;\n    self.ratio = 2;\n    self.free = \"any\";\n"
+      "  }\n}\nlet p = P();\np.x = 3;\np.ratio = 1.5;\np.free = nil;\n");
+  // A class instance is a map, so a key the class never declared can be added;
+  // that is not a declared field, so no type is known and no check applies.
+  expectCompiles("class P { x: int; }\nlet p = P();\np.extra = \"later\";\n");
+  // A local `self` the user declares shadows the method's instance, so the
+  // field check must not fire against the class shape.
+  expectCompiles(
+      "class P {\n  x: int;\n  fn f() { let self = {x: \"s\"}; self.x = \"t\"; }\n}\n");
+  // A lambda written inside a method captures that method's `self`, so it
+  // inherits the owner class and its field writes are checked too.
+  expectCompileError(
+      "class P {\n  x: int;\n  fn f() { let g = () => { self.x = \"s\"; }; g(); }\n}\n",
+      "wrong type assigned to a field of self from a nested lambda");
+  expectCompiles(
+      "class P {\n  x: int;\n  fn f() { let g = () => { self.x = 1; }; g(); }\n}\n");
+  // A lambda that declares its own `self` parameter shadows the method's
+  // instance, so its field write is that parameter's, not the class's.
+  expectCompiles(
+      "class P {\n  x: int;\n  fn f() { let g = (self) => { self.x = \"s\"; }; g({x: 1}); }\n}\n");
+  // A plain map has no declared field type at all.
+  expectCompiles("var m = {a: 1};\nm.a = \"text\";\n");
+}
+
 void testFloatLiteralRange() {
   // A representable subnormal is a valid literal: `strtod` reports ERANGE for
   // underflow too, but only a value outside the finite range is an error.
@@ -1715,6 +1839,7 @@ int main() {
   testDiagnosticSnippetLineEndings();
   testRuntimeTraceElision();
   testMustUse();
+  testClassSugar();
   testTypeMismatchErrors();
   testFloatLiteralRange();
   testIntegerLiteralAtInt64Min();

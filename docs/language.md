@@ -11,7 +11,7 @@ The language surface this reference documents is implemented on the development 
 | Area | Development engine (`oskel`) | AOT backend (`oskel build`) |
 | --- | --- | --- |
 | Language core: functions, closures, control flow, collections | ✅ | ✅ (subset the lowerer covers) |
-| Types, nullability, `struct`, variadics, `import`, `switch`, `defer` (PHASE 6.5) | ✅ | ✅ (all are compile-time; `struct` is erased, `switch`/`defer` lower to existing opcodes) |
+| Types, nullability, `struct`, `class`, variadics, `import`, `switch`, `defer` (PHASE 6.5/6.8) | ✅ | ✅ (all are compile-time; `struct`/`class` are erased, `switch`/`defer` lower to existing opcodes) |
 | `native fn` (PHASE 6.5) | ✅ | 🔶 only for the curated stubs the backend seeds; anything else fails the build (PHASE 7f) |
 | FFI with C (PHASE 6.6) | ✅ | 🔶 scalar `extern "C"` in `--mode hosted` only; FFI is hosted-only by design (PHASE 7f, §4.5) |
 | Error values, `pcall`, `try`/`catch`, unions, `@MustUse` (PHASE 6.7) | ✅ | 🔶 `error` values and value-based `try`/`catch` work (PHASE 7c.5c); `pcall` and raised runtime errors do not (no unwinding) |
@@ -25,6 +25,7 @@ The language surface this reference documents is implemented on the development 
 4. [Variables and scope](#4-variables-and-scope)
    - [4.6 Type annotations](#46-type-annotations)
    - [4.7 `struct`](#47-struct)
+   - [4.8 `class`](#48-class)
 5. [Operators](#5-operators)
 6. [Statements](#6-statements)
 7. [Functions and closures](#7-functions-and-closures)
@@ -53,7 +54,7 @@ A Oskel program is a UTF-8 text file (extension `.oskl`). The pipeline is:
 3. **Compiler**: translates the AST to bytecode (39 opcodes today, register-based, under a hard budget of 40).
 4. **VM**: executes the bytecode.
 
-The AST is never executed: the `oskel` executable compiles source to bytecode and runs it on the register-based VM. The compiler and the VM implement the whole language surface this reference documents — functions, closures and control flow, collections, the type system with nullability and `struct` (PHASE 6.5), FFI with C (PHASE 6.6) and error values with `pcall`, `try`/`catch`, unions and `@MustUse` (PHASE 6.7). The AOT backend (PHASE 7) compiles a subset of the same programs to a native binary through `oskel build`; §16 lists the constructs it does not yet lower.
+The AST is never executed: the `oskel` executable compiles source to bytecode and runs it on the register-based VM. The compiler and the VM implement the whole language surface this reference documents — functions, closures and control flow, collections, the type system with nullability, `struct` and `class` (PHASE 6.5/6.8), FFI with C (PHASE 6.6) and error values with `pcall`, `try`/`catch`, unions and `@MustUse` (PHASE 6.7). The AOT backend (PHASE 7) compiles a subset of the same programs to a native binary through `oskel build`; §16 lists the constructs it does not yet lower.
 
 The program runs from top to bottom in the global scope. Simple statements end with `;`. Statements with a block (`if`, `while`, `for`, `fn`) close with `}` and optionally accept a `;` after it.
 
@@ -89,7 +90,7 @@ Identifiers start with an ASCII letter or `_`, and continue with ASCII letters, 
 Reserved words:
 
 ```text
-break  case   catch  const  continue  default  defer  do     else  false  fn  for  if
+break  case   catch  class  const  continue  default  defer  do     else  false  fn  for  if
 import in     let    native nil       return   struct switch true  try  var
 while
 ```
@@ -351,7 +352,8 @@ fn add(a: int, b: int): int {
 
 The accepted type names are the primitives reported by `type()`: `nil`, `bool`,
 `int`, `float`, `double`, `string`, `error`, `array`, `map`, `function` and
-`range`, plus `any`. A name that is not one of these is a compile error.
+`range`, plus `any`, plus the name of a `struct` (§4.7) or a `class` (§4.8)
+declared in the file. A name that is not one of these is a compile error.
 `void` is accepted **only as a return type** (see below).
 
 **`void` return type.** A function may be declared `: void` to say it produces
@@ -773,8 +775,10 @@ let recovered = parse(input) catch 0;    // int
 ### 4.7 `struct`
 
 A `struct` is a named, data-only shape: a fixed set of fields with optional
-type annotations. It has no methods and no inheritance (and there never will
-be — maps plus closures replace classes). Like `import`, a `struct` is
+type annotations. It has no methods and no inheritance. A `class` (§4.8) is the
+method-carrying form: it is sugar over the same map shape plus closures, so a
+`struct` remains the lighter choice when no behaviour is attached. Like
+`import`, a `struct` is
 **module-level metadata**: it may only be declared at the top level of a file,
 and the declaration itself emits no bytecode.
 
@@ -849,6 +853,238 @@ a plain map (it cannot write `Point { ... }` unless it declares its own
 therefore exports **constructor functions** rather than the type name:
 `std.datetime` (§12.10) declares `struct Date`/`struct DateTime` and exports
 `date`/`datetime`, which return the maps.
+
+### 4.8 `class`
+
+A `class` is a named shape **with methods**. It is deliberately the smallest
+step beyond `struct`, and it is **pure sugar**: the parser rewrites the
+declaration into an ordinary top-level constructor function, so a class adds no
+AST node, no opcode and no engine code, and the VM and the AOT backend run it
+identically (see [§16](#16-known-limitations) for the parity guarantee).
+
+```oskel
+class Point {
+  x: int;
+  y: int;
+
+  fn init(x: int, y: int) {
+    self.x = x;
+    self.y = y;
+  }
+
+  fn lenSquared(): int {
+    return self.x * self.x + self.y * self.y;
+  }
+}
+
+let p = Point(3, 4);        // no `new`
+print(p.x, p.y);            // 3 4
+print(p.lenSquared());      // 25
+```
+
+The design has three hard rules:
+
+- **Instantiation is calling the class name.** There is no `new`, no `Point::new`
+  and no separate constructor syntax: `Point(3, 4)` builds an instance. The
+  class name is a value of type `function` (it *is* the constructor), so it can
+  be passed around and stored like any other function.
+- **`self` is explicit.** A method reaches its receiver through `self`, exactly
+  as a plain function reaches a parameter; there is no implicit `this`. The name
+  `self` is reserved inside a class body (it cannot be a field, a method or a
+  parameter).
+- **No inheritance.** There is no `extends`, no `super` and no base class. A
+  class is a flat shape; composition (a field that holds another class's
+  instance) is how one class reuses another.
+
+**The desugaring.** The class above compiles to the equivalent of:
+
+```oskel
+fn Point(x: int, y: int) {
+  let self = { x: nil, y: nil };
+  self.init = (x: int, y: int) => {
+    self.x = x;
+    self.y = y;
+  };
+  self.lenSquared = () => {
+    return self.x * self.x + self.y * self.y;
+  };
+  self.init(x, y);   // forward the constructor arguments
+  return self;
+}
+```
+
+Every field becomes a key of the instance map (each starting `nil`), every
+method becomes a closure assigned to that key, and `self` is the local that
+those closures capture. A method's declared return type rides on the desugared
+lambda, so the body's `return` is still checked even though a lambda the user
+writes has no return-annotation position. An instance **is a map at runtime**, so
+the whole map surface applies: member access, `in`, `len`, `for ... in`,
+indexing, `type(p)` reports `"map"`, and instances nest and live in collections.
+
+`init` is optional and defines the constructor's parameters: the arguments the
+caller writes after the class name are forwarded to `init`, so the arity of
+`Point(...)` is the arity `init` declares. Without `init` the fields keep their
+initial `nil` and the constructor takes no arguments:
+
+```oskel
+class Counter {
+  n: int;
+  fn set(v: int) { self.n = v; }
+  fn get(): int { return self.n; }
+}
+let c = Counter();   // no init: the fields start nil
+c.set(41);
+print(c.get());      // 41
+```
+
+A method returns with `return` like any function; `return self;` makes the call
+chainable (`p.scaled(2).scaled(2)`). A method may call another through `self`
+(`self.bump()`) and may recurse through `self`.
+
+**Field defaults.** A field may carry a default (`n: int = 5;`). The desugaring
+seeds the instance map with it instead of `nil`, so a constant field needs no
+line in `init`:
+
+```oskel
+class Config {
+  port: int = 8080;
+  host: string = "localhost";
+  fn init() {}
+}
+print(Config().port);   // 8080
+```
+
+A default is evaluated per instance, so mutating one instance never leaks into
+the next. `init` still runs after the defaults and may override them.
+
+**Every non-nullable annotated field must end up set.** When a class declares
+`init`, the parser checks that every field whose annotation is present and not
+nullable is either given a default or assigned as `self.<field> = ...` somewhere
+in `init`'s body. A forgotten field would otherwise leave `nil` in a slot the
+annotation says is never nil, and the first read would fault far from the
+declaration:
+
+```oskel
+class Config {
+  host: string;
+  timeout: int;          // error: 'init' never assigns it
+  fn init(host: string) { self.host = host; }
+}
+```
+
+The check is syntactic: it catches a forgotten field, not every path through
+`init`. An assignment inside an `if`, a loop or a `switch` counts, and so does a
+nullable field left `nil` on purpose. A lambda body inside `init` does **not**
+count, because it runs later, if at all — write the field's default instead.
+
+A method is a key of the instance map, so it can be **replaced**, but only by a
+function of the declared arity: a method body reads its parameters positionally,
+so another arity would be a latent crash. A non-function value is rejected for
+the same reason (the method would silently stop being callable):
+
+```oskel
+class Counter {
+  n: int;
+  fn init() { self.n = 0; }
+  fn get(): int { return self.n; }
+}
+let c = Counter();
+c.get = () => 42;      // ok: a function of the declared arity
+c.get = 5;             // error: a method is a function
+c.get = (a) => a;      // error: must take 0 parameters, got 1
+```
+
+A method's parameter and return annotations are checked like any function's, and
+so is a **field** annotation. An assignment to `self.field` inside a method, or
+to `instance.field` through a binding whose type is known (an annotated binding
+like `let p: Point = ...`, a plain `let p = Point(...)` whose type the
+constructor call gives, a call to a function with a declared return type, or a
+field of another instance), is checked against the field's declared type with the
+same rule as every other annotation:
+
+```oskel
+class Point {
+  x: int;
+  fn init() { self.x = "oops"; }   // error: cannot assign 'string' to 'int'
+}
+let p: Point = Point();
+p.x = "oops";                      // error: same rule through the binding
+```
+
+The check is compile-time metadata only, so it never changes the emitted code
+and the AOT backend inherits it. A lambda written inside a method captures that
+method's `self`, so its field writes are checked against the same class. Three
+cases stay unchecked, by design:
+
+- a field declared without an annotation (`x;`) has no type to enforce;
+- a receiver whose type is not known statically — an element of an array or a
+  map, or a parameter with no annotation — stays untyped, as everywhere else;
+- a compound assignment (`self.x += 1`) has a result type the compiler does not
+  track statically.
+
+Writing a key the class never declared (`p.added = ...`) is allowed, because an
+instance is a map and the map surface stays open. A name within two edits of a
+declared field is far more likely a typo than a deliberate new key — the typo
+would add a field while every read of the real one keeps returning its old value
+— so it is reported as a **warning** and the program still runs:
+
+```oskl
+class Counter {
+  count: int;
+  fn init() { self.count = 0; }
+}
+let c = Counter();
+c.cont = 5;    // warning: 'cont' is not a field of class 'Counter'
+               //          (did you mean 'count'?); the assignment adds a new key
+```
+
+The declared type name itself is validated as a known type (or a declared
+struct/class) at parse time.
+
+**Compile-time checks.** The parser rejects, before any bytecode is produced:
+
+- a class declared anywhere but the top level of a module (like `struct`);
+- a duplicate class name, and a class whose name collides with a `struct`
+  (a class name is also a valid type annotation, so the two would be ambiguous);
+- a duplicate field or a duplicate method, and a field and a method that share a
+  name (both are keys of the instance map, so one would overwrite the other);
+- the reserved name `self` used as a field, a method or a parameter;
+- an `init` with a variadic parameter (the constructor forwards its arguments
+  one by one, so it cannot pass the collected array);
+- an `init` that never assigns a non-nullable annotated field which has no
+  default (see above);
+- an assignment that replaces a method with a non-function, or with a function
+  of the wrong arity.
+
+A class name is a valid type annotation, and — like a hoisted `fn` — a class
+declared later in the file is visible earlier:
+
+```oskel
+fn area(r: Rect): int { return r.w * r.h; }
+
+class Rect {
+  w: int;
+  h: int;
+  fn init(w: int, h: int) { self.w = w; self.h = h; }
+}
+
+let r: Rect = Rect(3, 5);
+print(area(r));   // 15
+```
+
+Two instances are distinct map values, and because their method entries are
+distinct closures (closures compare by identity, §3.2), two instances compare
+unequal even when every field matches. Compare fields, not instances.
+
+Because a class desugars to a top-level constructor `fn`, its name **is** a
+module's public name: a class declared in a module is reachable through the
+qualified form, and `geom.Point(3, 4)` calls the constructor (the value is a
+`function`). This differs from a `struct`, whose name is not a value and stays
+local to its file. A module can still export a plain constructor function
+instead when it wants to keep the class itself private.
+
+`class` is a **reserved word** from 0.1.0 on: a variable or function named
+`class` no longer parses.
 
 ---
 
@@ -2656,7 +2892,7 @@ oskelc -pkg ... -o app.oskpkg  packages a .oskpkg
 
 - Dynamic typing. The `oskel` executable compiles source to bytecode and runs it on the register-based VM; the AST is never executed. The compiler and the VM implement the whole language surface this reference documents (PHASE 6 and its 6.5/6.6/6.7 additions).
 - The JIT covers only a narrow integer subset, and only in the development engine. `oskel` (a script run, `-e` and the REPL) compiles a *leaf* function whose body only manipulates `nil`/`bool`/`int` to native x86-64 the first time it is called (PHASE 8, slices 1-4: constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing). Everything else keeps running on the interpreter, so results never change, and `oskel build` and the generated binary never contain the JIT. `oskel --no-jit` disables it.
-- No classes, interfaces or inheritance (and there never will be — maps + closures replace them). A `struct` (data only, no methods) is supported (see §4.7): it is a named map shape checked at compile time, not a class.
+- Classes are supported (see §4.8): a `class` declares a named shape with methods, desugared by the parser into a top-level constructor function (a map plus closures capturing an explicit `self`), so it needs no new opcode. There is **no inheritance** and no interfaces; composition replaces them. A `struct` (data only, no methods) is the method-less form (see §4.7). Both are named map shapes checked at compile time.
 - No `try`/`catch` *statement* and no catchable exceptions. Error handling is value-based: `nil` (not found), `pcall(fn, ...)` to turn a raised runtime error into a `{ok, value, error}` map (see §13.1), and the error-value operators `try expr` (propagate, Rust's `?`) and `expr catch default` (recover locally, Zig's `catch`, see §13.3). `panic()` is for unrecoverable errors. A raised runtime error is not a value and is not caught by `catch`; use `pcall` for that.
 - Modules use Java-style `import` (see §18). `import` is only allowed at the top level of a module: nesting an import inside a function or block is a compile error. `require` (Lua-style) is dropped — `import` is the only module form. A module is loaded once, eagerly, when the program is compiled, and a cyclic import is a compile error rather than a crash.
 - No `++`, `--` or default parameters. A trailing `rest...` parameter makes a function variadic (see §7.1). `switch` on literals and ranges is supported (see §6.10), and so is the post-test loop `do { ... } while (cond);` (see §6.4).

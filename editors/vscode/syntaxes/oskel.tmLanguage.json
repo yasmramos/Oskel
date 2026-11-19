@@ -76,6 +76,15 @@
           }
         },
         {
+          "comment": "`class Name`",
+          "name": "meta.class.oskl",
+          "match": "\\b(class)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.class.oskl" },
+            "2": { "name": "entity.name.type.class.oskl" }
+          }
+        },
+        {
           "comment": "`fn name(...)` — the name only; parameters are matched elsewhere",
           "name": "meta.function.oskl",
           "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
@@ -106,7 +115,7 @@
         },
         {
           "name": "storage.type.oskl",
-          "match": "\\b(?:let|var|const|fn|struct|native|extern|import)\\b"
+          "match": "\\b(?:let|var|const|fn|struct|class|native|extern|import)\\b"
         }
       ]
     },
