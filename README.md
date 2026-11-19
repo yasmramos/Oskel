@@ -432,7 +432,7 @@ Current limitations:
 - Slicing syntax works for strings and arrays (`s[1:3]`, `a[2:]`, `a[:-1]`), with negative bounds counted from the end and an optional step (`a[::2]`, `a[::-1]` reverses); `substr`/`slice` remain available.
 - `upper` and `lower` only transform ASCII letters.
 - The maximum call depth is 2000.
-- Memory is managed with reference counting plus a cycle collector (`src/gc.h`) that reclaims unreachable cycles, such as a function stored in the scope it closes over. A cycle that runs through state captured by a native method (`a.f = a.push`) is never collected.
+- Memory is managed with reference counting plus a cycle collector (`src/core/gc.h`) that reclaims unreachable cycles, such as a function stored in the scope it closes over. A cycle that runs through state captured by a native method (`a.f = a.push`) is never collected.
 
 Ideas for future versions:
 
