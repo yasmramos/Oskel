@@ -35,6 +35,14 @@ if(NOT EXISTS "${prefix}/share/oskel/std/math.oskl")
     "library is not being installed")
 endif()
 
+# The host compiler ships beside the engine: a package that shipped only
+# `oskel` would leave the AOT product out of the release.
+if(NOT EXISTS "${prefix}/bin/oskelc${OSKEL_EXE_SUFFIX}")
+  message(FATAL_ERROR
+    "the installed tree is missing bin/oskelc${OSKEL_EXE_SUFFIX}; the host "
+    "compiler is not being installed")
+endif()
+
 # The binding generator ships beside the engine; a packaging format that
 # forgot it would drift from the others. `EXISTS` does not append the platform
 # executable suffix, so CMake passes it in.

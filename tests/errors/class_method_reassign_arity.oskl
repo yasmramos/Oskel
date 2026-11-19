@@ -1,0 +1,12 @@
+// expect-exit: 65
+// A replacement for a declared method must take the same number of parameters:
+// the method body reads its parameters positionally, so another arity would be
+// a latent crash rather than a working override.
+class Point {
+  x: int;
+  fn init() { self.x = 1; }
+  fn get(): int { return self.x; }
+}
+let p = Point();
+p.get = (a: int) => a;
+print(p.get());

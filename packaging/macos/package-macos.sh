@@ -38,6 +38,10 @@ if [ ! -x "$stage/bin/oskel" ]; then
   echo "package-macos: $stage/bin/oskel not found; did the install step run?" >&2
   exit 1
 fi
+if [ ! -x "$stage/bin/oskelc" ]; then
+  echo "package-macos: $stage/bin/oskelc not found; did the install step run?" >&2
+  exit 1
+fi
 if [ ! -x "$stage/bin/bindgen" ]; then
   echo "package-macos: $stage/bin/bindgen not found; did the install step run?" >&2
   exit 1
@@ -55,6 +59,7 @@ trap 'rm -rf "$work"' EXIT
 payload="$work/payload"
 mkdir -p "$payload/usr/local/bin" "$payload/usr/local/share/oskel"
 install -m 0755 "$stage/bin/oskel" "$payload/usr/local/bin/oskel"
+install -m 0755 "$stage/bin/oskelc" "$payload/usr/local/bin/oskelc"
 install -m 0755 "$stage/bin/bindgen" "$payload/usr/local/bin/bindgen"
 cp -a "$stage/share/oskel/std" "$payload/usr/local/share/oskel/std"
 

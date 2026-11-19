@@ -311,6 +311,12 @@ class Compiler {
   // like `structDefs_`.
   std::unordered_map<std::string, std::vector<StructField>> classDefs_;
 
+  // Declared signature of every class method, keyed by class name (PHASE
+  // 6.8.1). A method is a map field holding a closure, so an assignment could
+  // otherwise replace it with any value and the method would vanish with no
+  // diagnostic. Session state, like `classDefs_`.
+  std::unordered_map<std::string, std::vector<ClassMethodSig>> classMethodDefs_;
+
   // The class whose method body is being compiled, empty outside one. A method
   // is a closure capturing `self`, so this is what types `self` for the field
   // checks; it is saved and restored around every proto.
@@ -364,6 +370,31 @@ class Compiler {
   // ordinary map assignment is left alone, as is a compound assignment whose
   // result type is not tracked statically.
   void checkFieldAssign(const MemberExpr& member, const AssignExpr& assign);
+
+  // Checks that a value assigned to a declared method can stand in for it
+  // (PHASE 6.8.1). A method is a map field holding a closure, so replacing it
+  // with a non-function makes it silently uncallable; the replacement must be a
+  // function of the declared arity.
+  void checkMethodReassign(const std::string& className, const ClassMethodSig& method,
+                           const AssignExpr& assign);
+  void checkMethodArity(const ClassMethodSig& method, const std::vector<Param>& params, int line,
+                        int col, const std::string& context);
+
+  // Declared return types of the user functions in scope, keyed by name, so a
+  // call to one has a type and `let c = make(); c.field = ...` is checked
+  // against the field's annotation (PHASE 6.8.1). A binding that shadows the
+  // function clears the entry, exactly like `nativeSigs_`.
+  std::unordered_map<std::string, TypeRef> functionReturnTypes_;
+
+  // The declared field of `fields` closest to `name` within two edits, or an
+  // empty string when none is close enough. Used to turn a mistyped field
+  // assignment on a class instance into a warning (PHASE 6.8.1).
+  static std::string closestDeclaredName(const std::string& name,
+                                         const std::vector<StructField>& fields);
+  static size_t editDistance(const std::string& a, const std::string& b);
+
+  // The declared fields of a struct or class, or null when `name` is neither.
+  const std::vector<StructField>* lookupAggregateFields(const std::string& name) const;
 
   // Declared return type of the function currently being compiled, checked
   // against every `return` value. Empty means "unannotated".
@@ -640,6 +671,8 @@ class Compiler {
     std::unordered_map<std::string, std::vector<StructField>> structDefs;
     std::unordered_set<std::string> classNames;
     std::unordered_map<std::string, std::vector<StructField>> classDefs;
+    std::unordered_map<std::string, std::vector<ClassMethodSig>> classMethodDefs;
+    std::unordered_map<std::string, TypeRef> functionReturnTypes;
     std::unordered_map<std::string, NativeSig> nativeSigs;
     std::unordered_map<std::string, std::string> externSignatures;
     std::unordered_set<std::string> mustUseGlobals;

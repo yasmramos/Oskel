@@ -1,0 +1,11 @@
+// expect-exit: 65
+// A compound assignment reads the field before writing it, so it cannot
+// initialize one: `self.n += 1` on a field that is still nil would fault. Only
+// `=` and `??=` (which tolerates nil) count as initializing.
+class Counter {
+  n: int;
+  fn init() {
+    self.n += 1;
+  }
+}
+Counter();

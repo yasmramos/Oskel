@@ -945,6 +945,8 @@ StmtPtr Parser::parseStructDecl() {
     }
     StructField entry;
     entry.name = field.lexeme;
+    entry.line = field.line;
+    entry.col = field.col;
     entry.type = parseTypeAnnotation();
     decl.fields.push_back(std::move(entry));
     if (!match(Tok::Semicolon) && !check(Tok::RBrace)) {
@@ -984,6 +986,83 @@ StmtPtr Parser::parseFunctionBody(const Token& arrow) {
 // arity the caller writes is the arity `init` declares. There is no
 // inheritance. Because the desugared form is plain Oskel, the VM and the AOT
 // backend run it identically with no backend work (docs/language.md §4.8).
+
+// What `init` does to the `self.<field>` targets it writes. `initialized` holds
+// the fields written without reading them first; `readFirst` holds the ones a
+// compound operator reads before writing (`self.n += 1` on a field that is
+// still `nil` faults), which therefore do not initialize the instance. A nested
+// function or lambda is not entered: its body runs later, if at all, so an
+// assignment there does not initialize the instance being constructed
+// (PHASE 6.8.1).
+struct SelfWrites {
+  std::unordered_set<std::string> initialized;
+  std::unordered_set<std::string> readFirst;
+};
+
+// `??=` initializes: it falls back to its right operand when the left is nil,
+// so it tolerates an unset field. Every other compound reads the previous value
+// first and needs one.
+static bool initializesField(Tok op) { return op == Tok::Eq || op == Tok::QuestionQuestionEq; }
+
+static void collectSelfWritesInto(const Stmt& stmt, SelfWrites& out) {
+  if (const auto* exprStmt = std::get_if<ExprStmt>(&stmt.node)) {
+    if (const auto* assign = std::get_if<AssignExpr>(&exprStmt->expr->node)) {
+      if (const auto* member = std::get_if<MemberExpr>(&assign->target->node)) {
+        if (const auto* self = std::get_if<VariableExpr>(&member->object->node)) {
+          if (self->name == "self") {
+            auto& set = initializesField(assign->op) ? out.initialized : out.readFirst;
+            set.insert(member->name);
+          }
+        }
+      }
+    }
+    return;
+  }
+  if (const auto* block = std::get_if<BlockStmt>(&stmt.node)) {
+    for (const StmtPtr& child : block->stmts) collectSelfWritesInto(*child, out);
+    return;
+  }
+  if (const auto* branch = std::get_if<IfStmt>(&stmt.node)) {
+    collectSelfWritesInto(*branch->thenBranch, out);
+    if (branch->elseBranch) collectSelfWritesInto(*branch->elseBranch, out);
+    return;
+  }
+  if (const auto* loop = std::get_if<WhileStmt>(&stmt.node)) {
+    collectSelfWritesInto(*loop->body, out);
+    return;
+  }
+  if (const auto* loop = std::get_if<DoWhileStmt>(&stmt.node)) {
+    collectSelfWritesInto(*loop->body, out);
+    return;
+  }
+  if (const auto* loop = std::get_if<ForStmt>(&stmt.node)) {
+    if (loop->init) collectSelfWritesInto(*loop->init, out);
+    collectSelfWritesInto(*loop->body, out);
+    return;
+  }
+  if (const auto* loop = std::get_if<ForInStmt>(&stmt.node)) {
+    collectSelfWritesInto(*loop->body, out);
+    return;
+  }
+  if (const auto* sw = std::get_if<SwitchStmt>(&stmt.node)) {
+    for (const SwitchCase& branch : sw->cases) {
+      if (branch.body) collectSelfWritesInto(*branch.body, out);
+    }
+    if (sw->defaultBody) collectSelfWritesInto(*sw->defaultBody, out);
+    return;
+  }
+  if (const auto* deferred = std::get_if<DeferStmt>(&stmt.node)) {
+    // A deferred block runs when the scope exits, which is still inside `init`.
+    collectSelfWritesInto(*deferred->body, out);
+  }
+}
+
+static SelfWrites collectSelfWrites(const Stmt& stmt) {
+  SelfWrites out;
+  collectSelfWritesInto(stmt, out);
+  return out;
+}
+
 StmtPtr Parser::parseClassDecl() {
   const Token& keyword = previous();
   if (nestingDepth_ > 0) {
@@ -1061,7 +1140,13 @@ StmtPtr Parser::parseClassDecl() {
     }
     StructField entry;
     entry.name = field.lexeme;
+    entry.line = field.line;
+    entry.col = field.col;
     entry.type = parseTypeAnnotation();
+    // `x: int = 5;` (PHASE 6.8.1): an optional default, so a field that never
+    // changes does not need an `init` line. The parser only records it; the
+    // desugaring below writes it into the instance map instead of `nil`.
+    if (match(Tok::Eq)) entry.initializer = parseExpression();
     fields.push_back(std::move(entry));
     if (!match(Tok::Semicolon) && !check(Tok::RBrace)) {
       error(peek(), "expected ';' or '}' after the class field");
@@ -1095,16 +1180,48 @@ StmtPtr Parser::parseClassDecl() {
                        "arguments one by one");
       }
     }
+    // A field with a non-nullable annotation and no default must be assigned by
+    // `init`: the instance starts with `nil` there, so forgetting one leaves a
+    // `nil` inside a slot the annotation says is never nil (PHASE 6.8.1). The
+    // scan is syntactic — it accepts an assignment anywhere in `init`, including
+    // one under a branch that may not run — so it catches the forgotten field,
+    // not every path. A class without `init` is left alone: its fields start
+    // `nil` by design (documented), and `init` is what opts into the contract.
+    SelfWrites writes = collectSelfWrites(*init->body);
+    for (const StructField& field : fields) {
+      if (!field.type.isPresent() || field.type.nullable || field.type.isUnion()) continue;
+      if (field.initializer) continue;
+      if (writes.initialized.count(field.name) != 0) continue;
+      const std::string tail = "'" + field.name + ": " + field.type.name +
+                               " = ...') or assign 'self." + field.name + "' in 'init'";
+      if (writes.readFirst.count(field.name) != 0) {
+        throw CompileError{"field '" + field.name + "' of class '" + name.lexeme +
+                               "' is declared '" + field.type.name +
+                               "' but 'init' only updates it in place, and a compound "
+                               "assignment reads the field first, so it is still nil; give it a "
+                               "default (" + tail,
+                           field.line, field.col};
+      }
+      throw CompileError{"field '" + field.name + "' of class '" + name.lexeme +
+                             "' is declared '" + field.type.name +
+                             "' but 'init' never assigns it; give it a default (" + tail,
+                         field.line, field.col};
+    }
   }
 
   std::vector<StmtPtr> body;
-  // 1. `let self = { field: nil, ... };`
+  // 1. `let self = { field: <default>, ... };`. A field with a declared default
+  //    starts with it; the rest start `nil` and `init` fills them.
   {
     MapExpr map;
     for (const StructField& field : fields) {
       MapEntry entry;
       entry.literalKey = field.name;
-      entry.value = makeExpr(LiteralExpr{Value()}, keyword.line, keyword.col);
+      if (field.initializer) {
+        entry.value = field.initializer;
+      } else {
+        entry.value = makeExpr(LiteralExpr{Value()}, keyword.line, keyword.col);
+      }
       map.entries.push_back(std::move(entry));
     }
     LetStmt binding;
@@ -1162,6 +1279,15 @@ StmtPtr Parser::parseClassDecl() {
   constructor.body = makeStmt(BlockStmt{std::move(body)}, keyword.line, keyword.col);
   constructor.isClassConstructor = true;
   constructor.classFields = fields;
+  // The method signatures ride along so the compiler can reject an assignment
+  // that would replace a method with a value of the wrong shape (PHASE 6.8.1).
+  for (const Method& method : methods) {
+    ClassMethodSig sig;
+    sig.name = method.name;
+    sig.params = method.params;
+    sig.returnType = method.returnType;
+    constructor.classMethods.push_back(std::move(sig));
+  }
 
   classNames_.insert(name.lexeme);
   declaredClasses_.insert(name.lexeme);

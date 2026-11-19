@@ -109,6 +109,21 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   either way. This makes a C toolchain a *build-time* dependency of the hosted
   mode only; the freestanding path still needs no toolchain and emits no
   relocation. General `extern "C"` marshalling is PHASE 7f.5.
+- A `struct` crossing `extern "C"` by value is supported in the hosted backend
+  in both ABI classes (PHASE 7f.7). A struct of 16 bytes or fewer is flattened
+  to its System V eightbytes and travels in registers; a larger one is class
+  MEMORY, passed in the outgoing stack-argument area and returned through a
+  hidden `sret` buffer in `rdi`, which shifts every integer argument one register
+  along. The thunk builds the C bytes field by field from the `AotMap` the
+  program holds (a struct is a map at run time), reading each field with
+  `oskel_member_get`, and rebuilds a returned struct into a fresh map with
+  `oskel_member_set`. Both directions stay System V AMD64 only; the frame keeps
+  the outgoing area, the `sret` buffer, the register-class staging buffers and
+  the integer staging slots disjoint. `tests/native_build_extern_struct.oskl`
+  covers the register class and `tests/native_build_extern_memory_struct.oskl`
+  the MEMORY class (the latter links `tests/hosted/memory_struct_helper.c`,
+  because no libc symbol exercises that shape). A callback or C variadic
+  parameter is still PHASE 7f work.
 - Windows code paths can be exercised locally without a Windows host: build the
   engine with `x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude -Isrc -static
   -o /tmp/win/oskel.exe src/*.cpp src/native/*.cpp src/jit/*.cpp` and run it
@@ -156,6 +171,20 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   hard-coding the path. `dpkg-deb`/`pkgbuild`/`hdiutil` are on their images;
   `rpmbuild` is installed on demand and the `.rpm` is skipped, not failed, if it
   cannot be.
+- `oskelc` (the host compiler) is the second entry point over the same front
+  end: `oskel` links the runtime on top of it (VM, JIT, builtins, FFI
+  marshalling) and `oskelc` links the front end alone, so the shipped compiler
+  carries no interpreter. `OSKEL_RUNTIME_SOURCES` in `CMakeLists.txt` is the one
+  list that decides which sources are runtime; `build.sh` and `build.bat` keep
+  the same split, and the configure step fails when the list names a file that
+  does not exist. `oskel build` and `oskelc` both call `runBuildCommand` in
+  `src/cli.cpp`, so they cannot drift: `tests/oskelc_parity.cmake` compares the
+  two images byte for byte and against the VM's output, and
+  `tests/check_oskelc_no_vm.cmake` fails when `nm` finds `VM::`, `jitCompile`,
+  `Jit::`, `registerBuiltins`, `ops::binary` or `Runtime::fail` in the compiler. Adding a
+  runtime source means adding it to that list; adding a front-end source needs
+  no edit (the boundary test receives the exact front-end list from CMake).
+  Every packaging format ships `oskelc` beside `oskel` and `bindgen`.
 - `bindgen` (the C binding generator, `docs/bindgen.md`) is a second executable
   shipped beside `oskel`. It is standalone — it links no engine code — and its
   sources live under `tools/`, *outside* the `src/*.cpp` glob, so it is never

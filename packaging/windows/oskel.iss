@@ -4,7 +4,8 @@
 ;   iscc /DAppVersion=0.1.0 /DStageDir=C:\path\to\stage packaging\windows\oskel.iss
 ;
 ; `StageDir` is the tree produced by `cmake --install --prefix stage`:
-;   stage\bin\oskel.exe
+;   stage\bin\oskel.exe     the development engine (VM, REPL)
+;   stage\bin\oskelc.exe    the host compiler (AOT, no interpreter)
 ;   stage\share\oskel\std\*.oskl
 ; The installer reproduces that layout under the install directory, so the
 ; engine resolves `import std.math` through `..\share\oskel\std` relative to the
@@ -65,6 +66,7 @@ Name: "associate"; Description: "Associate .oskl files with Oskel"; GroupDescrip
 
 [Files]
 Source: "{#StageDir}\bin\{#AppExeName}"; DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "{#StageDir}\bin\oskelc.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "{#StageDir}\bin\bindgen.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "{#StageDir}\share\oskel\std\*"; DestDir: "{app}\share\oskel\std"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion

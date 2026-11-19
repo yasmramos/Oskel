@@ -26,6 +26,91 @@ may change between minor versions.
   `tests/compiler_test.cpp` pins the emitted shape (`GETGLOBAL; LOADK; op;
   SETGLOBAL`).
 
+- **`oskelc`, the host compiler, split out of `oskel`.** The toolchain now
+  builds two binaries from one front end: `oskel` (the development engine: run,
+  REPL, `-c`, `build`) links the runtime on top of it, and `oskelc` links the
+  front end alone, so the compiler you ship carries no VM, no JIT and no
+  builtins. `oskel build` stays as a thin alias: both entry points call
+  `runBuildCommand` in the new `src/cli.cpp`, so their flags, defaults,
+  diagnostics and exit codes cannot drift, and the emitted image is byte for
+  byte identical (`tests/oskelc_parity.cmake`). The sources are split by
+  `OSKEL_RUNTIME_SOURCES` in `CMakeLists.txt` (`vm`, `ops`, `builtins`, `ffi`,
+  `unicode_case`, `jit/jit`); the configure step fails if that list names a file
+  that does not exist. Two guards keep the boundary: the include graph of every
+  front-end source (`tests/check_compiler_boundary.cmake`, which CMake now feeds
+  the exact source list) and the link itself (`tests/check_oskelc_no_vm.cmake`:
+  `nm` must show no `VM::`, `jitCompile`, `Jit::`, `registerBuiltins`,
+  `ops::binary` or `Runtime::fail`). `oskelc` ships in every package beside `oskel` and
+  `bindgen`. `-c` (`.oskc`) and `-pkg` (`.oskpkg`) are refused by name with
+  exit 64 until a bytecode serializer exists.
+
+- **`bindgen` translates a `struct` by value and a C `enum` (PHASE 6.6).** A
+  header that declares `struct Point { int x; int y; };` and
+  `struct Point make_point(int x, int y);` now produces the matching
+  `struct Point { x: int32; y: int32; }` before the `extern "C"` block plus
+  `fn make_point(x: int32, y: int32): Point;`, so a struct crosses the boundary
+  by value instead of being skipped. An anonymous body
+  (`typedef struct { int quot; int rem; } div_t;`) takes the typedef's name,
+  which is the only name the header gives it. The layout is validated with
+  `ffi::buildStructLayout`, the same check the runtime applies, so a body Oskel
+  cannot represent — a union, an array field, a bitfield, a nested struct — is
+  reported as `// skipped:` with its real reason and never emitted with a wrong
+  layout; a body the runtime rejects is not queued for emission at all. A C
+  `enum` is an `int` at the ABI (BACKLOG §7.10), so a declaration that mentions
+  one maps to `int32` and the members become module constants (`let GREEN = 5;`),
+  which is what lets a program name them. `bindgen::Result` gained `structs`
+  and `constants`, and the CLI summary reports both. Covered by four new
+  `tests/bindgen_test.cpp` cases and the extended
+  `tests/bindgen/sample.h` fixture, whose output is fed back to `oskel -c` by
+  `tests/run_bindgen_case.cmake`. Verified end to end against libc: the
+  generated `div_t div(int, int)` returns the right quotient and remainder and
+  the enum constants print `5` and `6`.
+
+- **`class` hardening: field defaults, the `init` completeness check, method
+  reassignment rules and a typo warning (PHASE 6.8.1).** A `class` stays pure
+  sugar over the map-plus-closures idiom, so every check below lives in the
+  parser or the compiler and the AOT backend inherits it unchanged. A field may
+  now carry a default (`n: int = 5;`), which the desugaring seeds into the
+  instance map instead of `nil`, per instance. A class that declares `init` must
+  assign every non-nullable annotated field that has no default, or the field
+  would hold `nil` where the annotation promises a value; the check is
+  syntactic, so an assignment inside an `if`, a loop or a `switch` counts and a
+  lambda body inside `init` does not. Only `=` and `??=` count as setting a
+  field: every other compound reads the field first, so `self.n += 1` on a field
+  that is still `nil` is reported instead of crashing the constructor at run
+  time (a compound on a field that has a default is fine). Replacing a declared
+  method is allowed
+  only with a function of the same arity, because a method body reads its
+  parameters positionally. Assigning a name within two edits of a declared
+  field is a **warning**, not an error: an instance is a map, so the key is
+  really added, but the near miss is far more likely a typo than a deliberate
+  new key. Covered by `tests/60_class_hardening.oskl`,
+  `tests/61_class_field_typo.oskl`, six `tests/errors/class_*.oskl` cases and
+  the `oskel build` fixtures that pin VM/AOT parity.
+
+- **The class field-type check now reaches every statically known receiver.**
+  `checkFieldAssign` could only see a direct `let p = Point(...)`; a call to a
+  function with a declared return type (`let b = make(); b.n = "text"`) and a
+  field of another instance (`o.inner.n = "text"`) fell through untyped even
+  though both types are known at compile time. `inferExprType` now returns the
+  declared return type of a user function and the declared type of a member of a
+  statically known struct or class, so those writes are checked like a direct
+  one, with the same message and the same exit 65 under `oskel build`, which
+  writes no binary. A receiver whose type is genuinely unknown (an element of an
+  array or a map, an unannotated parameter or function) stays unchecked, since
+  the language is untyped by default.
+- **Structs by value across `extern "C"` in the hosted AOT backend (PHASE
+  7f.7).** A `struct` parameter or return now resolves through `oskel build
+  --mode hosted` in both System V ABI classes. A struct of 16 bytes or fewer is
+  flattened to its eightbytes and travels in registers; a larger one is class
+  MEMORY, passed in the outgoing stack-argument area and returned through a
+  hidden `sret` buffer in `rdi`. The thunk reads each field out of the `AotMap`
+  the program holds and rebuilds a returned struct into a fresh map, so a struct
+  behaves the same on the VM and in a hosted binary. The development engine
+  gained the class-MEMORY half too (through `libffi`, so it needs libffi and the
+  System V AMD64 ABI). Covered by `tests/native_build_extern_struct.oskl`,
+  `tests/native_build_extern_memory_struct.oskl` and `tests/vm_test.cpp`.
+
 - **Builtin `memSize()`: the machine's physical memory in bytes.** The RAM
   analogue of `time()` — a property of the machine, not of the program. On the
   development VM it comes from the platform (`sysconf(_SC_PHYS_PAGES)` on POSIX,
@@ -40,6 +125,34 @@ may change between minor versions.
   the builtin, so `var memSize = 5` compiles on every target. Covered by
   `tests/bare_metal_test.cpp` (a `-m 256M` boot asserting 255 MiB),
   `tests/lower_test.cpp` and `tests/vm_test.cpp`.
+
+### Fixed
+
+- **`bindgen` no longer emits a declaration the compiler rejects on a
+  non-System V ABI.** The tool promises that every declaration it writes as
+  active code compiles, and three shapes broke that promise — all of them on
+  Windows and macOS, which is why only the `windows-latest` job caught it. The
+  register budget was counted in *parameters* while the compiler counts
+  *eightbytes*, so `struct Q { double x; double y; }` plus five scalars came out
+  as six parameters and seven eightbytes, and the generated module failed
+  `oskel -c` with "may pass at most 6 register-sized values". A struct by value
+  was emitted regardless of the target ABI, although `OSKEL_FFI_STRUCT_BY_VALUE`
+  is true only on System V AMD64 without Windows. A struct inside a callback was
+  emitted even though the compiler always rejects it. The fix removes the
+  duplicated rules instead of patching each one: `ffi::validateSignature` and
+  `ffi::validateTypeSpec` take an `ffi::AbiCapabilities` (this build's by
+  default, `ffi::kFullAbiCapabilities` for "is the shape in the vocabulary at
+  all?") and `bindgen` asks twice — a shape the vocabulary cannot express is
+  skipped with the compiler's own reason, while one only some builds can
+  marshal is written commented out, which is how a variadic was already
+  handled. A fourth divergence went with them: an anonymous
+  `struct { int x; }` inline in a signature has no name to spell and used to be
+  emitted as a scalar `int32`; it is now skipped. Covered by new
+  `tests/bindgen_test.cpp` cases (the eightbyte budget, the anonymous struct)
+  and by making the existing struct-by-value and variadic assertions
+  ABI-aware, so the suite is green on both a System V and a Microsoft x64
+  build; the end-to-end test still feeds the generated module to `oskel -c`,
+  which is the property that actually failed.
 
 ### Removed
 

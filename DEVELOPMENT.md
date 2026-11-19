@@ -51,6 +51,8 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `module_resolver.cpp` | dotted module path | source file path | ✅ |
 | `vm.cpp` | `Bytecode*` | execution | ✅ |
 | `main.cpp` | CLI | full pipeline | ✅ (VM as dev engine, PHASE 4) |
+| `oskelc.cpp` | CLI | full pipeline, AOT only | ✅ (host compiler, no VM) |
+| `cli.cpp` | shared CLI plumbing | module resolution, `std/` lookup, AOT pipeline | ✅ |
 | `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slices 1-4 |
 | `value.cpp` | `Value`, tagged union | shared runtime | ✅ |
 | `builtins.cpp` / `ops.cpp` | native builtins, shared operators | runtime library | ✅ |
@@ -71,19 +73,31 @@ bytecode that later turns out to be impossible to compile efficiently).
 
 ### Toolchain binaries and the compiler boundary
 
-`oskel` ships as a single binary today, and `oskel build` is the AOT entry
-point inside it. PHASE 7d wired that subcommand into the CLI; the split into a
-separate host compiler is still pending, so the two binaries below are the
-target of that split, not the current state:
+Two binaries share one front end. The engine's sources split in two, and the
+split is what the products are:
 
-- `oskel` development engine (run, REPL, -c). Includes the VM and the JIT (the
-  JIT uses the project's own `native/codegen.h` emitter, not AsmJIT).
-- `oskelc` host compiler (oskelc file.oskl -o app). Reads sources and
-  writes the ELF with the project's own `native/codegen.cpp` and
-  `native/elf.cpp` (no AsmJIT, no ELFIO). Links against musl static. Planned;
-  not part of 0.1.0.
-- `oskel build` thin alias over `oskelc` (the goal; today it runs the AOT
-  backend in-process)
+- **front end** (`oskel_frontend`): lexer, parser, bytecode compiler, module
+  resolver, diagnostics, `value`/`gc`, the platform layer and the whole AOT
+  backend (`src/native/*`). A compiler needs exactly this.
+- **runtime** (`oskel_lib`, on top of the front end): `vm.cpp`, `ops.cpp`,
+  `builtins.cpp`, `ffi.cpp`, `unicode_case.cpp` and `jit/jit.cpp`.
+
+The binaries:
+
+- `oskel` development engine (run, REPL, -c, `build`). Links the runtime on top
+  of the front end, so it can interpret. Includes the JIT (the JIT uses the
+  project's own `native/codegen.h` emitter, not AsmJIT).
+- `oskelc` host compiler (`oskelc file.oskl -o app`). Links the front end
+  alone, so the shipped compiler carries no VM, no JIT and no builtins. Reads
+  sources and writes the ELF with the project's own `native/codegen.cpp` and
+  `native/elf.cpp` (no AsmJIT, no ELFIO).
+- `oskel build` is a thin alias: both commands call `runBuildCommand` in
+  `src/cli.cpp`, so their flags, defaults, diagnostics and exit codes cannot
+  drift. `oskelc` is the same AOT pipeline with a shorter command line.
+
+`oskelc` has no bytecode serializer yet, so `-c` (`.oskc`) and `-pkg`
+(`.oskpkg`) are refused by name with exit 64 instead of being read as a typo.
+Those are the documented next steps for the compiler, not implemented features.
 
 A third, standalone binary ships alongside them: `bindgen`, the C binding
 generator (`docs/bindgen.md`). It reads a C header and writes an Oskel
@@ -93,7 +107,17 @@ under `tools/` and are deliberately outside the `src/*.cpp` glob that builds the
 engine, so it can be built and shipped on its own.
 
 Boundary rule: src/compiler.* and src/native/* must not include
-interpreter.h, vm.h or jit/jit.h. Enforced by tests/check_compiler_boundary.cmake.
+interpreter.h, vm.h or jit/jit.h; and no source `oskelc` links may include
+vm.h, jit/jit.h, builtins.h, ops.h, ffi_marshal.h or libffi. Enforced twice:
+`tests/check_compiler_boundary.cmake` checks the include graph of the whole
+front end (CMake passes the exact `OSKEL_FRONTEND_SOURCES` list, so a new
+front-end file is checked automatically), and `tests/check_oskelc_no_vm.cmake`
+checks the *link* — `nm` must not show `VM::`, `jitCompile`, `Jit::`,
+`registerBuiltins`, `ops::binary` or `Runtime::fail` in the `oskelc` binary. The link check is what
+catches a runtime dependency that arrives through a header without naming
+`vm.h`. `OSKEL_RUNTIME_SOURCES` in `CMakeLists.txt` is the one list that decides
+what is runtime; the configure step fails when it names a file that does not
+exist, so a rename cannot silently move a runtime source into `oskelc`.
 
 ---
 
@@ -547,21 +571,42 @@ previous one.
   passed in the registers the ABI assigns them (an INTEGER eightbyte as an
   `int64_t`, an SSE eightbyte as a `double`, both bit-for-bit), so the callee
   reads back the exact bytes; a struct return is captured through a fixed POD
-  whose members land in `rax`/`rdx`/`xmm0`/`xmm1` and rebuilt as a map. Only
-  structs of **16 bytes or fewer** are supported: a larger one is class MEMORY
-  (passed on the stack), which the register thunks cannot express, so the
-  declaration is rejected at compile time, as is a nested (non-scalar) field.
-  No new opcode and no compiler-side ABI logic: the layout is the single source
-  of truth in `ffi_types.h`, shared by the compiler and the runtime across the
-  §2 boundary. Struct-by-value is **System V AMD64 only**: the register
-  classification is that ABI's, and the Microsoft x64 ABI (Windows) passes a
-  struct larger than 8 bytes through a hidden pointer instead, a shape the
-  register thunks cannot express. Off System V the compiler rejects the
-  declaration (`kStructByValueSupported` in `ffi_types.h`; the CMake capability
+  whose members land in `rax`/`rdx`/`xmm0`/`xmm1` and rebuilt as a map. A
+  nested (non-scalar) field is rejected. No new opcode and no compiler-side ABI
+  logic: the layout is the single source of truth in `ffi_types.h`, shared by
+  the compiler and the runtime across the §2 boundary. Struct-by-value is
+  **System V AMD64 only**: the register classification is that ABI's, and the
+  Microsoft x64 ABI (Windows) passes a struct larger than 8 bytes through a
+  hidden pointer instead. Off System V the compiler rejects the declaration
+  (`kStructByValueSupported` in `ffi_types.h`; the CMake capability
   `OSKEL_FFI_STRUCT_BY_VALUE` skips the script test), so a Windows build fails
   cleanly at compile time instead of crashing at the call. Scalars stay portable
   because the call is a typed function pointer. See `docs/language.md` §4.6 and
   `tests/31_ffi_struct.oskl`.
+- **Class-MEMORY structs by value (done, PHASE 7f.7)** — a struct larger than
+  two eightbytes (more than 16 bytes) is class MEMORY: it travels in the
+  outgoing stack-argument area and is returned through a hidden `sret` buffer the
+  caller supplies in `rdi`, which shifts every integer argument one register
+  along. The development engine expresses both directions through `libffi`
+  (`kMemoryStructsSupported`, so it needs libffi + System V AMD64; elsewhere the
+  declaration is rejected at compile time). The hosted AOT backend expresses
+  them in its register thunks: a MEMORY argument is written field by field
+  straight into the outgoing area, the `sret` pointer is staged with the other
+  integer arguments, and the returned bytes are read back out of the buffer and
+  boxed into a map, exactly like a register-class return. The thunk frame keeps
+  the outgoing area, the `sret` buffer, the register-class staging buffers and
+  the integer staging slots in disjoint regions so nothing overlaps. Each field
+  is boxed from the `AotMap` and back: an integer field is normalized to its
+  declared width, a `float` field is narrowed to binary32 on the way out and
+  widened on the way back, a `cstring` field is NUL-terminated in the arena on
+  the way out and copied into an `AotString` on the way back (NULL is nil, and
+  `type()` reports `"string"` for a non-NULL one -- the same documented VM/AOT
+  divergence as a `cstring` scalar return, BACKLOG §6 item 23), and a `ptr`
+  field boxes a NULL as nil and any other address as the integer it is. See
+  `tests/native_build_extern_struct.oskl` (registers) and
+  `tests/native_build_extern_memory_struct.oskl` (MEMORY, with
+  `tests/hosted/memory_struct_helper.c`, which also covers the narrow,
+  mixed-class, `ptr` and `cstring` field cases).
 - **Callbacks (done)** — a parameter typed `fn(P...): R` is a C function
   pointer. `fn` is a keyword, so `parseTypeAnnotation` reads the signature
   before the ordinary type-name path; the parameters are scalar FFI names and
@@ -722,6 +767,35 @@ Design decisions, all enforced by the parser:
 - **Rejected at parse time:** a nested class (not top level), a duplicate class
   name, a class/`struct` name collision, a duplicate field or method, a field
   and a method sharing a name, `self` as a member name, and a variadic `init`.
+- **A field may carry a default** (`n: int = 5;`, PHASE 6.8.1). The desugaring
+  seeds the instance map with the default expression instead of `nil`, so it is
+  evaluated per instance and `init` may still override it.
+- **An `init` must set every non-nullable annotated field that has no default**
+  (PHASE 6.8.1). `Parser::collectSelfWrites` walks `init`'s body collecting
+  `self.<field> = ...` targets and reports a field it never reaches. The walk
+  covers the nested statement forms (`if`, loops, `switch`, `defer`) and
+  deliberately does not descend into a nested function or lambda, whose body runs
+  later, if at all. The check is syntactic: it catches a forgotten field, not
+  every path through `init`.
+- **Only `=` and `??=` count as setting a field** (PHASE 6.8.1). `??=` falls back
+  to its right operand when the field is still `nil`, so it initializes. Every
+  other compound *reads* the field first: `self.n += 1` on a field that is still
+  `nil` faults at run time, so counting it would pass the check and then crash
+  the constructor. `SelfWrites::readFirst` records those, and the diagnostic says
+  the field is only updated in place instead of claiming it was never assigned.
+  A compound on a field that *has* a default is fine.
+- **A method may be replaced, but only by a function of the declared arity**
+  (PHASE 6.8.1). A method is a map key holding a closure, so a non-function
+  value would make it silently uncallable and another arity would be a latent
+  crash (the body reads its parameters positionally). A lambda written at the
+  assignment site is checked directly, including its parameter types; any other
+  value only has to be known to be a function. A receiver of unknown type stays
+  unchecked, as everywhere else.
+- **A field name within two edits of a declared one is a warning** (PHASE 6.8.1).
+  An instance is a map, so writing a new key is allowed and must keep working;
+  but a near miss silently adds a field while every read of the real one keeps
+  returning its old value, so `Compiler::checkFieldAssign` reports it through
+  `Compiler::warn` and the program still runs.
 
 Consequences of the desugaring, documented so they are not surprises:
 
@@ -736,18 +810,25 @@ Consequences of the desugaring, documented so they are not surprises:
   exports a plain constructor function instead.
 - A **field** annotation is enforced on assignment, like a `struct` literal's
   field: `self.field = value` inside a method and `instance.field = value`
-  through a typed binding are checked against it (`Compiler::checkFieldAssign`).
-  The declared type is carried to the compiler on the constructor declaration
-  (`FnDeclStmt::classFields`) and on each method lambda (`LambdaExpr::ownerClass`),
-  which is what types `self`; a lambda written *inside* a method inherits that
-  owner, because it captures the same `self`. Three cases stay unchecked: an
-  unannotated field, a key the class never declared (an instance is a map, so its
-  surface stays open), and a compound assignment (`self.x += 1`), whose result
-  type is not tracked statically.
+  through a receiver whose type is known statically are checked against it
+  (`Compiler::checkFieldAssign`). The declared type is carried to the compiler on
+  the constructor declaration (`FnDeclStmt::classFields`) and on each method
+  lambda (`LambdaExpr::ownerClass`), which is what types `self`; a lambda written
+  *inside* a method inherits that owner, because it captures the same `self`. A
+  receiver is statically known when it is an annotated binding, a constructor
+  call, a call to a function with a declared return type, or a field of another
+  statically known instance (`inferExprType`, PHASE 6.8.1). Three cases stay
+  unchecked: an unannotated field, a receiver whose type is not known statically
+  (an array or map element, an unannotated parameter or function), and a
+  compound assignment (`self.x += 1`), whose result type is not tracked
+  statically.
 - `class` is a **reserved word** from 0.1.0 on.
 
 Tested by `tests/58_classes.oskl` (VM), the `tests/errors/class_*.oskl` cases
-(parse-time rejections) and `tests/native_build_classes.oskl` (the AOT parity
+(parse-time rejections), `tests/60_class_hardening.oskl` and
+`tests/61_class_field_typo.oskl` (the PHASE 6.8.1 surface, registered as
+`oskel.build_binary_class_hardening` for the AOT parity check) and
+`tests/native_build_classes.oskl` (the AOT parity
 fixture, registered as `oskel.build_binary_classes`, which asserts the native
 binary prints byte for byte what the VM prints).
 
@@ -1781,7 +1862,7 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.4a-d, 7c.5a, 7c.5c, 7c.6, 7d, 7e, 7g done; 7c.5b — the remaining builtins — in progress; 7f — FFI in AOT — 7f.1-7f.6 done, scalar and `cstring`/`ptr` `extern "C"` resolve in the hosted backend, struct/callback/variadic still open)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.4a-d, 7c.5a, 7c.5c, 7c.6, 7d, 7e, 7g done; 7c.5b — the remaining builtins — in progress; 7f — FFI in AOT — 7f.1-7f.7 done, scalar, `cstring`/`ptr` and struct-by-value `extern "C"` (register and class-MEMORY) resolve in the hosted backend, callback/variadic still open)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)
