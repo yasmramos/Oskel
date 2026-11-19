@@ -17,6 +17,7 @@ const vscode = require('vscode');
 const path = require('path');
 const { execFile } = require('child_process');
 const { parseDiagnostics, messageForFailure } = require('./src/diagnostics.js');
+const { SaveGuard } = require('./src/save-guard.js');
 
 const LANGUAGE = 'oskel';
 const CONFIG = 'oskel.check';
@@ -30,10 +31,11 @@ const CHECK_TIMEOUT_MS = 30000;
 // changed, so the process is killed and its result discarded.
 const inFlight = new Map();
 
-// Documents this module is saving itself. `document.save()` fires
-// `onDidSaveTextDocument`, which would start a second check for the same
-// content and leave the first one's result racing it.
-const selfSaving = new Set();
+// `document.save()` fires `onDidSaveTextDocument`, which would start a second
+// check for the same content and leave the first one's result racing it. The
+// guard counts the expected events instead of clearing a flag, because the
+// event's ordering relative to `save()` resolving is not documented.
+const saveGuard = new SaveGuard();
 
 let collection = null;
 let warnedMissingBinary = false;
@@ -128,11 +130,15 @@ async function check(document) {
       'Save and check'
     );
     if (choice !== 'Save and check') return;
-    selfSaving.add(document.uri.toString());
+    const uri = document.uri.toString();
+    saveGuard.expect(uri);
     try {
       await document.save();
-    } finally {
-      selfSaving.delete(document.uri.toString());
+    } catch (error) {
+      // No event will follow a save that failed, so the expectation must go or
+      // it would swallow the next real save's check.
+      saveGuard.cancel(uri);
+      throw error;
     }
   }
 
@@ -182,9 +188,18 @@ async function check(document) {
   collection.set(document.uri, toVscodeDiagnostics(found));
 }
 
+// `check` is async and its callers are event handlers, which VS Code does not
+// await. A rejection would surface only as an unhandled promise in the
+// extension host log, so every entry point funnels through here.
+function checkSafely(document) {
+  return check(document).catch((error) => {
+    vscode.window.showErrorMessage(`Oskel: the check failed (${error.message}).`);
+  });
+}
+
 function checkActiveFile() {
   const editor = vscode.window.activeTextEditor;
-  return check(editor && editor.document);
+  return checkSafely(editor && editor.document);
 }
 
 function activate(context) {
@@ -194,8 +209,8 @@ function activate(context) {
   context.subscriptions.push(
     vscode.workspace.onDidSaveTextDocument((document) => {
       if (!config().onSave) return;
-      if (selfSaving.has(document.uri.toString())) return;
-      check(document);
+      if (saveGuard.consume(document.uri.toString())) return;
+      checkSafely(document);
     }),
 
     // A closed file keeps no diagnostics, or a reopened one would show a stale

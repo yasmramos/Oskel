@@ -145,7 +145,9 @@ code --install-extension oskel-0.1.0.vsix
 | `snippets/oskel.json` | The snippets above. |
 | `extension.js` | Runs `oskel -c` on save and publishes the diagnostics. |
 | `src/diagnostics.js` | Parses the compiler's stderr into positions. No `vscode` import, so it is unit-tested. |
-| `test/diagnostics.test.js` | `node --test` over that parser, with real compiler output as fixtures. |
+| `src/save-guard.js` | Keeps a programmatic save from starting a second check. Also `vscode`-free. |
+| `test/diagnostics.test.js` | `node --test` over the parser, with real compiler output as fixtures. |
+| `test/save-guard.test.js` | `node --test` over both save-event orderings. |
 
 ## Keeping it in step with the compiler
 

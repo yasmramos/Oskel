@@ -27,7 +27,13 @@ may change between minor versions.
   the open document is clamped instead of dropped. `src/diagnostics.js` holds
   the parser and imports no `vscode`, so `node --test` covers it
   (`tests/check_vscode_diagnostics.cmake`, CTest `vscode_diagnostics`), with
-  real compiler output as fixtures.
+  real compiler output as fixtures. Two editor-side races are covered by the
+  same suite: a programmatic save is suppressed by counting the expected
+  `onDidSaveTextDocument` events (`src/save-guard.js`) rather than clearing a
+  flag in `finally`, because the event's ordering relative to `document.save()`
+  resolving is not documented and a flag suppresses only one of the two; and a
+  failing check is reported to the user instead of becoming an unhandled
+  promise in the extension host log.
 
 - **Compound bitwise assignment: `&=`, `|=`, `^=`, `<<=` and `>>=`.** The
   assignment operators had an arithmetic form (`+=`, `-=`, `*=`, `/=`, `%=`,
