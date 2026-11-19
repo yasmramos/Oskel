@@ -112,8 +112,8 @@ vm.h, jit/jit.h, builtins.h, ops.h, ffi_marshal.h or libffi. Enforced twice:
 `tests/check_compiler_boundary.cmake` checks the include graph of the whole
 front end (CMake passes the exact `OSKEL_FRONTEND_SOURCES` list, so a new
 front-end file is checked automatically), and `tests/check_oskelc_no_vm.cmake`
-checks the *link* — `nm` must not show `VM::`, `jit::`, `registerBuiltins`,
-`ops::binary` or `Runtime::fail` in the `oskelc` binary. The link check is what
+checks the *link* — `nm` must not show `VM::`, `jitCompile`, `Jit::`,
+`registerBuiltins`, `ops::binary` or `Runtime::fail` in the `oskelc` binary. The link check is what
 catches a runtime dependency that arrives through a header without naming
 `vm.h`. `OSKEL_RUNTIME_SOURCES` in `CMakeLists.txt` is the one list that decides
 what is runtime; the configure step fails when it names a file that does not
