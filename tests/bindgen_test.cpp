@@ -117,6 +117,7 @@ int main() {
   }
 
   // Unsupported declarations are skipped with a comment, never mis-translated.
+  // A struct by value and a callback parameter are both translated now.
   {
     const bindgen::Result result = bindgen::generate(
         "struct Point { int x; int y; };\n"
@@ -124,12 +125,70 @@ int main() {
         "long double weird(long double x);\n"
         "void takes_cb(int (*cb)(int), int n);\n",
         "t.h");
-    check(contains(result.text, "// skipped: make:"), "a struct-by-value return is skipped");
+    check(contains(result.text, "struct Point {"), "a bindable struct is declared");
+    check(contains(result.text, "fn make(x: int32, y: int32): Point;"),
+          "a struct-by-value return is emitted with its struct name");
     check(contains(result.text, "// skipped: weird:"), "a long double is skipped");
     check(contains(result.text, "fn takes_cb(cb: fn(int32): int32, n: int32): void;"),
           "a callback parameter is generated as `fn(P...): R`");
-    check(result.emitted == 1, "the callback declaration is emitted, not skipped");
-    check(result.skipped == 2, "only the two unsupported skips are counted");
+    check(result.emitted == 2, "the struct and the callback declarations are emitted");
+    check(result.structs == 1, "the declared struct is counted");
+    check(result.skipped == 1, "only the long double is skipped");
+  }
+
+  // An anonymous struct named by its typedef is declared under that name, and a
+  // later bare reference reuses the body read earlier in the file.
+  {
+    const bindgen::Result result = bindgen::generate(
+        "typedef struct { int quot; int rem; } div_t;\n"
+        "div_t div(int num, int denom);\n",
+        "t.h");
+    check(contains(result.text, "struct div_t {"), "an anonymous struct takes its typedef name");
+    check(contains(result.text, "fn div(num: int32, denom: int32): div_t;"),
+          "the typedef names the struct in the signature");
+    check(result.structs == 1, "the typedef-named struct is counted");
+  }
+
+  // A C enum is an `int` at the ABI: the members become module constants and the
+  // declaration maps to `int32` (BACKLOG §7.10).
+  {
+    const bindgen::Result result = bindgen::generate(
+        "enum Color { RED, GREEN = 5, BLUE };\n"
+        "enum Color pick(int seed);\n",
+        "t.h");
+    check(contains(result.text, "let RED = 0;"), "the first enum member starts at zero");
+    check(contains(result.text, "let GREEN = 5;"), "an explicit enum value is kept");
+    check(contains(result.text, "let BLUE = 6;"), "the members after an explicit one continue");
+    check(contains(result.text, "fn pick(seed: int32): int32;"),
+          "an enum-typed function maps to int32");
+    check(result.constants == 3, "the enum members are counted");
+  }
+
+  // A body the Oskel `struct` (a map of whole scalars) cannot lay out is
+  // reported, never declared with a wrong layout.
+  {
+    const bindgen::Result result = bindgen::generate(
+        "struct Point { int x; int y; };\n"
+        "union Value { int i; float f; };\n"
+        "struct Named { char name[32]; int x; };\n"
+        "struct Nested { struct Point inner; int x; };\n"
+        "struct Bits { int a : 3; int b : 5; };\n"
+        "union Value get_value(void);\n"
+        "struct Named get_named(void);\n"
+        "struct Nested get_nested(void);\n"
+        "struct Bits get_bits(void);\n",
+        "t.h");
+    check(contains(result.text, "// skipped: get_value:"), "a union is reported");
+    check(contains(result.text, "// skipped: get_named:"), "an array field is reported");
+    check(contains(result.text, "// skipped: get_nested:"), "a nested struct is reported");
+    check(contains(result.text, "// skipped: get_bits:"), "a bitfield is reported");
+    check(!contains(result.text, "struct Value {"), "a union is not declared as a struct");
+    check(!contains(result.text, "struct Named {"),
+          "a struct with an array field is not declared");
+    check(!contains(result.text, "struct Nested {"), "a nested struct is not declared");
+    check(!contains(result.text, "struct Bits {"), "a struct with a bitfield is not declared");
+    check(result.structs == 1, "only the bindable struct is declared");
+    check(result.skipped == 4, "the four unbindable bodies are counted");
   }
 
   // A function *returning* a function pointer is a declaration the vocabulary

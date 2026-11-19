@@ -77,6 +77,8 @@ like this:
 | `T[N]`, `T[]` | `ptr` | an array parameter decays |
 | `R (*)(P...)` | `fn(P...): R` | a callback parameter (see below) |
 | `R (**)(P...)`, `R (*[N])(P...)` | `ptr` | a pointer *to* a callback is opaque |
+| `struct S` (by value) | `struct S { ... }` | the body is emitted before the block (see below) |
+| `enum E` | `int32` | the members become module constants (see below) |
 | `int8_t` … `uint64_t`, `size_t`, `intptr_t`, `uintptr_t`, `ptrdiff_t` | the matching FFI name | recognized without reading `<stdint.h>` |
 
 A `typedef` the header itself declares is resolved, including through pointers,
@@ -107,6 +109,80 @@ function *returning* a callback is skipped), its parameters must be scalars (a
 callback that takes another callback is skipped) and it may not be variadic. A
 callback that returns a struct by value is skipped as well.
 
+A callback *parameter* may take a struct by value only if that struct is itself
+declarable, for the same reason a function signature may: the layout has to be
+known.
+
+### Structs
+
+A `struct` used by value is declared as an Oskel `struct` before the
+`extern "C"` block, so a signature can spell it:
+
+```c
+struct Point { int x; int y; };
+struct Point make_point(int x, int y);
+```
+
+```oskel
+struct Point {
+  x: int32;
+  y: int32;
+}
+
+extern "C" {
+  fn make_point(x: int32, y: int32): Point;
+}
+```
+
+An **anonymous** body is named by its typedef, because that is the only name
+the header gives it:
+
+```c
+typedef struct { int quot; int rem; } div_t;
+div_t div(int num, int denom);
+```
+
+```oskel
+struct div_t {
+  quot: int32;
+  rem: int32;
+}
+```
+
+The layout is validated with `ffi::buildStructLayout`, the same check the
+runtime applies, so a body Oskel cannot represent is **never** emitted with a
+wrong layout. It is reported instead: a union (overlapping members), an array
+field (Oskel fields are whole scalars), a bitfield (intra-struct packing) and a
+nested struct (one level only) are all `// skipped:` with the reason that
+applies. The emitted `struct` is exactly what a hand-written module would
+declare, so nothing about the language changes.
+
+### Enums
+
+A C enum is an `int` at the ABI (BACKLOG §7.10), so a declaration that mentions
+one maps to `int32` — the exact spelling, not an approximation. The members
+become module constants, which is what lets the program name them:
+
+```c
+enum Color { RED, GREEN = 5, BLUE };
+enum Color pick_color(int seed);
+```
+
+```oskel
+let RED = 0;
+let GREEN = 5;
+let BLUE = 6;
+
+extern "C" {
+  fn pick_color(seed: int32): int32;
+}
+```
+
+The value of a member is a plain decimal, hex or octal literal; a member whose
+initializer is a larger expression keeps its position in the sequence (the tool
+does not evaluate C constant expressions), so prefer `cc -E` when a header
+computes its enum values.
+
 ## What is skipped, and why
 
 A declaration the vocabulary cannot express is **not** mis-translated: it is
@@ -114,9 +190,10 @@ written as a `// skipped: <name>: <reason>` comment inside the block, and the
 count is reported on stderr. Nothing the compiler would reject is ever emitted
 as active code. The current skips are:
 
-- a **struct/union/enum by value** (a parameter or a return). Passing an
-  aggregate across the C boundary is not in the slice-1 scope; a pointer to one
-  is a `ptr`.
+- a **struct body the Oskel `struct` cannot lay out**: a **union**, an **array
+  field**, a **bitfield** or a **nested struct**. A plain struct of scalar
+  fields is generated (see above); a pointer to any of these is a `ptr`. An
+  **enum** is never skipped: it is an `int` at the ABI.
 - a declaration prefixed by a **function-like macro** (`MY_API(int) f(void);`).
   Without a preprocessor the argument may be the return type or mere
   decoration, so the tool reports the declaration instead of guessing. Run the
