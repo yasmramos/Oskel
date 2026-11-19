@@ -91,6 +91,11 @@ source of truth for the same tag. Let the tag create it.
   tar -xzf oskel-linux-x64.tar.gz -C /tmp/oskel-check
   /tmp/oskel-check/bin/oskel --version
   /tmp/oskel-check/bin/oskel -e 'print("ok")'
+  # the compiler ships beside the engine and must emit a working binary
+  /tmp/oskel-check/bin/oskelc --version
+  printf 'print("ok");\n' > /tmp/hello.oskl
+  /tmp/oskel-check/bin/oskelc /tmp/hello.oskl -o /tmp/hello
+  /tmp/hello
   ```
 
 ## 5. Pre-release tags

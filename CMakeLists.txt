@@ -45,26 +45,60 @@ if(OSKEL_GC_STRESS)
 endif()
 
 # --------------------------------------------------------------------------- sources
-# Auto-detect every .cpp under src/ and src/native/. No file is listed by hand,
-# so adding a new source never requires touching this file.
+# Every .cpp under src/ is picked up automatically; the file is then sorted into
+# the front end (lexer, parser, bytecode compiler, AOT backend) or the runtime
+# (VM, JIT, builtins). The split is what makes `oskelc` possible: the compiler
+# links only the front end, so the shipped compiler cannot reach an interpreter
+# (DEVELOPMENT.md §2, toolchain boundary).
 file(GLOB_RECURSE OSKEL_ALL_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 )
 
-# The main entry point is not part of the runtime library.
+# The two entry points are not part of either library.
 set(OSKEL_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
-list(REMOVE_ITEM OSKEL_ALL_SOURCES "${OSKEL_MAIN}")
+set(OSKEL_COMPILER_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/src/oskelc.cpp")
+list(REMOVE_ITEM OSKEL_ALL_SOURCES "${OSKEL_MAIN}" "${OSKEL_COMPILER_MAIN}")
+
+# The runtime half: the VM, the JIT, the builtins and the FFI marshalling. These
+# are the only sources `oskel` adds on top of the front end, and the only ones
+# `oskelc` must never link.
+set(OSKEL_RUNTIME_SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/vm.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ops.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/builtins.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/unicode_case.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/jit/jit.cpp"
+)
+set(OSKEL_FRONTEND_SOURCES ${OSKEL_ALL_SOURCES})
+list(REMOVE_ITEM OSKEL_FRONTEND_SOURCES ${OSKEL_RUNTIME_SOURCES})
+
+# Configure-time guard: a new runtime source that is not listed above would
+# silently slip into `oskelc`. The list is exhaustive, so the check is exact.
+foreach(runtime_source IN LISTS OSKEL_RUNTIME_SOURCES)
+  list(FIND OSKEL_ALL_SOURCES "${runtime_source}" found)
+  if(found EQUAL -1)
+    message(FATAL_ERROR
+      "OSKEL_RUNTIME_SOURCES names '${runtime_source}', which does not exist; "
+      "update the list when a runtime source is renamed")
+  endif()
+endforeach()
 
 # --------------------------------------------------------------------------- library
-# One static library with the whole runtime. Every executable links against it,
-# so no test repeats the source list.
-add_library(oskel_lib STATIC ${OSKEL_ALL_SOURCES})
-target_include_directories(oskel_lib PUBLIC src include)
-target_compile_options(oskel_lib PRIVATE ${OSKEL_WARNINGS})
+# Two static libraries: the front end (everything a compiler needs) and the
+# runtime on top of it. `oskel_lib` keeps its name for the tests, which drive
+# the VM; `oskelc` links `oskel_frontend` alone.
+add_library(oskel_frontend STATIC ${OSKEL_FRONTEND_SOURCES})
+target_include_directories(oskel_frontend PUBLIC src include)
+target_compile_options(oskel_frontend PRIVATE ${OSKEL_WARNINGS})
 # `Platform::lookupSymbol` resolves `extern "C"` declarations with `dlsym`
 # (PHASE 6.6). Empty on platforms that fold libdl into libc (glibc 2.34+,
 # Windows), so linking it unconditionally is safe and portable.
-target_link_libraries(oskel_lib PUBLIC ${CMAKE_DL_LIBS})
+target_link_libraries(oskel_frontend PUBLIC ${CMAKE_DL_LIBS})
+
+add_library(oskel_lib STATIC ${OSKEL_RUNTIME_SOURCES})
+target_link_libraries(oskel_lib PUBLIC oskel_frontend)
+target_compile_options(oskel_lib PRIVATE ${OSKEL_WARNINGS})
 
 # --------------------------------------------------------------------------- libffi (optional)
 # FFI callbacks (PHASE 6.6) need a trampoline that C can call back into the VM.
@@ -84,9 +118,14 @@ if(OSKEL_ENABLE_LIBFFI)
     PATHS /usr/include /usr/local/include)
   if(FFI_LIBRARY AND FFI_INCLUDE_DIR)
     set(OSKEL_LIBFFI_FOUND TRUE)
+    # The compiler reads `OSKEL_HAVE_LIBFFI` through `include/ffi_types.h` to
+    # decide which `extern "C"` shapes it may accept (a variadic, a MEMORY
+    # struct), so the definition belongs to the front end and must reach both
+    # binaries: `oskelc` has to reject exactly what `oskel` rejects.
+    target_compile_definitions(oskel_frontend PUBLIC OSKEL_HAVE_LIBFFI)
+    # Only the runtime's marshalling includes `<ffi.h>` and links the library.
     target_include_directories(oskel_lib PRIVATE ${FFI_INCLUDE_DIR})
     target_link_libraries(oskel_lib PUBLIC ${FFI_LIBRARY})
-    target_compile_definitions(oskel_lib PUBLIC OSKEL_HAVE_LIBFFI)
     message(STATUS "libffi found: FFI callbacks enabled in the dev engine")
   else()
     set(OSKEL_LIBFFI_FOUND FALSE)
@@ -126,12 +165,22 @@ else()
   set(OSKEL_FFI_VARIADIC FALSE)
 endif()
 
-# --------------------------------------------------------------------------- main binary
+# --------------------------------------------------------------------------- binaries
+# `oskel`: the development engine. Links the runtime on top of the front end, so
+# it can run bytecode on the VM and host the REPL.
 add_executable(oskel "${OSKEL_MAIN}")
 target_link_libraries(oskel PRIVATE oskel_lib)
 target_compile_options(oskel PRIVATE ${OSKEL_WARNINGS})
 
-install(TARGETS oskel RUNTIME DESTINATION bin)
+# `oskelc`: the host compiler. Sources in, a native image out; it links the front
+# end alone, so the shipped compiler carries neither the VM nor the JIT
+# (DEVELOPMENT.md §2). `tests/check_compiler_boundary.cmake` keeps the include
+# graph clean and `oskelc_has_no_vm` proves the link stays clean.
+add_executable(oskelc "${OSKEL_COMPILER_MAIN}")
+target_link_libraries(oskelc PRIVATE oskel_frontend)
+target_compile_options(oskelc PRIVATE ${OSKEL_WARNINGS})
+
+install(TARGETS oskel oskelc RUNTIME DESTINATION bin)
 
 # --------------------------------------------------------------------------- bindgen
 # The binding generator: a C header in, an Oskel `extern "C"` module out. It is
@@ -236,12 +285,30 @@ if(BUILD_TESTING)
   add_test(NAME compiler_boundary
     COMMAND ${CMAKE_COMMAND}
       -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+      "-DFRONTEND_SOURCES=${OSKEL_FRONTEND_SOURCES}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_compiler_boundary.cmake")
+
+  # --- `oskelc` links no interpreter ---
+  # The include graph is checked above; this one checks the link, so a source
+  # that pulls the VM in without an `#include "vm.h"` (through a helper header)
+  # still fails. `nm` is a POSIX tool, so the test is skipped where it is absent.
+  add_test(NAME oskelc_has_no_vm
+    COMMAND ${CMAKE_COMMAND}
+      "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_oskelc_no_vm.cmake")
 
   # --- Version consistency: `oskel --version` matches the declared version ---
   add_test(NAME version_consistency
     COMMAND ${CMAKE_COMMAND}
       "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+      "-DOSKEL_EXPECTED_VERSION=${PROJECT_VERSION}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_version.cmake")
+
+  # `oskelc` prints the same version from the same header; a hard-coded literal
+  # in `src/oskelc.cpp` would otherwise ship unnoticed.
+  add_test(NAME version_consistency_oskelc
+    COMMAND ${CMAKE_COMMAND}
+      "-DOSKEL_EXE=$<TARGET_FILE:oskelc>"
       "-DOSKEL_EXPECTED_VERSION=${PROJECT_VERSION}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_version.cmake")
 
@@ -268,6 +335,18 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `oskelc` and `oskel build` are one compiler behind two entry points: the
+    # same fixture is compiled by each, the images must be byte for byte
+    # identical, and the compiler's image must agree with the VM. This is the
+    # guard that keeps `oskel build` a thin alias instead of a fork.
+    add_test(NAME oskelc.parity
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskelc.parity"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/oskelc_parity.cmake")
 
     # The flagship example must also build and agree with the VM, so the AOT
     # backend is exercised by a real program (a lexer, a parser and an

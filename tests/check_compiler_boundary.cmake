@@ -1,13 +1,17 @@
-# Fails when the bytecode compiler or the native backend pulls in the
-# interpreter or the VM.
+# Fails when the compiler's front end reaches the interpreter.
 #
-# DEVELOPMENT.md requires this boundary: `src/compiler.*` and `src/native/*` are
-# libraries any entry point may link (today the single `oskel` binary, later a
-# separate `oskelc`), and the AOT runtime must never be able to reach the
-# compiler or the interpreter. Keeping the include graph clean is what makes
-# that split a second `main` instead of a refactor.
+# `oskelc` links only the front end (lexer, parser, bytecode compiler, AOT
+# backend) and must never carry the VM, the JIT or the builtins: the product is
+# an AOT compiler, and a compiler that can interpret is both a size problem and
+# the GraalVM pitfall DEVELOPMENT.md §3 warns about.
+#
+# The first pass checks the include graph of `src/compiler.*` and `src/native/*`
+# (the rule that made the split a second `main`). The second pass, when
+# `FRONTEND_SOURCES` is provided, checks every source `oskelc` actually links, so
+# a front-end file that pulls in `vm.h` through a helper header is caught too.
 #
 # Usage: cmake -DROOT=<repository root> -P tests/check_compiler_boundary.cmake
+#        cmake -DROOT=<root> "-DFRONTEND_SOURCES=<a;b;c>" -P ...
 
 if(NOT DEFINED ROOT)
   get_filename_component(ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
@@ -33,6 +37,9 @@ set(forbidden "interpreter[.]h|vm[.]h|jit/jit[.]h")
 # compiler or the native backend.
 set(forbidden_ffi "ffi_marshal[.]h|ffi[.]h|libffi")
 
+# What the front end as a whole may not reach: the runtime half of the engine.
+set(forbidden_frontend "vm[.]h|jit/jit[.]h|builtins[.]h|ops[.]h|ffi_marshal[.]h|libffi")
+
 set(violations "")
 foreach(file IN LISTS boundary_files)
   file(STRINGS "${file}" source_lines)
@@ -51,16 +58,40 @@ foreach(file IN LISTS boundary_files)
   endforeach()
 endforeach()
 
+set(frontend_checked 0)
+if(DEFINED FRONTEND_SOURCES AND FRONTEND_SOURCES)
+  foreach(file IN LISTS FRONTEND_SOURCES)
+    if(NOT EXISTS "${file}")
+      continue()
+    endif()
+    math(EXPR frontend_checked "${frontend_checked} + 1")
+    file(STRINGS "${file}" source_lines)
+    foreach(line IN LISTS source_lines)
+      string(STRIP "${line}" candidate)
+      if(candidate MATCHES "^//" OR candidate MATCHES "^/[*]" OR candidate MATCHES "^[*]")
+        continue()
+      endif()
+      if(line MATCHES "#[ \t]*include[ \t]*[<\"](${forbidden_frontend})[>\"]")
+        file(RELATIVE_PATH shown "${ROOT}" "${file}")
+        string(STRIP "${line}" shown_line)
+        list(APPEND violations "${shown}: ${shown_line}")
+      endif()
+    endforeach()
+  endforeach()
+endif()
+
 if(violations)
   list(LENGTH violations count)
   foreach(violation IN LISTS violations)
     message(SEND_ERROR "forbidden include: ${violation}")
   endforeach()
   message(FATAL_ERROR
-    "${count} forbidden include(s): the compiler and the native backend must not "
-    "include interpreter.h, vm.h, the JIT (jit/jit.h), the FFI runtime "
+    "${count} forbidden include(s): the compiler, the native backend and every "
+    "source `oskelc` links must not include vm.h, the JIT (jit/jit.h), the "
+    "builtins (builtins.h), the operator library (ops.h), the FFI runtime "
     "(ffi_marshal.h) or libffi (see DEVELOPMENT.md, toolchain boundary).")
 endif()
 
 list(LENGTH boundary_files checked)
-message(STATUS "compiler boundary intact (${checked} file(s) checked)")
+message(STATUS
+  "compiler boundary intact (${checked} file(s) checked, ${frontend_checked} front-end source(s))")

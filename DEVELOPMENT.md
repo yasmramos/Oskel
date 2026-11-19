@@ -51,6 +51,8 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `module_resolver.cpp` | dotted module path | source file path | ✅ |
 | `vm.cpp` | `Bytecode*` | execution | ✅ |
 | `main.cpp` | CLI | full pipeline | ✅ (VM as dev engine, PHASE 4) |
+| `oskelc.cpp` | CLI | full pipeline, AOT only | ✅ (host compiler, no VM) |
+| `cli.cpp` | shared CLI plumbing | module resolution, `std/` lookup, AOT pipeline | ✅ |
 | `jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slices 1-4 |
 | `value.cpp` | `Value`, tagged union | shared runtime | ✅ |
 | `builtins.cpp` / `ops.cpp` | native builtins, shared operators | runtime library | ✅ |
@@ -71,19 +73,31 @@ bytecode that later turns out to be impossible to compile efficiently).
 
 ### Toolchain binaries and the compiler boundary
 
-`oskel` ships as a single binary today, and `oskel build` is the AOT entry
-point inside it. PHASE 7d wired that subcommand into the CLI; the split into a
-separate host compiler is still pending, so the two binaries below are the
-target of that split, not the current state:
+Two binaries share one front end. The engine's sources split in two, and the
+split is what the products are:
 
-- `oskel` development engine (run, REPL, -c). Includes the VM and the JIT (the
-  JIT uses the project's own `native/codegen.h` emitter, not AsmJIT).
-- `oskelc` host compiler (oskelc file.oskl -o app). Reads sources and
-  writes the ELF with the project's own `native/codegen.cpp` and
-  `native/elf.cpp` (no AsmJIT, no ELFIO). Links against musl static. Planned;
-  not part of 0.1.0.
-- `oskel build` thin alias over `oskelc` (the goal; today it runs the AOT
-  backend in-process)
+- **front end** (`oskel_frontend`): lexer, parser, bytecode compiler, module
+  resolver, diagnostics, `value`/`gc`, the platform layer and the whole AOT
+  backend (`src/native/*`). A compiler needs exactly this.
+- **runtime** (`oskel_lib`, on top of the front end): `vm.cpp`, `ops.cpp`,
+  `builtins.cpp`, `ffi.cpp`, `unicode_case.cpp` and `jit/jit.cpp`.
+
+The binaries:
+
+- `oskel` development engine (run, REPL, -c, `build`). Links the runtime on top
+  of the front end, so it can interpret. Includes the JIT (the JIT uses the
+  project's own `native/codegen.h` emitter, not AsmJIT).
+- `oskelc` host compiler (`oskelc file.oskl -o app`). Links the front end
+  alone, so the shipped compiler carries no VM, no JIT and no builtins. Reads
+  sources and writes the ELF with the project's own `native/codegen.cpp` and
+  `native/elf.cpp` (no AsmJIT, no ELFIO).
+- `oskel build` is a thin alias: both commands call `runBuildCommand` in
+  `src/cli.cpp`, so their flags, defaults, diagnostics and exit codes cannot
+  drift. `oskelc` is the same AOT pipeline with a shorter command line.
+
+`oskelc` has no bytecode serializer yet, so `-c` (`.oskc`) and `-pkg`
+(`.oskpkg`) are refused by name with exit 64 instead of being read as a typo.
+Those are the documented next steps for the compiler, not implemented features.
 
 A third, standalone binary ships alongside them: `bindgen`, the C binding
 generator (`docs/bindgen.md`). It reads a C header and writes an Oskel
@@ -93,7 +107,17 @@ under `tools/` and are deliberately outside the `src/*.cpp` glob that builds the
 engine, so it can be built and shipped on its own.
 
 Boundary rule: src/compiler.* and src/native/* must not include
-interpreter.h, vm.h or jit/jit.h. Enforced by tests/check_compiler_boundary.cmake.
+interpreter.h, vm.h or jit/jit.h; and no source `oskelc` links may include
+vm.h, jit/jit.h, builtins.h, ops.h, ffi_marshal.h or libffi. Enforced twice:
+`tests/check_compiler_boundary.cmake` checks the include graph of the whole
+front end (CMake passes the exact `OSKEL_FRONTEND_SOURCES` list, so a new
+front-end file is checked automatically), and `tests/check_oskelc_no_vm.cmake`
+checks the *link* — `nm` must not show `VM::`, `jitCompile`, `Jit::`,
+`registerBuiltins`, `ops::binary` or `Runtime::fail` in the `oskelc` binary. The link check is what
+catches a runtime dependency that arrives through a header without naming
+`vm.h`. `OSKEL_RUNTIME_SOURCES` in `CMakeLists.txt` is the one list that decides
+what is runtime; the configure step fails when it names a file that does not
+exist, so a rename cannot silently move a runtime source into `oskelc`.
 
 ---
 
