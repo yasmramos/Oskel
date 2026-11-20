@@ -9,22 +9,7 @@ may change between minor versions.
 
 ## [Unreleased]
 
-### Fixed
-
-- **`oskel build` no longer rejects a class-MEMORY `extern "C"` struct on an
-  engine built without libffi.** The compiler validated every declaration
-  against the *build's* ABI capabilities, which derive from `OSKEL_HAVE_LIBFFI`;
-  the AOT backend, however, emits its own thunks and marshals a struct larger
-  than 16 bytes natively (stack-passed, `sret`-returned), so it never needed
-  libffi for it. The two were conflated, and the hosted fixture failed on any
-  machine without `libffi-dev` even though the emitted code was correct. The
-  compiler now asks `validateSignature` with the destination's capabilities
-  (`Compiler::setAbiCapabilities`): `oskel build` passes
-  `ffi::kAotAbiCapabilities`, the interpreter keeps this build's
-  `AbiCapabilities{}`. A variadic stays rejected for the AOT destination
-  regardless of libffi, because the backend does not lower a variable argument
-  list (PHASE 7f.5). `oskel.build_hosted_extern_memory_struct` now passes with
-  no libffi installed.
+## [0.2.0] - 2026-11-20
 
 ### Added
 
@@ -251,179 +236,6 @@ may change between minor versions.
   `tests/bare_metal_test.cpp` (a `-m 256M` boot asserting 255 MiB),
   `tests/lower_test.cpp` and `tests/vm_test.cpp`.
 
-### Fixed
-
-- **A `cstring` returned by a C function is a `cstring` in the AOT backend
-  too.** `extern "C" fn strchr(...): cstring` came back boxed as a string, so
-  `type()` said `"string"` where the VM says `"cstring"`, `found == "llo"` was
-  true where the VM says false (a `cstring` compares as a handle), and
-  `"x" + found` built a string where the VM raises "unsupported operand
-  types" — a silent divergence, not a crash. The thunk now boxes the address as
-  a `Ptr` of kind `CString`, the same handle `cstring(text)` produces, and a
-  `Ptr` argument crosses as its own NUL-terminated bytes so the handle can be
-  fed back into another C function. A `cstring` field of a returned struct is
-  boxed the same way. The freestanding image is untouched (it emits no thunk)
-  and stays byte for byte identical. Pinned by
-  `tests/native_build_extern_hosted.oskl` and
-  `tests/native_build_extern_memory_struct.oskl` (BACKLOG §6 item 23).
-
-- **The VS Code grammar highlighted syntax the language does not have and
-  missed three real builtins.** `0x10`, `0b1010` and `0o17` were split into `0`
-  and a name, because the decimal rule ran first; the lexer accepts all three
-  prefixes. `time`, `memSize` and `args` were builtins the grammar never
-  highlighted, `@MustUse` and `self` were plain text, and a struct literal
-  (`Point { x: 1 }`) or a constructor call (`Point(3, 4)`) did not name a type.
-  In the other direction the grammar advertised `===`, `!==` and `->`, none of
-  which the lexer produces, so a file using them looked valid and failed to
-  compile. The auto-closing pair for `/*` also inserted a space (`" */"`), and
-  there was no indentation rule at all.
-
-- **`bindgen` no longer emits a declaration the compiler rejects on a
-  non-System V ABI.** The tool promises that every declaration it writes as
-  active code compiles, and three shapes broke that promise — all of them on
-  Windows and macOS, which is why only the `windows-latest` job caught it. The
-  register budget was counted in *parameters* while the compiler counts
-  *eightbytes*, so `struct Q { double x; double y; }` plus five scalars came out
-  as six parameters and seven eightbytes, and the generated module failed
-  `oskel -c` with "may pass at most 6 register-sized values". A struct by value
-  was emitted regardless of the target ABI, although `OSKEL_FFI_STRUCT_BY_VALUE`
-  is true only on System V AMD64 without Windows. A struct inside a callback was
-  emitted even though the compiler always rejects it. The fix removes the
-  duplicated rules instead of patching each one: `ffi::validateSignature` and
-  `ffi::validateTypeSpec` take an `ffi::AbiCapabilities` (this build's by
-  default, `ffi::kFullAbiCapabilities` for "is the shape in the vocabulary at
-  all?") and `bindgen` asks twice — a shape the vocabulary cannot express is
-  skipped with the compiler's own reason, while one only some builds can
-  marshal is written commented out, which is how a variadic was already
-  handled. A fourth divergence went with them: an anonymous
-  `struct { int x; }` inline in a signature has no name to spell and used to be
-  emitted as a scalar `int32`; it is now skipped. Covered by new
-  `tests/bindgen_test.cpp` cases (the eightbyte budget, the anonymous struct)
-  and by making the existing struct-by-value and variadic assertions
-  ABI-aware, so the suite is green on both a System V and a Microsoft x64
-  build; the end-to-end test still feeds the generated module to `oskel -c`,
-  which is the property that actually failed.
-
-### Removed
-
-- **The unused `Env` scope chain and `Function::closure`.** The VM keeps locals
-  in reference-counted `Cell`s and `Function::upvalues`, so `Env` was never
-  constructed and `closure` was only ever assigned by the GC test. `src/env.h`
-  and `src/env.cpp` are deleted, the field is dropped from `Function`, and the
-  `envGcOps` table and the closure edge in the `value.cpp` function visitor go
-  with them. The three `gc_test.cpp` cases are rewritten over `Cell` and
-  `Function::upvalues`, which is what the VM actually uses.
-
-### Changed
-
-- **The status table and the phase line catch up to the AOT error values
-  (PHASE 7c.5c).** `docs/language.md` still said `pcall`/`error` "and real error
-  catching do not" lower, which the 7c.5c work made false: `error` values and
-  value-based `try`/`catch` now behave identically on the VM and under `oskel
-  build` (`error`, `isError`, `type`, `.message`/`.code`, equality, `print`,
-  `repr`, interpolation, `catch` recovering a returned error). Only `pcall` and
-  raised runtime errors stay out, the latter because the AOT runtime has no
-  unwinding. The row now says so. `DEVELOPMENT.md`'s Phase 7 status line also
-  omitted the completed `7c.4a-d`, `7c.5a`, `7c.5c` and `7c.6` slices; it lists
-  them, and keeps `7c.5b` marked in progress as its section says. The same stale
-  claim survived in five module notes (`std/json.oskl`, `std/path.oskl`, and the
-  `std.json`/`std.datetime`/`std.path` bullets in `DEVELOPMENT.md`), which listed
-  `pcall`/`error` together as unimplemented in AOT; they now name only `pcall`,
-  which is what actually remains.
-
-- **The docs stop promising what the tree does not do.** `DEVELOPMENT.md` §8 now
-  marks the `.oskc`/`.oskpkg` formats and their bytecode verification as
-  *planned* (nothing serializes a `Bytecode` to disk yet), and `docs/language.md`
-  §19 says the same for the extension table. `DEVELOPMENT.md` §8 also states
-  what the JIT's "1:1" rule actually means: the invariant is over the bytecode
-  opcodes, not the native instruction count, so the slice-3 compare-branch
-  fusion is a peephole rewrite of the emission, not a superinstruction.
-
-- **FFI is documented as hosted-only under `oskel build`.** The decision (PHASE
-  7f) is recorded in `docs/language.md` §4.5 and §16 and BACKLOG §7.20: a program
-  using `extern "C"` builds with `--mode hosted`; the freestanding default, which
-  is self-contained by construction, reports the unresolved symbol instead of
-  emitting a broken binary. This is the design, not a temporary gap.
-
-- **`docs/BACKLOG.md` reflects the tree.** The Env and parity items are marked
-  done (VM/AOT parity already runs through `tests/build_binary.cmake`), the JIT
-  item is decided as *keep* (it ships on by default in `oskel` and gives ~420x
-  on its integer leaf subset), and §6.22 plus `docs/language.md` §16 record the
-  one known parity gap: a function renders as `<fn name>` in the VM but `<fn>`
-  in the AOT binary, since the AOT closure object has no name field.
-
-- **`docs/language.md` now states the real implementation status.** The
-  reference claimed "collections (PHASE 6 done)" and "No JIT ... planned for
-  PHASE 8+", both stale: PHASE 6.5/6.6/6.7 are complete on the development
-  engine and the JIT slices 1-4 ship in `oskel`. It also said the compiler
-  emits "40 opcodes" (it is 39, with 40 the budget ceiling), presented
-  `oskelc` as if it existed (`oskel build` is the AOT entry point and `oskelc`
-  is not part of 0.1.0), and described the AOT backend as lowering pointers and
-  callbacks to stubs when PHASE 7f only resolves a scalar `extern "C"` call in
-  the hosted link mode. A new "Implementation status" table opens the document
-  and §16 and §4.6/§15 are corrected to match the tree. Documentation only.
-
-- **Bare-metal boot tests now run in CI instead of skipping, on all three
-  platforms.** The `bare_metal_test` end-to-end cases boot the kernel under
-  `qemu-system-x86_64`, but CI never installed the package, so `haveQemu()`
-  returned false and the boot, float and CPU-fault tests silently skipped —
-  the new IDT exception handler was never exercised on a runner. The boot tests
-  were also compiled out on Windows and macOS, where the harness assumed POSIX
-  (`/tmp`, `chmod`, `WEXITSTATUS`, `command -v`). The compile guard now covers
-  the three platforms, the harness picks its temp directory, QEMU probe,
-  exit-code decoding and null device per platform, and the image stays x86-64
-  because QEMU emulates it anywhere (the arm64 macOS image included). Every CI
-  job installs QEMU (apt/brew/choco) and exports `OSKEL_REQUIRE_QEMU`, which
-  makes a missing binary a test failure rather than a skip; a developer box
-  without the variable still skips the boot tests and runs the structural
-  ones. No product code changes.
-
-- **JIT (slice 4): web-based register allocation with copy coalescing.** The JIT
-  used to tie every slot to a fixed register by index (`R0` to the first pool
-  register, `R1` to the second, ...), so a temporary reused for two values forced
-  a `mov` at every reuse and each `GETLOCAL`/`SETLOCAL` copied between the
-  temporary's register and the local's. The emitter now resolves each read and
-  write through a per-instruction allocation table, and an allocator fills it:
-  it builds a web per slot (the definitions a single live use can observe),
-  interferes webs that are live at the same point, coalesces the copies that do
-  not interfere (a `MOVE`, a local copy, or an in-place `s = s + x`), and colors
-  the result greedily over the seven-register pool; a web the pool cannot cover
-  keeps its 16-byte stack slot, exactly like the old overflow path. A liveness
-  pass that mirrors the emitter's fold decisions also drops a definition nothing
-  observes, which removes the constant a folded expression left behind. The
-  integer loop drops from 17 instructions to 9 (a hand-written `-O2` C++ loop is
-  7) and from 0.051s to 0.039s, within ~1.08x of the C++ loop and about 420x the
-  interpreter. Still 1:1 with the bytecode -- no opcode, superinstruction or
-  runtime specialization is added, and the differential suite (including a
-  20k-round fuzz over 12-local bodies) still proves the compiled body identical
-  to the interpreter.
-
-- **JIT (slice 3): compare-branch fusion.** When a comparison's boolean result
-  only feeds the conditional branch right after it, the JIT no longer builds the
-  bool (`cmp; setcc; movzx; mov; test; jcc`) and jumps straight off the flags
-  (`cmp; jcc`). A backward liveness pass proves the result dead past the branch
-  and that the branch is reached by fall-through alone (never a jump target), so
-  the re-test the VM would perform is never lost; a result that is reused
-  afterwards stays unfused and correct. The integer loop drops from 0.062s to
-  0.051s (about 320x the interpreter, within ~1.4x of a hand-written `-O2` C++
-  loop). Still 1:1 with the bytecode — the fusion rewrites how one opcode and its
-  branch are emitted, and no opcode, superinstruction or runtime specialization
-  is added. The differential suite (including the fuzz corpus) still proves the
-  compiled body identical to the interpreter.
-
-- **JIT (slice 2): constant folding, strength reduction and register-direct
-  codegen.** The development engine's JIT now folds an expression whose operands
-  are compile-time constants (`2 * 3` becomes `6`), applies a constant operand as
-  a machine immediate (`n + 7` is one `add`, `i * 2` is one `shl`), and computes
-  in the destination register instead of copying operands through scratch, so a
-  tight integer loop is another ~2x faster than slice 1 (about 260x the
-  interpreter, within ~1.7x of a hand-written `-O2` C++ loop). Everything stays
-  1:1 with the bytecode — a constant propagation over the proto feeds the same
-  emitter, and no opcode, superinstruction or runtime specialization is added.
-  The differential suite (including the fuzz corpus) still proves the compiled
-  body identical to the interpreter.
-
-### Added
 
 - **`bindgen` reads function-pointer declarators and calling conventions.**
   Three shapes a sweep over real headers (glibc, Windows-style SDK headers)
@@ -793,6 +605,114 @@ may change between minor versions.
 
 ### Changed
 
+- **The status table and the phase line catch up to the AOT error values
+  (PHASE 7c.5c).** `docs/language.md` still said `pcall`/`error` "and real error
+  catching do not" lower, which the 7c.5c work made false: `error` values and
+  value-based `try`/`catch` now behave identically on the VM and under `oskel
+  build` (`error`, `isError`, `type`, `.message`/`.code`, equality, `print`,
+  `repr`, interpolation, `catch` recovering a returned error). Only `pcall` and
+  raised runtime errors stay out, the latter because the AOT runtime has no
+  unwinding. The row now says so. `DEVELOPMENT.md`'s Phase 7 status line also
+  omitted the completed `7c.4a-d`, `7c.5a`, `7c.5c` and `7c.6` slices; it lists
+  them, and keeps `7c.5b` marked in progress as its section says. The same stale
+  claim survived in five module notes (`std/json.oskl`, `std/path.oskl`, and the
+  `std.json`/`std.datetime`/`std.path` bullets in `DEVELOPMENT.md`), which listed
+  `pcall`/`error` together as unimplemented in AOT; they now name only `pcall`,
+  which is what actually remains.
+
+- **The docs stop promising what the tree does not do.** `DEVELOPMENT.md` §8 now
+  marks the `.oskc`/`.oskpkg` formats and their bytecode verification as
+  *planned* (nothing serializes a `Bytecode` to disk yet), and `docs/language.md`
+  §19 says the same for the extension table. `DEVELOPMENT.md` §8 also states
+  what the JIT's "1:1" rule actually means: the invariant is over the bytecode
+  opcodes, not the native instruction count, so the slice-3 compare-branch
+  fusion is a peephole rewrite of the emission, not a superinstruction.
+
+- **FFI is documented as hosted-only under `oskel build`.** The decision (PHASE
+  7f) is recorded in `docs/language.md` §4.5 and §16 and BACKLOG §7.20: a program
+  using `extern "C"` builds with `--mode hosted`; the freestanding default, which
+  is self-contained by construction, reports the unresolved symbol instead of
+  emitting a broken binary. This is the design, not a temporary gap.
+
+- **`docs/BACKLOG.md` reflects the tree.** The Env and parity items are marked
+  done (VM/AOT parity already runs through `tests/build_binary.cmake`), the JIT
+  item is decided as *keep* (it ships on by default in `oskel` and gives ~420x
+  on its integer leaf subset), and §6.22 plus `docs/language.md` §16 record the
+  one known parity gap: a function renders as `<fn name>` in the VM but `<fn>`
+  in the AOT binary, since the AOT closure object has no name field.
+
+- **`docs/language.md` now states the real implementation status.** The
+  reference claimed "collections (PHASE 6 done)" and "No JIT ... planned for
+  PHASE 8+", both stale: PHASE 6.5/6.6/6.7 are complete on the development
+  engine and the JIT slices 1-4 ship in `oskel`. It also said the compiler
+  emits "40 opcodes" (it is 39, with 40 the budget ceiling), presented
+  `oskelc` as if it existed (`oskel build` is the AOT entry point and `oskelc`
+  is not part of 0.1.0), and described the AOT backend as lowering pointers and
+  callbacks to stubs when PHASE 7f only resolves a scalar `extern "C"` call in
+  the hosted link mode. A new "Implementation status" table opens the document
+  and §16 and §4.6/§15 are corrected to match the tree. Documentation only.
+
+- **Bare-metal boot tests now run in CI instead of skipping, on all three
+  platforms.** The `bare_metal_test` end-to-end cases boot the kernel under
+  `qemu-system-x86_64`, but CI never installed the package, so `haveQemu()`
+  returned false and the boot, float and CPU-fault tests silently skipped —
+  the new IDT exception handler was never exercised on a runner. The boot tests
+  were also compiled out on Windows and macOS, where the harness assumed POSIX
+  (`/tmp`, `chmod`, `WEXITSTATUS`, `command -v`). The compile guard now covers
+  the three platforms, the harness picks its temp directory, QEMU probe,
+  exit-code decoding and null device per platform, and the image stays x86-64
+  because QEMU emulates it anywhere (the arm64 macOS image included). Every CI
+  job installs QEMU (apt/brew/choco) and exports `OSKEL_REQUIRE_QEMU`, which
+  makes a missing binary a test failure rather than a skip; a developer box
+  without the variable still skips the boot tests and runs the structural
+  ones. No product code changes.
+
+- **JIT (slice 4): web-based register allocation with copy coalescing.** The JIT
+  used to tie every slot to a fixed register by index (`R0` to the first pool
+  register, `R1` to the second, ...), so a temporary reused for two values forced
+  a `mov` at every reuse and each `GETLOCAL`/`SETLOCAL` copied between the
+  temporary's register and the local's. The emitter now resolves each read and
+  write through a per-instruction allocation table, and an allocator fills it:
+  it builds a web per slot (the definitions a single live use can observe),
+  interferes webs that are live at the same point, coalesces the copies that do
+  not interfere (a `MOVE`, a local copy, or an in-place `s = s + x`), and colors
+  the result greedily over the seven-register pool; a web the pool cannot cover
+  keeps its 16-byte stack slot, exactly like the old overflow path. A liveness
+  pass that mirrors the emitter's fold decisions also drops a definition nothing
+  observes, which removes the constant a folded expression left behind. The
+  integer loop drops from 17 instructions to 9 (a hand-written `-O2` C++ loop is
+  7) and from 0.051s to 0.039s, within ~1.08x of the C++ loop and about 420x the
+  interpreter. Still 1:1 with the bytecode -- no opcode, superinstruction or
+  runtime specialization is added, and the differential suite (including a
+  20k-round fuzz over 12-local bodies) still proves the compiled body identical
+  to the interpreter.
+
+- **JIT (slice 3): compare-branch fusion.** When a comparison's boolean result
+  only feeds the conditional branch right after it, the JIT no longer builds the
+  bool (`cmp; setcc; movzx; mov; test; jcc`) and jumps straight off the flags
+  (`cmp; jcc`). A backward liveness pass proves the result dead past the branch
+  and that the branch is reached by fall-through alone (never a jump target), so
+  the re-test the VM would perform is never lost; a result that is reused
+  afterwards stays unfused and correct. The integer loop drops from 0.062s to
+  0.051s (about 320x the interpreter, within ~1.4x of a hand-written `-O2` C++
+  loop). Still 1:1 with the bytecode — the fusion rewrites how one opcode and its
+  branch are emitted, and no opcode, superinstruction or runtime specialization
+  is added. The differential suite (including the fuzz corpus) still proves the
+  compiled body identical to the interpreter.
+
+- **JIT (slice 2): constant folding, strength reduction and register-direct
+  codegen.** The development engine's JIT now folds an expression whose operands
+  are compile-time constants (`2 * 3` becomes `6`), applies a constant operand as
+  a machine immediate (`n + 7` is one `add`, `i * 2` is one `shl`), and computes
+  in the destination register instead of copying operands through scratch, so a
+  tight integer loop is another ~2x faster than slice 1 (about 260x the
+  interpreter, within ~1.7x of a hand-written `-O2` C++ loop). Everything stays
+  1:1 with the bytecode — a constant propagation over the proto feeds the same
+  emitter, and no opcode, superinstruction or runtime specialization is added.
+  The differential suite (including the fuzz corpus) still proves the compiled
+  body identical to the interpreter.
+
+
 - The development-engine JIT keeps each scalar slot in a physical CPU register
   instead of its 16-byte stack slot. The bytecode contract is untouched (no new
   opcode, no superinstruction, no runtime specialization): the JIT still lowers
@@ -845,7 +765,93 @@ may change between minor versions.
 - `DEVELOPMENT.md` marks PHASE 4 completed and notes that `env.cpp` is unused
   dead code (kept only by `tests/gc_test.cpp`).
 
+### Removed
+
+- **The unused `Env` scope chain and `Function::closure`.** The VM keeps locals
+  in reference-counted `Cell`s and `Function::upvalues`, so `Env` was never
+  constructed and `closure` was only ever assigned by the GC test. `src/env.h`
+  and `src/env.cpp` are deleted, the field is dropped from `Function`, and the
+  `envGcOps` table and the closure edge in the `value.cpp` function visitor go
+  with them. The three `gc_test.cpp` cases are rewritten over `Cell` and
+  `Function::upvalues`, which is what the VM actually uses.
+
 ### Fixed
+
+- **A `cstring` returned by a C function is a `cstring` in the AOT backend
+  too.** `extern "C" fn strchr(...): cstring` came back boxed as a string, so
+  `type()` said `"string"` where the VM says `"cstring"`, `found == "llo"` was
+  true where the VM says false (a `cstring` compares as a handle), and
+  `"x" + found` built a string where the VM raises "unsupported operand
+  types" — a silent divergence, not a crash. The thunk now boxes the address as
+  a `Ptr` of kind `CString`, the same handle `cstring(text)` produces, and a
+  `Ptr` argument crosses as its own NUL-terminated bytes so the handle can be
+  fed back into another C function. A `cstring` field of a returned struct is
+  boxed the same way. The freestanding image is untouched (it emits no thunk)
+  and stays byte for byte identical. Pinned by
+  `tests/native_build_extern_hosted.oskl` and
+  `tests/native_build_extern_memory_struct.oskl` (BACKLOG §6 item 23).
+- **`clock()` in a compiled binary now reports elapsed seconds instead of
+  `inf`.** The AOT emitter converted the nanosecond count to a double with
+  `cvtsi2sd` but loaded the divisor `1000000000` with `movqToXmm`, which copies
+  the *bit pattern* of the integer into the XMM register. Read as a binary64
+  that pattern is a denormal near `4.9e-315`, so the division overflowed to
+  `+inf` and every difference of two readings was `nan`. The divisor is now
+  converted with `cvtsi2sd` as well. The existing fixture only asserted
+  `clock() >= 0.0` and monotonicity, and both hold for `inf`; it now bounds the
+  value, so the regression fails the suite.
+- **`oskel build` no longer rejects a class-MEMORY `extern "C"` struct on an
+  engine built without libffi.** The compiler validated every declaration
+  against the *build's* ABI capabilities, which derive from `OSKEL_HAVE_LIBFFI`;
+  the AOT backend, however, emits its own thunks and marshals a struct larger
+  than 16 bytes natively (stack-passed, `sret`-returned), so it never needed
+  libffi for it. The two were conflated, and the hosted fixture failed on any
+  machine without `libffi-dev` even though the emitted code was correct. The
+  compiler now asks `validateSignature` with the destination's capabilities
+  (`Compiler::setAbiCapabilities`): `oskel build` passes
+  `ffi::kAotAbiCapabilities`, the interpreter keeps this build's
+  `AbiCapabilities{}`. A variadic stays rejected for the AOT destination
+  regardless of libffi, because the backend does not lower a variable argument
+  list (PHASE 7f.5). `oskel.build_hosted_extern_memory_struct` now passes with
+  no libffi installed.
+
+
+- **The VS Code grammar highlighted syntax the language does not have and
+  missed three real builtins.** `0x10`, `0b1010` and `0o17` were split into `0`
+  and a name, because the decimal rule ran first; the lexer accepts all three
+  prefixes. `time`, `memSize` and `args` were builtins the grammar never
+  highlighted, `@MustUse` and `self` were plain text, and a struct literal
+  (`Point { x: 1 }`) or a constructor call (`Point(3, 4)`) did not name a type.
+  In the other direction the grammar advertised `===`, `!==` and `->`, none of
+  which the lexer produces, so a file using them looked valid and failed to
+  compile. The auto-closing pair for `/*` also inserted a space (`" */"`), and
+  there was no indentation rule at all.
+
+- **`bindgen` no longer emits a declaration the compiler rejects on a
+  non-System V ABI.** The tool promises that every declaration it writes as
+  active code compiles, and three shapes broke that promise — all of them on
+  Windows and macOS, which is why only the `windows-latest` job caught it. The
+  register budget was counted in *parameters* while the compiler counts
+  *eightbytes*, so `struct Q { double x; double y; }` plus five scalars came out
+  as six parameters and seven eightbytes, and the generated module failed
+  `oskel -c` with "may pass at most 6 register-sized values". A struct by value
+  was emitted regardless of the target ABI, although `OSKEL_FFI_STRUCT_BY_VALUE`
+  is true only on System V AMD64 without Windows. A struct inside a callback was
+  emitted even though the compiler always rejects it. The fix removes the
+  duplicated rules instead of patching each one: `ffi::validateSignature` and
+  `ffi::validateTypeSpec` take an `ffi::AbiCapabilities` (this build's by
+  default, `ffi::kFullAbiCapabilities` for "is the shape in the vocabulary at
+  all?") and `bindgen` asks twice — a shape the vocabulary cannot express is
+  skipped with the compiler's own reason, while one only some builds can
+  marshal is written commented out, which is how a variadic was already
+  handled. A fourth divergence went with them: an anonymous
+  `struct { int x; }` inline in a signature has no name to spell and used to be
+  emitted as a scalar `int32`; it is now skipped. Covered by new
+  `tests/bindgen_test.cpp` cases (the eightbyte budget, the anonymous struct)
+  and by making the existing struct-by-value and variadic assertions
+  ABI-aware, so the suite is green on both a System V and a Microsoft x64
+  build; the end-to-end test still feeds the generated module to `oskel -c`,
+  which is the property that actually failed.
+
 
 - **`bindgen` no longer drops a declaration in silence.** A function returning
   a function pointer (`int (*signal(int, void (*)(int)))(int);`) vanished
@@ -1039,7 +1045,6 @@ may change between minor versions.
   as well.
 - Removed leftover debug `printf` output from the compiler, VM and PE test
   suites.
-
 ## [0.1.0] - 2026-11-14
 
 The first public release. Oskel is a dynamic, general-purpose language
@@ -1098,5 +1103,6 @@ dependencies beyond the C++ standard library.
 - The AOT backend targets `x86_64-linux-sysv`; on any other target `oskel
   build` reports the unsupported target instead of emitting bytes.
 
-[Unreleased]: https://github.com/yasmramos/Oskel/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/yasmramos/Oskel/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/yasmramos/Oskel/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/yasmramos/Oskel/releases/tag/v0.1.0
