@@ -1509,7 +1509,9 @@ binary prints byte for byte what the VM prints).
       of compiling to a binary that disagrees with the VM.
       `tests/native_build_math.oskl` and `tests/native_build_math_pure.oskl`
       build and agree with the VM; `tests/native_build_native_error.oskl`
-      pins the rejection.
+      pins the rejection. The fixture declares `getpid` rather than `clock`:
+      `clock` became an AOT builtin (BACKLOG §6 item 25), so it no longer
+      exercises a stub-less binding.
     - **7f.2** (done) — a qualified access to a module's native export is a use
       too, and a qualified *call* is checked at compile time. `std.math.pow(...)`
       reads the module table with `GETTABLE`, not `GETGLOBAL`, so the lowerer
@@ -1531,8 +1533,9 @@ binary prints byte for byte what the VM prints).
       time: a local that shadows a global is gone by then, and inferring late
       resolved it to the global. Covered by
       `tests/native_build_qualified_error.oskl` (the build rejection; the
-      `std.math` libm surface resolves from the embedded musl ports, so the
-      rejection is exercised with `modules.hostclock.clock`, which has no stub),
+      `std.math` libm surface resolves from the embedded musl ports and `clock`
+      is an AOT builtin since BACKLOG §6 item 25, so the rejection is exercised
+      with `modules.hostclock.getpid`, a libc call with no stub),
       `tests/errors/native_qualified_arity.oskl` and
       `tests/errors/native_qualified_arg_type.oskl` (the compile-time checks).
     - **7f.3** (done) — the two link modes as a CLI concept. The AOT backend
@@ -1895,7 +1898,7 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.7 done, scalar, `cstring`/`ptr` and struct-by-value `extern "C"` (register and class-MEMORY) resolve in the hosted backend; a C variadic and a callback argument are still open. 7c.5b covers every builtin the AOT runtime can implement without the host; the fourteen that still need the host (files, clock, `args`, raw memory) stay VM-only and are BACKLOG §6, while `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.7 done, scalar, `cstring`/`ptr` and struct-by-value `extern "C"` (register and class-MEMORY) resolve in the hosted backend; a C variadic and a callback argument are still open. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)

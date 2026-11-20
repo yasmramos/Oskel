@@ -272,6 +272,15 @@ constexpr const char* kAotRandomStateGlobal = "$randomState";
 // image byte for byte.
 constexpr const char* kAotPcallHandlerGlobal = "$pcallHandler";
 
+// The names of the two hidden globals the `clock()` and `args()` builtins read
+// (BACKLOG §6 item 25). Both hold a value the chunk can only obtain at entry and
+// both are needed from inside an ordinary builtin call, so they travel through
+// the global table like the `random` state and the `pcall` handler. Each slot is
+// reserved only when the program uses its builtin, so a program that does not
+// keeps its image byte for byte.
+constexpr const char* kAotClockOriginGlobal = "$clockOrigin";
+constexpr const char* kAotArgsGlobal = "$args";
+
 // Narrows the compiler's `extern "C"` declarations to the thunks the hosted
 // backend resolves through the system linker (PHASE 7f.5, structs in 7f.7).
 //
@@ -1057,14 +1066,48 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       // builtin, so `time()` is one more builtin that lowers to an ordinary
       // call.
       {"time", rt.timeBuiltin},
+      // The pointer builtins (BACKLOG §6 item 25). A handle is an `AotPtr` in the
+      // arena, so every target backs them and they are seeded unconditionally.
+      {"cstring", rt.cstringBuiltin},
+      {"cstr", rt.cstrBuiltin},
+      {"buffer", rt.bufferBuiltin},
+      {"byteLen", rt.byteLenBuiltin},
+      {"loadByte", rt.loadByteBuiltin},
+      {"storeByte", rt.storeByteBuiltin},
+      {"intToPtr", rt.intToPtrBuiltin},
+      {"ptrToInt", rt.ptrToIntBuiltin},
+      {"free", rt.freeBuiltin},
+      // `clock()`: elapsed seconds since the program started, from the
+      // `entry.monotonic` handle every prelude binds.
+      {"clock", rt.clockBuiltin},
   };
 
   // `input` reads the keyboard, so only the bare-metal prelude -- the one that
-  // binds `entry.read` -- seeds it; on the other targets the name stays
-  // unresolved and a program that calls it fails the build like any other
-  // unseeded builtin. This mirrors `emitAotRuntime`'s `hasInput`.
+  // binds `entry.read` -- seeds it. The other targets reject it by name below,
+  // like the file builtins. This mirrors `emitAotRuntime`'s `hasInput`.
   const bool hasInput = target.os == Os::Freestanding;
   if (hasInput) builtins.emplace("input", rt.inputBuiltin);
+
+  // The file builtins and `args()` (BACKLOG §6 item 25) need something from the
+  // prelude, so they are seeded only where it exists:
+  //
+  //   * `readFile`/`writeFile`/`fileExists` are written against
+  //     `entry.open`/`readFd`/`writeFd`/`close`, which every prelude with a file
+  //     system binds. A bare-metal image has none, so there the three are
+  //     rejected by name below rather than emitted against an unbound label.
+  //   * `args()` reads the `(argc, argv)` the prelude hands `main`. The
+  //     freestanding Linux `_start` and the hosted C runtime both pass one; the
+  //     Windows loader calls the entry with no arguments and bare metal has no
+  //     command line, so `args` stays unseeded there.
+  const bool hasFiles = target.os != Os::Freestanding || mode == LinkMode::Hosted;
+  const bool hasArgv = mode == LinkMode::Hosted ||
+                       (target.os == Os::Linux && target.arch == Arch::X86_64);
+  if (hasFiles) {
+    builtins.emplace("readFile", rt.readFileBuiltin);
+    builtins.emplace("writeFile", rt.writeFileBuiltin);
+    builtins.emplace("fileExists", rt.fileExistsBuiltin);
+  }
+  if (hasArgv) builtins.emplace("args", rt.argsBuiltin);
   // `random()`/`seed()` (PHASE 7c.5b.6) work on every target: the generator is
   // emitted in machine code and its state lives in the arena, so no host and no
   // syscall is involved. Both are seeded unconditionally; `emitAotRuntime` emits
@@ -1080,25 +1123,21 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   // sink's handler check only when the program actually calls it, so a program
   // that does not keeps its image byte for byte.
   builtins.emplace("pcall", rt.pcallBuiltin);
-  // `memSize()` is bare metal only: its value comes from the multiboot map, and
-  // no hosted prelude binds the handle. Seed it for `Os::Freestanding` so the
-  // builtin resolves; on any other target, name it in the rejection so a program
-  // that calls it fails the build instead of emitting a call to a nil closure.
-  if (target.os == Os::Freestanding) {
-    builtins["memSize"] = rt.memSizeBuiltin;
-  } else {
-    // Name the limitation instead of leaving the generic "read but never
-    // assigned" from `collectGlobals`: `memSize()` is a real builtin, just not on
-    // this target. A user binding (`var memSize = 5`) shadows it exactly as it
-    // shadows `print`, so only a read with no assignment is the builtin; a
-    // shadowed name is left to the ordinary global path.
+  // A builtin whose backing exists on only some targets is seeded where it does
+  // and *named* where it does not, so the failure points at the target instead
+  // of the generic "global 'X' is read but never assigned" from `collectGlobals`
+  // -- which is what a typo produces, and the two are not the same problem. A
+  // user binding (`var memSize = 5`) shadows the builtin exactly as it shadows
+  // `print`, so only a read with no assignment counts; a shadowed name is left
+  // to the ordinary global path.
+  auto unassignedRead = [&](const char* builtin) {
     bool assigned = false;
     bool read = false;
     for (const Bytecode* p : protos) {
       for (const Instruction& instr : p->code) {
         if (instr.op != OpCode::GETGLOBAL && instr.op != OpCode::SETGLOBAL) continue;
         const Value& name = p->constants.at(static_cast<std::size_t>(instr.b));
-        if (!name.isStr() || name.asStr() != "memSize") continue;
+        if (!name.isStr() || name.asStr() != builtin) continue;
         if (instr.op == OpCode::GETGLOBAL) {
           read = true;
         } else {
@@ -1106,10 +1145,42 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
         }
       }
     }
-    if (read && !assigned) {
-      throw LoweringError(
-          "lowering: memSize() is only available on the bare-metal target "
-          "(x86_64-freestanding-sysv); it reads the multiboot memory map");
+    return read && !assigned;
+  };
+
+  // `memSize()` is bare metal only: its value comes from the multiboot map, and
+  // no hosted prelude binds the handle.
+  if (target.os == Os::Freestanding) {
+    builtins["memSize"] = rt.memSizeBuiltin;
+  } else if (unassignedRead("memSize")) {
+    throw LoweringError(
+        "lowering: memSize() is only available on the bare-metal target "
+        "(x86_64-freestanding-sysv); it reads the multiboot memory map");
+  }
+  // `args()` needs the `(argc, argv)` the process entry hands `main`, which the
+  // Windows loader and a bare-metal boot do not provide.
+  if (!hasArgv && unassignedRead("args")) {
+    throw LoweringError(
+        "lowering: args() needs a process argument vector, which this target "
+        "does not provide (Windows calls the entry with no arguments and bare "
+        "metal has no command line)");
+  }
+  // `input()` reads the keyboard through `entry.read`, which only the bare-metal
+  // prelude binds.
+  if (!hasInput && unassignedRead("input")) {
+    throw LoweringError(
+        "lowering: input() needs a keyboard, which only the bare-metal target "
+        "(x86_64-freestanding-sysv) provides; a hosted image reads standard "
+        "input instead");
+  }
+  // The file builtins need the `open`/`readFd`/`writeFd`/`close` handles, which
+  // a bare-metal image has no file system for.
+  if (!hasFiles) {
+    for (const char* name : {"readFile", "writeFile", "fileExists"}) {
+      if (!unassignedRead(name)) continue;
+      throw LoweringError(std::string("lowering: ") + name +
+                          "() needs a file system, which the bare-metal target "
+                          "does not have");
     }
   }
 
@@ -1154,6 +1225,23 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     globals.slotOfName[kAotPcallHandlerGlobal] = pcallHandlerSlot;
   }
 
+  // `clock()` subtracts the origin captured at entry (BACKLOG §6 item 25), so
+  // the value is elapsed time. The slot exists only when the program reads
+  // `clock`, so a program that does not keeps its image byte for byte.
+  int clockOriginSlot = -1;
+  if (globals.slotOfName.count("clock") != 0) {
+    clockOriginSlot = globals.count++;
+    globals.slotOfName[kAotClockOriginGlobal] = clockOriginSlot;
+  }
+
+  // `args()` reads the array the chunk builds at entry from the process
+  // arguments. Same rule: the slot is reserved only when the builtin is read.
+  int argsSlot = -1;
+  if (globals.slotOfName.count("args") != 0) {
+    argsSlot = globals.count++;
+    globals.slotOfName[kAotArgsGlobal] = argsSlot;
+  }
+
   const std::uint64_t chunkOffset = cg.offset();
 
   // The root chunk: build the register file, map the arena and the global
@@ -1163,10 +1251,40 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   cg.bind(chunkEntry);
   const int rootRegisters = proto.numRegisters > 0 ? proto.numRegisters : 1;
   const int rootLocals = proto.numLocals > 0 ? proto.numLocals : 0;
-  emitRootPrologue(cg, rootRegisters, rootLocals);
+  // `args()` needs the `(argc, argv)` the chunk was entered with, but the
+  // allocation of the global table clobbers rdi/rsi before the builder can run.
+  // Two scratch slots at the end of the local region hold them across that call;
+  // a program that does not call `args` reserves neither.
+  const int argSlots = argsSlot >= 0 ? 2 : 0;
+  emitRootPrologue(cg, rootRegisters, rootLocals + argSlots);
+  if (argsSlot >= 0) {
+    cg.movToMem(kFileBase, localSlotOffset(rootRegisters, rootLocals), X64Reg::Rdi);
+    cg.movToMem(kFileBase, localSlotOffset(rootRegisters, rootLocals + 1), X64Reg::Rsi);
+  }
   cg.callLabel(entry.initArena);
   cg.movImm(X64Reg::Rdi, globals.count);
   cg.callLabel(rt.initGlobals);
+
+  // `clock()` reads the monotonic counter and subtracts this origin, so what it
+  // reports is elapsed time rather than an absolute counter (BACKLOG §6 item
+  // 25). Captured here, before the program's first statement.
+  if (clockOriginSlot >= 0) {
+    cg.callLabel(entry.monotonic);
+    cg.movImm(X64Reg::Rdi, clockOriginSlot);
+    cg.movImm(X64Reg::Rsi, static_cast<std::int64_t>(AotTag::Int));
+    cg.movReg(X64Reg::Rdx, X64Reg::Rax);
+    cg.callLabel(rt.globalSet);
+  }
+  // `args()` reads the array built from the process arguments the prelude
+  // handed `main`: `rdi` = argc, `rsi` = argv. `main` receives them from
+  // `_start` (freestanding) or the C runtime (hosted), so the chunk reads its
+  // own incoming registers before the first statement clobbers them.
+  if (argsSlot >= 0) {
+    cg.movFromMem(X64Reg::Rdi, kFileBase, localSlotOffset(rootRegisters, rootLocals));
+    cg.movFromMem(X64Reg::Rsi, kFileBase, localSlotOffset(rootRegisters, rootLocals + 1));
+    cg.movImm(X64Reg::Rdx, argsSlot);
+    cg.callLabel(rt.buildArgs);
+  }
 
   // Seed each builtin the program reads: build an `AotClosure` for its code and
   // store it into the global slot. A builtin has no captured cells, so the
@@ -1300,6 +1418,11 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   cg.bind(mainEntry);
   cg.push(X64Reg::Rbp);
   cg.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  // `rdi`/`rsi` are still the `(argc, argv)` the process entry handed this
+  // function -- `_start` on Linux, the C runtime in the hosted mode -- and the
+  // chunk reads them to build `args()`. `push rbp`/`mov rbp, rsp` touch neither,
+  // so they reach the chunk intact. On Windows and bare metal the entry passes
+  // nothing and `args` is not seeded there.
   cg.callLabel(chunkEntry);
   cg.xorReg(X64Reg::Rax, X64Reg::Rax);
   cg.movReg(X64Reg::Rsp, X64Reg::Rbp);
@@ -1325,9 +1448,15 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   } else {
     startOffset = emitFreestandingRuntime(cg, entry, mainEntry);
   }
+  AotRuntimeExtras extras;
+  extras.clockOriginSlot = clockOriginSlot;
+  extras.argsSlot = argsSlot;
+  extras.hasArgv = hasArgv;
+  extras.hasFiles = hasFiles;
   emitAotRuntime(cg, rt, entry, externThunks.empty() ? nullptr : &externThunks,
                  mode == LinkMode::Hosted, hasInput,
-                 target.os == Os::Freestanding, randomStateSlot, pcallHandlerSlot);
+                 target.os == Os::Freestanding, randomStateSlot, pcallHandlerSlot,
+                 extras);
   // String constants last: their bytes are addressed by `lea` from the code
   // above, and no path falls through into them.
   emitStringConstants(cg, stringConstants);

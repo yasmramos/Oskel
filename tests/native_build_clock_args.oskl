@@ -1,0 +1,27 @@
+// `clock()` and `args()` in the AOT backend (BACKLOG §6 item 25).
+//
+// Both read a value the chunk can only obtain at entry, so both travel through
+// a hidden global: `$clockOrigin` holds the monotonic counter captured before
+// the first statement (so `clock()` is elapsed time, not an absolute counter)
+// and `$args` holds the array the entry point builds from `(argc, argv)`.
+//
+// `clock()` is only asserted by its *shape*, never a value: two runs happen at
+// different times and the harness runs the VM and the binary separately.
+// `args()` is asserted by content, because the harness passes the same vector to
+// both (`-DOSKEL_ARGS`), including one argument with a space in it -- a naive
+// tokeniser would split that one in two.
+
+var a = clock();
+print("clock type", type(a));
+print("clock non-negative", a >= 0.0);
+var b = clock();
+print("clock monotonic", b >= a);
+
+var rest = args();
+print("args type", type(rest));
+print("args count", len(rest));
+var i = 0;
+for (a in rest) {
+  print("arg", i, a);
+  i = i + 1;
+}

@@ -1,0 +1,37 @@
+// File builtins in the AOT backend (BACKLOG §6 item 25).
+//
+// `readFile`/`writeFile`/`fileExists` are written against the prelude's
+// `open`/`readFd`/`writeFd`/`close` handles, so the syscall (Linux) or kernel32
+// (Windows) difference stays in one place and the builtins themselves are
+// target-independent.
+//
+// The path is a fixed relative name because both engines must see the same file:
+// the harness runs the VM first and the binary second. `writeFile` creates or
+// truncates, so the fixture is idempotent and its output does not depend on what
+// an earlier run left behind.
+
+var path = "oskel_native_files_test.txt";
+
+print("absent", fileExists("oskel_native_files_absent.txt"));
+writeFile(path, "first line\nsecond line\n");
+print("exists", fileExists(path));
+
+var text = readFile(path);
+print("len", len(text));
+print("starts", text[0:5]);
+print("round trip", text == "first line\nsecond line\n");
+
+// A second write truncates: the shorter text replaces the longer one instead of
+// leaving a tail behind.
+writeFile(path, "short\n");
+print("rewritten", len(readFile(path)), readFile(path) == "short\n");
+
+// A path reaches the OS as a NUL-terminated C string, so an embedded NUL would
+// silently truncate it. Both engines reject it with the same message instead of
+// operating on a different path than the program wrote. `pcall` is the only way
+// to observe the message: a raised error is not a value, so `try`/`catch` does
+// not see it.
+var nul = "a" + "\0" + "b";
+print("nul read", pcall(() => readFile(nul)).error.message);
+print("nul write", pcall(() => writeFile(nul, "x")).error.message);
+print("nul exists", pcall(() => fileExists(nul)).error.message);

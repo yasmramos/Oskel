@@ -1,18 +1,18 @@
 // Fixture for the `oskel build` qualified-native error test
 // (tests/build_error.cmake, PHASE 7f.2).
 //
-// `modules.hostclock.clock` is a `native fn` reached through the module
+// `modules.hostclock.getpid` is a `native fn` reached through the module
 // namespace. The read goes through the module table with `GETTABLE`, not with
 // `GETGLOBAL`, so before PHASE 7f.2 the lowerer could not see the use and
 // emitted a binary that faulted at run time (`cannot call a non-function
 // value`) instead of failing the build. The compiler now records the use on the
 // proto that performs it, so the AOT backend must reject it with the dedicated
-// message, exactly like the unqualified `native fn clock()` case.
+// message, exactly like the unqualified `native fn getpid()` case.
 //
-// `clock` is a host builtin with no curated AOT stub (unlike the `std.math`
-// libm surface, which PHASE 7c.5b.4 resolves from the embedded musl ports), so
-// it is the binding that still exercises the rejection. The program runs on the
-// VM (the host registry resolves `clock`), so it doubles as a script test there.
+// `getpid` is a libc call with no curated AOT stub (unlike the `std.math` libm
+// surface, which PHASE 7c.5b.4 resolves from the embedded musl ports), so it is
+// the binding that exercises the rejection. The program runs on the VM (the host
+// registry resolves `getpid`), so it doubles as a script test there.
 import modules.hostclock;
 
-print(modules.hostclock.clock() > 0);
+print(modules.hostclock.getpid() > 0);

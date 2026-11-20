@@ -1207,6 +1207,19 @@ void emitBareMetalRuntime(CodeGen& code, const RuntimeHandles& handles) {
     code.xorReg(X64Reg::Rax, X64Reg::Rax);
     code.retInsn();
   }
+
+  // --- long oskel_monotonic(void) ---
+  // The PIT tick counter the IRQ0 handler owns, scaled to nanoseconds. The PIT
+  // is programmed to 100 Hz (kPitDivisor), so one tick is 10 ms; a kernel has
+  // no finer monotonic source without a TSC calibration, and `clock()` only
+  // needs elapsed time. The counter is read with one `mov`, so a tick landing
+  // mid-read cannot tear the value.
+  code.bind(handles.monotonic);
+  code.movImm(X64Reg::Rcx, static_cast<std::int64_t>(kBMDataBase + kBMKernelDataTicks));
+  code.movFromMem(X64Reg::Rax, X64Reg::Rcx, 0);
+  code.movImm(X64Reg::Rcx, 10000000);
+  code.imulReg(X64Reg::Rax, X64Reg::Rcx);
+  code.retInsn();
 }
 
 std::vector<std::uint8_t> buildBareMetalElf(const Target& target,

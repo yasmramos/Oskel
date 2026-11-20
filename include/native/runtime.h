@@ -287,6 +287,40 @@ struct AotRuntimeHandles {
   CodeGen::Label mapClearMethod;   // AotValue oskel_builtin_map_clear(...)
   CodeGen::Label mapMergeMethod;   // AotValue oskel_builtin_map_merge(...)
   CodeGen::Label mapCloneMethod;   // AotValue oskel_builtin_map_clone(...)
+  // The pointer builtins (BACKLOG §6 item 25). A `ptr`/`cstring` is an opaque
+  // handle (PHASE 6.6): `cstring` builds one from a string, `buffer` allocates
+  // zeroed bytes, `cstr` reads the bytes back as a string, `byteLen` reports how
+  // many there are, `loadByte`/`storeByte` read and write one, `intToPtr`/
+  // `ptrToInt` wrap and unwrap the opaque token, and `free` releases the handle.
+  // The layout is `AotPtr` in `native/value.h`, so the two engines agree on what
+  // a handle is; nothing here reaches a host, which is why every target emits
+  // them.
+  CodeGen::Label cstringBuiltin;   // AotValue oskel_builtin_cstring(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label cstrBuiltin;      // AotValue oskel_builtin_cstr(...)
+  CodeGen::Label bufferBuiltin;    // AotValue oskel_builtin_buffer(...)
+  CodeGen::Label byteLenBuiltin;   // AotValue oskel_builtin_byte_len(...)
+  CodeGen::Label loadByteBuiltin;  // AotValue oskel_builtin_load_byte(...)
+  CodeGen::Label storeByteBuiltin; // AotValue oskel_builtin_store_byte(...)
+  CodeGen::Label intToPtrBuiltin;  // AotValue oskel_builtin_int_to_ptr(...)
+  CodeGen::Label ptrToIntBuiltin;  // AotValue oskel_builtin_ptr_to_int(...)
+  CodeGen::Label freeBuiltin;      // AotValue oskel_builtin_free(...)
+  // The file builtins (BACKLOG §6 item 25): `readFile`, `writeFile` and
+  // `fileExists`, written against the `entry.open`/`readFd`/`writeFd`/`close`
+  // handles so the syscall/API difference stays in the prelude. Only the targets
+  // whose prelude binds those handles emit them (see `AotRuntimeConfig::hasFiles`).
+  CodeGen::Label readFileBuiltin;  // AotValue oskel_builtin_read_file(...)
+  CodeGen::Label writeFileBuiltin; // AotValue oskel_builtin_write_file(...)
+  CodeGen::Label fileExistsBuiltin;// AotValue oskel_builtin_file_exists(...)
+  // `clock()`: the seconds since the process started, as a `double`, read from
+  // the `entry.monotonic` handle. The origin is captured once, at entry, into
+  // the hidden `$clockOrigin` global, so the first call is not the reference.
+  CodeGen::Label clockBuiltin;     // AotValue oskel_builtin_clock(AotValue* args, long argc, AotClosure* self)
+  // `args()`: the script arguments as an array of strings, read from the hidden
+  // `$args` global the chunk fills at entry from the process command line.
+  CodeGen::Label argsBuiltin;      // AotValue oskel_builtin_args(AotValue* args, long argc, AotClosure* self)
+  // `void oskel_build_args(long argc, char** argv, long slot)` builds the
+  // `$args` array at entry from the vector the prelude handed `main`.
+  CodeGen::Label buildArgs;        // void oskel_build_args(long argc, char** argv, long slot)
 };
 
 inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
@@ -315,7 +349,11 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel()};
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel(),};
 }
 
 // The selector `oskel_compare` accepts: the low nibble of the x86-64 condition
@@ -469,8 +507,36 @@ struct AotExternThunk {
 // one non-local return in the AOT runtime), and the `pcall` body is emitted.
 // A program that never calls `pcall` keeps a sink with no handler check and no
 // `pcall` code, so its image is unchanged.
+// What the pointer/file/clock/argument builtins (BACKLOG §6 item 25) need from
+// the caller, bundled so the argument list stays readable.
+//
+// The pointer builtins need nothing: a handle lives in the arena, so every
+// target emits them. The rest depend on the prelude:
+//
+//   * `clock()` reads `entry.monotonic` and subtracts the origin the chunk
+//     captured into the hidden `$clockOrigin` global (`clockOriginSlot`), so the
+//     value is elapsed time and not an absolute counter;
+//   * `args()` reads the hidden `$args` global (`argsSlot`) the chunk fills at
+//     entry from the `(argc, argv)` its caller handed `main`. Only a prelude that
+//     actually passes a vector can back it -- Linux freestanding and the hosted
+//     mode do, Windows and bare metal do not -- so `hasArgv` is false there,
+//     `argsSlot` stays at -1 and `args` is rejected by name (see `lower.cpp`);
+//   * `readFile`/`writeFile`/`fileExists` are written against the
+//     `entry.open`/`readFd`/`writeFd`/`close` handles, so `hasFiles` is true only
+//     for a prelude that binds them (bare metal has no file system).
+//
+// A field left at its default keeps the image byte for byte what it was: no
+// body is emitted and no label is referenced.
+struct AotRuntimeExtras {
+  int clockOriginSlot = -1;  // the hidden `$clockOrigin` global, or -1
+  int argsSlot = -1;         // the hidden `$args` global, or -1
+  bool hasArgv = false;      // the prelude hands the program argc/argv
+  bool hasFiles = false;     // the prelude binds the file handles
+};
+
 void emitAotRuntime(CodeGen& code, const AotRuntimeHandles& handles,
                     const RuntimeHandles& entry,
                     const std::vector<AotExternThunk>* externThunks = nullptr,
                     bool hosted = false, bool hasInput = false, bool bareMetal = false,
-                    int randomStateSlot = -1, int pcallHandlerSlot = -1);
+                    int randomStateSlot = -1, int pcallHandlerSlot = -1,
+                    const AotRuntimeExtras& extras = AotRuntimeExtras{});

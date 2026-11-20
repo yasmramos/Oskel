@@ -82,9 +82,11 @@ endif()
 # --- the documented exceptions ---------------------------------------------
 # Each name here is a builtin that exists on one side only *on purpose*. The
 # value is the side it lives on, so a name that moves engines also fails.
-set(vm_only
-  args buffer byteLen clock cstr cstring fileExists free intToPtr
-  loadByte ptrToInt readFile storeByte writeFile)
+# Every builtin the VM registers is now seeded by the AOT backend, so this list
+# is empty: the pointer, file, clock and argument builtins of BACKLOG §6 item 25
+# landed in both engines. It stays as the place to record a *new* divergence --
+# with its reason -- rather than letting one go unnoticed.
+set(vm_only "")
 set(aot_only "")
 
 set(problems "")

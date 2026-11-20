@@ -42,6 +42,16 @@ constexpr std::int64_t kTagArray = static_cast<std::int64_t>(AotTag::Array);
 constexpr std::int64_t kTagMap = static_cast<std::int64_t>(AotTag::Map);
 constexpr std::int64_t kTagRange = static_cast<std::int64_t>(AotTag::Range);
 constexpr std::int64_t kTagError = static_cast<std::int64_t>(AotTag::Error);
+constexpr std::int64_t kTagPtr = static_cast<std::int64_t>(AotTag::Ptr);
+
+// Field offsets of a pointer handle (see `native/value.h`).
+constexpr std::int64_t kPtrKindOffset = 0;
+constexpr std::int64_t kPtrDataOffset = 8;
+constexpr std::int64_t kPtrLengthOffset = 16;
+constexpr std::int64_t kPtrReleasedOffset = 24;
+constexpr std::int64_t kPtrKindVoid = static_cast<std::int64_t>(AotPtrKind::Void);
+constexpr std::int64_t kPtrKindCString = static_cast<std::int64_t>(AotPtrKind::CString);
+constexpr std::int64_t kPtrKindBuffer = static_cast<std::int64_t>(AotPtrKind::Buffer);
 
 // Field offsets of the collection headers (see `native/value.h`). Arrays and
 // maps share the same three-word header (length, capacity, block), so one set
@@ -370,7 +380,8 @@ void emitPrintValueCore(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeL
                         const DataBlob& badValue,
                         const DataBlob& textTrue, const DataBlob& textFalse,
                         const DataBlob& textNil, const DataBlob& textNewline,
-                        std::int64_t fd, bool newline, bool hosted) {
+                        const DataBlob& textPtr, std::int64_t fd, bool newline,
+                        bool hosted) {
   CodeGen::Label asInt = cg.newLabel();
   CodeGen::Label asBool = cg.newLabel();
   CodeGen::Label asNil = cg.newLabel();
@@ -378,6 +389,8 @@ void emitPrintValueCore(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeL
   CodeGen::Label asNum = cg.newLabel();
   CodeGen::Label asRepr = cg.newLabel();
   CodeGen::Label asError = cg.newLabel();
+  CodeGen::Label asPtr = cg.newLabel();
+  CodeGen::Label ptrOpaque = cg.newLabel();
   CodeGen::Label boolFalse = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
 
@@ -411,7 +424,45 @@ void emitPrintValueCore(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeL
   // An error prints its message alone (`Value::toString` display form).
   cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagError));
   cg.jcc(Jcc::Eq, asError);
+  // A pointer handle prints the text a `cstring` points at, up to the first
+  // NUL, and `<ptr>` for any other kind -- never an address the program must
+  // not see (the hosted `writeValue` rule).
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagPtr));
+  cg.jcc(Jcc::Eq, asPtr);
   emitFailCall(cg, fail, badValue);
+
+  cg.bind(asPtr);
+  cg.movFromMem(Rax, Rsi, kPtrKindOffset);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kPtrKindCString));
+  cg.jcc(Jcc::Ne, ptrOpaque);
+  // A `cstring` displays up to the first NUL, which is C's view of it: an
+  // embedded NUL ends the text even though the handle owns the bytes after it.
+  cg.movFromMem(Rdi, Rsi, kPtrDataOffset);   // the bytes
+  cg.movFromMem(Rcx, Rsi, kPtrLengthOffset); // the owned length
+  cg.xorReg(R8, R8);                         // scanned length
+  CodeGen::Label ptrScan = cg.newLabel();
+  CodeGen::Label ptrScanEnd = cg.newLabel();
+  cg.bind(ptrScan);
+  cg.cmpReg(R8, Rcx);
+  cg.jcc(Jcc::Ae, ptrScanEnd);
+  cg.movReg(R9, Rdi);
+  cg.addReg(R9, R8);
+  cg.movzxFromMem(Rax, R9, 0);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, ptrScanEnd);
+  cg.addImm32(R8, 1);
+  cg.jmp(ptrScan);
+  cg.bind(ptrScanEnd);
+  cg.movReg(Rsi, R8);
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Eq, done);                     // an empty handle writes nothing
+  emitWriteToFd(cg, writeLabel, fd);
+  cg.jmp(done);
+  cg.bind(ptrOpaque);
+  cg.leaRipLabel(Rdi, textPtr.label);
+  cg.movImm(Rsi, static_cast<std::int64_t>(textPtr.text.size()));
+  emitWriteToFd(cg, writeLabel, fd);
+  cg.jmp(done);
 
   cg.bind(asRepr);
   cg.xorReg(Rdx, Rdx);          // depth = 0
@@ -507,10 +558,10 @@ void emitPrintValue(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeLabel
                     const DataBlob& badValue,
                     const DataBlob& textTrue, const DataBlob& textFalse,
                     const DataBlob& textNil, const DataBlob& textNewline,
-                    bool hosted) {
+                    const DataBlob& textPtr, bool hosted) {
   emitPrintValueCore(cg, label, writeLabel, fail, writeInt, formatDouble, printRepr,
-                     badValue, textTrue, textFalse, textNil, textNewline, /*fd=*/1,
-                     /*newline=*/true, hosted);
+                     badValue, textTrue, textFalse, textNil, textNewline, textPtr,
+                     /*fd=*/1, /*newline=*/true, hosted);
 }
 
 // `void oskel_print_value_raw(AotValue v)`: prints the value with no trailing
@@ -521,10 +572,10 @@ void emitPrintValueRaw(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeLa
                        const DataBlob& badValue,
                        const DataBlob& textTrue, const DataBlob& textFalse,
                        const DataBlob& textNil, const DataBlob& textNewline,
-                       bool hosted) {
+                       const DataBlob& textPtr, bool hosted) {
   emitPrintValueCore(cg, label, writeLabel, fail, writeInt, formatDouble, printRepr,
-                     badValue, textTrue, textFalse, textNil, textNewline, /*fd=*/1,
-                     /*newline=*/false, hosted);
+                     badValue, textTrue, textFalse, textNil, textNewline, textPtr,
+                     /*fd=*/1, /*newline=*/false, hosted);
 }
 
 // `void oskel_print_value_err_raw(AotValue v)`: prints the value with no trailing
@@ -535,10 +586,10 @@ void emitPrintValueErrRaw(CodeGen& cg, CodeGen::Label label, CodeGen::Label writ
                           const DataBlob& badValue,
                           const DataBlob& textTrue, const DataBlob& textFalse,
                           const DataBlob& textNil, const DataBlob& textNewline,
-                          bool hosted) {
+                          const DataBlob& textPtr, bool hosted) {
   emitPrintValueCore(cg, label, writeLabel, fail, writeInt, formatDouble, printRepr,
-                     badValue, textTrue, textFalse, textNil, textNewline, /*fd=*/2,
-                     /*newline=*/false, hosted);
+                     badValue, textTrue, textFalse, textNil, textNewline, textPtr,
+                     /*fd=*/2, /*newline=*/false, hosted);
 }
 
 // One of the `print`/`write`/`eprint` builtins, as a machine-code function with
@@ -5212,7 +5263,8 @@ void emitStrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
                     CodeGen::Label fail, CodeGen::Label formatDouble,
                     CodeGen::Label reprToString, const DataBlob& msgOom,
                     const DataBlob& textTrue, const DataBlob& textFalse,
-                    const DataBlob& textNil, const DataBlob& msgStrBad) {
+                    const DataBlob& textNil, const DataBlob& textPtr,
+                    const DataBlob& msgStrBad) {
   CodeGen::Label asInt = cg.newLabel();
   CodeGen::Label asBool = cg.newLabel();
   CodeGen::Label boolFalse = cg.newLabel();
@@ -5221,6 +5273,10 @@ void emitStrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
   CodeGen::Label asNum = cg.newLabel();
   CodeGen::Label asRepr = cg.newLabel();
   CodeGen::Label asError = cg.newLabel();
+  CodeGen::Label asPtr = cg.newLabel();
+  CodeGen::Label ptrOpaque = cg.newLabel();
+  CodeGen::Label ptrScan = cg.newLabel();
+  CodeGen::Label ptrScanEnd = cg.newLabel();
   CodeGen::Label asRange = cg.newLabel();
   CodeGen::Label rangeIncl = cg.newLabel();
   CodeGen::Label rangeAfterSep = cg.newLabel();
@@ -5273,7 +5329,53 @@ void emitStrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
   // An error renders as its message alone (the hosted display form).
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagError));
   cg.jcc(Jcc::Eq, asError);
+  // A pointer handle renders like it prints: a `cstring` as its text (a fresh
+  // arena copy, since a `Str` payload must be an `AotString`), any other handle
+  // as `<ptr>`.
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagPtr));
+  cg.jcc(Jcc::Eq, asPtr);
   emitFailCall(cg, fail, msgStrBad);
+
+  cg.bind(asPtr);
+  cg.movFromMem(R9, Rbx, 8);                  // the handle
+  cg.movFromMem(Rax, R9, kPtrKindOffset);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kPtrKindCString));
+  cg.jcc(Jcc::Ne, ptrOpaque);
+  // Copy the text (up to the first NUL) into a fresh `AotString`.
+  cg.movFromMem(R8, R9, kPtrDataOffset);      // the bytes
+  cg.movFromMem(R10, R9, kPtrLengthOffset);   // the owned length
+  cg.xorReg(R11, R11);                        // the scanned length
+  cg.bind(ptrScan);
+  cg.cmpReg(R11, R10);
+  cg.jcc(Jcc::Ae, ptrScanEnd);
+  cg.movReg(Rax, R8);
+  cg.addReg(Rax, R11);
+  cg.movzxFromMem(Rax, Rax, 0);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, ptrScanEnd);
+  cg.addImm32(R11, 1);
+  cg.jmp(ptrScan);
+  cg.bind(ptrScanEnd);
+  cg.movReg(R12, R11);                        // the text length
+  cg.movReg(Rdi, R12);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movToMem(Rbp, -24, R8);                  // the source bytes
+  cg.callLabel(allocLabel);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rax, 0, R12);                   // the length
+  cg.movReg(Rdi, Rax);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movFromMem(Rsi, Rbp, -24);
+  cg.movReg(Rcx, R12);
+  cg.repMovsb();
+  cg.movReg(Rdx, Rax);
+  cg.movImm(Rax, kTagStr);
+  cg.jmp(done);
+  cg.bind(ptrOpaque);
+  cg.leaRipLabel(R8, textPtr.label);
+  cg.movImm(R12, static_cast<std::int64_t>(textPtr.text.size()));
+  cg.jmp(buildConst);
 
   // A collection or function renders with the recursive repr, so `"${[1, 2]}"`
   // reads exactly like `print([1, 2])` (nested strings quoted, depth-capped).
@@ -5910,7 +6012,8 @@ void emitTypeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
                      const DataBlob& tBool, const DataBlob& tInt, const DataBlob& tFloat,
                      const DataBlob& tDouble, const DataBlob& tStr, const DataBlob& tArray,
                      const DataBlob& tMap, const DataBlob& tFunc, const DataBlob& tRange,
-                     const DataBlob& tError) {
+                     const DataBlob& tError, const DataBlob& tPtr,
+                     const DataBlob& tCString) {
   CodeGen::Label asNil = cg.newLabel();
   CodeGen::Label asBool = cg.newLabel();
   CodeGen::Label asInt = cg.newLabel();
@@ -5922,6 +6025,8 @@ void emitTypeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
   CodeGen::Label asFunc = cg.newLabel();
   CodeGen::Label asRange = cg.newLabel();
   CodeGen::Label asError = cg.newLabel();
+  CodeGen::Label asPtr = cg.newLabel();
+  CodeGen::Label asCString = cg.newLabel();
   CodeGen::Label buildConst = cg.newLabel();
   CodeGen::Label oom = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
@@ -5953,7 +6058,24 @@ void emitTypeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
   cg.jcc(Jcc::Eq, asRange);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagError));
   cg.jcc(Jcc::Eq, asError);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagPtr));
+  cg.jcc(Jcc::Eq, asPtr);
   cg.jmp(asNil);  // every AotTag is covered; default is defensive only
+
+  // A pointer handle reports the FFI type it was built as, exactly like the
+  // hosted `typeName`: `cstring` for a text handle, `ptr` for everything else.
+  cg.bind(asPtr);
+  cg.movFromMem(Rax, Rdi, 8);   // the handle
+  cg.movFromMem(Rax, Rax, kPtrKindOffset);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kPtrKindCString));
+  cg.jcc(Jcc::Eq, asCString);
+  cg.leaRipLabel(R8, tPtr.label);
+  cg.movImm(R12, static_cast<std::int64_t>(tPtr.text.size()));
+  cg.jmp(buildConst);
+  cg.bind(asCString);
+  cg.leaRipLabel(R8, tCString.label);
+  cg.movImm(R12, static_cast<std::int64_t>(tCString.text.size()));
+  cg.jmp(buildConst);
 
 #define OSKEL_TYPE_CASE(name, blob)          \
   cg.bind(name);                            \
@@ -8345,11 +8467,16 @@ void emitSbNew(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
 // `\n`, `\t`, `\r`, and `\xHH` for any other control byte. This is the
 // builder-sink counterpart of `oskel_print_str_escaped`, so a quoted string in a
 // rendered collection reads identically on `print` and `$str`.
+// `void sbAppendEscaped(sb, source[, length])`: appends `source` to the builder
+// with the repr escaping rule, surrounded by double quotes. `fromString` selects
+// the shape of `source`: an `AotString*` (length at [rsi], bytes at rsi+8) when
+// true, or raw bytes with the length in rdx when false -- the form a pointer
+// handle needs, since its bytes are not preceded by an `AotString` header.
 void emitSbAppendEscaped(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbAppend,
                          CodeGen::Label sbAppendByte, const DataBlob& textQuote,
                          const DataBlob& textEscQuote, const DataBlob& textEscBackslash,
                          const DataBlob& textEscNL, const DataBlob& textEscTab,
-                         const DataBlob& textEscCR) {
+                         const DataBlob& textEscCR, bool fromString) {
   CodeGen::Label loop = cg.newLabel();
   CodeGen::Label plain = cg.newLabel();
   CodeGen::Label hex = cg.newLabel();
@@ -8371,7 +8498,14 @@ void emitSbAppendEscaped(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbApp
   cg.push(R12);
   cg.subRegImm32(Rsp, 40);
   cg.movReg(Rbx, Rdi);  // sb
-  cg.movReg(R12, Rsi);  // string
+  cg.movReg(R12, Rsi);  // the bytes
+  if (fromString) {
+    cg.movFromMem(R8, R12, 0);  // the AotString length
+    cg.addImm32(R12, static_cast<std::int32_t>(kStringDataOffset));
+  } else {
+    cg.movReg(R8, Rdx);  // the raw length
+  }
+  cg.movToMem(Rbp, -56, R8);    // the byte count
   cg.movImmToMem(Rbp, -40, 0);  // index
 
   cg.movReg(Rdi, Rbx);
@@ -8387,13 +8521,13 @@ void emitSbAppendEscaped(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbApp
   // would leave the arena cursor stale and hand the same bytes out twice.
   cg.bind(loop);
   cg.movFromMem(R11, Rbp, -40);
-  cg.movFromMem(R9, R12, 0);
+  cg.movFromMem(R9, Rbp, -56);  // the byte length
   cg.cmpReg(R11, R9);
   cg.jcc(Jcc::Ae, loopDone);
 
   cg.movReg(R10, R11);
   cg.addReg(R10, R12);
-  cg.movzxFromMem(R10, R10, kStringDataOffset);
+  cg.movzxFromMem(R10, R10, 0);
   cg.cmpImm32(R10, '"');
   cg.jcc(Jcc::Eq, escQuote);
   cg.cmpImm32(R10, '\\');
@@ -8444,7 +8578,7 @@ void emitSbAppendEscaped(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbApp
   cg.movImmByteToMem(Rbp, -47, 'x');
   cg.movFromMem(R10, Rbp, -40);
   cg.addReg(R10, R12);
-  cg.movzxFromMem(R10, R10, kStringDataOffset);
+  cg.movzxFromMem(R10, R10, 0);
   cg.movReg(R9, R10);
   cg.shrImm8(R9, 4);
   cg.andImm32(R9, 0x0F);
@@ -8501,14 +8635,15 @@ void emitSbAppendEscaped(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbApp
 // structure terminates. Every `print` and every `$str` of a collection goes
 // through here, so the two agree byte for byte.
 void emitReprInto(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbAppend,
-                  CodeGen::Label sbAppendEscaped, CodeGen::Label formatDouble,
+                  CodeGen::Label sbAppendEscaped, CodeGen::Label sbAppendEscapedBytes,
+                  CodeGen::Label formatDouble,
                   const DataBlob& textTrue, const DataBlob& textFalse,
                   const DataBlob& textNil, const DataBlob& textFunc,
                   const DataBlob& textComma, const DataBlob& textColon,
                   const DataBlob& textOpenBracket, const DataBlob& textCloseBracket,
                   const DataBlob& textOpenBrace, const DataBlob& textCloseBrace,
                   const DataBlob& textEllipsis, const DataBlob& textError,
-                  const DataBlob& textCloseParen) {
+                  const DataBlob& textCloseParen, const DataBlob& textPtr) {
   CodeGen::Label asInt = cg.newLabel();
   CodeGen::Label asBool = cg.newLabel();
   CodeGen::Label boolFalse = cg.newLabel();
@@ -8520,6 +8655,10 @@ void emitReprInto(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbAppend,
   CodeGen::Label asMap = cg.newLabel();
   CodeGen::Label asRange = cg.newLabel();
   CodeGen::Label asError = cg.newLabel();
+  CodeGen::Label asPtr = cg.newLabel();
+  CodeGen::Label ptrOpaque = cg.newLabel();
+  CodeGen::Label ptrScan = cg.newLabel();
+  CodeGen::Label ptrScanEnd = cg.newLabel();
   CodeGen::Label errorNoCode = cg.newLabel();
   CodeGen::Label errorCodePos = cg.newLabel();
   CodeGen::Label errorCodeConv = cg.newLabel();
@@ -8583,6 +8722,46 @@ void emitReprInto(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbAppend,
   cg.jcc(Jcc::Eq, asRange);
   cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagError));
   cg.jcc(Jcc::Eq, asError);
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagPtr));
+  cg.jcc(Jcc::Eq, asPtr);
+  cg.jmp(done);
+
+  // A pointer handle: a `cstring` renders its text quoted, like a string (that
+  // is what the user holds); any other handle renders as the bare `<ptr>`, so
+  // an address never leaks into a rendered collection.
+  cg.bind(asPtr);
+  cg.movFromMem(Rax, Rbp, -40);        // payload
+  cg.movFromMem(Rax, Rax, kPtrKindOffset);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kPtrKindCString));
+  cg.jcc(Jcc::Ne, ptrOpaque);
+  // Build a temporary `AotString` view over the handle's bytes, cut at the
+  // first NUL, and hand it to the escaped appender: the escaping rule is the
+  // string one, so `repr(cstring("a\nb"))` quotes like `repr("a\nb")`.
+  cg.movFromMem(R8, Rbp, -40);         // the handle
+  cg.movFromMem(R9, R8, kPtrDataOffset);    // bytes
+  cg.movFromMem(R10, R8, kPtrLengthOffset);  // owned length
+  cg.xorReg(R11, R11);                 // scanned length
+  cg.bind(ptrScan);
+  cg.cmpReg(R11, R10);
+  cg.jcc(Jcc::Ae, ptrScanEnd);
+  cg.movReg(Rax, R9);
+  cg.addReg(Rax, R11);
+  cg.movzxFromMem(Rax, Rax, 0);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, ptrScanEnd);
+  cg.addImm32(R11, 1);
+  cg.jmp(ptrScan);
+  cg.bind(ptrScanEnd);
+  cg.movReg(Rdi, Rbx);
+  cg.movReg(Rsi, R9);
+  cg.movReg(Rdx, R11);
+  cg.callLabel(sbAppendEscapedBytes);
+  cg.jmp(done);
+  cg.bind(ptrOpaque);
+  cg.movReg(Rdi, Rbx);
+  cg.leaRipLabel(Rsi, textPtr.label);
+  cg.movImm(Rdx, static_cast<std::int64_t>(textPtr.text.size()));
+  cg.callLabel(sbAppend);
   cg.jmp(done);
 
   cg.bind(asInt);
@@ -9668,11 +9847,1063 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// The pointer, file, clock and argument builtins (BACKLOG §6 item 25)
+//
+// These are the builtins that used to exist only in the development engine, so a
+// program that called one failed `oskel build` with "global 'X' is read but
+// never assigned". They now land in both engines:
+//
+//   * the pointer ones (`cstring`, `cstr`, `buffer`, `byteLen`, `loadByte`,
+//     `storeByte`, `intToPtr`, `ptrToInt`, `free`) work on every target, because
+//     a handle is an `AotPtr` in the arena and nothing reaches a host;
+//   * the file ones (`readFile`, `writeFile`, `fileExists`) are written against
+//     the `entry.open`/`readFd`/`writeFd`/`close` handles, so the syscall/API
+//     difference stays in the prelude and a target with no file system simply
+//     does not seed them;
+//   * `clock()` reads `entry.monotonic` minus an origin the chunk captured at
+//     entry, and `args()` reads a hidden global the chunk filled there.
+//
+// A failure reports the hosted message's fixed part. The hosted helpers append a
+// dynamic tail (`, got 'int'`, the offending index); the AOT runtime keeps fixed
+// text, the convention every other builtin already follows (`ord`, `len`,
+// `chr`, `sqrt`, ...), so a failing binary exits 70 with the same wording up to
+// that tail.
+// ---------------------------------------------------------------------------
+
+// `AotValue oskel_str_new(const char* bytes, long length)`: allocate an
+// `AotString` for `length` bytes, copy them in and return the `Str` value (tag
+// in rax, payload in rdx). The bytes need no terminator, so a caller holding a
+// NUL-terminated buffer passes the text length rather than the buffer size.
+void emitStrNew(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
+                CodeGen::Label fail, const DataBlob& msgOom) {
+  CodeGen::Label oom = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 16);
+  cg.movReg(R12, Rdi);         // bytes
+  cg.movToMem(Rbp, -24, Rsi);  // length
+  cg.movReg(Rdi, Rsi);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.callLabel(allocLabel);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movReg(Rbx, Rax);  // the AotString*
+  cg.movFromMem(R8, Rbp, -24);
+  cg.movToMem(Rbx, 0, R8);  // the length word
+  cg.movReg(Rdi, Rbx);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movReg(Rsi, R12);
+  cg.movReg(Rcx, R8);
+  cg.cld();
+  cg.repMovsb();  // a zero length is a no-op
+  cg.movReg(Rdx, Rbx);
+  cg.movImm(Rax, kTagStr);
+  cg.addImm32(Rsp, 16);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+
+  cg.bind(oom);
+  emitFailCall(cg, fail, msgOom);
+}
+
+// `AotPtr* oskel_ptr_new(long kind, long length)`: allocate a handle and the
+// `length` bytes it owns, in one block, and return the header -- or null when
+// the arena is exhausted, which the caller reports. The bytes are zeroed, which
+// is what `buffer()` promises and what gives a `cstring` its terminator for
+// free. A `Void` handle owns no bytes: its `data` word is the opaque token the
+// caller stores.
+void emitPtrNew(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel) {
+  CodeGen::Label zeroLoop = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.movReg(Rbx, Rdi);  // kind
+  cg.movReg(R12, Rsi);  // length
+  cg.movReg(Rdi, R12);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kAotPtrHeaderSize));
+  cg.callLabel(allocLabel);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, done);  // rax = 0: the caller reports out of memory
+  cg.movToMem(Rax, kPtrKindOffset, Rbx);
+  cg.movToMem(Rax, kPtrLengthOffset, R12);
+  cg.movImmToMem(Rax, kPtrReleasedOffset, 0);
+  cg.movReg(R8, Rax);
+  cg.addImm32(R8, static_cast<std::int32_t>(kAotPtrHeaderSize));
+  cg.movToMem(Rax, kPtrDataOffset, R8);
+  cg.xorReg(R9, R9);    // index
+  cg.xorReg(R11, R11);  // the zero byte
+  cg.bind(zeroLoop);
+  cg.cmpReg(R9, R12);
+  cg.jcc(Jcc::Ae, done);
+  cg.movReg(R10, R8);
+  cg.addReg(R10, R9);
+  cg.movByteToMem(R10, 0, R11);
+  cg.addImm32(R9, 1);
+  cg.jmp(zeroLoop);
+
+  cg.bind(done);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `long oskel_ptr_text_len(AotPtr* handle)`: how many bytes a `cstring` exposes
+// as text -- it stops at its first NUL, C's view of it. Every other kind keeps
+// all its bytes. A leaf: it calls nothing and touches only rax and r8-r11.
+void emitPtrTextLen(CodeGen& cg, CodeGen::Label label) {
+  CodeGen::Label opaque = cg.newLabel();
+  CodeGen::Label scan = cg.newLabel();
+  CodeGen::Label scanned = cg.newLabel();
+
+  cg.bind(label);
+  cg.movFromMem(R8, Rdi, kPtrKindOffset);
+  cg.movFromMem(R9, Rdi, kPtrLengthOffset);
+  cg.cmpImm32(R8, static_cast<std::int32_t>(kPtrKindCString));
+  cg.jcc(Jcc::Ne, opaque);
+  cg.movFromMem(R10, Rdi, kPtrDataOffset);
+  cg.xorReg(Rax, Rax);  // the scanned length
+  cg.bind(scan);
+  cg.cmpReg(Rax, R9);
+  cg.jcc(Jcc::Ae, scanned);
+  cg.movReg(R11, R10);
+  cg.addReg(R11, Rax);
+  cg.movzxFromMem(R11, R11, 0);
+  cg.testReg(R11);
+  cg.jcc(Jcc::Eq, scanned);
+  cg.addImm32(Rax, 1);
+  cg.jmp(scan);
+  cg.bind(scanned);
+  cg.retInsn();
+
+  cg.bind(opaque);
+  cg.movReg(Rax, R9);
+  cg.retInsn();
+}
+
+// Loads `args[index]` as a live pointer handle into `dst`, reporting the type
+// error or the use-after-`free` the hosted `wantPtr` reports. The argument
+// window grows downward (slot 0 at +0, slot 1 at -16, ...).
+void emitPtrArgCheck(CodeGen& cg, X64Reg args, std::int64_t index, X64Reg dst,
+                     CodeGen::Label fail, const DataBlob& msgType,
+                     const DataBlob& msgFreed) {
+  CodeGen::Label isPtr = cg.newLabel();
+  CodeGen::Label live = cg.newLabel();
+  const std::int64_t offset = -16 * index;
+
+  cg.movFromMem(Rax, args, offset);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagPtr));
+  cg.jcc(Jcc::Eq, isPtr);
+  emitFailCall(cg, fail, msgType);
+
+  cg.bind(isPtr);
+  cg.movFromMem(dst, args, offset + 8);
+  cg.movFromMem(Rax, dst, kPtrReleasedOffset);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, live);
+  emitFailCall(cg, fail, msgFreed);
+
+  cg.bind(live);
+}
+
+// `cstring(text)`: a `CString` handle owning the text plus its NUL terminator.
+void emitCStringBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label ptrNew,
+                        CodeGen::Label fail, const DataBlob& msgArgc,
+                        const DataBlob& msgType, const DataBlob& msgOom) {
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label isText = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(argcOk);
+  cg.movFromMem(Rax, Rdi, 0);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, isText);
+  emitFailCall(cg, fail, msgType);
+
+  cg.bind(isText);
+  cg.movFromMem(R12, Rdi, 8);  // the AotString*
+  cg.movImm(Rdi, kPtrKindCString);
+  cg.movFromMem(Rsi, R12, 0);
+  cg.addImm32(Rsi, 1);  // the text plus the terminator
+  cg.callLabel(ptrNew);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movReg(Rbx, Rax);
+  cg.movFromMem(Rdi, Rbx, kPtrDataOffset);
+  cg.movReg(Rsi, R12);
+  cg.addImm32(Rsi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movFromMem(Rcx, R12, 0);
+  cg.cld();
+  cg.repMovsb();
+  cg.movReg(Rdx, Rbx);
+  cg.movImm(Rax, kTagPtr);
+  cg.jmp(done);
+
+  cg.bind(oom);
+  emitFailCall(cg, fail, msgOom);
+
+  cg.bind(done);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `buffer(size)`: a `Buffer` handle owning `size` zeroed, writable bytes.
+void emitBufferBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label ptrNew,
+                       CodeGen::Label fail, const DataBlob& msgArgc,
+                       const DataBlob& msgType, const DataBlob& msgNegative,
+                       const DataBlob& msgOom) {
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label isInt = cg.newLabel();
+  CodeGen::Label nonNegative = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(argcOk);
+  cg.movFromMem(Rax, Rdi, 0);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Eq, isInt);
+  emitFailCall(cg, fail, msgType);
+
+  cg.bind(isInt);
+  cg.movFromMem(R12, Rdi, 8);  // size
+  cg.testReg(R12);
+  cg.jcc(Jcc::Ge, nonNegative);
+  emitFailCall(cg, fail, msgNegative);
+
+  cg.bind(nonNegative);
+  cg.movImm(Rdi, kPtrKindBuffer);
+  cg.movReg(Rsi, R12);
+  cg.callLabel(ptrNew);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movReg(Rdx, Rax);
+  cg.movImm(Rax, kTagPtr);
+  cg.jmp(done);
+
+  cg.bind(oom);
+  emitFailCall(cg, fail, msgOom);
+
+  cg.bind(done);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `cstr(handle)`: the handle's bytes as an Oskel string.
+void emitCstrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label strNew,
+                     CodeGen::Label ptrTextLen, CodeGen::Label fail,
+                     const DataBlob& msgArgc, const DataBlob& msgType,
+                     const DataBlob& msgFreed) {
+  CodeGen::Label argcOk = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(argcOk);
+  emitPtrArgCheck(cg, Rdi, 0, Rbx, fail, msgType, msgFreed);
+  cg.movReg(Rdi, Rbx);
+  cg.callLabel(ptrTextLen);
+  cg.movReg(R12, Rax);
+  cg.movFromMem(Rdi, Rbx, kPtrDataOffset);
+  cg.movReg(Rsi, R12);
+  cg.callLabel(strNew);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `byteLen(handle)`: how many bytes the handle owns, as an `int`. A `cstring`
+// counts its text and not its terminator (the hosted builtin drops the trailing
+// NUL), a buffer counts every byte, and a `void *` owns none.
+void emitByteLenBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+                        const DataBlob& msgArgc, const DataBlob& msgType,
+                        const DataBlob& msgFreed) {
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(argcOk);
+  emitPtrArgCheck(cg, Rdi, 0, Rbx, fail, msgType, msgFreed);
+  cg.movFromMem(Rdx, Rbx, kPtrLengthOffset);
+  cg.movFromMem(R8, Rbx, kPtrKindOffset);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Eq, done);  // a `void *` was built with a zero length
+  cg.cmpImm32(R8, static_cast<std::int32_t>(kPtrKindCString));
+  cg.jcc(Jcc::Ne, done);  // a buffer keeps every byte
+  cg.testReg(Rdx);
+  cg.jcc(Jcc::Eq, done);
+  cg.subRegImm32(Rdx, 1);  // drop the terminator
+
+  cg.bind(done);
+  cg.movImm(Rax, kTagInt);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `loadByte(handle, index)`: one byte (0-255) of a `cstring`/`buffer`.
+void emitLoadByteBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+                         const DataBlob& msgArgc, const DataBlob& msgType,
+                         const DataBlob& msgFreed, const DataBlob& msgNeeds,
+                         const DataBlob& msgIndexType, const DataBlob& msgRange) {
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label hasBytes = cg.newLabel();
+  CodeGen::Label indexOk = cg.newLabel();
+  CodeGen::Label indexNonNeg = cg.newLabel();
+  CodeGen::Label inRange = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.cmpImm32(Rsi, 2);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(argcOk);
+  emitPtrArgCheck(cg, Rdi, 0, Rbx, fail, msgType, msgFreed);
+  cg.movFromMem(Rax, Rbx, kPtrKindOffset);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, hasBytes);  // a `void *` is opaque
+  emitFailCall(cg, fail, msgNeeds);
+
+  cg.bind(hasBytes);
+  cg.movFromMem(Rax, Rdi, -16);  // args[1].tag
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Eq, indexOk);
+  emitFailCall(cg, fail, msgIndexType);
+
+  cg.bind(indexOk);
+  cg.movFromMem(R12, Rdi, -8);  // args[1].payload
+  cg.testReg(R12);
+  cg.jcc(Jcc::Ge, indexNonNeg);
+  emitFailCall(cg, fail, msgRange);
+
+  cg.bind(indexNonNeg);
+  cg.movFromMem(Rax, Rbx, kPtrLengthOffset);
+  cg.cmpReg(R12, Rax);
+  cg.jcc(Jcc::B, inRange);
+  emitFailCall(cg, fail, msgRange);
+
+  cg.bind(inRange);
+  cg.movFromMem(R8, Rbx, kPtrDataOffset);
+  cg.addReg(R8, R12);
+  cg.movzxFromMem(Rdx, R8, 0);
+  cg.movImm(Rax, kTagInt);
+  cg.jmp(done);
+
+  cg.bind(done);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `storeByte(handle, index, byte)`: write one byte into a buffer. A `cstring` is
+// read-only, like C's `const char *`.
+void emitStoreByteBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+                          const DataBlob& msgArgc, const DataBlob& msgType,
+                          const DataBlob& msgFreed, const DataBlob& msgNeeds,
+                          const DataBlob& msgIndexType, const DataBlob& msgByteType,
+                          const DataBlob& msgRange, const DataBlob& msgByteRange) {
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label writable = cg.newLabel();
+  CodeGen::Label indexOk = cg.newLabel();
+  CodeGen::Label indexNonNeg = cg.newLabel();
+  CodeGen::Label inRange = cg.newLabel();
+  CodeGen::Label byteOk = cg.newLabel();
+  CodeGen::Label byteNonNeg = cg.newLabel();
+  CodeGen::Label byteInRange = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.cmpImm32(Rsi, 3);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(argcOk);
+  emitPtrArgCheck(cg, Rdi, 0, Rbx, fail, msgType, msgFreed);
+  cg.movFromMem(Rax, Rbx, kPtrKindOffset);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kPtrKindBuffer));
+  cg.jcc(Jcc::Eq, writable);
+  emitFailCall(cg, fail, msgNeeds);
+
+  cg.bind(writable);
+  cg.movFromMem(Rax, Rdi, -16);  // args[1].tag
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Eq, indexOk);
+  emitFailCall(cg, fail, msgIndexType);
+
+  cg.bind(indexOk);
+  cg.movFromMem(R12, Rdi, -8);   // args[1].payload: the index
+  cg.movFromMem(Rax, Rdi, -32);  // args[2].tag
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Eq, byteOk);
+  emitFailCall(cg, fail, msgByteType);
+
+  cg.bind(byteOk);
+  cg.testReg(R12);
+  cg.jcc(Jcc::Ge, indexNonNeg);
+  emitFailCall(cg, fail, msgRange);
+
+  cg.bind(indexNonNeg);
+  cg.movFromMem(Rax, Rbx, kPtrLengthOffset);
+  cg.cmpReg(R12, Rax);
+  cg.jcc(Jcc::B, inRange);
+  emitFailCall(cg, fail, msgRange);
+
+  cg.bind(inRange);
+  cg.movFromMem(R8, Rdi, -24);  // args[2].payload: the byte
+  cg.testReg(R8);
+  cg.jcc(Jcc::Ge, byteNonNeg);
+  emitFailCall(cg, fail, msgByteRange);
+
+  cg.bind(byteNonNeg);
+  cg.cmpImm32(R8, 255);
+  cg.jcc(Jcc::Le, byteInRange);
+  emitFailCall(cg, fail, msgByteRange);
+
+  cg.bind(byteInRange);
+  cg.movFromMem(R9, Rbx, kPtrDataOffset);
+  cg.addReg(R9, R12);
+  cg.movByteToMem(R9, 0, R8);
+  cg.xorReg(Rax, Rax);  // nil
+  cg.xorReg(Rdx, Rdx);
+
+  cg.bind(done);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `intToPtr(token)`: wrap an opaque integer in a `Void` handle.
+void emitIntToPtrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label ptrNew,
+                         CodeGen::Label fail, const DataBlob& msgArgc,
+                         const DataBlob& msgType, const DataBlob& msgOom) {
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label isInt = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(argcOk);
+  cg.movFromMem(Rax, Rdi, 0);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Eq, isInt);
+  emitFailCall(cg, fail, msgType);
+
+  cg.bind(isInt);
+  cg.movFromMem(R12, Rdi, 8);  // the token
+  cg.movImm(Rdi, kPtrKindVoid);
+  cg.xorReg(Rsi, Rsi);
+  cg.callLabel(ptrNew);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rax, kPtrDataOffset, R12);
+  cg.movReg(Rdx, Rax);
+  cg.movImm(Rax, kTagPtr);
+  cg.jmp(done);
+
+  cg.bind(oom);
+  emitFailCall(cg, fail, msgOom);
+
+  cg.bind(done);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `ptrToInt(handle)`: read the opaque token back out.
+void emitPtrToIntBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+                         const DataBlob& msgArgc, const DataBlob& msgType,
+                         const DataBlob& msgFreed) {
+  CodeGen::Label argcOk = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(argcOk);
+  emitPtrArgCheck(cg, Rdi, 0, Rbx, fail, msgType, msgFreed);
+  cg.movFromMem(Rdx, Rbx, kPtrDataOffset);
+  cg.movImm(Rax, kTagInt);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `free(handle)`: release the handle's storage. The arena never reclaims, so
+// this only marks the handle released -- a later use is a reported error
+// instead of a read of bytes the program believed were gone.
+void emitFreeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+                     const DataBlob& msgArgc, const DataBlob& msgType,
+                     const DataBlob& msgFreed) {
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label isPtr = cg.newLabel();
+  CodeGen::Label live = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(argcOk);
+  cg.movFromMem(Rax, Rdi, 0);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagPtr));
+  cg.jcc(Jcc::Eq, isPtr);
+  emitFailCall(cg, fail, msgType);
+
+  cg.bind(isPtr);
+  cg.movFromMem(Rbx, Rdi, 8);
+  cg.movFromMem(Rax, Rbx, kPtrReleasedOffset);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, live);
+  emitFailCall(cg, fail, msgFreed);
+
+  cg.bind(live);
+  cg.movImmToMem(Rbx, kPtrReleasedOffset, 1);
+  cg.movImmToMem(Rbx, kPtrLengthOffset, 0);
+  cg.xorReg(Rax, Rax);  // nil
+  cg.xorReg(Rdx, Rdx);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// Copies the text of the `AotString*` in `src` into the arena and leaves a
+// NUL-terminated `const char*` in rax -- the path a file handle takes. Reports
+// out of memory through `fail`, and a path with an embedded NUL through the
+// same sink: the OS would see only the prefix, and the hosted engine rejects
+// such a path for exactly that reason, so truncating here would be a silent
+// divergence between the two engines. Inline, because each file builtin needs
+// it once and the copy is not hot.
+void emitPathCopy(CodeGen& cg, X64Reg src, CodeGen::Label allocLabel,
+                  CodeGen::Label fail, const DataBlob& msgOom,
+                  const DataBlob& msgNul) {
+  CodeGen::Label copied = cg.newLabel();
+  CodeGen::Label scan = cg.newLabel();
+  CodeGen::Label scanned = cg.newLabel();
+  CodeGen::Label nulFound = cg.newLabel();
+  CodeGen::Label copiedDone = cg.newLabel();
+
+  cg.movFromMem(R8, src, 0);  // the text length
+  cg.movReg(R9, src);
+  cg.addImm32(R9, static_cast<std::int32_t>(kStringDataOffset));  // the first byte
+  cg.movReg(R10, R9);
+  cg.addReg(R10, R8);  // one past the last byte
+  cg.bind(scan);
+  cg.cmpReg(R9, R10);
+  cg.jcc(Jcc::Ae, scanned);
+  cg.movzxFromMem(Rax, R9, 0);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, nulFound);  // a NUL: report it and stop before copying
+  cg.addImm32(R9, 1);
+  cg.jmp(scan);
+
+  cg.bind(scanned);
+  cg.movReg(Rdi, R8);   // the text length
+  cg.addImm32(Rdi, 1);  // plus the terminator
+  cg.callLabel(allocLabel);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, copied);
+  emitFailCall(cg, fail, msgOom);  // never returns
+
+  cg.bind(copied);
+  cg.movReg(R8, Rax);  // the buffer, kept across the copy
+  cg.movReg(Rdi, R8);
+  cg.movReg(Rsi, src);
+  cg.addImm32(Rsi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movFromMem(Rcx, src, 0);
+  cg.cld();
+  cg.repMovsb();  // rdi now sits at the terminator slot
+  cg.movImmByteToMem(Rdi, 0, 0);
+  cg.movReg(Rax, R8);
+  cg.jmp(copiedDone);
+
+  cg.bind(nulFound);
+  emitFailCall(cg, fail, msgNul);
+
+  cg.bind(copiedDone);
+}
+
+// `void oskel_fail_path(AotString* path)`: reports `prefix` + the path + `'`, the
+// text the hosted `readFile`/`writeFile` produce ("cannot read file 'x'"). The
+// bytes go through the one error sink, so a `pcall` catches them like any other
+// message. `prefix` selects which of the two messages is reported.
+void emitFailPath(CodeGen& cg, CodeGen::Label label, CodeGen::Label failDynamic,
+                  CodeGen::Label sbNew, CodeGen::Label sbAppend,
+                  const DataBlob& prefix, const DataBlob& textQuote) {
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 16);
+  cg.movToMem(Rbp, -24, Rdi);  // the path
+  cg.callLabel(sbNew);
+  cg.movReg(Rbx, Rax);
+  cg.movReg(Rdi, Rbx);
+  cg.leaRipLabel(Rsi, prefix.label);
+  cg.movImm(Rdx, static_cast<std::int64_t>(prefix.text.size()));
+  cg.callLabel(sbAppend);
+  cg.movFromMem(R12, Rbp, -24);
+  cg.movReg(Rdi, Rbx);
+  cg.movReg(Rsi, R12);
+  cg.addImm32(Rsi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movFromMem(Rdx, R12, 0);
+  cg.callLabel(sbAppend);
+  cg.movReg(Rdi, Rbx);
+  cg.leaRipLabel(Rsi, textQuote.label);
+  cg.movImm(Rdx, static_cast<std::int64_t>(textQuote.text.size()));
+  cg.callLabel(sbAppend);
+  cg.movFromMem(Rdi, Rbx, kSbDataOffset);
+  cg.movFromMem(Rsi, Rbx, kSbLengthOffset);
+  cg.callLabel(failDynamic);
+  cg.ud2();
+}
+
+// `readFile(path)`: the whole file as a string. It is read in 4 KiB chunks into
+// a string builder, so a file of any size lands in one arena string and no size
+// has to be known up front.
+void emitReadFileBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                         const RuntimeHandles& entry, CodeGen::Label sbNew,
+                         CodeGen::Label sbAppend, CodeGen::Label failPath,
+                         const DataBlob& msgArgc, const DataBlob& msgPathType,
+                         const DataBlob& msgNul) {
+  constexpr std::int64_t kChunk = 4096;
+  constexpr std::int64_t kBuffer = -4144;  // 4096 bytes, below the two locals
+  constexpr std::int64_t kFd = -24;
+  constexpr std::int64_t kSb = -32;
+  constexpr std::int64_t kPath = -40;
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label isPath = cg.newLabel();
+  CodeGen::Label opened = cg.newLabel();
+  CodeGen::Label readLoop = cg.newLabel();
+  CodeGen::Label buildString = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 4144);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitFailCall(cg, env.fail, msgArgc);
+
+  cg.bind(argcOk);
+  cg.movFromMem(Rax, Rdi, 0);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, isPath);
+  emitFailCall(cg, env.fail, msgPathType);
+
+  cg.bind(isPath);
+  cg.movFromMem(R12, Rdi, 8);  // the path AotString*
+  cg.movToMem(Rbp, kPath, R12);
+  cg.callLabel(sbNew);  // the builder first: its own allocation may fail
+  cg.movToMem(Rbp, kSb, Rax);
+  emitPathCopy(cg, R12, env.alloc, env.fail, *env.msgOom, msgNul);
+  cg.movReg(Rdi, Rax);
+  cg.xorReg(Rsi, Rsi);  // mode 0: read
+  cg.callLabel(entry.open);
+  cg.movToMem(Rbp, kFd, Rax);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ge, opened);
+  cg.movFromMem(Rdi, Rbp, kPath);
+  cg.callLabel(failPath);
+  cg.ud2();
+
+  cg.bind(opened);
+  cg.bind(readLoop);
+  cg.movFromMem(Rdi, Rbp, kFd);
+  cg.leaMem(Rsi, Rbp, kBuffer);
+  cg.movImm(Rdx, kChunk);
+  cg.callLabel(entry.readFd);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Le, buildString);  // end of file, or a read error: stop
+  cg.movReg(R12, Rax);
+  cg.movFromMem(Rdi, Rbp, kSb);
+  cg.leaMem(Rsi, Rbp, kBuffer);
+  cg.movReg(Rdx, R12);
+  cg.callLabel(sbAppend);
+  cg.jmp(readLoop);
+
+  cg.bind(buildString);
+  cg.movFromMem(Rdi, Rbp, kFd);
+  cg.callLabel(entry.close);
+  cg.movFromMem(Rbx, Rbp, kSb);
+  cg.movFromMem(R12, Rbx, kSbLengthOffset);
+  cg.movReg(Rdi, R12);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.callLabel(env.alloc);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rax, 0, R12);
+  cg.movReg(Rdi, Rax);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movFromMem(Rsi, Rbx, kSbDataOffset);
+  cg.movReg(Rcx, R12);
+  cg.cld();
+  cg.repMovsb();
+  cg.movReg(Rdx, Rax);
+  cg.movImm(Rax, kTagStr);
+  cg.jmp(done);
+
+  cg.bind(oom);
+  emitFailCall(cg, env.fail, *env.msgOom);
+
+  cg.bind(done);
+  cg.addImm32(Rsp, 4144);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `writeFile(path, contents)`: write the string's bytes to the path, creating or
+// truncating it, and return nil.
+void emitWriteFileBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                          const RuntimeHandles& entry, CodeGen::Label failPath,
+                          const DataBlob& msgArgc, const DataBlob& msgPathType,
+                          const DataBlob& msgContentsType, const DataBlob& msgNul) {
+  constexpr std::int64_t kFd = -24;
+  constexpr std::int64_t kPath = -32;
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label isPath = cg.newLabel();
+  CodeGen::Label isText = cg.newLabel();
+  CodeGen::Label opened = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 16);
+  cg.cmpImm32(Rsi, 2);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitFailCall(cg, env.fail, msgArgc);
+
+  cg.bind(argcOk);
+  cg.movFromMem(Rax, Rdi, 0);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, isPath);
+  emitFailCall(cg, env.fail, msgPathType);
+
+  cg.bind(isPath);
+  cg.movFromMem(R12, Rdi, 8);    // the path AotString*
+  cg.movToMem(Rbp, kPath, R12);
+  cg.movFromMem(Rax, Rdi, -16);  // args[1].tag
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, isText);
+  emitFailCall(cg, env.fail, msgContentsType);
+
+  cg.bind(isText);
+  cg.movFromMem(Rbx, Rdi, -8);  // args[1].payload: the contents AotString*
+  emitPathCopy(cg, R12, env.alloc, env.fail, *env.msgOom, msgNul);
+  cg.movReg(Rdi, Rax);
+  cg.movImm(Rsi, 1);  // mode 1: write (create or truncate)
+  cg.callLabel(entry.open);
+  cg.movToMem(Rbp, kFd, Rax);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ge, opened);
+  cg.movFromMem(Rdi, Rbp, kPath);
+  cg.callLabel(failPath);
+  cg.ud2();
+
+  cg.bind(opened);
+  cg.movFromMem(Rdi, Rbp, kFd);
+  cg.movReg(Rsi, Rbx);
+  cg.addImm32(Rsi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movFromMem(Rdx, Rbx, 0);
+  cg.callLabel(entry.writeFd);
+  cg.movFromMem(Rdi, Rbp, kFd);
+  cg.callLabel(entry.close);
+  cg.xorReg(Rax, Rax);  // nil
+  cg.xorReg(Rdx, Rdx);
+  cg.addImm32(Rsp, 16);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `fileExists(path)`: true when the path opens for reading.
+void emitFileExistsBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                           const RuntimeHandles& entry, const DataBlob& msgArgc,
+                           const DataBlob& msgPathType, const DataBlob& msgNul) {
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label isPath = cg.newLabel();
+  CodeGen::Label missing = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitFailCall(cg, env.fail, msgArgc);
+
+  cg.bind(argcOk);
+  cg.movFromMem(Rax, Rdi, 0);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, isPath);
+  emitFailCall(cg, env.fail, msgPathType);
+
+  cg.bind(isPath);
+  cg.movFromMem(R12, Rdi, 8);
+  emitPathCopy(cg, R12, env.alloc, env.fail, *env.msgOom, msgNul);
+  cg.movReg(Rdi, Rax);
+  cg.xorReg(Rsi, Rsi);  // mode 0: read
+  cg.callLabel(entry.open);
+  cg.movReg(Rbx, Rax);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Lt, missing);
+  cg.movReg(Rdi, Rbx);
+  cg.callLabel(entry.close);
+  cg.movImm(Rdx, 1);  // true
+  CodeGen::Label done = cg.newLabel();
+  cg.jmp(done);
+
+  cg.bind(missing);
+  cg.xorReg(Rdx, Rdx);  // false
+
+  cg.bind(done);
+  cg.movImm(Rax, kTagBool);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `clock()`: the seconds since the process started, as a `double`. The origin is
+// the value the chunk captured from `entry.monotonic` at entry, so the first
+// call is not the reference; the difference is scaled from nanoseconds to
+// seconds, the unit the hosted `clock()` reports.
+void emitClockBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label monotonic,
+                      int originSlot, CodeGen::Label fail, const DataBlob& msgArgc) {
+  CodeGen::Label argcOk = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(argcOk);
+  cg.callLabel(monotonic);  // rax = nanoseconds
+  cg.movFromMem(R8, kAotGlobalBase, 16LL * originSlot + 8);
+  cg.subReg(Rax, R8);
+  cg.cvtsi2sd(Xmm0, Rax);
+  cg.movImm(R9, 1000000000);
+  cg.movqToXmm(Xmm1, R9);
+  cg.divsd(Xmm0, Xmm1);
+  cg.movqFromXmm(Rdx, Xmm0);
+  cg.movImm(Rax, kTagDouble);
+  epilogue(cg);
+}
+
+// `args()`: the script arguments as an array of strings, read from the hidden
+// global the chunk filled at entry. A program with no arguments gets an empty
+// array, never nil.
+void emitArgsBuiltin(CodeGen& cg, CodeGen::Label label, int argsSlot,
+                     CodeGen::Label fail, const DataBlob& msgArgc) {
+  CodeGen::Label argcOk = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitFailCall(cg, fail, msgArgc);
+
+  cg.bind(argcOk);
+  cg.movFromMem(Rax, kAotGlobalBase, 16LL * argsSlot);
+  cg.movFromMem(Rdx, kAotGlobalBase, 16LL * argsSlot + 8);
+  epilogue(cg);
+}
+
+// `void oskel_build_args(long argc, char** argv, long slot)`: build the array
+// `args()` returns from the process argument vector, skipping `argv[0]` (the
+// program itself, which the hosted engine does not report either) and storing it
+// in the hidden global `slot`. A NULL slot is skipped rather than fatal, so a
+// truncated vector still yields the arguments before it.
+void emitBuildArgs(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
+  constexpr std::int64_t kCount = -24;
+  constexpr std::int64_t kArgv = -32;
+  constexpr std::int64_t kSlot = -40;
+  constexpr std::int64_t kIndex = -48;
+  constexpr std::int64_t kBlock = -56;
+  constexpr std::int64_t kLength = -64;
+  CodeGen::Label empty = cg.newLabel();
+  CodeGen::Label loop = cg.newLabel();
+  CodeGen::Label scan = cg.newLabel();
+  CodeGen::Label scanned = cg.newLabel();
+  CodeGen::Label skip = cg.newLabel();
+  CodeGen::Label store = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 48);
+  cg.subRegImm32(Rdi, 1);  // the arguments after argv[0]
+  cg.movToMem(Rbp, kCount, Rdi);
+  cg.movToMem(Rbp, kArgv, Rsi);
+  cg.movToMem(Rbp, kSlot, Rdx);
+
+  cg.movImm(Rdi, static_cast<std::int64_t>(kAotArrayHeaderSize));
+  cg.callLabel(env.alloc);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movReg(Rbx, Rax);  // the header
+  cg.movImmToMem(Rbx, kTableLengthOffset, 0);
+  cg.movImmToMem(Rbx, kTableCapacityOffset, 0);
+  cg.movImmToMem(Rbx, kTableBlockOffset, 0);
+
+  cg.movFromMem(R8, Rbp, kCount);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Le, empty);  // no arguments: an empty array
+  cg.movReg(Rdi, R8);
+  cg.shlImm8(Rdi, 4);  // count * sizeof(AotValue)
+  cg.callLabel(env.alloc);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rbp, kBlock, Rax);
+  cg.movFromMem(R8, Rbp, kCount);
+  cg.movToMem(Rbx, kTableLengthOffset, R8);
+  cg.movToMem(Rbx, kTableCapacityOffset, R8);
+  cg.movToMem(Rbx, kTableBlockOffset, Rax);
+  cg.movImmToMem(Rbp, kIndex, 0);
+
+  cg.bind(loop);
+  cg.movFromMem(R8, Rbp, kIndex);
+  cg.movFromMem(R9, Rbp, kCount);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ae, store);
+
+  // The `char*` of this argument: argv[index + 1].
+  cg.movFromMem(R9, Rbp, kArgv);
+  cg.addImm32(R8, 1);
+  cg.shlImm8(R8, 3);  // (index + 1) * sizeof(char*)
+  cg.addReg(R9, R8);
+  cg.movFromMem(R12, R9, 0);  // the text
+  cg.testReg(R12);
+  cg.jcc(Jcc::Eq, skip);
+
+  cg.xorReg(R10, R10);  // strlen, inline
+  cg.bind(scan);
+  cg.movReg(R11, R12);
+  cg.addReg(R11, R10);
+  cg.movzxFromMem(R11, R11, 0);
+  cg.testReg(R11);
+  cg.jcc(Jcc::Eq, scanned);
+  cg.addImm32(R10, 1);
+  cg.jmp(scan);
+
+  cg.bind(scanned);
+  cg.movToMem(Rbp, kLength, R10);
+  cg.movReg(Rdi, R10);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.callLabel(env.alloc);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movFromMem(R8, Rbp, kLength);
+  cg.movToMem(Rax, 0, R8);
+  cg.movReg(Rdi, Rax);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movReg(Rsi, R12);
+  cg.movReg(Rcx, R8);
+  cg.cld();
+  cg.repMovsb();
+  // block[index] = { Str, the AotString* }
+  cg.movFromMem(R9, Rbp, kIndex);
+  cg.shlImm8(R9, 4);
+  cg.movFromMem(R10, Rbp, kBlock);
+  cg.addReg(R10, R9);
+  cg.movImmToMem(R10, 0, kTagStr);
+  cg.movToMem(R10, 8, Rax);
+
+  cg.bind(skip);
+  cg.movFromMem(R8, Rbp, kIndex);
+  cg.addImm32(R8, 1);
+  cg.movToMem(Rbp, kIndex, R8);
+  cg.jmp(loop);
+
+  cg.bind(empty);
+  cg.bind(store);
+  cg.movFromMem(R9, Rbp, kSlot);
+  cg.shlImm8(R9, 4);
+  cg.addReg(R9, kAotGlobalBase);
+  cg.movImmToMem(R9, 0, kTagArray);
+  cg.movToMem(R9, 8, Rbx);
+  cg.jmp(done);
+
+  cg.bind(oom);
+  emitFailCall(cg, env.fail, *env.msgOom);
+
+  cg.bind(done);
+  cg.addImm32(Rsp, 48);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
 void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                     const RuntimeHandles& entry,
                     const std::vector<AotExternThunk>* externThunks, bool hosted,
                     bool hasInput, bool bareMetal, int randomStateSlot,
-                    int pcallHandlerSlot) {
+                    int pcallHandlerSlot, const AotRuntimeExtras& extras) {
   // Constant text, bound after all code so nothing falls through into it.
   std::vector<DataBlob> data;
   auto addText = [&](const char* text) {
@@ -9744,6 +10975,9 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob textNewline = addText("\n");
   DataBlob textSpace = addText(" ");
   DataBlob textFunc = addText("<fn>");
+  // A pointer handle with no text (`ptr`, or a buffer) renders as `<ptr>`,
+  // exactly like the hosted `writeValue`; a `cstring` renders its bytes.
+  DataBlob textPtr = addText("<ptr>");
   DataBlob textComma = addText(", ");
   DataBlob textColon = addText(": ");
   DataBlob textOpenBracket = addText("[");
@@ -9776,6 +11010,10 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob typeNameFunc = addText("function");
   DataBlob typeNameRange = addText("range");
   DataBlob typeNameError = addText("error");
+  // A pointer handle reports `ptr` or `cstring` by its kind (PHASE 7g.2), the
+  // same two names the hosted `Value::typeName` returns.
+  DataBlob typeNamePtr = addText("ptr");
+  DataBlob typeNameCString = addText("cstring");
   DataBlob msgErrorCodeType = addText("error() expects an integer code");
   DataBlob textError = addText("error(");
   DataBlob textCloseParen = addText(")");
@@ -9821,6 +11059,61 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgTimeArgc = addText("time() expects 0 arguments");
   DataBlob msgInputArgc = addText("input() expects between 0 and 1 arguments");
   DataBlob msgMemSizeArgc = addText("memSize() expects 0 arguments");
+  // The pointer/file/clock/argument builtins (BACKLOG §6 item 25). Their
+  // messages are the hosted ones' fixed part: the hosted helpers append a
+  // dynamic tail (`, got 'int'`, the offending index), which the AOT runtime
+  // does not assemble -- the convention `ord`/`len`/`chr` already follow.
+  // The messages keep the *function name* the hosted helpers print, so the two
+  // engines report the same error; only the dynamic tail (`, got 'int'`, the
+  // offending index) is dropped, because the AOT sink writes a fixed blob.
+  DataBlob msgCStringArgc = addText("cstring() expects 1 argument");
+  DataBlob msgCStringType = addText("cstring() expects a string argument");
+  DataBlob msgBufferArgc = addText("buffer() expects 1 argument");
+  DataBlob msgBufferType = addText("buffer() expects an integer size");
+  DataBlob msgBufferNegative = addText("buffer() size must not be negative");
+  DataBlob msgCstrArgc = addText("cstr() expects 1 argument");
+  DataBlob msgCstrType = addText("cstr() expects a pointer argument");
+  DataBlob msgCstrFreed = addText("cstr() used a pointer after it was freed");
+  DataBlob msgByteLenArgc = addText("byteLen() expects 1 argument");
+  DataBlob msgByteLenType = addText("byteLen() expects a pointer argument");
+  DataBlob msgByteLenFreed = addText("byteLen() used a pointer after it was freed");
+  DataBlob msgLoadArgc = addText("loadByte() expects 2 arguments");
+  DataBlob msgLoadType = addText("loadByte() expects a pointer value");
+  DataBlob msgLoadFreed = addText("loadByte() used a pointer after it was freed");
+  DataBlob msgLoadNeeds = addText("loadByte() needs a cstring or buffer");
+  DataBlob msgLoadIndexType = addText("loadByte() expects an integer index");
+  DataBlob msgLoadRange = addText("loadByte() index out of range");
+  DataBlob msgStoreArgc = addText("storeByte() expects 3 arguments");
+  DataBlob msgStoreType = addText("storeByte() expects a pointer value");
+  DataBlob msgStoreFreed = addText("storeByte() used a pointer after it was freed");
+  DataBlob msgStoreNeeds = addText("storeByte() needs a buffer (a cstring is read-only)");
+  DataBlob msgStoreIndexType = addText("storeByte() expects an integer index");
+  DataBlob msgStoreByteType = addText("storeByte() expects an integer byte");
+  DataBlob msgStoreRange = addText("storeByte() index out of range");
+  DataBlob msgStoreByteRange = addText("storeByte() byte must be in 0..255");
+  DataBlob msgIntToPtrArgc = addText("intToPtr() expects 1 argument");
+  DataBlob msgIntToPtrType = addText("intToPtr() expects an integer token");
+  DataBlob msgPtrToIntArgc = addText("ptrToInt() expects 1 argument");
+  DataBlob msgPtrToIntType = addText("ptrToInt() expects a pointer argument");
+  DataBlob msgPtrToIntFreed = addText("ptrToInt() used a pointer after it was freed");
+  DataBlob msgFreeArgc = addText("free() expects 1 argument");
+  DataBlob msgFreeType = addText("free() expects a pointer");
+  DataBlob msgFreeFreed = addText("free() used a pointer after it was freed");
+  DataBlob msgReadFileArgc = addText("readFile() expects 1 argument");
+  DataBlob msgWriteFileArgc = addText("writeFile() expects 2 arguments");
+  DataBlob msgFileExistsArgc = addText("fileExists() expects 1 argument");
+  DataBlob msgClockArgc = addText("clock() expects 0 arguments");
+  DataBlob msgArgsArgc = addText("args() expects 0 arguments");
+  DataBlob msgReadFileType = addText("readFile() expects a string path");
+  DataBlob msgReadFileNul = addText("readFile() path must not contain a NUL byte");
+  DataBlob msgWriteFilePathType = addText("writeFile() expects a string path");
+  DataBlob msgWriteFileNul = addText("writeFile() path must not contain a NUL byte");
+  DataBlob msgWriteFileType = addText("writeFile() expects a string contents");
+  DataBlob msgFileExistsType = addText("fileExists() expects a string path");
+  DataBlob msgFileExistsNul = addText("fileExists() path must not contain a NUL byte");
+  DataBlob textReadPrefix = addText("cannot read file '");
+  DataBlob textWritePrefix = addText("cannot write file '");
+  DataBlob textApostrophe = addText("'");
   // The `random`/`seed` messages are added only when the program draws, so a
   // program that never calls them keeps a byte-for-byte identical image.
   // The `pcall` argument message is added only when the program calls `pcall`,
@@ -9867,11 +11160,20 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   CodeGen::Label printRepr = cg.newLabel();
   CodeGen::Label printStrEsc = cg.newLabel();
   CodeGen::Label sbInit = handles.sbInit;
+  // The pointer/file/clock/argument helper labels (BACKLOG §6 item 25). They
+  // are only emitted when the target can back them, so an unseeded builtin
+  // never references an unbound label.
+  CodeGen::Label strNew = cg.newLabel();
+  CodeGen::Label ptrNew = cg.newLabel();
+  CodeGen::Label ptrTextLen = cg.newLabel();
+  CodeGen::Label failPath = cg.newLabel();
+  CodeGen::Label failPathWrite = cg.newLabel();
   // Bound at the public handles so a test can drive them directly.
   CodeGen::Label sbAppend = handles.sbAppend;
   CodeGen::Label sbAppendByte = cg.newLabel();
   CodeGen::Label sbNew = handles.sbNew;
   CodeGen::Label sbAppendEscaped = cg.newLabel();
+  CodeGen::Label sbAppendEscapedBytes = cg.newLabel();
   CodeGen::Label reprInto = cg.newLabel();
   CodeGen::Label reprToString = cg.newLabel();
   // The `pcall` result keys, raw `AotString`s laid out with the other data
@@ -10064,24 +11366,27 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitSbAppend(cg, sbAppend, handles.alloc, fail, msgOom);
   emitSbAppendByte(cg, sbAppendByte, sbAppend);
   emitSbNew(cg, sbNew, handles.alloc, fail, msgOom);
+  emitSbAppendEscaped(cg, sbAppendEscapedBytes, sbAppend, sbAppendByte, textQuote,
+                      textEscQuote, textEscBackslash, textEscNL, textEscTab, textEscCR,
+                      /*fromString=*/false);
   emitSbAppendEscaped(cg, sbAppendEscaped, sbAppend, sbAppendByte, textQuote,
                       textEscQuote, textEscBackslash, textEscNL, textEscTab,
-                      textEscCR);
-  emitReprInto(cg, reprInto, sbAppend, sbAppendEscaped, dtoaHandles.formatDouble,
-               textTrue, textFalse, textNil, textFunc, textComma, textColon,
-               textOpenBracket, textCloseBracket, textOpenBrace, textCloseBrace,
-               textEllipsis, textError, textCloseParen);
+                      textEscCR, /*fromString=*/true);
+  emitReprInto(cg, reprInto, sbAppend, sbAppendEscaped, sbAppendEscapedBytes,
+               dtoaHandles.formatDouble, textTrue, textFalse, textNil, textFunc,
+               textComma, textColon, textOpenBracket, textCloseBracket, textOpenBrace,
+               textCloseBrace, textEllipsis, textError, textCloseParen, textPtr);
   emitReprToString(cg, reprToString, sbNew, reprInto, handles.alloc, fail, msgOom);
   emitPrintRepr(cg, printRepr, entry.write, sbInit, reprInto);
   emitPrintValue(cg, handles.printValue, entry.write, fail, writeInt,
                  dtoaHandles.formatDouble, printRepr, msgPrint, textTrue, textFalse,
-                 textNil, textNewline, hosted);
+                 textNil, textNewline, textPtr, hosted);
   emitPrintValueRaw(cg, handles.printValueRaw, entry.write, fail, writeInt,
                     dtoaHandles.formatDouble, printRepr, msgPrint, textTrue, textFalse,
-                    textNil, textNewline, hosted);
+                    textNil, textNewline, textPtr, hosted);
   emitPrintValueErrRaw(cg, handles.printValueErrRaw, entry.write, fail, writeInt,
                        dtoaHandles.formatDouble, printRepr, msgPrint, textTrue,
-                       textFalse, textNil, textNewline, hosted);
+                       textFalse, textNil, textNewline, textPtr, hosted);
   emitPrintBuiltin(cg, handles.printBuiltin, handles.printValueRaw, entry.write,
                    textSpace, textNewline, /*fd=*/1, /*newline=*/true);
   emitPrintBuiltin(cg, handles.writeBuiltin, handles.printValueRaw, entry.write,
@@ -10116,11 +11421,65 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitNonNullBuiltin(cg, handles.nonNullBuiltin, fail, msgNonNull);
   emitStrBuiltin(cg, handles.strBuiltin, handles.alloc, fail,
                  dtoaHandles.formatDouble, reprToString, msgOom, textTrue, textFalse,
-                 textNil, msgStrBad);
+                 textNil, textPtr, msgStrBad);
   emitRangeBuiltin(cg, handles.rangeBuiltin, handles.alloc, fail, msgOom,
                    msgRangeBounds);
   emitSliceBuiltin(cg, handles.sliceBuiltin, env, msgSliceStart, msgSliceEnd,
                    msgSliceStep, msgSliceType);
+  // The pointer/file/clock/argument builtins (BACKLOG §6 item 25). `strNew`,
+  // `ptrNew` and `ptrTextLen` are the shared leaves; the builtins below are
+  // emitted unconditionally for the pointer ones (every target can back them)
+  // and under the target's capability flag for the rest, so a target that does
+  // not seed one never emits a body that references an unbound prelude label.
+  emitStrNew(cg, strNew, handles.alloc, fail, msgOom);
+  emitPtrNew(cg, ptrNew, handles.alloc);
+  emitPtrTextLen(cg, ptrTextLen);
+  emitCStringBuiltin(cg, handles.cstringBuiltin, ptrNew, fail, msgCStringArgc,
+                     msgCStringType, msgOom);
+  emitBufferBuiltin(cg, handles.bufferBuiltin, ptrNew, fail, msgBufferArgc,
+                    msgBufferType, msgBufferNegative, msgOom);
+  emitCstrBuiltin(cg, handles.cstrBuiltin, strNew, ptrTextLen, fail, msgCstrArgc,
+                  msgCstrType, msgCstrFreed);
+  emitByteLenBuiltin(cg, handles.byteLenBuiltin, fail, msgByteLenArgc, msgByteLenType,
+                     msgByteLenFreed);
+  emitLoadByteBuiltin(cg, handles.loadByteBuiltin, fail, msgLoadArgc, msgLoadType,
+                      msgLoadFreed, msgLoadNeeds, msgLoadIndexType, msgLoadRange);
+  emitStoreByteBuiltin(cg, handles.storeByteBuiltin, fail, msgStoreArgc, msgStoreType,
+                       msgStoreFreed, msgStoreNeeds, msgStoreIndexType, msgStoreByteType,
+                       msgStoreRange, msgStoreByteRange);
+  emitIntToPtrBuiltin(cg, handles.intToPtrBuiltin, ptrNew, fail, msgIntToPtrArgc,
+                      msgIntToPtrType, msgOom);
+  emitPtrToIntBuiltin(cg, handles.ptrToIntBuiltin, fail, msgPtrToIntArgc,
+                      msgPtrToIntType, msgPtrToIntFreed);
+  emitFreeBuiltin(cg, handles.freeBuiltin, fail, msgFreeArgc, msgFreeType, msgFreeFreed);
+  // `clock()` needs `entry.monotonic`, which every prelude binds; the origin
+  // slot is the hidden `$clockOrigin` global the chunk captured at entry.
+  if (extras.clockOriginSlot >= 0) {
+    emitClockBuiltin(cg, handles.clockBuiltin, entry.monotonic, extras.clockOriginSlot,
+                     fail, msgClockArgc);
+  }
+  // `args()` reads the hidden `$args` global; the chunk filled it at entry from
+  // the `(argc, argv)` the prelude handed `main`.
+  if (extras.argsSlot >= 0) {
+    emitArgsBuiltin(cg, handles.argsBuiltin, extras.argsSlot, fail, msgArgsArgc);
+    emitBuildArgs(cg, handles.buildArgs, env);
+  }
+  // The file builtins are written against the prelude's file handles, so only a
+  // target that binds them emits the bodies.
+  if (extras.hasFiles) {
+    emitFailPath(cg, failPath, failDynamic, sbNew, sbAppend, textReadPrefix,
+                 textApostrophe);
+    emitFailPath(cg, failPathWrite, failDynamic, sbNew, sbAppend, textWritePrefix,
+                 textApostrophe);
+    emitReadFileBuiltin(cg, handles.readFileBuiltin, env, entry, sbNew, sbAppend,
+                        failPath, msgReadFileArgc, msgReadFileType, msgReadFileNul);
+    emitWriteFileBuiltin(cg, handles.writeFileBuiltin, env, entry, failPathWrite,
+                         msgWriteFileArgc, msgWriteFilePathType, msgWriteFileType,
+                         msgWriteFileNul);
+    emitFileExistsBuiltin(cg, handles.fileExistsBuiltin, env, entry, msgFileExistsArgc,
+                          msgFileExistsType, msgFileExistsNul);
+  }
+
   // The public builtins (PHASE 7c.5a). `str` and `isError` reuse the `$str` and
   // `$isError` code: the public names are just two more seeds of the same entry.
   emitFailDynamic(cg, failDynamic, entry.write, entry.exit, textOskelPrefix, textNewline,
@@ -10128,7 +11487,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitLenBuiltin(cg, handles.lenBuiltin, env, msgLenType);
   emitTypeBuiltin(cg, handles.typeBuiltin, handles.alloc, fail, msgOom, typeNameNil,
                   typeNameBool, typeNameInt, typeNameFloat, typeNameDouble, typeNameStr,
-                  typeNameArray, typeNameMap, typeNameFunc, typeNameRange, typeNameError);
+                  typeNameArray, typeNameMap, typeNameFunc, typeNameRange, typeNameError,
+                  typeNamePtr, typeNameCString);
   emitReprBuiltin(cg, handles.reprBuiltin, reprToString);
   emitBoolBuiltin(cg, handles.boolBuiltin, handles.truthy);
   emitOrdBuiltin(cg, handles.ordBuiltin, env.utf8Len, fail, msgOrdType, msgOrdChar);
