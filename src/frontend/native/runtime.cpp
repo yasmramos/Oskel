@@ -11537,7 +11537,10 @@ void emitClockBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label monotoni
   cg.subReg(Rax, R8);
   cg.cvtsi2sd(Xmm0, Rax);
   cg.movImm(R9, 1000000000);
-  cg.movqToXmm(Xmm1, R9);
+  // `movqToXmm` copies the *bit pattern*, so it would put the integer
+  // 1000000000 in as a denormal (~4.9e-315) and the division would overflow to
+  // +inf. The divisor is a value, so it has to be converted, not moved.
+  cg.cvtsi2sd(Xmm1, R9);
   cg.divsd(Xmm0, Xmm1);
   cg.movqFromXmm(Rdx, Xmm0);
   cg.movImm(Rax, kTagDouble);

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(oskel VERSION 0.1.0 LANGUAGES CXX)
+project(oskel VERSION 0.2.0 LANGUAGES CXX)
 
 # `include/version.h` is the version the binary prints; CMake's project version
 # names the packages and the release tag. They must agree, so the configure step

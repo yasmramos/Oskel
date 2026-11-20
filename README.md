@@ -47,7 +47,7 @@ for language in languages {
 
 ## Status
 
-Version **0.1.0**. The language is functional and covered by a test suite, but it is not yet considered stable or complete. See the [limitations](#limitations-and-roadmap) section and the [changelog](CHANGELOG.md) for what each release contains.
+Version **0.2.0**. The language is functional and covered by a test suite, but it is not yet considered stable or complete. See the [limitations](#limitations-and-roadmap) section and the [changelog](CHANGELOG.md) for what each release contains.
 
 ## Requirements
 
@@ -197,7 +197,7 @@ for name in args() {
 Running `oskel` with no arguments opens the REPL:
 
 ```text
-Oskel 0.1.0 - a small scripting language written in C++
+Oskel 0.2.0 - a small scripting language written in C++
 Type :help for help, :quit to exit.
 oskel> let x = 21
 oskel> x * 2
@@ -295,7 +295,7 @@ Oskel has two execution paths: the register-based **VM** (used by `oskel`,
 `oskel -e` and the REPL) and the **AOT backend** (used by `oskel build`, which
 emits a static native binary). The AOT backend covers the language core, not
 the whole runtime yet, so a program can run on the VM and fail to build — or
-behave differently — under AOT. This is the exact split in 0.1.0.
+behave differently — under AOT. This is the exact split in 0.2.0.
 
 **Available in both:**
 
@@ -309,7 +309,8 @@ behave differently — under AOT. This is the exact split in 0.1.0.
   receiver, so a call mutates or scans the same array; `contains`/`indexOf`
   compare structurally (an array or map needle compares by content).
 - These builtins: `print`, `write`, `eprint`, `len`, `type`, `str`, `repr`,
-  `bool`, `ord`, `chr`, `assert`, `panic`, `isError`.
+  `bool`, `ord`, `chr`, `assert`, `panic`, `isError`, `error`, `pcall`, `exit`,
+  `clock`, `args`, `readFile`, `writeFile` and `fileExists`.
 - The numeric conversions `int`, `float`, `double`, and the math builtins
   `floor`, `ceil`, `round`, `sqrt`, `pow`, `exp`, `log`, `sin`, `cos`, `tan`.
 
@@ -318,16 +319,9 @@ behave differently — under AOT. This is the exact split in 0.1.0.
 - The string methods such as `str.upper`, `str.split` and `str.trim`, and
   `sort`/`sorted` on an array. They compile but fail at runtime with
   `value has no such member`.
-- `pcall`, and the I/O and process builtins `readFile`, `writeFile`,
-  `fileExists`, `args`, `exit`, `clock`. A program using any of them does not
-  build.
 
 **Available in both, but with different semantics:**
 
-- **`try`/`catch` does not catch in AOT.** The AOT runtime has no error values
-  yet, so `$isError` always reports "not an error": the success path of `try`
-  and `catch` runs, and a real failure still exits 70 instead of being
-  recovered. `try`/`catch` only behaves as documented on the VM.
 - **`map.get` is O(n) in AOT** (linear scan) instead of O(1) (hash lookup), so
   a loop that looks up every key of a large map is O(n²) in a compiled binary.
 
@@ -447,7 +441,7 @@ Editor support: a VS Code syntax-highlighting extension lives in
 
 ## Releases
 
-**0.1.0 is the first release.** Prebuilt packages are published on the
+**0.2.0 is the current release.** Prebuilt packages are published on the
 [releases page](https://github.com/yasmramos/Oskel/releases):
 
 | Platform | Asset |
@@ -462,8 +456,10 @@ Every release also ships a `SHA256SUMS` file; verify a download with
 [`CHANGELOG.md`](CHANGELOG.md), and the maintainer checklist is in
 [`docs/RELEASING.md`](docs/RELEASING.md).
 
-`oskel build` is the AOT entry point in 0.1.0. A separate host compiler,
-`oskelc`, is planned for a later release; it is not part of 0.1.0.
+`oskel build` is the AOT entry point. A separate host compiler, `oskelc`,
+ships beside it: it links the front end and the AOT backend without the VM or
+the JIT, so a compiled program carries no interpreter. Both call the same
+`buildBinary` pipeline, so they emit the same image.
 
 ## License
 
