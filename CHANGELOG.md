@@ -44,11 +44,11 @@ may change between minor versions.
 - **A release made by hand is published as a final release.** The publish step
   reused an existing release instead of creating it, but never touched its
   flags, so a release created in the UI kept the "pre-release" mark the UI gives
-  it by default. `v0.2.0` shipped that way: the assets were correct, yet GitHub
-  hid the release from the "Latest" slot and `gh release download` without a tag
-  ignored it. The step now edits an existing release first, deriving the
-  pre-release/latest flags from the tag, so only a tag with a `-` stays a
-  pre-release.
+  it by default. `v0.2.0` shipped that way: every asset was correct, yet GitHub
+  kept the release out of the "Latest" slot, so `releases/latest` answered
+  nothing and a tagless `gh release download` had no release to resolve. The
+  step now edits an existing release first, deriving the pre-release/latest
+  flags from the tag, so only a tag with a `-` stays a pre-release.
 
 ## [0.2.0] - 2026-11-20
 
