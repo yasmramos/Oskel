@@ -391,6 +391,21 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     produces; `lower_test` pins each message and the shadowing case
     (`var args = 1` still lowers).
 
+    **Arity is checked, not assumed.** Every fixed-arity builtin now validates
+    `argc` before it touches the argument window, because it did not and that
+    was a memory-safety bug rather than a message mismatch: the window grows
+    *down* from `args`, so `type()` with no arguments read a slot nobody had
+    written and returned a type name built from whatever was there (`int` after
+    a four-int call, `nil` before it), and `chr(65, 1)` returned `"A"` while the
+    VM raised. Eight builtins were affected: `len`, `type`, `str`, `repr`,
+    `bool`, `isError`, `ord` and `chr`. Each now compares `argc` first and fails
+    with the fixed prefix `X() expects 1 argument`. `$str` shares `str`'s entry
+    and always passes one argument, so the guard is safe for interpolation and
+    computed map keys too. Pinned by `tests/native_build_builtin_arity.oskl`,
+    which drives all sixteen wrong-count calls through `pcall` (a raised error
+    is not a value, so `try`/`catch` cannot see it) and still compares line for
+    line with the VM.
+
     One divergence remains and is deliberate: a builtin's *runtime* error
     message that ends in a dynamic tail keeps only its fixed prefix in AOT
     (`free() expects a pointer` against `free() expects a pointer, got 'int'`;
@@ -400,7 +415,8 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     both engines, which is what a program can branch on; assembling the tail
     would mean a per-message builder in the runtime and is not worth it until a
     program is shown to depend on the text. `ord`/`len`/`chr` set this
-    convention before the pointer builtins did.
+    convention before the pointer builtins did, and the new arity guards follow
+    it (the VM appends `, got N`).
 
 ---
 

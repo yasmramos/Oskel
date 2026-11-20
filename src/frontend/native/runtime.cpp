@@ -5850,9 +5850,15 @@ void emitIterNextRange(CodeGen& cg, CodeGen::Label range, CodeGen::Label rangeAs
 // `Error`, so a user map with an `ok` field is never mistaken for one. With
 // error values now a real tag, `try`/`catch` observes the propagation the same
 // way the VM does.
-void emitIsErrorBuiltin(CodeGen& cg, CodeGen::Label label) {
+void emitIsErrorBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+                        const DataBlob& msgArgc) {
+  CodeGen::Label badArgc = cg.newLabel();
   cg.bind(label);
   prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
   // args[0] is the operand: the argument window grows *down* from `args`, so
   // args[0] sits at [rdi + 0] (tag) and [rdi + 8] (payload).
   cg.movFromMem(Rax, Rdi, 0);
@@ -5860,7 +5866,12 @@ void emitIsErrorBuiltin(CodeGen& cg, CodeGen::Label label) {
   cg.setcc(Jcc::Eq, Rdx);
   cg.movzx(Rdx, Rdx);
   cg.movImm(Rax, kTagBool);
+  cg.pop(R12);
+  cg.pop(Rbx);
   epilogue(cg);
+
+  cg.bind(badArgc);
+  emitFailCall(cg, fail, msgArgc);
 }
 
 // `AotValue oskel_builtin_error(AotValue* args, long argc, AotClosure* self)`:
@@ -6015,7 +6026,7 @@ void emitStrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
                     CodeGen::Label reprToString, const DataBlob& msgOom,
                     const DataBlob& textTrue, const DataBlob& textFalse,
                     const DataBlob& textNil, const DataBlob& textPtr,
-                    const DataBlob& msgStrBad) {
+                    const DataBlob& msgStrBad, const DataBlob& msgArgc) {
   CodeGen::Label asInt = cg.newLabel();
   CodeGen::Label asBool = cg.newLabel();
   CodeGen::Label boolFalse = cg.newLabel();
@@ -6046,6 +6057,7 @@ void emitStrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
   CodeGen::Label buildConst = cg.newLabel();
   CodeGen::Label numOom = cg.newLabel();
   CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
 
   cg.bind(label);
@@ -6054,6 +6066,11 @@ void emitStrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
   cg.push(R12);
   cg.subRegImm32(Rsp, 64);   // digit buffer (int, or range bounds + separator)
   cg.movReg(Rbx, Rdi);       // rbx = args
+  // Exactly one argument. `$str` (interpolation, computed map keys) goes
+  // through the same entry and always passes one, so the check is safe there
+  // too; a second argument used to be silently ignored.
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
 
   // args[0] is the operand: tag at [rbx + 0], payload at [rbx + 8].
   cg.movFromMem(Rax, Rbx, 0);
@@ -6270,6 +6287,10 @@ void emitStrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
   cg.pop(R12);
   cg.pop(Rbx);
   epilogue(cg);
+
+  cg.bind(badArgc);
+  cg.addImm32(Rsp, 64);
+  emitFailCall(cg, fail, msgArgc);
 }
 
 // `AotValue oskel_builtin_range(AotValue* args, long argc, AotClosure* self)`:
@@ -6676,7 +6697,7 @@ void emitSliceBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& en
 // ranges the distance between the bounds (inclusive-aware, saturated at
 // INT64_MAX), matching the hosted `len`. Any other type is a runtime error.
 void emitLenBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
-                    const DataBlob& msgLenType) {
+                    const DataBlob& msgLenType, const DataBlob& msgArgc) {
   CodeGen::Label asStr = cg.newLabel();
   CodeGen::Label asArray = cg.newLabel();
   CodeGen::Label asMap = cg.newLabel();
@@ -6685,12 +6706,18 @@ void emitLenBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
   CodeGen::Label rangeSat = cg.newLabel();
   CodeGen::Label rangeUse = cg.newLabel();
   CodeGen::Label rangeMax = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
 
   cg.bind(label);
   prologue(cg);
   cg.push(Rbx);
   cg.push(R12);
+  // Exactly one argument. Without this the operand below is read from a window
+  // that was never written (`len()` with no arguments), and a second argument
+  // is silently ignored -- the VM raises "expects 1 argument" for both.
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
   cg.movFromMem(Rax, Rdi, 0);   // tag
   cg.movFromMem(R12, Rdi, 8);   // payload
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
@@ -6753,6 +6780,9 @@ void emitLenBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
   cg.pop(R12);
   cg.pop(Rbx);
   epilogue(cg);
+
+  cg.bind(badArgc);
+  emitFailCall(cg, env.fail, msgArgc);
 }
 
 // `AotValue oskel_builtin_type(AotValue* args, long argc, AotClosure* self)`: the
@@ -6764,7 +6794,7 @@ void emitTypeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
                      const DataBlob& tDouble, const DataBlob& tStr, const DataBlob& tArray,
                      const DataBlob& tMap, const DataBlob& tFunc, const DataBlob& tRange,
                      const DataBlob& tError, const DataBlob& tPtr,
-                     const DataBlob& tCString) {
+                     const DataBlob& tCString, const DataBlob& msgArgc) {
   CodeGen::Label asNil = cg.newLabel();
   CodeGen::Label asBool = cg.newLabel();
   CodeGen::Label asInt = cg.newLabel();
@@ -6780,12 +6810,17 @@ void emitTypeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
   CodeGen::Label asCString = cg.newLabel();
   CodeGen::Label buildConst = cg.newLabel();
   CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
 
   cg.bind(label);
   prologue(cg);
   cg.push(Rbx);
   cg.push(R12);
+  // Exactly one argument: with none, the tag read below comes from a window
+  // nobody wrote, so `type()` returned a garbage name instead of failing.
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
   cg.movFromMem(Rax, Rdi, 0);   // tag
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagNil));
   cg.jcc(Jcc::Eq, asNil);
@@ -6869,6 +6904,9 @@ void emitTypeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
   cg.pop(R12);
   cg.pop(Rbx);
   epilogue(cg);
+
+  cg.bind(badArgc);
+  emitFailCall(cg, fail, msgArgc);
 }
 
 // `int64_t oskel_parse_int_text(char* data, long length)`: parses the text of an
@@ -7388,27 +7426,49 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
 // public `repr`. It renders through the same recursive repr `$str` uses for a
 // collection, which is exactly `Value::repr()` for every type (a top-level
 // string is quoted).
-void emitReprBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label reprToString) {
+void emitReprBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label reprToString,
+                     CodeGen::Label fail, const DataBlob& msgArgc) {
+  CodeGen::Label badArgc = cg.newLabel();
   cg.bind(label);
   prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
   cg.movFromMem(Rsi, Rdi, 8);   // payload
   cg.movFromMem(Rdi, Rdi, 0);   // tag
   cg.callLabel(reprToString);
+  cg.pop(R12);
+  cg.pop(Rbx);
   epilogue(cg);
+
+  cg.bind(badArgc);
+  emitFailCall(cg, fail, msgArgc);
 }
 
 // `AotValue oskel_builtin_bool(AotValue* args, long argc, AotClosure* self)`: the
 // public `bool`, i.e. the operand's truthiness (`0` and `nil` are false, every
 // other value true).
-void emitBoolBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label truthy) {
+void emitBoolBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label truthy,
+                     CodeGen::Label fail, const DataBlob& msgArgc) {
+  CodeGen::Label badArgc = cg.newLabel();
   cg.bind(label);
   prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
   cg.movFromMem(Rsi, Rdi, 8);   // payload
   cg.movFromMem(Rdi, Rdi, 0);   // tag
   cg.callLabel(truthy);
   cg.movReg(Rdx, Rax);
   cg.movImm(Rax, kTagBool);
+  cg.pop(R12);
+  cg.pop(Rbx);
   epilogue(cg);
+
+  cg.bind(badArgc);
+  emitFailCall(cg, fail, msgArgc);
 }
 
 // `AotValue oskel_builtin_sqrt(AotValue* args, long argc, AotClosure* self)`:
@@ -7488,7 +7548,8 @@ void emitSqrtBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
 // point; the code point is returned as an int.
 void emitOrdBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label utf8Len,
                     CodeGen::Label fail, const DataBlob& msgOrdType,
-                    const DataBlob& msgOrdChar) {
+                    const DataBlob& msgOrdChar, const DataBlob& msgArgc) {
+  CodeGen::Label badArgc = cg.newLabel();
   CodeGen::Label isStr = cg.newLabel();
   CodeGen::Label okLen = cg.newLabel();
   CodeGen::Label single = cg.newLabel();
@@ -7501,6 +7562,8 @@ void emitOrdBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label utf8Len,
   prologue(cg);
   cg.push(Rbx);
   cg.push(R12);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
   cg.movFromMem(Rax, Rdi, 0);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, isStr);
@@ -7579,6 +7642,9 @@ void emitOrdBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label utf8Len,
   cg.pop(R12);
   cg.pop(Rbx);
   epilogue(cg);
+
+  cg.bind(badArgc);
+  emitFailCall(cg, fail, msgArgc);
 }
 
 // `AotValue oskel_builtin_chr(AotValue* args, long argc, AotClosure* self)`: the
@@ -7587,7 +7653,8 @@ void emitOrdBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label utf8Len,
 void emitChrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
                     CodeGen::Label fail, const DataBlob& msgChrInt,
                     const DataBlob& msgChrRange, const DataBlob& msgChrSurrogate,
-                    const DataBlob& msgOom) {
+                    const DataBlob& msgOom, const DataBlob& msgArgc) {
+  CodeGen::Label badArgc = cg.newLabel();
   CodeGen::Label isInt = cg.newLabel();
   CodeGen::Label len1 = cg.newLabel();
   CodeGen::Label len2 = cg.newLabel();
@@ -7606,6 +7673,8 @@ void emitChrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
   prologue(cg);
   cg.push(Rbx);
   cg.push(R12);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
   cg.movFromMem(Rax, Rdi, 0);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
   cg.jcc(Jcc::Eq, isInt);
@@ -7736,6 +7805,8 @@ void emitChrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
   emitFailCall(cg, fail, msgChrSurrogate);
   cg.bind(oom);
   emitFailCall(cg, fail, msgOom);
+  cg.bind(badArgc);
+  emitFailCall(cg, fail, msgArgc);
 }
 
 // `void oskel_fail_dynamic(char* text, long length)`: the one runtime-error
@@ -8942,6 +9013,12 @@ void emitSeedBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label stateLabe
   cg.movReg(Rdi, Rax);
   cg.movFromMem(Rsi, Rbx, 8);
   cg.callLabel(seedLabel);
+  // `seed` returns nil in the VM. The reseed helper leaves its own value in
+  // rax:rdx, so the nil has to be written explicitly -- without this a
+  // `print(seed(n))` fails with "cannot print this value" while the VM prints
+  // `nil`.
+  cg.xorReg(Rax, Rax);
+  cg.xorReg(Rdx, Rdx);
   cg.pop(R12);
   cg.pop(Rbx);
   epilogue(cg);
@@ -11826,6 +11903,19 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob textCloseParen = addText(")");
   DataBlob textOskelPrefix = addText("oskel: ");
   DataBlob msgLenType = addText("len() is not defined for this type");
+  // The arity guard every fixed-arity builtin now has: without it a call with
+  // the wrong count read a window that was never written (or ignored the extra
+  // argument) while the VM raised "expects 1 argument". The count itself is not
+  // in the blob, for the same reason the pointer messages keep only their fixed
+  // prefix (BACKLOG §6 item 25): the sink writes one constant string.
+  DataBlob msgLenArgc = addText("len() expects 1 argument");
+  DataBlob msgTypeArgc = addText("type() expects 1 argument");
+  DataBlob msgStrArgc = addText("str() expects 1 argument");
+  DataBlob msgReprArgc = addText("repr() expects 1 argument");
+  DataBlob msgBoolArgc = addText("bool() expects 1 argument");
+  DataBlob msgIsErrorArgc = addText("isError() expects 1 argument");
+  DataBlob msgOrdArgc = addText("ord() expects 1 argument");
+  DataBlob msgChrArgc = addText("chr() expects 1 argument");
   DataBlob msgOrdType = addText("ord() expects a string argument");
   DataBlob msgOrdChar = addText("ord() expects a single character");
   DataBlob msgChrInt = addText("chr() expects an integer argument");
@@ -12259,13 +12349,13 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitMemberSet(cg, handles.memberSet, env);
   emitContains(cg, handles.contains, env);
   emitIterNext(cg, handles.iterNext, env);
-  emitIsErrorBuiltin(cg, handles.isErrorBuiltin);
+  emitIsErrorBuiltin(cg, handles.isErrorBuiltin, fail, msgIsErrorArgc);
   emitErrorBuiltin(cg, handles.errorBuiltin, handles.alloc, fail, handles.strBuiltin,
                    msgOom, msgErrorCodeType, msgArity);
   emitNonNullBuiltin(cg, handles.nonNullBuiltin, fail, msgNonNull);
   emitStrBuiltin(cg, handles.strBuiltin, handles.alloc, fail,
                  dtoaHandles.formatDouble, reprToString, msgOom, textTrue, textFalse,
-                 textNil, textPtr, msgStrBad);
+                 textNil, textPtr, msgStrBad, msgStrArgc);
   emitRangeBuiltin(cg, handles.rangeBuiltin, handles.alloc, fail, msgOom,
                    msgRangeBounds);
   emitSliceBuiltin(cg, handles.sliceBuiltin, env, msgSliceStart, msgSliceEnd,
@@ -12328,16 +12418,17 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   // `$isError` code: the public names are just two more seeds of the same entry.
   emitFailDynamic(cg, failDynamic, entry.write, entry.exit, textOskelPrefix, textNewline,
                   pcallHandlerSlot);
-  emitLenBuiltin(cg, handles.lenBuiltin, env, msgLenType);
+  emitLenBuiltin(cg, handles.lenBuiltin, env, msgLenType, msgLenArgc);
   emitTypeBuiltin(cg, handles.typeBuiltin, handles.alloc, fail, msgOom, typeNameNil,
                   typeNameBool, typeNameInt, typeNameFloat, typeNameDouble, typeNameStr,
                   typeNameArray, typeNameMap, typeNameFunc, typeNameRange, typeNameError,
-                  typeNamePtr, typeNameCString);
-  emitReprBuiltin(cg, handles.reprBuiltin, reprToString);
-  emitBoolBuiltin(cg, handles.boolBuiltin, handles.truthy);
-  emitOrdBuiltin(cg, handles.ordBuiltin, env.utf8Len, fail, msgOrdType, msgOrdChar);
+                  typeNamePtr, typeNameCString, msgTypeArgc);
+  emitReprBuiltin(cg, handles.reprBuiltin, reprToString, fail, msgReprArgc);
+  emitBoolBuiltin(cg, handles.boolBuiltin, handles.truthy, fail, msgBoolArgc);
+  emitOrdBuiltin(cg, handles.ordBuiltin, env.utf8Len, fail, msgOrdType, msgOrdChar,
+                 msgOrdArgc);
   emitChrBuiltin(cg, handles.chrBuiltin, handles.alloc, fail, msgChrInt, msgChrRange,
-                 msgChrSurrogate, msgOom);
+                 msgChrSurrogate, msgOom, msgChrArgc);
   emitAssertBuiltin(cg, handles.assertBuiltin, handles.truthy, fail, failDynamic,
                     msgAssert);
   emitPanicBuiltin(cg, handles.panicBuiltin, fail, failDynamic, msgPanic);

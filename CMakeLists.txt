@@ -692,6 +692,19 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_pcall.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # Every fixed-arity builtin rejects a call with the wrong argument count,
+    # like the VM (BACKLOG §6 item 25). Without the guard the AOT builtin read
+    # its operand from an argument window nobody wrote, so `type()` returned a
+    # garbage name and `chr(65, 1)` returned "A" while the VM raised. `pcall`
+    # turns each raised error into `{ok, value, error}`, so the fixture can
+    # assert the failure end to end and still agree with the VM line for line.
+    add_test(NAME oskel.build_binary_builtin_arity
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_builtin_arity"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_builtin_arity.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # The callback-taking array methods -- `map`, `filter`, `each`, `find`,
     # `any`, `all` (PHASE 7c.3h). They are the first emitted helpers that call
     # back into the program through `oskel_call`, so the callback runs real

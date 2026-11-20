@@ -11,6 +11,26 @@ may change between minor versions.
 
 ### Fixed
 
+- **Eight builtins read past the argument window instead of rejecting a wrong
+  argument count, and `seed()` did not return `nil`.** The AOT builtins for
+  `len`, `type`, `str`, `repr`, `bool`, `isError`, `ord` and `chr` never looked
+  at `argc`. The argument window grows *down* from `args`, so a call with no
+  argument read a slot nobody had written: `type()` returned a type name built
+  from whatever was there -- `int` after a four-`int` call, `nil` before it --
+  instead of raising, and a call with a second argument silently ignored it, so
+  `chr(65, 1)` printed `A` where the VM raises "expects 1 argument". Each one
+  now checks `argc` first and fails with the fixed prefix `X() expects 1
+  argument`; `$str` shares `str`'s entry and always passes one argument, so
+  interpolation and computed map keys are unaffected. Separately, `seed()`
+  returned whatever the reseed helper left in `rax:rdx` rather than `nil`, so
+  `print(seed(42))` failed with "cannot print this value" while the VM printed
+  `nil`; the epilogue now writes the nil explicitly. The message keeps only its
+  fixed prefix in AOT, the same convention `free()` and the index checks
+  already follow (BACKLOG §6 item 25). Pinned by
+  `tests/native_build_builtin_arity.oskl` (sixteen wrong-count calls driven
+  through `pcall`, compared with the VM line for line) and by new `seed` cases
+  in `tests/native_build_random.oskl`.
+
 - **A returned struct with a `cstring` field can be passed straight back into a
   C function.** `extern "C" fn f(): CS` boxing the field as a pointer handle
   was not enough on its own: the argument side only accepted a string or `nil`

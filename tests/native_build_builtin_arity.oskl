@@ -1,0 +1,62 @@
+// Every fixed-arity builtin must reject a call with the wrong argument count,
+// exactly like the VM (BACKLOG §6 item 25). Without the guard the AOT builtin
+// read its operand from an argument window that was never written -- `type()`
+// returned a garbage type name built from whatever happened to sit there -- and
+// a second argument was silently ignored (`chr(65, 1)` returned "A"). The
+// message keeps only its fixed prefix in both engines, so the fixture compares
+// the *fact* that the call fails, not the text.
+//
+// `pcall` is what makes this testable end to end: a raised runtime error is not
+// a value, so `try`/`catch` does not see it, while `pcall` hands back
+// `{ok, value, error}`.
+
+fn noArgsLen(): any { return len(); }
+fn extraLen(): any { return len([1], 2); }
+fn noArgsType(): any { return type(); }
+fn extraType(): any { return type(1, 2); }
+fn noArgsStr(): any { return str(); }
+fn extraStr(): any { return str(1, 2); }
+fn noArgsRepr(): any { return repr(); }
+fn extraRepr(): any { return repr(1, 2); }
+fn noArgsBool(): any { return bool(); }
+fn extraBool(): any { return bool(1, 2); }
+fn noArgsIsError(): any { return isError(); }
+fn extraIsError(): any { return isError(1, 2); }
+fn noArgsOrd(): any { return ord(); }
+fn extraOrd(): any { return ord("a", "b"); }
+fn noArgsChr(): any { return chr(); }
+fn extraChr(): any { return chr(65, 1); }
+
+fn reported(f: any): int64 {
+  let r = pcall(f);
+  if (r.ok) { return 0; }
+  if (r.error == nil) { return -1; }
+  return 1;
+}
+
+print(reported(noArgsLen));
+print(reported(extraLen));
+print(reported(noArgsType));
+print(reported(extraType));
+print(reported(noArgsStr));
+print(reported(extraStr));
+print(reported(noArgsRepr));
+print(reported(extraRepr));
+print(reported(noArgsBool));
+print(reported(extraBool));
+print(reported(noArgsIsError));
+print(reported(extraIsError));
+print(reported(noArgsOrd));
+print(reported(extraOrd));
+print(reported(noArgsChr));
+print(reported(extraChr));
+
+// The one-argument form still works, so the guard did not break the happy path.
+print(len("abcd"));
+print(type(1));
+print(str(42));
+print(repr("x"));
+print(bool(0));
+print(isError(error("boom")));
+print(ord("A"));
+print(chr(66));
