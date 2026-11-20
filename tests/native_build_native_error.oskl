@@ -1,8 +1,15 @@
 // Fixture for the `oskel build` native-fn error test (tests/build_error.cmake).
 //
-// `clock` is a `native fn` the development VM resolves through its host registry
-// (a host builtin), so this program runs on the VM. The AOT backend has no host,
-// and `clock` has no curated stub, so `oskel build` must fail with the dedicated
-// message instead of the generic unassigned-global one a typo produces.
-native fn clock(): double;
-print(clock());
+// `getpid` is declared as a `native fn`: the development VM resolves the name
+// through its host registry, so this program runs on the VM. The AOT backend has
+// no host, and `getpid` has no curated stub, so `oskel build` must fail with the
+// dedicated message instead of the generic unassigned-global one a typo
+// produces.
+//
+// It must stay a name the AOT backend has *no* binding for. `clock` used to be
+// this fixture's symbol and stopped working as one the moment `clock()` became
+// an AOT builtin (BACKLOG §6 item 25), so pick a libc call the runtime does not
+// implement -- not a builtin, not one of the curated `sqrt`/`floor`/`ceil`/
+// `round` stubs.
+native fn getpid(): int;
+print(getpid());

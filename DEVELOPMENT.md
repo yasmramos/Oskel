@@ -467,8 +467,8 @@ previous one.
   and `stringify` (compact or indented). The module is written over the portable
   primitive surface (indexing, slicing, `len`, `ord`/`chr`,
   `int`/`double`/`str`/`type`, `panic`, `for ... in`, closures), avoiding the
-  collection/string methods and `pcall` the AOT backend does not
-  implement yet, so it behaves identically on the VM and under `oskel build`.
+  collection/string methods the AOT backend does not implement yet, so it
+  behaves identically on the VM and under `oskel build`.
   See `docs/language.md` §12.9/§18, `tests/55_std_json.oskl` and the AOT
   fixture `tests/native_build_json.oskl`.
 - **Standard library: `std.datetime`** — **done**: a pure-Oskel module for civil
@@ -478,8 +478,8 @@ previous one.
   `days_from_civil` algorithm, epoch conversion, calendar arithmetic,
   differences, components, a `strftime`-like `format` and ISO-8601
   `parse`/`iso`/`isValid`/`tryParse`. The module is written over the portable
-  primitive surface, avoiding the collection/string methods and `pcall`
-  the AOT backend does not implement yet, so it behaves identically on the VM and
+  primitive surface, avoiding the collection/string methods the AOT backend
+  does not implement yet, so it behaves identically on the VM and
   under `oskel build`. See `docs/language.md` §12.10/§18,
   `tests/56_std_datetime.oskl` and the AOT fixture
   `tests/native_build_datetime.oskl`.
@@ -501,8 +501,8 @@ previous one.
   Windows; `normalize`/`relative` match `posixpath.normpath`/`relpath` exactly,
   with three documented deviations elsewhere (`basename`, `dirname`, `join`).
   The module is written over the portable primitive surface, avoiding the
-  collection/string methods and `pcall` the AOT backend does not
-  implement yet, so it behaves identically on the VM and under `oskel build`.
+  collection/string methods the AOT backend does not implement yet, so it
+  behaves identically on the VM and under `oskel build`.
   See `docs/language.md` §12.11/§18, `tests/57_std_path.oskl` and the AOT
   fixture `tests/native_build_path.oskl`.
 - **Standard library: `std.collections`** — **done**: a pure-Oskel module of
@@ -1441,9 +1441,24 @@ binary prints byte for byte what the VM prints).
       No new opcode and no bytecode change -- it is a runtime value like the
       others. Covered by `tests/native_build_error.oskl` (built and run against
       the VM by `tests/build_binary.cmake`), which is what makes value-based
-      `try`/`catch` work in a native binary. `pcall` (backlog §6.4) and
-      catchable *runtime* errors (the AOT runtime has no unwinding) remain out
-      of scope.
+      `try`/`catch` work in a native binary.
+    - **7c.5d** (done) — `pcall` in AOT, the one non-local return in the call
+      ABI. Value-based recovery (`try`/`catch` over a returned error) needed no
+      unwinding, but `pcall` calls a function the program chose at run time and
+      must catch a `panic` raised *inside* it, and the AOT runtime reports a
+      failure by writing to stderr and exiting. The builtin now installs a
+      handler record in its own frame and publishes the record's address in the
+      hidden `$pcallHandler` global; `oskel_fail_dynamic` checks that slot before
+      printing and, when it is set, stores the message in the record, restores
+      the `pcall` frame's `rsp`/`rbp` and jumps to the resume address the record
+      saved. The record carries the previous handler, so a nested `pcall` and a
+      normal return both restore the chain. The slot, the builtin body, the three
+      result keys and the sink's handler check are emitted only when the program
+      calls `pcall`, so every other image is byte for byte what it was. Covered
+      by `tests/native_build_pcall.oskl` (built and run against the VM by
+      `tests/build_binary.cmake`): a success, a caught failure, a nested catch
+      and a closure. What stays out of scope is the *other* direction: a raised
+      runtime error with no active `pcall` still exits 70.
     - **7c.6** (done) — variadic parameter packs. A function with a trailing
       `rest...` parameter was a lowering error ("variadic function",
       `PHASE 7c.3`); it now compiles. The child proto's prologue checks the
@@ -1527,7 +1542,9 @@ binary prints byte for byte what the VM prints).
       of compiling to a binary that disagrees with the VM.
       `tests/native_build_math.oskl` and `tests/native_build_math_pure.oskl`
       build and agree with the VM; `tests/native_build_native_error.oskl`
-      pins the rejection.
+      pins the rejection. The fixture declares `getpid` rather than `clock`:
+      `clock` became an AOT builtin (BACKLOG §6 item 25), so it no longer
+      exercises a stub-less binding.
     - **7f.2** (done) — a qualified access to a module's native export is a use
       too, and a qualified *call* is checked at compile time. `std.math.pow(...)`
       reads the module table with `GETTABLE`, not `GETGLOBAL`, so the lowerer
@@ -1549,8 +1566,9 @@ binary prints byte for byte what the VM prints).
       time: a local that shadows a global is gone by then, and inferring late
       resolved it to the global. Covered by
       `tests/native_build_qualified_error.oskl` (the build rejection; the
-      `std.math` libm surface resolves from the embedded musl ports, so the
-      rejection is exercised with `modules.hostclock.clock`, which has no stub),
+      `std.math` libm surface resolves from the embedded musl ports and `clock`
+      is an AOT builtin since BACKLOG §6 item 25, so the rejection is exercised
+      with `modules.hostclock.getpid`, a libc call with no stub),
       `tests/errors/native_qualified_arity.oskl` and
       `tests/errors/native_qualified_arg_type.oskl` (the compile-time checks).
     - **7f.3** (done) — the two link modes as a CLI concept. The AOT backend
@@ -1913,7 +1931,7 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.7 done, scalar, `cstring`/`ptr` and struct-by-value `extern "C"` (register and class-MEMORY) resolve in the hosted backend; a C variadic and a callback argument are still open. 7c.5b covers every builtin the AOT runtime can implement without the host; the fifteen that still need the host (files, clock, `pcall`, raw memory) stay VM-only and are BACKLOG §6, and `random`/`seed` joined the AOT side in 7c.5b.6)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.7 done, scalar, `cstring`/`ptr` and struct-by-value `extern "C"` (register and class-MEMORY) resolve in the hosted backend; a C variadic and a callback argument are still open. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)

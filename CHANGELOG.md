@@ -28,6 +28,32 @@ may change between minor versions.
 
 ### Added
 
+- **Every builtin now exists in both engines.** Fourteen builtins ran only in
+  the development engine: a program that called one built fine on the VM and
+  failed `oskel build` with "global 'X' is read but never assigned" (exit 65).
+  They are implemented in the AOT backend now, so the VM/AOT parity list in
+  `tests/check_builtin_parity.cmake` is empty. The pointer builtins (`cstring`,
+  `cstr`, `buffer`, `byteLen`, `loadByte`, `storeByte`, `intToPtr`, `ptrToInt`,
+  `free`) back an `AotPtr` in the arena with the same four fields as the hosted
+  `PtrObj`, and need nothing from the host, so every target emits them. The
+  file builtins (`readFile`, `writeFile`, `fileExists`) are written against four
+  prelude handles (`oskel_open`, `oskel_read_fd`, `oskel_write_fd`,
+  `oskel_close`), so the Linux syscalls, the kernel32 calls and the hosted libc
+  path stay in the prelude. `clock()` reads a new `monotonic` handle
+  (`clock_gettime(CLOCK_MONOTONIC)`, libc, `GetTickCount64`, the bare-metal PIT
+  counter) and subtracts the origin captured at entry, so it reports elapsed
+  time; `args()` reads a hidden global the chunk fills from the `(argc, argv)`
+  the process entry passes. A target that cannot back one of these now says so
+  by name ("args() needs a process argument vector", "readFile() needs a file
+  system", "input() needs a keyboard") instead of the unassigned-global error a
+  typo produces. Three parity
+  fixtures pin the result (`native_build_pointers.oskl`,
+  `native_build_files.oskl`, `native_build_clock.oskl`, and
+  `native_build_args.oskl` where the entry receives an argument vector), each
+  compared with the VM byte for byte. Two latent bugs in the Windows prelude are fixed with
+  them: the file thunks stored their saved path over the fifth outgoing argument
+  and reused `rdx` for `lpBuffer` before reading the length out of it.
+
 - **The AOT backend binds the callback-taking and folding array methods**
   (PHASE 7c.3h). `map`, `filter`, `each`, `find`, `any`, `all`, `reduce`,
   `sum` and `join` now work in an `oskel build` binary, closing the last

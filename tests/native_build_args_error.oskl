@@ -1,0 +1,10 @@
+// A target whose entry point receives no argument vector must reject `args()`
+// by name (BACKLOG §6 item 25). Windows calls the entry with no arguments and
+// bare metal has no command line, so `oskel build` fails with a message that
+// names the missing capability instead of the generic "global 'args' is read
+// but never assigned" a typo produces -- and writes no binary.
+//
+// Registered only on those targets; the Linux side runs `native_build_args.oskl`
+// against the VM instead.
+
+print(len(args()));

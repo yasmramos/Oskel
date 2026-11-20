@@ -171,7 +171,11 @@ int main() {
   // The list is derived from `PeImport`, so adding an import extends the check
   // instead of leaving a hard-coded count behind.
   const char* expected[] = {"WriteFile", "GetStdHandle", "ExitProcess", "VirtualAlloc",
-                            "GetSystemTimeAsFileTime"};
+                            "GetSystemTimeAsFileTime", "GetTickCount64", "CreateFileA",
+                            "ReadFile", "CloseHandle"};
+  static_assert(sizeof(expected) / sizeof(expected[0]) ==
+                    static_cast<std::size_t>(PeImport::Count),
+                "every PeImport needs its name here");
   const int importCount = static_cast<int>(PeImport::Count);
   for (int i = 0; i < importCount; ++i) {
     const std::uint32_t entryRva = read32(pe, idataPtr + (iltRva - idataVa) + i * 8);

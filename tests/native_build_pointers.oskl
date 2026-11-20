@@ -1,0 +1,50 @@
+// Pointer builtins in the AOT backend (BACKLOG §6 item 25).
+//
+// `ptr`/`cstring` are opaque handles (PHASE 6.6). The VM keeps them in a
+// reference-counted `PtrObj`; a native binary keeps an `AotPtr` in the arena
+// (`native/value.h`). The two must agree on everything a program can observe:
+// the byte count, the text `cstr` reads back, a single byte loaded and stored,
+// and the integer token `intToPtr`/`ptrToInt` round-trip.
+//
+// `free` is exercised last: it only marks the handle released, so the checks
+// after it are about the builtin returning normally, not about reading the
+// freed bytes (which both engines report as an error).
+
+var s = cstring("hello");
+print("len", byteLen(s));
+print("text", cstr(s));
+print("bytes", loadByte(s, 0), loadByte(s, 1), loadByte(s, 4));
+print("type", type(s));
+
+// `byteLen` reports the text ("hello" is five), but the terminating NUL is a
+// real byte the program can load.
+print("nul", loadByte(s, 5) == 0);
+
+var b = buffer(4);
+print("zeroed", byteLen(b), loadByte(b, 0), loadByte(b, 3));
+// A buffer yields every byte to `cstr`, NULs included, so an untouched one is
+// four zero bytes rather than the empty string.
+print("raw", len(cstr(b)));
+storeByte(b, 0, 65);
+storeByte(b, 1, 66);
+storeByte(b, 3, 90);
+print("filled", byteLen(b), cstr(b));
+print("round", loadByte(b, 0), loadByte(b, 1), loadByte(b, 3));
+
+var p = intToPtr(123456789);
+print("token", ptrToInt(p), type(p), byteLen(p));
+
+free(s);
+free(b);
+free(p);
+print("freed");
+
+// The error messages are part of the contract: both engines name the function
+// and the same condition. A message that ends in a *dynamic* tail (`, got 'int'`)
+// is the one place they differ, because the AOT sink writes a fixed blob
+// (BACKLOG §6 item 25), so the cases below are the ones whose text is fixed.
+print("freed read", pcall(() => loadByte(b, 0)).error.message);
+print("double free", pcall(() => free(b)).error.message);
+print("read only", pcall(() => storeByte(s, 0, 1)).error.message);
+print("negative", pcall(() => buffer(-1)).error.message);
+print("void load", pcall(() => loadByte(p, 0)).error.message);

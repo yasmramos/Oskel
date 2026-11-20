@@ -42,11 +42,33 @@ struct RuntimeHandles {
   // multiboot map); the hosted targets leave it unbound and the lowerer rejects
   // `memSize()` there instead of emitting a call to nil.
   CodeGen::Label memSize;
+  // `long oskel_monotonic(void)`: a monotonically non-decreasing nanosecond
+  // counter with an arbitrary origin. `clock()` subtracts the value captured at
+  // program start, so what it reports is the elapsed time and not the origin --
+  // which is why every target can use its own source (CLOCK_MONOTONIC, libc
+  // `clock_gettime`, `GetTickCount64`, the PIT tick counter). Unlike `now` it is
+  // never a date, and unlike the hosted `clock()` it does not depend on libm.
+  CodeGen::Label monotonic;
+  // The file system, in four operations: `long oskel_open(const char* path,
+  // long mode)` (mode 0 reads, 1 writes; -1 on failure), `long oskel_read_fd
+  // (long fd, char* buf, long len)`, `long oskel_write_fd(long fd, const char*
+  // buf, long len)` (both return the bytes transferred, or a negative value) and
+  // `void oskel_close(long fd)`. The runtime's `readFile`/`writeFile`/
+  // `fileExists` are written against these, so the file builtins carry no
+  // syscall of their own and the Windows prelude keeps the Microsoft ABI in one
+  // place. A bare-metal image has no file system, so it binds none of them and
+  // the lowerer rejects those builtins by name.
+  CodeGen::Label open;
+  CodeGen::Label readFd;
+  CodeGen::Label writeFd;
+  CodeGen::Label close;
 };
 
 inline RuntimeHandles newRuntimeHandles(CodeGen& code) {
   return RuntimeHandles{code.newLabel(), code.newLabel(), code.newLabel(),
-                        code.newLabel(), code.newLabel(), code.newLabel()};
+                        code.newLabel(), code.newLabel(), code.newLabel(),
+                        code.newLabel(), code.newLabel(), code.newLabel(),
+                        code.newLabel(), code.newLabel()};
 }
 
 // The generated binary's bump arena (PHASE 7c.1c). `_start` maps a region and

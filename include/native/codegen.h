@@ -258,6 +258,11 @@ class CodeGen {
   // uses it to dispatch a bytecode `CALL`, whose callee (and therefore its
   // code address) is only known at run time.
   void callReg(X64Reg target);
+  // `jmp r/m64` (FF /4): an indirect jump through a register. `pcall` uses it to
+  // resume after a runtime error: the error sink restores the caller's frame and
+  // jumps to the address the handler record saved, which is only known at run
+  // time (the record lives on the stack, one per active `pcall`).
+  void jmpReg(X64Reg target);
   // `call qword ptr [rip + delta]` (FF 15). An indirect call through a
   // RIP-relative pointer, used by the Windows prelude to call an imported
   // function through its IAT slot: the slot's RVA is known when the

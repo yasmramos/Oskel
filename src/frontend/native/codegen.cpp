@@ -823,6 +823,14 @@ void CodeGen::callReg(X64Reg target) {
   emitByte(static_cast<std::uint8_t>(0xD0 | (t & 0x07)));
 }
 
+// `jmp r/m64`: opcode FF /4 with the same REX/ModRM shape as `callReg`.
+void CodeGen::jmpReg(X64Reg target) {
+  std::uint8_t t = enc(target);
+  if (t >= 8) emitByte(0x41);
+  emitByte(0xFF);
+  emitByte(static_cast<std::uint8_t>(0xE0 | (t & 0x07)));
+}
+
 // `call qword ptr [rip + disp32]`: opcode FF /2 with rm = 101 (RIP-relative)
 // and a mandatory disp32. The displacement is relative to the end of the
 // instruction, so the caller supplies it already measured from the next

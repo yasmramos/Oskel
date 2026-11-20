@@ -43,6 +43,7 @@ enum class AotTag : std::uint64_t {
   Map = 8,     // payload is the address of an `AotMap`
   Range = 9,   // payload is the address of an `AotRange`
   Error = 10,  // payload is the address of an `AotError`
+  Ptr = 11,    // payload is the address of an `AotPtr`
 };
 
 // On-image layout of a string: an 8-byte length followed by the bytes. The
@@ -136,6 +137,29 @@ struct AotError {
 };
 
 constexpr std::size_t kAotErrorHeaderSize = 2 * sizeof(std::uint64_t);
+
+// On-image layout of a pointer handle (PHASE 7g.2): the kind of handle, the
+// address of the bytes it owns, how many bytes those are, and a released flag.
+// A `Ptr` payload points at the header. The layout mirrors the hosted `PtrObj`
+// so the pointer builtins agree with the development engine: `cstring` owns the
+// text plus a terminating NUL, `buffer` owns `length` zero-initialised bytes,
+// and a `void *` owns nothing -- it is only the opaque token in `data`. `free`
+// sets `released`, so a use afterwards is a reported error rather than a read
+// of freed bytes; the arena never reclaims, exactly like the hosted handle.
+enum class AotPtrKind : std::uint64_t {
+  Void = 0,     // `ptr`: opaque, not dereferenceable
+  CString = 1,  // `cstring`: `length` bytes, the last one the NUL
+  Buffer = 2,   // owned, writable byte buffer
+};
+
+struct AotPtr {
+  std::uint64_t kind;      // an `AotPtrKind`
+  std::uint64_t data;      // the bytes (Void: the opaque integer token)
+  std::uint64_t length;    // bytes owned (a cstring counts its NUL)
+  std::uint64_t released;  // 1 once `free` ran
+};
+
+constexpr std::size_t kAotPtrHeaderSize = 4 * sizeof(std::uint64_t);
 
 // On-image layout of a string builder (PHASE 7c.4b.2): a growable byte buffer in
 // the arena, used to render a collection or function to an `AotString` for

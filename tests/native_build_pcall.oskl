@@ -1,0 +1,61 @@
+// `pcall` on the AOT backend (BACKLOG §6 item 4). The development engine
+// catches a raised error with a value-based `try`/`catch`, but a `panic` inside
+// a function chosen at run time can only be recovered with `pcall`, because the
+// AOT runtime reports a failure by exiting. This fixture exercises both
+// outcomes and a nested catch, and must print exactly the same lines under the
+// VM and in the compiled binary (tests/build_binary.cmake).
+
+fn safeDiv(a, b) {
+    if (b == 0) {
+        panic("division by zero is not allowed");
+    }
+    return a / b;
+}
+
+fn okAdd(a, b) {
+    return a + b;
+}
+
+fn outer() {
+    // A nested pcall: the inner one catches its own failure, so the outer one
+    // still succeeds.
+    var inner = pcall(safeDiv, 10, 0);
+    if (!inner.ok) {
+        return "inner caught: " + inner.error.message;
+    }
+    return "inner returned " + str(inner.value);
+}
+
+// A success keeps the returned value and leaves `error` nil.
+var good = pcall(okAdd, 2, 3);
+print(good.ok);
+print(good.value);
+print(good.error);
+
+// A failure yields ok == false, a nil value and an error value.
+var bad = pcall(safeDiv, 1, 0);
+print(bad.ok);
+print(bad.value);
+print(type(bad.error));
+print(bad.error.message);
+print(isError(bad.error));
+
+// The engine survives the caught failure: an ordinary call still works.
+print(safeDiv(9, 3));
+
+// A nested catch restores the chain, so the outer call reports success.
+var nested = pcall(outer);
+print(nested.ok);
+print(nested.value);
+
+// A second failure after a caught one still behaves.
+var again = pcall(safeDiv, 7, 0);
+print(again.ok);
+print(again.error.message);
+
+// `pcall` of a closure keeps its captures.
+var offset = 100;
+var addOffset = (x) => x + offset;
+var captured = pcall(addOffset, 5);
+print(captured.ok);
+print(captured.value);

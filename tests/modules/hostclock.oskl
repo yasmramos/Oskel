@@ -1,7 +1,10 @@
 // Test fixture: a module that declares a `native fn` the AOT backend has no
-// curated stub for (`clock` is a host builtin). `import modules.hostclock;`
-// makes it available as `modules.hostclock.clock`. The VM resolves it through
-// its host registry; the AOT backend must reject a qualified call to it
+// curated stub for (`getpid` is a libc call). `import modules.hostclock;` makes
+// it available as `modules.hostclock.getpid`. The VM resolves it through its
+// host registry; the AOT backend must reject a qualified call to it
 // (PHASE 7f.2).
+//
+// The symbol must stay one the AOT runtime has no binding for: `clock` was this
+// fixture's symbol until `clock()` became an AOT builtin (BACKLOG §6 item 25).
 
-native fn clock(): double;
+native fn getpid(): int;
