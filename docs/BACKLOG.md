@@ -327,7 +327,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     nondeterministically. The index now lives in a caller-saved scratch (`r11`),
     reloaded from its slot after every call. Regression:
     `tests/native_build_string_repr.oskl`.
-25. **[P1]** Seventeen builtins exist in the development engine and are not
+25. **[P1]** Fifteen builtins exist in the development engine and are not
     seeded by the AOT backend, so a program that calls one fails `oskel build`
     with "global 'X' is read but never assigned" (exit 65) while the VM runs it.
     `tests/check_builtin_parity.cmake` enumerates the set from both sides, so a
@@ -335,10 +335,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     on purpose are listed there and here. Grouped by what blocks each one:
     - **Needs a host capability the freestanding image has no binding for**:
       `readFile`, `writeFile`, `fileExists` (file system), `clock` (a monotonic
-      clock; `time()` is bound, `clock()` is not), `random`/`seed` (the hosted
-      generator is `std::mt19937_64`), `args` (the process argument vector).
-      A freestanding image has no files and no argv, so these need a curated
-      binding per target, exactly like `time()` got one.
+      clock; `time()` is bound, `clock()` is not), `args` (the process argument
+      vector). A freestanding image has no files and no argv, so these need a
+      curated binding per target, exactly like `time()` got one.
+      (`random`/`seed` used to be listed here; they are now implemented in AOT,
+      see the note below.)
     - **Needs to call an arbitrary value and recover from a raised error**:
       `pcall`. Value-based `try`/`catch` already works in AOT (PHASE 7c.5c):
       `try e` and `e catch d` are `isError` + a jump, and they need no
@@ -348,6 +349,17 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
       non-local return in the call ABI, not a builtin. It is the most valuable
       of the seventeen: a program that cannot recover from a raised error can
       only recover from an error it was handed.
+    - **Done (PHASE 7c.5b.6)**: `random`/`seed`. `std::mt19937_64` is fully
+      specified by the C++ standard, so its bit stream is portable, while
+      `std::uniform_real_distribution`/`std::uniform_int_distribution` are not.
+      Both engines now apply the same explicit formulas (the top 53 bits over
+      2^53 for `random()`, `next() % span` otherwise) and the AOT backend emits
+      the generator itself in machine code, with its 312-word state in a hidden
+      global backed by the arena. `tests/native_build_random.oskl` proves the
+      two engines agree. The one remaining divergence: the VM seeds from
+      `std::random_device` and a native binary from the standard's default seed
+      (5489), because an image has no entropy source and a fixture must be
+      reproducible; a program that needs a fixed stream calls `seed(n)`.
     - **Raw memory intrinsics**: `buffer`, `loadByte`, `storeByte`, `intToPtr`,
       `ptrToInt`, `free`, `byteLen`, `cstr`, `cstring`. These exist so a
       development program can talk to `extern "C"` code through libffi; in AOT
@@ -547,7 +559,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 1. **[P3]** `registerBuiltins` for `random`/`seed` share one global engine, so
     two programs in the same process share state; correct in a REPL, document
-    it.
+    it. The engine is `std::mt19937_64`, whose stream the standard specifies;
+    the *reduction* is a stated formula in `builtins.cpp` (not a library
+    distribution) so it matches the AOT backend bit for bit.
 ## 13. Ops (`src/runtime/ops.cpp`)
 
 1. **[P1]** `unary` `Minus` on `INT64_MIN` wraps to `INT64_MIN` while the

@@ -659,6 +659,18 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_path.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `random()`/`seed()` are implemented in the AOT backend as `mt19937_64` in
+    # machine code, with the same reduction formulas as the VM (PHASE 7c.5b.6).
+    # The fixture reseeds every stream, because only a seeded sequence is
+    # reproducible across the two engines: the VM seeds from `std::random_device`
+    # and a native binary from the standard's default seed (BACKLOG §6 item 25).
+    add_test(NAME oskel.build_binary_random
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_random"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_random.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `std.collections` exists because the AOT backend does not bind the array
     # methods yet (docs/BACKLOG.md §6 item 1); it is plain Oskel over the
     # portable primitive surface, so it must build to a native binary and agree

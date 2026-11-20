@@ -232,6 +232,16 @@ struct AotRuntimeHandles {
   // have no such handle, so `lower.cpp` seeds this builtin only for
   // `Os::Freestanding` and rejects `memSize()` elsewhere by name.
   CodeGen::Label memSizeBuiltin;   // AotValue oskel_builtin_mem_size(AotValue* args, long argc, AotClosure* self)
+  // `random()`/`seed()` (PHASE 7c.5b.6): the `mt19937_64` generator the hosted
+  // engine uses, emitted in machine code so a native binary draws the same
+  // sequence. The state (312 words plus a cursor) lives in the hidden
+  // `$randomState` global, because the image has no writable data segment. The
+  // reduction formulas are the hosted engine's, so `random()` returns the same
+  // double and `random(n)` the same integer on both engines -- see
+  // `src/runtime/builtins.cpp` for why a library distribution cannot be used.
+  CodeGen::Label randomStateInit;  // void oskel_random_state_init(AotValue* slot)
+  CodeGen::Label randomBuiltin;    // AotValue oskel_builtin_random(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label seedBuiltin;      // AotValue oskel_builtin_seed(AotValue* args, long argc, AotClosure* self)
   // Bound array methods (PHASE 7c.3c/7c.3e). `a.<method>` on an array yields a
   // closure that captured its receiver in one upvalue cell, exactly like the
   // hosted `bindArray`. `bindArrayMethod` builds that closure from the receiver
@@ -296,7 +306,8 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel()};
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
+      code.newLabel(), code.newLabel(), code.newLabel()};
 }
 
 // The selector `oskel_compare` accepts: the low nibble of the x86-64 condition
@@ -438,7 +449,13 @@ struct AotExternThunk {
 // `bareMetal` emits the `memSize()` builtin, which reads the `entry.memSize`
 // handle only the bare-metal prelude binds. It is false for every other target,
 // so their runtime is unchanged.
+//
+// `randomStateSlot` is the hidden `$randomState` global's index, or -1 when the
+// program never touches `random`/`seed`; the generator and both builtins are
+// emitted only when it is set, so a program that does not draw keeps a runtime
+// with no generator in it.
 void emitAotRuntime(CodeGen& code, const AotRuntimeHandles& handles,
                     const RuntimeHandles& entry,
                     const std::vector<AotExternThunk>* externThunks = nullptr,
-                    bool hosted = false, bool hasInput = false, bool bareMetal = false);
+                    bool hosted = false, bool hasInput = false, bool bareMetal = false,
+                    int randomStateSlot = -1);

@@ -1245,20 +1245,27 @@ void registerBuiltins(Runtime& in) {
   in.addNative("random", [](Runtime& in, Args args) -> Value {
     needBetween(in, "random", args, 0, 2);
     if (args.empty()) {
-      std::uniform_real_distribution<double> distribution(0.0, 1.0);
-      return Value(distribution(engine));
+      // The top 53 bits scaled into [0, 1). A double has a 53-bit significand,
+      // so every value this produces is exact, and the algorithm is a stated
+      // formula rather than a library's: `std::uniform_real_distribution` is
+      // not specified by the standard, so two implementations (libstdc++ on
+      // Linux, libc++ on macOS) may disagree. The AOT backend emits this same
+      // formula, which is what lets a native binary reproduce the VM's output.
+      return Value(static_cast<double>(engine() >> 11) / 9007199254740992.0);
     }
     if (args.size() == 1) {
       int64_t high = wantInt(in, "random", args[0]);
       if (high <= 0) in.fail("random() bound must be positive");
-      std::uniform_int_distribution<int64_t> distribution(0, high - 1);
-      return Value(distribution(engine));
+      // `next() % high` is uniform up to the bias a modulo always has: at most
+      // `high / 2^64`, which is below 2^-32 for any bound a program can ask for.
+      // Determinism is the contract here, not cryptographic quality.
+      return Value(static_cast<int64_t>(engine() % static_cast<uint64_t>(high)));
     }
     int64_t low = wantInt(in, "random", args[0]);
     int64_t high = wantInt(in, "random", args[1]);
     if (high <= low) in.fail("random() needs an upper bound greater than the lower bound");
-    std::uniform_int_distribution<int64_t> distribution(low, high - 1);
-    return Value(distribution(engine));
+    const uint64_t span = static_cast<uint64_t>(high - low);
+    return Value(low + static_cast<int64_t>(engine() % span));
   });
 
   in.addNative("seed", [](Runtime& in, Args args) -> Value {

@@ -84,7 +84,7 @@ endif()
 # value is the side it lives on, so a name that moves engines also fails.
 set(vm_only
   args buffer byteLen clock cstr cstring fileExists free intToPtr
-  loadByte pcall ptrToInt random readFile seed storeByte writeFile)
+  loadByte pcall ptrToInt readFile storeByte writeFile)
 set(aot_only "")
 
 set(problems "")
