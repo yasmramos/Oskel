@@ -197,6 +197,21 @@ it as a caveat:
   `+16` read passes a smoke test whenever the two arguments happen to be equal
   and fails as "bound must be positive" otherwise — `random(low, high)` was
   shipped with exactly that bug.
+- A fixed-arity builtin has to check `argc` (the `rsi` the entry receives)
+  **before** it reads `args[0]`, and reject any other count. The window grows
+  down from `args`, so `argc == 0` means the slot `args[0]` names was never
+  written: reading it is an out-of-bounds read of the caller's frame, not a
+  benign default. Eight builtins shipped without the check — `len`, `type`,
+  `str`, `repr`, `bool`, `isError`, `ord`, `chr` — so `type()` returned a type
+  name built from whatever happened to sit there (`int` after a four-`int` call)
+  and `chr(65, 1)` returned `"A"` while the VM raised "expects 1 argument".
+  The VM's `need(in, name, args, 1)` is the counterpart; a new builtin gets the
+  guard in the same commit. The message keeps only its fixed prefix in AOT
+  (`type() expects 1 argument`), which is the documented convention for a tail
+  that would need a per-message builder (BACKLOG §6 item 25);
+  `tests/native_build_builtin_arity.oskl` drives every wrong-count call through
+  `pcall`, because a raised runtime error is not a value and `try`/`catch` never
+  sees it.
 - `random`/`seed` are AOT-backed (PHASE 7g): `mt19937_64` is emitted as machine
   code, so a native binary reproduces the VM's stream after the same `seed(n)`.
   Three rules keep it correct, and each was a real bug first: only `rbx` and
