@@ -12,5 +12,11 @@
 var a = clock();
 print("clock type", type(a));
 print("clock non-negative", a >= 0.0);
+// `inf >= 0.0` and `inf >= inf` are both true, so the two assertions above
+// accepted a broken conversion. Elapsed time is small, so bound it: an
+// implementation that divides by a denormal overflows to +inf and fails here.
+print("clock finite", a < 1000000000.0);
 var b = clock();
 print("clock monotonic", b >= a);
+var c = clock();
+print("clock elapsed finite", c - a < 1000000000.0);
