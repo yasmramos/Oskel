@@ -40,12 +40,20 @@ assertEq(strcmp("abc", "abd") < 0, true);
 assertEq(strncmp("hello", "help", 3), 0);
 assertEq(strncmp("hello", "help", 4) != 0, true);
 
-// A `cstring` return is scanned back into an Oskel string; a NULL pointer
-// (`strchr` with no match) becomes `nil`. The non-NULL case is checked by
-// feeding the handle back into a C function: the VM keeps a `cstring` return
-// as an opaque handle (so `assertEq` against a string would differ), but the
-// bytes are the same and the AOT thunk reproduces them.
-assertEq(strcmp(strchr("hello", 108), "llo"), 0);
+// A `cstring` return is a pointer handle, not a string (BACKLOG §6 item 23):
+// `type()` says "cstring", equality is handle identity and `+` rejects it, all
+// exactly as the VM. A NULL pointer (`strchr` with no match) becomes `nil`.
+var found = strchr("hello", 108);
+assertEq(type(found), "cstring");
+assertEq(found == nil, false);
+assertEq(found == found, true);
+// Handle identity, not text equality: a `cstring` never equals a string.
+assertEq(found == "llo", false);
+// The bytes are still the C function's: feeding the handle back into a C
+// function must reproduce them (the thunk passes a `Ptr` through as its own
+// NUL-terminated address).
+assertEq(strcmp(found, "llo"), 0);
+assertEq(byteLen(found), 3);
 assertEq(strchr("hello", 122) == nil, true);
 
 print("extern hosted ok");

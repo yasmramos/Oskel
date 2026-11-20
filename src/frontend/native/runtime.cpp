@@ -10131,10 +10131,17 @@ void emitStructArgBytes(CodeGen& cg, const AotStructLayout& arg, std::int64_t ar
   }
 }
 
-// Boxes a C string address held in `addrReg` (an `AotString`, or nil for NULL).
+// Boxes a C string address held in `addrReg` as a `CString` pointer handle, or
+// nil for NULL. This is what the hosted engine returns for a `const char *`
+// return or field (PHASE 7f.6): a `cstring`, not a string, so `type()` reports
+// "cstring", equality is handle identity and `+` rejects it. Boxing as `Str`
+// instead would make `type()` lie and silently accept string operations the VM
+// rejects (BACKLOG §6 item 23).
+//
 // The bytes are scanned to the NUL with the hosted engine's 16 MiB cap and
-// copied into the arena, exactly as a `cstring` scalar return is. Leaves the
-// boxed value in rax:rdx. `oom` is the thunk's out-of-memory label.
+// copied into an arena block that also holds the `AotPtr` header and the
+// terminator, exactly as `cstring(text)` builds one. Leaves the boxed value in
+// rax:rdx. `oom` is the thunk's out-of-memory label.
 void emitCStringBox(CodeGen& cg, X64Reg addrReg, CodeGen::Label oom,
                     CodeGen::Label allocLabel, CodeGen::Label fail,
                     const DataBlob& msgCStringTooLong) {
@@ -10148,7 +10155,7 @@ void emitCStringBox(CodeGen& cg, X64Reg addrReg, CodeGen::Label oom,
   // `r12`), so it holds the C string across the `alloc`; `r12` must survive
   // because a struct return keeps the map there.
   cg.movReg(Rbx, addrReg);
-  cg.xorReg(Rcx, Rcx);      // the byte count
+  cg.xorReg(Rcx, Rcx);      // the byte count, the NUL excluded
   cg.bind(scanLoop);
   // `movzxFromMem` takes a displacement, so index through a temporary base.
   cg.movReg(R11, Rbx);
@@ -10161,18 +10168,30 @@ void emitCStringBox(CodeGen& cg, X64Reg addrReg, CodeGen::Label oom,
   cg.jcc(Jcc::B, scanLoop);
   emitFailCall(cg, fail, msgCStringTooLong);
   cg.bind(scanned);
-  cg.movReg(Rdi, Rcx);
-  cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
+  // The block holds the header, the bytes and the terminator; `length` counts
+  // the bytes plus that NUL, matching `cstring(text)` and the hosted `PtrObj`.
+  // The length lives in `rsi` -- not `r12`, which a struct return keeps the
+  // map in -- and `alloc` preserves it (it only clobbers rax/r10/r11).
+  cg.movReg(Rsi, Rcx);
+  cg.addImm32(Rsi, 1);  // the terminator
+  cg.movReg(Rdi, Rsi);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kAotPtrHeaderSize));
   cg.callLabel(allocLabel);
   cg.testReg(Rax);
   cg.jcc(Jcc::Eq, oom);
-  cg.movToMem(Rax, 0, Rcx);  // the AotString length
+  cg.movImmToMem(Rax, kPtrKindOffset, kPtrKindCString);
+  cg.movToMem(Rax, kPtrLengthOffset, Rsi);
+  cg.movImmToMem(Rax, kPtrReleasedOffset, 0);
   cg.movReg(Rdi, Rax);
-  cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kAotPtrHeaderSize));
+  cg.movToMem(Rax, kPtrDataOffset, Rdi);  // data points past the header
+  // `rbx` still holds the C address; `rcx` is the byte count the scan left.
   cg.movReg(Rsi, Rbx);
-  cg.repMovsb();             // copies rcx bytes (the scan left rcx = length)
+  cg.cld();
+  cg.repMovsb();
+  cg.movImmByteToMem(Rdi, 0, 0);  // the terminator, at data + length
   cg.movReg(Rdx, Rax);
-  cg.movImm(Rax, kTagStr);
+  cg.movImm(Rax, kTagPtr);
   cg.jmp(returned);
   cg.bind(null);
   cg.movImm(Rax, kTagNil);
@@ -10488,14 +10507,26 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         // it fails like the hosted engine does.
         CodeGen::Label isNil = cg.newLabel();
         CodeGen::Label isStr = cg.newLabel();
+        CodeGen::Label isPtr = cg.newLabel();
         CodeGen::Label staged = cg.newLabel();
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagNil));
         cg.jcc(Jcc::Eq, isNil);
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagStr));
         cg.jcc(Jcc::Eq, isStr);
+        cg.cmpImm32(R10, static_cast<std::int32_t>(kTagPtr));
+        cg.jcc(Jcc::Eq, isPtr);
         emitFailCall(cg, fail, msgType);
         cg.bind(isNil);
         cg.xorReg(R11, R11);  // NULL
+        cg.jmp(staged);
+        cg.bind(isPtr);
+        // A pointer handle already owns NUL-terminated bytes (a `CString` keeps
+        // its terminator; a `Void` carries the opaque address), so it crosses
+        // as-is -- no copy. This is what the hosted engine passes for a `cstring`
+        // argument, and it is how a `cstring` returned by one C function can be
+        // fed back into another.
+        cg.movFromMem(R11, Rbx, base + 8);            // the AotPtr*
+        cg.movFromMem(R11, R11, kPtrDataOffset);      // its bytes
         cg.jmp(staged);
         cg.bind(isStr);
         cg.movFromMem(R12, Rbx, base + 8);  // the AotString* (a length word)

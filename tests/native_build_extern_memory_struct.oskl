@@ -100,14 +100,15 @@ let ps = oskelTestMakeNullPointer(7);
 assertEq(ps.n, 7);
 assertEq(type(ps.p), "nil");
 
-// A `cstring` field: C hands back a `const char *`, which the backend copies
-// into a Oskel string; a NULL field becomes nil. `type()` reports "string" for
-// a non-NULL one -- the documented VM/AOT divergence (BACKLOG §6 item 23), the
-// same as a `cstring` scalar return.
+// A `cstring` field: C hands back a `const char *`, which the backend boxes as
+// a pointer handle exactly like a `cstring` scalar return (BACKLOG §6 item 23),
+// so `type()` says "cstring" and equality is handle identity, never text. A
+// NULL field becomes nil.
 let cs = oskelTestMakeCString();
-assertEq(cs.s, "hi");
+assertEq(type(cs.s), "cstring");
+assertEq(cs.s == "hi", false);
+assertEq(byteLen(cs.s), 2);
 assertEq(cs.n, 5);
-assertEq(type(cs.s), "string");
 assertEq(oskelTestCStringLength({s: "abc", n: 4}), 7);
 let nullCs = oskelTestMakeNullCString();
 assertEq(type(nullCs.s), "nil");
