@@ -314,19 +314,26 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     array methods, the lowerer's capture stores) and threading the proto name
     into the emitter. The AOT form is pinned by `tests/freestanding_test.cpp`;
     the parity fixtures avoid printing a bare function until then.
-23. **[P1]** VM/AOT divergence in the value of a returned `cstring` (PHASE
-    7f.6). The hosted backend has no pointer tag in `AotTag` (and adding one
-    would touch every tag switch and break the freestanding byte-identity), so
-    `emitExternThunk` scans a returned `const char *` and boxes it as the
-    existing `Str`. `print` and `== nil` match the VM, but `type()` reports
-    `"string"` where the VM reports `"cstring"`, and the more permissive string
-    operations then accept it: `r == "llo"` is true in AOT and false in the VM
-    (a `cstring` compares as a handle), and `"x" + r` builds a string in AOT
-    where the VM raises "unsupported operand types". The scan cap (16 MiB, the
-    hosted engine's `kMaxCStringBytes`) also matches the VM. A real `AotTag::Ptr`
-    (with `ptr`/`cstring` in `type()`, handle equality and the pointer builtins)
-    removes the divergence; until then the parity fixtures avoid comparing a
-    returned `cstring` against a string.
+23. **[P1] [done]** VM/AOT divergence in the value of a returned `cstring`
+    (PHASE 7f.6). `emitExternThunk` scanned a returned `const char *` and boxed
+    it as the existing `Str`, so `type()` reported `"string"` where the VM
+    reports `"cstring"`, and the more permissive string operations then
+    accepted it: `r == "llo"` was true in AOT and false in the VM (a `cstring`
+    compares as a handle), and `"x" + r` built a string where the VM raised
+    "unsupported operand types". `emitCStringBox` now builds an `AotPtr` of
+    kind `CString` -- the same handle `cstring(text)` produces and the pointer
+    builtins already understand -- so `type()`, handle equality, `print`/`str`/
+    `repr`, `byteLen` and the rejection of `+` all agree with the VM. The same
+    box is used for a `cstring` field of a returned struct. The parameter side
+    had to follow: a `Ptr` argument now crosses as its own NUL-terminated bytes
+    instead of failing the type check, which is what lets a `cstring` returned
+    by one C function be fed back into another. The scan cap (16 MiB, the hosted
+    engine's `kMaxCStringBytes`) still matches. Pinned by
+    `tests/native_build_extern_hosted.oskl` (`type`, `== nil`, handle identity,
+    `==` against a string, `byteLen`, and the handle reused as an argument) and
+    by the `cstring`-field case in `tests/native_build_extern_memory_struct.oskl`.
+    The freestanding image is unaffected: it emits no thunk, and its output
+    stays byte for byte identical.
 24. **[P0] [done]** Silent memory corruption when a rendered collection crossed
     the string builder's 64-byte initial capacity. `oskel_sb_append_escaped`
     kept its loop index in `r13` and pushed/popped it around the loop; `r13` is

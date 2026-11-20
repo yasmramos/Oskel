@@ -236,6 +236,20 @@ may change between minor versions.
 
 ### Fixed
 
+- **A `cstring` returned by a C function is a `cstring` in the AOT backend
+  too.** `extern "C" fn strchr(...): cstring` came back boxed as a string, so
+  `type()` said `"string"` where the VM says `"cstring"`, `found == "llo"` was
+  true where the VM says false (a `cstring` compares as a handle), and
+  `"x" + found` built a string where the VM raises "unsupported operand
+  types" — a silent divergence, not a crash. The thunk now boxes the address as
+  a `Ptr` of kind `CString`, the same handle `cstring(text)` produces, and a
+  `Ptr` argument crosses as its own NUL-terminated bytes so the handle can be
+  fed back into another C function. A `cstring` field of a returned struct is
+  boxed the same way. The freestanding image is untouched (it emits no thunk)
+  and stays byte for byte identical. Pinned by
+  `tests/native_build_extern_hosted.oskl` and
+  `tests/native_build_extern_memory_struct.oskl` (BACKLOG §6 item 23).
+
 - **The VS Code grammar highlighted syntax the language does not have and
   missed three real builtins.** `0x10`, `0b1010` and `0o17` were split into `0`
   and a name, because the decimal rule ran first; the lexer accepts all three

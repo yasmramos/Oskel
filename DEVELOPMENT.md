@@ -1650,14 +1650,18 @@ binary prints byte for byte what the VM prints).
       before the call (the SSE arguments are written directly, since nothing
       clobbers an xmm register). A `cstring` *return* comes back in `rax`: NULL
       becomes `nil`, otherwise the bytes are scanned to the NUL (with the hosted
-      engine's 16 MiB cap, `src/runtime/ffi.cpp`) and copied into an `AotString`, which
-      the thunk returns as a `Str` value. Boxing the result as the existing
-      `Str` tag — rather than adding an `AotTag::Ptr` — keeps every shared
-      helper (`type`, `print`, comparison, interpolation) untouched, so the
-      freestanding image stays byte for byte identical; the cost is a documented
-      VM/AOT divergence (BACKLOG §6 item 23): a returned `cstring` prints and
-      compares `== nil` like the VM, but reads as `"string"` in `type()` and the
-      string operations then accept it. An opaque
+      engine's 16 MiB cap, `src/runtime/ffi.cpp`) and copied into an arena block
+      that also holds an `AotPtr` header and the terminator, which the thunk
+      returns as a `Ptr` of kind `CString` — the same handle `cstring(text)`
+      builds. That is what the VM returns for a `const char *`, so `type()` says
+      `"cstring"`, equality is handle identity (never text) and `+` rejects the
+      value, all matching the development engine (BACKLOG §6 item 23, closed).
+      The parameter side accepts a `Ptr` as well as a `Str`: a handle already
+      owns NUL-terminated bytes, so it crosses as its own address with no copy,
+      which is how a `cstring` returned by one C function is fed to another. A
+      `cstring` field of a returned struct is boxed the same way. No thunk is
+      emitted in freestanding mode, so its image stays byte for byte identical.
+      An opaque
       `ptr` *return* is still rejected: the AOT runtime has no representation
       for a handle it must never dereference. A struct, a callback and a C
       variadic remain 7f work. Covered by
