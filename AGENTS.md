@@ -140,11 +140,14 @@ it as a caveat:
   closures, variadic `rest...` and the operators. The AOT backend binds the
   array methods (`push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`,
   `slice`, `concat`, `join`, `contains`, `indexOf`, `map`, `filter`, `each`,
-  `find`, `any`, `all`, `reduce`, `sum`, `reversed`, `clone`, `clear`) and the
-  ten map methods, but not `sort`/`sorted` and no *string* method (`.split`,
-  `.upper`, `.substr`, `.length` on a string, ...) — those build (exit 0) but
-  fault at run time with "value has no such member" / "cannot call a
-  non-function value" — and it does not seed `pcall`/`error`/`readFile` at all,
+  `find`, `any`, `all`, `reduce`, `sum`, `reversed`, `clone`, `clear`), the
+  ten map methods and the twelve *pure* string methods (`upper`, `lower`,
+  `trim`, `trimStart`, `trimEnd`, `contains`, `startsWith`, `endsWith`,
+  `indexOf`, `substr`, `reversed`, `repeat`), but not `sort`/`sorted` and not
+  the string methods that return a collection or call back into the program
+  (`.split`, `.lines`, `.chars`, `.replace`, `.replaceFirst`) — those build
+  (exit 0) but fault at run time with "value has no such member" / "cannot call
+  a non-function value" — and it does not seed `pcall`/`error`/`readFile` at all,
   so a module function that calls one fails `oskel build` with "global 'pcall'
   is read but never assigned" (exit 65) even when the function is unused. A
   module written over the portable surface behaves identically on the VM and
