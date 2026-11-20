@@ -17,6 +17,35 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
 - Before opening the PR: build clean and the full CTest suite green
   (`ctest` in the build directory).
 
+### A pull request is not finished until it is mergeable
+
+Creating the PR is the middle of the task, not the end. Before reporting a PR as
+done, check all of the following, and fix what is not true rather than reporting
+it as a caveat:
+
+- **`mergeable` is true and `mergeable_state` is `clean`.** Read it back from the
+  API (`GET /repos/{owner}/{repo}/pulls/{n}`) — `gh pr view` and the tool that
+  creates the PR both report the state as computed *before* the last push, and
+  GitHub needs a moment to recompute after a push, so re-read until the field is
+  no longer `null`. A `dirty` state means a conflict with `develop`: merge
+  `develop` in, resolve it, re-run the suite, push. A `behind` state means the
+  branch needs the base merged in. Never open a PR and leave it conflicting.
+- **The base is `develop`**, never `main` (only a release targets `main`).
+- **Every CI job is green**, not just the one you expected to break. Read each
+  failing job's log and name the real cause. A red job that is infrastructure
+  (a registry 503, a runner image change) is re-run once and then reported as
+  infrastructure, with the evidence — never as "probably flaky".
+- **The suite is green *on the merge commit*.** CI tests `develop` merged with
+  the branch, so a file another PR added after you branched is already in the
+  tree CI builds. Run `git fetch && git merge origin/develop` locally and run
+  `ctest` before pushing, or a hard-coded path in someone else's new test will
+  fail all eight runners (that is exactly how `vscode_grammar` broke).
+- **When several PRs are open at once, open them in dependency order and
+  re-check the earlier ones after the later ones land.** A later PR that touches
+  the same lines makes an earlier one `dirty` without any push to it. Re-read
+  every open PR's `mergeable` at the end of the session, not only the one just
+  created.
+
 ## Response language
 
 - Reply to the user in **Spanish**. All repository artifacts (code, comments,
@@ -124,6 +153,28 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   the MEMORY class (the latter links `tests/hosted/memory_struct_helper.c`,
   because no libc symbol exercises that shape). A callback or C variadic
   parameter is still PHASE 7f work.
+- A builtin whose argument window the AOT backend walks by hand has to read
+  `args[i]` **downward**: `slotOffset` is `-16 * (index + 1)`, so `args[1]` sits
+  16 bytes *below* `args[0]` (`-16` tag, `-8` payload), not at `+16`/`+24`. A
+  `+16` read passes a smoke test whenever the two arguments happen to be equal
+  and fails as "bound must be positive" otherwise — `random(low, high)` was
+  shipped with exactly that bug.
+- `random`/`seed` are AOT-backed (PHASE 7g): `mt19937_64` is emitted as machine
+  code, so a native binary reproduces the VM's stream after the same `seed(n)`.
+  Three rules keep it correct, and each was a real bug first: only `rbx` and
+  `r12` survive the runtime calls (never `r13`/`r14`/`r15` — the arena cursor
+  and the global base live there); every helper keeps `rsp` 16-byte aligned at
+  its `call`s, including a thunk that just forwards; and `divUnsigned` leaves the
+  remainder in `rdx`, so an integer draw adds the low bound to `rdx` rather than
+  reloading the quotient. The 312-word state is a hidden global the lowerer
+  reserves only when the program mentions `random`/`seed`, so a program that
+  does not keeps its byte-for-byte binary. `tests/native_build_random.oskl`
+  compares VM and native output line for line. The argument-error messages
+  (`bound must be positive`, `needs an upper bound greater than the lower bound`,
+  `expects between 0 and 2 arguments`, `expects an integer argument`) are
+  matched to the VM's but cannot go in that fixture: a raised runtime error is
+  not a value, so `try`/`catch` does not capture it and `build_binary.cmake`
+  requires exit 0 from both engines.
 - Windows code paths can be exercised locally without a Windows host: build the
   engine with `x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude -Isrc -static
   -o /tmp/win/oskel.exe src/main.cpp src/core/*.cpp src/frontend/*.cpp
@@ -143,8 +194,8 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
 - The grammar keeps its **own** keyword, type and builtin lists, because a
   TextMate grammar cannot read the compiler. `tests/check_vscode_grammar.cmake`
   (CTest `vscode_grammar`) derives the vocabulary from the single sources of
-  truth — `kKeywords` in `src/lexer.cpp`, the `name == "..."` type names in
-  `src/ast.h`, the `addNative` registry in `src/builtins.cpp` — and fails when
+  truth — `kKeywords` in `src/frontend/lexer.cpp`, the `name == "..."` type names in
+  `src/frontend/ast.h`, the `addNative` registry in `src/runtime/builtins.cpp` — and fails when
   the grammar misses a word, when a `#include` names a missing entry, or when
   the grammar highlights syntax the lexer never produces. Adding a keyword, a
   type or a builtin means updating `syntaxes/oskel.tmLanguage.json` in the same
@@ -152,8 +203,8 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   `cmake -DROOT=. -P tests/check_vscode_grammar.cmake` before opening the PR.
 - The same test owns the **operators**, and in both directions. It rebuilds the
   spelling of every operator from the `if (c1 == 'a' ...)` guard that returns it
-  in `src/lexer.cpp`, and it takes the assignment set from `isAssignOp` in
-  `src/parser.cpp`, so a new `x op= y` cannot reach the compiler while the
+  in `src/frontend/lexer.cpp`, and it takes the assignment set from `isAssignOp` in
+  `src/frontend/parser.cpp`, so a new `x op= y` cannot reach the compiler while the
   grammar stays silent. The grammar's own rules are reduced to literal spellings
   (character class, `\|`, lookahead, one line per key) before the comparison,
   and if that reduction finds fewer than 15 operators it fails rather than
@@ -181,8 +232,25 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   diagnostic of its own; and an error inside an imported module is reported
   under the *root* file's name with the module's line and column, so the parser
   clamps a position that falls past the end of the open document instead of
-  dropping it. Keep `package.json` free of a `dependencies` block: the extension
-  ships as plain CommonJS.
+  dropping it. A third trap is the **unit**: the compiler counts its column in
+  UTF-8 bytes and a VS Code `Range` counts UTF-16 code units, so the two agree
+  only on ASCII — an accent or an emoji earlier in the line moves the squiggle
+  off the token by two positions either way. `byteColumnToUtf16` converts
+  against the document text, which is why `parseDiagnostics` takes the source as
+  well as the output; do not "simplify" it back to a bare column.
+- A programmatic `document.save()` fires `onDidSaveTextDocument`, and whether
+  that event arrives before or after the promise resolves is **not documented**.
+  A flag cleared in `finally` therefore suppresses it in one ordering only; in
+  the other, "Save and check" starts two compiler processes and the second kills
+  the first. `src/save-guard.js` counts the expected events instead, so the
+  ordering stops mattering, and a save that throws cancels its own expectation.
+  Both orderings are unit-tested — a stub that fires the event synchronously
+  only ever exercises the one that happens to work.
+- `check` is async and its callers are event handlers VS Code does not await, so
+  every entry point goes through `checkSafely`; otherwise a rejection is visible
+  only as an unhandled promise in the extension host log.
+- Keep `package.json` free of a `dependencies` block: the extension ships as
+  plain CommonJS.
 
 ## Release and artifacts
 
@@ -240,6 +308,20 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   **or in `liboskel_frontend.a`** — the archive matters because an unreferenced
   object never reaches the binary, so a binary-only check cannot see it.
   Every packaging format ships `oskelc` beside `oskel` and `bindgen`.
+- **A builtin must exist in both engines.** `tests/check_builtin_parity.cmake`
+  reads `addNative(...)` out of `src/runtime/builtins.cpp` and the `builtins`
+  map out of `src/frontend/native/lower.cpp` and compares the name sets. Each
+  engine is self-consistent, so a builtin only the VM has is invisible to every
+  other test: it runs in `oskel` and fails `oskel build` with "global 'X' is
+  read but never assigned". The names that are VM-only on purpose live in a list
+  in that script and in BACKLOG §6 item 25; the check also fails when a listed
+  exception stops being one, because a stale exception hides the next real gap.
+  Seventeen are VM-only today (files, `clock`, `random`/`seed`, `args`, `pcall`,
+  and the raw-memory intrinsics). `pcall` is the one that matters most, and not
+  because `try`/`catch` needs it — value-based `try`/`catch` already works in
+  AOT. `pcall` is the only way to recover from a `panic` raised inside a
+  function chosen at run time, and the AOT runtime reports a failure by exiting,
+  so it needs a non-local return in the call ABI.
 - A check that reads the source tree must name the *basename* of the file it
   wants, never a fixed `src/<name>.cpp` path, and must fail loudly when the file
   is missing. `tests/check_vscode_grammar.cmake` reads the keyword table, the
@@ -260,7 +342,7 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
   pulled into `oskel`; `nm build/oskel | grep bindgen` must stay empty. Every
   packaging format must ship it (`/usr/bin/bindgen`, `/usr/local/bin/bindgen`,
   `{app}\bin\bindgen.exe`) or the three platforms drift apart. It reuses
-  `isKnownTypeName`/`isIntegerTypeName` from `src/ast.h` so the vocabulary it
+  `isKnownTypeName`/`isIntegerTypeName` from `src/frontend/ast.h` so the vocabulary it
   emits cannot drift from the compiler's; keep that the single source of truth.
   It must never emit a declaration the compiler rejects — an unsupported type
   becomes a `// skipped:` comment, and a C variadic is written commented out.

@@ -7590,6 +7590,378 @@ void emitMemSizeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label memSiz
   epilogue(cg);
 }
 
+// --- mt19937_64 in machine code (PHASE 7c.5b.6) -----------------------------
+//
+// `random()`/`seed()` need a generator a native binary can reproduce bit for
+// bit, because `tests/build_binary.cmake` compares the AOT output with the VM's.
+// `std::mt19937_64` is fully specified by the standard, so the hosted engine's
+// sequence is portable; the *distributions* are not, which is why the hosted
+// side no longer uses them (see `src/runtime/builtins.cpp`). This emits the
+// generator itself, then the same reduction formulas.
+//
+// The state is a flat `uint64_t[312]` plus a cursor, allocated from the arena
+// and addressed through the hidden `$randomState` global's payload. The image
+// has no writable data segment, so the arena is the only place it can live.
+//
+// Register discipline: r13/r14/r15 are the arena cursor, the arena end and the
+// global table base (entry.h), so a helper must never write them. Only rbx and
+// r12 are pushed as scratch; r8-r11 and rax/rcx/rdx are caller-saved.
+
+constexpr std::int64_t kMtWords = 312;                   // the standard's N
+constexpr std::int64_t kMtMiddleWord = 156;              // M
+constexpr std::int64_t kMtStateBytes = kMtWords * 8;
+constexpr std::int64_t kMtCursorOffset = kMtStateBytes;  // cursor follows the words
+constexpr std::int64_t kMtStateTotal = kMtStateBytes + 8;
+
+// A native binary has no `std::random_device`, and it must not: two runs of the
+// same program would then differ, and the AOT fixture compares against the VM's
+// output. The VM seeds from `std::random_device`; under `oskel build` the
+// default seed is the standard's, and a program that wants a reproducible stream
+// calls `seed(n)`. BACKLOG §6 item 25 records the divergence.
+constexpr std::uint64_t kAotDefaultSeed = 5489ULL;  // the standard's default seed
+
+// `void* oskel_random_state(long slot)`: return the generator state, allocating
+// and seeding it on first use. The slot is the hidden `$randomState` global's
+// index, passed in rdi; the state pointer is cached in that slot's payload, so a
+// second call returns the same block. Returns the pointer in rax.
+void emitRandomState(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
+                     CodeGen::Label seedLabel, CodeGen::Label fail,
+                     const DataBlob& msgOom) {
+  CodeGen::Label allocate = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.shlImm8(Rdi, 4);          // slot * 16
+  cg.addReg(Rdi, kAotGlobalBase);
+  cg.movReg(Rbx, Rdi);         // &slot
+  cg.movFromMem(Rax, Rbx, 8);  // cached pointer (nil until seeded)
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, allocate);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+
+  cg.bind(allocate);
+  cg.movImm(Rdi, kMtStateTotal);
+  cg.callLabel(allocLabel);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rbx, 8, Rax);  // cache it in the slot's payload
+  cg.movReg(R12, Rax);
+  cg.movReg(Rdi, R12);
+  cg.movImm(Rsi, static_cast<std::int64_t>(kAotDefaultSeed));
+  cg.callLabel(seedLabel);
+  cg.movReg(Rax, R12);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+
+  cg.bind(oom);
+  emitFailCall(cg, fail, msgOom);
+}
+
+// `uint64_t oskel_random_next(void* state)`: one tempered draw, twisting first
+// when the cursor has run out. Returns the value in rax.
+void emitRandomNext(CodeGen& cg, CodeGen::Label label, CodeGen::Label twistLabel) {
+  CodeGen::Label loaded = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);  // scratch: keeps rsp 16-byte aligned at the `call` below
+  cg.movReg(Rbx, Rdi);
+  cg.movFromMem(Rax, Rbx, kMtCursorOffset);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kMtWords));
+  cg.jcc(Jcc::Lt, loaded);
+  cg.movReg(Rdi, Rbx);
+  cg.callLabel(twistLabel);  // resets the cursor to 0
+  cg.bind(loaded);
+  cg.movFromMem(R8, Rbx, kMtCursorOffset);
+  cg.movReg(R9, R8);
+  cg.shlImm8(R9, 3);
+  cg.addReg(R9, Rbx);
+  cg.movFromMem(Rax, R9, 0);  // y = s[cursor]
+  cg.addImm32(R8, 1);
+  cg.movToMem(Rbx, kMtCursorOffset, R8);
+  // Tempering, exactly as the standard states it.
+  cg.movReg(R10, Rax);
+  cg.shrImm8(R10, 29);
+  cg.movImm(R11, static_cast<std::int64_t>(0x5555555555555555ULL));
+  cg.andReg(R10, R11);
+  cg.xorReg(Rax, R10);
+  cg.movReg(R10, Rax);
+  cg.shlImm8(R10, 17);
+  cg.movImm(R11, static_cast<std::int64_t>(0x71D67FFFEDA60000ULL));
+  cg.andReg(R10, R11);
+  cg.xorReg(Rax, R10);
+  cg.movReg(R10, Rax);
+  cg.shlImm8(R10, 37);
+  cg.movImm(R11, static_cast<std::int64_t>(0xFFF7EEE000000000ULL));
+  cg.andReg(R10, R11);
+  cg.xorReg(Rax, R10);
+  cg.movReg(R10, Rax);
+  cg.shrImm8(R10, 43);
+  cg.xorReg(Rax, R10);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `void oskel_random_twist(void* state)`: the standard's twist, in place.
+void emitRandomTwist(CodeGen& cg, CodeGen::Label label) {
+  constexpr std::int64_t kUpperMask = static_cast<std::int64_t>(0xFFFFFFFF80000000ULL);
+  constexpr std::int64_t kLowerMask = 0x7FFFFFFF;
+  constexpr std::int64_t kMatrixA = static_cast<std::int64_t>(0xB5026F5AA96619E9ULL);
+
+  CodeGen::Label loop = cg.newLabel();
+  CodeGen::Label noMatrix = cg.newLabel();
+  CodeGen::Label successorReady = cg.newLabel();
+  CodeGen::Label middleReady = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);   // state
+  cg.push(R12);   // k
+  cg.movReg(Rbx, Rdi);
+  cg.xorReg(R12, R12);
+
+  cg.bind(loop);
+  // x = (s[k] & UM) | (s[(k+1) % N] & LM)
+  cg.movReg(R11, R12);
+  cg.shlImm8(R11, 3);
+  cg.addReg(R11, Rbx);
+  cg.movFromMem(Rax, R11, 0);  // s[k]
+  cg.movImm(R8, kUpperMask);
+  cg.andReg(Rax, R8);
+  cg.movReg(R9, R12);
+  cg.addImm32(R9, 1);
+  cg.cmpImm32(R9, static_cast<std::int32_t>(kMtWords));
+  cg.jcc(Jcc::Lt, successorReady);
+  cg.xorReg(R9, R9);
+  cg.bind(successorReady);
+  cg.movReg(R10, R9);
+  cg.shlImm8(R10, 3);
+  cg.addReg(R10, Rbx);
+  cg.movFromMem(R8, R10, 0);
+  cg.movImm(R9, kLowerMask);
+  cg.andReg(R8, R9);
+  cg.orReg(Rax, R8);  // rax = x
+  // xa = x >> 1; if (x & 1) xa ^= MATRIX_A.
+  cg.movReg(R8, Rax);
+  cg.shrImm8(Rax, 1);
+  cg.movImm(R9, 1);
+  cg.andReg(R8, R9);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Eq, noMatrix);
+  cg.movImm(R9, kMatrixA);
+  cg.xorReg(Rax, R9);
+  cg.bind(noMatrix);
+  // s[k] = s[(k+M) % N] ^ xa. k < N so k+M < N+M; one subtraction suffices.
+  cg.movReg(R9, R12);
+  cg.addImm32(R9, static_cast<std::int32_t>(kMtMiddleWord));
+  cg.cmpImm32(R9, static_cast<std::int32_t>(kMtWords));
+  cg.jcc(Jcc::Lt, middleReady);
+  cg.subRegImm32(R9, static_cast<std::int32_t>(kMtWords));
+  cg.bind(middleReady);
+  cg.movReg(R10, R9);
+  cg.shlImm8(R10, 3);
+  cg.addReg(R10, Rbx);
+  cg.movFromMem(R8, R10, 0);
+  cg.xorReg(R8, Rax);
+  cg.movReg(R11, R12);
+  cg.shlImm8(R11, 3);
+  cg.addReg(R11, Rbx);
+  cg.movToMem(R11, 0, R8);
+  cg.addImm32(R12, 1);
+  cg.cmpImm32(R12, static_cast<std::int32_t>(kMtWords));
+  cg.jcc(Jcc::Lt, loop);
+  cg.movImmToMem(Rbx, kMtCursorOffset, 0);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `void oskel_random_seed(void* state, uint64_t seed)`: the standard's seeding,
+// shared by the one-time init (fixed default seed) and `seed(n)`.
+void emitRandomSeed(CodeGen& cg, CodeGen::Label label) {
+  CodeGen::Label loop = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);   // state
+  cg.push(R12);   // k
+  cg.movReg(Rbx, Rdi);
+  cg.movToMem(Rbx, 0, Rsi);  // s[0] = seed
+  cg.movImm(R12, 1);
+  cg.bind(loop);
+  // s[k] = 6364136223846793005 * (s[k-1] ^ (s[k-1] >> 62)) + k
+  cg.movReg(R9, R12);
+  cg.shlImm8(R9, 3);
+  cg.addReg(R9, Rbx);         // &s[k]
+  cg.movFromMem(R10, R9, -8); // s[k-1]
+  cg.movReg(R11, R10);
+  cg.shrImm8(R11, 62);
+  cg.xorReg(R10, R11);
+  cg.movImm(R11, static_cast<std::int64_t>(6364136223846793005ULL));
+  cg.imulReg(R10, R11);
+  cg.addReg(R10, R12);
+  cg.movToMem(R9, 0, R10);
+  cg.addImm32(R12, 1);
+  cg.cmpImm32(R12, static_cast<std::int32_t>(kMtWords));
+  cg.jcc(Jcc::Lt, loop);
+  cg.movImmToMem(Rbx, kMtCursorOffset, kMtWords);  // first draw twists
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `void oskel_builtin_seed(AotValue* args, long argc, AotClosure* self)`:
+// reseed from one integer, exactly as the hosted `seed(n)`.
+void emitSeedBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label stateLabel,
+                     CodeGen::Label seedLabel, CodeGen::Label fail,
+                     const DataBlob& msgArgc, const DataBlob& msgInt) {
+  CodeGen::Label badType = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);  // scratch: keeps rsp 16-byte aligned at the `call`s below
+  cg.movReg(Rbx, Rdi);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
+  cg.movFromMem(Rax, Rbx, 0);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Ne, badType);
+  cg.callLabel(stateLabel);
+  cg.movReg(Rdi, Rax);
+  cg.movFromMem(Rsi, Rbx, 8);
+  cg.callLabel(seedLabel);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+
+  // Out of line, so the happy path stays straight.
+  cg.bind(badType);
+  emitFailCall(cg, fail, msgInt);
+  cg.bind(badArgc);
+  emitFailCall(cg, fail, msgArgc);
+}
+
+// `AotValue oskel_builtin_random(AotValue* args, long argc, AotClosure* self)`.
+// Zero arguments: `(next() >> 11) / 2^53`, the hosted formula. One or two: an
+// integer via `next() % span`, offset by the lower bound.
+//
+// rbx and r12 are the only scratch registers that survive the calls below (both
+// are pushed in the prologue and restored by every helper), so the argument
+// window goes in rbx and the argument count in r12. The state pointer is not
+// kept in a register across a call at all: each draw reloads it through
+// `stateLabel`, which is cheap and removes a class of clobber bug.
+void emitRandomBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label nextLabel,
+                       CodeGen::Label stateLabel, CodeGen::Label fail,
+                       const DataBlob& msgHigh, const DataBlob& msgBounds,
+                       const DataBlob& msgArgc, const DataBlob& msgType) {
+  constexpr int Xmm0 = kXmmBase + 0;
+  constexpr int Xmm1 = kXmmBase + 1;
+  constexpr std::int64_t kTwoPow53 = 0x4340000000000000LL;
+
+  CodeGen::Label zeroArgs = cg.newLabel();
+  CodeGen::Label oneArg = cg.newLabel();
+  CodeGen::Label twoArgs = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+  CodeGen::Label badHigh = cg.newLabel();
+  CodeGen::Label badBounds = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label badType = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);  // args, then a surviving operand
+  cg.push(R12);  // argc, then a surviving operand
+  cg.movReg(Rbx, Rdi);
+  cg.movReg(R12, Rsi);
+  cg.cmpImm32(R12, 2);
+  cg.jcc(Jcc::A, badArgc);  // more than two
+  cg.testReg(R12);
+  cg.jcc(Jcc::Eq, zeroArgs);
+  cg.cmpImm32(R12, 1);
+  cg.jcc(Jcc::Eq, oneArg);
+  cg.jmp(twoArgs);
+
+  // --- two arguments: low = args[0], high = args[1] ---
+  cg.bind(twoArgs);
+  cg.movFromMem(Rax, Rbx, 0);  // args[0].tag
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Ne, badType);
+  // Argument slots grow *downward* from `args` (slotOffset is -16*(index+1)),
+  // so args[1] sits 16 bytes below args[0], not above it.
+  cg.movFromMem(Rax, Rbx, -16);  // args[1].tag
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Ne, badType);
+  cg.movFromMem(R8, Rbx, 8);    // low  = args[0].payload
+  cg.movFromMem(R11, Rbx, -8);  // high = args[1].payload
+  cg.cmpReg(R11, R8);
+  cg.jcc(Jcc::Le, badBounds);
+  cg.subReg(R11, R8);   // r11 = span
+  cg.movReg(Rbx, R8);   // rbx = low; the argument window is dead from here
+  cg.movReg(R12, R11);  // r12 = span
+  cg.callLabel(stateLabel);
+  cg.movReg(Rdi, Rax);
+  cg.callLabel(nextLabel);
+  cg.movReg(R9, R12);
+  cg.divUnsigned(R9);   // rdx = next() % span
+  cg.addReg(Rdx, Rbx);  // low + remainder
+  cg.movImm(Rax, kTagInt);
+  cg.jmp(done);
+
+  // --- one argument: high = args[0], 0 <= r < high ---
+  cg.bind(oneArg);
+  cg.movFromMem(Rax, Rbx, 0);  // args[0].tag
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Ne, badType);
+  cg.movFromMem(R11, Rbx, 8);  // high
+  cg.testReg(R11);
+  cg.jcc(Jcc::Le, badHigh);    // high <= 0
+  cg.movReg(R12, R11);         // r12 = high
+  cg.callLabel(stateLabel);
+  cg.movReg(Rdi, Rax);
+  cg.callLabel(nextLabel);
+  cg.movReg(R9, R12);
+  cg.divUnsigned(R9);   // rdx = next() % high
+  cg.movImm(Rax, kTagInt);
+  cg.jmp(done);
+
+  // --- no argument: a double in [0, 1) ---
+  cg.bind(zeroArgs);
+  cg.callLabel(stateLabel);
+  cg.movReg(Rdi, Rax);
+  cg.callLabel(nextLabel);
+  cg.shrImm8(Rax, 11);  // the top 53 bits: every value is exact in a double
+  cg.cvtsi2sd(Xmm0, Rax);
+  cg.movImm(R9, kTwoPow53);
+  cg.movqToXmm(Xmm1, R9);
+  cg.divsd(Xmm0, Xmm1);
+  cg.movqFromXmm(Rdx, Xmm0);  // payload = the double's bit pattern
+  cg.movImm(Rax, kTagDouble);
+
+  cg.bind(done);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+
+  cg.bind(badHigh);
+  emitFailCall(cg, fail, msgHigh);
+  cg.bind(badBounds);
+  emitFailCall(cg, fail, msgBounds);
+  cg.bind(badArgc);
+  emitFailCall(cg, fail, msgArgc);
+  cg.bind(badType);
+  emitFailCall(cg, fail, msgType);
+}
+
 // `void oskel_sb_init(AotStringBuilder* sb, char* data, long capacity)`: start a
 // builder over a caller-owned buffer (`data`/`capacity`) with `length` zero. A
 // caller that renders a `print` value passes a stack buffer, so a small render
@@ -9070,7 +9442,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
 void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                     const RuntimeHandles& entry,
                     const std::vector<AotExternThunk>* externThunks, bool hosted,
-                    bool hasInput, bool bareMetal) {
+                    bool hasInput, bool bareMetal, int randomStateSlot) {
   // Constant text, bound after all code so nothing falls through into it.
   std::vector<DataBlob> data;
   auto addText = [&](const char* text) {
@@ -9219,6 +9591,23 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgTimeArgc = addText("oskel: time() expects 0 arguments\n");
   DataBlob msgInputArgc = addText("oskel: input() expects between 0 and 1 arguments\n");
   DataBlob msgMemSizeArgc = addText("oskel: memSize() expects 0 arguments\n");
+  // The `random`/`seed` messages are added only when the program draws, so a
+  // program that never calls them keeps a byte-for-byte identical image.
+  DataBlob msgRandomHigh;
+  DataBlob msgRandomBounds;
+  DataBlob msgRandomArgc;
+  DataBlob msgRandomType;
+  DataBlob msgSeedArgc;
+  DataBlob msgSeedType;
+  if (randomStateSlot >= 0) {
+    msgRandomHigh = addText("oskel: random() bound must be positive\n");
+    msgRandomArgc = addText("oskel: random() expects between 0 and 2 arguments\n");
+    msgRandomType = addText("oskel: random() expects an integer argument\n");
+    msgRandomBounds =
+        addText("oskel: random() needs an upper bound greater than the lower bound\n");
+    msgSeedArgc = addText("oskel: seed() expects 1 argument\n");
+    msgSeedType = addText("oskel: seed() expects an integer argument\n");
+  }
   // The scalar `extern "C"` thunks (PHASE 7f.5). A direct call is arity- and
   // type-checked at compile time, so these only fire through a first-class
   // reference (`var f = abs; f("x")`). The arity message is the shared one; the
@@ -9557,6 +9946,36 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   // references the label.
   if (bareMetal) {
     emitMemSizeBuiltin(cg, handles.memSizeBuiltin, entry.memSize, fail, msgMemSizeArgc);
+  }
+  // `random()`/`seed()` (PHASE 7c.5b.6): the mt19937_64 generator and the two
+  // reduction formulas, so a native binary draws the VM's sequence. `stateSlot`
+  // is the hidden `$randomState` global's index, resolved by `lower.cpp`.
+  if (randomStateSlot >= 0) {
+    CodeGen::Label twistLabel = cg.newLabel();
+    CodeGen::Label nextLabel = cg.newLabel();
+    CodeGen::Label seedLabel = cg.newLabel();
+    emitRandomSeed(cg, seedLabel);
+    emitRandomTwist(cg, twistLabel);
+    emitRandomNext(cg, nextLabel, twistLabel);
+    emitRandomState(cg, handles.randomStateInit, handles.alloc, seedLabel, fail, msgOom);
+    // The state helper takes the slot in rdi, so wrap it in a thunk that the
+    // builtins can `call` with no arguments: `random`/`seed` call this label to
+    // obtain the pointer. It reads the slot from a constant.
+    CodeGen::Label stateThunk = cg.newLabel();
+    cg.bind(stateThunk);
+    // A real frame: at a call site rsp is 16-byte aligned, so the thunk starts
+    // at 8 (mod 16) and must re-align before it calls out.
+    cg.push(Rbp);
+    cg.movReg(Rbp, Rsp);
+    cg.movImm(X64Reg::Rdi, randomStateSlot);
+    cg.callLabel(handles.randomStateInit);
+    cg.movReg(Rsp, Rbp);
+    cg.pop(Rbp);
+    cg.retInsn();
+    emitRandomBuiltin(cg, handles.randomBuiltin, nextLabel, stateThunk, fail,
+                      msgRandomHigh, msgRandomBounds, msgRandomArgc, msgRandomType);
+    emitSeedBuiltin(cg, handles.seedBuiltin, stateThunk, seedLabel, fail, msgSeedArgc,
+                    msgSeedType);
   }
   emitIntTextParser(cg, handles.intTextParser, fail, msgConvertInt);
   dtoa::emitDtoa(cg, dtoaHandles);

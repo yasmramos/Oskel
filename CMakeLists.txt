@@ -336,6 +336,17 @@ if(BUILD_TESTING)
       "-DFRONTEND_ARCHIVE=$<TARGET_FILE:oskel_frontend>"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_oskelc_no_vm.cmake")
 
+  # --- Every builtin exists in both engines ---
+  # A builtin registered by `registerBuiltins` but not seeded into the AOT chunk
+  # runs in the VM and fails `oskel build`. Each engine is self-consistent, so
+  # only a check that reads both registries can see the gap (AGENTS.md: "VM/AOT
+  # parity is part of every feature"). The names that are VM-only on purpose are
+  # listed in the script and tracked in BACKLOG §6 item 25.
+  add_test(NAME builtin_parity
+    COMMAND ${CMAKE_COMMAND}
+      -DROOT=${CMAKE_CURRENT_SOURCE_DIR}
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_builtin_parity.cmake")
+
   # --- Version consistency: `oskel --version` matches the declared version ---
   add_test(NAME version_consistency
     COMMAND ${CMAKE_COMMAND}
@@ -646,6 +657,18 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_TEST_NAME=oskel.build_binary_path"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_path.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `random()`/`seed()` are implemented in the AOT backend as `mt19937_64` in
+    # machine code, with the same reduction formulas as the VM (PHASE 7c.5b.6).
+    # The fixture reseeds every stream, because only a seeded sequence is
+    # reproducible across the two engines: the VM seeds from `std::random_device`
+    # and a native binary from the standard's default seed (BACKLOG §6 item 25).
+    add_test(NAME oskel.build_binary_random
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_random"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_random.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
     # `std.collections` exists because the AOT backend does not bind the array

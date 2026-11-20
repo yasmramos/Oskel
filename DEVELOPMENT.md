@@ -281,9 +281,9 @@ previous one.
   nil keep their type
 - `LOADK` loads any constant (`nil`, booleans, numbers and strings)
 - Functions: `bytecodeInit`, `bytecodeEmit`, `bytecodeFree` (declared in
-  `include/bytecode.h`, implemented in `src/bytecode.cpp`)
+  `include/bytecode.h`, implemented in `src/frontend/bytecode.cpp`)
 
-### PHASE 2 — `src/compiler.cpp` (AST → bytecode) ✅
+### PHASE 2 — `src/frontend/compiler.cpp` (AST → bytecode) ✅
 - Literals: every literal → `LOADK` with the value in the tagged pool
 - `VariableExpr` → `GETGLOBAL`
 - `BinaryExpr` with `+`, `-`, `*`, `/`, `%`, `**` and comparisons (`==`, `!=`,
@@ -308,7 +308,7 @@ previous one.
   constants
 - Nodes not yet supported throw `CompileError` with line/column
 
-### PHASE 3 — `src/vm.cpp` (run bytecode) ✅
+### PHASE 3 — `src/runtime/vm.cpp` (run bytecode) ✅
 - Loop `while (pc < count)` + `switch` on the opcode
 - `std::vector<Value> registers_` sized by `numRegisters`
 - Global variable table `std::unordered_map<std::string, Value>`
@@ -360,7 +360,7 @@ previous one.
 - Do **NOT** add `OP_IF` or `OP_WHILE` (high level)
 - `in` and `for-in` are left for PHASE 6 (they depend on collections)
 
-### PHASE 6 — Functions, collections and library 🔶 in progress ← NEXT
+### PHASE 6 — Functions, collections and library ✅
 - `CALL`, `RETURN`, `CLOSURE`, `GETUPVAL`, `SETUPVAL`
 - Call stack in the VM and registers per frame
 - `Bytecode` evolves into **per-function protos** with child protos (Lua style)
@@ -621,9 +621,12 @@ previous one.
   `tests/native_build_extern_memory_struct.oskl` (MEMORY, with
   `tests/hosted/memory_struct_helper.c`, which also covers the narrow,
   mixed-class, `ptr` and `cstring` field cases).
-- **Callbacks (done)** — a parameter typed `fn(P...): R` is a C function
-  pointer. `fn` is a keyword, so `parseTypeAnnotation` reads the signature
-  before the ordinary type-name path; the parameters are scalar FFI names and
+- **Callbacks (done in the development engine; still open in AOT)** — a
+  parameter typed `fn(P...): R` is a C function pointer. The `libffi` closure
+  below is the *development engine* implementation; the AOT backend has no
+  equivalent yet, so a program that passes a callback to an `extern "C"`
+  function fails `oskel build` with the PHASE 7f rejection (BACKLOG §6). `fn` is a keyword, so `parseTypeAnnotation` reads the signature before
+  the ordinary type-name path; the parameters are scalar FFI names and
   the return is a scalar or a struct by value (a nested callback, a non-scalar
   callback parameter and a struct *parameter* inside the callback are out of
   scope). A callback is
@@ -664,7 +667,7 @@ previous one.
   time (`OSKEL_FFI_VARIADIC` skips the script test). See `docs/language.md`
   §4.6 and `tests/53_ffi_variadic.oskl`.
 
-### PHASE 6.7 — Error handling 🔶 in progress
+### PHASE 6.7 — Error handling ✅
 
 Value-based error handling, no catchable exceptions: the AOT runtime has no
 unwinding, so a feature the freestanding backend cannot compile would be
@@ -847,7 +850,7 @@ fixture, registered as `oskel.build_binary_classes`, which asserts the native
 binary prints byte for byte what the VM prints).
 
 ### PHASE 7 — Bytecode → native backend (AOT, freestanding) 🔶 in progress
-- New module `src/native/` + `include/native/`: lowering of every opcode to
+- New module `src/frontend/native/` + `include/native/`: lowering of every opcode to
   x86-64 following the bytecode → native lowering table of §3.
 - **Own machine-code and static ELF executable emitter** (~500-1000 lines:
   ELF header, program headers, `.text`, `.rodata`, entry point), keeping the
@@ -892,15 +895,15 @@ binary prints byte for byte what the VM prints).
     builtin, collections on top of the custom allocator) and the boxed
     `Value` representation that unlocks floats and the rest of the opcodes.
     - **7c.0** (done) — the freestanding substrate: the static ELF64 emitter
-      (`include/native/elf.h`, `src/native/elf.cpp`) and the PE32+ emitter
-      (`include/native/pe.h`, `src/native/pe.cpp`); the bump allocator
-      (`include/native/arena.h`, `src/native/arena.cpp`); `PlatformFreestanding`
+      (`include/native/elf.h`, `src/frontend/native/elf.cpp`) and the PE32+ emitter
+      (`include/native/pe.h`, `src/frontend/native/pe.cpp`); the bump allocator
+      (`include/native/arena.h`, `src/frontend/native/arena.cpp`); `PlatformFreestanding`
       (`include/native/platform_freestanding.h`,
-      `src/native/platform_freestanding.cpp`), the second `Platform`
+      `src/frontend/native/platform_freestanding.cpp`), the second `Platform`
       implementation, reaching the kernel through direct Linux x86-64 syscalls
       (`write`, `read`, `openat`, `close`, `lseek`, `mmap`, `exit_group`) with
       no libc; and the entry point (`include/native/entry.h`,
-      `src/native/entry.cpp`), which appends the `_start` and the runtime
+      `src/frontend/native/entry.cpp`), which appends the `_start` and the runtime
       prelude (`oskel_write`, `oskel_exit`) to the same code buffer as the
       program so every `call` resolves through the emitter's labels, with no
       relocations and no linker. Verified end to end in
@@ -914,7 +917,7 @@ binary prints byte for byte what the VM prints).
       two-register size (rdi:rsi in, rax:rdx out), so a helper takes and
       returns a value without touching memory, and the old 12-register ceiling
       is gone. The embedded runtime (`include/native/runtime.h`,
-      `src/native/runtime.cpp`) emits, as machine code in the same buffer as
+      `src/frontend/native/runtime.cpp`) emits, as machine code in the same buffer as
       the program, the helpers the opcodes call: integer arithmetic
       (`+`/`-`/`*`), bitwise (`&`/`|`/`^`), unary (`-`/`!`/`~`), comparison
       (equality for any pair, ordering for int/int and bool/bool, all
@@ -977,7 +980,7 @@ binary prints byte for byte what the VM prints).
       hosted engine prints a `double` with the shortest text that round-trips
       through binary64 (`std::to_chars`, e.g. `0.1 + 0.2` → `"0.3"`) and a
       `float` with the shortest binary32 round-trip (`0.1f` → `"0.1"`,
-      `1.0f/3.0f` → `"0.33333334"`). `src/native/dtoa.cpp` implements a
+      `1.0f/3.0f` → `"0.33333334"`). `src/frontend/native/dtoa.cpp` implements a
       freestanding Dragon4 (Steele & White free-format) over a small fixed
       bignum (32-bit limbs in 64-bit slots), emitted as x86-64 through the
       shared `CodeGen` — no libc, no `printf`, no table of powers of ten. It
@@ -1298,7 +1301,8 @@ binary prints byte for byte what the VM prints).
       so it links into the freestanding binary. Covered by
       `tests/freestanding_test.cpp` (each builtin and every failure path under
       the real `_start`) and the `oskel build` fixture.
-    - **7c.5b** (in progress) — the remaining builtins. **7c.5b.1** (done) adds
+    - **7c.5b** (done, except the VM-only builtins listed in BACKLOG §6)
+      — the remaining builtins. **7c.5b.1** (done) adds
       the numeric conversions `int`/`float`/`double` for a numeric or boolean
       operand: `int` truncates toward zero (returning an int unchanged, a bool
       as 0/1, and a float/double after a finiteness and a `-2^63 <= x < 2^63`
@@ -1437,11 +1441,11 @@ binary prints byte for byte what the VM prints).
     default follows the host, and a Windows output name gets `.exe`) selects
     it. The lowering and the embedded runtime are shared with Linux unchanged:
     the Microsoft x64 ABI lives only in the entry prelude
-    (`emitWindowsRuntime` in `src/native/entry.cpp`), which reaches kernel32
+    (`emitWindowsRuntime` in `src/frontend/native/entry.cpp`), which reaches kernel32
     instead of issuing syscalls — `oskel_write` marshals `GetStdHandle` +
     `WriteFile` (retrying for a full write, with the mandatory NULL
     `lpOverlapped` and shadow space), `oskel_exit` calls `ExitProcess` and
-    `oskel_init_arena` calls `VirtualAlloc`. `src/native/pe.cpp` emits a static
+    `oskel_init_arena` calls `VirtualAlloc`. `src/frontend/native/pe.cpp` emits a static
     PE32+ with a real import table built from a fixed list
     (`WriteFile`, `GetStdHandle`, `ExitProcess`, `VirtualAlloc`), a `.idata`
     section pinned at RVA 0x1000 so the IAT slots are constant and the prelude
@@ -1534,13 +1538,13 @@ binary prints byte for byte what the VM prints).
       `include/native/codegen.h`): `callExternal` emits `call rel32` to an
       undefined symbol and records the displacement slot, and `leaRipExternal`
       does the same for an address; `exportSymbol` records a defined symbol
-      (the program's `main`). `src/native/object.cpp` wraps the code buffer in
+      (the program's `main`). `src/frontend/native/object.cpp` wraps the code buffer in
       an ELF64 `ET_REL` object — `.text`, `.rodata`, `.rela.text` (one
       relocation per reference: `R_X86_64_PLT32` for a call, `R_X86_64_PC32` for
       an address, both with addend `-4` because the CPU measures the
       displacement from the slot's end), `.symtab`/`.strtab` and `.shstrtab`,
       with the local symbols before the global ones as the ABI requires.
-      `emitHostedRuntime` (`src/native/entry.cpp`) binds the same three entry
+      `emitHostedRuntime` (`src/frontend/native/entry.cpp`) binds the same three entry
       handles the runtime already references but reaches the system through libc
       (`write`/`exit`/`malloc`) instead of a raw syscall, and exports the
       program entry as the C `main` the C runtime calls — the lowering's `main`
@@ -1565,7 +1569,7 @@ binary prints byte for byte what the VM prints).
       express it. `collectExternThunks` builds the list in the hosted mode and
       seeds each thunk into the symbol's global slot as an `AotClosure`, exactly
       like a builtin, so a `CALL` reaches it through the ordinary `oskel_call`
-      path. The thunk itself (`emitExternThunk`, `src/native/runtime.cpp`) has
+      path. The thunk itself (`emitExternThunk`, `src/frontend/native/runtime.cpp`) has
       the lowering's own function shape and reproduces the hosted
       `ffi_marshal.h` conversions: a bool is 0/1, an integer is the payload, a
       number is truncated toward zero for an integer parameter and widened for a
@@ -1601,7 +1605,7 @@ binary prints byte for byte what the VM prints).
       before the call (the SSE arguments are written directly, since nothing
       clobbers an xmm register). A `cstring` *return* comes back in `rax`: NULL
       becomes `nil`, otherwise the bytes are scanned to the NUL (with the hosted
-      engine's 16 MiB cap, `src/ffi.cpp`) and copied into an `AotString`, which
+      engine's 16 MiB cap, `src/runtime/ffi.cpp`) and copied into an `AotString`, which
       the thunk returns as a `Str` value. Boxing the result as the existing
       `Str` tag — rather than adding an `AotTag::Ptr` — keeps every shared
       helper (`type`, `print`, comparison, interpolation) untouched, so the
@@ -1622,7 +1626,7 @@ binary prints byte for byte what the VM prints).
     (QEMU `-kernel`, GRUB, Limine) loads at 1 MiB and enters in 32-bit
     protected mode. Because the CPU starts in 32-bit mode with paging off and
     multiboot leaves a *32-bit* code descriptor in the GDT, the image begins
-    with a small hand-assembled 32-bit trampoline (`src/native/bare_metal.cpp`,
+    with a small hand-assembled 32-bit trampoline (`src/frontend/native/bare_metal.cpp`,
     `include/native/bare_metal.h`): it builds an identity page table with 2 MiB
     huge pages, turns on PAE and long mode (and, in CR4, `OSFXSR` and
     `OSXMMEXCPT`, without which the first SSE instruction the float path emits
@@ -1709,12 +1713,12 @@ binary prints byte for byte what the VM prints).
 - Afterwards, LuaJIT's JIT as a reference (see PHASE 8 below).
 - **In the tree now**: the `Target` descriptor (`include/native/target.h`) and
   the x86-64 instruction emitter (`include/native/codegen.h`,
-  `src/native/codegen.cpp`): labels with backpatching, `mov`/`lea`, integer
+  `src/frontend/native/codegen.cpp`): labels with backpatching, `mov`/`lea`, integer
   ALU, shifts, compares, `setcc`/`movzx`, `jmp`/`jcc`, SSE2 float ops,
   `push`/`pop`, `call rel32`, `syscall` and `ret`, covered by the byte-exact
   tests in `tests/codegen_test.cpp` (the mmap/execution checks run on Linux
   x86-64 only). The 7b lowering (`include/native/lower.h`,
-  `src/native/lower.cpp`) turned the runtime-free, integer-only opcodes into
+  `src/frontend/native/lower.cpp`) turned the runtime-free, integer-only opcodes into
   machine code, and 7c.1a replaced it with the boxed value model; both are
   tested by execution in `tests/lower_test.cpp`.
   7c.0 adds the freestanding substrate: the static ELF64 and PE32+ emitters,
@@ -1722,7 +1726,7 @@ binary prints byte for byte what the VM prints).
   `_start`/prelude, exercised end to end (a real generated binary is run) in
   `tests/freestanding_test.cpp`. 7c.1a adds the boxed value model
   (`include/native/value.h`) and the embedded runtime
-  (`include/native/runtime.cpp`): a register is a 16-byte `AotValue` slot in a
+  (`src/frontend/native/runtime.cpp`): a register is a 16-byte `AotValue` slot in a
   stack register file, and the integer/float arithmetic, bitwise/shift, unary,
   comparison and truthiness helpers plus the int/bool/nil printer are emitted
   as machine code into the program's own buffer. 7c.1b adds floats and doubles
@@ -1876,7 +1880,7 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.4a-d, 7c.5a, 7c.5c, 7c.6, 7d, 7e, 7g done; 7c.5b — the remaining builtins — in progress; 7f — FFI in AOT — 7f.1-7f.7 done, scalar, `cstring`/`ptr` and struct-by-value `extern "C"` (register and class-MEMORY) resolve in the hosted backend, callback/variadic still open)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.7 done, scalar, `cstring`/`ptr` and struct-by-value `extern "C"` (register and class-MEMORY) resolve in the hosted backend; a C variadic and a callback argument are still open. 7c.5b covers every builtin the AOT runtime can implement without the host; the fifteen that still need the host (files, clock, `pcall`, raw memory) stay VM-only and are BACKLOG §6, and `random`/`seed` joined the AOT side in 7c.5b.6)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)

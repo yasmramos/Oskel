@@ -7,7 +7,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { parseDiagnostics, messageForFailure, clamp } = require('../src/diagnostics.js');
+const { parseDiagnostics, messageForFailure, clamp, byteColumnToUtf16 } = require('../src/diagnostics.js');
 
 const TYPE_ERROR = `bad.oskl:3:7: error: cannot assign 'string' to 'int' in 'x'
   |
@@ -133,4 +133,45 @@ test('a failed run with output reports the first line', () => {
 
 test('a failed run with no output still says something', () => {
   assert.match(messageForFailure('   ', 65), /exited with code 65/);
+});
+
+test('converts a byte column to UTF-16 when the line is not ASCII', () => {
+  // Measured against the real compiler: the error is on `"no"`, and the
+  // compiler reports column 33 for this line. The author sees the 31st
+  // character, because `ñ` costs two bytes and one unit.
+  const line = '  var s = "aññ"; var x: int = "no";';
+  const output = `acc.oskl:2:33: error: cannot assign 'string' to 'int' in 'x'`;
+  const [found] = parseDiagnostics(output, `fn main() {\n${line}\n}`);
+  assert.strictEqual(found.column, 31);
+  assert.strictEqual(line.slice(found.column - 1, found.column - 1 + 4), '"no"');
+});
+
+test('converts a byte column to UTF-16 past an astral character', () => {
+  // The emoji is 4 bytes but 2 UTF-16 units, so the drift runs the other way.
+  // The compiler reports byte column 32; VS Code needs unit column 30.
+  const line = '  var s = "😀"; var x: int = "no";';
+  const output = `emo.oskl:2:32: error: cannot assign 'string' to 'int' in 'x'`;
+  const [found] = parseDiagnostics(output, `fn main() {\n${line}\n}`);
+  assert.strictEqual(found.column, 30);
+  assert.strictEqual(line.slice(found.column - 1, found.column - 1 + 4), '"no"');
+});
+
+test('an ASCII line is unchanged by the conversion', () => {
+  const line = '  x = "no";';
+  const [found] = parseDiagnostics(`a.oskl:1:7: error: bad`, line);
+  assert.strictEqual(found.column, 7);
+  assert.strictEqual(line.slice(6, 10), '"no"');
+});
+
+test('a column inside a multi-byte character snaps to its first unit', () => {
+  // Byte 2 of `é` is not a character boundary; the squiggle must still cover
+  // the character rather than land mid-surrogate.
+  assert.strictEqual(byteColumnToUtf16('é', 1), 1);
+  assert.strictEqual(byteColumnToUtf16('é', 2), 1);
+  assert.strictEqual(byteColumnToUtf16('é', 3), 2);
+});
+
+test('a byte column past the end of the line clamps', () => {
+  const [found] = parseDiagnostics('a.oskl:1:99: error: bad', 'ab');
+  assert.strictEqual(found.column, 3);
 });
