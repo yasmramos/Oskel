@@ -671,8 +671,33 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_random.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
-    # `std.collections` exists because the AOT backend does not bind the array
-    # methods yet (docs/BACKLOG.md §6 item 1); it is plain Oskel over the
+    # The callback-taking array methods -- `map`, `filter`, `each`, `find`,
+    # `any`, `all` (PHASE 7c.3h). They are the first emitted helpers that call
+    # back into the program through `oskel_call`, so the callback runs real
+    # Oskel code inside the helper. The fixture pins the whole surface,
+    # including `each` returning the receiver and `find` returning nil.
+    add_test(NAME oskel.build_binary_array_callbacks
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_array_callbacks"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_callbacks.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The folding array methods -- `reduce`, `sum`, `join` (PHASE 7c.3h).
+    # `reduce` is the first emitted helper that hands its callback two values,
+    # so the fixture pins the argument-window ordering; `sum` pins the all-int
+    # fast path and its switch to a double, and `join` pins the `toString`
+    # rendering of both the items and the separator.
+    add_test(NAME oskel.build_binary_array_folds
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_array_folds"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_folds.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `std.collections` exists because the AOT backend does not bind every array
+    # method yet -- `sort`/`sorted` are open (docs/BACKLOG.md §6 item 1); it is
+    # plain Oskel over the
     # portable primitive surface, so it must build to a native binary and agree
     # with the VM. The fixture is the guard that keeps the module off the
     # methods, `pcall`/`error` and the rest of the AOT gaps.

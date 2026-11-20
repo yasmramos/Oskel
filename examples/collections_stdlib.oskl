@@ -3,10 +3,10 @@
 // form.
 //
 // These are the same operations as the array methods, provided as functions.
-// The array methods are implemented in the VM but the AOT backend does not bind
-// them yet (`docs/BACKLOG.md` §6 item 1), so a program that must compile with
-// `oskel build` uses these instead. The module is pure Oskel: the same program
-// runs on the VM and as a native binary.
+// The AOT backend does not bind `sort`/`sorted` yet (`docs/BACKLOG.md` §6
+// item 1), so a program that must compile with `oskel build` uses these instead.
+// The module is pure Oskel: the same program runs on the VM and as a native
+// binary.
 
 // 1. Qualified: the module is bound under its path.
 import std.collections;
