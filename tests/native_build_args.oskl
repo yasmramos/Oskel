@@ -1,0 +1,21 @@
+// `args()` in the AOT backend (BACKLOG §6 item 25).
+//
+// The entry point builds an array from the `(argc, argv)` it receives and the
+// chunk stores it in a hidden `$args` global, skipping `argv[0]` exactly like
+// the VM. The harness passes the same vector to both runs (`-DOSKEL_ARGS`), so
+// the values are compared by content rather than by shape -- including one
+// argument with a space in it, which a naive tokeniser would split in two.
+//
+// Only the targets whose entry receives an argument vector can back this
+// builtin: Linux freestanding and hosted. Windows (the loader calls the entry
+// with no arguments) and bare metal reject it by name, which is what
+// `tests/native_build_args_error.oskl` pins.
+
+var rest = args();
+print("args type", type(rest));
+print("args count", len(rest));
+var i = 0;
+for (a in rest) {
+  print("arg", i, a);
+  i = i + 1;
+}

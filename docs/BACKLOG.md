@@ -370,8 +370,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
       the VM. Only the targets whose entry receives an argument vector seed it
       -- freestanding Linux and hosted -- while Windows (the loader calls the
       entry with no arguments) and bare metal reject it by name.
-      Fixture: `tests/native_build_clock_args.oskl` covers both this and
-      `clock`.
+      Fixture: `tests/native_build_args.oskl` (Linux and hosted only; Windows
+      and bare metal pin the rejection with `tests/native_build_args_error.oskl`
+      instead), and `tests/native_build_clock.oskl` covers `clock`.
     - **Done earlier**: `pcall` (§6 item 4) and `random`/`seed` (PHASE
       7c.5b.6).
     A target that cannot back a builtin now fails with a message that names the

@@ -31,8 +31,9 @@ may change between minor versions.
   system", "input() needs a keyboard") instead of the unassigned-global error a
   typo produces. Three parity
   fixtures pin the result (`native_build_pointers.oskl`,
-  `native_build_files.oskl`, `native_build_clock_args.oskl`), each compared with
-  the VM byte for byte. Two latent bugs in the Windows prelude are fixed with
+  `native_build_files.oskl`, `native_build_clock.oskl`, and
+  `native_build_args.oskl` where the entry receives an argument vector), each
+  compared with the VM byte for byte. Two latent bugs in the Windows prelude are fixed with
   them: the file thunks stored their saved path over the fifth outgoing argument
   and reused `rdx` for `lpBuffer` before reading the length out of it.
 

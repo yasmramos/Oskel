@@ -777,16 +777,36 @@ if(BUILD_TESTING)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
     # `clock()` reads the `entry.monotonic` handle and subtracts the origin the
-    # chunk captured at entry, and `args()` reads the array the entry point
-    # builds from `(argc, argv)`. Only the shape is compared: the two runs
-    # happen at different times.
-    add_test(NAME oskel.build_binary_clock_args
+    # chunk captured at entry, so it reports elapsed time. Every target backs it,
+    # and only the shape is compared: the two runs happen at different times.
+    add_test(NAME oskel.build_binary_clock
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-        "-DOSKEL_TEST_NAME=oskel.build_binary_clock_args"
-        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_clock_args.oskl"
-        "-DOSKEL_ARGS=alpha;beta;two words"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_clock"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_clock.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `args()` reads the array the entry point builds from `(argc, argv)`, so it
+    # is seeded only where the entry receives one: Linux freestanding and hosted.
+    # Windows calls the entry with no arguments and bare metal has no command
+    # line, and there the build must reject it by name instead.
+    if(NOT WIN32)
+      add_test(NAME oskel.build_binary_args
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_TEST_NAME=oskel.build_binary_args"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_args.oskl"
+          "-DOSKEL_ARGS=alpha;beta;two words"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+    else()
+      add_test(NAME oskel.build_args_error
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_args_error"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_args_error.oskl"
+          "-DEXPECTED_MESSAGE=args\\(\\) needs a process argument vector"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+    endif()
 
     # The field-type check runs in the compiler, so `oskel build` rejects a
     # mistyped field assignment exactly as the VM does, with the same message
