@@ -241,12 +241,35 @@ jobs:
         # the assets, so the step is idempotent either way. `--generate-notes`
         # writes the changelog from the commits since the previous tag; `--repo`
         # lets both commands run without a checkout.
+        #
+        # An existing release is edited before the upload: the UI marks a
+        # hand-made release "pre-release" by default, and reusing it verbatim
+        # published a final `v0.2.0` that GitHub hid from the "Latest" slot.
+        # The tag is the only thing that decides the version, so the release is
+        # normalised from the tag: a tag carrying a `-` (`v0.2.0-rc1`) is a
+        # pre-release and must stay one, every other tag is a final release.
         run: |
-          gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 ||
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            PRE_RELEASE=true
+            LATEST=false
+          else
+            PRE_RELEASE=false
+            LATEST=true
+          fi
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release edit "${GITHUB_REF_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${GITHUB_REF_NAME}" \
+              --prerelease="${PRE_RELEASE}" \
+              --latest="${LATEST}"
+          else
             gh release create "${GITHUB_REF_NAME}" \
               --repo "${GITHUB_REPOSITORY}" \
               --title "${GITHUB_REF_NAME}" \
+              --prerelease="${PRE_RELEASE}" \
+              --latest="${LATEST}" \
               --generate-notes
+          fi
           gh release upload "${GITHUB_REF_NAME}" \
             --repo "${GITHUB_REPOSITORY}" \
             --clobber \
