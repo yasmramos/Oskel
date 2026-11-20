@@ -5,7 +5,8 @@
 // expected value here must hold on the development VM and under `oskel build`
 // on every AOT target (see `tests/native_build_collections.oskl`). These are the
 // same operations as the array methods, provided as functions because the AOT
-// backend does not bind the methods yet (`docs/BACKLOG.md` §6 item 1).
+// backend does not bind every method yet -- `sort`/`sorted` are still open
+// (`docs/BACKLOG.md` §6 item 1).
 
 import std.collections;
 import std.collections.*;
@@ -197,8 +198,8 @@ assertEq(ascending, true);
 // The helpers chain: the top three distinct values, descending.
 let top3 = take(sortBy(unique(nums), (a, b) => a > b), 3);
 assertEq(top3, [9, 8, 5]);
-// Group, then measure each group by walking the map (no map methods, which the
-// AOT backend does not bind).
+// Group, then measure each group by walking the map (no map methods, which this
+// module deliberately avoids so it stays on the portable primitive surface).
 let byParity = groupBy(nums, x => x % 2 == 0 ? "even" : "odd");
 var groupSizes = [];
 for k, group in byParity {

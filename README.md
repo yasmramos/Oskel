@@ -315,12 +315,12 @@ behave differently — under AOT. This is the exact split in 0.1.0.
 
 **VM only — not yet available in `oskel build` (a build error names the global):**
 
-- The allocating array methods `slice`, `concat`, `clone` and `reversed`, and
-  the map and string methods such as `map.keys` and `str.upper`. They compile
-  but fail at runtime with `value has no such member`.
+- The string methods such as `str.upper`, `str.split` and `str.trim`, and
+  `sort`/`sorted` on an array. They compile but fail at runtime with
+  `value has no such member`.
 - `pcall`, and the I/O and process builtins `readFile`, `writeFile`,
-  `fileExists`, `args`, `exit`, `random`, `seed`, `clock`. A program using any
-  of them does not build.
+  `fileExists`, `args`, `exit`, `clock`. A program using any of them does not
+  build.
 
 **Available in both, but with different semantics:**
 

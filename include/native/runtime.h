@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ffi_types.h"
@@ -261,6 +263,22 @@ struct AotRuntimeHandles {
   CodeGen::Label arrayConcatMethod;    // AotValue oskel_builtin_array_concat(...)
   CodeGen::Label arrayReversedMethod;  // AotValue oskel_builtin_array_reversed(...)
   CodeGen::Label arrayCloneMethod;     // AotValue oskel_builtin_array_clone(...)
+  // The callback-taking array methods (PHASE 7c.3h). Unlike the bodies above,
+  // these invoke a closure they receive as an argument, through `oskel_call`:
+  // the first helpers in this runtime to call back into the program. A callback
+  // runs arbitrary Oskel code and allocates, so r13/r14 -- the arena cursor and
+  // end -- must be left advanced by whatever it allocated, and r15 (the global
+  // table) is never written: only rbx and r12, the program's own locals in the
+  // calling frame, are saved and restored.
+  CodeGen::Label arrayMapMethod;       // AotValue oskel_builtin_array_map(...)
+  CodeGen::Label arrayFilterMethod;    // AotValue oskel_builtin_array_filter(...)
+  CodeGen::Label arrayEachMethod;      // AotValue oskel_builtin_array_each(...)
+  CodeGen::Label arrayFindMethod;      // AotValue oskel_builtin_array_find(...)
+  CodeGen::Label arrayAnyMethod;       // AotValue oskel_builtin_array_any(...)
+  CodeGen::Label arrayAllMethod;       // AotValue oskel_builtin_array_all(...)
+  CodeGen::Label arrayReduceMethod;    // AotValue oskel_builtin_array_reduce(...)
+  CodeGen::Label arraySumMethod;       // AotValue oskel_builtin_array_sum(...)
+  CodeGen::Label arrayJoinMethod;      // AotValue oskel_builtin_array_join(...)
   // Bound map methods (PHASE 7c.3g). `m.<method>` on a map yields a closure
   // that captured its receiver in one upvalue cell, exactly like the array
   // methods above and the hosted `bindMap`. `bindMapMethod` builds that closure
@@ -281,33 +299,22 @@ struct AotRuntimeHandles {
   CodeGen::Label mapCloneMethod;   // AotValue oskel_builtin_map_clone(...)
 };
 
+template <std::size_t... I>
+inline AotRuntimeHandles makeHandles(CodeGen& code, std::index_sequence<I...>) {
+  return AotRuntimeHandles{(static_cast<void>(I), code.newLabel())...};
+}
+
 inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
-  return AotRuntimeHandles{
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel()};
+  // Every field is a `CodeGen::Label`, so the aggregate initialiser takes one
+  // label per field. The count comes from the struct, not from a literal: a
+  // positional initialiser written by hand fell one short twice, and a short
+  // one value-initialises the tail to the default (invalid) label, which only
+  // surfaced as "binding an unknown label" at the end of codegen. Producing
+  // exactly `kHandles` elements also makes a field of any other type a
+  // compile error (too many initialisers) instead of a silent shift.
+  static_assert(sizeof(AotRuntimeHandles) % sizeof(CodeGen::Label) == 0);
+  constexpr std::size_t kHandles = sizeof(AotRuntimeHandles) / sizeof(CodeGen::Label);
+  return makeHandles(code, std::make_index_sequence<kHandles>{});
 }
 
 // The selector `oskel_compare` accepts: the low nibble of the x86-64 condition

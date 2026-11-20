@@ -1,0 +1,111 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): the callback-taking
+// array methods under the AOT backend -- `map`, `filter`, `each`, `find`,
+// `any`, `all` (PHASE 7c.3h).
+//
+// These are the first runtime helpers that call *back* into the program: each
+// one invokes the closure it is handed through `oskel_call`, once per item, so
+// the callback runs real Oskel code (allocating, recursing, capturing locals)
+// inside an emitted helper. Both engines must therefore agree on every value,
+// including the ones the VM's `bindArray` returns verbatim: `each` yields the
+// receiver, `find` yields nil when nothing matches, and `filter` keeps the
+// item it was given rather than the predicate's result.
+//
+// The build harness compares this file's VM output with the native binary's
+// byte for byte.
+
+fn double(x) {
+  return x * 2;
+}
+
+// A named function as the callback, not a lambda: the argument is an ordinary
+// value, so a function value must work exactly like a closure.
+fn sumTo(x) {
+  if (x <= 0) {
+    return 0;
+  }
+  return x + sumTo(x - 1);
+}
+
+var a = [1, 2, 3];
+
+// --- map: one result per item, in order ------------------------------------
+print(a.map(x => x * 2));
+print(a.map(double));
+print(a.map(x => x + 1));
+print(a.map(x => str(x)));
+print(a.map(x => [x, x * x]));
+
+// A callback that captures a local, and one that recurses.
+var k = 10;
+print(a.map(x => x + k));
+print(a.map(sumTo));
+
+// Chained: the array a callback method returns is an ordinary array.
+print(a.map(x => x * 2).filter(x => x > 2));
+print(a.map(x => x + 1).map(x => x * 2));
+
+// A lambda bound to a variable, then used twice.
+var triple = x => x * 3;
+print(a.map(triple).map(triple));
+
+// --- filter: keeps the item, tests the predicate's truthiness --------------
+print(a.filter(x => x > 1));
+print(a.filter(x => x > 99));
+print(a.filter(x => x % 2 == 0));
+// A non-bool predicate is judged by truthiness, exactly like `if`.
+print(a.filter(x => "yes"));
+print(a.filter(x => nil));
+
+// --- each: returns the receiver, not a new array ---------------------------
+a.each(x => print(x));
+print(a.each(x => x));
+// The callback may mutate captured state.
+var collected = [];
+a.each(x => collected.push(x * 100));
+print(collected);
+
+// --- find: the first match, or nil ----------------------------------------
+print(a.find(x => x > 1));
+print(a.find(x => x == 3));
+print(a.find(x => x > 99));
+
+// --- any / all: short-circuit predicates ----------------------------------
+print(a.any(x => x > 2));
+print(a.any(x => x > 99));
+print(a.all(x => x > 0));
+print(a.all(x => x > 1));
+
+// --- empty receivers -------------------------------------------------------
+var empty = [];
+print(empty.map(x => x));
+print(empty.filter(x => x));
+print(empty.each(x => x));
+print(empty.find(x => x));
+print(empty.any(x => x));
+print(empty.all(x => x));
+
+// --- truthiness of the receiver's items -----------------------------------
+var mixed = [0, 1, ""];
+print(mixed.filter(x => x));
+print(mixed.any(x => x));
+print(mixed.all(x => x));
+
+// --- nil results are values like any other --------------------------------
+print(a.map(x => nil));
+print(a.map(x => nil).length);
+
+// --- a receiver built at run time, and a longer one -----------------------
+var big = [];
+var i = 0;
+while (i < 50) {
+  big.push(i);
+  i = i + 1;
+}
+print(big.map(x => x * 2).filter(x => x % 4 == 0).length);
+print(big.filter(x => x > 45));
+print(big.map(x => x + 1).filter(x => x % 10 == 0));
+
+// --- strings and nested arrays as items -----------------------------------
+print(["a", "b"].map(w => w + "!"));
+print(["a", "b"].filter(w => w == "a"));
+print([["x"], ["y"]].map(r => r.length));

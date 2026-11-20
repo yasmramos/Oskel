@@ -5,16 +5,16 @@
 // or `import { map, filter } from std.collections;`.
 //
 // Why a module and not methods: the array methods (`map`, `filter`, `sort`, ...)
-// are implemented in the VM, but the AOT backend does not bind them yet (a miss
-// is "value has no such member"; `docs/BACKLOG.md` §6 item 1). These are the
-// same operations as ordinary functions over the portable primitive surface, so
-// they work identically on the development VM and under `oskel build` on every
+// exist, but `sort`/`sorted` are not bound by the AOT backend yet (a miss is
+// "value has no such member"; `docs/BACKLOG.md` §6 item 1). These are the same
+// operations as ordinary functions over the portable primitive surface, so they
+// work identically on the development VM and under `oskel build` on every
 // target. Prefer them over the methods when a program must compile natively.
 //
 // The module is pure Oskel over the portable primitive surface (indexing,
 // slicing, `len`, `str`, `panic`, `for ... in`, closures, `@MustUse`). It
-// deliberately avoids the collection/string methods and `pcall`/`error`, which
-// the AOT backend does not implement yet (DEVELOPMENT.md PHASE 7f).
+// deliberately avoids the methods the AOT backend does not implement yet, plus
+// `pcall`/`error` (DEVELOPMENT.md PHASE 7f).
 //
 // Every function returns a **new** array or map and never mutates its input,
 // so a caller can keep the original and chain freely.

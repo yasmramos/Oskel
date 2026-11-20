@@ -97,6 +97,24 @@ it as a caveat:
   against the export's signature (arity and argument types), exactly like the
   direct form. The argument types are captured at the call site, not at flush
   time: a local that shadows a global is gone by then.
+- An emitted helper that calls back into the program (`oskel_call` on a closure
+  it was handed) saves only `rbx`/`r12`. `r13`/`r14` are the arena cursor and
+  end: the callback allocates, so they must be left advanced by whatever it
+  allocated — pushing and popping them rebinds the cursor and a later
+  allocation overwrites a returned array. `r15` is the global table and is never
+  written. An argument window is built *upward in memory* from its highest
+  address: a callee reads `args[i]` at `args - 16*i`, because the register file
+  grows down, so `args[0]` sits at the window's highest slot. Getting that
+  ordering wrong passes the callback a plausible but wrong value (the callback
+  itself, or `nil`) instead of the item, so every fold fixture asserts on both
+  a one-item and a many-item receiver.
+- `AotRuntimeHandles` (`include/native/runtime.h`) is all `CodeGen::Label`, and
+  `newAotRuntimeHandles` fills them with one flat sweep guarded by a
+  `static_assert` on the struct size. Adding a handle used to mean bumping a
+  positional `{...}` initialiser by hand; a short one silently left the new
+  labels unbound and `oskel build` failed with "codegen: binding an unknown
+  label". A new non-label field must trip the `static_assert`, not shift every
+  handle by one.
 - The AOT backend has two link modes (`LinkMode`, PHASE 7f.3/7f.4), chosen on
   the command line and never in the source: `freestanding` (the default) is the
   self-contained image every target emits today (no libc, no linker, `ldd` says
@@ -109,9 +127,12 @@ it as a caveat:
 - A standard-library module that must work on both engines stays on the
   **portable primitive surface**: indexing and slicing (`s[i]`, `s[a:b]`),
   `len`, `ord`/`chr`, `int`/`double`/`str`/`type`, `panic`, `for ... in`,
-  closures, variadic `rest...` and the operators. The AOT backend implements no
-  collection or string *method* (`.split`, `.map`, `.join`, `.push`, `.get`,
-  `.has`, `.substr`, `.length` on a string, ...) — those build (exit 0) but
+  closures, variadic `rest...` and the operators. The AOT backend binds the
+  array methods (`push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`,
+  `slice`, `concat`, `join`, `contains`, `indexOf`, `map`, `filter`, `each`,
+  `find`, `any`, `all`, `reduce`, `sum`, `reversed`, `clone`, `clear`) and the
+  ten map methods, but not `sort`/`sorted` and no *string* method (`.split`,
+  `.upper`, `.substr`, `.length` on a string, ...) — those build (exit 0) but
   fault at run time with "value has no such member" / "cannot call a
   non-function value" — and it does not seed `pcall`/`error`/`readFile` at all,
   so a module function that calls one fails `oskel build` with "global 'pcall'
