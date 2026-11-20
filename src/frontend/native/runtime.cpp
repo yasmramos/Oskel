@@ -10083,14 +10083,24 @@ void emitStructArgBytes(CodeGen& cg, const AotStructLayout& arg, std::int64_t ar
       // exactly like a scalar `cstring` argument; `nil` stays NULL.
       CodeGen::Label isNil = cg.newLabel();
       CodeGen::Label isStr = cg.newLabel();
+      CodeGen::Label isPtr = cg.newLabel();
       CodeGen::Label staged = cg.newLabel();
       cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagNil));
       cg.jcc(Jcc::Eq, isNil);
       cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
       cg.jcc(Jcc::Eq, isStr);
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagPtr));
+      cg.jcc(Jcc::Eq, isPtr);
       emitFailCall(cg, fail, msgType);
       cg.bind(isNil);
       cg.xorReg(Rdx, Rdx);
+      cg.jmp(staged);
+      cg.bind(isPtr);
+      // A pointer handle already holds NUL-terminated bytes -- the shape a
+      // returned `cstring` boxes as -- so its address is the `const char *`
+      // with no copy. Without this a struct returned with a `cstring` field
+      // could not be passed back to a C function.
+      cg.movFromMem(Rdx, Rdx, kPtrDataOffset);
       cg.jmp(staged);
       cg.bind(isStr);
       cg.movReg(R12, Rdx);            // the AotString*

@@ -9,6 +9,19 @@ may change between minor versions.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A returned struct with a `cstring` field can be passed straight back into a
+  C function.** `extern "C" fn f(): CS` boxing the field as a pointer handle
+  was not enough on its own: the argument side only accepted a string or `nil`
+  for a `cstring` field, so `oskelTestCStringLength(oskelTestMakeCString())`
+  failed with "argument type does not match the extern \"C\" declaration" and
+  never produced a binary. Both places that marshal a `cstring` argument -- the
+  scalar parameter and the field of a struct passed by value -- now accept the
+  handle and pass its own NUL-terminated bytes, so the round trip compiles and
+  the value survives. Pinned by
+  `tests/native_build_extern_memory_struct.oskl`.
+
 ## [0.2.0] - 2026-11-20
 
 ### Added

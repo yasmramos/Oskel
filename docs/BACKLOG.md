@@ -325,9 +325,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     builtins already understand -- so `type()`, handle equality, `print`/`str`/
     `repr`, `byteLen` and the rejection of `+` all agree with the VM. The same
     box is used for a `cstring` field of a returned struct. The parameter side
-    had to follow: a `Ptr` argument now crosses as its own NUL-terminated bytes
-    instead of failing the type check, which is what lets a `cstring` returned
-    by one C function be fed back into another. The scan cap (16 MiB, the hosted
+    had to follow, in both places that marshal a `cstring` argument: the scalar
+    parameter and the `cstring` field of a struct passed by value. A `Ptr`
+    argument now crosses as its own NUL-terminated bytes instead of failing the
+    type check, which is what lets a `cstring` returned by one C function -- or
+    held by a returned struct -- be fed back into another. The scan cap (16 MiB, the hosted
     engine's `kMaxCStringBytes`) still matches. Pinned by
     `tests/native_build_extern_hosted.oskl` (`type`, `== nil`, handle identity,
     `==` against a string, `byteLen`, and the handle reused as an argument) and

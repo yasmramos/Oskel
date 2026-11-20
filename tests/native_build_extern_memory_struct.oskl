@@ -110,6 +110,9 @@ assertEq(cs.s == "hi", false);
 assertEq(byteLen(cs.s), 2);
 assertEq(cs.n, 5);
 assertEq(oskelTestCStringLength({s: "abc", n: 4}), 7);
+// A returned struct is passed straight back: its `cstring` field is a pointer
+// handle now, and the argument side reads the handle's own terminated bytes.
+assertEq(oskelTestCStringLength(oskelTestMakeCString()), 7);
 let nullCs = oskelTestMakeNullCString();
 assertEq(type(nullCs.s), "nil");
 assertEq(nullCs.n, 9);
