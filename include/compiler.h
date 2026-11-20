@@ -12,6 +12,7 @@
 
 #include "bytecode.h"
 #include "core/errors.h"
+#include "ffi_types.h"
 #include "frontend/ast.h"
 
 // Signature of a `native fn`/`extern "C"` declaration (PHASE 6.5), keyed by
@@ -140,6 +141,14 @@ class Compiler {
   // module cannot be resolved.
   using ImportLoader = std::function<StmtPtr(const std::string& path, int line, int col)>;
   void setImportLoader(ImportLoader loader) { importLoader_ = std::move(loader); }
+
+  // The ABI capabilities `extern "C"` declarations are validated against. The
+  // default is this build's, which is what the interpreter marshals; the AOT
+  // path sets `ffi::kAotAbiCapabilities` because the backend emits its own
+  // thunks and does not depend on how the engine was built. Without this, a
+  // shape the backend can emit (a class-MEMORY struct) would be rejected by
+  // `oskel build` on an engine built without libffi.
+  void setAbiCapabilities(ffi::AbiCapabilities caps) { abiCapabilities_ = caps; }
 
   // Compiles a program that runs *in the current session* instead of starting
   // a clean one. `:load` uses this so a loaded file sees the session's structs,
@@ -766,6 +775,10 @@ class Compiler {
   void predeclareModuleImports(const BlockStmt& block);
 
   ImportLoader importLoader_;
+  // The ABI `extern "C"` declarations are validated against; see
+  // `setAbiCapabilities`. Defaults to this build's, which is what the
+  // interpreter marshals.
+  ffi::AbiCapabilities abiCapabilities_{};
   std::map<std::string, ImportedModule> loadedModules_;
   // Module paths currently being loaded, outermost first. A path that is
   // already on the stack when it is requested again closes a cycle

@@ -2470,6 +2470,57 @@ void testExternVariadicRejectedWithoutSupport() {
 #endif
 }
 
+void testExternValidatedAgainstDestinationAbi() {
+  TEST_SCOPE();
+  // The compiler validates `extern "C"` against the destination, not against
+  // how the engine was built. The AOT backend emits its own thunks, so it
+  // marshals a class-MEMORY struct even on an engine built without libffi: a
+  // build that can only reject it in the interpreter must still accept it for
+  // `oskel build`. The reverse also holds — a variadic is not lowered by the
+  // backend, so it stays rejected for the AOT destination regardless of libffi.
+  const std::string memoryStruct =
+      "struct Big { a: int64; b: int64; c: int64; }\n"
+      "extern \"C\" { fn f(x: Big): int64; }\n";
+  const std::string variadic = "extern \"C\" { fn printf(fmt: cstring, ...): int; }\n";
+
+  auto compileFor = [](const std::string& source, ffi::AbiCapabilities caps) {
+    auto tokens = lex(source);
+    Parser parser(std::move(tokens), "<vm-test>");
+    auto program = parser.parseProgram();
+    Compiler compiler;
+    compiler.setAbiCapabilities(caps);
+    return compiler.compile(program);
+  };
+  auto compileErrorFor = [](const std::string& source, ffi::AbiCapabilities caps) {
+    auto tokens = lex(source);
+    Parser parser(std::move(tokens), "<vm-test>");
+    auto program = parser.parseProgram();
+    Compiler compiler;
+    compiler.setAbiCapabilities(caps);
+    try {
+      compiler.compile(program);
+    } catch (const CompileError& error) {
+      return error.message;
+    }
+    std::fprintf(stderr, "expected a compile error but the source compiled\n");
+    std::exit(1);
+  };
+
+  // A class-MEMORY struct is accepted for the AOT destination on every build.
+  compileFor(memoryStruct, ffi::kAotAbiCapabilities);
+  // The interpreter keeps this build's capability: where libffi provides the
+  // marshalling it is accepted, otherwise the rejection names the reason.
+  if (ffi::kMemoryStructsSupported) {
+    compileFor(memoryStruct, ffi::AbiCapabilities{});
+  } else {
+    const std::string message = compileErrorFor(memoryStruct, ffi::AbiCapabilities{});
+    assert(message.find("MEMORY") != std::string::npos);
+  }
+  // A variadic is not lowered by the AOT backend, whatever this build has.
+  const std::string variadicAot = compileErrorFor(variadic, ffi::kAotAbiCapabilities);
+  assert(variadicAot.find("variadic") != std::string::npos);
+}
+
 void testExternRejectsLargeStructAtCompileTime() {
   TEST_SCOPE();
   // A struct larger than 16 bytes is class MEMORY: passed on the stack and
@@ -2707,6 +2758,7 @@ int main() {
   testExternCallbackReturnsMixedStruct();
   testExternCallbackStructReturnErrorIsReraised();
 #endif
+  testExternValidatedAgainstDestinationAbi();
   testExternRejectsLargeStructAtCompileTime();
   testExternRejectsNonScalarStructFieldAtCompileTime();
   testExternMissingSymbolIsAClearRuntimeError();

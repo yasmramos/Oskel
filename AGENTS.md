@@ -85,9 +85,19 @@ it as a caveat:
   a function). The AOT backend has no host. An *unused* declaration is harmless
   (PHASE 7f.1) and builds; a *used* one the backend has no stub for fails with a
   dedicated message (exit 65); a genuine self-read (`var x = x;`) keeps the
-  generic "global 'N' is read but never assigned". FFI in the AOT backend is
-  still PHASE 7 work; the lowerer only fails it cleanly. `sqrt`, `floor`, `ceil`
-  and `round` are the curated stubs (`sqrtsd` and the SSE rounding are exact).
+  generic "global 'N' is read but never assigned". `sqrt`, `floor`, `ceil` and
+  `round` are the curated stubs (`sqrtsd` and the SSE rounding are exact).
+- The compiler validates an `extern "C"` declaration against the **destination**,
+  not against how the engine was built: `oskel build` passes
+  `ffi::kAotAbiCapabilities` (struct-by-value and class-MEMORY on, variadic off)
+  through `Compiler::setAbiCapabilities`, while the interpreter keeps
+  `AbiCapabilities{}`, this build's. The backend emits its own thunks, so a
+  class-MEMORY struct must not be rejected for `oskel build` just because the
+  engine lacks libffi — that conflation made
+  `oskel.build_hosted_extern_memory_struct` fail without `libffi-dev` even
+  though the emitted code was right. A C variadic stays rejected for the AOT
+  destination whatever the build has, because the backend does not lower a
+  variable argument list (PHASE 7f.5).
 - A qualified access to a module's native export (`std.math.pow`) is a use too,
   but it reads the module table with `GETTABLE`, not with `GETGLOBAL`, so the
   lowerer cannot see it by counting reads. The compiler records such a use on

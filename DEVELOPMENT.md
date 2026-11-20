@@ -527,7 +527,9 @@ previous one.
 - Compile-time stubs (like Zig/Rust).
 - **No `libffi` in the AOT backend.** The development engine (`oskel`) may use
   libffi for callbacks; the freestanding AOT runtime never does (callbacks are
-  compile-time stubs there).
+  compile-time stubs there). This is also why the compiler validates a
+  declaration against the *destination*: an engine built without libffi still
+  accepts, for `oskel build`, every shape the backend marshals itself.
 - Support for ints, floats, strings, structs, callbacks.
 - **FFI type vocabulary (done)** — the type names needed to *spell* a C
   signature: `ptr` (`void *`), `cstring` (`const char *`), the fixed-width
@@ -603,9 +605,13 @@ previous one.
   caller supplies in `rdi`, which shifts every integer argument one register
   along. The development engine expresses both directions through `libffi`
   (`kMemoryStructsSupported`, so it needs libffi + System V AMD64; elsewhere the
-  declaration is rejected at compile time). The hosted AOT backend expresses
-  them in its register thunks: a MEMORY argument is written field by field
-  straight into the outgoing area, the `sret` pointer is staged with the other
+  declaration is rejected at compile time). The validation is per *destination*,
+  not per build: the compiler asks `validateSignature` with the ABI the target
+  marshals (`Compiler::setAbiCapabilities`), so `oskel build` accepts a MEMORY
+  struct with `ffi::kAotAbiCapabilities` even on an engine built without libffi,
+  while the interpreter keeps `AbiCapabilities{}`, this build's. The hosted AOT
+  backend expresses them in its register thunks: a MEMORY argument is written
+  field by field straight into the outgoing area, the `sret` pointer is staged with the other
   integer arguments, and the returned bytes are read back out of the buffer and
   boxed into a map, exactly like a register-class return. The thunk frame keeps
   the outgoing area, the `sret` buffer, the register-class staging buffers and
