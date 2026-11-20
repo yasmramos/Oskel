@@ -204,8 +204,18 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    A runtime error that is *not* a returned error value (an out-of-range index,
    a failed `assert`, ...) still exits 70: the AOT backend has no unwinding, so
    only value-based recovery is possible (by design, DEVELOPMENT.md §3).
-4. **[P0]** `pcall` is not implemented in AOT; a program that uses it does not
-   compile or fails at run time.
+4. **[P0] [done]** `pcall` is implemented in AOT (BACKLOG §6 item 4): the
+   builtin calls the callee and turns a raised runtime error into a value, so
+   `pcall` returns `{ok, value, error}` exactly like the VM. The AOT runtime had
+   no unwinding, so the error sink (`oskel_fail_dynamic`) now checks a hidden
+   `$pcallHandler` global before printing: while a `pcall` is active it stores
+   the message in that handler's record, restores the `pcall` frame's `rsp`/`rbp`
+   and jumps back to it -- the one non-local return in the call ABI. The record
+   carries the previous handler, so a nested `pcall` and a normal return both
+   restore the chain. The slot, the builtin body and the sink's handler check
+   are emitted only when the program calls `pcall`, so every other image is byte
+   for byte what it was. `tests/native_build_pcall.oskl` pins the parity (a
+   success, a caught failure, a nested catch and a closure).
 5. **[P0] [done]** `error()`/`makeError` is now implemented in AOT (PHASE
    7c.5c): `error(message, code?)` builds a real error value, and `type(err)`,
    `isError`, `err.message`/`err.code`, structural equality, `print`/`repr` and
@@ -340,15 +350,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
       curated binding per target, exactly like `time()` got one.
       (`random`/`seed` used to be listed here; they are now implemented in AOT,
       see the note below.)
-    - **Needs to call an arbitrary value and recover from a raised error**:
-      `pcall`. Value-based `try`/`catch` already works in AOT (PHASE 7c.5c):
-      `try e` and `e catch d` are `isError` + a jump, and they need no
-      unwinding. `pcall` is different: it calls a function the program chose at
-      run time and must catch a `panic` raised *inside* it, and the AOT runtime
-      reports a failure by writing to stderr and exiting. It therefore needs a
-      non-local return in the call ABI, not a builtin. It is the most valuable
-      of the seventeen: a program that cannot recover from a raised error can
-      only recover from an error it was handed.
+    - **Done (BACKLOG §6 item 4)**: `pcall`. Value-based `try`/`catch` already
+      worked in AOT (PHASE 7c.5c): `try e` and `e catch d` are `isError` + a
+      jump, and they need no unwinding. `pcall` was different: it calls a
+      function the program chose at run time and must catch a `panic` raised
+      *inside* it, and the AOT runtime reports a failure by writing to stderr and
+      exiting. It needed a non-local return in the call ABI, which it now has:
+      the error sink jumps back into the innermost `pcall` instead of exiting,
+      through a handler record whose address lives in a hidden global.
     - **Done (PHASE 7c.5b.6)**: `random`/`seed`. `std::mt19937_64` is fully
       specified by the C++ standard, so its bit stream is portable, while
       `std::uniform_real_distribution`/`std::uniform_int_distribution` are not.
@@ -668,9 +677,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `tests/native_build_*.oskl` fixture on both engines (the VM is the
    reference) and asserts identical stdout and exit code, plus the static-link
    check. The list is curated, not exhaustive: a sweep of `tests/*.oskl` shows
-   48 of them build in AOT and agree with the VM, while the rest either use
-   `pcall` (the documented 7f gap) or a collection/string method the AOT
-   backend does not implement. Widening the curated list to every agreeing
+   48 of them build in AOT and agree with the VM, while the rest use a
+   collection/string method the AOT backend does not implement (`pcall` is no
+   longer a gap, see §6.4). Widening the curated list to every agreeing
    script is the remaining work; `tests/native_build_control_flow.oskl`
    (registered as `oskel.build_binary_control_flow`) closes the `switch`/
    `defer`/`struct` hole the earlier fixtures left.

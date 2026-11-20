@@ -671,6 +671,18 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_random.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `pcall` is the only way to recover from a `panic` raised inside a function
+    # chosen at run time (BACKLOG §6 item 4): the AOT runtime reports a failure
+    # by exiting, so the builtin installs a handler the error sink jumps back
+    # into. The fixture exercises a success, a caught failure, a nested catch and
+    # a closure, and must agree with the VM line for line.
+    add_test(NAME oskel.build_binary_pcall
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_pcall"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_pcall.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `std.collections` exists because the AOT backend does not bind the array
     # methods yet (docs/BACKLOG.md §6 item 1); it is plain Oskel over the
     # portable primitive surface, so it must build to a native binary and agree

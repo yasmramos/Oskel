@@ -242,6 +242,14 @@ struct AotRuntimeHandles {
   CodeGen::Label randomStateInit;  // void oskel_random_state_init(AotValue* slot)
   CodeGen::Label randomBuiltin;    // AotValue oskel_builtin_random(AotValue* args, long argc, AotClosure* self)
   CodeGen::Label seedBuiltin;      // AotValue oskel_builtin_seed(AotValue* args, long argc, AotClosure* self)
+  // `pcall(fn, args...)` (BACKLOG §6 item 4). It is the only builtin that has to
+  // recover from a *raised* error, which the AOT runtime reports by exiting, so
+  // it installs a handler record on its own stack that `oskel_fail_dynamic`
+  // jumps back to instead of printing (a non-local return in the call ABI). The
+  // record's address lives in the hidden `$pcallHandler` global, which the
+  // lowerer reserves only when the program calls `pcall`; a program that does
+  // not keeps a runtime and an image byte for byte what they were.
+  CodeGen::Label pcallBuiltin;     // AotValue oskel_builtin_pcall(AotValue* args, long argc, AotClosure* self)
   // Bound array methods (PHASE 7c.3c/7c.3e). `a.<method>` on an array yields a
   // closure that captured its receiver in one upvalue cell, exactly like the
   // hosted `bindArray`. `bindArrayMethod` builds that closure from the receiver
@@ -307,7 +315,7 @@ inline AotRuntimeHandles newAotRuntimeHandles(CodeGen& code) {
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
       code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel(),
-      code.newLabel(), code.newLabel(), code.newLabel()};
+      code.newLabel(), code.newLabel(), code.newLabel(), code.newLabel()};
 }
 
 // The selector `oskel_compare` accepts: the low nibble of the x86-64 condition
@@ -454,8 +462,15 @@ struct AotExternThunk {
 // program never touches `random`/`seed`; the generator and both builtins are
 // emitted only when it is set, so a program that does not draw keeps a runtime
 // with no generator in it.
+//
+// `pcallHandlerSlot` is the hidden `$pcallHandler` global's index, or -1 when
+// the program never calls `pcall`. When it is set, the error sink checks that
+// slot before printing and jumps back into the innermost `pcall` instead (the
+// one non-local return in the AOT runtime), and the `pcall` body is emitted.
+// A program that never calls `pcall` keeps a sink with no handler check and no
+// `pcall` code, so its image is unchanged.
 void emitAotRuntime(CodeGen& code, const AotRuntimeHandles& handles,
                     const RuntimeHandles& entry,
                     const std::vector<AotExternThunk>* externThunks = nullptr,
                     bool hosted = false, bool hasInput = false, bool bareMetal = false,
-                    int randomStateSlot = -1);
+                    int randomStateSlot = -1, int pcallHandlerSlot = -1);

@@ -264,6 +264,14 @@ struct GlobalSlots {
 // program's, because the lexer rejects `$` in an identifier.
 constexpr const char* kAotRandomStateGlobal = "$randomState";
 
+// The name of the hidden global that holds the address of the innermost active
+// `pcall` handler record (BACKLOG §6 item 4). The error sink is reached by an
+// ordinary `call`, so it cannot see the `pcall` frame; the record's address
+// therefore travels through the global table, which the arena backs. Reserved
+// only when the program calls `pcall`, so a program that does not keeps its
+// image byte for byte.
+constexpr const char* kAotPcallHandlerGlobal = "$pcallHandler";
+
 // Narrows the compiler's `extern "C"` declarations to the thunks the hosted
 // backend resolves through the system linker (PHASE 7f.5, structs in 7f.7).
 //
@@ -1064,6 +1072,14 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   // never draws carries none of it.
   builtins.emplace("random", rt.randomBuiltin);
   builtins.emplace("seed", rt.seedBuiltin);
+  // `pcall(fn, args...)` (BACKLOG §6 item 4) works on every target: it is the
+  // only way to recover from a `panic` raised inside a function chosen at run
+  // time, and the AOT runtime reports a failure by exiting, so the builtin
+  // installs a handler the error sink jumps back into (a non-local return in the
+  // call ABI). Seeded unconditionally; `emitAotRuntime` emits the body and the
+  // sink's handler check only when the program actually calls it, so a program
+  // that does not keeps its image byte for byte.
+  builtins.emplace("pcall", rt.pcallBuiltin);
   // `memSize()` is bare metal only: its value comes from the multiboot map, and
   // no hosted prelude binds the handle. Seed it for `Os::Freestanding` so the
   // builtin resolves; on any other target, name it in the rejection so a program
@@ -1123,6 +1139,19 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   if (globals.slotOfName.count("random") != 0 || globals.slotOfName.count("seed") != 0) {
     randomStateSlot = globals.count++;
     globals.slotOfName[kAotRandomStateGlobal] = randomStateSlot;
+  }
+
+  // `pcall` needs the same treatment for a different reason: the error sink has
+  // to find the innermost handler from a plain call, so the handler's address
+  // lives in a hidden global the sink reads. `collectGlobals` pre-assigns
+  // `pcall`'s slot only when the program reads it, so a name here means the
+  // program catches errors. Reserving the slot only then keeps a program that
+  // never calls `pcall` byte for byte what it was -- the sink carries no
+  // handler check and the builtin body is not emitted.
+  int pcallHandlerSlot = -1;
+  if (globals.slotOfName.count("pcall") != 0) {
+    pcallHandlerSlot = globals.count++;
+    globals.slotOfName[kAotPcallHandlerGlobal] = pcallHandlerSlot;
   }
 
   const std::uint64_t chunkOffset = cg.offset();
@@ -1298,7 +1327,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   }
   emitAotRuntime(cg, rt, entry, externThunks.empty() ? nullptr : &externThunks,
                  mode == LinkMode::Hosted, hasInput,
-                 target.os == Os::Freestanding, randomStateSlot);
+                 target.os == Os::Freestanding, randomStateSlot, pcallHandlerSlot);
   // String constants last: their bytes are addressed by `lea` from the code
   // above, and no path falls through into them.
   emitStringConstants(cg, stringConstants);

@@ -297,19 +297,14 @@ void emitFailCall(CodeGen& cg, CodeGen::Label fail, const DataBlob& message) {
   cg.ud2();
 }
 
-// `void fail(rdi = text, rsi = length)`: writes the text to stderr and exits
-// with the runtime-error code. Never returns, so it has no epilogue.
-void emitFail(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeLabel,
-              CodeGen::Label exitLabel) {
+// `void fail(rdi = text, rsi = length)`: reports a runtime error from a fixed
+// message blob. It is a plain jump to `failDynamic`, the one sink, so both the
+// fixed and the assembled messages share the presentation and the `pcall`
+// hand-off. The jump keeps the stack shape a `call` produced (rsp % 16 == 8),
+// which is what the sink's own prologue expects.
+void emitFail(CodeGen& cg, CodeGen::Label label, CodeGen::Label failDynamic) {
   cg.bind(label);
-  prologue(cg);
-  cg.movReg(Rdx, Rsi);
-  cg.movReg(Rsi, Rdi);
-  cg.movImm(Rdi, 2);  // stderr
-  cg.callLabel(writeLabel);
-  cg.movImm(Rdi, kRuntimeErrorExit);
-  cg.callLabel(exitLabel);
-  cg.ud2();
+  cg.jmp(failDynamic);
 }
 
 // Emits `rax = 1` if `tag` is a number (int, float or double), else `rax = 0`.
@@ -6870,18 +6865,36 @@ void emitChrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
   emitFailCall(cg, fail, msgOom);
 }
 
-// `void oskel_fail_dynamic(char* text, long length)`: writes "oskel: " + the
-// message + a newline to stderr and exits with the runtime-error code, never
-// returning. It is the dynamic counterpart of `oskel_fail`, which takes a
-// constant blob, and lets `assert`/`panic` report the caller's own message.
+// `void oskel_fail_dynamic(char* text, long length)`: the one runtime-error
+// sink. It writes `oskel: ` + text + newline to stderr and exits 70 -- unless a
+// `pcall` is active, in which case it hands the text to the innermost one and
+// returns there instead (see `emitPcallBuiltin`). It is the dynamic counterpart
+// of `oskel_fail`, which takes a constant blob; both end up here.
+//
+// `handlerSlot` is the hidden `$pcallHandler` global's index, or -1 when the
+// program never calls `pcall`. With a handler installed the sink does not print
+// and does not exit: it stores the message in that handler's record, pops the
+// record, restores the `pcall` frame's `rsp`/`rbp` and jumps to its resume
+// address. That is the one non-local return in the AOT runtime (BACKLOG §6 item
+// 4). A program that never calls `pcall` keeps a sink with no handler check.
 void emitFailDynamic(CodeGen& cg, CodeGen::Label label, CodeGen::Label write,
-                     CodeGen::Label exit, const DataBlob& prefix, const DataBlob& newline) {
+                     CodeGen::Label exit, const DataBlob& prefix, const DataBlob& newline,
+                     int handlerSlot) {
+  CodeGen::Label toHandler = cg.newLabel();
+
   cg.bind(label);
   prologue(cg);
   cg.push(Rbx);
   cg.push(R12);
   cg.movReg(Rbx, Rdi);          // message bytes
   cg.movReg(R12, Rsi);          // message length
+
+  if (handlerSlot >= 0) {
+    cg.movFromMem(Rax, kAotGlobalBase, 16LL * handlerSlot + 8);
+    cg.testReg(Rax);
+    cg.jcc(Jcc::Ne, toHandler);
+  }
+
   cg.leaRipLabel(Rdi, prefix.label);
   cg.movImm(Rsi, static_cast<std::int64_t>(prefix.text.size()));
   emitWriteToFd(cg, write, 2);
@@ -6894,6 +6907,24 @@ void emitFailDynamic(CodeGen& cg, CodeGen::Label label, CodeGen::Label write,
   cg.movImm(Rdi, kRuntimeErrorExit);
   cg.callLabel(exit);
   cg.ud2();
+
+  if (handlerSlot < 0) return;
+
+  // A `pcall` is active: hand it the message and leave. The record is the one
+  // `oskel_builtin_pcall` built in its own frame:
+  //   +0 previous handler, +8 saved rsp, +16 saved rbp, +24 resume address,
+  //   +32 message bytes, +40 message length.
+  cg.bind(toHandler);
+  cg.movFromMem(Rcx, Rax, 0);   // previous handler
+  cg.movFromMem(Rdx, Rax, 8);   // saved rsp
+  cg.movFromMem(R8, Rax, 16);   // saved rbp
+  cg.movFromMem(R9, Rax, 24);   // resume address
+  cg.movToMem(Rax, 32, Rbx);    // message bytes
+  cg.movToMem(Rax, 40, R12);    // message length
+  cg.movToMem(kAotGlobalBase, 16LL * handlerSlot + 8, Rcx);
+  cg.movReg(Rsp, Rdx);
+  cg.movReg(Rbp, R8);
+  cg.jmpReg(R9);
 }
 
 // `AotValue oskel_builtin_assert(AotValue* args, long argc, AotClosure* self)`: the
@@ -6963,6 +6994,204 @@ void emitPanicBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
 
   cg.bind(noMsg);
   emitFailCall(cg, fail, msgPanic);
+}
+
+// `AotValue oskel_builtin_pcall(AotValue* args, long argc, AotClosure* self)`:
+// the public `pcall(fn, args...)` (BACKLOG §6 item 4). It calls `fn` with the
+// remaining arguments and turns a runtime error into a value: the result is a
+// map `{ok, value, error}` -- `ok` true with the return value, or `ok` false,
+// `value` nil and `error` an error value -- exactly the hosted builtin's shape.
+//
+// This is the one place the AOT runtime leaves a frame non-locally. A raised
+// error normally reaches `oskel_fail_dynamic`, which prints and exits; while a
+// `pcall` is active, that sink instead stores the message in the handler record
+// this builtin leaves on its own stack and jumps back to the `resume` label
+// below, after restoring this frame's `rsp`/`rbp`. The record also carries the
+// previous handler, so a nested `pcall` and a normal return both restore the
+// chain; a frame the error abandoned saved rbx/r12 in its own frame, so the two
+// this builtin pushed are reloaded on the way back.
+//
+// The record is the first 48 bytes of the frame, because the sink walks it with
+// constant offsets:
+//   +0 previous handler, +8 saved rsp, +16 saved rbp, +24 resume address,
+//   +32 message bytes, +40 message length.
+// The rest of the 144-byte frame holds the call's inputs and results. 144 is a
+// multiple of 16, so the two saved callee registers plus the frame keep `rsp`
+// 16-byte aligned at the `call` below.
+//
+// `handlerSlot` is the hidden `$pcallHandler` global's index; the caller emits
+// this body only when the program actually calls `pcall`.
+void emitPcallBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label callLabel,
+                      CodeGen::Label tableNew, CodeGen::Label memberSet,
+                      CodeGen::Label allocLabel, CodeGen::Label fail,
+                      CodeGen::Label failDynamic, const DataBlob& msgNotFunc,
+                      const DataBlob& msgOom, CodeGen::Label okConst,
+                      CodeGen::Label valueConst, CodeGen::Label errorConst,
+                      int handlerSlot) {
+  constexpr std::int64_t kPrev = -144;
+  constexpr std::int64_t kSavedRsp = -136;
+  constexpr std::int64_t kSavedRbp = -128;
+  constexpr std::int64_t kResume = -120;
+  constexpr std::int64_t kMsgBytes = -112;
+  constexpr std::int64_t kMsgLength = -104;
+  constexpr std::int64_t kArgs = -96;
+  constexpr std::int64_t kArgc = -88;
+  constexpr std::int64_t kCallee = -80;
+  constexpr std::int64_t kStatus = -72;
+  constexpr std::int64_t kValueTag = -64;
+  constexpr std::int64_t kValuePayload = -56;
+  constexpr std::int64_t kErrorTag = -48;
+  constexpr std::int64_t kErrorPayload = -40;
+  constexpr std::int64_t kFrameBytes = 144;
+
+  CodeGen::Label arityOk = cg.newLabel();
+  CodeGen::Label isFunc = cg.newLabel();
+  CodeGen::Label resume = cg.newLabel();
+  CodeGen::Label buildResult = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, static_cast<std::int32_t>(kFrameBytes));
+  cg.movToMem(Rbp, kArgs, Rdi);
+  cg.movToMem(Rbp, kArgc, Rsi);
+
+  // `pcall` needs a function as its first argument: anything else is a caller
+  // bug, so it fails loudly instead of returning `{ok: false}`, with the hosted
+  // builtin's message. No handler is installed yet, so this failure reaches an
+  // *outer* `pcall` or the process sink, exactly like the hosted builtin's.
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ge, arityOk);
+  emitFailCall(cg, failDynamic, msgNotFunc);
+  cg.bind(arityOk);
+  cg.movFromMem(Rax, Rdi, 0);   // args[0].tag
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagFunc));
+  cg.jcc(Jcc::Eq, isFunc);
+  emitFailCall(cg, failDynamic, msgNotFunc);
+  cg.bind(isFunc);
+  cg.movFromMem(Rax, Rdi, 8);   // args[0].payload (AotClosure*)
+  cg.movToMem(Rbp, kCallee, Rax);
+
+  // Install the handler record and publish it in the hidden global. The sink
+  // only reads the payload word, so the slot's tag stays nil.
+  cg.movFromMem(Rax, kAotGlobalBase, 16LL * handlerSlot + 8);
+  cg.movToMem(Rbp, kPrev, Rax);
+  cg.movToMem(Rbp, kSavedRsp, Rsp);
+  cg.movToMem(Rbp, kSavedRbp, Rbp);
+  cg.leaRipLabel(Rax, resume);
+  cg.movToMem(Rbp, kResume, Rax);
+  cg.movImmToMem(Rbp, kMsgBytes, 0);
+  cg.movImmToMem(Rbp, kMsgLength, 0);
+  cg.leaMem(Rax, Rbp, kPrev);
+  cg.movToMem(kAotGlobalBase, 16LL * handlerSlot + 8, Rax);
+
+  // Call the callee with the remaining arguments. The argument window grows
+  // down, so `args[1]` sits 16 bytes below `args[0]`.
+  cg.movImm(Rdi, static_cast<std::int64_t>(kTagFunc));
+  cg.movFromMem(Rsi, Rbp, kCallee);
+  cg.movFromMem(Rdx, Rbp, kArgc);
+  cg.subRegImm32(Rdx, 1);
+  cg.movFromMem(Rcx, Rbp, kArgs);
+  cg.subRegImm32(Rcx, 16);
+  cg.callLabel(callLabel);
+
+  // Normal return: restore the previous handler and keep the result.
+  cg.movFromMem(Rcx, Rbp, kPrev);
+  cg.movToMem(kAotGlobalBase, 16LL * handlerSlot + 8, Rcx);
+  cg.movToMem(Rbp, kValueTag, Rax);
+  cg.movToMem(Rbp, kValuePayload, Rdx);
+  cg.movImmToMem(Rbp, kStatus, 0);
+  cg.movImmToMem(Rbp, kErrorTag, static_cast<std::int64_t>(kTagNil));
+  cg.movImmToMem(Rbp, kErrorPayload, 0);
+  cg.jmp(buildResult);
+
+  // The sink jumped back here with the message in the record: rebuild the
+  // pushed callee registers (the abandoned frames restored their own), mark the
+  // call as failed and clear the value.
+  cg.bind(resume);
+  cg.movFromMem(Rbx, Rbp, -8);
+  cg.movFromMem(R12, Rbp, -16);
+  cg.movImmToMem(Rbp, kStatus, 1);
+  cg.movImmToMem(Rbp, kValueTag, static_cast<std::int64_t>(kTagNil));
+  cg.movImmToMem(Rbp, kValuePayload, 0);
+
+  // Build the error value: an `AotString` from the record's bytes, then the
+  // error header around it. The message is a copy, so it outlives the record.
+  cg.movFromMem(R8, Rbp, kMsgLength);
+  cg.movReg(Rdi, R8);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.callLabel(allocLabel);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movReg(Rbx, Rax);          // message AotString*
+  cg.movFromMem(R8, Rbp, kMsgLength);
+  cg.movToMem(Rbx, 0, R8);
+  cg.movReg(Rdi, Rbx);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movFromMem(Rsi, Rbp, kMsgBytes);
+  cg.movFromMem(Rcx, Rbp, kMsgLength);
+  cg.cld();
+  cg.repMovsb();
+
+  cg.movImm(Rdi, static_cast<std::int64_t>(kAotErrorHeaderSize));
+  cg.callLabel(allocLabel);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rax, kErrorMessageOffset, Rbx);
+  cg.movImmToMem(Rax, kErrorCodeOffset, 0);
+  cg.movImmToMem(Rbp, kErrorTag, static_cast<std::int64_t>(kTagError));
+  cg.movToMem(Rbp, kErrorPayload, Rax);
+
+  cg.bind(buildResult);
+  cg.movImm(Rdi, 1);            // kind 1 = map
+  cg.callLabel(tableNew);
+  cg.movReg(R12, Rdx);          // r12 = the result map
+
+  // ok = status == 0
+  cg.movImm(Rdi, static_cast<std::int64_t>(kTagMap));
+  cg.movReg(Rsi, R12);
+  cg.movImm(Rdx, static_cast<std::int64_t>(kTagStr));
+  cg.leaRipLabel(Rcx, okConst);
+  cg.movImm(R8, static_cast<std::int64_t>(kTagBool));
+  cg.movFromMem(R9, Rbp, kStatus);
+  cg.testReg(R9);
+  cg.setcc(Jcc::Eq, R9);
+  cg.movzx(R9, R9);
+  cg.callLabel(memberSet);
+
+  // value = the return value, or nil after a caught error.
+  cg.movImm(Rdi, static_cast<std::int64_t>(kTagMap));
+  cg.movReg(Rsi, R12);
+  cg.movImm(Rdx, static_cast<std::int64_t>(kTagStr));
+  cg.leaRipLabel(Rcx, valueConst);
+  cg.movFromMem(R8, Rbp, kValueTag);
+  cg.movFromMem(R9, Rbp, kValuePayload);
+  cg.callLabel(memberSet);
+
+  // error = nil, or the error value the failure path built.
+  cg.movImm(Rdi, static_cast<std::int64_t>(kTagMap));
+  cg.movReg(Rsi, R12);
+  cg.movImm(Rdx, static_cast<std::int64_t>(kTagStr));
+  cg.leaRipLabel(Rcx, errorConst);
+  cg.movFromMem(R8, Rbp, kErrorTag);
+  cg.movFromMem(R9, Rbp, kErrorPayload);
+  cg.callLabel(memberSet);
+
+  cg.movImm(Rax, kTagMap);
+  cg.movReg(Rdx, R12);
+  cg.jmp(done);
+
+  cg.bind(oom);
+  emitFailCall(cg, fail, msgOom);
+
+  cg.bind(done);
+  cg.addImm32(Rsp, static_cast<std::int32_t>(kFrameBytes));
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
 }
 
 // The exact math builtins (PHASE 7c.5b.3): `floor`, `ceil`, `round` and `sqrt`.
@@ -9442,7 +9671,8 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
 void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                     const RuntimeHandles& entry,
                     const std::vector<AotExternThunk>* externThunks, bool hosted,
-                    bool hasInput, bool bareMetal, int randomStateSlot) {
+                    bool hasInput, bool bareMetal, int randomStateSlot,
+                    int pcallHandlerSlot) {
   // Constant text, bound after all code so nothing falls through into it.
   std::vector<DataBlob> data;
   auto addText = [&](const char* text) {
@@ -9452,62 +9682,62 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   };
   // Copy the blobs out so later `data.push_back` reallocations cannot
   // invalidate a reference held by an emit helper below.
-  DataBlob msgTypes = addText("oskel: unsupported operand types\n");
-  DataBlob msgPow = addText("oskel: unsupported operand types for '**'\n");
-  DataBlob msgDivZero = addText("oskel: division by zero\n");
-  DataBlob msgShift = addText("oskel: shift count must be between 0 and 63\n");
-  DataBlob msgBit = addText("oskel: unsupported operand types for a bitwise operator\n");
-  DataBlob msgNeg = addText("oskel: unsupported operand type for unary '-'\n");
-  DataBlob msgBitNot = addText("oskel: unsupported operand type for unary '~'\n");
-  DataBlob msgCompare = addText("oskel: cannot compare these values\n");
-  DataBlob msgPrint = addText("oskel: cannot print this value\n");
-  DataBlob msgOom = addText("oskel: out of memory\n");
-  DataBlob msgCallNonFunc = addText("oskel: cannot call a non-function value\n");
-  DataBlob msgArity = addText("oskel: wrong number of arguments\n");
-  DataBlob msgArrayIndexType = addText("oskel: array index must be an integer\n");
-  DataBlob msgIndexRange = addText("oskel: index out of range\n");
-  DataBlob msgMapKeyType = addText("oskel: map key must be a string\n");
-  DataBlob msgBadIndex = addText("oskel: value is not indexable\n");
-  DataBlob msgNoMember = addText("oskel: value has no such member\n");
-  DataBlob msgImmutable = addText("oskel: strings are immutable\n");
-  DataBlob msgPopArgc = addText("oskel: pop() expects 0 arguments\n");
-  DataBlob msgShiftArgc = addText("oskel: shift() expects 0 arguments\n");
-  DataBlob msgUnshiftArgc = addText("oskel: unshift() expects 1 argument\n");
-  DataBlob msgInsertArgc = addText("oskel: insert() expects 2 arguments\n");
-  DataBlob msgRemoveAtArgc = addText("oskel: removeAt() expects 1 argument\n");
-  DataBlob msgContainsArgc = addText("oskel: contains() expects 1 argument\n");
-  DataBlob msgIndexOfArgc = addText("oskel: indexOf() expects 1 argument\n");
-  DataBlob msgClearArgc = addText("oskel: clear() expects 0 arguments\n");
-  DataBlob msgArraySliceArgc = addText("oskel: slice() expects between 0 and 2 arguments\n");
-  DataBlob msgArraySliceStart = addText("oskel: slice() expects an integer start\n");
-  DataBlob msgArraySliceEnd = addText("oskel: slice() expects an integer end\n");
-  DataBlob msgConcatArgc = addText("oskel: concat() expects 1 argument\n");
-  DataBlob msgConcatType = addText("oskel: concat() expects an array\n");
-  DataBlob msgReversedArgc = addText("oskel: reversed() expects 0 arguments\n");
-  DataBlob msgCloneArgc = addText("oskel: clone() expects 0 arguments\n");
+  DataBlob msgTypes = addText("unsupported operand types");
+  DataBlob msgPow = addText("unsupported operand types for '**'");
+  DataBlob msgDivZero = addText("division by zero");
+  DataBlob msgShift = addText("shift count must be between 0 and 63");
+  DataBlob msgBit = addText("unsupported operand types for a bitwise operator");
+  DataBlob msgNeg = addText("unsupported operand type for unary '-'");
+  DataBlob msgBitNot = addText("unsupported operand type for unary '~'");
+  DataBlob msgCompare = addText("cannot compare these values");
+  DataBlob msgPrint = addText("cannot print this value");
+  DataBlob msgOom = addText("out of memory");
+  DataBlob msgCallNonFunc = addText("cannot call a non-function value");
+  DataBlob msgArity = addText("wrong number of arguments");
+  DataBlob msgArrayIndexType = addText("array index must be an integer");
+  DataBlob msgIndexRange = addText("index out of range");
+  DataBlob msgMapKeyType = addText("map key must be a string");
+  DataBlob msgBadIndex = addText("value is not indexable");
+  DataBlob msgNoMember = addText("value has no such member");
+  DataBlob msgImmutable = addText("strings are immutable");
+  DataBlob msgPopArgc = addText("pop() expects 0 arguments");
+  DataBlob msgShiftArgc = addText("shift() expects 0 arguments");
+  DataBlob msgUnshiftArgc = addText("unshift() expects 1 argument");
+  DataBlob msgInsertArgc = addText("insert() expects 2 arguments");
+  DataBlob msgRemoveAtArgc = addText("removeAt() expects 1 argument");
+  DataBlob msgContainsArgc = addText("contains() expects 1 argument");
+  DataBlob msgIndexOfArgc = addText("indexOf() expects 1 argument");
+  DataBlob msgClearArgc = addText("clear() expects 0 arguments");
+  DataBlob msgArraySliceArgc = addText("slice() expects between 0 and 2 arguments");
+  DataBlob msgArraySliceStart = addText("slice() expects an integer start");
+  DataBlob msgArraySliceEnd = addText("slice() expects an integer end");
+  DataBlob msgConcatArgc = addText("concat() expects 1 argument");
+  DataBlob msgConcatType = addText("concat() expects an array");
+  DataBlob msgReversedArgc = addText("reversed() expects 0 arguments");
+  DataBlob msgCloneArgc = addText("clone() expects 0 arguments");
   // The bound map methods (PHASE 7c.3g). `clear`/`clone` reuse the array
   // messages above, their text being identical.
-  DataBlob msgMapKeysArgc = addText("oskel: keys() expects 0 arguments\n");
-  DataBlob msgMapValuesArgc = addText("oskel: values() expects 0 arguments\n");
-  DataBlob msgMapEntriesArgc = addText("oskel: entries() expects 0 arguments\n");
-  DataBlob msgMapHasArgc = addText("oskel: has() expects 1 argument\n");
-  DataBlob msgMapHasKeyType = addText("oskel: has() expects a string key\n");
-  DataBlob msgMapGetArgc = addText("oskel: get() expects between 1 and 2 arguments\n");
-  DataBlob msgMapGetKeyType = addText("oskel: get() expects a string key\n");
-  DataBlob msgMapSetArgc = addText("oskel: set() expects 2 arguments\n");
-  DataBlob msgMapSetKeyType = addText("oskel: set() expects a string key\n");
-  DataBlob msgMapDeleteArgc = addText("oskel: delete() expects 1 argument\n");
-  DataBlob msgMapDeleteKeyType = addText("oskel: delete() expects a string key\n");
-  DataBlob msgMapMergeArgc = addText("oskel: merge() expects 1 argument\n");
-  DataBlob msgMapMergeType = addText("oskel: merge() expects a map\n");
-  DataBlob msgInsertRange = addText("oskel: insert() index out of range\n");
-  DataBlob msgRemoveAtRange = addText("oskel: removeAt() index out of range\n");
-  DataBlob msgBadAssign = addText("oskel: cannot assign to this value\n");
-  DataBlob msgBadField = addText("oskel: cannot assign a field on this value\n");
-  DataBlob msgBadIn = addText("oskel: unsupported operands for 'in'\n");
-  DataBlob msgMapValue = addText("oskel: key/value iteration ('for k, v in ...') requires a map\n");
-  DataBlob msgNonNull = addText("oskel: unexpected nil (non-null assertion '!!' failed)\n");
-  DataBlob msgStrBad = addText("oskel: cannot render this value to a string\n");
+  DataBlob msgMapKeysArgc = addText("keys() expects 0 arguments");
+  DataBlob msgMapValuesArgc = addText("values() expects 0 arguments");
+  DataBlob msgMapEntriesArgc = addText("entries() expects 0 arguments");
+  DataBlob msgMapHasArgc = addText("has() expects 1 argument");
+  DataBlob msgMapHasKeyType = addText("has() expects a string key");
+  DataBlob msgMapGetArgc = addText("get() expects between 1 and 2 arguments");
+  DataBlob msgMapGetKeyType = addText("get() expects a string key");
+  DataBlob msgMapSetArgc = addText("set() expects 2 arguments");
+  DataBlob msgMapSetKeyType = addText("set() expects a string key");
+  DataBlob msgMapDeleteArgc = addText("delete() expects 1 argument");
+  DataBlob msgMapDeleteKeyType = addText("delete() expects a string key");
+  DataBlob msgMapMergeArgc = addText("merge() expects 1 argument");
+  DataBlob msgMapMergeType = addText("merge() expects a map");
+  DataBlob msgInsertRange = addText("insert() index out of range");
+  DataBlob msgRemoveAtRange = addText("removeAt() index out of range");
+  DataBlob msgBadAssign = addText("cannot assign to this value");
+  DataBlob msgBadField = addText("cannot assign a field on this value");
+  DataBlob msgBadIn = addText("unsupported operands for 'in'");
+  DataBlob msgMapValue = addText("key/value iteration ('for k, v in ...') requires a map");
+  DataBlob msgNonNull = addText("unexpected nil (non-null assertion '!!' failed)");
+  DataBlob msgStrBad = addText("cannot render this value to a string");
   DataBlob textTrue = addText("true");
   DataBlob textFalse = addText("false");
   DataBlob textNil = addText("nil");
@@ -9521,11 +9751,11 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob textOpenBrace = addText("{");
   DataBlob textCloseBrace = addText("}");
   DataBlob textEllipsis = addText("...");
-  DataBlob msgRangeBounds = addText("oskel: range bounds must be integers\n");
-  DataBlob msgSliceStart = addText("oskel: slice start must be an integer\n");
-  DataBlob msgSliceEnd = addText("oskel: slice end must be an integer\n");
-  DataBlob msgSliceStep = addText("oskel: slice step must not be zero\n");
-  DataBlob msgSliceType = addText("oskel: value is not sliceable\n");
+  DataBlob msgRangeBounds = addText("range bounds must be integers");
+  DataBlob msgSliceStart = addText("slice start must be an integer");
+  DataBlob msgSliceEnd = addText("slice end must be an integer");
+  DataBlob msgSliceStep = addText("slice step must not be zero");
+  DataBlob msgSliceType = addText("value is not sliceable");
   DataBlob textQuote = addText("\"");
   DataBlob textEscQuote = addText("\\\"");
   DataBlob textEscBackslash = addText("\\\\");
@@ -9546,53 +9776,56 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob typeNameFunc = addText("function");
   DataBlob typeNameRange = addText("range");
   DataBlob typeNameError = addText("error");
-  DataBlob msgErrorCodeType = addText("oskel: error() expects an integer code\n");
+  DataBlob msgErrorCodeType = addText("error() expects an integer code");
   DataBlob textError = addText("error(");
   DataBlob textCloseParen = addText(")");
   DataBlob textOskelPrefix = addText("oskel: ");
-  DataBlob msgLenType = addText("oskel: len() is not defined for this type\n");
-  DataBlob msgOrdType = addText("oskel: ord() expects a string argument\n");
-  DataBlob msgOrdChar = addText("oskel: ord() expects a single character\n");
-  DataBlob msgChrInt = addText("oskel: chr() expects an integer argument\n");
-  DataBlob msgChrRange = addText("oskel: chr() code point out of range\n");
-  DataBlob msgChrSurrogate = addText("oskel: chr() code point is a surrogate\n");
-  DataBlob msgAssert = addText("oskel: assertion failed\n");
-  DataBlob msgPanic = addText("oskel: panic\n");
-  DataBlob msgConvertInt = addText("oskel: cannot convert this value to int\n");
-  DataBlob msgConvertFloat = addText("oskel: cannot convert this value to float\n");
-  DataBlob msgConvertDouble = addText("oskel: cannot convert this value to double\n");
-  DataBlob msgFloorType = addText("oskel: floor() expects a number argument\n");
-  DataBlob msgCeilType = addText("oskel: ceil() expects a number argument\n");
-  DataBlob msgRoundType = addText("oskel: round() expects a number argument\n");
+  DataBlob msgLenType = addText("len() is not defined for this type");
+  DataBlob msgOrdType = addText("ord() expects a string argument");
+  DataBlob msgOrdChar = addText("ord() expects a single character");
+  DataBlob msgChrInt = addText("chr() expects an integer argument");
+  DataBlob msgChrRange = addText("chr() code point out of range");
+  DataBlob msgChrSurrogate = addText("chr() code point is a surrogate");
+  DataBlob msgAssert = addText("assertion failed");
+  DataBlob msgPanic = addText("panic");
+  DataBlob msgConvertInt = addText("cannot convert this value to int");
+  DataBlob msgConvertFloat = addText("cannot convert this value to float");
+  DataBlob msgConvertDouble = addText("cannot convert this value to double");
+  DataBlob msgFloorType = addText("floor() expects a number argument");
+  DataBlob msgCeilType = addText("ceil() expects a number argument");
+  DataBlob msgRoundType = addText("round() expects a number argument");
   // The curated `sqrt` stub (PHASE 7f.1). The messages mirror the hosted
   // builtin's, which the CLI prefixes with `file:line:col: runtime error: `.
-  DataBlob msgSqrtArgc = addText("oskel: sqrt() expects 1 argument\n");
-  DataBlob msgSqrtType = addText("oskel: sqrt() expects a number argument\n");
-  DataBlob msgSqrtNegative = addText("oskel: sqrt() of a negative number\n");
-  DataBlob msgExpType = addText("oskel: exp() expects a number argument\n");
-  DataBlob msgLogType = addText("oskel: log() expects a number argument\n");
-  DataBlob msgLogNonPositive = addText("oskel: log() of a non-positive number\n");
-  DataBlob msgPowType = addText("oskel: pow() expects a number argument\n");
-  DataBlob msgSinType = addText("oskel: sin() expects a number argument\n");
-  DataBlob msgCosType = addText("oskel: cos() expects a number argument\n");
-  DataBlob msgTanType = addText("oskel: tan() expects a number argument\n");
+  DataBlob msgSqrtArgc = addText("sqrt() expects 1 argument");
+  DataBlob msgSqrtType = addText("sqrt() expects a number argument");
+  DataBlob msgSqrtNegative = addText("sqrt() of a negative number");
+  DataBlob msgExpType = addText("exp() expects a number argument");
+  DataBlob msgLogType = addText("log() expects a number argument");
+  DataBlob msgLogNonPositive = addText("log() of a non-positive number");
+  DataBlob msgPowType = addText("pow() expects a number argument");
+  DataBlob msgSinType = addText("sin() expects a number argument");
+  DataBlob msgCosType = addText("cos() expects a number argument");
+  DataBlob msgTanType = addText("tan() expects a number argument");
   // The remaining public builtins (PHASE 7c.5b.5): `range`, `assertEq` and
   // `exit`. `assertEq` reuses the shared `failDynamic` and the recursive repr,
   // so its message is assembled at run time from the two fragments below.
-  DataBlob msgRangeFnArgc = addText("oskel: range() expects between 1 and 2 arguments\n");
-  DataBlob msgRangeFnStart = addText("oskel: range() expects an integer start\n");
-  DataBlob msgRangeFnEnd = addText("oskel: range() expects an integer end\n");
-  DataBlob msgAssertEqArgc = addText("oskel: assertEq() expects between 2 and 3 arguments\n");
+  DataBlob msgRangeFnArgc = addText("range() expects between 1 and 2 arguments");
+  DataBlob msgRangeFnStart = addText("range() expects an integer start");
+  DataBlob msgRangeFnEnd = addText("range() expects an integer end");
+  DataBlob msgAssertEqArgc = addText("assertEq() expects between 2 and 3 arguments");
   DataBlob msgAssertEqDefault = addText("assertion failed");
   DataBlob textExpected = addText(": expected ");
   DataBlob textGot = addText(", got ");
-  DataBlob msgExitArgc = addText("oskel: exit() expects between 0 and 1 arguments\n");
-  DataBlob msgExitType = addText("oskel: exit() expects an integer argument\n");
-  DataBlob msgTimeArgc = addText("oskel: time() expects 0 arguments\n");
-  DataBlob msgInputArgc = addText("oskel: input() expects between 0 and 1 arguments\n");
-  DataBlob msgMemSizeArgc = addText("oskel: memSize() expects 0 arguments\n");
+  DataBlob msgExitArgc = addText("exit() expects between 0 and 1 arguments");
+  DataBlob msgExitType = addText("exit() expects an integer argument");
+  DataBlob msgTimeArgc = addText("time() expects 0 arguments");
+  DataBlob msgInputArgc = addText("input() expects between 0 and 1 arguments");
+  DataBlob msgMemSizeArgc = addText("memSize() expects 0 arguments");
   // The `random`/`seed` messages are added only when the program draws, so a
   // program that never calls them keeps a byte-for-byte identical image.
+  // The `pcall` argument message is added only when the program calls `pcall`,
+  // for the same byte-identity reason as the `random` ones.
+  DataBlob msgPcallNotFunc;
   DataBlob msgRandomHigh;
   DataBlob msgRandomBounds;
   DataBlob msgRandomArgc;
@@ -9600,13 +9833,16 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgSeedArgc;
   DataBlob msgSeedType;
   if (randomStateSlot >= 0) {
-    msgRandomHigh = addText("oskel: random() bound must be positive\n");
-    msgRandomArgc = addText("oskel: random() expects between 0 and 2 arguments\n");
-    msgRandomType = addText("oskel: random() expects an integer argument\n");
+    msgRandomHigh = addText("random() bound must be positive");
+    msgRandomArgc = addText("random() expects between 0 and 2 arguments");
+    msgRandomType = addText("random() expects an integer argument");
     msgRandomBounds =
-        addText("oskel: random() needs an upper bound greater than the lower bound\n");
-    msgSeedArgc = addText("oskel: seed() expects 1 argument\n");
-    msgSeedType = addText("oskel: seed() expects an integer argument\n");
+        addText("random() needs an upper bound greater than the lower bound");
+    msgSeedArgc = addText("seed() expects 1 argument");
+    msgSeedType = addText("seed() expects an integer argument");
+  }
+  if (pcallHandlerSlot >= 0) {
+    msgPcallNotFunc = addText("pcall() expects a function as its first argument");
   }
   // The scalar `extern "C"` thunks (PHASE 7f.5). A direct call is arity- and
   // type-checked at compile time, so these only fire through a first-class
@@ -9615,15 +9851,15 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   // stays byte for byte what it was.
   DataBlob msgExternType;
   if (externThunks != nullptr) {
-    msgExternType = addText("oskel: argument type does not match the extern \"C\" declaration\n");
+    msgExternType = addText("argument type does not match the extern \"C\" declaration");
   }
   // The returned-`cstring` scan cap message, hosted only, for the same
   // byte-identity reason.
   DataBlob msgCStringTooLong;
   if (externThunks != nullptr) {
     msgCStringTooLong = addText(
-        "oskel: a C function returned a 'cstring' longer than 16777216 bytes with no NUL "
-        "terminator; the host broke the `const char *` contract\n");
+        "a C function returned a 'cstring' longer than 16777216 bytes with no NUL "
+        "terminator; the host broke the `const char *` contract");
   }
   CodeGen::Label fail = cg.newLabel();
   CodeGen::Label failDynamic = cg.newLabel();
@@ -9638,6 +9874,11 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   CodeGen::Label sbAppendEscaped = cg.newLabel();
   CodeGen::Label reprInto = cg.newLabel();
   CodeGen::Label reprToString = cg.newLabel();
+  // The `pcall` result keys, raw `AotString`s laid out with the other data
+  // islands; only referenced when the program calls `pcall`.
+  CodeGen::Label okConst = cg.newLabel();
+  CodeGen::Label valueConst = cg.newLabel();
+  CodeGen::Label errorConst = cg.newLabel();
 
   // The float/double formatter is part of the embedded runtime: bind its
   // handles and emit the whole dtoa routine so `oskel_print_value` can call it.
@@ -9753,7 +9994,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   env.textEscCR = &textEscCR;
   env.textHexPrefix = &textHexPrefix;
 
-  emitFail(cg, fail, entry.write, entry.exit);
+  emitFail(cg, fail, failDynamic);
   emitWriteInt(cg, writeInt, entry.write);
   emitAlloc(cg, handles.alloc);
   emitConcat(cg, handles.concat, handles.alloc, fail, msgOom);
@@ -9882,7 +10123,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                    msgSliceStep, msgSliceType);
   // The public builtins (PHASE 7c.5a). `str` and `isError` reuse the `$str` and
   // `$isError` code: the public names are just two more seeds of the same entry.
-  emitFailDynamic(cg, failDynamic, entry.write, entry.exit, textOskelPrefix, textNewline);
+  emitFailDynamic(cg, failDynamic, entry.write, entry.exit, textOskelPrefix, textNewline,
+                  pcallHandlerSlot);
   emitLenBuiltin(cg, handles.lenBuiltin, env, msgLenType);
   emitTypeBuiltin(cg, handles.typeBuiltin, handles.alloc, fail, msgOom, typeNameNil,
                   typeNameBool, typeNameInt, typeNameFloat, typeNameDouble, typeNameStr,
@@ -9977,6 +10219,14 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
     emitSeedBuiltin(cg, handles.seedBuiltin, stateThunk, seedLabel, fail, msgSeedArgc,
                     msgSeedType);
   }
+  // `pcall(fn, args...)` (BACKLOG §6 item 4). Emitted only when the program
+  // calls it: the body installs a handler the error sink jumps back into, and
+  // the sink only carries that check when `pcallHandlerSlot` is set.
+  if (pcallHandlerSlot >= 0) {
+    emitPcallBuiltin(cg, handles.pcallBuiltin, handles.call, handles.tableNew,
+                     handles.memberSet, handles.alloc, fail, failDynamic, msgPcallNotFunc,
+                     msgOom, okConst, valueConst, errorConst, pcallHandlerSlot);
+  }
   emitIntTextParser(cg, handles.intTextParser, fail, msgConvertInt);
   dtoa::emitDtoa(cg, dtoaHandles);
   parse_float::emitParseFloat(cg, parseFloatHandles, dtoaHandles);
@@ -10035,6 +10285,14 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x07\x00\x00\x00\x00\x00\x00\x00" "message"), 15);
   cg.bind(env.codeConst);
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x04\x00\x00\x00\x00\x00\x00\x00" "code"), 12);
+  if (pcallHandlerSlot >= 0) {
+    cg.bind(okConst);
+    cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x02\x00\x00\x00\x00\x00\x00\x00" "ok"), 10);
+    cg.bind(valueConst);
+    cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x05\x00\x00\x00\x00\x00\x00\x00" "value"), 13);
+    cg.bind(errorConst);
+    cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x05\x00\x00\x00\x00\x00\x00\x00" "error"), 13);
+  }
 
   // The field names of every by-value struct in an `extern "C"` signature
   // (PHASE 7f.7), each a raw `AotString` the thunk uses as a map key. They are
