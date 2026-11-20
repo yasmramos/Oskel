@@ -36,6 +36,25 @@ may change between minor versions.
   them: the file thunks stored their saved path over the fifth outgoing argument
   and reused `rdx` for `lpBuffer` before reading the length out of it.
 
+- **The AOT backend binds the callback-taking and folding array methods**
+  (PHASE 7c.3h). `map`, `filter`, `each`, `find`, `any`, `all`, `reduce`,
+  `sum` and `join` now work in an `oskel build` binary, closing the last
+  array-method divergence between the VM and a compiled program except
+  `sort`/`sorted` (docs/BACKLOG.md §6 item 1). The callback ones are the first
+  emitted helpers that call back into the program: each invokes the closure it
+  was handed through `oskel_call`, once per item, so a callback runs real
+  Oskel code — allocating, recursing, capturing locals — inside the helper.
+  `reduce` is the first to hand its callback two values, so the argument
+  window is built with the accumulator at its highest address (a callee reads
+  `args[i]` at `args - 16*i`, because the register file grows down); getting
+  that backwards passed the callback the closure itself instead of the item.
+  `sum` follows the hosted all-int fast path and switches to a binary64 total
+  at the first float, and `join` renders both the items and the separator
+  through `$str`, since the hosted `join` calls `toString` on whatever
+  separator it is given. Covered by the `oskel build` fixtures
+  `tests/native_build_array_callbacks.oskl` and
+  `tests/native_build_array_folds.oskl`, which compare the VM's output with
+  the binary's byte for byte.
 - **The VS Code extension reports the compiler's diagnostics.** Saving an
   `.oskl` file now runs `oskel -c` and publishes the result as editor
   diagnostics, so a type error is a squiggle on the line that caused it instead

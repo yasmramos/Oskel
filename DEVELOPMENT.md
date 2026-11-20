@@ -1224,6 +1224,33 @@ binary prints byte for byte what the VM prints).
       it, so the `.oskc` is untouched. Covered by the freestanding
       `test_map_methods` (values, mutation and the error paths) and the
       `oskel build` fixture `tests/native_build_map_methods.oskl`.
+    - **7c.3h** (done) — the callback-taking and folding array methods:
+      `map`, `filter`, `each`, `find`, `any`, `all`, `reduce`, `sum` and `join`.
+      The first six are the first emitted helpers that call *back* into the
+      program: each invokes the closure it is handed through `oskel_call`, once
+      per item, so a callback runs real Oskel code (allocating, recursing,
+      capturing locals) inside the helper. The binding is the one 7c.3c/7c.3e
+      already use (the receiver captured in a shared cell, the body reached
+      through `oskel_call`), with nine new selectors (13..21) in
+      `bindArrayMethod`'s table. `map` stores the callback's result and
+      `filter` the item it was given; `each` returns the receiver, `find` the
+      matching item or `nil`, and `any`/`all` short-circuit to a boolean.
+      `reduce` is the first helper to hand its callback *two* values: a callee
+      reads `args[i]` at `args - 16*i` (the register file grows down), so the
+      argument window is built with the accumulator at its highest address --
+      the ordering a stack-slot mix-up silently breaks. `sum` mirrors the
+      hosted all-int fast path (a wrapping integer add until the first
+      float/double, then a binary64 total seeded from the integer one); `join`
+      renders every item, and the separator, through `$str`, since the hosted
+      `join` calls `toString` on whatever it is given. Only rbx and r12 are
+      saved around a callback: r13/r14 are the arena cursor and end and must be
+      left advanced by whatever the callback allocated, and r15 (the global
+      table) is never written. No new opcode and no compiler change: the member
+      form of `GETTABLE` plus `CALL` already carries it, so the `.oskc` is
+      untouched. Covered by the `oskel build` fixtures
+      `tests/native_build_array_callbacks.oskl` and
+      `tests/native_build_array_folds.oskl`. `sort`/`sorted` remain open (they
+      need a stable sort that calls a comparator), as do the string methods.
     - **7c.4a** (done) — the hidden `$nonNull` and `$isError` helpers. The
       compiler emits `$nonNull` for the non-null assertion `a!!` and `$isError`
       for `try` / `x catch y` (PHASE 6.5/6.7); the AOT backend had no binding
@@ -1898,7 +1925,7 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.7 done, scalar, `cstring`/`ptr` and struct-by-value `extern "C"` (register and class-MEMORY) resolve in the hosted backend; a C variadic and a callback argument are still open. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.7 done, scalar, `cstring`/`ptr` and struct-by-value `extern "C"` (register and class-MEMORY) resolve in the hosted backend; a C variadic and a callback argument are still open. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
 2.0: ⬜ future (static with `@Dynamic`)

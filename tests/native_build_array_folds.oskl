@@ -1,0 +1,108 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): the folding array
+// methods under the AOT backend -- `reduce`, `sum` and `join` (PHASE 7c.3h).
+//
+// `reduce` is the second emitted helper that calls back into the program, and
+// the first that hands the callback *two* values. A callee reads `args[i]` at
+// `args - 16*i` (the register file grows down), so the argument window is built
+// with the accumulator at its highest address -- the ordering bug this fixture
+// guards against.
+//
+// `sum` mirrors the hosted all-int fast path: an int total while every item is
+// an int, a double total once a float appears, and a wrapping integer add. A
+// float value stores its binary32 rounding widened to binary64, so `[1, 2.5]`
+// sums to the double 3.5 in both engines.
+//
+// `join` renders every item through `toString` -- a string unquoted, a
+// collection as its repr -- and renders the separator the same way, since the
+// hosted `join` calls `args[0].toString()` on whatever it is given.
+//
+// The build harness compares this file's VM output with the native binary's
+// byte for byte.
+
+fn add(a, b) {
+  return a + b;
+}
+
+// A named function as the callback, and a closure over a local: both are
+// ordinary values, so both must work as the folding function.
+fn scale(by) {
+  return (a, b) => a + b * by;
+}
+
+var a = [1, 2, 3];
+
+// --- reduce, with and without a seed --------------------------------------
+print(a.reduce(add));
+print(a.reduce(add, 100));
+print([7].reduce(add));
+print([].reduce(add, 7));
+print(a.reduce((x, y) => x * y, 1));
+print(a.reduce((x, y) => y, 0));
+print(a.reduce((x, y) => x, 0));
+
+// --- reduce does not mutate its receiver ----------------------------------
+var keep = [1, 2, 3];
+var folded = keep.reduce(add, 0);
+print(folded);
+print(keep);
+
+// --- a closure that captures a local --------------------------------------
+var by = 10;
+print(a.reduce(scale(by), 0));
+by = 100;
+print(a.reduce(scale(by), 0));
+
+// --- recursion inside the callback ----------------------------------------
+fn sumTo(n) {
+  if (n <= 0) {
+    return 0;
+  }
+  return n + sumTo(n - 1);
+}
+print([1, 2, 3].reduce((acc, x) => acc + sumTo(x), 0));
+
+// --- reduce over nested collections ---------------------------------------
+var rows = [[1, 2], [3, 4]];
+print(rows.map(r => r.reduce(add, 0)));
+print(rows.reduce((acc, r) => acc + r.reduce(add, 0), 0));
+print(rows.reduce((acc, r) => acc.concat(r), []));
+
+// --- sum: the all-int fast path and the switch to a double ----------------
+print([1, 2, 3].sum());
+print([].sum());
+print([-1, -2].sum());
+print([1.5, 2.5].sum());
+print([1, 2.5].sum());
+print([2.5, 1].sum());
+print([1, 2, 3].map(x => x * 2).sum());
+print(rows.map(r => r.sum()).sum());
+
+// --- join: the separator, the default and the empty receiver --------------
+print(a.join());
+print(a.join("-"));
+print(a.join(", "));
+print([].join("-"));
+print(["a"].join("-"));
+print(["a", "b"].join(""));
+
+// --- join renders each item through toString ------------------------------
+print([true, false, nil].join("|"));
+print([1, 2.5].join("/"));
+print([[1, 2], [3]].join("|"));
+print([1, 2].join(0));
+
+// --- a longer receiver, to catch a window that drifts ---------------------
+var big = [];
+var i = 0;
+while (i < 40) {
+  big.push(i);
+  i = i + 1;
+}
+print(big.reduce(add, 0));
+print(big.sum());
+print(big.join(",").length);
+print(big.filter(x => x % 8 == 0).reduce(add, 0));
+
+// --- folds nested inside folds --------------------------------------------
+print(big.map(x => x + 1).filter(x => x % 5 == 0).reduce(add, 0));
+print(big.map(x => [x, x * 2]).reduce((acc, p) => acc + p[1], 0));

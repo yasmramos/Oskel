@@ -2525,13 +2525,14 @@ filtering, folding, searching, reshaping, grouping and sorting. Every function
 takes a **new** array or map and never mutates its input, so a caller can keep
 the original and chain freely.
 
-The array methods (`xs.map(f)`, `xs.filter(f)`, `xs.sort()`, ...) exist too and
-are the shorter form on the development VM, but the AOT backend does not bind
-them yet: `oskel build` compiles a call to one and the binary fails at run time
-with `value has no such member` (BACKLOG §6 item 1). These functions are the
-same operations over the portable primitive surface, so they work identically
-on the VM and in a native binary. **Prefer them when a program must compile with
-`oskel build`.**
+The array methods (`xs.map(f)`, `xs.filter(f)`, `xs.reduce(f, init)`,
+`xs.sum()`, `xs.join(sep)`, `xs.push(x)`, ...) exist too and are the shorter
+form; both engines bind them. The exceptions are `xs.sort()`/`xs.sorted()` and
+the string methods (`str.upper`, `str.split`, ...), which `oskel build` compiles
+and the binary then fails at run time with `value has no such member` (BACKLOG
+§6 item 1). These functions are the same operations over the portable primitive
+surface, so they work identically on the VM and in a native binary. **Prefer
+them when a program must compile with `oskel build`.**
 
 | Function | Description |
 | --- | --- |
