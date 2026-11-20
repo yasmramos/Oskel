@@ -123,6 +123,22 @@ struct AbiCapabilities {
 // ABI accepts.
 inline constexpr AbiCapabilities kFullAbiCapabilities{true, true, true};
 
+// What the AOT backend marshals, independent of how the development engine was
+// built. The backend emits its own thunks (`native/runtime.cpp`), so it never
+// calls libffi: a class-MEMORY struct travels in the outgoing stack area and
+// comes back through an `sret` pointer, and a register-class struct goes through
+// the eightbyte buffers. Its thunks hard-code the System V argument registers,
+// which is why the hosted link mode is Linux x86-64 only, and a C variadic is
+// not lowered (PHASE 7f.5): the variable argument list changes per call.
+//
+// The compiler validates `extern "C"` against the *destination*: `oskel build`
+// asks with these capabilities, so a shape the backend can emit is not rejected
+// because the development engine happened to be built without libffi. The
+// interpreter asks with `AbiCapabilities{}`, the build's own.
+inline constexpr AbiCapabilities kAotAbiCapabilities{/*structByValue=*/true,
+                                                     /*memoryStructs=*/true,
+                                                     /*variadic=*/false};
+
 // One field of a struct crossing the C boundary. `type` is an FFI scalar type
 // name (the same vocabulary as a parameter annotation); a nested struct is not
 // a scalar and is rejected by `buildStructLayout`.
@@ -538,8 +554,9 @@ inline std::string validateSignature(const std::vector<TypeSpec>& params,
   }
   if (variadic) {
     if (!caps.variadic) {
-      return "a variadic 'extern \"C\"' declaration needs libffi and the System V AMD64 ABI, "
-             "which this build does not have";
+      return "a variadic 'extern \"C\"' declaration needs a marshalling that builds the variable "
+             "argument list per call (libffi in the development engine), on the System V AMD64 "
+             "ABI, which this destination does not have";
     }
     for (const TypeSpec& spec : params) {
       if (spec.isStruct || spec.isCallback) {

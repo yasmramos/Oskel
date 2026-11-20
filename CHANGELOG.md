@@ -9,6 +9,23 @@ may change between minor versions.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`oskel build` no longer rejects a class-MEMORY `extern "C"` struct on an
+  engine built without libffi.** The compiler validated every declaration
+  against the *build's* ABI capabilities, which derive from `OSKEL_HAVE_LIBFFI`;
+  the AOT backend, however, emits its own thunks and marshals a struct larger
+  than 16 bytes natively (stack-passed, `sret`-returned), so it never needed
+  libffi for it. The two were conflated, and the hosted fixture failed on any
+  machine without `libffi-dev` even though the emitted code was correct. The
+  compiler now asks `validateSignature` with the destination's capabilities
+  (`Compiler::setAbiCapabilities`): `oskel build` passes
+  `ffi::kAotAbiCapabilities`, the interpreter keeps this build's
+  `AbiCapabilities{}`. A variadic stays rejected for the AOT destination
+  regardless of libffi, because the backend does not lower a variable argument
+  list (PHASE 7f.5). `oskel.build_hosted_extern_memory_struct` now passes with
+  no libffi installed.
+
 ### Added
 
 - **The VS Code extension reports the compiler's diagnostics.** Saving an
