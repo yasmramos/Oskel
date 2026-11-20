@@ -267,6 +267,13 @@ may change between minor versions.
   `tests/native_build_extern_hosted.oskl` and
   `tests/native_build_extern_memory_struct.oskl` (BACKLOG §6 item 23).
 
+- **A returned struct with a `cstring` field can be passed straight back into a
+  C function.** The field boxed as a pointer handle, but the argument side only
+  accepted a string or `nil` for it, so `oskelTestCStringLength(oskelTestMakeCString())`
+  failed to compile with "argument type does not match the extern \"C\"
+  declaration". Both places that marshal a `cstring` argument now accept the
+  handle and pass its own terminated bytes.
+
 - **The VS Code grammar highlighted syntax the language does not have and
   missed three real builtins.** `0x10`, `0b1010` and `0o17` were split into `0`
   and a name, because the decimal rule ran first; the lexer accepts all three
