@@ -6,6 +6,13 @@
 #   -DOSKEL_EXE=<path to the oskel executable>
 #   -DOSKEL_SCRIPT=<the .oskl file to build>
 #   -DOSKEL_TEST_NAME=<the CTest name, used for a unique output path>
+#   -DOSKEL_ARGS=<optional list of script arguments>
+#
+# `OSKEL_ARGS` is passed to *both* runs, so a fixture that reads `args()` sees
+# the same vector in the VM and in the binary. It is a CMake list (a semicolon
+# separates two arguments), which is how a caller writes one. A quoted argument
+# with a space survives as one element, which is exactly the case a naive
+# tokeniser gets wrong.
 #
 # It asserts:
 #   1. `oskel build` exits 0 and writes the requested output,
@@ -52,7 +59,7 @@ endif()
 
 # The reference output is the development VM's: the AOT binary must agree.
 execute_process(
-  COMMAND "${OSKEL_EXE}" "${OSKEL_SCRIPT}"
+  COMMAND "${OSKEL_EXE}" "${OSKEL_SCRIPT}" ${OSKEL_ARGS}
   RESULT_VARIABLE vm_exit
   OUTPUT_VARIABLE vm_stdout
 )
@@ -61,7 +68,7 @@ if(NOT vm_exit EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND "${out}"
+  COMMAND "${out}" ${OSKEL_ARGS}
   RESULT_VARIABLE run_exit
   OUTPUT_VARIABLE run_stdout
   ERROR_VARIABLE run_stderr

@@ -181,16 +181,16 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 6. AOT backend (`src/frontend/native/lower.cpp`, `src/frontend/native/runtime.cpp`)
 
-1. **[P0]** VM/AOT divergence in collection methods: the array methods bind in
-   AOT (`push`/`pop` in PHASE 7c.3c, `shift`/`unshift`/`insert`/`removeAt`/
-   `contains`/`indexOf`/`clear` in PHASE 7c.3e, and the allocating `slice`/
-   `concat`/`reversed`/`clone` in PHASE 7c.3f), but the callback-taking array
-   methods (`map`, `filter`, `reduce`, `each`, `find`, `any`, `all`, `sum`,
-   `sort`/`sorted`) and `map.keys`, `str.upper`, and the rest of the
-   string/map methods still work in the VM and fail in AOT with "no such
-   member". The binding mechanism (receiver captured in a closure upvalue,
-   method body reached through `oskel_call`) generalises to the rest; the
-   callback ones additionally need `oskel_call` on the argument closure.
+1. **[P0] [done]** VM/AOT divergence in collection methods: the array methods
+   bind in AOT (`push`/`pop` in PHASE 7c.3c, `shift`/`unshift`/`insert`/
+   `removeAt`/`contains`/`indexOf`/`clear` in PHASE 7c.3e, the allocating
+   `slice`/`concat`/`reversed`/`clone` in PHASE 7c.3f, and the callback-taking
+   `map`/`filter`/`each`/`find`/`any`/`all` plus the folding `reduce`/`sum`/
+   `join` in PHASE 7c.3h), and the ten map methods in PHASE 7c.3g. What is
+   still open is `sort`/`sorted` (they need a stable sort that calls a
+   comparator back into the program) and the string methods
+   (`upper`/`lower`/`trim`/`split`/`lines`/`replace`/...), which still work in
+   the VM and fail in AOT with "no such member".
 2. **[P0] [done]** VM/AOT divergence in structural equality: `[1,2] == [1,2]`
    is true in the VM (content) and false in AOT (identity). The equality helper
    in `oskel_compare` now descends into arrays and maps (equal length, equal
@@ -204,8 +204,18 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    A runtime error that is *not* a returned error value (an out-of-range index,
    a failed `assert`, ...) still exits 70: the AOT backend has no unwinding, so
    only value-based recovery is possible (by design, DEVELOPMENT.md §3).
-4. **[P0]** `pcall` is not implemented in AOT; a program that uses it does not
-   compile or fails at run time.
+4. **[P0] [done]** `pcall` is implemented in AOT (BACKLOG §6 item 4): the
+   builtin calls the callee and turns a raised runtime error into a value, so
+   `pcall` returns `{ok, value, error}` exactly like the VM. The AOT runtime had
+   no unwinding, so the error sink (`oskel_fail_dynamic`) now checks a hidden
+   `$pcallHandler` global before printing: while a `pcall` is active it stores
+   the message in that handler's record, restores the `pcall` frame's `rsp`/`rbp`
+   and jumps back to it -- the one non-local return in the call ABI. The record
+   carries the previous handler, so a nested `pcall` and a normal return both
+   restore the chain. The slot, the builtin body and the sink's handler check
+   are emitted only when the program calls `pcall`, so every other image is byte
+   for byte what it was. `tests/native_build_pcall.oskl` pins the parity (a
+   success, a caught failure, a nested catch and a closure).
 5. **[P0] [done]** `error()`/`makeError` is now implemented in AOT (PHASE
    7c.5c): `error(message, code?)` builds a real error value, and `type(err)`,
    `isError`, `err.message`/`err.code`, structural equality, `print`/`repr` and
@@ -218,8 +228,8 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 8. **[P1] [done]** `emitContains` for arrays uses `AotCompareOp::Eq`, which
    used to be identity for arrays/maps; now that equality is structural, `in`
    over an array of arrays matches the VM (fixed with item 2).
-9. **[P1]** `emitMemberGet` for array/string supports only `.length`, no
-   methods — same divergence as item 1.
+9. **[P1]** `emitMemberGet` for a string supports only `.length`, no methods
+   — the string half of item 1, still open.
 10. **[P1]** `emitIterNext` for `str` allocates a string per character — same
     as item 7.
 11. **[P1]** `collectGlobals` does not detect name-resolution cycles: a
@@ -327,47 +337,61 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     nondeterministically. The index now lives in a caller-saved scratch (`r11`),
     reloaded from its slot after every call. Regression:
     `tests/native_build_string_repr.oskl`.
-25. **[P1]** Fifteen builtins exist in the development engine and are not
-    seeded by the AOT backend, so a program that calls one fails `oskel build`
-    with "global 'X' is read but never assigned" (exit 65) while the VM runs it.
-    `tests/check_builtin_parity.cmake` enumerates the set from both sides, so a
-    new builtin cannot be added to one engine alone; the names that are VM-only
-    on purpose are listed there and here. Grouped by what blocks each one:
-    - **Needs a host capability the freestanding image has no binding for**:
-      `readFile`, `writeFile`, `fileExists` (file system), `clock` (a monotonic
-      clock; `time()` is bound, `clock()` is not), `args` (the process argument
-      vector). A freestanding image has no files and no argv, so these need a
-      curated binding per target, exactly like `time()` got one.
-      (`random`/`seed` used to be listed here; they are now implemented in AOT,
-      see the note below.)
-    - **Needs to call an arbitrary value and recover from a raised error**:
-      `pcall`. Value-based `try`/`catch` already works in AOT (PHASE 7c.5c):
-      `try e` and `e catch d` are `isError` + a jump, and they need no
-      unwinding. `pcall` is different: it calls a function the program chose at
-      run time and must catch a `panic` raised *inside* it, and the AOT runtime
-      reports a failure by writing to stderr and exiting. It therefore needs a
-      non-local return in the call ABI, not a builtin. It is the most valuable
-      of the seventeen: a program that cannot recover from a raised error can
-      only recover from an error it was handed.
-    - **Done (PHASE 7c.5b.6)**: `random`/`seed`. `std::mt19937_64` is fully
-      specified by the C++ standard, so its bit stream is portable, while
-      `std::uniform_real_distribution`/`std::uniform_int_distribution` are not.
-      Both engines now apply the same explicit formulas (the top 53 bits over
-      2^53 for `random()`, `next() % span` otherwise) and the AOT backend emits
-      the generator itself in machine code, with its 312-word state in a hidden
-      global backed by the arena. `tests/native_build_random.oskl` proves the
-      two engines agree. The one remaining divergence: the VM seeds from
-      `std::random_device` and a native binary from the standard's default seed
-      (5489), because an image has no entropy source and a fixture must be
-      reproducible; a program that needs a fixed stream calls `seed(n)`.
-    - **Raw memory intrinsics**: `buffer`, `loadByte`, `storeByte`, `intToPtr`,
-      `ptrToInt`, `free`, `byteLen`, `cstr`, `cstring`. These exist so a
-      development program can talk to `extern "C"` code through libffi; in AOT
-      the pointer marshalling is done by the thunk (PHASE 7f.6), so the
-      intrinsics have no consumer there. They are the least urgent, but they
-      must still fail cleanly rather than diverge.
-    None of these is a silent divergence — each one fails the build — but they
-    are the reason 7c.5b cannot be called complete for the language as a whole.
+25. **[P1] [done]** Fourteen builtins existed in the development engine and
+    were not seeded by the AOT backend, so a program that called one failed
+    `oskel build` with "global 'X' is read but never assigned" (exit 65) while
+    the VM ran it. `tests/check_builtin_parity.cmake` enumerates the set from
+    both sides, so a new builtin cannot be added to one engine alone; its
+    exception list is now empty. Every one is implemented, each with the parity
+    fixture that pins it:
+    - **Pointers** (`cstring`, `cstr`, `buffer`, `byteLen`, `loadByte`,
+      `storeByte`, `intToPtr`, `ptrToInt`, `free`). The VM keeps them in a
+      reference-counted `PtrObj`; the image keeps an `AotPtr` in the arena
+      (`native/value.h`), with the same four fields and the same observable
+      behaviour, `free` marking the handle released instead of reclaiming it.
+      Nothing in these needs a host, so they are seeded on every target.
+      Fixture: `tests/native_build_pointers.oskl`.
+    - **Files** (`readFile`, `writeFile`, `fileExists`). Written against four
+      prelude handles -- `oskel_open`/`oskel_read_fd`/`oskel_write_fd`/
+      `oskel_close` -- so the syscall (Linux `openat`/`read`/`write`/`close`),
+      the kernel32 calls (`CreateFileA`/`ReadFile`/`WriteFile`/`CloseHandle`)
+      and the hosted libc path all stay in the prelude and the builtins
+      themselves are target-independent. A bare-metal image has no file system,
+      so it binds none of the handles and the lowerer rejects the three by
+      name. Fixture: `tests/native_build_files.oskl`.
+    - **`clock`**. Reads the `entry.monotonic` handle, which every prelude
+      binds (Linux `clock_gettime(CLOCK_MONOTONIC)`, hosted the same through
+      libc, Windows `GetTickCount64`, bare metal the PIT tick counter), and
+      subtracts the value the chunk captured at entry, so it reports elapsed
+      time rather than an absolute counter. It is deliberately *not* the hosted
+      engine's `clock()` (CPU time) and does not need libm.
+    - **`args`**. Reads a hidden `$args` global the chunk fills from the
+      `(argc, argv)` the process entry passes, skipping `argv[0]` exactly like
+      the VM. Only the targets whose entry receives an argument vector seed it
+      -- freestanding Linux and hosted -- while Windows (the loader calls the
+      entry with no arguments) and bare metal reject it by name.
+      Fixture: `tests/native_build_args.oskl` (Linux and hosted only; Windows
+      and bare metal pin the rejection with `tests/native_build_args_error.oskl`
+      instead), and `tests/native_build_clock.oskl` covers `clock`.
+    - **Done earlier**: `pcall` (§6 item 4) and `random`/`seed` (PHASE
+      7c.5b.6).
+    A target that cannot back a builtin now fails with a message that names the
+    *target* ("args() needs a process argument vector", "readFile() needs a file
+    system", "input() needs a keyboard", "memSize() is only available on the
+    bare-metal target") instead of the generic unassigned-global error a typo
+    produces; `lower_test` pins each message and the shadowing case
+    (`var args = 1` still lowers).
+
+    One divergence remains and is deliberate: a builtin's *runtime* error
+    message that ends in a dynamic tail keeps only its fixed prefix in AOT
+    (`free() expects a pointer` against `free() expects a pointer, got 'int'`;
+    likewise `expects an integer index, got '...'` and `index 7 is out of
+    range`), because the AOT sink writes one fixed message blob and does not
+    format values into it. The function name and the condition are identical in
+    both engines, which is what a program can branch on; assembling the tail
+    would mean a per-message builder in the runtime and is not worth it until a
+    program is shown to depend on the text. `ord`/`len`/`chr` set this
+    convention before the pointer builtins did.
 
 ---
 
@@ -668,9 +692,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `tests/native_build_*.oskl` fixture on both engines (the VM is the
    reference) and asserts identical stdout and exit code, plus the static-link
    check. The list is curated, not exhaustive: a sweep of `tests/*.oskl` shows
-   48 of them build in AOT and agree with the VM, while the rest either use
-   `pcall` (the documented 7f gap) or a collection/string method the AOT
-   backend does not implement. Widening the curated list to every agreeing
+   48 of them build in AOT and agree with the VM, while the rest use a
+   collection/string method the AOT backend does not implement (`pcall` is no
+   longer a gap, see §6.4). Widening the curated list to every agreeing
    script is the remaining work; `tests/native_build_control_flow.oskl`
    (registered as `oskel.build_binary_control_flow`) closes the `switch`/
    `defer`/`struct` hole the earlier fixtures left.

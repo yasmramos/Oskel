@@ -617,13 +617,22 @@ if(BUILD_TESTING)
       # A class-MEMORY struct (larger than two eightbytes) is stack-passed and
       # `sret`-returned, a shape no libc symbol exercises: the fixture links a
       # small C helper of its own.
-      add_test(NAME oskel.build_hosted_extern_memory_struct
-        COMMAND ${CMAKE_COMMAND}
-          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_memory_struct"
-          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_memory_struct.oskl"
-          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/memory_struct_helper.c"
-          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_memory_struct.cmake")
+      #
+      # The compiler only *accepts* such a declaration when the development
+      # engine has libffi (`OSKEL_FFI_MEMORY_STRUCTS`, mirroring
+      # `OSKEL_FFI_MEMORY_STRUCTS` in `include/ffi_types.h`); without it the
+      # build fails by design with the "needs libffi" message, so the test has
+      # to be gated on the same flag or it fails on every machine without
+      # libffi-dev.
+      if(OSKEL_FFI_MEMORY_STRUCTS)
+        add_test(NAME oskel.build_hosted_extern_memory_struct
+          COMMAND ${CMAKE_COMMAND}
+            "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_memory_struct"
+            "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+            "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_memory_struct.oskl"
+            "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/memory_struct_helper.c"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_memory_struct.cmake")
+      endif()
     endif()
     # `std.json` is plain Oskel over the portable primitive surface, so it must
     # build to a native binary and agree with the VM. The fixture is the guard
@@ -671,8 +680,45 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_random.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
-    # `std.collections` exists because the AOT backend does not bind the array
-    # methods yet (docs/BACKLOG.md §6 item 1); it is plain Oskel over the
+    # `pcall` is the only way to recover from a `panic` raised inside a function
+    # chosen at run time (BACKLOG §6 item 4): the AOT runtime reports a failure
+    # by exiting, so the builtin installs a handler the error sink jumps back
+    # into. The fixture exercises a success, a caught failure, a nested catch and
+    # a closure, and must agree with the VM line for line.
+    add_test(NAME oskel.build_binary_pcall
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_pcall"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_pcall.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The callback-taking array methods -- `map`, `filter`, `each`, `find`,
+    # `any`, `all` (PHASE 7c.3h). They are the first emitted helpers that call
+    # back into the program through `oskel_call`, so the callback runs real
+    # Oskel code inside the helper. The fixture pins the whole surface,
+    # including `each` returning the receiver and `find` returning nil.
+    add_test(NAME oskel.build_binary_array_callbacks
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_array_callbacks"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_callbacks.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The folding array methods -- `reduce`, `sum`, `join` (PHASE 7c.3h).
+    # `reduce` is the first emitted helper that hands its callback two values,
+    # so the fixture pins the argument-window ordering; `sum` pins the all-int
+    # fast path and its switch to a double, and `join` pins the `toString`
+    # rendering of both the items and the separator.
+    add_test(NAME oskel.build_binary_array_folds
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_array_folds"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_folds.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `std.collections` exists because the AOT backend does not bind every array
+    # method yet -- `sort`/`sorted` are open (docs/BACKLOG.md §6 item 1); it is
+    # plain Oskel over the
     # portable primitive surface, so it must build to a native binary and agree
     # with the VM. The fixture is the guard that keeps the module off the
     # methods, `pcall`/`error` and the rest of the AOT gaps.
@@ -707,6 +753,60 @@ if(BUILD_TESTING)
         "-DOSKEL_TEST_NAME=oskel.build_binary_classes"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_classes.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The pointer builtins (BACKLOG §6 item 25): `cstring`/`cstr`/`buffer`/
+    # `byteLen`/`loadByte`/`storeByte`/`intToPtr`/`ptrToInt`/`free` are opaque
+    # handles an `AotPtr` in the arena backs, so every target emits them. The
+    # fixture compares the binary with the VM byte for byte.
+    add_test(NAME oskel.build_binary_pointers
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_pointers"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_pointers.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `readFile`/`writeFile`/`fileExists` are written against the prelude's
+    # `open`/`readFd`/`writeFd`/`close` handles, so the syscall (Linux) or
+    # kernel32 (Windows) difference stays in the prelude. Every target with a
+    # file system emits them; bare metal rejects them by name.
+    add_test(NAME oskel.build_binary_files
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_files"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_files.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `clock()` reads the `entry.monotonic` handle and subtracts the origin the
+    # chunk captured at entry, so it reports elapsed time. Every target backs it,
+    # and only the shape is compared: the two runs happen at different times.
+    add_test(NAME oskel.build_binary_clock
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_clock"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_clock.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `args()` reads the array the entry point builds from `(argc, argv)`, so it
+    # is seeded only where the entry receives one: Linux freestanding and hosted.
+    # Windows calls the entry with no arguments and bare metal has no command
+    # line, and there the build must reject it by name instead.
+    if(NOT WIN32)
+      add_test(NAME oskel.build_binary_args
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_TEST_NAME=oskel.build_binary_args"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_args.oskl"
+          "-DOSKEL_ARGS=alpha;beta;two words"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+    else()
+      add_test(NAME oskel.build_args_error
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_args_error"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_args_error.oskl"
+          "-DEXPECTED_MESSAGE=args\\(\\) needs a process argument vector"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+    endif()
 
     # The field-type check runs in the compiler, so `oskel build` rejects a
     # mistyped field assignment exactly as the VM does, with the same message
@@ -778,20 +878,20 @@ if(BUILD_TESTING)
         "-DOSKEL_TEST_NAME=oskel.build_native_error"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_native_error.oskl"
-        "-DEXPECTED_MESSAGE=native fn 'clock' cannot be resolved by the AOT backend"
+        "-DEXPECTED_MESSAGE=native fn 'getpid' cannot be resolved by the AOT backend"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
 
-    # A qualified access to a module's native export (`modules.hostclock.clock()`)
-    # reads the module table with `GETTABLE`, so before PHASE 7f.2 the lowerer
-    # could not see the use and emitted a binary that faulted at run time. The
-    # compiler now records the use, so the build must fail with the same
-    # dedicated message.
+    # A qualified access to a module's native export
+    # (`modules.hostclock.getpid()`) reads the module table with `GETTABLE`, so
+    # before PHASE 7f.2 the lowerer could not see the use and emitted a binary
+    # that faulted at run time. The compiler now records the use, so the build
+    # must fail with the same dedicated message.
     add_test(NAME oskel.build_native_qualified_error
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_TEST_NAME=oskel.build_native_qualified_error"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_qualified_error.oskl"
-        "-DEXPECTED_MESSAGE=native fn 'clock' cannot be resolved by the AOT backend"
+        "-DEXPECTED_MESSAGE=native fn 'getpid' cannot be resolved by the AOT backend"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
 
     # A runtime error in a generated binary must behave exactly like the VM:
@@ -827,6 +927,17 @@ if(BUILD_TESTING)
     # VM cannot resolve (its host registry knows libc, not the test helper). It
     # is covered end-to-end by `oskel.build_hosted_extern_memory_struct`.
     if(name STREQUAL "native_build_extern_memory_struct")
+      continue()
+    endif()
+    # The two `native fn` rejection fixtures are inputs for
+    # `tests/build_error.cmake`. They are build-only on purpose: the VM resolves
+    # a `native fn` from the builtin registry, so the symbol has to be a VM
+    # builtin to run there -- and since BACKLOG §6 item 25 every VM builtin is
+    # also seeded in AOT, which is exactly what makes the rejection
+    # unreachable for one. `lower_test` covers the message and
+    # `native_build_extern.oskl` covers the VM-runnable shape.
+    if(name STREQUAL "native_build_native_error" OR
+       name STREQUAL "native_build_qualified_error")
       continue()
     endif()
     # `native_build_extern` is an input for `tests/build_error.cmake`. It also

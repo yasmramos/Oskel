@@ -115,6 +115,77 @@ static void testMemSizeTargetGate() {
   check(!bare.code.empty(), "memSize() lowers on the bare-metal target");
 }
 
+static bool loweringThrowsOn(const Target& target, const Bytecode& proto,
+                             const char* needle) {
+  try {
+    lowerToX64(target, proto, CodeGen{});
+  } catch (const LoweringError& error) {
+    return std::string(error.what()).find(needle) != std::string::npos;
+  }
+  return false;
+}
+
+static void testBackingTargetGates() {
+  // `args()` needs the `(argc, argv)` the process entry hands `main`. The Linux
+  // freestanding `_start` and the hosted C runtime both pass one, so it lowers
+  // there; Windows calls the entry with no arguments and bare metal has no
+  // command line, so on those the lowerer names the limitation instead of the
+  // generic "read but never assigned" a typo produces.
+  auto argsProto = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::HALT)},
+                             {Value(std::string("args"))}, 1);
+  check(!lower(argsProto).code.empty(), "args() lowers on the Linux target");
+  check(loweringThrowsOn(Target::winX64(), argsProto, "args() needs a process argument vector"),
+        "args() on Windows names the missing argument vector");
+  check(loweringThrowsOn(Target::bareMetalX64(), argsProto, "args() needs a process argument vector"),
+        "args() on bare metal names the missing argument vector");
+
+  // The file builtins are written against the prelude's file handles, which a
+  // bare-metal image has no file system to bind.
+  for (const char* name : {"readFile", "writeFile", "fileExists"}) {
+    auto proto = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::HALT)},
+                           {Value(std::string(name))}, 1);
+    check(!lower(proto).code.empty(), "a file builtin lowers on the Linux target");
+    const std::string expected = std::string(name) + "() needs a file system";
+    check(loweringThrowsOn(Target::bareMetalX64(), proto, expected.c_str()),
+          "a file builtin on bare metal names the missing file system");
+  }
+
+  // `input()` reads the keyboard through `entry.read`, which only the bare-metal
+  // prelude binds: on a hosted target it names the limitation instead of the
+  // generic unassigned-global error.
+  auto inputProto = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::HALT)},
+                              {Value(std::string("input"))}, 1);
+  check(loweringThrowsOn(Target::linuxX64(), inputProto, "input() needs a keyboard"),
+        "input() on Linux names the missing keyboard");
+  check(loweringThrowsOn(Target::winX64(), inputProto, "input() needs a keyboard"),
+        "input() on Windows names the missing keyboard");
+  check(!lowerToX64(Target::bareMetalX64(), inputProto, CodeGen{}).code.empty(),
+        "input() lowers on the bare-metal target");
+
+  // `clock()` and the pointer builtins need nothing from the prelude beyond the
+  // monotonic handle every target binds and the arena, so they lower everywhere.
+  auto clockProto = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::HALT)},
+                              {Value(std::string("clock"))}, 1);
+  check(!lower(clockProto).code.empty(), "clock() lowers on the Linux target");
+  check(!lowerToX64(Target::winX64(), clockProto, CodeGen{}).code.empty(),
+        "clock() lowers on the Windows target");
+  check(!lowerToX64(Target::bareMetalX64(), clockProto, CodeGen{}).code.empty(),
+        "clock() lowers on the bare-metal target");
+
+  auto ptrProto = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::HALT)},
+                            {Value(std::string("cstring"))}, 1);
+  check(!lowerToX64(Target::bareMetalX64(), ptrProto, CodeGen{}).code.empty(),
+        "a pointer builtin lowers on the bare-metal target");
+
+  // A user binding shadows the builtin, so the gate must not fire on a
+  // `var args = 1` that merely reuses the name.
+  auto shadow = makeProto({instr(OpCode::LOADK, 0, 0), instr(OpCode::SETGLOBAL, 0, 1),
+                           instr(OpCode::GETGLOBAL, 1, 1), instr(OpCode::HALT)},
+                          {Value(static_cast<int64_t>(1)), Value(std::string("args"))}, 2);
+  check(!lowerToX64(Target::winX64(), shadow, CodeGen{}).code.empty(),
+        "a user binding named args lowers on the Windows target");
+}
+
 // --- Error tests: the deferred opcodes must be rejected, not miscompiled ---
 
 static void testCollectionsLower() {
@@ -225,13 +296,15 @@ static void testExternSymbolGetsDedicatedMessage() {
         "an extern symbol read names the AOT limitation, not a typo");
 
   // A `native fn` that is used (read beyond its declaration) is named too, with
-  // a message that says `native fn` rather than `extern "C"`. `clock` is a host
-  // binding with no curated stub (the libm ports cover `sqrt`/`pow`/`sin`/...).
+  // a message that says `native fn` rather than `extern "C"`. `getpid` is a host
+  // binding with no curated stub (the libm ports cover `sqrt`/`pow`/`sin`/...,
+  // and `clock` is an AOT builtin since BACKLOG §6 item 25, so neither works
+  // here).
   auto native = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::SETGLOBAL, 0, 0),
                            instr(OpCode::GETGLOBAL, 1, 0), instr(OpCode::HALT)},
-                          {Value(std::string("clock"))}, 2);
-  native.nativeFns.push_back("clock");
-  check(loweringThrows(native, "native fn 'clock' cannot be resolved"),
+                          {Value(std::string("getpid"))}, 2);
+  native.nativeFns.push_back("getpid");
+  check(loweringThrows(native, "native fn 'getpid' cannot be resolved"),
         "a used native fn names the AOT limitation");
 
   // The dedicated message is only for a declared symbol: an undeclared read of
@@ -1212,6 +1285,7 @@ static void testExecCompiledCapture() {
 int main() {
   testImageIsSelfContained();
   testMemSizeTargetGate();
+  testBackingTargetGates();
   testCollectionsLower();
   testIterOperandsLower();
   testBadJumpTargetThrows();

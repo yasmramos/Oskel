@@ -1,0 +1,16 @@
+// `clock()` in the AOT backend (BACKLOG §6 item 25).
+//
+// The chunk captures a monotonic counter at entry into the hidden `$clockOrigin`
+// global and `clock()` subtracts it, so what it reports is elapsed time rather
+// than an absolute counter. Only the *shape* is asserted, never a value: the VM
+// and the binary run at different times.
+//
+// Every target backs this one -- the origin comes from `clock_gettime`, libc,
+// `GetTickCount64` or the bare-metal PIT counter -- so the fixture carries no
+// `args()`: that builtin is Linux-only and lives in `native_build_args.oskl`.
+
+var a = clock();
+print("clock type", type(a));
+print("clock non-negative", a >= 0.0);
+var b = clock();
+print("clock monotonic", b >= a);

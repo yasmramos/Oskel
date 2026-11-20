@@ -9,8 +9,70 @@ may change between minor versions.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`oskel build` no longer rejects a class-MEMORY `extern "C"` struct on an
+  engine built without libffi.** The compiler validated every declaration
+  against the *build's* ABI capabilities, which derive from `OSKEL_HAVE_LIBFFI`;
+  the AOT backend, however, emits its own thunks and marshals a struct larger
+  than 16 bytes natively (stack-passed, `sret`-returned), so it never needed
+  libffi for it. The two were conflated, and the hosted fixture failed on any
+  machine without `libffi-dev` even though the emitted code was correct. The
+  compiler now asks `validateSignature` with the destination's capabilities
+  (`Compiler::setAbiCapabilities`): `oskel build` passes
+  `ffi::kAotAbiCapabilities`, the interpreter keeps this build's
+  `AbiCapabilities{}`. A variadic stays rejected for the AOT destination
+  regardless of libffi, because the backend does not lower a variable argument
+  list (PHASE 7f.5). `oskel.build_hosted_extern_memory_struct` now passes with
+  no libffi installed.
+
 ### Added
 
+- **Every builtin now exists in both engines.** Fourteen builtins ran only in
+  the development engine: a program that called one built fine on the VM and
+  failed `oskel build` with "global 'X' is read but never assigned" (exit 65).
+  They are implemented in the AOT backend now, so the VM/AOT parity list in
+  `tests/check_builtin_parity.cmake` is empty. The pointer builtins (`cstring`,
+  `cstr`, `buffer`, `byteLen`, `loadByte`, `storeByte`, `intToPtr`, `ptrToInt`,
+  `free`) back an `AotPtr` in the arena with the same four fields as the hosted
+  `PtrObj`, and need nothing from the host, so every target emits them. The
+  file builtins (`readFile`, `writeFile`, `fileExists`) are written against four
+  prelude handles (`oskel_open`, `oskel_read_fd`, `oskel_write_fd`,
+  `oskel_close`), so the Linux syscalls, the kernel32 calls and the hosted libc
+  path stay in the prelude. `clock()` reads a new `monotonic` handle
+  (`clock_gettime(CLOCK_MONOTONIC)`, libc, `GetTickCount64`, the bare-metal PIT
+  counter) and subtracts the origin captured at entry, so it reports elapsed
+  time; `args()` reads a hidden global the chunk fills from the `(argc, argv)`
+  the process entry passes. A target that cannot back one of these now says so
+  by name ("args() needs a process argument vector", "readFile() needs a file
+  system", "input() needs a keyboard") instead of the unassigned-global error a
+  typo produces. Three parity
+  fixtures pin the result (`native_build_pointers.oskl`,
+  `native_build_files.oskl`, `native_build_clock.oskl`, and
+  `native_build_args.oskl` where the entry receives an argument vector), each
+  compared with the VM byte for byte. Two latent bugs in the Windows prelude are fixed with
+  them: the file thunks stored their saved path over the fifth outgoing argument
+  and reused `rdx` for `lpBuffer` before reading the length out of it.
+
+- **The AOT backend binds the callback-taking and folding array methods**
+  (PHASE 7c.3h). `map`, `filter`, `each`, `find`, `any`, `all`, `reduce`,
+  `sum` and `join` now work in an `oskel build` binary, closing the last
+  array-method divergence between the VM and a compiled program except
+  `sort`/`sorted` (docs/BACKLOG.md §6 item 1). The callback ones are the first
+  emitted helpers that call back into the program: each invokes the closure it
+  was handed through `oskel_call`, once per item, so a callback runs real
+  Oskel code — allocating, recursing, capturing locals — inside the helper.
+  `reduce` is the first to hand its callback two values, so the argument
+  window is built with the accumulator at its highest address (a callee reads
+  `args[i]` at `args - 16*i`, because the register file grows down); getting
+  that backwards passed the callback the closure itself instead of the item.
+  `sum` follows the hosted all-int fast path and switches to a binary64 total
+  at the first float, and `join` renders both the items and the separator
+  through `$str`, since the hosted `join` calls `toString` on whatever
+  separator it is given. Covered by the `oskel build` fixtures
+  `tests/native_build_array_callbacks.oskl` and
+  `tests/native_build_array_folds.oskl`, which compare the VM's output with
+  the binary's byte for byte.
 - **The VS Code extension reports the compiler's diagnostics.** Saving an
   `.oskl` file now runs `oskel -c` and publishes the result as editor
   diagnostics, so a type error is a squiggle on the line that caused it instead

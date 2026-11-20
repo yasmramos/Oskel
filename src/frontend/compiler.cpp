@@ -2266,7 +2266,8 @@ void Compiler::compileExternBlock(const ExternBlockStmt& block, int line, int co
     rejectUnionForFfi(fn.returnType, "return type of extern \"C\" function '" + fn.name + "'",
                       line, col);
     const ffi::TypeSpec returnType = resolveTypeSpec(fn.returnType);
-    std::string problem = ffi::validateSignature(paramTypes, returnType, fn.cVariadic);
+    std::string problem = ffi::validateSignature(paramTypes, returnType, fn.cVariadic,
+                                                 abiCapabilities_);
     if (!problem.empty()) {
       fail("extern \"C\" function '" + fn.name + "': " + problem, line, col);
     }

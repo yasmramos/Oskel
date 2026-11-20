@@ -5,9 +5,13 @@
 namespace {
 
 // Linux x86-64 syscall numbers used by the prelude.
+constexpr long kSysRead = 0;
 constexpr long kSysWrite = 1;
+constexpr long kSysClose = 3;
 constexpr long kSysMmap = 9;
+constexpr long kSysClockGettime = 228;
 constexpr long kSysExitGroup = 231;
+constexpr long kSysOpenAt = 257;
 // `time(NULL)`: the wall clock as seconds since the Unix epoch. It is the one
 // value the runtime cannot compute from memory, and the kernel's own clock is
 // already in UTC, so no timezone handling is needed.
@@ -16,6 +20,15 @@ constexpr long kSysTime = 201;
 // mmap flags: a private, anonymous, read/write mapping (no file).
 constexpr long kProtReadWrite = 3;
 constexpr long kMapPrivateAnonymous = 0x22;
+
+// `clock_gettime` takes one of these; `CLOCK_MONOTONIC` cannot go backwards and
+// is unaffected by a wall-clock adjustment, which is what `clock()` reports.
+constexpr long kClockMonotonic = 1;
+
+// `openat` flags for the two modes `oskel_open` supports.
+constexpr long kAtFdcwd = -100;
+constexpr long kOpenReadOnly = 0;
+constexpr long kOpenWrite = 1 | 64 | 512;  // O_WRONLY | O_CREAT | O_TRUNC
 
 }  // namespace
 
@@ -85,6 +98,70 @@ std::uint64_t emitFreestandingRuntime(CodeGen& code, const RuntimeHandles& handl
   code.bind(handles.now);
   code.xorReg(X64Reg::Rdi, X64Reg::Rdi);  // tloc = NULL
   code.movImm(X64Reg::Rax, kSysTime);
+  code.syscallInsn();
+  code.retInsn();
+
+  // --- long oskel_monotonic(void) ---
+  // `clock_gettime(CLOCK_MONOTONIC, &ts)` in nanoseconds. The kernel's
+  // `timespec` is two 64-bit fields on x86-64, so the 16-byte frame below `rsp`
+  // is enough and no alignment fix-up is needed (the syscall does not require
+  // one). `clock()` subtracts the origin, so only the differences matter.
+  code.bind(handles.monotonic);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, 16);
+  code.movImm(X64Reg::Rdi, kClockMonotonic);
+  code.movReg(X64Reg::Rsi, X64Reg::Rsp);
+  code.movImm(X64Reg::Rax, kSysClockGettime);
+  code.syscallInsn();
+  // A failed call (rax < 0) leaves the frame zeroed, which reports "no time
+  // passed" instead of a wild value.
+  code.movFromMem(X64Reg::R8, X64Reg::Rsp, 0);   // tv_sec
+  code.movFromMem(X64Reg::R9, X64Reg::Rsp, 8);   // tv_nsec
+  code.movImm(X64Reg::Rax, 1000000000);
+  code.imulReg(X64Reg::Rax, X64Reg::R8);
+  code.addReg(X64Reg::Rax, X64Reg::R9);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  // --- long oskel_open(const char* path, long mode) ---
+  // `openat(AT_FDCWD, path, flags, 0644)`. The mode only selects the access
+  // flags: 0 reads, anything else truncates and creates. A negative return is
+  // the errno and the caller reports the failure; -1 is never a valid fd.
+  code.bind(handles.open);
+  code.movReg(X64Reg::R8, X64Reg::Rdi);   // path
+  code.testReg(X64Reg::Rsi);              // mode: 0 reads, else writes
+  CodeGen::Label reading = code.newLabel();
+  code.jcc(Jcc::Eq, reading);
+  code.movImm(X64Reg::Rdx, kOpenWrite);
+  CodeGen::Label opened = code.newLabel();
+  code.jmp(opened);
+  code.bind(reading);
+  code.movImm(X64Reg::Rdx, kOpenReadOnly);
+  code.bind(opened);
+  code.movReg(X64Reg::Rsi, X64Reg::R8);   // path
+  code.movImm(X64Reg::Rdi, kAtFdcwd);     // dirfd
+  code.movImm(X64Reg::R10, 0644);         // mode for O_CREAT
+  code.movImm(X64Reg::Rax, kSysOpenAt);
+  code.syscallInsn();
+  code.retInsn();
+
+  // --- long oskel_read_fd(long fd, char* buf, long len) ---
+  code.bind(handles.readFd);
+  code.movImm(X64Reg::Rax, kSysRead);
+  code.syscallInsn();
+  code.retInsn();
+
+  // --- long oskel_write_fd(long fd, const char* buf, long len) ---
+  code.bind(handles.writeFd);
+  code.movImm(X64Reg::Rax, kSysWrite);
+  code.syscallInsn();
+  code.retInsn();
+
+  // --- void oskel_close(long fd) ---
+  code.bind(handles.close);
+  code.movImm(X64Reg::Rax, kSysClose);
   code.syscallInsn();
   code.retInsn();
 
@@ -280,6 +357,147 @@ std::uint64_t emitWindowsRuntime(CodeGen& code, const RuntimeHandles& handles,
   code.pop(X64Reg::Rbp);
   code.retInsn();
 
+  // --- long oskel_monotonic(void) ---
+  // GetTickCount64: milliseconds since the system started, monotonic and
+  // unaffected by a wall-clock change. The value is scaled to nanoseconds so
+  // every target hands `clock()` the same unit; the multiplication cannot
+  // overflow a 64-bit register for any uptime below 584 years.
+  code.bind(handles.monotonic);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, kWinShadowSpace);
+  callImport(code, PeImport::GetTickCount64);
+  code.movImm(X64Reg::Rcx, 1000000);
+  code.imulReg(X64Reg::Rax, X64Reg::Rcx);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  // --- the file system, through kernel32 ---
+  // `CreateFileA(path, access, FILE_SHARE_READ, NULL, disposition, flags,
+  // NULL)`: the fifth and sixth arguments are stack-passed above the 32-byte
+  // shadow space. The mode picks the access rights and the disposition -- mode
+  // 0 is `GENERIC_READ` + `OPEN_EXISTING`, anything else is `GENERIC_WRITE` +
+  // `CREATE_ALWAYS` (which truncates, the POSIX `O_TRUNC` the runtime's writer
+  // relies on). A failure is `INVALID_HANDLE_VALUE` (-1), which the runtime
+  // treats exactly like a negative POSIX return.
+  //
+  // The frame is rbp-relative and keeps rsp 16-byte aligned at the call: with
+  // `push rbp; push rbx` and a 72-byte frame, rsp is rbp-80, so the outgoing
+  // slots at [rsp+32] and [rsp+40] sit above the shadow space. The saved path
+  // goes at [rbp-16] = [rsp+64], above every outgoing slot and below the saved
+  // rbx at [rbp-8]: storing it at [rbp-48] would alias the fifth argument, so
+  // the disposition would overwrite the file name.
+  code.bind(handles.open);
+  {
+    CodeGen::Label reading = code.newLabel();
+    CodeGen::Label disposed = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.push(X64Reg::Rbx);
+    code.subRegImm32(X64Reg::Rsp, 72);
+    code.movToMem(X64Reg::Rbp, -16, X64Reg::Rdi);  // path
+    code.testReg(X64Reg::Rsi);                     // mode
+    code.jcc(Jcc::Eq, reading);
+    code.movImm(X64Reg::Rbx, 0x40000000LL);        // GENERIC_WRITE
+    code.movImm(X64Reg::R10, 2);                   // CREATE_ALWAYS
+    code.jmp(disposed);
+    code.bind(reading);
+    code.movImm(X64Reg::Rbx, 0x80000000LL);        // GENERIC_READ
+    code.movImm(X64Reg::R10, 3);                   // OPEN_EXISTING
+    code.bind(disposed);
+    code.movFromMem(X64Reg::Rcx, X64Reg::Rbp, -16);  // lpFileName
+    code.movReg(X64Reg::Rdx, X64Reg::Rbx);           // dwDesiredAccess
+    code.movImm(X64Reg::R8, 1);                      // FILE_SHARE_READ
+    code.xorReg(X64Reg::R9, X64Reg::R9);             // lpSecurityAttributes = NULL
+    code.movToMem(X64Reg::Rsp, 32, X64Reg::R10);     // dwCreationDisposition
+    code.movImm(X64Reg::R11, 0x80);                  // FILE_ATTRIBUTE_NORMAL
+    code.movToMem(X64Reg::Rsp, 40, X64Reg::R11);     // dwFlagsAndAttributes
+    code.movImmToMem(X64Reg::Rsp, 48, 0);            // hTemplateFile = NULL
+    callImport(code, PeImport::CreateFileA);
+    code.addImm32(X64Reg::Rsp, 72);
+    code.pop(X64Reg::Rbx);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
+  // --- long oskel_read_fd(long handle, char* buf, long len) ---
+  // ReadFile(hFile, lpBuffer, nBytes, &read, NULL) reports success in rax and
+  // the byte count through the out-parameter, so a failed call returns -1 and
+  // the runtime's loop stops; a zero count is end of file.
+  //
+  // The frame is 64 bytes below `rbp`, so [rbp-8] is [rsp+56] -- above the
+  // shadow space and the outgoing `lpOverlapped` slot at [rsp+32]. Writing the
+  // count to [rbp-32] would alias that slot: the kernel reads `lpOverlapped`
+  // and writes `lpNumberOfBytesRead` through the same address.
+  code.bind(handles.readFd);
+  {
+    CodeGen::Label failed = code.newLabel();
+    CodeGen::Label done = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.subRegImm32(X64Reg::Rsp, 64);
+    code.movReg(X64Reg::Rcx, X64Reg::Rdi);           // hFile
+    code.movReg(X64Reg::R8, X64Reg::Rdx);            // nNumberOfBytesToRead
+    code.movReg(X64Reg::Rdx, X64Reg::Rsi);           // lpBuffer
+    code.movImmToMem(X64Reg::Rbp, -8, 0);            // lpNumberOfBytesRead = 0
+    code.leaMem(X64Reg::R9, X64Reg::Rbp, -8);
+    code.movImmToMem(X64Reg::Rsp, 32, 0);            // lpOverlapped = NULL
+    callImport(code, PeImport::ReadFile);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, failed);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, -8);
+    code.jmp(done);
+    code.bind(failed);
+    code.movImm(X64Reg::Rax, -1);
+    code.bind(done);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
+  // --- long oskel_write_fd(long handle, const char* buf, long len) ---
+  // The length arrives in rdx and the buffer in rsi, so the count is moved out
+  // of rdx *before* rdx is reused for lpBuffer: reading it afterwards would pass
+  // the buffer's address as the byte count.
+  code.bind(handles.writeFd);
+  {
+    CodeGen::Label failed = code.newLabel();
+    CodeGen::Label done = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.subRegImm32(X64Reg::Rsp, 64);
+    code.movReg(X64Reg::Rcx, X64Reg::Rdi);           // hFile
+    code.movReg(X64Reg::R8, X64Reg::Rdx);            // nNumberOfBytesToWrite
+    code.movReg(X64Reg::Rdx, X64Reg::Rsi);           // lpBuffer
+    code.movImmToMem(X64Reg::Rbp, -8, 0);            // lpNumberOfBytesWritten = 0
+    code.leaMem(X64Reg::R9, X64Reg::Rbp, -8);
+    code.movImmToMem(X64Reg::Rsp, 32, 0);            // lpOverlapped = NULL
+    callImport(code, PeImport::WriteFile);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, failed);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, -8);
+    code.jmp(done);
+    code.bind(failed);
+    code.movImm(X64Reg::Rax, -1);
+    code.bind(done);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
+  // --- void oskel_close(long handle) ---
+  code.bind(handles.close);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, kWinShadowSpace);
+  code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+  callImport(code, PeImport::CloseHandle);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
   // --- the entry point ---
   // The loader calls it with no arguments (and rsp 8 mod 16). Reserve the
   // shadow space the calls below need, run the program entry and exit with its
@@ -379,6 +597,76 @@ std::uint64_t emitHostedRuntime(CodeGen& code, const RuntimeHandles& handles,
   code.movReg(X64Reg::Rbp, X64Reg::Rsp);
   code.xorReg(X64Reg::Rdi, X64Reg::Rdi);  // tloc = NULL
   code.callExternal("time");
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  // --- long oskel_monotonic(void) ---
+  // libc `clock_gettime(CLOCK_MONOTONIC, &ts)` in nanoseconds, the same source
+  // the freestanding syscall reads. `timespec` is two 64-bit fields, so a
+  // 16-byte frame serves it; the second argument is the frame's address.
+  code.bind(handles.monotonic);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, 16);
+  code.movImm(X64Reg::Rdi, 1);            // CLOCK_MONOTONIC
+  code.movReg(X64Reg::Rsi, X64Reg::Rsp);
+  code.callExternal("clock_gettime");
+  code.movFromMem(X64Reg::R8, X64Reg::Rsp, 0);   // tv_sec
+  code.movFromMem(X64Reg::R9, X64Reg::Rsp, 8);   // tv_nsec
+  code.movImm(X64Reg::Rax, 1000000000);
+  code.imulReg(X64Reg::Rax, X64Reg::R8);
+  code.addReg(X64Reg::Rax, X64Reg::R9);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  // --- the file system, through libc ---
+  // `open` is variadic, so it is called as `open(path, flags, 0644)`: the mode
+  // is ignored unless O_CREAT is set, and always passing it keeps one call
+  // site. `read`/`write`/`close` are the plain POSIX names, so the runtime's
+  // file builtins need no per-mode branch of their own.
+  code.bind(handles.open);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.movReg(X64Reg::R8, X64Reg::Rdi);   // path
+  code.testReg(X64Reg::Rsi);              // mode: 0 reads, else writes
+  CodeGen::Label reading = code.newLabel();
+  code.jcc(Jcc::Eq, reading);
+  code.movImm(X64Reg::Rsi, 1 | 64 | 512);  // O_WRONLY | O_CREAT | O_TRUNC
+  CodeGen::Label opened = code.newLabel();
+  code.jmp(opened);
+  code.bind(reading);
+  code.xorReg(X64Reg::Rsi, X64Reg::Rsi);  // O_RDONLY
+  code.bind(opened);
+  code.movReg(X64Reg::Rdi, X64Reg::R8);
+  code.movImm(X64Reg::Rdx, 0644);
+  code.xorReg(X64Reg::Rax, X64Reg::Rax);  // variadic: no vector arguments
+  code.callExternal("open");
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.readFd);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.callExternal("read");
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.writeFd);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.callExternal("write");
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.close);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.callExternal("close");
   code.movReg(X64Reg::Rsp, X64Reg::Rbp);
   code.pop(X64Reg::Rbp);
   code.retInsn();

@@ -85,9 +85,19 @@ it as a caveat:
   a function). The AOT backend has no host. An *unused* declaration is harmless
   (PHASE 7f.1) and builds; a *used* one the backend has no stub for fails with a
   dedicated message (exit 65); a genuine self-read (`var x = x;`) keeps the
-  generic "global 'N' is read but never assigned". FFI in the AOT backend is
-  still PHASE 7 work; the lowerer only fails it cleanly. `sqrt`, `floor`, `ceil`
-  and `round` are the curated stubs (`sqrtsd` and the SSE rounding are exact).
+  generic "global 'N' is read but never assigned". `sqrt`, `floor`, `ceil` and
+  `round` are the curated stubs (`sqrtsd` and the SSE rounding are exact).
+- The compiler validates an `extern "C"` declaration against the **destination**,
+  not against how the engine was built: `oskel build` passes
+  `ffi::kAotAbiCapabilities` (struct-by-value and class-MEMORY on, variadic off)
+  through `Compiler::setAbiCapabilities`, while the interpreter keeps
+  `AbiCapabilities{}`, this build's. The backend emits its own thunks, so a
+  class-MEMORY struct must not be rejected for `oskel build` just because the
+  engine lacks libffi — that conflation made
+  `oskel.build_hosted_extern_memory_struct` fail without `libffi-dev` even
+  though the emitted code was right. A C variadic stays rejected for the AOT
+  destination whatever the build has, because the backend does not lower a
+  variable argument list (PHASE 7f.5).
 - A qualified access to a module's native export (`std.math.pow`) is a use too,
   but it reads the module table with `GETTABLE`, not with `GETGLOBAL`, so the
   lowerer cannot see it by counting reads. The compiler records such a use on
@@ -97,6 +107,24 @@ it as a caveat:
   against the export's signature (arity and argument types), exactly like the
   direct form. The argument types are captured at the call site, not at flush
   time: a local that shadows a global is gone by then.
+- An emitted helper that calls back into the program (`oskel_call` on a closure
+  it was handed) saves only `rbx`/`r12`. `r13`/`r14` are the arena cursor and
+  end: the callback allocates, so they must be left advanced by whatever it
+  allocated — pushing and popping them rebinds the cursor and a later
+  allocation overwrites a returned array. `r15` is the global table and is never
+  written. An argument window is built *upward in memory* from its highest
+  address: a callee reads `args[i]` at `args - 16*i`, because the register file
+  grows down, so `args[0]` sits at the window's highest slot. Getting that
+  ordering wrong passes the callback a plausible but wrong value (the callback
+  itself, or `nil`) instead of the item, so every fold fixture asserts on both
+  a one-item and a many-item receiver.
+- `AotRuntimeHandles` (`include/native/runtime.h`) is all `CodeGen::Label`, and
+  `newAotRuntimeHandles` fills them with one flat sweep guarded by a
+  `static_assert` on the struct size. Adding a handle used to mean bumping a
+  positional `{...}` initialiser by hand; a short one silently left the new
+  labels unbound and `oskel build` failed with "codegen: binding an unknown
+  label". A new non-label field must trip the `static_assert`, not shift every
+  handle by one.
 - The AOT backend has two link modes (`LinkMode`, PHASE 7f.3/7f.4), chosen on
   the command line and never in the source: `freestanding` (the default) is the
   self-contained image every target emits today (no libc, no linker, `ldd` says
@@ -109,9 +137,12 @@ it as a caveat:
 - A standard-library module that must work on both engines stays on the
   **portable primitive surface**: indexing and slicing (`s[i]`, `s[a:b]`),
   `len`, `ord`/`chr`, `int`/`double`/`str`/`type`, `panic`, `for ... in`,
-  closures, variadic `rest...` and the operators. The AOT backend implements no
-  collection or string *method* (`.split`, `.map`, `.join`, `.push`, `.get`,
-  `.has`, `.substr`, `.length` on a string, ...) — those build (exit 0) but
+  closures, variadic `rest...` and the operators. The AOT backend binds the
+  array methods (`push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`,
+  `slice`, `concat`, `join`, `contains`, `indexOf`, `map`, `filter`, `each`,
+  `find`, `any`, `all`, `reduce`, `sum`, `reversed`, `clone`, `clear`) and the
+  ten map methods, but not `sort`/`sorted` and no *string* method (`.split`,
+  `.upper`, `.substr`, `.length` on a string, ...) — those build (exit 0) but
   fault at run time with "value has no such member" / "cannot call a
   non-function value" — and it does not seed `pcall`/`error`/`readFile` at all,
   so a module function that calls one fails `oskel build` with "global 'pcall'
@@ -123,9 +154,16 @@ it as a caveat:
   whose AOT binding differs per target).
 - `time()` (epoch seconds, an `int`) is bound as the `now` runtime handle on
   every AOT path: syscall 201 on Linux, `time(NULL)` hosted, `GetSystemTimeAsFileTime`
-  on Windows (a kernel32 import), and the CMOS RTC in bare metal. `clock()`
-  stays monotonic and has no AOT binding. A `divUnsigned` in the AOT emitters
-  zeroes `rdx`, so a divisor must never live there.
+  on Windows (a kernel32 import), and the CMOS RTC in bare metal. `clock()` is
+  bound too, as the separate `monotonic` handle (`clock_gettime(CLOCK_MONOTONIC)`,
+  libc, `GetTickCount64`, the PIT tick counter), and the chunk subtracts the
+  value it captured at entry, so it reports elapsed time -- not the VM's CPU
+  time, but the same observable shape (a non-negative, non-decreasing double).
+  A `divUnsigned` in the AOT emitters zeroes `rdx`, so a divisor must never live
+  there. A thunk that reaches a Windows API with five or more arguments must
+  keep its saved state *above* the outgoing stack slots (`[rbp-16]` in a 72-byte
+  frame), never at `[rbp-48]`, and must read a length out of `rdx` before reusing
+  `rdx` for `lpBuffer` -- both were real bugs in the file thunks.
 - The hosted image is an object plus a link (PHASE 7f.4), not a closed binary
   the emitter writes. `native/object.h` emits an ELF64 `ET_REL` object whose
   `.rela.text` carries one relocation per external reference (`R_X86_64_PLT32`
@@ -316,12 +354,18 @@ it as a caveat:
   read but never assigned". The names that are VM-only on purpose live in a list
   in that script and in BACKLOG §6 item 25; the check also fails when a listed
   exception stops being one, because a stale exception hides the next real gap.
-  Seventeen are VM-only today (files, `clock`, `random`/`seed`, `args`, `pcall`,
-  and the raw-memory intrinsics). `pcall` is the one that matters most, and not
-  because `try`/`catch` needs it — value-based `try`/`catch` already works in
-  AOT. `pcall` is the only way to recover from a `panic` raised inside a
-  function chosen at run time, and the AOT runtime reports a failure by exiting,
-  so it needs a non-local return in the call ABI.
+  The list is **empty** today: BACKLOG §6 item 25 landed the pointer, file,
+  `clock` and `args` builtins, so every name `addNative` registers is seeded by
+  the AOT backend on at least one target. Four names are seeded per target
+  rather than everywhere, and each has a lowerer gate with its own message: the
+  file builtins and `input` on anything but bare metal, `args` where the entry
+  receives an argument vector (Linux freestanding and hosted), and `memSize`
+  which only bare metal backs. The gate matters because the fallback message --
+  "global 'X' is read but never assigned" -- is what a *typo* produces, so a
+  program that spelled a real builtin correctly must not see it. A `native fn`
+  used as a rejection fixture therefore has to be a symbol the backend has *no*
+  binding for (`getpid`, not `clock`) -- `clock` became a builtin and stopped
+  working as that fixture.
 - A check that reads the source tree must name the *basename* of the file it
   wants, never a fixed `src/<name>.cpp` path, and must fail loudly when the file
   is missing. `tests/check_vscode_grammar.cmake` reads the keyword table, the
@@ -399,7 +443,10 @@ and a feature that works only in AOT is a bug. Concretely:
   module avoids it.
 - The tests prove the parity: an AOT fixture (`tests/native_build_*.oskl`,
   built and run by `tests/build_binary.cmake`) compares the compiled output with
-  the VM byte for byte, so a divergence cannot ship silently.
+  the VM byte for byte, so a divergence cannot ship silently. The harness passes
+  the same `-DOSKEL_ARGS` vector to both runs, so a fixture can assert `args()`
+  content rather than only its shape -- one element with a space in it is the
+  case that catches a naive tokeniser.
 - Known VM/AOT divergences live in `docs/BACKLOG.md` §6 and shrink over time;
   do not add a new one without an entry and a reason.
 

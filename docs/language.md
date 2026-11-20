@@ -14,7 +14,7 @@ The language surface this reference documents is implemented on the development 
 | Types, nullability, `struct`, `class`, variadics, `import`, `switch`, `defer` (PHASE 6.5/6.8) | ✅ | ✅ (all are compile-time; `struct`/`class` are erased, `switch`/`defer` lower to existing opcodes) |
 | `native fn` (PHASE 6.5) | ✅ | 🔶 only for the curated stubs the backend seeds; anything else fails the build (PHASE 7f) |
 | FFI with C (PHASE 6.6) | ✅ | 🔶 scalar `extern "C"` in `--mode hosted` only; FFI is hosted-only by design (PHASE 7f, §4.5) |
-| Error values, `pcall`, `try`/`catch`, unions, `@MustUse` (PHASE 6.7) | ✅ | 🔶 `error` values and value-based `try`/`catch` work (PHASE 7c.5c); `pcall` and raised runtime errors do not (no unwinding) |
+| Error values, `pcall`, `try`/`catch`, unions, `@MustUse` (PHASE 6.7) | ✅ | ✅ `error` values, `try`/`catch` and `pcall` (PHASE 7c.5c/7c.5d); a raised error with no active `pcall` exits 70 |
 | JIT (PHASE 8) | 🔶 integer leaf protos (slices 1-4) | — (never) |
 
 ## Table of contents
@@ -2525,13 +2525,14 @@ filtering, folding, searching, reshaping, grouping and sorting. Every function
 takes a **new** array or map and never mutates its input, so a caller can keep
 the original and chain freely.
 
-The array methods (`xs.map(f)`, `xs.filter(f)`, `xs.sort()`, ...) exist too and
-are the shorter form on the development VM, but the AOT backend does not bind
-them yet: `oskel build` compiles a call to one and the binary fails at run time
-with `value has no such member` (BACKLOG §6 item 1). These functions are the
-same operations over the portable primitive surface, so they work identically
-on the VM and in a native binary. **Prefer them when a program must compile with
-`oskel build`.**
+The array methods (`xs.map(f)`, `xs.filter(f)`, `xs.reduce(f, init)`,
+`xs.sum()`, `xs.join(sep)`, `xs.push(x)`, ...) exist too and are the shorter
+form; both engines bind them. The exceptions are `xs.sort()`/`xs.sorted()` and
+the string methods (`str.upper`, `str.split`, ...), which `oskel build` compiles
+and the binary then fails at run time with `value has no such member` (BACKLOG
+§6 item 1). These functions are the same operations over the portable primitive
+surface, so they work identically on the VM and in a native binary. **Prefer
+them when a program must compile with `oskel build`.**
 
 | Function | Description |
 | --- | --- |
@@ -2668,6 +2669,13 @@ program keeps running and the engine stays consistent.
 `pcall` is a function, not a keyword, so it compiles to an ordinary call: no
 new syntax and no new bytecode. Passing a non-function as the first argument is
 a caller bug, not a catchable error, and fails loudly.
+
+`pcall` works the same way in a native binary (`oskel build`): the AOT runtime
+reports a raised error by jumping back into the innermost active `pcall`, so the
+program keeps control exactly as it does on the VM. The one difference is the
+message: it is the bare text (`division by zero`), not the CLI's
+`file:line:col: runtime error: ` decoration, which belongs to the process sink
+that a caught error never reaches.
 
 ### 13.2 Errors as values
 
