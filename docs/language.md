@@ -2930,9 +2930,9 @@ The backend targets `x86_64-linux-sysv`, `x86_64-windows-win64`,
 `x86_64-macos-sysv` and the bare-metal `x86_64-freestanding-sysv`; on any other
 target `oskel build` reports the unsupported target instead of emitting bytes
 for an ABI it cannot produce. The hosted mode is available on Linux, Windows
-and macOS x86-64; macOS has no freestanding image, so there the default
-`freestanding` mode is reported as unsupported and `--mode hosted` is required.
-An unsupported (target, mode) pair is reported, never emitted.
+and macOS x86-64; macOS has no freestanding image, so its default mode is
+`hosted` and an explicit `--mode freestanding` is reported as unsupported. An
+unsupported (target, mode) pair is reported, never emitted.
 
 A compiled binary carries the standard-library builtins that need no libm:
 `print`/`write`/`eprint`, `len`, `type`, `str`, `repr`, `bool`, `ord`, `chr`,

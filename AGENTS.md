@@ -126,16 +126,17 @@ it as a caveat:
   label". A new non-label field must trip the `static_assert`, not shift every
   handle by one.
 - The AOT backend has two link modes (`LinkMode`, PHASE 7f.3/7f.4), chosen on
-  the command line and never in the source: `freestanding` (the default) is the
-  self-contained image every target emits today (no libc, no linker, `ldd` says
-  "not a dynamic executable"); `hosted` links against the host C library so an
-  `extern "C"` symbol resolves to the real C function — the mode that makes FFI
-  work. `isSupportedLinkMode` pins the matrix (freestanding: Linux, Windows and
-  bare metal; hosted: Linux, Windows and macOS x86-64) and an unsupported pair is
-  reported, never emitted. macOS has no freestanding image, so there the default
-  `freestanding` mode is reported as unsupported and `--mode hosted` is
-  required. A change to the freestanding path must keep the emitted binary byte
-  for byte identical; `oskel build --mode freestanding` is the explicit form.
+  the command line and never in the source: `freestanding` (the default on
+  Linux and Windows) is the self-contained image (no libc, no linker, `ldd`
+  says "not a dynamic executable"); `hosted` links against the host C library
+  so an `extern "C"` symbol resolves to the real C function — the mode that
+  makes FFI work. `isSupportedLinkMode` pins the matrix (freestanding: Linux,
+  Windows and bare metal; hosted: Linux, Windows and macOS x86-64) and an
+  unsupported pair is reported, never emitted. macOS has no freestanding image,
+  so `runBuildCommand` defaults its mode to `hosted` there (and an explicit
+  `--mode freestanding` is reported as unsupported). A change to the
+  freestanding path must keep the emitted binary byte for byte identical;
+  `oskel build --mode freestanding` is the explicit form.
 - A standard-library module that must work on both engines stays on the
   **portable primitive surface**: indexing and slicing (`s[i]`, `s[a:b]`),
   `len`, `ord`/`chr`, `int`/`double`/`str`/`type`, `panic`, `for ... in`,

@@ -361,9 +361,11 @@ if(BUILD_TESTING)
 
   # End-to-end: the real binary through new/check/build/run/test, a path
   # dependency, --locked, a cycle, a failing test, clean and init. The AOT
-  # backend only runs on x86-64 Linux and Windows, so the native half of the
-  # test is gated the same way as the `oskel build` fixtures.
-  if((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32) AND
+  # backend only runs on an x86-64 host (Linux, Windows and Intel macOS), so
+  # the native half of the test is gated the same way as the `oskel build`
+  # fixtures.
+  if((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32 OR
+      CMAKE_SYSTEM_NAME STREQUAL "Darwin") AND
      CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
     set(OSKELP_AOT_RUNNABLE ON)
   else()

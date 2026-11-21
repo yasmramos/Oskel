@@ -1732,7 +1732,10 @@ binary prints byte for byte what the VM prints).
       picks the link line per target: `cc -no-pie -lm` on Linux,
       `cc -arch x86_64 -lm` on macOS (so an arm64 host can cross-link the
       x86-64 object) and `cl /Fe:... /link /SUBSYSTEM:CONSOLE` on Windows, with
-      `$CC` overriding the compiler on all three. The Windows entry prelude is
+      `$CC` overriding the compiler on all three. macOS has no freestanding
+      image, so `runBuildCommand` defaults its mode to `hosted` when the target
+      is macOS and the user did not pass `--mode`; `oskelp build` therefore
+      works there without an extra flag. The Windows entry prelude is
       separate (`emitWindowsHostedRuntime`) because the Microsoft x64 ABI uses
       rcx/rdx/r8/r9 plus 32 bytes of shadow space and the UCRT spells the file
       functions `_open`/`_read`/`_write`/`_close`; `time(NULL)` is the wall

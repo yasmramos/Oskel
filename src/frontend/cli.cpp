@@ -225,8 +225,8 @@ Target hostTarget() {
 // The default is `freestanding`, the mode Linux, Windows and bare metal support
 // and the one that keeps the "not a dynamic executable" invariant, so an
 // existing command line keeps producing the same binary. macOS has only the
-// hosted backend, so there the freestanding default is reported as unsupported
-// and `--mode hosted` is required.
+// hosted backend, so its default is `hosted` (and an explicit `--mode
+// freestanding` is reported as unsupported).
 bool parseLinkModeName(const std::string &name, LinkMode &out) {
   if (name == linkModeName(LinkMode::Freestanding)) {
     out = LinkMode::Freestanding;
@@ -525,6 +525,7 @@ int runBuildCommand(const std::vector<std::string> &arguments,
   std::string buildOutput;
   Target buildTarget = hostTarget();
   LinkMode buildMode = LinkMode::Freestanding;
+  bool buildModeExplicit = false;
   std::vector<std::string> buildLinkLibs;
   for (size_t i = 0; i < arguments.size(); ++i) {
     const std::string &arg = arguments[i];
@@ -565,6 +566,7 @@ int runBuildCommand(const std::vector<std::string> &arguments,
                   << linkModeName(LinkMode::Hosted) << ")\n";
         return 64;
       }
+      buildModeExplicit = true;
       continue;
     }
     if (arg == "--link-lib") {
@@ -598,6 +600,13 @@ int runBuildCommand(const std::vector<std::string> &arguments,
   if (buildFile.empty()) {
     std::cerr << tool << ": a source file is required\n";
     return 64;
+  }
+  // macOS has no freestanding image, so its default is the mode it can close.
+  // An explicit `--mode freestanding` still reaches the support check and is
+  // reported there instead of being silently replaced.
+  if (!buildModeExplicit && buildTarget.os == Os::MacOs &&
+      !isWasmTarget(buildTarget)) {
+    buildMode = LinkMode::Hosted;
   }
   // `--link-lib` is a hosted-mode concept: the freestanding image has no host
   // linker, so accepting it there would silently ignore a flag the user needs.

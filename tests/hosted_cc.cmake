@@ -17,7 +17,20 @@ function(oskel_prepare_hosted_cc)
     set(vcvarsall "${cc_dir}/../../../../../../Auxiliary/Build/vcvarsall.bat")
     get_filename_component(vcvarsall "${vcvarsall}" ABSOLUTE)
     if(NOT EXISTS "${vcvarsall}")
-      set(vswhere "$ENV{ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe")
+      # CMake rejects a `(` inside `$ENV{...}`, so `ProgramFiles(x86)` cannot
+      # be spelled directly. Probe the usual roots instead: on a 64-bit host
+      # `ProgramFiles` is `C:\Program Files` and the x86 tree is the sibling.
+      set(vswhere "")
+      foreach(base "$ENV{ProgramFiles}" "$ENV{ProgramFiles} (x86)" "$ENV{ProgramW6432}")
+        if(base STREQUAL "")
+          continue()
+        endif()
+        set(candidate "${base}/Microsoft Visual Studio/Installer/vswhere.exe")
+        if(EXISTS "${candidate}")
+          set(vswhere "${candidate}")
+          break()
+        endif()
+      endforeach()
       if(EXISTS "${vswhere}")
         execute_process(
           COMMAND "${vswhere}" -latest -products *
