@@ -50,6 +50,7 @@ const char *kUsage =
     "                            x86_64-freestanding-sysv (bare metal)\n"
     "  --mode <name>             link mode for `build` (default: freestanding);\n"
     "                            freestanding (self-contained) or hosted (links libc)\n"
+    "  --link-lib <name>         library for the hosted link (repeatable), e.g. SDL3\n"
     "\n"
     "`oskelc <file.oskl> -o <out>` is the compiler without the interpreter.\n";
 

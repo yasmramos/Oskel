@@ -36,6 +36,35 @@ may change between minor versions.
   dependency's manifest. `remove` refuses an entry that spans multiple lines
   rather than deleting a partial one. Both accept `--manifest-path`; only path
   dependencies are supported.
+- **SDL3 bindings: `std/sdl.oskl`.** The standard library now binds SDL3's
+  window, renderer and event surface, so a program can open a window and draw
+  into it on both engines. `bindings/sdl/sdl3_subset.h` is the curated C surface
+  `bindgen` translates, and the module adds the constants, the `SDL_Event`
+  accessors (the union stays a 128-byte buffer, read at fixed offsets) and the
+  `SDL_FRect` helpers. SDL3's float rectangles and event coordinates are
+  encoded in Oskel (`storeF32`/`loadF32`), so no builtin was added and the VM
+  and the AOT backend agree by construction. The development engine links SDL3
+  when CMake finds it; a native binary uses
+  `oskel build --mode hosted --link-lib SDL3`. `tests/sdl_bindings.oskl` runs
+  headless under the dummy video driver and is also the AOT parity fixture;
+  `tests/check/sdl_import.oskl` type-checks the module on every platform. See
+  `docs/sdl.md`.
+- **FFI: up to eight register-sized values, with stack spill.** The
+  `kMaxExternArgs` bound moves from six to eight, so `SDL_ReadSurfacePixel` and
+  `SDL_WriteSurfacePixel` (seven arguments) are now bound and exercised by
+  `tests/sdl_bindings.oskl`. The VM's typed call lets the C++ compiler place the
+  seventh and eighth GPR arguments on the stack; the AOT thunk writes them to
+  the outgoing stack area (`AotThunkParam::stackOffset`), keeps all eight SSE
+  registers free (`XmmScratch` moved to xmm15), and passes a register-class
+  struct that no longer fits the remaining registers wholly on the stack.
+  `tests/native_build_extern_many_args.oskl` pins the 7/8-argument and
+  stack-struct shapes against a C helper.
+- **`oskel build --link-lib <name>`.** The hosted link accepts a third-party
+  library as `-l<name>`, which is what lets an `extern "C"` symbol in SDL3 (or
+  any other library) resolve. The flag is repeatable, requires `--mode hosted`
+  (the freestanding image has no linker), and restricts the name to letters,
+  digits, `_`, `+`, `-` and `.` so it cannot inject a shell metacharacter. Both
+  entry points share the parser, so `oskelc` gains it too.
 - **`sort`/`sorted` now run under `oskel build`.** They were the last array
   methods the AOT backend answered with "value has no such member", and the
   only ones whose comparator is arbitrary program code: the body calls back
@@ -76,6 +105,13 @@ may change between minor versions.
 
 ### Fixed
 
+- **Windows `lookupSymbol` now searches every loaded module.** After the
+  process image, `kernel32.dll` and the CRT, `PlatformPosix::lookupSymbol`
+  walks the modules the process has loaded with `CreateToolhelp32Snapshot`
+  (`TH32CS_SNAPMODULE`) and resolves the name with `GetProcAddress`. A `std.sdl`
+  program linked against `SDL3.dll` can now find `SDL_*` at run time; the
+  Windows-only `platform_lookup_test` loads a DLL with `LoadLibrary` and
+  resolves an export only that DLL provides.
 - **Eight builtins read past the argument window instead of rejecting a wrong
   argument count, and `seed()` did not return `nil`.** The AOT builtins for
   `len`, `type`, `str`, `repr`, `bool`, `isError`, `ord` and `chr` never looked

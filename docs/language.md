@@ -468,7 +468,9 @@ self-contained by construction, and a general `extern "C"` call is exactly the
 thing that breaks that property. So the rule is simple — **if a program uses
 FFI, build it hosted.** The development engine (`oskel`) is unaffected: it
 resolves the symbol through `Platform::lookupSymbol` and runs the same program
-either way.
+either way. When the symbol lives in a third-party library, name it with
+`--link-lib` (`--link-lib SDL3` becomes `-lSDL3`); libc and libm are already
+linked.
 
 **`extern "C"` blocks.** A C function is declared with `extern` (PHASE 6.6).
 Three spellings are accepted and compile to the same thing:
@@ -596,8 +598,10 @@ In the development engine the callback is a `libffi` closure: the trampoline
 re-enters the VM with the C arguments boxed as Oskel values and writes the Oskel
 result back in the declared C type. The callback runs while the C function is on
 the stack, so the trampoline is alive for the whole call; storing the function
-pointer for a later call is out of scope for this phase. `nil` is the NULL
-function pointer.
+pointer for a later call is out of scope in the development engine. The AOT
+backend's stub and context live in the arena, so a callback C stores for a later
+call -- including one invoked from an `atexit` handler after the chunk returns
+-- works there (BACKLOG §6). `nil` is the NULL function pointer.
 
 A callback can only be a **parameter**; a C function that returns a function
 pointer is not supported. A callback may return a **struct by value** (its
@@ -610,9 +614,10 @@ An error raised inside a callback cannot unwind
 through the C frame, so the extern call captures it and re-raises it once C
 returns: `pcall` catches it like any other runtime error. A struct the callback
 returns that does not match the declared shape (not a map, a missing field, a
-field of the wrong type) fails the same way. The AOT backend
-(PHASE 7) is to lower callbacks to compile-time stubs and never link `libffi`;
-that is not implemented yet.
+field of the wrong type) fails the same way. The AOT backend (PHASE 7f.8)
+lowers callbacks to generated stubs and never links `libffi`; it supports every
+scalar parameter and return class, but rejects a callback that returns a struct
+by value and a callback with a struct parameter with a dedicated build error.
 
 **C variadics.** A trailing bare `...` declares a C variadic function: the named
 parameters are the fixed prefix and every extra argument is passed through the
@@ -2843,6 +2848,7 @@ oskelc <file.oskl>         the same compiler without the interpreter
 | `-o`, `--output <file>` | Output path for `build`/`oskelc` (default: the script's base name). |
 | `--target <name>` | Build target for `build`/`oskelc` (default: the host). |
 | `--mode <name>` | Link mode for `build`/`oskelc` (default: `freestanding`). |
+| `--link-lib <name>` | Library for the hosted link, passed as `-l<name>` (repeatable). |
 | `--no-jit` | Disables the JIT (development engine only). |
 | `--` | End of options; the next argument is the file. |
 
@@ -2907,7 +2913,16 @@ compiles either way):
 oskel build app.oskl                       # freestanding (default)
 oskel build app.oskl --mode freestanding   # the same, stated explicitly
 oskel build app.oskl --mode hosted         # links libc (FFI; PHASE 7f.4)
+oskel build app.oskl --mode hosted --link-lib SDL3 -o app   # links SDL3 too
 ```
+
+`--link-lib <name>` adds a library to the hosted link as `-l<name>`, which is
+how an `extern "C"` symbol that lives in a third-party library resolves. It is
+repeatable, it is only meaningful with `--mode hosted` (the freestanding image
+has no linker), and the name is restricted to letters, digits, `_`, `+`, `-`
+and `.` so it cannot smuggle a shell metacharacter into the `$CC` command. The
+development engine does not use it: it links the library itself (CMake finds
+SDL3, for example) and resolves the symbol through `Platform::lookupSymbol`.
 
 The backend targets x86_64-linux-sysv today; on any other target `oskel build`
 reports the unsupported target instead of emitting bytes for an ABI it cannot
@@ -2975,7 +2990,7 @@ features of this release.
 - No `++`, `--` or default parameters. A trailing `rest...` parameter makes a function variadic (see §7.1). `switch` on literals and ranges is supported (see §6.10), and so is the post-test loop `do { ... } while (cond);` (see §6.4).
 - Optional types and nullability are implemented for declarations and expressions (PHASE 6.5). Type annotations (`let x: int = 5`), local inference, the nullable `T?` annotation, and the null-safe expressions `?.`, `??` and `!!` are checked at compile time. `struct` is implemented (see §4.7) and so is `native fn` (see §7.6), the typed declaration of a host-provided function.
 - FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the System V AMD64 ABI without `libffi` for scalars and structs by value. A `fn(P...): R` parameter is a callback: the development engine builds a `libffi` closure that re-enters the VM (its `R` may be a scalar or a struct by value). A trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...): int`), which applies the C default argument promotions and goes through `libffi`; like a class-MEMORY struct it needs the System V AMD64 ABI plus `libffi`, and is rejected at compile time elsewhere.
-- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.7 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux x86-64 only), where the program is linked against libc; the freestanding mode, which is the default, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — both register-class and class-MEMORY — are lowered (7f.6, 7f.7); callbacks and C variadics are not, and `native fn` declarations the backend has no stub for fail the build with a dedicated message.
+- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.8 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux x86-64 only), where the program is linked against libc; the freestanding mode, which is the default, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — both register-class and class-MEMORY — are lowered (7f.6, 7f.7); C variadics are not, and `native fn` declarations the backend has no stub for fail the build with a dedicated message. Callbacks are lowered (7f.8): a scalar parameter or return crosses through a generated stub; a struct return or a struct parameter is rejected with a dedicated message.
 - A function's text representation differs between the engines: the VM renders a named function as `<fn name>` (`<native fn name>` for a host binding) while the AOT binary renders every function as `<fn>`, because the AOT closure object carries only code, arity and upvalue count and no name. This is a known parity gap (BACKLOG §6.22); `tests/freestanding_test.cpp` pins the AOT form and `tests/native_build_control_flow.oskl` avoids printing a bare function so the fixture agrees on both engines.
 - No UI library yet. Skia + SDL2 + declarative UI is planned for post-1.0.
 - No async/await, generics, full pattern matching, generators, or transactions. These are out of scope (see `DEVELOPMENT.md`).

@@ -438,6 +438,18 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     convention before the pointer builtins did, and the new arity guards follow
     it (the VM appends `, got N`).
 
+26. **[P1]** A callback that C stores for a later call works in AOT but not in
+    the VM: the development engine's `CallbackObj` is released when the
+    `extern "C"` call returns, while the AOT stub and its context live in the
+    arena. The AOT-only fixtures `tests/native_build_extern_callback_stored.oskl`
+    and `..._exit.oskl` (an `atexit` handler after the chunk returns) cover it;
+    keeping the VM closure alive would close the gap.
+27. **[P1]** A callback returning a struct by value is supported by the VM
+    (`libffi`) and rejected by the AOT backend with a dedicated message; the AOT
+    callback body does not rebuild the returned registers into a map. A struct
+    *parameter* is rejected by both. `tests/errors/callback_struct_{return,param}.oskl`
+    pin the AOT rejection.
+
 ---
 
 ## 7. FFI (`src/runtime/ffi.cpp`)
@@ -521,8 +533,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 17. ~~**[P2]** `dispatch` for callbacks is limited to `kMaxExternArgs = 6`; the
     error message does not say so.~~ **Not a bug**: callbacks go through libffi,
     not `dispatch`, so they are not bound by `kMaxExternArgs`; an 8-parameter
-    callback compiles and runs. The scalar path still rejects more than six
-    eightbytes at compile time with a message that names the limit.
+    callback compiles and runs. **Done**: the scalar bound is now eight
+    eightbytes. The VM's typed call lets the C++ compiler spill the seventh and
+    eighth GPR arguments; the AOT thunk writes them to the outgoing stack area
+    and passes a register-class struct that no longer fits wholly on the stack.
+    `SDL_ReadSurfacePixel`/`SDL_WriteSurfacePixel` are bound, and
+    `tests/native_build_extern_many_args.oskl` pins the AOT spill.
 18. **[P2]** `pointerAddress` for a `str` uses `asStr().c_str()`; valid for the
     call, but a footgun if the host mutates it.
 19. ~~**[P3]** `installExterns` recurses over children; make it iterative for
@@ -728,6 +744,13 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `std::cout`/`std::cerr`; verify the flush points.
 6. **[P3]** `rawSyscall` uses inline asm with a `"memory"` clobber and is not
    MSVC-portable; note the constraint where it is used.
+7. ~~**[P2]** `PlatformPosix::lookupSymbol` on Windows does not search the other
+   DLLs the process has loaded, so a `std.sdl` program linked against
+   `SDL3.dll` still fails to resolve `SDL_*` at run time.~~ **Done**: after the
+   process image, `kernel32.dll` and the CRT, the Windows path walks every
+   loaded module with `CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, ...)` and
+   `GetProcAddress`. `platform_lookup_test` loads a DLL with `LoadLibrary` and
+   resolves an export that only that DLL provides.
 
 ---
 
@@ -813,7 +836,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    and drives `oskel`/`oskelc` as child processes; `OSKEL_MODULE_ROOT` is the
    only compiler-side hook.
 8. **[P3]** Add a "hello world with UI" tutorial (needs the post-1.0 UI work).
-9. **[P3]** Add a C wrapper for Skia/SDL2 (post-1.0 UI).
+9. **[P2] [partial]** SDL3 bindings landed (post-1.0 UI): `std/sdl.oskl` binds
+   the window, renderer and event surface, `docs/sdl.md` documents it, and
+   `oskel build --mode hosted --link-lib SDL3` compiles it. The declarative UI
+   layer (`Window`, `Column`, `Text`, `Button`, ...) and the Windows loaded-DLL
+   symbol lookup (§18) are still open.
 10. **[P3]** Add `dlopen`/`dlsym` as a builtin for dynamic FFI.
 11. **[P1]** `oskelp`: add a local registry (`$OSKEL_REGISTRY`) with semver
     ranges, so a dependency can be `utils = "1.2.0"` instead of a path. A

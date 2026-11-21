@@ -635,11 +635,10 @@ previous one.
   `tests/native_build_extern_memory_struct.oskl` (MEMORY, with
   `tests/hosted/memory_struct_helper.c`, which also covers the narrow,
   mixed-class, `ptr` and `cstring` field cases).
-- **Callbacks (done in the development engine; still open in AOT)** — a
-  parameter typed `fn(P...): R` is a C function pointer. The `libffi` closure
-  below is the *development engine* implementation; the AOT backend has no
-  equivalent yet, so a program that passes a callback to an `extern "C"`
-  function fails `oskel build` with the PHASE 7f rejection (BACKLOG §6). `fn` is a keyword, so `parseTypeAnnotation` reads the signature before
+- **Callbacks (done in both engines)** — a parameter typed `fn(P...): R` is a
+  C function pointer. The `libffi` closure below is the *development engine*
+  implementation; the AOT backend lowers the same declaration to a generated
+  stub (PHASE 7f.8). `fn` is a keyword, so `parseTypeAnnotation` reads the signature before
   the ordinary type-name path; the parameters are scalar FFI names and
   the return is a scalar or a struct by value (a nested callback, a non-scalar
   callback parameter and a struct *parameter* inside the callback are out of
@@ -654,13 +653,15 @@ previous one.
   its layout, and needs the by-value struct marshalling, plus the `libffi` path
   for a class-MEMORY struct).
   The closure lives in a reference-counted `CallbackObj` held for the whole
-  extern call, so the trampoline address stays valid while C runs (a callback C
-  stores for a later call is out of scope for this phase). An error raised
+  extern call, so the trampoline address stays valid while C runs. A callback C
+  stores for a later call is out of scope in the development engine (the
+  closure is released when the extern call returns); the AOT backend's
+  stub/context lives in the arena and supports it (BACKLOG §6). An error raised
   inside a callback cannot unwind through the C frame, so the extern call
   captures it and re-raises it once C returns; `pcall` catches it like any other
   runtime error. `nil` is the NULL function pointer. `libffi` is a
   **development-engine-only** dependency (§5.1/§6): the AOT backend lowers
-  callbacks to compile-time stubs and never links it. The boundary check
+  callbacks to generated stubs and never links it. The boundary check
   (`tests/check_compiler_boundary.cmake`) forbids the compiler and the native
   backend from including `ffi_marshal.h` or `libffi`, so the split cannot
   regress. See `docs/language.md` §4.6, `tests/32_ffi_callback.oskl` and
@@ -1683,6 +1684,29 @@ binary prints byte for byte what the VM prints).
       `strlen`/`strcmp`/`strncmp` (a pointer then a `size_t`, exercising the
       staging order) and `strchr` (a `cstring` return, including the NULL
       no-match case), built hosted and checked against the VM.
+    - **7f.8** (done) — C callbacks in the hosted backend. A parameter typed
+      `fn(P...): R` is no longer left out: `oskel_callback_create` allocates a
+      32-byte context (the closure, the Oskel global base and a pointer to a
+      shared arena-state block) and a private RWX `mmap` page holding
+      `movabs r10, context; movabs r11, body; jmp r11`, so the C callee receives
+      a real function pointer. The body saves the C arguments, boxes a
+      `ptr`/`cstring` into a handle, calls the closure through `oskel_call`, and
+      converts the result to the callback's C return class
+      (int/bool/float/double/cstring/ptr). A C caller expects r13/r14/r15
+      preserved, but they are the Oskel arena cursor/end and global base: the
+      body saves the C values, loads the Oskel ones from the shared state, runs
+      the closure, parks the advanced cursor/end back, and restores the C
+      values. Every extern thunk in a program with a callback publishes the
+      current cursor/end before the call and reloads it afterwards, and the root
+      epilogue publishes the final state, so a callback C stores for a later
+      call (`atexit`, a setter/invoker pair) resumes from the program's current
+      arena. A callback returning a struct by value and a callback with a struct
+      parameter are rejected with a dedicated build error; a C variadic remains
+      7f work. Covered by `tests/native_build_extern_callback.oskl` (`qsort`,
+      VM parity), `tests/native_build_extern_callback_stored.oskl`,
+      `..._exit.oskl` (an `atexit` handler after the chunk returns),
+      `..._many_args.oskl` and `..._returns.oskl` (AOT-only helpers) and
+      `tests/errors/callback_struct_{return,param}.oskl` (rejections).
   - **7g** (done) — bare-metal x86-64 (multiboot). A third target,
     `x86_64-freestanding-sysv` (`oskel build --target
     x86_64-freestanding-sysv`), emits a multiboot 1 kernel that a boot loader
@@ -1909,8 +1933,10 @@ moment a design needs inline caching or specialization, it is out of scope
 
 ### Post-1.0 — UI library
 
-- **Skia** as rendering backend.
-- **SDL2** for windows and events.
+- **SDL3** for windows, renderer and events: the low-level bindings landed as
+  `std/sdl.oskl` (slice 1, `docs/sdl.md`), and a native binary links them with
+  `oskel build --mode hosted --link-lib SDL3`.
+- **Skia** as an optional rendering backend on top of SDL3's window.
 - **Declarative UI** (SwiftUI/Flutter style): `Window`, `Column`, `Row`,
   `Text`, `Button`, `Input`, `Checkbox`, `Slider`, etc.
 
@@ -1946,7 +1972,7 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.7 done, scalar, `cstring`/`ptr` and struct-by-value `extern "C"` (register and class-MEMORY) resolve in the hosted backend; a C variadic and a callback argument are still open. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.8 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY) and callbacks resolve in the hosted backend; a C variadic is still open. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending
 2.0: ⬜ future (static with `@Dynamic`)

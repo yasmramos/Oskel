@@ -26,7 +26,11 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 if(MSVC)
-  set(OSKEL_WARNINGS /W4)
+  # `/bigobj` is required by `src/runtime/ffi.cpp`: the typed `dispatch`
+  # instantiates one function per 3^N class sequence, and at the
+  # eight-eightbyte bound MSVC's default object format runs out of sections
+  # (C1128).
+  set(OSKEL_WARNINGS /W4 /bigobj)
   # Match the 8 MiB main-thread stack Linux and macOS give by default. The
   # recursive-descent parser and the compiler's AST walk each hold a DepthGuard
   # (see src/frontend/parser.cpp and src/frontend/compiler.cpp) sized for that
@@ -173,6 +177,34 @@ add_executable(oskel "${OSKEL_MAIN}")
 target_link_libraries(oskel PRIVATE oskel_lib)
 target_compile_options(oskel PRIVATE ${OSKEL_WARNINGS})
 
+# --------------------------------------------------------------------------- SDL3 (optional)
+# `std/sdl.oskl` binds SDL3's window, renderer and event surface. The module is
+# always installed; the development engine links SDL3 when CMake finds it, so
+# `import std.sdl` resolves the `SDL_*` symbols through `dlsym(RTLD_DEFAULT)`.
+# `oskelc` does not link it: it only compiles the module, and a native binary
+# gets the symbols from the hosted link (`--link-lib SDL3`).
+#
+# `--as-needed` drops a shared library nothing references at link time, and the
+# engine only names SDL3 through `dlsym`, so the library must be forced in.
+# `ENABLE_EXPORTS` adds the `-rdynamic`/`-export_dynamic` flag a static SDL3
+# build would need for the same lookup to find the symbols in the executable.
+option(OSKEL_ENABLE_SDL3 "Link the development engine against SDL3" ON)
+set(OSKEL_SDL3_FOUND FALSE)
+if(OSKEL_ENABLE_SDL3)
+  find_package(SDL3 QUIET)
+  if(SDL3_FOUND)
+    set(OSKEL_SDL3_FOUND TRUE)
+    target_link_libraries(oskel PRIVATE SDL3::SDL3)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      target_link_options(oskel PRIVATE "-Wl,--no-as-needed")
+    endif()
+    set_target_properties(oskel PROPERTIES ENABLE_EXPORTS ON)
+    message(STATUS "SDL3 found: std.sdl enabled in the development engine")
+  else()
+    message(STATUS "SDL3 not found: std.sdl tests skipped (set OSKEL_ENABLE_SDL3=OFF to silence)")
+  endif()
+endif()
+
 # `oskelc`: the host compiler. Sources in, a native image out; it links the front
 # end alone, so the shipped compiler carries neither the VM nor the JIT
 # (DEVELOPMENT.md §2). `tests/check_compiler_boundary.cmake` keeps the include
@@ -279,6 +311,21 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(freestanding_test)
   oskel_add_cpp_test(bare_metal_test)
 
+  # Windows only: `lookupSymbol` must search a DLL loaded after startup, not
+  # just the process image, kernel32 and the CRT. The test loads the DLL CMake
+  # builds beside it and resolves its export.
+  if(WIN32)
+    add_library(oskel_lookup_test_dll SHARED
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/platform_lookup_dll.cpp")
+    add_executable(platform_lookup_test
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/platform_lookup_test.cpp")
+    target_link_libraries(platform_lookup_test PRIVATE oskel_lib)
+    target_compile_options(platform_lookup_test PRIVATE ${OSKEL_WARNINGS})
+    add_test(NAME platform_lookup_test
+      COMMAND platform_lookup_test "$<TARGET_FILE:oskel_lookup_test_dll>"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  endif()
+
   # The binding generator is a standalone tool, not part of `oskel_lib`, so its
   # unit test links `bindgen_lib` directly instead of the helper above.
   add_executable(bindgen_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/bindgen_test.cpp")
@@ -295,6 +342,15 @@ if(BUILD_TESTING)
       "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
       "-DBINDGEN_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/tests/bindgen/sample.h"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_bindgen_case.cmake")
+
+  # `--target` selects the C data model for `long`/`wchar_t`; the module it
+  # produces must still compile.
+  add_test(NAME bindgen.target
+    COMMAND ${CMAKE_COMMAND}
+      "-DBINDGEN_EXE=$<TARGET_FILE:bindgen>"
+      "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+      "-DBINDGEN_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/tests/bindgen/target.h"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_bindgen_target.cmake")
 
   # `oskelp` is standalone too, so its unit test links `oskelp_lib` directly.
   add_executable(oskelp_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/oskelp_test.cpp")
@@ -417,6 +473,34 @@ if(BUILD_TESTING)
       "-DOSKEL_EXE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}"
       "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/21_std_math.oskl"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_stdlib.cmake")
+
+  # --- SDL3 bindings (`std/sdl.oskl`) ---
+  # The module is always installed; these tests need the development engine to
+  # have SDL3 loaded, which CMake arranges above when it finds the library.
+  # `run_sdl_case.cmake` sets SDL_VIDEODRIVER=dummy, so no display is needed.
+  # The hosted fixture is Linux x86-64 only, like every hosted AOT test.
+  add_test(NAME sdl.bindgen
+    COMMAND ${CMAKE_COMMAND}
+      "-DBINDGEN=$<TARGET_FILE:bindgen>"
+      "-DHEADER=${CMAKE_CURRENT_SOURCE_DIR}/bindings/sdl/sdl3_subset.h"
+      "-DMODULE=${CMAKE_CURRENT_SOURCE_DIR}/std/sdl.oskl"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_sdl_bindings.cmake")
+  if(OSKEL_SDL3_FOUND)
+    add_test(NAME sdl.bindings
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/sdl_bindings.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_sdl_case.cmake")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+       CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+      add_test(NAME oskel.build_hosted_sdl
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_sdl"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/sdl_bindings.oskl"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_sdl.cmake")
+    endif()
+  endif()
 
   # --- `oskel build`: compile to a native binary and run it (PHASE 7d/7e) ---
   # The AOT backend has a Linux and a Windows target. One fixture list drives
@@ -715,8 +799,93 @@ if(BUILD_TESTING)
             "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
             "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_memory_struct.oskl"
             "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/memory_struct_helper.c"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_memory_struct.cmake")
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
       endif()
+      # The seventh and eighth integer arguments do not fit the six System V
+      # GPRs, so the thunk spills them to the outgoing stack area; a
+      # register-class struct that no longer fits is passed wholly on the stack.
+      # No libc symbol exercises those shapes, so the fixture links its own C
+      # helper. It needs no libffi (there is no struct-by-value *return*), just
+      # the hosted link mode.
+      add_test(NAME oskel.build_hosted_extern_many_args
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_many_args"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_many_args.oskl"
+          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/many_args_helper.c"
+          "-DOSKEL_EXPECTED_OUTPUT=ffi many args ok"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
+      # A callback is a C function pointer. The VM marshals it through libffi;
+      # the AOT backend emits a runtime stub per registration whose body boxes
+      # the C arguments and calls the Oskel closure. `qsort` invokes the
+      # comparator from libc, so the reference is the VM.
+      if(OSKEL_LIBFFI_FOUND)
+        add_test(NAME oskel.build_hosted_extern_callback
+          COMMAND ${CMAKE_COMMAND}
+            "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_callback"
+            "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+            "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_callback.oskl"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+      endif()
+      # Registration and invocation are separate extern calls, so the callback
+      # runs after the program has allocated again: the body must resume from
+      # the program's current arena cursor, not the one at registration.
+      add_test(NAME oskel.build_hosted_extern_callback_stored
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_callback_stored"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_callback_stored.oskl"
+          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_helper.c"
+          "-DOSKEL_EXPECTED_OUTPUT=stored callback ok"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
+      # Seven arguments fill the six GPRs and the first stack slot; eight reach
+      # the second. The body reads both from its caller's frame.
+      add_test(NAME oskel.build_hosted_extern_callback_many_args
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_callback_many_args"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_callback_many_args.oskl"
+          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_many_args_helper.c"
+          "-DOSKEL_EXPECTED_OUTPUT=many args callback ok"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
+      # C invokes this callback from an `atexit` handler after the chunk
+      # returns; the root epilogue publishes the final arena state for it.
+      add_test(NAME oskel.build_hosted_extern_callback_exit
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_callback_exit"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_callback_exit.oskl"
+          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_exit_helper.c"
+          "-DOSKEL_EXPECTED_OUTPUT=late callback 1"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
+      # Every scalar return class the marshalling supports, including a
+      # `cstring` (a copy in the arena) and an opaque `ptr`.
+      add_test(NAME oskel.build_hosted_extern_callback_returns
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_callback_returns"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_callback_returns.oskl"
+          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_returns_helper.c"
+          "-DOSKEL_EXPECTED_OUTPUT=callback returns ok"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
+      # The shapes the AOT callback body cannot build yet must fail the hosted
+      # build with the dedicated message, never emit a binary.
+      add_test(NAME oskel.build_hosted_callback_struct_return_error
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_callback_struct_return_error"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/errors/callback_struct_return.oskl"
+          "-DOSKEL_BUILD_MODE=hosted"
+          "-DEXPECTED_MESSAGE=a callback returning a struct by value is not supported"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+      add_test(NAME oskel.build_hosted_callback_struct_param_error
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_callback_struct_param_error"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/errors/callback_struct_param.oskl"
+          "-DOSKEL_BUILD_MODE=hosted"
+          "-DEXPECTED_MESSAGE=callback parameter type 'Point' cannot cross the C boundary"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
       # A C variadic is walked at run time by the thunk (PHASE 7f.5): the tail
       # continues the GPR/SSE allocation after the fixed prefix, spills to the
       # outgoing stack area and sets `%al` to the vector-register count. The
@@ -982,6 +1151,24 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern.oskl"
         "-DEXPECTED_MESSAGE=extern \"C\" symbol 'getpid' cannot be resolved by the AOT backend"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+    # SDL3 is a host binding too: the freestanding backend must reject a used
+    # `SDL_*` symbol with the dedicated message and write no binary. The
+    # fixture imports the module, so it also pins the module's own rejection
+    # (the lowerer names one of its externs, whichever comes first).
+    add_test(NAME oskel.build_sdl_freestanding_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_sdl_freestanding_error"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_sdl_freestanding.oskl"
+        "-DEXPECTED_MESSAGE=extern \"C\" symbol 'SDL_[A-Za-z]+' cannot be resolved by the AOT backend"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+    # `--link-lib` without `--mode hosted`, and a name that is not a library
+    # name, are usage errors (exit 64), not silently accepted flags.
+    add_test(NAME oskel.build_link_lib_usage_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_sdl_freestanding.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_usage_error.cmake")
     # A `native fn` the AOT backend has no stub for fails the same way, with a
     # message that says `native fn` rather than `extern "C"` (PHASE 7f.1).
     add_test(NAME oskel.build_native_error
@@ -1024,6 +1211,17 @@ if(BUILD_TESTING)
   )
   foreach(script IN LISTS oskel_tests)
     get_filename_component(name "${script}" NAME_WE)
+    # `sdl_bindings` needs SDL3 loaded and the dummy video driver; it is
+    # registered above with its own runner, and skipped when the build has no
+    # SDL3.
+    if(name STREQUAL "sdl_bindings")
+      continue()
+    endif()
+    # `native_build_sdl_freestanding` is a `oskel build` rejection fixture, not
+    # a VM test: running it would try to open a window (and needs SDL3 loaded).
+    if(name STREQUAL "native_build_sdl_freestanding")
+      continue()
+    endif()
     # FFI callbacks need libffi in the dev engine; skip the callback test when
     # the build has no libffi (the feature reports a clear runtime error then).
     if(name STREQUAL "32_ffi_callback" AND NOT OSKEL_LIBFFI_FOUND)
@@ -1038,6 +1236,24 @@ if(BUILD_TESTING)
     # VM cannot resolve (its host registry knows libc, not the test helper). It
     # is covered end-to-end by `oskel.build_hosted_extern_memory_struct`.
     if(name STREQUAL "native_build_extern_memory_struct")
+      continue()
+    endif()
+    # The many-args fixture binds a helper too; the VM has no registry entry for
+    # those symbols, so it is covered by `oskel.build_hosted_extern_many_args`.
+    if(name STREQUAL "native_build_extern_many_args")
+      continue()
+    endif()
+    # The stored/many-args/returns callback fixtures bind helpers the VM cannot
+    # resolve; their hosted tests are the coverage.
+    if(name STREQUAL "native_build_extern_callback_stored" OR
+       name STREQUAL "native_build_extern_callback_exit" OR
+       name STREQUAL "native_build_extern_callback_many_args" OR
+       name STREQUAL "native_build_extern_callback_returns")
+      continue()
+    endif()
+    # The qsort callback fixture needs libffi in the development engine; the
+    # hosted test (which also runs the VM) is gated on the same flag.
+    if(name STREQUAL "native_build_extern_callback" AND NOT OSKEL_LIBFFI_FOUND)
       continue()
     endif()
     # The two `native fn` rejection fixtures are inputs for
@@ -1120,6 +1336,13 @@ if(BUILD_TESTING)
     # which only holds where the libffi-backed marshalling is unavailable; where
     # it is available the declaration compiles and the rejection case is gone.
     if(name STREQUAL "extern_struct_too_large" AND OSKEL_FFI_MEMORY_STRUCTS)
+      continue()
+    endif()
+    # These two are `oskel build --mode hosted` rejection inputs, not VM
+    # scripts: the struct-param declaration does not compile and the struct
+    # return binds a symbol the VM's host registry does not have. Their coverage
+    # is `oskel.build_hosted_callback_struct_{param,return}_error`.
+    if(name STREQUAL "callback_struct_param" OR name STREQUAL "callback_struct_return")
       continue()
     endif()
     oskel_add_script_test("oskel.errors.${name}" "${script}")

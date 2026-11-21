@@ -1,0 +1,52 @@
+// Seven- and eight-argument `extern "C"` marshalling (PHASE 7f.5).
+//
+// The seventh and eighth integer arguments do not fit the six System V GPRs:
+// the thunk writes them to the outgoing stack area. A register-class struct
+// that no longer fits the remaining registers is passed wholly on the stack,
+// and the arguments after it continue from the stack cursor. The functions
+// come from `tests/hosted/many_args_helper.c`, because no libc symbol
+// exercises these shapes; `tests/build_hosted_helper.cmake` compiles and links
+// it.
+
+struct Pair {
+  a: int64;
+  b: int64;
+}
+
+struct One {
+  a: int64;
+}
+
+extern "C" {
+  fn oskelTestSum7(a: int64, b: int64, c: int64, d: int64, e: int64, f: int64,
+                   g: int64): int64;
+  fn oskelTestMix8(a: int64, b: int64, c: int64, d: int64, e: int64, f: int64,
+                   g: int64, h: double): int64;
+  fn oskelTestPairAfter6(a: int64, b: int64, c: int64, d: int64, e: int64, f: int64,
+                         p: Pair): int64;
+  fn oskelTestPairThenScalar(a: int64, b: int64, c: int64, d: int64, e: int64,
+                             p: Pair, g: int64): int64;
+  fn oskelTestOneThenScalar(a: int64, b: int64, c: int64, d: int64, e: int64, f: int64,
+                            p: One, g: int64): int64;
+}
+
+// Seven GPRs: the seventh is stack-passed.
+assertEq(oskelTestSum7(1, 2, 3, 4, 5, 6, 7), 28);
+assertEq(oskelTestSum7(-1, -2, -3, -4, -5, -6, -7), -28);
+
+// Seven GPRs plus one SSE: the seventh GPR spills, the SSE stays in xmm0.
+assertEq(oskelTestMix8(1, 2, 3, 4, 5, 6, 7, 8.0), 36);
+
+// A 16-byte struct normally travels in two GPRs; after six scalars it has none
+// left, so the whole struct goes on the stack.
+assertEq(oskelTestPairAfter6(1, 2, 3, 4, 5, 6, {a: 7, b: 8}), 36);
+
+// After five scalars one GPR remains, but a 16-byte struct needs two, so it is
+// stack-passed and the following scalar takes the last register.
+assertEq(oskelTestPairThenScalar(1, 2, 3, 4, 5, {a: 7, b: 8}, 9), 39);
+
+// After six scalars an 8-byte struct has no register left and goes on the
+// stack; the following scalar goes to the next stack slot.
+assertEq(oskelTestOneThenScalar(1, 2, 3, 4, 5, 6, {a: 7}, 8), 36);
+
+print("ffi many args ok");

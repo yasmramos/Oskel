@@ -10,6 +10,7 @@
 #include <malloc.h>
 #include <sys/stat.h>
 #include <windows.h>
+#include <tlhelp32.h>
 #else
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -178,6 +179,24 @@ void* PlatformPosix::lookupSymbol(const char* name) {
     if (FARPROC symbol = GetProcAddress(runtime, name)) {
       return reinterpret_cast<void*>(symbol);
     }
+  }
+  // A third-party library the host loaded (`SDL3.dll`, a plugin, ...) is not
+  // one of the modules above. Walk every module the process has loaded; the
+  // snapshot is kernel32's own, so no extra library is needed. The fast paths
+  // above stay first because they cover the common case without the walk.
+  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+  if (snapshot != INVALID_HANDLE_VALUE) {
+    MODULEENTRY32 entry;
+    entry.dwSize = sizeof(entry);
+    if (Module32First(snapshot, &entry)) {
+      do {
+        if (FARPROC symbol = GetProcAddress(entry.hModule, name)) {
+          CloseHandle(snapshot);
+          return reinterpret_cast<void*>(symbol);
+        }
+      } while (Module32Next(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
   }
   return nullptr;
 #else

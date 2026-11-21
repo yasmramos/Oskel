@@ -12538,17 +12538,16 @@ void emitPrintRepr(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeLabel,
 
 // ------------------------------------------------------------------- extern thunks
 
-// The System V AMD64 integer argument registers, in order (PHASE 7f.5). A
-// scalar `extern "C"` signature has at most `kMaxExternArgs` (6) parameters, so
-// at most 6 of these 6 registers and 6 of the 8 SSE registers are used: the two
-// counters in `emitExternThunk` can never overrun.
+// The System V AMD64 integer argument registers, in order (PHASE 7f.5). The
+// first six integer/pointer eightbytes use these; any further one travels in
+// the outgoing stack-argument area (`AotThunkParam::stackOffset`). All eight
+// SSE registers stay available.
 constexpr X64Reg kIntArgRegs[] = {Rdi, Rsi, Rdx, Rcx, R8, R9};
 // A scratch xmm for the register-class conversions (a boxed number narrowed to
-// an integer, an integer widened to a float). It must not collide with an
-// argument xmm: a scalar signature uses at most xmm0-xmm5, so xmm7 is free. It
-// is kept in the xmm0-xmm7 range deliberately, so no instruction that uses it
-// needs a REX prefix.
-constexpr int XmmScratch = kXmmBase + 7;
+// an integer, an integer widened to a float). It sits outside xmm0-xmm7, the
+// eight SSE argument registers, so an SSE argument is never clobbered by a
+// later integer argument's conversion; the REX prefix is the price.
+constexpr int XmmScratch = kXmmBase + 15;
 
 // The hosted engine caps a returned `cstring` scan at 16 MiB (`src/ffi.cpp`):
 // past the cap the C `const char *` contract is broken and the read stops with
@@ -12935,7 +12934,9 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
                      CodeGen::Label tableNew, CodeGen::Label memberSet,
                      CodeGen::Label voidPtrBox, const DataBlob& msgArity,
                      const DataBlob& msgType, const DataBlob& msgOom,
-                     const DataBlob& msgCStringTooLong) {
+                     const DataBlob& msgCStringTooLong,
+                     const std::vector<AotCallbackSignature>* callbacks,
+                     CodeGen::Label callbackCreate, int callbackStateSlot) {
   CodeGen::Label arityOk = cg.newLabel();
   CodeGen::Label oom = cg.newLabel();
 
@@ -12943,14 +12944,16 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   prologue(cg);
   cg.push(Rbx);
   cg.push(R12);  // a callee-saved scratch: the `alloc`/`rep movsb` calls clobber rdi/rsi/rcx/r10/r11
-  // The integer arguments are staged here and loaded into their registers only
-  // just before the call, because marshalling a later pointer argument calls
-  // `alloc` and `rep movsb`, which clobber the argument registers. Six 8-byte
-  // slots keep the frame 16-byte aligned (48 is a multiple of 16).
+  // The integer arguments that fit the six GPRs are staged here and loaded into
+  // their registers only just before the call, because marshalling a later
+  // pointer argument calls `alloc` and `rep movsb`, which clobber the argument
+  // registers. Six 8-byte slots keep the frame 16-byte aligned (48 is a
+  // multiple of 16). A spilled GPR is written straight to the outgoing area.
   constexpr std::int32_t kArgStageBytes = 6 * 8;
-  // One 16-byte buffer per register-class struct (at most six, since a signature
-  // is bounded by six eightbytes and every struct contributes at least one).
-  constexpr std::int32_t kStructBufSlots = 6;
+  // One 16-byte buffer per register-class struct. The eightbyte bound allows at
+  // most `kMaxExternArgs` such structs (each contributes at least one); a struct
+  // that does not fit is passed wholly on the stack and needs no buffer.
+  constexpr std::int32_t kStructBufSlots = static_cast<std::int32_t>(ffi::kMaxExternArgs);
   constexpr std::int32_t kStructBufBytes = 16 * kStructBufSlots;
   // The frame below `rbp` is laid out top to bottom as: the staging slots, the
   // register-class struct buffers, the `sret` buffer, and finally the outgoing
@@ -13255,8 +13258,12 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         cg.bind(asIs);
         cg.movFromMem(R11, Rbx, base + 8);
         cg.bind(done);
-        cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
-        ++gpr;
+        if (param.stackOffset >= 0) {
+          cg.movToMem(Rsp, param.stackOffset, R11);
+        } else {
+          cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
+          ++gpr;
+        }
         break;
       }
       case ffi::ParamClass::Double: {
@@ -13309,6 +13316,37 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         break;
       }
       case ffi::ParamClass::Pointer: {
+        if (param.callbackSignature >= 0) {
+          // The argument is an Oskel closure. A C function pointer carries no
+          // context, so a runtime stub binds the closure and the thunk passes
+          // the stub's address.
+          CodeGen::Label notFunc = cg.newLabel();
+          CodeGen::Label staged = cg.newLabel();
+          cg.movFromMem(R10, Rbx, base);  // the value's tag
+          cg.cmpImm32(R10, static_cast<std::int32_t>(kTagFunc));
+          cg.jcc(Jcc::Ne, notFunc);
+          if (callbacks == nullptr ||
+              param.callbackSignature >= static_cast<int>(callbacks->size())) {
+            emitFailCall(cg, fail, msgType);
+          } else {
+            cg.leaRipLabel(
+                Rdi, (*callbacks)[static_cast<std::size_t>(param.callbackSignature)].body);
+            cg.movReg(Rsi, R10);                // the closure tag
+            cg.movFromMem(Rdx, Rbx, base + 8);  // the closure payload
+            cg.callLabel(callbackCreate);
+            if (param.stackOffset >= 0) {
+              cg.movToMem(Rsp, param.stackOffset, Rax);
+            } else {
+              cg.movToMem(Rbp, kStageBase + 8LL * gpr, Rax);
+              ++gpr;
+            }
+          }
+          cg.jmp(staged);
+          cg.bind(notFunc);
+          emitFailCall(cg, fail, msgType);
+          cg.bind(staged);
+          break;
+        }
         // A `cstring`/`ptr` crosses as a GPR holding a machine address. `nil`
         // is C's NULL (0). A Oskel string is an `AotString` (a length then the
         // bytes, *not* NUL-terminated), so it cannot be passed as-is: the thunk
@@ -13358,8 +13396,12 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         cg.movImmByteToMem(Rdi, 0, 0);  // the terminating NUL
         cg.movReg(R11, Rax);
         cg.bind(staged);
-        cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
-        ++gpr;
+        if (param.stackOffset >= 0) {
+          cg.movToMem(Rsp, param.stackOffset, R11);
+        } else {
+          cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
+          ++gpr;
+        }
         break;
       }
       default:
@@ -13523,7 +13565,37 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     cg.movFromMem(Rax, Rbp, kVarSse);
   }
 
+  // Park the current arena cursor/end where a stored callback will find it.
+  // The callback may be invoked by this C function or by a later one that has
+  // no callback argument (`set_cb` now, `call_cb` later), so every extern call
+  // in a program that has a callback signature publishes the state first.
+  if (callbackStateSlot >= 0) {
+    CodeGen::Label noState = cg.newLabel();
+    cg.movFromMem(R10, R15, 16 * callbackStateSlot + 8);
+    cg.testReg(R10);
+    cg.jcc(Jcc::Eq, noState);
+    cg.movToMem(R10, 0, R13);
+    cg.movToMem(R10, 8, R14);
+    cg.bind(noState);
+  }
+
   cg.callExternal(thunk.symbol);
+
+  // A callback the C function invoked may have allocated (the `ptr` argument
+  // boxes and a string return do), so the arena cursor/end the C caller
+  // preserved are stale: the callback body parked the advanced values in the
+  // shared state, and the program must resume from there. Reloading after the
+  // call is what lets a C caller that uses r13/r14 itself stay correct while the
+  // Oskel arena keeps growing.
+  if (callbackStateSlot >= 0) {
+    CodeGen::Label noState = cg.newLabel();
+    cg.movFromMem(R10, R15, 16 * callbackStateSlot + 8);
+    cg.testReg(R10);
+    cg.jcc(Jcc::Eq, noState);
+    cg.movFromMem(R13, R10, 0);
+    cg.movFromMem(R14, R10, 8);
+    cg.bind(noState);
+  }
 
   // A struct return comes back in the registers its eightbyte classes assign
   // (`rax`/`rdx` and `xmm0`/`xmm1`), so it is rebuilt into a map and the scalar
@@ -13584,6 +13656,373 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
 
   cg.bind(oom);
   emitFailCall(cg, fail, msgOom);
+}
+
+// `void* oskel_callback_create(void* body, AotValue closure)`: builds the C
+// function pointer the thunk passes for an Oskel callback. A C function pointer
+// carries no context, so each registration gets a tiny executable stub that
+// loads the closure and jumps to the shared body:
+//
+//   49 BA <context>   movabs r10, context
+//   49 BB <body>      movabs r11, body
+//   41 FF E3          jmp r11
+//
+// The context is 32 bytes in the arena: the closure tag and payload, the Oskel
+// global base, and a pointer to the shared arena state. The body reads it from
+// r10. The stub lives in a private RWX `mmap` page, because the image's own text
+// is not writable and the compiler cannot know a runtime closure's address. This
+// helper exists only in the hosted mode, where libc provides `mmap`.
+void emitCallbackCreate(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
+                        CodeGen::Label fail, const DataBlob& msgOom,
+                        const DataBlob& msgCallback, int stateSlot) {
+  CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label mmapFailed = cg.newLabel();
+  CodeGen::Label haveState = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 32);
+  // [rbp-24] the closure tag, [rbp-32] its payload, [rbp-40] the body address.
+  cg.movToMem(Rbp, -24, Rsi);
+  cg.movToMem(Rbp, -32, Rdx);
+  cg.movToMem(Rbp, -40, Rdi);
+
+  cg.movImm(Rdi, 32);
+  cg.callLabel(allocLabel);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movReg(R12, Rax);  // the context
+  cg.movFromMem(R10, Rbp, -24);
+  cg.movToMem(R12, 0, R10);
+  cg.movFromMem(R10, Rbp, -32);
+  cg.movToMem(R12, 8, R10);
+  cg.movToMem(R12, 16, R15);  // the Oskel global base
+
+  // The shared arena state is created once and pointed at by every registration,
+  // so a callback that allocates advances the cursor the next callback sees.
+  // The global table is an array of 16-byte `AotValue` slots; the pointer is
+  // the slot's payload (the tag stays nil, since no Oskel code reads it).
+  cg.movFromMem(R10, R15, 16 * stateSlot + 8);
+  cg.testReg(R10);
+  cg.jcc(Jcc::Ne, haveState);
+  cg.movImm(Rdi, 16);
+  cg.callLabel(allocLabel);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movReg(R10, Rax);
+  cg.movToMem(R15, 16 * stateSlot + 8, R10);
+  cg.bind(haveState);
+  cg.movToMem(R12, 24, R10);
+  // Every allocation above advanced r13/r14; the state starts from the current
+  // arena, not from a snapshot taken before the context existed.
+  cg.movToMem(R10, 0, R13);
+  cg.movToMem(R10, 8, R14);
+
+  // mmap(NULL, 4096, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS,
+  //      -1, 0). W+X keeps the page writable for the stub and executable for the
+  //      C caller; the hosted mode is Linux x86-64 only.
+  cg.xorReg(Rdi, Rdi);
+  cg.movImm(Rsi, 4096);
+  cg.movImm(Rdx, 7);
+  cg.movImm(Rcx, 0x22);
+  cg.movImm(R8, -1);
+  cg.xorReg(R9, R9);
+  cg.callExternal("mmap");
+  cg.cmpImm32(Rax, -1);
+  cg.jcc(Jcc::Eq, mmapFailed);
+  cg.movReg(Rbx, Rax);  // the stub page
+
+  cg.movImmByteToMem(Rbx, 0, 0x49);   // movabs r10, ...
+  cg.movImmByteToMem(Rbx, 1, 0xBA);
+  cg.movToMem(Rbx, 2, R12);           // the context
+  cg.movImmByteToMem(Rbx, 10, 0x49);  // movabs r11, ...
+  cg.movImmByteToMem(Rbx, 11, 0xBB);
+  cg.movFromMem(R10, Rbp, -40);
+  cg.movToMem(Rbx, 12, R10);          // the body
+  cg.movImmByteToMem(Rbx, 20, 0x41);  // jmp r11
+  cg.movImmByteToMem(Rbx, 21, 0xFF);
+  cg.movImmByteToMem(Rbx, 22, 0xE3);
+
+  cg.movReg(Rax, Rbx);
+  cg.addImm32(Rsp, 32);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+
+  cg.bind(oom);
+  emitFailCall(cg, fail, msgOom);
+  cg.bind(mmapFailed);
+  emitFailCall(cg, fail, msgCallback);
+}
+
+// The shared body of one callback signature. The C side calls a runtime stub,
+// which leaves the closure context in r10 and jumps here. The body saves the C
+// arguments, boxes them into the Oskel argument window (`args[i]` at
+// `args - 16*i`), calls `oskel_call`, and converts the result to the callback's
+// C return class.
+//
+// The C ABI is the System V AMD64 one: six GPRs, eight SSE registers, then the
+// stack. The frame keeps the saved arguments, the window and the two callee-
+// saved registers disjoint; `r12` holds the closure context across the boxing
+// helpers (they may clobber `rbx`), and `r13`/`r14` are the arena cursor/end, so
+// they are never touched.
+void emitCallbackBody(CodeGen& cg, const AotCallbackSignature& sig,
+                      CodeGen::Label call, CodeGen::Label allocLabel,
+                      CodeGen::Label voidPtrBox, CodeGen::Label fail,
+                      const DataBlob& msgOom, const DataBlob& msgType,
+                      const DataBlob& msgCStringTooLong) {
+  constexpr std::int32_t kStageBytes = (6 + 8) * 8;  // six GPRs and eight SSE slots
+  // Five callee-saved registers are pushed (rbx, r12-r15), then the stage and
+  // the window live below them. The stage base must clear the saved r15 at
+  // -40, or the SSE slots overwrite it and the body returns a wrong r15.
+  constexpr std::int64_t kSavedBytes = 5 * 8;
+  constexpr std::int64_t kStageBase = -(kSavedBytes + 8 + kStageBytes);
+  constexpr std::int64_t kArgs = kStageBase - 16;    // window[0]
+  const std::int32_t arity = static_cast<std::int32_t>(sig.params.size());
+  const std::int32_t frameBytes = kStageBytes + 16 * arity;
+  CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label bad = cg.newLabel();
+
+  cg.bind(sig.body);
+  prologue(cg);
+  // The C caller expects every callee-saved register preserved, so the body
+  // saves r13/r14/r15 -- the Oskel arena cursor/end and global base -- around
+  // the call. They are restored from the shared state, not from a snapshot: a
+  // callback that allocates advances the cursor the next callback must see.
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.push(R13);
+  cg.push(R14);
+  cg.push(R15);
+  cg.subRegImm32(Rsp, frameBytes + 8);
+  cg.movReg(R12, R10);          // the closure context from the stub
+  cg.movFromMem(R15, R12, 16);  // the Oskel global base
+  cg.movFromMem(R11, R12, 24);  // the shared arena state
+  cg.movFromMem(R13, R11, 0);   // the arena cursor
+  cg.movFromMem(R14, R11, 8);   // the arena end
+
+  // Save the C arguments before any helper call. The SSE slots keep the raw
+  // bits: a `float` is narrowed back to binary32 below, a `double` is verbatim.
+  for (int i = 0; i < 6; ++i) cg.movToMem(Rbp, kStageBase + 8 * i, kIntArgRegs[i]);
+  for (int i = 0; i < 8; ++i) {
+    cg.movqFromXmm(R11, kXmmBase + i);
+    cg.movToMem(Rbp, kStageBase + 8 * (6 + i), R11);
+  }
+
+  // Box each C argument into the window. `args[i]` sits at `args - 16*i`; the
+  // window is written through `rbp`, so a helper clobbering `rbx` is harmless.
+  for (std::int32_t i = 0; i < arity; ++i) {
+    const AotCallbackParam& param = sig.params[static_cast<std::size_t>(i)];
+    const std::int64_t slot = kArgs - 16LL * i;
+    if (param.gpr >= 0) {
+      cg.movFromMem(R11, Rbp, kStageBase + 8 * param.gpr);
+    } else if (param.sse >= 0) {
+      cg.movFromMem(R11, Rbp, kStageBase + 8 * (6 + param.sse));
+    } else if (param.cls == ffi::ParamClass::Float) {
+      cg.movFromMem32(R11, Rbp, 16 + param.stackOffset);
+    } else {
+      cg.movFromMem(R11, Rbp, 16 + param.stackOffset);
+    }
+
+    if (param.cls == ffi::ParamClass::Float) {
+      cg.movqToXmm(XmmScratch, R11);
+      cg.cvtss2sd(XmmScratch, XmmScratch);
+      cg.movqFromXmm(Rdx, XmmScratch);
+      cg.movImm(Rax, kTagFloat);
+    } else if (param.cls == ffi::ParamClass::Double) {
+      cg.movReg(Rdx, R11);
+      cg.movImm(Rax, kTagDouble);
+    } else if (param.cls == ffi::ParamClass::Pointer) {
+      if (param.type == "cstring") {
+        emitCStringBox(cg, R11, oom, allocLabel, fail, msgCStringTooLong);
+      } else {
+        cg.movReg(Rdi, R11);
+        cg.callLabel(voidPtrBox);
+      }
+    } else if (param.type == "bool") {
+      cg.movReg(Rax, R11);
+      cg.andImm32(Rax, 0xff);
+      cg.testReg(Rax);
+      cg.setcc(Jcc::Ne, Rdx);
+      cg.movzx(Rdx, Rdx);
+      cg.movImm(Rax, kTagBool);
+    } else {
+      cg.movReg(Rax, R11);
+      normalizeIntegerReturn(cg, param.type);
+      cg.movReg(Rdx, Rax);
+      cg.movImm(Rax, kTagInt);
+    }
+    cg.movToMem(Rbp, slot, Rax);
+    cg.movToMem(Rbp, slot + 8, Rdx);
+  }
+
+  // Call the Oskel closure. The context is an `AotValue` (Func, AotClosure*).
+  cg.movFromMem(Rdi, R12, 0);
+  cg.movFromMem(Rsi, R12, 8);
+  cg.movImm(Rdx, arity);
+  cg.leaMem(Rcx, Rbp, kArgs);
+  cg.callLabel(call);
+
+  // Convert the returned `AotValue` (rax:rdx) to the callback's C return class.
+  switch (sig.returns) {
+    case ffi::ReturnClass::Void:
+      break;
+    case ffi::ReturnClass::Bool: {
+      CodeGen::Label asBool = cg.newLabel();
+      CodeGen::Label asInt = cg.newLabel();
+      CodeGen::Label done = cg.newLabel();
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagBool));
+      cg.jcc(Jcc::Eq, asBool);
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+      cg.jcc(Jcc::Eq, asInt);
+      cg.jmp(bad);
+      cg.bind(asBool);
+      cg.movReg(Rax, Rdx);
+      cg.andImm32(Rax, 1);
+      cg.jmp(done);
+      cg.bind(asInt);
+      cg.testReg(Rdx);
+      cg.setcc(Jcc::Ne, Rax);
+      cg.movzx(Rax, Rax);
+      cg.bind(done);
+      break;
+    }
+    case ffi::ReturnClass::Int: {
+      CodeGen::Label asInt = cg.newLabel();
+      CodeGen::Label asBool = cg.newLabel();
+      CodeGen::Label done = cg.newLabel();
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+      cg.jcc(Jcc::Eq, asInt);
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagBool));
+      cg.jcc(Jcc::Eq, asBool);
+      cg.jmp(bad);
+      cg.bind(asInt);
+      cg.movReg(Rax, Rdx);
+      normalizeIntegerReturn(cg, sig.returnType);
+      cg.jmp(done);
+      cg.bind(asBool);
+      cg.movReg(Rax, Rdx);
+      cg.andImm32(Rax, 1);
+      cg.bind(done);
+      break;
+    }
+    case ffi::ReturnClass::Float: {
+      CodeGen::Label asNumber = cg.newLabel();
+      CodeGen::Label asInt = cg.newLabel();
+      CodeGen::Label done = cg.newLabel();
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagFloat));
+      cg.jcc(Jcc::Eq, asNumber);
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
+      cg.jcc(Jcc::Eq, asNumber);
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+      cg.jcc(Jcc::Eq, asInt);
+      cg.jmp(bad);
+      cg.bind(asNumber);
+      cg.movqToXmm(Xmm0, Rdx);
+      cg.cvtsd2ss(Xmm0, Xmm0);
+      cg.jmp(done);
+      cg.bind(asInt);
+      cg.cvtsi2sd(XmmScratch, Rdx);
+      cg.cvtsd2ss(Xmm0, XmmScratch);
+      cg.bind(done);
+      break;
+    }
+    case ffi::ReturnClass::Double: {
+      CodeGen::Label asNumber = cg.newLabel();
+      CodeGen::Label asInt = cg.newLabel();
+      CodeGen::Label done = cg.newLabel();
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagFloat));
+      cg.jcc(Jcc::Eq, asNumber);
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
+      cg.jcc(Jcc::Eq, asNumber);
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+      cg.jcc(Jcc::Eq, asInt);
+      cg.jmp(bad);
+      cg.bind(asNumber);
+      cg.movqToXmm(Xmm0, Rdx);
+      cg.jmp(done);
+      cg.bind(asInt);
+      cg.cvtsi2sd(Xmm0, Rdx);
+      cg.bind(done);
+      break;
+    }
+    case ffi::ReturnClass::CString: {
+      CodeGen::Label isNil = cg.newLabel();
+      CodeGen::Label isStr = cg.newLabel();
+      CodeGen::Label isPtr = cg.newLabel();
+      CodeGen::Label done = cg.newLabel();
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagNil));
+      cg.jcc(Jcc::Eq, isNil);
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+      cg.jcc(Jcc::Eq, isStr);
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagPtr));
+      cg.jcc(Jcc::Eq, isPtr);
+      cg.jmp(bad);
+      cg.bind(isNil);
+      cg.xorReg(Rax, Rax);
+      cg.jmp(done);
+      cg.bind(isPtr);
+      cg.movFromMem(Rax, Rdx, kPtrDataOffset);
+      cg.jmp(done);
+      cg.bind(isStr);
+      // An AotString is not NUL-terminated; copy it into an arena block with
+      // the terminator, exactly like a `cstring` argument.
+      cg.movReg(Rbx, Rdx);              // the AotString*
+      cg.movFromMem(Rdi, Rbx, 0);       // the byte length
+      cg.addImm32(Rdi, 1);              // plus the NUL
+      cg.callLabel(allocLabel);
+      cg.testReg(Rax);
+      cg.jcc(Jcc::Eq, oom);
+      cg.movReg(Rdi, Rax);
+      cg.movReg(Rsi, Rbx);
+      cg.addImm32(Rsi, static_cast<std::int32_t>(kAotStringHeaderSize));
+      cg.movFromMem(Rcx, Rbx, 0);
+      cg.repMovsb();
+      cg.movImmByteToMem(Rdi, 0, 0);
+      cg.bind(done);
+      break;
+    }
+    case ffi::ReturnClass::Ptr: {
+      CodeGen::Label isNil = cg.newLabel();
+      CodeGen::Label isPtr = cg.newLabel();
+      CodeGen::Label done = cg.newLabel();
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagNil));
+      cg.jcc(Jcc::Eq, isNil);
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagPtr));
+      cg.jcc(Jcc::Eq, isPtr);
+      cg.jmp(bad);
+      cg.bind(isNil);
+      cg.xorReg(Rax, Rax);
+      cg.jmp(done);
+      cg.bind(isPtr);
+      cg.movFromMem(Rax, Rdx, kPtrDataOffset);
+      cg.bind(done);
+      break;
+    }
+    default:
+      cg.jmp(bad);
+      break;
+  }
+
+  // Park the advanced arena cursor/end for the next callback, then restore the
+  // C caller's callee-saved registers.
+  cg.movFromMem(R11, R12, 24);
+  cg.movToMem(R11, 0, R13);
+  cg.movToMem(R11, 8, R14);
+  cg.addImm32(Rsp, frameBytes + 8);
+  cg.pop(R15);
+  cg.pop(R14);
+  cg.pop(R13);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+
+  cg.bind(oom);
+  emitFailCall(cg, fail, msgOom);
+  cg.bind(bad);
+  emitFailCall(cg, fail, msgType);
 }
 
 }  // namespace
@@ -14647,7 +15086,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                     const RuntimeHandles& entry,
                     const std::vector<AotExternThunk>* externThunks, bool hosted,
                     bool hasInput, bool bareMetal, int randomStateSlot,
-                    int pcallHandlerSlot, const AotRuntimeExtras& extras) {
+                    int pcallHandlerSlot, const AotRuntimeExtras& extras,
+                    const std::vector<AotCallbackSignature>* callbacks) {
   // Constant text, bound after all code so nothing falls through into it.
   std::vector<DataBlob> data;
   auto addText = [&](const char* text) {
@@ -14971,6 +15411,12 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
     msgCStringTooLong = addText(
         "a C function returned a 'cstring' longer than 16777216 bytes with no NUL "
         "terminator; the host broke the `const char *` contract");
+  }
+  // A callback registration that cannot get its executable stub. Hosted only:
+  // the freestanding image has no `extern "C"` surface and no `mmap`.
+  DataBlob msgCallback;
+  if (externThunks != nullptr) {
+    msgCallback = addText("could not allocate a callback trampoline");
   }
   CodeGen::Label fail = cg.newLabel();
   CodeGen::Label failDynamic = cg.newLabel();
@@ -15368,17 +15814,45 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitArityError(cg, handles.arityError, fail, msgArity);
   if (externThunks != nullptr) {
     // The box is emitted only for a signature that needs it, so a program with
-    // no `ptr`-returning binding keeps its binary byte for byte.
+    // no `ptr`-returning binding and no `ptr` callback parameter keeps its
+    // binary byte for byte.
+    bool needsVoidPtrBox = false;
     for (const AotExternThunk& thunk : *externThunks) {
       if (thunk.returns == ffi::ReturnClass::Ptr) {
-        emitVoidPtrBox(cg, voidPtrBox, ptrNew, fail, msgOom);
+        needsVoidPtrBox = true;
         break;
+      }
+    }
+    if (!needsVoidPtrBox && callbacks != nullptr) {
+      for (const AotCallbackSignature& signature : *callbacks) {
+        for (const AotCallbackParam& param : signature.params) {
+          if (param.cls == ffi::ParamClass::Pointer && param.type != "cstring") {
+            needsVoidPtrBox = true;
+            break;
+          }
+        }
+        if (needsVoidPtrBox) break;
+      }
+    }
+    if (needsVoidPtrBox) emitVoidPtrBox(cg, voidPtrBox, ptrNew, fail, msgOom);
+
+    // A callback's C function pointer is a runtime stub (the image text is not
+    // writable), so the helper and the shared bodies are emitted before the
+    // thunks that reference them.
+    CodeGen::Label callbackCreate = cg.newLabel();
+    if (callbacks != nullptr && !callbacks->empty()) {
+      emitCallbackCreate(cg, callbackCreate, handles.alloc, fail, msgOom, msgCallback,
+                         extras.callbackStateSlot);
+      for (const AotCallbackSignature& signature : *callbacks) {
+        emitCallbackBody(cg, signature, handles.call, handles.alloc, voidPtrBox, fail,
+                         msgOom, msgExternType, msgCStringTooLong);
       }
     }
     for (const AotExternThunk& thunk : *externThunks) {
       emitExternThunk(cg, thunk, fail, handles.alloc, handles.memberGet, handles.tableNew,
                       handles.memberSet, voidPtrBox, msgArity, msgExternType, msgOom,
-                      msgCStringTooLong);
+                      msgCStringTooLong, callbacks, callbackCreate,
+                      extras.callbackStateSlot);
     }
   }
   emitPrintStrEsc(cg, printStrEsc, entry.write, textQuote, textEscQuote,
