@@ -2059,15 +2059,17 @@ Still open, and each reported rather than mis-compiled:
   `supportedBuiltins()` in `src/frontend/native/wasm.cpp`.
 - A used `extern "C"` or `native fn` symbol with no builtin stub is a build
   error, the WASM counterpart of the AOT backend's message.
-- `double` printing is the shortest round-trip form `std::to_chars` produces:
-  `fmtDouble` scales with a 633-entry `pow10` table, generates 18 significant
-  digits, rounds the 18th into the 17th, tries every shorter precision and
-  re-parses each candidate with `parseDoubleStr`, then emits the shorter of
-  fixed and scientific (fixed on a tie), including `-0`, subnormals and
-  `e±NN`. `parseDoubleStr` combines the fraction into one `mantissa / scale`
-  division and applies the exponent with one table multiply/divide.
-  `tests/native_build_double_format.oskl` and `tests/native_build_math.oskl`
-  pin it.
+- `double` printing is the shortest round-trip form the VM emits. The WASM
+  backend ports the x86-64 Dragon4 generator (`dtoa.cpp`): a static scratch
+  block holds the `r`/`s`/`mp`/`mm`/`t` bignums, the digit buffer and the input
+  fields; emitted helpers (`bnSetU64`, `bnSetU32`, `bnCopy`, `bnCmp`,
+  `bnMulSmall`, `bnShl`, `bnSub`, `bnAdd`, `bnMulPow10`, `bnDivMod`) implement
+  the arithmetic and `generate` fills `digits`, `nd` and `k`. `fmtDouble`
+  formats from `nd`/`k` with the same fixed/scientific choice as the x86-64
+  backend, including `-0`, subnormals and `e±NN`. `parseDoubleStr` combines the
+  fraction into one `mantissa / scale` division and applies the exponent with
+  one table multiply/divide. `tests/native_build_double_format.oskl` and
+  `tests/native_build_math.oskl` pin it.
 
 Testing: `tests/native_build_wasm.oskl` is compiled to a module and run under
 Node by `tests/wasm_case.cmake` (CTest `oskel.build_wasm`), which compares its
