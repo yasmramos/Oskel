@@ -1959,17 +1959,16 @@ an array), and the builtins `print`, `write`, `eprint`, `len`, `type`, `str`,
 `$str`, `repr`, `int`, `float`, `double`, `bool`, `chr`, `ord`, `floor`,
 `ceil`, `round`, `sqrt`, `assert`, `assertEq`, `panic`, `error`, `isError`,
 `$isError`, `$nonNull`, `range`, `$range`, `$slice`, `time`, `clock` and
-`exit`. `int`/`float`/`double` also parse strings, so `std/json` builds and
-agrees with the VM byte for byte; the host clock makes `std/datetime` agree
-too.
+`exit`. The array, map and string methods are bound too (the same list as the
+x86-64 backend), so `std/json`, `std/datetime`, `std/collections`, `std/path`
+and the bound half of `std.math` build and agree with the VM byte for byte; the
+host clock is what lets `std/datetime` read `time()`/`clock()`.
 
 Still open, and each reported rather than mis-compiled:
 
-- **Collection and string methods** (`.push`, `.map`, `.join`, `.upper`,
-  `.split`, `.sort`, ...) are not bound yet. A map returns `nil` for an absent
-  name; an array or string raises the runtime "no such member" error. This is
-  what keeps `std/collections.oskl` and most of `std/datetime.oskl` out of
-  reach for now.
+- **Transcendental builtins** (`sin`, `cos`, `tan`, `log`, `exp`, ...) are not
+  bound yet; `std.math` builds and its `abs`/`min`/`max`/`clamp`/`sqrt`/`PI`/`E`
+  subset agrees with the VM, but a call to an unbound name reports the gap.
 - A builtin the backend does not bind is **seeded as a closure that raises a
   clear runtime error when called**, not left unseeded: a module that merely
   *declares* `native fn sin` (through `import std.math`) still builds, while a
@@ -1977,17 +1976,24 @@ Still open, and each reported rather than mis-compiled:
   `supportedBuiltins()` in `src/frontend/native/wasm.cpp`.
 - A used `extern "C"` or `native fn` symbol with no builtin stub is a build
   error, the WASM counterpart of the AOT backend's message.
-- `print` of a non-integral `double` renders the integer part, `.`, and up to
-  17 fractional digits with trailing zeros trimmed. That matches `std::to_chars`
-  for JSON-sized values such as `3.5`, `-1.25` and `0.025`; a value whose
-  shortest form needs rounding rather than the exact binary expansion (`123456789.123`) or scientific notation (`1e10`) is a known divergence.
-  A shortest round-trip dtoa is PHASE 9.2.
+- `double` printing is the shortest round-trip form `std::to_chars` produces:
+  `fmtDouble` scales with a 633-entry `pow10` table, generates 18 significant
+  digits, rounds the 18th into the 17th, tries every shorter precision and
+  re-parses each candidate with `parseDoubleStr`, then emits the shorter of
+  fixed and scientific (fixed on a tie), including `-0`, subnormals and
+  `e±NN`. `parseDoubleStr` combines the fraction into one `mantissa / scale`
+  division and applies the exponent with one table multiply/divide.
+  `tests/native_build_double_format.oskl` and `tests/native_build_math.oskl`
+  pin it.
 
 Testing: `tests/native_build_wasm.oskl` is compiled to a module and run under
 Node by `tests/wasm_case.cmake` (CTest `oskel.build_wasm`), which compares its
 output with the VM's byte for byte. The fixture covers the scalar core, arrays,
-maps, slicing, variadics and `std/json`. The tests need Node and are skipped
-where it is absent.
+maps, slicing and variadics; `oskel.build_wasm_datetime`,
+`oskel.build_wasm_collections`, `oskel.build_wasm_math` and
+`oskel.build_wasm_double_format` add `std/datetime`, `std/collections`,
+`std/math` and the full-range double formatter. The tests need Node and are
+skipped where it is absent.
 
 ### Post-1.0 — UI library
 

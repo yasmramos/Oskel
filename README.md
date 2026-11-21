@@ -436,12 +436,13 @@ The value model is the AOT one — a `(tag, payload)` pair of `i64` per register
 so tags, string layout, closure layout and the semantics of every operator
 match the x86-64 backend. Strings, ranges, closures/upvalues, error values,
 arrays and maps (indexing, iteration, structural equality, `str`/`repr`),
-slicing, variadic functions, control flow and the portable builtins work;
-`std/json` and `std/datetime` build and agree with the VM byte for byte. Collection and string
-*methods* (`.push`, `.map`, `.split`, ...) are not bound yet, and a builtin with
-no WASM body is seeded as a closure that raises a clear runtime error when
-called. The remaining gaps are listed in [DEVELOPMENT.md](DEVELOPMENT.md)
-PHASE 9 and `docs/BACKLOG.md` §6.
+slicing, variadic functions, control flow, the portable builtins and the
+array/map/string *methods* (`.push`, `.map`, `.split`, ...) work;
+`std/json`, `std/datetime`, `std/collections`, `std/path` and the bound half of
+`std.math` build and agree with the VM byte for byte, and `double` printing is
+the same shortest round-trip form. A builtin with no WASM body is seeded as a
+closure that raises a clear runtime error when called. The remaining gaps are
+listed in [DEVELOPMENT.md](DEVELOPMENT.md) PHASE 9 and `docs/BACKLOG.md` §6.
 
 ## Tests
 

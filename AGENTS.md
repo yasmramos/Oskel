@@ -289,18 +289,25 @@ it as a caveat:
   covers both, `==` is structural (with the cycle-safe visited list), and a
   variadic proto packs its extras into an array bound to the last parameter.
   `$slice` and the string-to-number forms of `int`/`float`/`double` are bound,
-  so `std/json` builds and matches the VM byte for byte. `time()` and `clock()`
-  read the host imports, so `std/datetime` does too.
+  so `std/json`, `std/datetime` and `std/collections` build and match the VM
+  byte for byte; `time()`/`clock()` read the host imports.
 - A construct the backend cannot lower yet must fail cleanly, never emit a
   mis-compiled module: an unbound builtin is seeded as a trapping closure, and
   a used `extern "C"`/`native fn` symbol with no stub is a build error (exit
   65). `tests/native_build_wasm.oskl` pins the supported surface against the VM
   byte for byte.
-- Non-integral `double` printing renders the integer part, `.`, and up to 17
-  fractional digits with trailing zeros trimmed. That matches `std::to_chars`
-  for the values a JSON document carries, but a value whose shortest form
-  needs rounding rather than the exact binary expansion (for example `123456789.123`) or scientific notation (`1e10`) is a known divergence
-  (BACKLOG §6 item 26); a full shortest-round-trip dtoa is PHASE 9.2.
+- `double` printing is the same shortest round-trip form `std::to_chars`
+  produces, not a fixed-point approximation: `fmtDouble` generates 18
+  significant digits by scaling with the 633-entry `pow10` table
+  (`1e-324`..`1e308`, built with `strtod` so every entry is the correctly
+  rounded double), rounds the 18th into the 17th, then tries every shorter
+  precision and re-parses the candidate with `parseDoubleStr`. It emits the
+  shorter of fixed and scientific (fixed on a tie), and handles `-0`,
+  subnormals and `e±NN`. `parseDoubleStr` combines the fraction into one
+  `mantissa / scale` division (a term-by-term sum rounds twice and accepts a
+  15-digit prefix that does not round-trip) and applies the exponent with one
+  table multiply/divide. `tests/native_build_double_format.oskl` pins the
+  whole range and `tests/native_build_math.oskl` pins `PI`/`E`/`sqrt`.
 
 ## SDL3 bindings (`std/sdl.oskl`)
 

@@ -11,6 +11,15 @@ may change between minor versions.
 
 ### Added
 
+- **WebAssembly backend (PHASE 9).** `oskel build --target
+  wasm32-freestanding-wasm` emits a freestanding `.wasm` module behind the
+  existing `Target` descriptor. The value model is the AOT `(tag, payload)`
+  pair; arrays, maps, slicing, closures, variadics, the array/map/string
+  methods and the portable builtins are lowered to ordinary WASM functions, so
+  `std/json`, `std/datetime`, `std/collections`, `std/path` and the bound
+  `std.math` surface agree with the VM byte for byte. The module imports only
+  `oskel.write`, `oskel.exit`, `oskel.time` and `oskel.clock`; Node is the test
+  host.
 - **`oskelp`, the project and package manager.** A Cargo-style tool that owns
   the project instead of the language: `oskel.toml` (a strict TOML subset with
   `[package]` and path `[dependencies]`), `oskel.lock`, recursive path
@@ -86,6 +95,18 @@ may change between minor versions.
 
 ### Fixed
 
+- **WASM `double` formatting now matches the VM across the whole range.**
+  The formatter generated up to 17 fractional digits and trimmed zeros, which
+  diverged from `std::to_chars` whenever the shortest form needed rounding
+  (`123456789.123`), scientific notation (`1e10`, `1e150`) or the subnormal
+  boundary (`5e-324`). It now scales with a 633-entry `pow10` table, generates
+  18 significant digits, rounds the 18th into the 17th, tries every shorter
+  precision and re-parses the candidate, then emits the shorter of fixed and
+  scientific. `parseDoubleStr` combines the fraction into one
+  `mantissa / scale` division and applies the exponent with one table
+  multiply/divide, so the candidate check cannot accept a value that does not
+  round-trip. `tests/native_build_double_format.oskl` and
+  `tests/native_build_math.oskl` pin the result against the VM.
 - **Eight builtins read past the argument window instead of rejecting a wrong
   argument count, and `seed()` did not return `nil`.** The AOT builtins for
   `len`, `type`, `str`, `repr`, `bool`, `isError`, `ord` and `chr` never looked
