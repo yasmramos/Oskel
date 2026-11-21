@@ -411,11 +411,13 @@ consume. It is a new backend behind the `Target` descriptor
 (`Target::wasm32()`), not a different compiler: the language, the type checker
 and the lowering pipeline are shared, and only the emitter differs.
 
-The module is self-contained except for two imports and one export:
+The module is self-contained except for four imports and one export:
 
 ```wat
 (import "oskel" "write" (func (param i32 i32 i32) (result i32)))  ;; fd, ptr, len
 (import "oskel" "exit"  (func (param i32)))                       ;; exit code
+(import "oskel" "time"  (func (result i64)))                      ;; epoch second
+(import "oskel" "clock" (func (result f64)))                      ;; monotonic second
 (export "_start" (func))
 ```
 
@@ -433,11 +435,13 @@ In a browser, `WebAssembly.instantiate` with an `oskel` import object whose
 The value model is the AOT one — a `(tag, payload)` pair of `i64` per register —
 so tags, string layout, closure layout and the semantics of every operator
 match the x86-64 backend. Strings, ranges, closures/upvalues, error values,
-control flow and the portable builtins work. Collections (arrays and maps) and
-variadic functions are rejected at build time with a dedicated message (exit
-65); a builtin with no WASM body is seeded as a closure that raises a clear
-runtime error when called. The remaining gaps are listed in
-[DEVELOPMENT.md](DEVELOPMENT.md) PHASE 9 and `docs/BACKLOG.md` §6.
+arrays and maps (indexing, iteration, structural equality, `str`/`repr`),
+slicing, variadic functions, control flow and the portable builtins work;
+`std/json` and `std/datetime` build and agree with the VM byte for byte. Collection and string
+*methods* (`.push`, `.map`, `.split`, ...) are not bound yet, and a builtin with
+no WASM body is seeded as a closure that raises a clear runtime error when
+called. The remaining gaps are listed in [DEVELOPMENT.md](DEVELOPMENT.md)
+PHASE 9 and `docs/BACKLOG.md` §6.
 
 ## Tests
 

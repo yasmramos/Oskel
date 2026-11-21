@@ -273,21 +273,34 @@ it as a caveat:
   `isWasmTarget()` routes it in `src/frontend/cli.cpp`; `isSupportedTarget()`
   deliberately stays x86-64-only, because `requireSupportedTarget` guards the
   x86-64 emitter.
-- The module imports only `oskel.write(fd, ptr, len) -> i32` and
-  `oskel.exit(code)`, and exports `_start`. `tests/run_wasm.cjs` is the Node
-  host that supplies both; the tests are skipped where Node is absent.
+- The module imports `oskel.write(fd, ptr, len) -> i32`, `oskel.exit(code)`,
+  `oskel.time() -> i64` and `oskel.clock() -> f64`, and exports `_start`.
+  `tests/run_wasm.cjs` is the Node host that supplies all four; the tests are
+  skipped where Node is absent.
 - The runtime helpers (`print`, `toStr`, `repr`, the operators, iteration,
   member access, the builtins) are ordinary WASM functions emitted by
   `Runtime` in the same file, not a hand-written blob. Registers are `(i64 tag,
   i64 payload)` local pairs; the globals table is 16 bytes per slot at offset 0,
   followed by the static pool and the bump arena.
+- The collection half of the language is supported too: `NEWTABLE` creates an
+  array or a map, `GETTABLE`/`SETTABLE` dispatch to `indexGet`/`indexSet`
+  (array/string/map) or `memberGet`/`memberSet` (error fields, map fields,
+  `length`), `for ... in` walks arrays and maps (with the key/value pair), `in`
+  covers both, `==` is structural (with the cycle-safe visited list), and a
+  variadic proto packs its extras into an array bound to the last parameter.
+  `$slice` and the string-to-number forms of `int`/`float`/`double` are bound,
+  so `std/json` builds and matches the VM byte for byte. `time()` and `clock()`
+  read the host imports, so `std/datetime` does too.
 - A construct the backend cannot lower yet must fail cleanly, never emit a
-  mis-compiled module: `NEWTABLE` and variadic protos are build errors (exit
-  65) with dedicated messages, and an unbound builtin is seeded as a trapping
-  closure. `tests/wasm_reject_arrays.oskl` pins the array rejection;
-  `tests/native_build_wasm.oskl` pins the supported surface against the VM
-  byte for byte. Non-integral `double` printing is still PHASE 9.2; the parity
-  fixture prints only integral doubles.
+  mis-compiled module: an unbound builtin is seeded as a trapping closure, and
+  a used `extern "C"`/`native fn` symbol with no stub is a build error (exit
+  65). `tests/native_build_wasm.oskl` pins the supported surface against the VM
+  byte for byte.
+- Non-integral `double` printing renders the integer part, `.`, and up to 17
+  fractional digits with trailing zeros trimmed. That matches `std::to_chars`
+  for the values a JSON document carries, but a value whose shortest form
+  needs rounding rather than the exact binary expansion (for example `123456789.123`) or scientific notation (`1e10`) is a known divergence
+  (BACKLOG §6 item 26); a full shortest-round-trip dtoa is PHASE 9.2.
 
 ## SDL3 bindings (`std/sdl.oskl`)
 

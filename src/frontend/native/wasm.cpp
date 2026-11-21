@@ -67,6 +67,22 @@ constexpr std::uint64_t kStr = static_cast<std::uint64_t>(AotTag::Str);
 constexpr std::uint64_t kFunc = static_cast<std::uint64_t>(AotTag::Func);
 constexpr std::uint64_t kRange = static_cast<std::uint64_t>(AotTag::Range);
 constexpr std::uint64_t kError = static_cast<std::uint64_t>(AotTag::Error);
+constexpr std::uint64_t kArray = static_cast<std::uint64_t>(AotTag::Array);
+constexpr std::uint64_t kMap = static_cast<std::uint64_t>(AotTag::Map);
+
+// On-image layouts, shared with `include/native/value.h`. An array is
+// {length, capacity, items}; a map is {length, capacity, entries}, where an
+// entry is {key AotString*, value tag, value payload} (24 bytes).
+constexpr std::uint32_t kArrayLengthOffset = 0;
+constexpr std::uint32_t kArrayCapacityOffset = 8;
+constexpr std::uint32_t kArrayItemsOffset = 16;
+constexpr std::uint32_t kMapLengthOffset = 0;
+constexpr std::uint32_t kMapCapacityOffset = 8;
+constexpr std::uint32_t kMapEntriesOffset = 16;
+constexpr std::uint32_t kMapEntryKeyOffset = 0;
+constexpr std::uint32_t kMapEntryTagOffset = 8;
+constexpr std::uint32_t kMapEntryPayloadOffset = 16;
+constexpr std::uint32_t kMapEntrySize = 24;
 
 // --------------------------------------------------------------- module model
 struct FuncType {
@@ -342,6 +358,8 @@ class Func {
   void f64Gt() { op(0x64); }
   void f64Le() { op(0x65); }
   void f64Ge() { op(0x66); }
+  void f64ConvertI32S() { op(0xB7); }
+  void f64ConvertI32U() { op(0xB8); }
   void f64ConvertI64S() { op(0xB9); }
   void f64ConvertI64U() { op(0xBA); }
   void f64PromoteF32() { op(0xBB); }
@@ -533,10 +551,16 @@ struct Runtime {
   ModuleBuilder& m;
   StaticPool& pool;
 
-  std::uint32_t tWrite = 0, tExit = 0, tValue = 0, tStart = 0, tBin = 0,
-                tUn = 0, tTruthy = 0, tAlloc = 0, tIter = 0, tFmtInt = 0;
+  std::uint32_t tWrite = 0, tExit = 0, tTime = 0, tClock = 0, tValue = 0,
+                tStart = 0, tBin = 0,
+                tUn = 0, tTruthy = 0, tAlloc = 0, tIter = 0, tFmtInt = 0,
+                tNewArray = 0, tNewMap = 0, tArrayPush = 0, tArrayGet = 0,
+                tArraySet = 0, tMapFind = 0, tMapSet = 0, tMapGet = 0,
+                tMapDelete = 0, tEquals = 0, tToStrDepth = 0, tInvoke = 0,
+                tBindMethod = 0;
 
-  std::uint32_t writeImport = 0, exitImport = 0;
+  std::uint32_t writeImport = 0, exitImport = 0, timeImport = 0,
+                clockImport = 0;
 
   // Static strings the helpers and the builtins share.
   std::uint32_t sNil = 0, sTrue = 0, sFalse = 0, sNan = 0, sInf = 0, sNegInf = 0,
@@ -557,12 +581,24 @@ struct Runtime {
                 sNonNull = 0, sLenType = 0;
   std::uint32_t sMessage = 0, sCode = 0, sNoMember = 0, sCannotIndex = 0,
                 sStringImmutable = 0, sIndexRange = 0, sKeyValue = 0;
+  std::uint32_t sOpenBracket = 0, sCloseBracket = 0, sOpenBrace = 0,
+                sCloseBrace = 0, sColonSpace = 0, sEllipsis = 0, sLength = 0,
+                sCannotSetField = 0, sCannotSlice = 0, sSliceStartInt = 0,
+                sSliceEndInt = 0, sSliceStepInt = 0, sSliceStepZero = 0;
+  std::uint32_t sArrayIndexInt = 0, sMapKeyString = 0, sStringIndexInt = 0,
+                sArrayRange = 0, sMapMembership = 0, sStringMembership = 0,
+                sCannotAssignIndex = 0;
 
   std::uint32_t alloc = 0, fail = 0, writeStr = 0, utf8Len = 0, newStr = 0,
                 concat = 0, strCmp = 0, fmtInt = 0, fmtDouble = 0, fmtRange = 0,
                 toStr = 0, quote = 0, reprStr = 0, truthy = 0, iterStep = 0,
                 typeName = 0, fmtFunc = 0, memberGet = 0, memberSet = 0,
-                utf8ByteOffset = 0;
+                utf8ByteOffset = 0, indexGet = 0, indexSet = 0;
+  std::uint32_t newArray = 0, newMap = 0, arrayPush = 0, arrayGet = 0,
+                arraySet = 0, mapFind = 0, mapSet = 0, mapGet = 0,
+                mapDelete = 0, mapClear = 0, equals = 0, toStrDepth = 0,
+                reprDepth = 0, slice = 0, parseIntStr = 0,
+                parseDoubleStr = 0;
 
   std::uint32_t opAdd = 0, opSub = 0, opMul = 0, opDiv = 0, opMod = 0,
                 opPow = 0, opBand = 0, opBor = 0, opBxor = 0, opShl = 0,
@@ -572,20 +608,37 @@ struct Runtime {
   void declareTypes() {
     tWrite = m.typeFor({kI32, kI32, kI32}, {kI32});
     tExit = m.typeFor({kI32}, {});
+    tTime = m.typeFor({}, {kI64});
+    tClock = m.typeFor({}, {kF64});
     tValue = m.typeFor({kI32, kI32, kI32}, {kI64, kI64});
     tStart = m.typeFor({}, {});
     tBin = m.typeFor({kI64, kI64, kI64, kI64}, {kI64, kI64});
     tUn = m.typeFor({kI64, kI64}, {kI64, kI64});
     tTruthy = m.typeFor({kI64, kI64}, {kI32});
     tAlloc = m.typeFor({kI32}, {kI32});
-    tIter = m.typeFor({kI64, kI64, kI64, kI64},
-                      {kI64, kI64, kI64, kI64, kI32});
+    tIter = m.typeFor({kI64, kI64, kI64, kI64, kI32},
+                      {kI64, kI64, kI64, kI64, kI32, kI64, kI64});
     tFmtInt = m.typeFor({kI64}, {kI32});
+    tNewArray = m.typeFor({kI64}, {kI64, kI64});
+    tNewMap = m.typeFor({}, {kI64, kI64});
+    tArrayPush = m.typeFor({kI32, kI64, kI64}, {});
+    tArrayGet = m.typeFor({kI32, kI64}, {kI64, kI64});
+    tArraySet = m.typeFor({kI32, kI64, kI64, kI64}, {});
+    tMapFind = m.typeFor({kI32, kI32}, {kI32});
+    tMapSet = m.typeFor({kI32, kI32, kI64, kI64}, {});
+    tMapGet = m.typeFor({kI32, kI32}, {kI64, kI64});
+    tMapDelete = m.typeFor({kI32, kI32}, {kI32});
+    tEquals = m.typeFor({kI64, kI64, kI64, kI64, kI32}, {kI32});
+    tToStrDepth = m.typeFor({kI64, kI64, kI32}, {kI32});
+    tInvoke = m.typeFor({kI64, kI64, kI32, kI32}, {kI64, kI64});
+    tBindMethod = m.typeFor({kI64, kI64, kI64}, {kI64, kI64});
   }
 
   void addImports() {
     writeImport = m.addImport("oskel", "write", tWrite);
     exitImport = m.addImport("oskel", "exit", tExit);
+    timeImport = m.addImport("oskel", "time", tTime);
+    clockImport = m.addImport("oskel", "clock", tClock);
   }
 
   void addStaticStrings() {
@@ -637,12 +690,10 @@ struct Runtime {
     sChrSurrogate = pool.addString("chr() code point is a surrogate");
     sOrdSingle = pool.addString("ord() expects a single character");
     sSqrtNegative = pool.addString("sqrt() of a negative number");
-    sIntString = pool.addString(
-        "int() of a string is not supported by the WebAssembly backend yet (PHASE 9)");
+    sIntString = pool.addString("cannot convert this string to int");
     sIntNonFinite = pool.addString("cannot convert a non-finite float to int");
     sIntRange = pool.addString("float is out of the integer range");
-    sFloatString = pool.addString(
-        "float()/double() of a string is not supported by the WebAssembly backend yet (PHASE 9)");
+    sFloatString = pool.addString("cannot convert this string to double");
     sAssertFailed = pool.addString("assertion failed");
     sPanic = pool.addString("panic");
     sNonNull = pool.addString("unexpected nil (non-null assertion '!!' failed)");
@@ -655,6 +706,26 @@ struct Runtime {
     sIndexRange = pool.addString("index out of range");
     sKeyValue = pool.addString(
         "key/value iteration ('for k, v in ...') requires a map");
+    sOpenBracket = pool.addString("[");
+    sCloseBracket = pool.addString("]");
+    sOpenBrace = pool.addString("{");
+    sCloseBrace = pool.addString("}");
+    sColonSpace = pool.addString(": ");
+    sEllipsis = pool.addString("...");
+    sLength = pool.addString("length");
+    sCannotSetField = pool.addString("cannot set a field on this value");
+    sCannotSlice = pool.addString("cannot slice a value of this type");
+    sSliceStartInt = pool.addString("slice start must be an integer");
+    sSliceEndInt = pool.addString("slice end must be an integer");
+    sSliceStepInt = pool.addString("slice step must be an integer");
+    sSliceStepZero = pool.addString("slice step must not be zero");
+    sArrayIndexInt = pool.addString("array index must be an integer");
+    sMapKeyString = pool.addString("map keys must be strings");
+    sStringIndexInt = pool.addString("string index must be an integer");
+    sArrayRange = pool.addString("array index out of range");
+    sMapMembership = pool.addString("map membership requires a string key");
+    sStringMembership = pool.addString("string membership requires a string operand");
+    sCannotAssignIndex = pool.addString("cannot assign to an index of this value");
   }
 
   // (tag, payload) -> bool value on the stack.
@@ -700,6 +771,24 @@ struct Runtime {
   std::uint32_t emitIterStep();
   std::uint32_t emitTypeName();
   std::uint32_t emitFmtFunc();
+  std::uint32_t emitNewArray();
+  std::uint32_t emitNewMap();
+  std::uint32_t emitArrayPush();
+  std::uint32_t emitArrayGet();
+  std::uint32_t emitArraySet();
+  std::uint32_t emitMapFind();
+  std::uint32_t emitMapSet();
+  std::uint32_t emitMapGet();
+  std::uint32_t emitMapDelete();
+  std::uint32_t emitMapClear();
+  std::uint32_t emitEquals();
+  std::uint32_t emitToStrDepthBody(std::uint32_t index);
+  std::uint32_t emitReprDepthBody(std::uint32_t index);
+  std::uint32_t emitIndexGet();
+  std::uint32_t emitIndexSet();
+  std::uint32_t emitSlice();
+  std::uint32_t emitParseIntStr();
+  std::uint32_t emitParseDoubleStr();
   std::uint32_t emitBinary(int op, std::uint32_t failAddress, const char* failText);
   std::uint32_t emitUnary(int op);
   std::uint32_t emitCompare(int op);
@@ -1066,7 +1155,12 @@ std::uint32_t Runtime::emitFmtInt() {
 std::uint32_t Runtime::emitFmtDouble() {
   std::uint32_t index = m.reserveFunction(tFmtInt);
   Func f(m, index, {kI64});
-  std::uint32_t d = f.addLocal(kF64);
+  std::uint32_t d = f.addLocal(kF64), frac = f.addLocal(kF64),
+                digit = f.addLocal(kF64), ip = f.addLocal(kI64),
+                neg = f.addLocal(kI32), out = f.addLocal(kI32),
+                off = f.addLocal(kI32), fracStart = f.addLocal(kI32),
+                count = f.addLocal(kI32), intStr = f.addLocal(kI32),
+                intLen = f.addLocal(kI32);
   f.lget(0);
   f.f64ReinterpretI64();
   f.lset(d);
@@ -1108,7 +1202,155 @@ std::uint32_t Runtime::emitFmtDouble() {
   f.end();
   emitFailStatic(f, sLargeDouble);
   f.end();
-  emitFailStatic(f, sNonIntegral);
+
+  // A non-integral double renders as sign, integer part, '.', and up to 17
+  // fractional digits with the trailing zeros trimmed. That matches the
+  // shortest form `std::to_chars` produces for the values a JSON document
+  // carries; a value whose shortest form needs more than 17 digits is
+  // documented as a divergence (BACKLOG §6).
+  f.lget(d);
+  f.f64c(0.0);
+  f.f64Lt();
+  f.lset(neg);
+  f.lget(d);
+  f.f64Abs();
+  f.lset(frac);
+  f.lget(frac);
+  f.f64Trunc();
+  f.i64TruncSatF64S();
+  f.lset(ip);
+  f.lget(frac);
+  f.lget(ip);
+  f.f64ConvertI64S();
+  f.f64Sub();
+  f.lset(frac);
+  f.i32c(40);
+  f.call(newStr);
+  f.lset(out);
+  f.i32c(0);
+  f.lset(off);
+  f.lget(neg);
+  f.if_();
+  f.lget(out);
+  f.i32c(8);
+  f.i32Add();
+  f.i32c(45);
+  f.i32Store8(0);
+  f.lget(off);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(off);
+  f.end();
+  f.lget(ip);
+  f.call(fmtInt);
+  f.lset(intStr);
+  f.lget(intStr);
+  f.i64Load(0);
+  f.i32WrapI64();
+  f.lset(intLen);
+  f.lget(out);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(off);
+  f.i32Add();
+  f.lget(intStr);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(intLen);
+  f.memoryCopy();
+  f.lget(off);
+  f.lget(intLen);
+  f.i32Add();
+  f.lset(off);
+  f.lget(out);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(off);
+  f.i32Add();
+  f.i32c(46);
+  f.i32Store8(0);
+  f.lget(off);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(off);
+  f.lget(off);
+  f.lset(fracStart);
+  f.i32c(0);
+  f.lset(count);
+  f.block();
+  f.loop();
+  f.lget(count);
+  f.i32c(17);
+  f.i32GeS();
+  f.brIf(1);
+  f.lget(frac);
+  f.f64c(10.0);
+  f.f64Mul();
+  f.lset(frac);
+  f.lget(frac);
+  f.f64Trunc();
+  f.lset(digit);
+  f.lget(frac);
+  f.lget(digit);
+  f.f64Sub();
+  f.lset(frac);
+  f.lget(out);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(off);
+  f.i32Add();
+  f.lget(digit);
+  f.i64TruncSatF64S();
+  f.i32WrapI64();
+  f.i32c(48);
+  f.i32Add();
+  f.i32Store8(0);
+  f.lget(off);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(off);
+  f.lget(count);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(count);
+  f.lget(frac);
+  f.f64c(0.0);
+  f.f64Eq();
+  f.brIf(1);
+  f.br(0);
+  f.end();
+  f.end();
+  f.block();
+  f.loop();
+  f.lget(off);
+  f.lget(fracStart);
+  f.i32c(1);
+  f.i32Add();
+  f.i32LeS();
+  f.brIf(1);
+  f.lget(out);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(off);
+  f.i32Add();
+  f.i32c(1);
+  f.i32Sub();
+  f.i32Load8u(0);
+  f.i32c(48);
+  f.i32Ne();
+  f.brIf(1);
+  f.lget(off);
+  f.i32c(1);
+  f.i32Sub();
+  f.lset(off);
+  f.br(0);
+  f.end();
+  f.end();
+  f.lget(out);
+  f.lget(off);
+  f.i64ExtendI32U();
+  f.i64Store(0);
+  f.lget(out);
   return index;
 }
 
@@ -1168,87 +1410,9 @@ std::uint32_t Runtime::emitToStr() {
   std::uint32_t index = m.reserveFunction(m.typeFor({kI64, kI64}, {kI32}));
   Func f(m, index, {kI64, kI64});
   f.lget(0);
-  f.i64c(static_cast<std::int64_t>(kNil));
-  f.i64Eq();
-  f.if_();
-  f.i32c(static_cast<std::int32_t>(sNil));
-  f.ret();
-  f.end();
-  f.lget(0);
-  f.i64c(static_cast<std::int64_t>(kBool));
-  f.i64Eq();
-  f.if_();
   f.lget(1);
-  f.i32WrapI64();
-  f.if_();
-  f.i32c(static_cast<std::int32_t>(sTrue));
-  f.ret();
-  f.else_();
-  f.i32c(static_cast<std::int32_t>(sFalse));
-  f.ret();
-  f.end();
-  f.end();
-  f.lget(0);
-  f.i64c(static_cast<std::int64_t>(kInt));
-  f.i64Eq();
-  f.if_();
-  f.lget(1);
-  f.call(fmtInt);
-  f.ret();
-  f.end();
-  f.lget(0);
-  f.i64c(static_cast<std::int64_t>(kFloat));
-  f.i64Eq();
-  f.if_();
-  f.lget(1);
-  f.call(fmtDouble);
-  f.ret();
-  f.end();
-  f.lget(0);
-  f.i64c(static_cast<std::int64_t>(kDouble));
-  f.i64Eq();
-  f.if_();
-  f.lget(1);
-  f.call(fmtDouble);
-  f.ret();
-  f.end();
-  f.lget(0);
-  f.i64c(static_cast<std::int64_t>(kStr));
-  f.i64Eq();
-  f.if_();
-  f.lget(1);
-  f.i32WrapI64();
-  f.ret();
-  f.end();
-  f.lget(0);
-  f.i64c(static_cast<std::int64_t>(kRange));
-  f.i64Eq();
-  f.if_();
-  f.lget(1);
-  f.i32WrapI64();
-  f.call(fmtRange);
-  f.ret();
-  f.end();
-  f.lget(0);
-  f.i64c(static_cast<std::int64_t>(kFunc));
-  f.i64Eq();
-  f.if_();
-  f.lget(1);
-  f.i32WrapI64();
-  f.call(fmtFunc);
-  f.ret();
-  f.end();
-  f.lget(0);
-  f.i64c(static_cast<std::int64_t>(kError));
-  f.i64Eq();
-  f.if_();
-  f.lget(1);
-  f.i32WrapI64();
-  f.i64Load(0);
-  f.i32WrapI64();
-  f.ret();
-  f.end();
-  emitFailStatic(f, sUnknown);
+  f.i32c(0);
+  f.call(toStrDepth);
   return index;
 }
 
@@ -1529,52 +1693,10 @@ std::uint32_t Runtime::emitQuote() {
 std::uint32_t Runtime::emitReprStr() {
   std::uint32_t index = m.reserveFunction(m.typeFor({kI64, kI64}, {kI32}));
   Func f(m, index, {kI64, kI64});
-  std::uint32_t addr = f.addLocal(kI32), s = f.addLocal(kI32);
-  f.lget(0);
-  f.i64c(static_cast<std::int64_t>(kStr));
-  f.i64Eq();
-  f.if_();
-  f.lget(1);
-  f.i32WrapI64();
-  f.call(quote);
-  f.ret();
-  f.end();
-  f.lget(0);
-  f.i64c(static_cast<std::int64_t>(kError));
-  f.i64Eq();
-  f.if_();
-  f.lget(1);
-  f.i32WrapI64();
-  f.lset(addr);
-  f.i32c(static_cast<std::int32_t>(sErrorPrefix));
-  f.lget(addr);
-  f.i64Load(0);
-  f.i32WrapI64();
-  f.call(quote);
-  f.call(concat);
-  f.lset(s);
-  f.lget(addr);
-  f.i64Load(8);
-  f.i64c(0);
-  f.i64Ne();
-  f.if_();
-  f.lget(s);
-  f.i32c(static_cast<std::int32_t>(sComma));
-  f.call(concat);
-  f.lget(addr);
-  f.i64Load(8);
-  f.call(fmtInt);
-  f.call(concat);
-  f.lset(s);
-  f.end();
-  f.lget(s);
-  f.i32c(static_cast<std::int32_t>(sCloseParen));
-  f.call(concat);
-  f.ret();
-  f.end();
   f.lget(0);
   f.lget(1);
-  f.call(toStr);
+  f.i32c(0);
+  f.call(reprDepth);
   return index;
 }
 
@@ -1633,14 +1755,17 @@ std::uint32_t Runtime::emitTypeName() {
 
 std::uint32_t Runtime::emitIterStep() {
   std::uint32_t index = m.reserveFunction(tIter);
-  Func f(m, index, {kI64, kI64, kI64, kI64});
+  Func f(m, index, {kI64, kI64, kI64, kI64, kI32});
   std::uint32_t addr = f.addLocal(kI32), start = f.addLocal(kI64), end = f.addLocal(kI64),
                 incl = f.addLocal(kI32), asc = f.addLocal(kI32), cur = f.addLocal(kI64),
                 len = f.addLocal(kI64), done = f.addLocal(kI32),
                 itemTag = f.addLocal(kI64), itemPayload = f.addLocal(kI64),
                 nextTag = f.addLocal(kI64), nextPayload = f.addLocal(kI64),
                 byte = f.addLocal(kI32), clen = f.addLocal(kI32),
-                itemStr = f.addLocal(kI32);
+                itemStr = f.addLocal(kI32), vTag = f.addLocal(kI64),
+                vPayload = f.addLocal(kI64), items = f.addLocal(kI32),
+                entries = f.addLocal(kI32), entry = f.addLocal(kI32),
+                idx = f.addLocal(kI32);
   f.i64c(static_cast<std::int64_t>(kNil));
   f.lset(itemTag);
   f.i64c(0);
@@ -1651,6 +1776,22 @@ std::uint32_t Runtime::emitIterStep() {
   f.lset(nextPayload);
   f.i32c(0);
   f.lset(done);
+  f.i64c(static_cast<std::int64_t>(kNil));
+  f.lset(vTag);
+  f.i64c(0);
+  f.lset(vPayload);
+  // `for k, v in ...` needs a map: a paired value from any other iterable is
+  // the same runtime error the VM raises.
+  f.lget(4);
+  f.if_();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kMap));
+  f.i64Eq();
+  f.i32Eqz();
+  f.if_();
+  emitFailStatic(f, sKeyValue);
+  f.end();
+  f.end();
 
   // Range: walk the cursor from `start` towards `end`, inclusive or exclusive.
   f.lget(0);
@@ -1817,13 +1958,128 @@ std::uint32_t Runtime::emitIterStep() {
   f.end();
   f.end();
 
-  // Anything else (arrays and maps are rejected at build time) is a clean
-  // runtime error rather than a silent empty loop.
+  // Array: the cursor is an index into the items block.
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kArray));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lset(addr);
+  f.lget(addr);
+  f.i64Load(kArrayLengthOffset);
+  f.lset(len);
+  f.lget(addr);
+  f.i64Load(kArrayItemsOffset);
+  f.i32WrapI64();
+  f.lset(items);
+  f.i64c(0);
+  f.lget(3);
+  f.lget(2);
+  f.i64c(static_cast<std::int64_t>(kNil));
+  f.i64Eq();
+  f.select();
+  f.lset(cur);
+  f.lget(cur);
+  f.lget(len);
+  f.i64GeU();
+  f.if_();
+  f.i32c(1);
+  f.lset(done);
+  f.else_();
+  f.lget(items);
+  f.lget(cur);
+  f.i32WrapI64();
+  f.i32c(16);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(addr);
+  f.lget(addr);
+  f.i64Load(0);
+  f.lset(itemTag);
+  f.lget(addr);
+  f.i64Load(8);
+  f.lset(itemPayload);
+  f.i64c(static_cast<std::int64_t>(kInt));
+  f.lset(nextTag);
+  f.lget(cur);
+  f.i64c(1);
+  f.i64Add();
+  f.lset(nextPayload);
+  f.end();
+  f.end();
+
+  // Map: the cursor is an entry index; the item is the key and the paired
+  // value (when the loop asked for one) is the entry's value.
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kMap));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lset(addr);
+  f.lget(addr);
+  f.i64Load(kMapLengthOffset);
+  f.lset(len);
+  f.lget(addr);
+  f.i64Load(kMapEntriesOffset);
+  f.i32WrapI64();
+  f.lset(entries);
+  f.i64c(0);
+  f.lget(3);
+  f.lget(2);
+  f.i64c(static_cast<std::int64_t>(kNil));
+  f.i64Eq();
+  f.select();
+  f.lset(cur);
+  f.lget(cur);
+  f.lget(len);
+  f.i64GeU();
+  f.if_();
+  f.i32c(1);
+  f.lset(done);
+  f.else_();
+  f.lget(entries);
+  f.lget(cur);
+  f.i32WrapI64();
+  f.i32c(kMapEntrySize);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(entry);
+  f.i64c(static_cast<std::int64_t>(kStr));
+  f.lset(itemTag);
+  f.lget(entry);
+  f.i64Load(kMapEntryKeyOffset);
+  f.lset(itemPayload);
+  f.i64c(static_cast<std::int64_t>(kInt));
+  f.lset(nextTag);
+  f.lget(cur);
+  f.i64c(1);
+  f.i64Add();
+  f.lset(nextPayload);
+  f.lget(entry);
+  f.i64Load(kMapEntryTagOffset);
+  f.lset(vTag);
+  f.lget(entry);
+  f.i64Load(kMapEntryPayloadOffset);
+  f.lset(vPayload);
+  f.end();
+  f.end();
+
+  // Anything else is a clean runtime error rather than a silent empty loop.
   f.lget(0);
   f.i64c(static_cast<std::int64_t>(kRange));
   f.i64Eq();
   f.lget(0);
   f.i64c(static_cast<std::int64_t>(kStr));
+  f.i64Eq();
+  f.i32Or();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kArray));
+  f.i64Eq();
+  f.i32Or();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kMap));
   f.i64Eq();
   f.i32Or();
   f.i32Eqz();
@@ -1836,6 +2092,8 @@ std::uint32_t Runtime::emitIterStep() {
   f.lget(nextTag);
   f.lget(nextPayload);
   f.lget(done);
+  f.lget(vTag);
+  f.lget(vPayload);
   return index;
 }
 
@@ -1905,7 +2163,11 @@ std::uint32_t Runtime::emitBinary(int op, std::uint32_t failAddress, const char*
   Func f(m, index, {kI64, kI64, kI64, kI64});
   std::uint32_t rank = f.addLocal(kI32), a = f.addLocal(kF64), b = f.addLocal(kF64),
                 r = f.addLocal(kF64), base = f.addLocal(kI64), exp = f.addLocal(kI64),
-                acc = f.addLocal(kI64), neg = f.addLocal(kI32);
+                acc = f.addLocal(kI64), neg = f.addLocal(kI32),
+                resTag = f.addLocal(kI64), resPay = f.addLocal(kI64),
+                itemsA = f.addLocal(kI32), itemsB = f.addLocal(kI32),
+                addrA = f.addLocal(kI32), addrB = f.addLocal(kI32),
+                li = f.addLocal(kI64);
 
   auto emitResultTag = [&]() {
     f.lget(rank);
@@ -2002,6 +2264,104 @@ std::uint32_t Runtime::emitBinary(int op, std::uint32_t failAddress, const char*
       f.i32WrapI64();
       f.call(concat);
       f.i64ExtendI32U();
+      f.ret();
+      f.end();
+
+      // `a + b` on two arrays concatenates them into a fresh array.
+      f.lget(0);
+      f.i64c(static_cast<std::int64_t>(kArray));
+      f.i64Eq();
+      f.lget(2);
+      f.i64c(static_cast<std::int64_t>(kArray));
+      f.i64Eq();
+      f.i32And();
+      f.if_();
+      f.lget(1);
+      f.i32WrapI64();
+      f.lset(addrA);
+      f.lget(addrA);
+      f.i64Load(kArrayLengthOffset);
+      f.lset(acc);
+      f.lget(addrA);
+      f.i64Load(kArrayItemsOffset);
+      f.i32WrapI64();
+      f.lset(itemsA);
+      f.lget(3);
+      f.i32WrapI64();
+      f.lset(addrB);
+      f.lget(addrB);
+      f.i64Load(kArrayLengthOffset);
+      f.lset(exp);
+      f.lget(addrB);
+      f.i64Load(kArrayItemsOffset);
+      f.i32WrapI64();
+      f.lset(itemsB);
+      f.lget(acc);
+      f.lget(exp);
+      f.i64Add();
+      f.call(newArray);
+      f.lset(resPay);
+      f.lset(resTag);
+      f.i64c(0);
+      f.lset(li);
+      f.block();
+      f.loop();
+      f.lget(li);
+      f.lget(acc);
+      f.i64GeS();
+      f.brIf(1);
+      f.lget(itemsA);
+      f.lget(li);
+      f.i32WrapI64();
+      f.i32c(16);
+      f.i32Mul();
+      f.i32Add();
+      f.lset(addrA);
+      f.lget(resPay);
+      f.i32WrapI64();
+      f.lget(addrA);
+      f.i64Load(0);
+      f.lget(addrA);
+      f.i64Load(8);
+      f.call(arrayPush);
+      f.lget(li);
+      f.i64c(1);
+      f.i64Add();
+      f.lset(li);
+      f.br(0);
+      f.end();
+      f.end();
+      f.i64c(0);
+      f.lset(li);
+      f.block();
+      f.loop();
+      f.lget(li);
+      f.lget(exp);
+      f.i64GeS();
+      f.brIf(1);
+      f.lget(itemsB);
+      f.lget(li);
+      f.i32WrapI64();
+      f.i32c(16);
+      f.i32Mul();
+      f.i32Add();
+      f.lset(addrB);
+      f.lget(resPay);
+      f.i32WrapI64();
+      f.lget(addrB);
+      f.i64Load(0);
+      f.lget(addrB);
+      f.i64Load(8);
+      f.call(arrayPush);
+      f.lget(li);
+      f.i64c(1);
+      f.i64Add();
+      f.lset(li);
+      f.br(0);
+      f.end();
+      f.end();
+      f.lget(resTag);
+      f.lget(resPay);
       f.ret();
       f.end();
     }
@@ -2367,147 +2727,15 @@ std::uint32_t Runtime::emitCompare(int op) {
   std::uint32_t addrA = f.addLocal(kI32), addrB = f.addLocal(kI32);
 
   if (op == 0) {  // equality
-    emitIsNumeric(f, 0);
-    emitIsNumeric(f, 2);
-    f.i32And();
-    f.if_();
     f.lget(0);
-    f.i64c(static_cast<std::int64_t>(kInt));
-    f.i64Eq();
+    f.lget(1);
     f.lget(2);
-    f.i64c(static_cast<std::int64_t>(kInt));
-    f.i64Eq();
-    f.i32And();
-    f.if_();
-    f.i64c(static_cast<std::int64_t>(kBool));
-    f.lget(1);
     f.lget(3);
-    f.i64Eq();
-    f.i64ExtendI32U();
-    f.ret();
-    f.end();
-    f.i64c(static_cast<std::int64_t>(kBool));
-    emitToF64(f, 0, 1);
-    emitToF64(f, 2, 3);
-    f.f64Eq();
-    f.i64ExtendI32U();
-    f.ret();
-    f.end();
-    f.lget(0);
-    f.lget(2);
-    f.i64Ne();
-    f.if_();
-    f.i64c(static_cast<std::int64_t>(kBool));
     f.i32c(0);
-    f.i64ExtendI32U();
-    f.ret();
-    f.end();
-    f.lget(0);
-    f.i64c(static_cast<std::int64_t>(kNil));
-    f.i64Eq();
-    f.if_();
-    f.i64c(static_cast<std::int64_t>(kBool));
-    f.i32c(1);
-    f.i64ExtendI32U();
-    f.ret();
-    f.end();
-    f.lget(0);
-    f.i64c(static_cast<std::int64_t>(kBool));
-    f.i64Eq();
-    f.if_();
-    f.i64c(static_cast<std::int64_t>(kBool));
-    f.lget(1);
-    f.lget(3);
-    f.i64Eq();
-    f.i64ExtendI32U();
-    f.ret();
-    f.end();
-    f.lget(0);
-    f.i64c(static_cast<std::int64_t>(kStr));
-    f.i64Eq();
-    f.if_();
-    f.i64c(static_cast<std::int64_t>(kBool));
-    f.lget(1);
-    f.i32WrapI64();
-    f.lget(3);
-    f.i32WrapI64();
-    f.call(strCmp);
-    f.i32Eqz();
-    f.i64ExtendI32U();
-    f.ret();
-    f.end();
-    f.lget(0);
-    f.i64c(static_cast<std::int64_t>(kFunc));
-    f.i64Eq();
-    f.if_();
-    f.i64c(static_cast<std::int64_t>(kBool));
-    f.lget(1);
-    f.lget(3);
-    f.i64Eq();
-    f.i64ExtendI32U();
-    f.ret();
-    f.end();
-    f.lget(0);
-    f.i64c(static_cast<std::int64_t>(kRange));
-    f.i64Eq();
-    f.if_();
-    f.lget(1);
-    f.i32WrapI64();
+    f.call(equals);
     f.lset(addrA);
-    f.lget(3);
-    f.i32WrapI64();
-    f.lset(addrB);
     f.i64c(static_cast<std::int64_t>(kBool));
     f.lget(addrA);
-    f.i64Load(0);
-    f.lget(addrB);
-    f.i64Load(0);
-    f.i64Eq();
-    f.lget(addrA);
-    f.i64Load(8);
-    f.lget(addrB);
-    f.i64Load(8);
-    f.i64Eq();
-    f.i32And();
-    f.lget(addrA);
-    f.i64Load(16);
-    f.lget(addrB);
-    f.i64Load(16);
-    f.i64Eq();
-    f.i32And();
-    f.i64ExtendI32U();
-    f.ret();
-    f.end();
-    f.lget(0);
-    f.i64c(static_cast<std::int64_t>(kError));
-    f.i64Eq();
-    f.if_();
-    f.lget(1);
-    f.i32WrapI64();
-    f.lset(addrA);
-    f.lget(3);
-    f.i32WrapI64();
-    f.lset(addrB);
-    f.i64c(static_cast<std::int64_t>(kBool));
-    f.lget(addrA);
-    f.i64Load(0);
-    f.i32WrapI64();
-    f.lget(addrB);
-    f.i64Load(0);
-    f.i32WrapI64();
-    f.call(strCmp);
-    f.i32Eqz();
-    f.lget(addrA);
-    f.i64Load(8);
-    f.lget(addrB);
-    f.i64Load(8);
-    f.i64Eq();
-    f.i32And();
-    f.i64ExtendI32U();
-    f.ret();
-    f.end();
-    f.i64c(static_cast<std::int64_t>(kBool));
-    f.i32c(0);
     f.i64ExtendI32U();
     return index;
   }
@@ -2588,6 +2816,92 @@ std::uint32_t Runtime::emitIn() {
                 j = f.addLocal(kI64), match = f.addLocal(kI32), b1 = f.addLocal(kI32),
                 b2 = f.addLocal(kI32), addr = f.addLocal(kI32), start = f.addLocal(kI64),
                 end = f.addLocal(kI64), incl = f.addLocal(kI32), v = f.addLocal(kI64);
+
+  std::uint32_t items = f.addLocal(kI32), entry = f.addLocal(kI32),
+                idx = f.addLocal(kI32);
+
+  // Array membership: any item equal to the needle.
+  f.lget(2);
+  f.i64c(static_cast<std::int64_t>(kArray));
+  f.i64Eq();
+  f.if_();
+  f.lget(3);
+  f.i32WrapI64();
+  f.lset(addr);
+  f.lget(addr);
+  f.i64Load(kArrayLengthOffset);
+  f.lset(ln);
+  f.lget(addr);
+  f.i64Load(kArrayItemsOffset);
+  f.i32WrapI64();
+  f.lset(items);
+  f.i64c(0);
+  f.lset(i);
+  f.block();
+  f.loop();
+  f.lget(i);
+  f.lget(ln);
+  f.i64GeS();
+  f.brIf(1);
+  f.lget(items);
+  f.lget(i);
+  f.i32WrapI64();
+  f.i32c(16);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(entry);
+  f.lget(entry);
+  f.i64Load(0);
+  f.lget(entry);
+  f.i64Load(8);
+  f.lget(0);
+  f.lget(1);
+  f.i32c(0);
+  f.call(equals);
+  f.if_();
+  f.i64c(static_cast<std::int64_t>(kBool));
+  f.i32c(1);
+  f.i64ExtendI32U();
+  f.ret();
+  f.end();
+  f.lget(i);
+  f.i64c(1);
+  f.i64Add();
+  f.lset(i);
+  f.br(0);
+  f.end();
+  f.end();
+  f.i64c(static_cast<std::int64_t>(kBool));
+  f.i32c(0);
+  f.i64ExtendI32U();
+  f.ret();
+  f.end();
+
+  // Map membership: a string key.
+  f.lget(2);
+  f.i64c(static_cast<std::int64_t>(kMap));
+  f.i64Eq();
+  f.if_();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kStr));
+  f.i64Eq();
+  f.i32Eqz();
+  f.if_();
+  emitFailStatic(f, sMapMembership);
+  f.end();
+  f.lget(3);
+  f.i32WrapI64();
+  f.lget(1);
+  f.i32WrapI64();
+  f.call(mapFind);
+  f.i32c(0);
+  f.i32GeS();
+  f.lset(idx);
+  f.i64c(static_cast<std::int64_t>(kBool));
+  f.lget(idx);
+  f.i64ExtendI32U();
+  f.ret();
+  f.end();
 
   f.lget(2);
   f.i64c(static_cast<std::int64_t>(kStr));
@@ -2843,9 +3157,9 @@ std::uint32_t Runtime::emitUtf8ByteOffset() {
 std::uint32_t Runtime::emitMemberGet() {
   std::uint32_t index = m.reserveFunction(tBin);
   Func f(m, index, {kI64, kI64, kI64, kI64});
-  std::uint32_t addr = f.addLocal(kI32), count = f.addLocal(kI64), idx = f.addLocal(kI64),
-                off = f.addLocal(kI32), byte = f.addLocal(kI32), clen = f.addLocal(kI32),
-                out = f.addLocal(kI32);
+  std::uint32_t addr = f.addLocal(kI32), idx = f.addLocal(kI32),
+                entry = f.addLocal(kI32), start = f.addLocal(kI64),
+                end = f.addLocal(kI64), incl = f.addLocal(kI32);
 
   // An error exposes its `message` and `code` fields.
   f.lget(0);
@@ -2886,7 +3200,1369 @@ std::uint32_t Runtime::emitMemberGet() {
   emitFailStatic(f, sNoMember);
   f.end();
 
-  // A string is indexed by character, matching `utf8Chars` in the VM.
+  // A member name is always a string; a dynamic index goes through
+  // `indexGet` instead.
+  f.lget(2);
+  f.i64c(static_cast<std::int64_t>(kStr));
+  f.i64Eq();
+  f.i32Eqz();
+  f.if_();
+  emitFailStatic(f, sNoMember);
+  f.end();
+  f.lget(3);
+  f.i32WrapI64();
+  f.lset(addr);
+
+  // A map looks the name up first, so a stored `length` wins, then falls back
+  // to `length` and the bound methods; an absent name is nil, not an error.
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kMap));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lget(addr);
+  f.call(mapFind);
+  f.lset(idx);
+  f.lget(idx);
+  f.i32c(0);
+  f.i32GeS();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.i64Load(kMapEntriesOffset);
+  f.i32WrapI64();
+  f.lget(idx);
+  f.i32c(kMapEntrySize);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(entry);
+  f.lget(entry);
+  f.i64Load(kMapEntryTagOffset);
+  f.lget(entry);
+  f.i64Load(kMapEntryPayloadOffset);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sLength));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  f.i64c(static_cast<std::int64_t>(kInt));
+  f.lget(1);
+  f.i32WrapI64();
+  f.i64Load(kMapLengthOffset);
+  f.ret();
+  f.end();
+  f.i64c(static_cast<std::int64_t>(kNil));
+  f.i64c(0);
+  f.ret();
+  f.end();
+
+  // An array exposes `length` and its bound methods.
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kArray));
+  f.i64Eq();
+  f.if_();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sLength));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  f.i64c(static_cast<std::int64_t>(kInt));
+  f.lget(1);
+  f.i32WrapI64();
+  f.i64Load(kArrayLengthOffset);
+  f.ret();
+  f.end();
+  emitFailStatic(f, sNoMember);
+  f.end();
+
+  // A string exposes `length` and its bound methods.
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kStr));
+  f.i64Eq();
+  f.if_();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sLength));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  f.i64c(static_cast<std::int64_t>(kInt));
+  f.lget(1);
+  f.i32WrapI64();
+  f.call(utf8Len);
+  f.ret();
+  f.end();
+  emitFailStatic(f, sNoMember);
+  f.end();
+
+  // A range exposes `length` and its bound methods.
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kRange));
+  f.i64Eq();
+  f.if_();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sLength));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lset(addr);
+  f.lget(addr);
+  f.i64Load(0);
+  f.lset(start);
+  f.lget(addr);
+  f.i64Load(8);
+  f.lset(end);
+  f.lget(addr);
+  f.i64Load(16);
+  f.i32WrapI64();
+  f.lset(incl);
+  f.i64c(static_cast<std::int64_t>(kInt));
+  f.lget(end);
+  f.lget(start);
+  f.i64Sub();
+  f.lget(start);
+  f.lget(end);
+  f.i64Sub();
+  f.lget(end);
+  f.lget(start);
+  f.i64GeS();
+  f.select();
+  f.lget(incl);
+  f.i64ExtendI32U();
+  f.i64Add();
+  f.ret();
+  f.end();
+  emitFailStatic(f, sNoMember);
+  f.end();
+
+  emitFailStatic(f, sCannotIndex);
+  return index;
+}
+
+std::uint32_t Runtime::emitMemberSet() {
+  std::uint32_t type = m.typeFor({kI64, kI64, kI64, kI64, kI64, kI64}, {kI64, kI64});
+  std::uint32_t index = m.reserveFunction(type);
+  Func f(m, index, {kI64, kI64, kI64, kI64, kI64, kI64});
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kMap));
+  f.i64Eq();
+  f.if_();
+  f.lget(2);
+  f.i64c(static_cast<std::int64_t>(kStr));
+  f.i64Eq();
+  f.i32Eqz();
+  f.if_();
+  emitFailStatic(f, sMapKeyString);
+  f.end();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lget(3);
+  f.i32WrapI64();
+  f.lget(4);
+  f.lget(5);
+  f.call(mapSet);
+  f.i64c(static_cast<std::int64_t>(kNil));
+  f.i64c(0);
+  f.ret();
+  f.end();
+  emitFailStatic(f, sCannotSetField);
+  return index;
+}
+
+// -------------------------------------------------------------- collections
+// An array and a map share the on-image layout documented in
+// `include/native/value.h`: a three-word header whose first word is the live
+// length. `newArray`/`newMap` allocate the header and the items block; the
+// accessors mirror `ops::indexGet`/`indexSet` so a program behaves the same
+// on the VM and in the module.
+std::uint32_t Runtime::emitNewArray() {
+  std::uint32_t index = m.reserveFunction(tNewArray);
+  Func f(m, index, {kI64});
+  std::uint32_t cap = f.addLocal(kI32), header = f.addLocal(kI32),
+                items = f.addLocal(kI32);
+  f.lget(0);
+  f.i32WrapI64();
+  f.lset(cap);
+  f.lget(cap);
+  f.i32c(4);
+  f.i32LtS();
+  f.if_();
+  f.i32c(4);
+  f.lset(cap);
+  f.end();
+  f.i32c(24);
+  f.call(alloc);
+  f.lset(header);
+  f.lget(cap);
+  f.i32c(16);
+  f.i32Mul();
+  f.call(alloc);
+  f.lset(items);
+  f.lget(header);
+  f.i64c(0);
+  f.i64Store(kArrayLengthOffset);
+  f.lget(header);
+  f.lget(cap);
+  f.i64ExtendI32U();
+  f.i64Store(kArrayCapacityOffset);
+  f.lget(header);
+  f.lget(items);
+  f.i64ExtendI32U();
+  f.i64Store(kArrayItemsOffset);
+  f.i64c(static_cast<std::int64_t>(kArray));
+  f.lget(header);
+  f.i64ExtendI32U();
+  return index;
+}
+
+std::uint32_t Runtime::emitNewMap() {
+  std::uint32_t index = m.reserveFunction(tNewMap);
+  Func f(m, index, {});
+  std::uint32_t header = f.addLocal(kI32), entries = f.addLocal(kI32);
+  f.i32c(24);
+  f.call(alloc);
+  f.lset(header);
+  f.i32c(4 * kMapEntrySize);
+  f.call(alloc);
+  f.lset(entries);
+  f.lget(header);
+  f.i64c(0);
+  f.i64Store(kMapLengthOffset);
+  f.lget(header);
+  f.i64c(4);
+  f.i64Store(kMapCapacityOffset);
+  f.lget(header);
+  f.lget(entries);
+  f.i64ExtendI32U();
+  f.i64Store(kMapEntriesOffset);
+  f.i64c(static_cast<std::int64_t>(kMap));
+  f.lget(header);
+  f.i64ExtendI32U();
+  return index;
+}
+
+std::uint32_t Runtime::emitArrayPush() {
+  std::uint32_t index = m.reserveFunction(tArrayPush);
+  Func f(m, index, {kI32, kI64, kI64});
+  std::uint32_t len = f.addLocal(kI64), cap = f.addLocal(kI64),
+                fresh = f.addLocal(kI32), addr = f.addLocal(kI32);
+  f.lget(0);
+  f.i64Load(kArrayLengthOffset);
+  f.lset(len);
+  f.lget(0);
+  f.i64Load(kArrayCapacityOffset);
+  f.lset(cap);
+  f.lget(len);
+  f.lget(cap);
+  f.i64GeU();
+  f.if_();
+  f.lget(cap);
+  f.i64c(2);
+  f.i64Mul();
+  f.lset(cap);
+  f.lget(cap);
+  f.i32WrapI64();
+  f.i32c(16);
+  f.i32Mul();
+  f.call(alloc);
+  f.lset(fresh);
+  f.lget(fresh);
+  f.lget(0);
+  f.i64Load(kArrayItemsOffset);
+  f.i32WrapI64();
+  f.lget(len);
+  f.i32WrapI64();
+  f.i32c(16);
+  f.i32Mul();
+  f.memoryCopy();
+  f.lget(0);
+  f.lget(cap);
+  f.i64Store(kArrayCapacityOffset);
+  f.lget(0);
+  f.lget(fresh);
+  f.i64ExtendI32U();
+  f.i64Store(kArrayItemsOffset);
+  f.end();
+  f.lget(0);
+  f.i64Load(kArrayItemsOffset);
+  f.i32WrapI64();
+  f.lget(len);
+  f.i32WrapI64();
+  f.i32c(16);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(addr);
+  f.lget(addr);
+  f.lget(1);
+  f.i64Store(0);
+  f.lget(addr);
+  f.lget(2);
+  f.i64Store(8);
+  f.lget(0);
+  f.lget(len);
+  f.i64c(1);
+  f.i64Add();
+  f.i64Store(kArrayLengthOffset);
+  return index;
+}
+
+std::uint32_t Runtime::emitArrayGet() {
+  std::uint32_t index = m.reserveFunction(tArrayGet);
+  Func f(m, index, {kI32, kI64});
+  std::uint32_t len = f.addLocal(kI64), idx = f.addLocal(kI64),
+                addr = f.addLocal(kI32);
+  f.lget(0);
+  f.i64Load(kArrayLengthOffset);
+  f.lset(len);
+  f.lget(1);
+  f.lset(idx);
+  f.lget(idx);
+  f.i64c(0);
+  f.i64LtS();
+  f.if_();
+  f.lget(idx);
+  f.lget(len);
+  f.i64Add();
+  f.lset(idx);
+  f.end();
+  f.lget(idx);
+  f.i64c(0);
+  f.i64LtS();
+  f.lget(idx);
+  f.lget(len);
+  f.i64GeS();
+  f.i32Or();
+  f.if_();
+  emitFailStatic(f, sArrayRange);
+  f.end();
+  f.lget(0);
+  f.i64Load(kArrayItemsOffset);
+  f.i32WrapI64();
+  f.lget(idx);
+  f.i32WrapI64();
+  f.i32c(16);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(addr);
+  f.lget(addr);
+  f.i64Load(0);
+  f.lget(addr);
+  f.i64Load(8);
+  return index;
+}
+
+std::uint32_t Runtime::emitArraySet() {
+  std::uint32_t index = m.reserveFunction(tArraySet);
+  Func f(m, index, {kI32, kI64, kI64, kI64});
+  std::uint32_t len = f.addLocal(kI64), idx = f.addLocal(kI64),
+                addr = f.addLocal(kI32);
+  f.lget(0);
+  f.i64Load(kArrayLengthOffset);
+  f.lset(len);
+  f.lget(1);
+  f.lset(idx);
+  f.lget(idx);
+  f.i64c(0);
+  f.i64LtS();
+  f.if_();
+  f.lget(idx);
+  f.lget(len);
+  f.i64Add();
+  f.lset(idx);
+  f.end();
+  f.lget(idx);
+  f.lget(len);
+  f.i64Eq();
+  f.if_();
+  f.lget(0);
+  f.lget(2);
+  f.lget(3);
+  f.call(arrayPush);
+  f.ret();
+  f.end();
+  f.lget(idx);
+  f.i64c(0);
+  f.i64LtS();
+  f.lget(idx);
+  f.lget(len);
+  f.i64GtS();
+  f.i32Or();
+  f.if_();
+  emitFailStatic(f, sArrayRange);
+  f.end();
+  f.lget(0);
+  f.i64Load(kArrayItemsOffset);
+  f.i32WrapI64();
+  f.lget(idx);
+  f.i32WrapI64();
+  f.i32c(16);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(addr);
+  f.lget(addr);
+  f.lget(2);
+  f.i64Store(0);
+  f.lget(addr);
+  f.lget(3);
+  f.i64Store(8);
+  return index;
+}
+
+std::uint32_t Runtime::emitMapFind() {
+  std::uint32_t index = m.reserveFunction(tMapFind);
+  Func f(m, index, {kI32, kI32});
+  std::uint32_t len = f.addLocal(kI64), i = f.addLocal(kI64),
+                entries = f.addLocal(kI32), entry = f.addLocal(kI32);
+  f.lget(0);
+  f.i64Load(kMapLengthOffset);
+  f.lset(len);
+  f.lget(0);
+  f.i64Load(kMapEntriesOffset);
+  f.i32WrapI64();
+  f.lset(entries);
+  f.i64c(0);
+  f.lset(i);
+  f.block();
+  f.loop();
+  f.lget(i);
+  f.lget(len);
+  f.i64GeS();
+  f.brIf(1);
+  f.lget(entries);
+  f.lget(i);
+  f.i32WrapI64();
+  f.i32c(kMapEntrySize);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(entry);
+  f.lget(entry);
+  f.i64Load(kMapEntryKeyOffset);
+  f.i32WrapI64();
+  f.lget(1);
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  f.lget(i);
+  f.i32WrapI64();
+  f.ret();
+  f.end();
+  f.lget(i);
+  f.i64c(1);
+  f.i64Add();
+  f.lset(i);
+  f.br(0);
+  f.end();
+  f.end();
+  f.i32c(-1);
+  return index;
+}
+
+std::uint32_t Runtime::emitMapSet() {
+  std::uint32_t index = m.reserveFunction(tMapSet);
+  Func f(m, index, {kI32, kI32, kI64, kI64});
+  std::uint32_t idx = f.addLocal(kI32), len = f.addLocal(kI64),
+                cap = f.addLocal(kI64), entries = f.addLocal(kI32),
+                fresh = f.addLocal(kI32), entry = f.addLocal(kI32);
+  f.lget(0);
+  f.lget(1);
+  f.call(mapFind);
+  f.lset(idx);
+  f.lget(idx);
+  f.i32c(0);
+  f.i32GeS();
+  f.if_();
+  f.lget(0);
+  f.i64Load(kMapEntriesOffset);
+  f.i32WrapI64();
+  f.lget(idx);
+  f.i32c(kMapEntrySize);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(entry);
+  f.lget(entry);
+  f.lget(2);
+  f.i64Store(kMapEntryTagOffset);
+  f.lget(entry);
+  f.lget(3);
+  f.i64Store(kMapEntryPayloadOffset);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64Load(kMapLengthOffset);
+  f.lset(len);
+  f.lget(0);
+  f.i64Load(kMapCapacityOffset);
+  f.lset(cap);
+  f.lget(len);
+  f.lget(cap);
+  f.i64GeU();
+  f.if_();
+  f.lget(cap);
+  f.i64c(2);
+  f.i64Mul();
+  f.lset(cap);
+  f.lget(cap);
+  f.i32WrapI64();
+  f.i32c(kMapEntrySize);
+  f.i32Mul();
+  f.call(alloc);
+  f.lset(fresh);
+  f.lget(fresh);
+  f.lget(0);
+  f.i64Load(kMapEntriesOffset);
+  f.i32WrapI64();
+  f.lget(len);
+  f.i32WrapI64();
+  f.i32c(kMapEntrySize);
+  f.i32Mul();
+  f.memoryCopy();
+  f.lget(0);
+  f.lget(cap);
+  f.i64Store(kMapCapacityOffset);
+  f.lget(0);
+  f.lget(fresh);
+  f.i64ExtendI32U();
+  f.i64Store(kMapEntriesOffset);
+  f.end();
+  f.lget(0);
+  f.i64Load(kMapEntriesOffset);
+  f.i32WrapI64();
+  f.lset(entries);
+  f.lget(entries);
+  f.lget(len);
+  f.i32WrapI64();
+  f.i32c(kMapEntrySize);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(entry);
+  f.lget(entry);
+  f.lget(1);
+  f.i64ExtendI32U();
+  f.i64Store(kMapEntryKeyOffset);
+  f.lget(entry);
+  f.lget(2);
+  f.i64Store(kMapEntryTagOffset);
+  f.lget(entry);
+  f.lget(3);
+  f.i64Store(kMapEntryPayloadOffset);
+  f.lget(0);
+  f.lget(len);
+  f.i64c(1);
+  f.i64Add();
+  f.i64Store(kMapLengthOffset);
+  return index;
+}
+
+std::uint32_t Runtime::emitMapGet() {
+  std::uint32_t index = m.reserveFunction(tMapGet);
+  Func f(m, index, {kI32, kI32});
+  std::uint32_t idx = f.addLocal(kI32), entry = f.addLocal(kI32);
+  f.lget(0);
+  f.lget(1);
+  f.call(mapFind);
+  f.lset(idx);
+  f.lget(idx);
+  f.i32c(0);
+  f.i32LtS();
+  f.if_();
+  f.i64c(static_cast<std::int64_t>(kNil));
+  f.i64c(0);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64Load(kMapEntriesOffset);
+  f.i32WrapI64();
+  f.lget(idx);
+  f.i32c(kMapEntrySize);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(entry);
+  f.lget(entry);
+  f.i64Load(kMapEntryTagOffset);
+  f.lget(entry);
+  f.i64Load(kMapEntryPayloadOffset);
+  return index;
+}
+
+std::uint32_t Runtime::emitMapDelete() {
+  std::uint32_t index = m.reserveFunction(tMapDelete);
+  Func f(m, index, {kI32, kI32});
+  std::uint32_t idx = f.addLocal(kI32), len = f.addLocal(kI64),
+                entries = f.addLocal(kI32), dst = f.addLocal(kI32),
+                src = f.addLocal(kI32), count = f.addLocal(kI32);
+  f.lget(0);
+  f.lget(1);
+  f.call(mapFind);
+  f.lset(idx);
+  f.lget(idx);
+  f.i32c(0);
+  f.i32LtS();
+  f.if_();
+  f.i32c(0);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64Load(kMapLengthOffset);
+  f.lset(len);
+  f.lget(0);
+  f.i64Load(kMapEntriesOffset);
+  f.i32WrapI64();
+  f.lset(entries);
+  f.lget(entries);
+  f.lget(idx);
+  f.i32c(kMapEntrySize);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(dst);
+  f.lget(dst);
+  f.i32c(kMapEntrySize);
+  f.i32Add();
+  f.lset(src);
+  f.lget(len);
+  f.i32WrapI64();
+  f.lget(idx);
+  f.i32Sub();
+  f.i32c(1);
+  f.i32Sub();
+  f.i32c(kMapEntrySize);
+  f.i32Mul();
+  f.lset(count);
+  f.lget(dst);
+  f.lget(src);
+  f.lget(count);
+  f.memoryCopy();
+  f.lget(0);
+  f.lget(len);
+  f.i64c(1);
+  f.i64Sub();
+  f.i64Store(kMapLengthOffset);
+  f.i32c(1);
+  return index;
+}
+
+std::uint32_t Runtime::emitMapClear() {
+  std::uint32_t index = m.reserveFunction(m.typeFor({kI32}, {}));
+  Func f(m, index, {kI32});
+  f.lget(0);
+  f.i64c(0);
+  f.i64Store(kMapLengthOffset);
+  return index;
+}
+
+// Structural equality, with the hosted engine's `visited` rule: a pair already
+// under comparison is assumed equal, so a cyclic structure terminates. The
+// list is a chain of 16-byte nodes {a address, b address, next}.
+std::uint32_t Runtime::emitEquals() {
+  std::uint32_t index = m.reserveFunction(tEquals);
+  Func f(m, index, {kI64, kI64, kI64, kI64, kI32});
+  std::uint32_t addrA = f.addLocal(kI32), addrB = f.addLocal(kI32),
+                lenA = f.addLocal(kI64), lenB = f.addLocal(kI64),
+                i = f.addLocal(kI64), node = f.addLocal(kI32),
+                p = f.addLocal(kI32), itemsA = f.addLocal(kI32),
+                itemsB = f.addLocal(kI32), entryA = f.addLocal(kI32),
+                entryB = f.addLocal(kI32), idx = f.addLocal(kI32),
+                a = f.addLocal(kF64), b = f.addLocal(kF64);
+
+  // Numbers compare numerically (`1 == 1.0`), matching `Value::equals`.
+  emitIsNumeric(f, 0);
+  emitIsNumeric(f, 2);
+  f.i32And();
+  f.if_();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kInt));
+  f.i64Eq();
+  f.lget(2);
+  f.i64c(static_cast<std::int64_t>(kInt));
+  f.i64Eq();
+  f.i32And();
+  f.if_();
+  f.lget(1);
+  f.lget(3);
+  f.i64Eq();
+  f.ret();
+  f.end();
+  emitToF64(f, 0, 1);
+  f.lset(a);
+  emitToF64(f, 2, 3);
+  f.lset(b);
+  f.lget(a);
+  f.lget(b);
+  f.f64Eq();
+  f.ret();
+  f.end();
+
+  // Different kinds are never equal (the numeric pair was handled above).
+  f.lget(0);
+  f.lget(2);
+  f.i64Ne();
+  f.if_();
+  f.i32c(0);
+  f.ret();
+  f.end();
+
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kNil));
+  f.i64Eq();
+  f.if_();
+  f.i32c(1);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kBool));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.lget(3);
+  f.i64Eq();
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kStr));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lget(3);
+  f.i32WrapI64();
+  f.call(strCmp);
+  f.i32Eqz();
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kFunc));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.lget(3);
+  f.i64Eq();
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(AotTag::Ptr));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.lget(3);
+  f.i64Eq();
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kRange));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lset(addrA);
+  f.lget(3);
+  f.i32WrapI64();
+  f.lset(addrB);
+  f.lget(addrA);
+  f.i64Load(0);
+  f.lget(addrB);
+  f.i64Load(0);
+  f.i64Eq();
+  f.lget(addrA);
+  f.i64Load(8);
+  f.lget(addrB);
+  f.i64Load(8);
+  f.i64Eq();
+  f.i32And();
+  f.lget(addrA);
+  f.i64Load(16);
+  f.lget(addrB);
+  f.i64Load(16);
+  f.i64Eq();
+  f.i32And();
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kError));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lset(addrA);
+  f.lget(3);
+  f.i32WrapI64();
+  f.lset(addrB);
+  f.lget(addrA);
+  f.i64Load(0);
+  f.i32WrapI64();
+  f.lget(addrB);
+  f.i64Load(0);
+  f.i32WrapI64();
+  f.call(strCmp);
+  f.i32Eqz();
+  f.lget(addrA);
+  f.i64Load(8);
+  f.lget(addrB);
+  f.i64Load(8);
+  f.i64Eq();
+  f.i32And();
+  f.ret();
+  f.end();
+
+  // Containers: compare lengths, then walk the pair list so a cycle is
+  // assumed equal instead of recursing forever.
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kArray));
+  f.i64Eq();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kMap));
+  f.i64Eq();
+  f.i32Or();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lset(addrA);
+  f.lget(3);
+  f.i32WrapI64();
+  f.lset(addrB);
+  f.lget(addrA);
+  f.i64Load(0);
+  f.lset(lenA);
+  f.lget(addrB);
+  f.i64Load(0);
+  f.lset(lenB);
+  f.lget(lenA);
+  f.lget(lenB);
+  f.i64Ne();
+  f.if_();
+  f.i32c(0);
+  f.ret();
+  f.end();
+  f.lget(4);
+  f.lset(p);
+  f.block();
+  f.loop();
+  f.lget(p);
+  f.i32Eqz();
+  f.brIf(1);
+  f.lget(p);
+  f.i32Load(0);
+  f.lget(addrA);
+  f.i32Eq();
+  f.lget(p);
+  f.i32Load(4);
+  f.lget(addrB);
+  f.i32Eq();
+  f.i32And();
+  f.if_();
+  f.i32c(1);
+  f.ret();
+  f.end();
+  f.lget(p);
+  f.i32Load(8);
+  f.lset(p);
+  f.br(0);
+  f.end();
+  f.end();
+  f.i32c(16);
+  f.call(alloc);
+  f.lset(node);
+  f.lget(node);
+  f.lget(addrA);
+  f.i32Store(0);
+  f.lget(node);
+  f.lget(addrB);
+  f.i32Store(4);
+  f.lget(node);
+  f.lget(4);
+  f.i32Store(8);
+
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kArray));
+  f.i64Eq();
+  f.if_();
+  f.lget(addrA);
+  f.i64Load(kArrayItemsOffset);
+  f.i32WrapI64();
+  f.lset(itemsA);
+  f.lget(addrB);
+  f.i64Load(kArrayItemsOffset);
+  f.i32WrapI64();
+  f.lset(itemsB);
+  f.i64c(0);
+  f.lset(i);
+  f.block();
+  f.loop();
+  f.lget(i);
+  f.lget(lenA);
+  f.i64GeS();
+  f.brIf(1);
+  f.lget(itemsA);
+  f.lget(i);
+  f.i32WrapI64();
+  f.i32c(16);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(addrA);
+  f.lget(itemsB);
+  f.lget(i);
+  f.i32WrapI64();
+  f.i32c(16);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(addrB);
+  f.lget(addrA);
+  f.i64Load(0);
+  f.lget(addrA);
+  f.i64Load(8);
+  f.lget(addrB);
+  f.i64Load(0);
+  f.lget(addrB);
+  f.i64Load(8);
+  f.lget(node);
+  f.call(index);
+  f.i32Eqz();
+  f.if_();
+  f.i32c(0);
+  f.ret();
+  f.end();
+  f.lget(i);
+  f.i64c(1);
+  f.i64Add();
+  f.lset(i);
+  f.br(0);
+  f.end();
+  f.end();
+  f.i32c(1);
+  f.ret();
+  f.end();
+
+  // Map: every key of A must exist in B with an equal value.
+  f.lget(addrA);
+  f.i64Load(kMapEntriesOffset);
+  f.i32WrapI64();
+  f.lset(itemsA);
+  f.lget(addrB);
+  f.i64Load(kMapEntriesOffset);
+  f.i32WrapI64();
+  f.lset(itemsB);
+  f.i64c(0);
+  f.lset(i);
+  f.block();
+  f.loop();
+  f.lget(i);
+  f.lget(lenA);
+  f.i64GeS();
+  f.brIf(1);
+  f.lget(itemsA);
+  f.lget(i);
+  f.i32WrapI64();
+  f.i32c(kMapEntrySize);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(entryA);
+  f.lget(addrB);
+  f.lget(entryA);
+  f.i64Load(kMapEntryKeyOffset);
+  f.i32WrapI64();
+  f.call(mapFind);
+  f.lset(idx);
+  f.lget(idx);
+  f.i32c(0);
+  f.i32LtS();
+  f.if_();
+  f.i32c(0);
+  f.ret();
+  f.end();
+  f.lget(itemsB);
+  f.lget(idx);
+  f.i32c(kMapEntrySize);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(entryB);
+  f.lget(entryA);
+  f.i64Load(kMapEntryTagOffset);
+  f.lget(entryA);
+  f.i64Load(kMapEntryPayloadOffset);
+  f.lget(entryB);
+  f.i64Load(kMapEntryTagOffset);
+  f.lget(entryB);
+  f.i64Load(kMapEntryPayloadOffset);
+  f.lget(node);
+  f.call(index);
+  f.i32Eqz();
+  f.if_();
+  f.i32c(0);
+  f.ret();
+  f.end();
+  f.lget(i);
+  f.i64c(1);
+  f.i64Add();
+  f.lset(i);
+  f.br(0);
+  f.end();
+  f.end();
+  f.i32c(1);
+  f.ret();
+  f.end();
+
+  f.i32c(0);
+  return index;
+}
+
+// The depth-aware renderers. `toStr`/`repr` are thin wrappers that start at
+// depth 0; a nested container renders its items with depth + 1 and stops at 9
+// with `...`, exactly like `writeValue` in `value.cpp`.
+std::uint32_t Runtime::emitToStrDepthBody(std::uint32_t index) {
+  Func f(m, index, {kI64, kI64, kI32});
+  f.lget(2);
+  f.i32c(8);
+  f.i32GtS();
+  f.if_();
+  f.i32c(static_cast<std::int32_t>(sEllipsis));
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kArray));
+  f.i64Eq();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kMap));
+  f.i64Eq();
+  f.i32Or();
+  f.if_();
+  f.lget(0);
+  f.lget(1);
+  f.lget(2);
+  f.call(reprDepth);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kNil));
+  f.i64Eq();
+  f.if_();
+  f.i32c(static_cast<std::int32_t>(sNil));
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kBool));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.if_();
+  f.i32c(static_cast<std::int32_t>(sTrue));
+  f.ret();
+  f.else_();
+  f.i32c(static_cast<std::int32_t>(sFalse));
+  f.ret();
+  f.end();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kInt));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.call(fmtInt);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kFloat));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.call(fmtDouble);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kDouble));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.call(fmtDouble);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kStr));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kRange));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.call(fmtRange);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kFunc));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.call(fmtFunc);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kError));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.i64Load(0);
+  f.i32WrapI64();
+  f.ret();
+  f.end();
+  emitFailStatic(f, sUnknown);
+  return index;
+}
+
+std::uint32_t Runtime::emitReprDepthBody(std::uint32_t index) {
+  Func f(m, index, {kI64, kI64, kI32});
+  std::uint32_t addr = f.addLocal(kI32), len = f.addLocal(kI64),
+                i = f.addLocal(kI64), items = f.addLocal(kI32),
+                s = f.addLocal(kI32), itemTag = f.addLocal(kI64),
+                itemPayload = f.addLocal(kI64), entry = f.addLocal(kI32);
+  f.lget(2);
+  f.i32c(8);
+  f.i32GtS();
+  f.if_();
+  f.i32c(static_cast<std::int32_t>(sEllipsis));
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kStr));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.call(quote);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kError));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lset(addr);
+  f.i32c(static_cast<std::int32_t>(sErrorPrefix));
+  f.lget(addr);
+  f.i64Load(0);
+  f.i32WrapI64();
+  f.call(quote);
+  f.call(concat);
+  f.lset(s);
+  f.lget(addr);
+  f.i64Load(8);
+  f.i64c(0);
+  f.i64Ne();
+  f.if_();
+  f.lget(s);
+  f.i32c(static_cast<std::int32_t>(sComma));
+  f.call(concat);
+  f.lget(addr);
+  f.i64Load(8);
+  f.call(fmtInt);
+  f.call(concat);
+  f.lset(s);
+  f.end();
+  f.lget(s);
+  f.i32c(static_cast<std::int32_t>(sCloseParen));
+  f.call(concat);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kArray));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lset(addr);
+  f.lget(addr);
+  f.i64Load(kArrayLengthOffset);
+  f.lset(len);
+  f.lget(addr);
+  f.i64Load(kArrayItemsOffset);
+  f.i32WrapI64();
+  f.lset(items);
+  f.i32c(static_cast<std::int32_t>(sOpenBracket));
+  f.lset(s);
+  f.i64c(0);
+  f.lset(i);
+  f.block();
+  f.loop();
+  f.lget(i);
+  f.lget(len);
+  f.i64GeS();
+  f.brIf(1);
+  f.lget(i);
+  f.i64c(0);
+  f.i64GtS();
+  f.if_();
+  f.lget(s);
+  f.i32c(static_cast<std::int32_t>(sComma));
+  f.call(concat);
+  f.lset(s);
+  f.end();
+  f.lget(items);
+  f.lget(i);
+  f.i32WrapI64();
+  f.i32c(16);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(addr);
+  f.lget(addr);
+  f.i64Load(0);
+  f.lset(itemTag);
+  f.lget(addr);
+  f.i64Load(8);
+  f.lset(itemPayload);
+  f.lget(s);
+  f.lget(itemTag);
+  f.lget(itemPayload);
+  f.lget(2);
+  f.i32c(1);
+  f.i32Add();
+  f.call(reprDepth);
+  f.call(concat);
+  f.lset(s);
+  f.lget(i);
+  f.i64c(1);
+  f.i64Add();
+  f.lset(i);
+  f.br(0);
+  f.end();
+  f.end();
+  f.lget(s);
+  f.i32c(static_cast<std::int32_t>(sCloseBracket));
+  f.call(concat);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kMap));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lset(addr);
+  f.lget(addr);
+  f.i64Load(kMapLengthOffset);
+  f.lset(len);
+  f.lget(addr);
+  f.i64Load(kMapEntriesOffset);
+  f.i32WrapI64();
+  f.lset(items);
+  f.i32c(static_cast<std::int32_t>(sOpenBrace));
+  f.lset(s);
+  f.i64c(0);
+  f.lset(i);
+  f.block();
+  f.loop();
+  f.lget(i);
+  f.lget(len);
+  f.i64GeS();
+  f.brIf(1);
+  f.lget(i);
+  f.i64c(0);
+  f.i64GtS();
+  f.if_();
+  f.lget(s);
+  f.i32c(static_cast<std::int32_t>(sComma));
+  f.call(concat);
+  f.lset(s);
+  f.end();
+  f.lget(items);
+  f.lget(i);
+  f.i32WrapI64();
+  f.i32c(kMapEntrySize);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(entry);
+  f.lget(s);
+  f.lget(entry);
+  f.i64Load(kMapEntryKeyOffset);
+  f.i32WrapI64();
+  f.call(quote);
+  f.call(concat);
+  f.lset(s);
+  f.lget(s);
+  f.i32c(static_cast<std::int32_t>(sColonSpace));
+  f.call(concat);
+  f.lset(s);
+  f.lget(s);
+  f.lget(entry);
+  f.i64Load(kMapEntryTagOffset);
+  f.lget(entry);
+  f.i64Load(kMapEntryPayloadOffset);
+  f.lget(2);
+  f.i32c(1);
+  f.i32Add();
+  f.call(reprDepth);
+  f.call(concat);
+  f.lset(s);
+  f.lget(i);
+  f.i64c(1);
+  f.i64Add();
+  f.lset(i);
+  f.br(0);
+  f.end();
+  f.end();
+  f.lget(s);
+  f.i32c(static_cast<std::int32_t>(sCloseBrace));
+  f.call(concat);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.lget(1);
+  f.lget(2);
+  f.call(toStrDepth);
+  return index;
+}
+
+std::uint32_t Runtime::emitIndexGet() {
+  std::uint32_t index = m.reserveFunction(tBin);
+  Func f(m, index, {kI64, kI64, kI64, kI64});
+  std::uint32_t addr = f.addLocal(kI32), count = f.addLocal(kI64),
+                idx = f.addLocal(kI64), off = f.addLocal(kI32),
+                byte = f.addLocal(kI32), clen = f.addLocal(kI32),
+                out = f.addLocal(kI32);
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kArray));
+  f.i64Eq();
+  f.if_();
+  f.lget(2);
+  f.i64c(static_cast<std::int64_t>(kInt));
+  f.i64Eq();
+  f.i32Eqz();
+  f.if_();
+  emitFailStatic(f, sArrayIndexInt);
+  f.end();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lget(3);
+  f.call(arrayGet);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kMap));
+  f.i64Eq();
+  f.if_();
+  f.lget(2);
+  f.i64c(static_cast<std::int64_t>(kStr));
+  f.i64Eq();
+  f.i32Eqz();
+  f.if_();
+  emitFailStatic(f, sMapKeyString);
+  f.end();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lget(3);
+  f.i32WrapI64();
+  f.call(mapGet);
+  f.ret();
+  f.end();
   f.lget(0);
   f.i64c(static_cast<std::int64_t>(kStr));
   f.i64Eq();
@@ -2896,7 +4572,7 @@ std::uint32_t Runtime::emitMemberGet() {
   f.i64Eq();
   f.i32Eqz();
   f.if_();
-  emitFailStatic(f, sCannotIndex);
+  emitFailStatic(f, sStringIndexInt);
   f.end();
   f.lget(1);
   f.i32WrapI64();
@@ -2985,64 +4661,28 @@ std::uint32_t Runtime::emitMemberGet() {
   return index;
 }
 
-std::uint32_t Runtime::emitMemberSet() {
-  std::uint32_t type = m.typeFor({kI64, kI64, kI64, kI64, kI64, kI64}, {kI64, kI64});
+std::uint32_t Runtime::emitIndexSet() {
+  std::uint32_t type = m.typeFor({kI64, kI64, kI64, kI64, kI64, kI64}, {});
   std::uint32_t index = m.reserveFunction(type);
   Func f(m, index, {kI64, kI64, kI64, kI64, kI64, kI64});
   f.lget(0);
-  f.i64c(static_cast<std::int64_t>(kError));
+  f.i64c(static_cast<std::int64_t>(kArray));
   f.i64Eq();
   f.if_();
   f.lget(2);
-  f.i64c(static_cast<std::int64_t>(kStr));
-  f.i64Eq();
-  f.i32Eqz();
-  f.if_();
-  emitFailStatic(f, sNoMember);
-  f.end();
-  f.lget(3);
-  f.i32WrapI64();
-  f.i32c(static_cast<std::int32_t>(sMessage));
-  f.call(strCmp);
-  f.i32Eqz();
-  f.if_();
-  f.lget(4);
-  f.i64c(static_cast<std::int64_t>(kStr));
-  f.i64Eq();
-  f.i32Eqz();
-  f.if_();
-  emitFailStatic(f, sNoMember);
-  f.end();
-  f.lget(1);
-  f.i32WrapI64();
-  f.lget(5);
-  f.i64Store(0);
-  f.i64c(static_cast<std::int64_t>(kNil));
-  f.i64c(0);
-  f.ret();
-  f.end();
-  f.lget(3);
-  f.i32WrapI64();
-  f.i32c(static_cast<std::int32_t>(sCode));
-  f.call(strCmp);
-  f.i32Eqz();
-  f.if_();
-  f.lget(4);
   f.i64c(static_cast<std::int64_t>(kInt));
   f.i64Eq();
   f.i32Eqz();
   f.if_();
-  emitFailStatic(f, sNoMember);
+  emitFailStatic(f, sArrayIndexInt);
   f.end();
   f.lget(1);
   f.i32WrapI64();
+  f.lget(3);
+  f.lget(4);
   f.lget(5);
-  f.i64Store(8);
-  f.i64c(static_cast<std::int64_t>(kNil));
-  f.i64c(0);
+  f.call(arraySet);
   f.ret();
-  f.end();
-  emitFailStatic(f, sNoMember);
   f.end();
   f.lget(0);
   f.i64c(static_cast<std::int64_t>(kStr));
@@ -3050,7 +4690,936 @@ std::uint32_t Runtime::emitMemberSet() {
   f.if_();
   emitFailStatic(f, sStringImmutable);
   f.end();
-  emitFailStatic(f, sCannotIndex);
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kMap));
+  f.i64Eq();
+  f.if_();
+  f.lget(2);
+  f.i64c(static_cast<std::int64_t>(kStr));
+  f.i64Eq();
+  f.i32Eqz();
+  f.if_();
+  emitFailStatic(f, sMapKeyString);
+  f.end();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lget(3);
+  f.i32WrapI64();
+  f.lget(4);
+  f.lget(5);
+  f.call(mapSet);
+  f.ret();
+  f.end();
+  emitFailStatic(f, sCannotAssignIndex);
+  return index;
+}
+
+
+// `$slice(receiver, start, end, step)`: nil bounds are "not given", a
+// negative bound counts from the end and the bounds are clamped the way
+// Python clamps them, so `a[:]`, `a[-2:]`, `a[::-1]` and `s[1:len(s)-1]`
+// share one path. A string slices by UTF-8 character.
+std::uint32_t Runtime::emitSlice() {
+  std::uint32_t type = m.typeFor(
+      {kI64, kI64, kI64, kI64, kI64, kI64, kI64, kI64}, {kI64, kI64});
+  std::uint32_t index = m.reserveFunction(type);
+  Func f(m, index, {kI64, kI64, kI64, kI64, kI64, kI64, kI64, kI64});
+  std::uint32_t len = f.addLocal(kI64), from = f.addLocal(kI64),
+                to = f.addLocal(kI64), step = f.addLocal(kI64),
+                i = f.addLocal(kI64), lower = f.addLocal(kI64),
+                upper = f.addLocal(kI64), hasStart = f.addLocal(kI32),
+                hasEnd = f.addLocal(kI32), hasStep = f.addLocal(kI32),
+                addr = f.addLocal(kI32), items = f.addLocal(kI32),
+                itemAddr = f.addLocal(kI32), resTag = f.addLocal(kI64),
+                resPay = f.addLocal(kI64), out = f.addLocal(kI32),
+                cpay = f.addLocal(kI64);
+
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kArray));
+  f.i64Eq();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kStr));
+  f.i64Eq();
+  f.i32Or();
+  f.i32Eqz();
+  f.if_();
+  emitFailStatic(f, sCannotSlice);
+  f.end();
+
+  auto parseBound = [&](int tagParam, int payParam, std::uint32_t present,
+                        std::uint32_t value, std::uint32_t message) {
+    f.lget(tagParam);
+    f.i64c(static_cast<std::int64_t>(kNil));
+    f.i64Ne();
+    f.lset(present);
+    f.lget(present);
+    f.if_();
+    f.lget(tagParam);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64Eq();
+    f.i32Eqz();
+    f.if_();
+    emitFailStatic(f, message);
+    f.end();
+    f.lget(payParam);
+    f.lset(value);
+    f.end();
+  };
+  parseBound(2, 3, hasStart, from, sSliceStartInt);
+  parseBound(4, 5, hasEnd, to, sSliceEndInt);
+  parseBound(6, 7, hasStep, step, sSliceStepInt);
+  f.lget(hasStep);
+  f.i32Eqz();
+  f.if_();
+  f.i64c(1);
+  f.lset(step);
+  f.end();
+  f.lget(step);
+  f.i64c(0);
+  f.i64Eq();
+  f.if_();
+  emitFailStatic(f, sSliceStepZero);
+  f.end();
+
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kArray));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.i64Load(kArrayLengthOffset);
+  f.lset(len);
+  f.else_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.call(utf8Len);
+  f.lset(len);
+  f.end();
+
+  // lower/upper follow the step's direction; a missing bound is that side's
+  // default rather than 0.
+  f.lget(step);
+  f.i64c(0);
+  f.i64GtS();
+  f.ifResult(kI64);
+  f.i64c(0);
+  f.else_();
+  f.i64c(-1);
+  f.end();
+  f.lset(lower);
+  f.lget(step);
+  f.i64c(0);
+  f.i64GtS();
+  f.ifResult(kI64);
+  f.lget(len);
+  f.else_();
+  f.lget(len);
+  f.i64c(1);
+  f.i64Sub();
+  f.end();
+  f.lset(upper);
+
+  auto clamp = [&](std::uint32_t value, std::uint32_t present,
+                   std::uint32_t result, bool isStart) {
+    f.lget(present);
+    f.i32Eqz();
+    f.if_();
+    f.lget(step);
+    f.i64c(0);
+    f.i64GtS();
+    f.ifResult(kI64);
+    f.lget(isStart ? lower : upper);
+    f.else_();
+    f.lget(isStart ? upper : lower);
+    f.end();
+    f.lset(result);
+    f.else_();
+    f.lget(value);
+    f.i64c(0);
+    f.i64LtS();
+    f.if_();
+    f.lget(value);
+    f.lget(len);
+    f.i64Add();
+    f.lset(value);
+    f.end();
+    f.lget(value);
+    f.lget(lower);
+    f.i64LtS();
+    f.if_();
+    f.lget(lower);
+    f.lset(value);
+    f.end();
+    f.lget(value);
+    f.lget(upper);
+    f.i64GtS();
+    f.if_();
+    f.lget(upper);
+    f.lset(value);
+    f.end();
+    f.lget(value);
+    f.lset(result);
+    f.end();
+  };
+  clamp(from, hasStart, from, true);
+  clamp(to, hasEnd, to, false);
+
+  auto emitLoopCondition = [&]() {
+    f.lget(step);
+    f.i64c(0);
+    f.i64GtS();
+    f.ifResult(kI32);
+    f.lget(i);
+    f.lget(to);
+    f.i64GeS();
+    f.else_();
+    f.lget(i);
+    f.lget(to);
+    f.i64LeS();
+    f.end();
+    f.brIf(1);
+  };
+
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kArray));
+  f.i64Eq();
+  f.if_();
+  f.lget(len);
+  f.call(newArray);
+  f.lset(resPay);
+  f.lset(resTag);
+  f.lget(1);
+  f.i32WrapI64();
+  f.i64Load(kArrayItemsOffset);
+  f.i32WrapI64();
+  f.lset(items);
+  f.lget(from);
+  f.lset(i);
+  f.block();
+  f.loop();
+  emitLoopCondition();
+  f.lget(items);
+  f.lget(i);
+  f.i32WrapI64();
+  f.i32c(16);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(itemAddr);
+  f.lget(resPay);
+  f.i32WrapI64();
+  f.lget(itemAddr);
+  f.i64Load(0);
+  f.lget(itemAddr);
+  f.i64Load(8);
+  f.call(arrayPush);
+  f.lget(i);
+  f.lget(step);
+  f.i64Add();
+  f.lset(i);
+  f.br(0);
+  f.end();
+  f.end();
+  f.lget(resTag);
+  f.lget(resPay);
+  f.ret();
+  f.end();
+
+  f.i32c(0);
+  f.call(newStr);
+  f.lset(out);
+  f.lget(from);
+  f.lset(i);
+  f.block();
+  f.loop();
+  emitLoopCondition();
+  f.i64c(static_cast<std::int64_t>(kStr));
+  f.lget(1);
+  f.i64c(static_cast<std::int64_t>(kInt));
+  f.lget(i);
+  f.call(indexGet);
+  f.lset(cpay);
+  f.drop();
+  f.lget(out);
+  f.lget(cpay);
+  f.i32WrapI64();
+  f.call(concat);
+  f.lset(out);
+  f.lget(i);
+  f.lget(step);
+  f.i64Add();
+  f.lset(i);
+  f.br(0);
+  f.end();
+  f.end();
+  f.i64c(static_cast<std::int64_t>(kStr));
+  f.lget(out);
+  f.i64ExtendI32U();
+  return index;
+}
+
+
+// String-to-number parsing for `int()`, `float()` and `double()`. The VM
+// trims ASCII whitespace and rejects trailing junk, so these do the same.
+std::uint32_t Runtime::emitParseIntStr() {
+  std::uint32_t index = m.reserveFunction(m.typeFor({kI32}, {kI64}));
+  Func f(m, index, {kI32});
+  std::uint32_t p = f.addLocal(kI32), end = f.addLocal(kI32),
+                b = f.addLocal(kI32), digits = f.addLocal(kI32),
+                base = f.addLocal(kI32), sign = f.addLocal(kI64),
+                acc = f.addLocal(kI64), digitVal = f.addLocal(kI64),
+                limit = f.addLocal(kI64);
+
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lset(p);
+  f.lget(p);
+  f.lget(0);
+  f.i64Load(0);
+  f.i32WrapI64();
+  f.i32Add();
+  f.lset(end);
+
+  auto isSpace = [&]() {
+    // b is on the stack; leave an i32 condition.
+    f.lget(b);
+    f.i32c(32);
+    f.i32Eq();
+    f.lget(b);
+    f.i32c(9);
+    f.i32Eq();
+    f.i32Or();
+    f.lget(b);
+    f.i32c(10);
+    f.i32Eq();
+    f.i32Or();
+    f.lget(b);
+    f.i32c(13);
+    f.i32Eq();
+    f.i32Or();
+  };
+  f.block();
+  f.loop();
+  f.lget(p);
+  f.lget(end);
+  f.i32GeS();
+  f.brIf(1);
+  f.lget(p);
+  f.i32Load8u(0);
+  f.lset(b);
+  isSpace();
+  f.i32Eqz();
+  f.brIf(1);
+  f.lget(p);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(p);
+  f.br(0);
+  f.end();
+  f.end();
+  f.block();
+  f.loop();
+  f.lget(end);
+  f.lget(p);
+  f.i32LeS();
+  f.brIf(1);
+  f.lget(end);
+  f.i32c(1);
+  f.i32Sub();
+  f.i32Load8u(0);
+  f.lset(b);
+  isSpace();
+  f.i32Eqz();
+  f.brIf(1);
+  f.lget(end);
+  f.i32c(1);
+  f.i32Sub();
+  f.lset(end);
+  f.br(0);
+  f.end();
+  f.end();
+
+  f.i64c(1);
+  f.lset(sign);
+  f.lget(p);
+  f.lget(end);
+  f.i32LtS();
+  f.if_();
+  f.lget(p);
+  f.i32Load8u(0);
+  f.lset(b);
+  f.lget(b);
+  f.i32c(43);
+  f.i32Eq();
+  f.if_();
+  f.lget(p);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(p);
+  f.else_();
+  f.lget(b);
+  f.i32c(45);
+  f.i32Eq();
+  f.if_();
+  f.i64c(-1);
+  f.lset(sign);
+  f.lget(p);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(p);
+  f.end();
+  f.end();
+  f.end();
+
+  // `strtoll` accepts `0x`/`0b`/`0o` prefixes; keep the same spellings.
+  f.i32c(10);
+  f.lset(base);
+  f.lget(p);
+  f.i32c(1);
+  f.i32Add();
+  f.lget(end);
+  f.i32LtS();
+  f.if_();
+  f.lget(p);
+  f.i32Load8u(0);
+  f.i32c(48);
+  f.i32Eq();
+  f.if_();
+  f.lget(p);
+  f.i32c(1);
+  f.i32Add();
+  f.i32Load8u(0);
+  f.lset(b);
+  f.lget(b);
+  f.i32c(120);
+  f.i32Eq();
+  f.lget(b);
+  f.i32c(88);
+  f.i32Eq();
+  f.i32Or();
+  f.if_();
+  f.i32c(16);
+  f.lset(base);
+  f.lget(p);
+  f.i32c(2);
+  f.i32Add();
+  f.lset(p);
+  f.else_();
+  f.lget(b);
+  f.i32c(98);
+  f.i32Eq();
+  f.lget(b);
+  f.i32c(66);
+  f.i32Eq();
+  f.i32Or();
+  f.if_();
+  f.i32c(2);
+  f.lset(base);
+  f.lget(p);
+  f.i32c(2);
+  f.i32Add();
+  f.lset(p);
+  f.else_();
+  f.lget(b);
+  f.i32c(111);
+  f.i32Eq();
+  f.lget(b);
+  f.i32c(79);
+  f.i32Eq();
+  f.i32Or();
+  f.if_();
+  f.i32c(8);
+  f.lset(base);
+  f.lget(p);
+  f.i32c(2);
+  f.i32Add();
+  f.lset(p);
+  f.end();
+  f.end();
+  f.end();
+  f.end();
+  f.end();
+
+  // The magnitude limit is INT64_MAX for a positive number and 2^63 for a
+  // negative one (whose bits are INT64_MIN).
+  f.lget(sign);
+  f.i64c(0);
+  f.i64GtS();
+  f.ifResult(kI64);
+  f.i64c(std::numeric_limits<std::int64_t>::max());
+  f.else_();
+  f.i64c(std::numeric_limits<std::int64_t>::min());
+  f.end();
+  f.lset(limit);
+
+  f.i64c(0);
+  f.lset(acc);
+  f.i32c(0);
+  f.lset(digits);
+  f.block();
+  f.loop();
+  f.lget(p);
+  f.lget(end);
+  f.i32GeS();
+  f.brIf(1);
+  f.lget(p);
+  f.i32Load8u(0);
+  f.lset(b);
+  f.lget(b);
+  f.i32c(48);
+  f.i32LtU();
+  f.lget(b);
+  f.i32c(57);
+  f.i32GtU();
+  f.i32Or();
+  f.lget(b);
+  f.i32c(97);
+  f.i32LtU();
+  f.lget(b);
+  f.i32c(102);
+  f.i32GtU();
+  f.i32Or();
+  f.i32And();
+  f.lget(b);
+  f.i32c(65);
+  f.i32LtU();
+  f.lget(b);
+  f.i32c(70);
+  f.i32GtU();
+  f.i32Or();
+  f.i32And();
+  f.if_();
+  emitFailStatic(f, sIntString);
+  f.end();
+  f.lget(b);
+  f.i32c(58);
+  f.i32GeU();
+  f.if_();
+  f.lget(b);
+  f.i32c(97);
+  f.i32LtU();
+  f.if_();
+  f.lget(b);
+  f.i32c(65);
+  f.i32Sub();
+  f.i32c(10);
+  f.i32Add();
+  f.i64ExtendI32U();
+  f.lset(digitVal);
+  f.else_();
+  f.lget(b);
+  f.i32c(97);
+  f.i32Sub();
+  f.i32c(10);
+  f.i32Add();
+  f.i64ExtendI32U();
+  f.lset(digitVal);
+  f.end();
+  f.else_();
+  f.lget(b);
+  f.i32c(48);
+  f.i32Sub();
+  f.i64ExtendI32U();
+  f.lset(digitVal);
+  f.end();
+  f.lget(digitVal);
+  f.lget(base);
+  f.i64ExtendI32U();
+  f.i64GeU();
+  f.if_();
+  emitFailStatic(f, sIntString);
+  f.end();
+  f.lget(acc);
+  f.lget(limit);
+  f.lget(digitVal);
+  f.i64Sub();
+  f.lget(base);
+  f.i64ExtendI32U();
+  f.i64DivU();
+  f.i64GtU();
+  f.if_();
+  emitFailStatic(f, sIntString);
+  f.end();
+  f.lget(acc);
+  f.lget(base);
+  f.i64ExtendI32U();
+  f.i64Mul();
+  f.lget(digitVal);
+  f.i64Add();
+  f.lset(acc);
+  f.lget(digits);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(digits);
+  f.lget(p);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(p);
+  f.br(0);
+  f.end();
+  f.end();
+  f.lget(digits);
+  f.i32Eqz();
+  f.if_();
+  emitFailStatic(f, sIntString);
+  f.end();
+  f.lget(acc);
+  f.lget(sign);
+  f.i64Mul();
+  return index;
+}
+
+std::uint32_t Runtime::emitParseDoubleStr() {
+  std::uint32_t index = m.reserveFunction(m.typeFor({kI32}, {kF64}));
+  Func f(m, index, {kI32});
+  std::uint32_t p = f.addLocal(kI32), end = f.addLocal(kI32),
+                b = f.addLocal(kI32), digits = f.addLocal(kI32),
+                expDigits = f.addLocal(kI32), exp = f.addLocal(kI64),
+                expSign = f.addLocal(kI64), value = f.addLocal(kF64),
+                scale = f.addLocal(kF64), sign = f.addLocal(kF64);
+
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lset(p);
+  f.lget(p);
+  f.lget(0);
+  f.i64Load(0);
+  f.i32WrapI64();
+  f.i32Add();
+  f.lset(end);
+  auto isSpace = [&]() {
+    f.lget(b);
+    f.i32c(32);
+    f.i32Eq();
+    f.lget(b);
+    f.i32c(9);
+    f.i32Eq();
+    f.i32Or();
+    f.lget(b);
+    f.i32c(10);
+    f.i32Eq();
+    f.i32Or();
+    f.lget(b);
+    f.i32c(13);
+    f.i32Eq();
+    f.i32Or();
+  };
+  f.block();
+  f.loop();
+  f.lget(p);
+  f.lget(end);
+  f.i32GeS();
+  f.brIf(1);
+  f.lget(p);
+  f.i32Load8u(0);
+  f.lset(b);
+  isSpace();
+  f.i32Eqz();
+  f.brIf(1);
+  f.lget(p);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(p);
+  f.br(0);
+  f.end();
+  f.end();
+  f.block();
+  f.loop();
+  f.lget(end);
+  f.lget(p);
+  f.i32LeS();
+  f.brIf(1);
+  f.lget(end);
+  f.i32c(1);
+  f.i32Sub();
+  f.i32Load8u(0);
+  f.lset(b);
+  isSpace();
+  f.i32Eqz();
+  f.brIf(1);
+  f.lget(end);
+  f.i32c(1);
+  f.i32Sub();
+  f.lset(end);
+  f.br(0);
+  f.end();
+  f.end();
+
+  f.f64c(1.0);
+  f.lset(sign);
+  f.lget(p);
+  f.lget(end);
+  f.i32LtS();
+  f.if_();
+  f.lget(p);
+  f.i32Load8u(0);
+  f.lset(b);
+  f.lget(b);
+  f.i32c(43);
+  f.i32Eq();
+  f.if_();
+  f.lget(p);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(p);
+  f.else_();
+  f.lget(b);
+  f.i32c(45);
+  f.i32Eq();
+  f.if_();
+  f.f64c(-1.0);
+  f.lset(sign);
+  f.lget(p);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(p);
+  f.end();
+  f.end();
+  f.end();
+
+  f.f64c(0.0);
+  f.lset(value);
+  f.i32c(0);
+  f.lset(digits);
+  f.block();
+  f.loop();
+  f.lget(p);
+  f.lget(end);
+  f.i32GeS();
+  f.brIf(1);
+  f.lget(p);
+  f.i32Load8u(0);
+  f.lset(b);
+  f.lget(b);
+  f.i32c(48);
+  f.i32LtU();
+  f.lget(b);
+  f.i32c(57);
+  f.i32GtU();
+  f.i32Or();
+  f.brIf(1);
+  f.lget(value);
+  f.f64c(10.0);
+  f.f64Mul();
+  f.lget(b);
+  f.i32c(48);
+  f.i32Sub();
+  f.f64ConvertI32U();
+  f.f64Add();
+  f.lset(value);
+  f.lget(digits);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(digits);
+  f.lget(p);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(p);
+  f.br(0);
+  f.end();
+  f.end();
+
+  f.lget(p);
+  f.lget(end);
+  f.i32LtS();
+  f.if_();
+  f.lget(p);
+  f.i32Load8u(0);
+  f.i32c(46);
+  f.i32Eq();
+  f.if_();
+  f.lget(p);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(p);
+  f.f64c(0.1);
+  f.lset(scale);
+  f.block();
+  f.loop();
+  f.lget(p);
+  f.lget(end);
+  f.i32GeS();
+  f.brIf(1);
+  f.lget(p);
+  f.i32Load8u(0);
+  f.lset(b);
+  f.lget(b);
+  f.i32c(48);
+  f.i32LtU();
+  f.lget(b);
+  f.i32c(57);
+  f.i32GtU();
+  f.i32Or();
+  f.brIf(1);
+  f.lget(value);
+  f.lget(b);
+  f.i32c(48);
+  f.i32Sub();
+  f.f64ConvertI32U();
+  f.lget(scale);
+  f.f64Mul();
+  f.f64Add();
+  f.lset(value);
+  f.lget(scale);
+  f.f64c(0.1);
+  f.f64Mul();
+  f.lset(scale);
+  f.lget(digits);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(digits);
+  f.lget(p);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(p);
+  f.br(0);
+  f.end();
+  f.end();
+  f.end();
+  f.end();
+
+  f.lget(digits);
+  f.i32Eqz();
+  f.if_();
+  emitFailStatic(f, sFloatString);
+  f.end();
+
+  f.lget(p);
+  f.lget(end);
+  f.i32LtS();
+  f.if_();
+  f.lget(p);
+  f.i32Load8u(0);
+  f.lset(b);
+  f.lget(b);
+  f.i32c(101);
+  f.i32Eq();
+  f.lget(b);
+  f.i32c(69);
+  f.i32Eq();
+  f.i32Or();
+  f.if_();
+  f.lget(p);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(p);
+  f.i64c(1);
+  f.lset(expSign);
+  f.lget(p);
+  f.lget(end);
+  f.i32LtS();
+  f.if_();
+  f.lget(p);
+  f.i32Load8u(0);
+  f.lset(b);
+  f.lget(b);
+  f.i32c(43);
+  f.i32Eq();
+  f.if_();
+  f.lget(p);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(p);
+  f.else_();
+  f.lget(b);
+  f.i32c(45);
+  f.i32Eq();
+  f.if_();
+  f.i64c(-1);
+  f.lset(expSign);
+  f.lget(p);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(p);
+  f.end();
+  f.end();
+  f.end();
+  f.i64c(0);
+  f.lset(exp);
+  f.i32c(0);
+  f.lset(expDigits);
+  f.block();
+  f.loop();
+  f.lget(p);
+  f.lget(end);
+  f.i32GeS();
+  f.brIf(1);
+  f.lget(p);
+  f.i32Load8u(0);
+  f.lset(b);
+  f.lget(b);
+  f.i32c(48);
+  f.i32LtU();
+  f.lget(b);
+  f.i32c(57);
+  f.i32GtU();
+  f.i32Or();
+  f.brIf(1);
+  f.lget(exp);
+  f.i64c(10);
+  f.i64Mul();
+  f.lget(b);
+  f.i32c(48);
+  f.i32Sub();
+  f.i64ExtendI32U();
+  f.i64Add();
+  f.lset(exp);
+  f.lget(expDigits);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(expDigits);
+  f.lget(p);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(p);
+  f.br(0);
+  f.end();
+  f.end();
+  f.lget(expDigits);
+  f.i32Eqz();
+  f.if_();
+  emitFailStatic(f, sFloatString);
+  f.end();
+  f.block();
+  f.loop();
+  f.lget(exp);
+  f.i64c(0);
+  f.i64LeS();
+  f.brIf(1);
+  f.lget(expSign);
+  f.i64c(0);
+  f.i64GtS();
+  f.if_();
+  f.lget(value);
+  f.f64c(10.0);
+  f.f64Mul();
+  f.lset(value);
+  f.else_();
+  f.lget(value);
+  f.f64c(10.0);
+  f.f64Div();
+  f.lset(value);
+  f.end();
+  f.lget(exp);
+  f.i64c(1);
+  f.i64Sub();
+  f.lset(exp);
+  f.br(0);
+  f.end();
+  f.end();
+  f.end();
+  f.end();
+
+  f.lget(p);
+  f.lget(end);
+  f.i32Ne();
+  f.if_();
+  emitFailStatic(f, sFloatString);
+  f.end();
+  f.lget(value);
+  f.lget(sign);
+  f.f64Mul();
   return index;
 }
 
@@ -3063,15 +5632,34 @@ void Runtime::emitCore() {
   concat = emitConcat();
   strCmp = emitStrCmp();
   fmtInt = emitFmtInt();
+  parseIntStr = emitParseIntStr();
+  parseDoubleStr = emitParseDoubleStr();
   fmtDouble = emitFmtDouble();
   fmtFunc = emitFmtFunc();
   fmtRange = emitFmtRange();
-  toStr = emitToStr();
   quote = emitQuote();
+  // The two renderers call each other, so both indices are reserved before
+  // either body is emitted.
+  toStrDepth = m.reserveFunction(tToStrDepth);
+  reprDepth = m.reserveFunction(tToStrDepth);
+  emitToStrDepthBody(toStrDepth);
+  emitReprDepthBody(reprDepth);
+  toStr = emitToStr();
   reprStr = emitReprStr();
   truthy = emitTruthy();
   iterStep = emitIterStep();
   typeName = emitTypeName();
+  newArray = emitNewArray();
+  newMap = emitNewMap();
+  arrayPush = emitArrayPush();
+  arrayGet = emitArrayGet();
+  arraySet = emitArraySet();
+  mapFind = emitMapFind();
+  mapSet = emitMapSet();
+  mapGet = emitMapGet();
+  mapDelete = emitMapDelete();
+  mapClear = emitMapClear();
+  equals = emitEquals();
   opAdd = emitBinary(kBinAdd, 0, "");
   opSub = emitBinary(kBinSub, 0, "");
   opMul = emitBinary(kBinMul, 0, "");
@@ -3087,6 +5675,9 @@ void Runtime::emitCore() {
   opLt = emitCompare(1);
   opIn = emitIn();
   utf8ByteOffset = emitUtf8ByteOffset();
+  indexGet = emitIndexGet();
+  indexSet = emitIndexSet();
+  slice = emitSlice();
   memberGet = emitMemberGet();
   memberSet = emitMemberSet();
   unNeg = emitUnary(0);
@@ -3286,6 +5877,20 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
     f.i64Add();
     f.ret();
     f.end();
+    argTag(0);
+    f.i64c(static_cast<std::int64_t>(kArray));
+    f.i64Eq();
+    argTag(0);
+    f.i64c(static_cast<std::int64_t>(kMap));
+    f.i64Eq();
+    f.i32Or();
+    f.if_();
+    f.i64c(static_cast<std::int64_t>(kInt));
+    argPayload(0);
+    f.i32WrapI64();
+    f.i64Load(0);
+    f.ret();
+    f.end();
     emitFailStatic(f, sLenType);
     return index;
   }
@@ -3390,7 +5995,11 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
     f.i64c(static_cast<std::int64_t>(kStr));
     f.i64Eq();
     f.if_();
-    emitFailStatic(f, sIntString);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    argPayload(0);
+    f.i32WrapI64();
+    f.call(parseIntStr);
+    f.ret();
     f.end();
     emitFailStatic(f, sUnsupportedOperands);
     return index;
@@ -3410,7 +6019,14 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
     f.i64c(static_cast<std::int64_t>(kStr));
     f.i64Eq();
     f.if_();
-    emitFailStatic(f, sFloatString);
+    f.i64c(static_cast<std::int64_t>(kFloat));
+    argPayload(0);
+    f.i32WrapI64();
+    f.call(parseDoubleStr);
+    f.f32DemoteF64();
+    f.f64PromoteF32();
+    f.i64ReinterpretF64();
+    f.ret();
     f.end();
     argTag(0);
     f.i64c(static_cast<std::int64_t>(kBool));
@@ -3457,7 +6073,12 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
     f.i64c(static_cast<std::int64_t>(kStr));
     f.i64Eq();
     f.if_();
-    emitFailStatic(f, sFloatString);
+    f.i64c(static_cast<std::int64_t>(kDouble));
+    argPayload(0);
+    f.i32WrapI64();
+    f.call(parseDoubleStr);
+    f.i64ReinterpretF64();
+    f.ret();
     f.end();
     argTag(0);
     f.i64c(static_cast<std::int64_t>(kBool));
@@ -3965,6 +6586,16 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
     return index;
   }
 
+  if (name == "$slice") {
+    arity(4);
+    for (int i = 0; i < 4; ++i) {
+      argTag(i);
+      argPayload(i);
+    }
+    f.call(slice);
+    return index;
+  }
+
   if (name == "$range" || name == "range") {
     const int count = name == "$range" ? 3 : 2;
     arity(count);
@@ -4003,6 +6634,21 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
     return index;
   }
 
+  if (name == "time") {
+    arity(0);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.call(timeImport);
+    return index;
+  }
+
+  if (name == "clock") {
+    arity(0);
+    f.i64c(static_cast<std::int64_t>(kDouble));
+    f.call(clockImport);
+    f.i64ReinterpretF64();
+    return index;
+  }
+
   if (name == "exit") {
     arityBetween(0, 1);
     f.lget(1);
@@ -4032,7 +6678,8 @@ const std::unordered_set<std::string>& supportedBuiltins() {
       "print", "write", "eprint", "len", "type", "str", "$str", "repr",
       "int", "float", "double", "bool", "chr", "ord", "floor", "ceil",
       "round", "sqrt", "assert", "assertEq", "panic", "error", "isError",
-      "$isError", "$nonNull", "$range", "range", "exit",
+      "$isError", "$nonNull", "$range", "range", "exit", "$slice",
+      "time", "clock",
   };
   return names;
 }
@@ -4110,7 +6757,6 @@ struct Lowering {
 
   explicit Lowering(const Bytecode& proto) : root(proto) {}
 
-  void validate() const;
   void planGlobals();
   void emitProto(const Bytecode& proto, std::size_t protoIndex);
   void emitInstruction(const Bytecode& proto, const Instruction& instr,
@@ -4123,26 +6769,10 @@ struct Lowering {
                        std::uint32_t addrLocal, std::uint32_t itTagLocal,
                        std::uint32_t itPayloadLocal, std::uint32_t curTagLocal,
                        std::uint32_t curPayloadLocal, std::uint32_t doneLocal,
+                       std::uint32_t vTagLocal, std::uint32_t vPayloadLocal,
                        std::size_t protoIndex, int blockIndex);
   std::vector<std::uint8_t> run();
 };
-
-void Lowering::validate() const {
-  for (const Bytecode* proto : protos) {
-    if (proto->variadic) {
-      throw LoweringError(
-          "lowering: variadic functions are not supported by the WebAssembly backend yet "
-          "(PHASE 9)");
-    }
-    for (const Instruction& instr : proto->code) {
-      if (instr.op == OpCode::NEWTABLE) {
-        throw LoweringError(
-            "lowering: arrays and maps are not supported by the WebAssembly backend yet "
-            "(PHASE 9)");
-      }
-    }
-  }
-}
 
 void Lowering::planGlobals() {
   std::unordered_set<std::string> hostBindings;
@@ -4218,6 +6848,7 @@ void Lowering::emitInstruction(
     std::uint32_t windowLocal, std::uint32_t addrLocal, std::uint32_t itTagLocal,
     std::uint32_t itPayloadLocal, std::uint32_t curTagLocal,
     std::uint32_t curPayloadLocal, std::uint32_t doneLocal,
+    std::uint32_t vTagLocal, std::uint32_t vPayloadLocal,
     std::size_t protoIndex, int blockIndex) {
   const std::uint32_t functionIndex = protoFunc[&proto];
   Func f(m, functionIndex, {kI32, kI32, kI32});
@@ -4555,12 +7186,12 @@ void Lowering::emitInstruction(
       f.i64Store(8);
       break;
     case OpCode::ITER: {
-      // `d >= 0` is `for k, v in ...`, which only a map supports; the backend
-      // cannot create a map yet, so this is always the VM's error.
-      if (instr.d >= 0) rt.emitFailStatic(f, rt.sKeyValue);
       loadReg(instr.b);
       loadReg(instr.c);
+      f.i32c(instr.d >= 0 ? 1 : 0);
       f.call(rt.iterStep);
+      f.lset(vPayloadLocal);
+      f.lset(vTagLocal);
       f.lset(doneLocal);
       f.lset(curPayloadLocal);
       f.lset(curTagLocal);
@@ -4575,9 +7206,9 @@ void Lowering::emitInstruction(
       f.lget(itPayloadLocal);
       f.lset(regPayload.at(static_cast<std::size_t>(instr.a)));
       if (instr.d >= 0) {
-        f.i64c(static_cast<std::int64_t>(kNil));
+        f.lget(vTagLocal);
         f.lset(regTag.at(static_cast<std::size_t>(instr.d)));
-        f.i64c(0);
+        f.lget(vPayloadLocal);
         f.lset(regPayload.at(static_cast<std::size_t>(instr.d)));
       }
       f.i64c(static_cast<std::int64_t>(kBool));
@@ -4599,12 +7230,13 @@ void Lowering::emitInstruction(
       loadReg(instr.b);
       if (instr.c >= 0) {
         loadReg(instr.c);
+        f.call(rt.indexGet);
       } else {
         f.i64c(static_cast<std::int64_t>(kStr));
         f.i64c(static_cast<std::int64_t>(
             stringAddr[protoIndex][static_cast<std::size_t>(-instr.c - 1)]));
+        f.call(rt.memberGet);
       }
-      f.call(rt.memberGet);
       storeReg(instr.a);
       break;
     }
@@ -4612,21 +7244,30 @@ void Lowering::emitInstruction(
       loadReg(instr.b);
       if (instr.c >= 0) {
         loadReg(instr.c);
+        loadReg(instr.a);
+        f.call(rt.indexSet);
       } else {
         f.i64c(static_cast<std::int64_t>(kStr));
         f.i64c(static_cast<std::int64_t>(
             stringAddr[protoIndex][static_cast<std::size_t>(-instr.c - 1)]));
+        loadReg(instr.a);
+        f.call(rt.memberSet);
+        f.drop();
+        f.drop();
       }
-      loadReg(instr.a);
-      f.call(rt.memberSet);
-      f.drop();
-      f.drop();
       break;
     }
     case OpCode::NEWTABLE:
-      throw LoweringError(
-          "lowering: arrays and maps are not supported by the WebAssembly backend yet "
-          "(PHASE 9)");
+      if (instr.c == 0) {
+        f.i64c(instr.b);
+        f.call(rt.newArray);
+      } else if (instr.c == 1) {
+        f.call(rt.newMap);
+      } else {
+        throw LoweringError("lowering: invalid table kind for NEWTABLE");
+      }
+      storeReg(instr.a);
+      break;
   }
 }
 
@@ -4662,14 +7303,23 @@ void Lowering::emitProto(const Bytecode& proto, std::size_t protoIndex) {
   const std::uint32_t curTagLocal = f.addLocal(kI64);
   const std::uint32_t curPayloadLocal = f.addLocal(kI64);
   const std::uint32_t doneLocal = f.addLocal(kI32);
+  const std::uint32_t vTagLocal = f.addLocal(kI64);
+  const std::uint32_t vPayloadLocal = f.addLocal(kI64);
 
-  f.lget(1);
-  f.i32c(proto.numParams);
-  f.i32Ne();
+  const int required = proto.numParams - (proto.variadic ? 1 : 0);
+  if (proto.variadic) {
+    f.lget(1);
+    f.i32c(required);
+    f.i32LtS();
+  } else {
+    f.lget(1);
+    f.i32c(required);
+    f.i32Ne();
+  }
   f.if_();
   rt.emitFailStatic(f, rt.sBadArity);
   f.end();
-  for (int i = 0; i < proto.numParams && i < fileRegs; ++i) {
+  for (int i = 0; i < required && i < fileRegs; ++i) {
     f.lget(0);
     f.i32c(16 * i);
     f.i32Add();
@@ -4680,6 +7330,51 @@ void Lowering::emitProto(const Bytecode& proto, std::size_t protoIndex) {
     f.i32Add();
     f.i64Load(0);
     f.lset(regPayload[static_cast<std::size_t>(i)]);
+  }
+  if (proto.variadic && required < fileRegs) {
+    // The extras are packed into a fresh array bound to the last parameter,
+    // exactly as the VM's call setup does.
+    f.lget(1);
+    f.i32c(required);
+    f.i32Sub();
+    f.i64ExtendI32U();
+    f.call(rt.newArray);
+    f.lset(vPayloadLocal);
+    f.lset(vTagLocal);
+    f.i32c(required);
+    f.lset(addrLocal);
+    f.block();
+    f.loop();
+    f.lget(addrLocal);
+    f.lget(1);
+    f.i32GeS();
+    f.brIf(1);
+    f.lget(vPayloadLocal);
+    f.i32WrapI64();
+    f.lget(0);
+    f.lget(addrLocal);
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i64Load(0);
+    f.lget(0);
+    f.lget(addrLocal);
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i64Load(8);
+    f.call(rt.arrayPush);
+    f.lget(addrLocal);
+    f.i32c(1);
+    f.i32Add();
+    f.lset(addrLocal);
+    f.br(0);
+    f.end();
+    f.end();
+    f.lget(vTagLocal);
+    f.lset(regTag[static_cast<std::size_t>(required)]);
+    f.lget(vPayloadLocal);
+    f.lset(regPayload[static_cast<std::size_t>(required)]);
   }
 
   const int count = static_cast<int>(proto.code.size());
@@ -4739,7 +7434,8 @@ void Lowering::emitProto(const Bytecode& proto, std::size_t protoIndex) {
       emitInstruction(proto, proto.code[static_cast<std::size_t>(i)], regTag,
                       regPayload, localTag, localPayload, localCell, pcLocal,
                       windowLocal, addrLocal, itTagLocal, itPayloadLocal,
-                      curTagLocal, curPayloadLocal, doneLocal, protoIndex, k);
+                      curTagLocal, curPayloadLocal, doneLocal, vTagLocal,
+                      vPayloadLocal, protoIndex, k);
     }
     const OpCode lastOp = proto.code[static_cast<std::size_t>(end - 1)].op;
     const bool terminator = lastOp == OpCode::JMP || lastOp == OpCode::JMP_IF_FALSE ||
@@ -4757,7 +7453,6 @@ void Lowering::emitProto(const Bytecode& proto, std::size_t protoIndex) {
 
 std::vector<std::uint8_t> Lowering::run() {
   collectProtos(root, protos);
-  validate();
   planGlobals();
 
   pool.base = static_cast<std::uint32_t>(globalCount * 16);

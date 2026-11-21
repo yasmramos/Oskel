@@ -439,32 +439,29 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     it (the VM appends `, got N`).
 
 26. **[P1]** WebAssembly backend gaps (PHASE 9). The backend behind
-    `Target::wasm32()` (`src/frontend/native/wasm.cpp`) covers the scalar core
-    but not yet the collection half of the language:
-    - `NEWTABLE` is a build error (exit 65), so arrays and maps cannot be
-      created. `GETTABLE`/`SETTABLE` are lowered only for error fields and
-      string character indexing; other shapes raise a runtime error. This is
-      what keeps `for ... in` over an array and every collection method
-      (`push`, `map`, `sort`, ...) out of reach.
-    - Variadic functions (`rest...`) are a build error, because a variadic call
-      materialises an array. `std.math` defines `min`/`max` as variadic, so
-      `import std.math` does not build yet even when those functions are unused.
+    `Target::wasm32()` (`src/frontend/native/wasm.cpp`) now covers the scalar
+    core, arrays, maps, slicing, variadic functions and `std/json`. What is
+    still open:
+    - Collection and string **methods** (`.push`, `.pop`, `.map`, `.filter`,
+      `.join`, `.sort`, `.upper`, `.split`, `.replace`, ...) are not bound. A
+      map returns `nil` for an absent name; an array or string raises the
+      runtime "no such member" error. This keeps `std/collections.oskl` and
+      most of `std/datetime.oskl` out of reach.
     - A builtin with no WASM body is seeded as a trapping closure: declaring it
       is harmless, calling it reports the gap. The unbound names are the
       complement of `supportedBuiltins()`; `pow`, `sin`, `cos`, `tan`, `log`,
-      `exp`, `random`, `seed`, `clock`, `time`, `input`, `pcall`, `args`, the
-      file builtins, the pointer builtins and `$slice` are in that set today.
-    - `print` of a non-integral `double` is not byte-compatible: the formatter
-      prints the integer part and raises `runtime error:`. A shortest
-      round-trip dtoa (the WASM twin of `src/frontend/native/dtoa.cpp`) is
-      PHASE 9.2. The parity fixture avoids printing non-integral doubles until
-      then.
+      `exp`, `random`, `seed`, `input`, `pcall`, `args`, the file builtins and
+      the pointer builtins are in that set today.
+    - `print` of a non-integral `double` renders up to 17 fractional digits with
+      trailing zeros trimmed. That matches `std::to_chars` for JSON-sized values
+      (`3.5`, `-1.25`, `0.025`) but not for a value whose shortest form needs a
+      rounding rather than the exact binary expansion (`123456789.123`) or scientific notation (`1e10`). A shortest round-trip dtoa (the WASM
+      twin of `src/frontend/native/dtoa.cpp`) is PHASE 9.2.
     - A used `extern "C"` or `native fn` symbol with no builtin stub is a build
       error, mirroring the AOT backend's message.
     Each gap fails cleanly (build error 65 or a runtime error), never a
-    mis-compiled module. `tests/native_build_wasm.oskl` and
-    `tests/wasm_reject_arrays.oskl` pin the supported surface and the
-    rejection.
+    mis-compiled module. `tests/native_build_wasm.oskl` pins the supported
+    surface against the VM byte for byte.
 
 ---
 

@@ -1942,29 +1942,34 @@ backend but none of its emission code:
   Calls go through one `call_indirect` type
   `(i32 args, i32 argc, i32 self) -> (i64, i64)`; the callee's table slot is
   read from its closure, so builtins and program functions share one table.
-- The module imports exactly `oskel.write(fd, ptr, len) -> i32` and
-  `oskel.exit(code)` and exports `_start`. `tests/run_wasm.cjs` is the Node
-  host that supplies them.
+- The module imports `oskel.write(fd, ptr, len) -> i32`, `oskel.exit(code)`,
+  `oskel.time() -> i64` and `oskel.clock() -> f64`, and exports `_start`.
+  `tests/run_wasm.cjs` is the Node host that supplies them.
 
 Supported today (PHASE 9.1): `nil`/`bool`/`int`/`float`/`double`/`string`,
 ranges, every operator (`+ - * / % ** & | ^ << >>`, unary `- ! ~`, the six
 comparisons, `in`), `for`/`while`/`do`/`switch`/`break`/`continue`, globals,
 locals, closures and upvalues (captured locals are boxed in cells), error
-values with `message`/`code`, character indexing, and the builtins `print`,
-`write`, `eprint`, `len`, `type`, `str`, `$str`, `repr`, `int`, `float`,
-`double`, `bool`, `chr`, `ord`, `floor`, `ceil`, `round`, `sqrt`, `assert`,
-`assertEq`, `panic`, `error`, `isError`, `$isError`, `$nonNull`, `range`,
-`$range` and `exit`.
+values with `message`/`code`, character indexing, arrays and maps (literals,
+indexing with negative indices, assignment/append, `length`, `for ... in`
+including the key/value form, `in`, structural `==`, array concatenation,
+`str`/`repr`), slicing through `$slice` (arrays and UTF-8 strings, positive and
+negative steps, Python clamping), variadic functions (`rest...` is packed into
+an array), and the builtins `print`, `write`, `eprint`, `len`, `type`, `str`,
+`$str`, `repr`, `int`, `float`, `double`, `bool`, `chr`, `ord`, `floor`,
+`ceil`, `round`, `sqrt`, `assert`, `assertEq`, `panic`, `error`, `isError`,
+`$isError`, `$nonNull`, `range`, `$range`, `$slice`, `time`, `clock` and
+`exit`. `int`/`float`/`double` also parse strings, so `std/json` builds and
+agrees with the VM byte for byte; the host clock makes `std/datetime` agree
+too.
 
-Still open, and each rejected or reported rather than mis-compiled:
+Still open, and each reported rather than mis-compiled:
 
-- **Arrays and maps** (`NEWTABLE`) are a build error (exit 65) with a dedicated
-  message. `GETTABLE`/`SETTABLE` are lowered, but only for the shapes that exist
-  without a collection: error fields and string character indexing; anything
-  else raises a runtime error.
-- **Variadic functions** (`rest...`) are a build error, because a variadic call
-  materialises an array. `std.math` defines `min`/`max` as variadic, so importing
-  it does not build yet.
+- **Collection and string methods** (`.push`, `.map`, `.join`, `.upper`,
+  `.split`, `.sort`, ...) are not bound yet. A map returns `nil` for an absent
+  name; an array or string raises the runtime "no such member" error. This is
+  what keeps `std/collections.oskl` and most of `std/datetime.oskl` out of
+  reach for now.
 - A builtin the backend does not bind is **seeded as a closure that raises a
   clear runtime error when called**, not left unseeded: a module that merely
   *declares* `native fn sin` (through `import std.math`) still builds, while a
@@ -1972,16 +1977,17 @@ Still open, and each rejected or reported rather than mis-compiled:
   `supportedBuiltins()` in `src/frontend/native/wasm.cpp`.
 - A used `extern "C"` or `native fn` symbol with no builtin stub is a build
   error, the WASM counterpart of the AOT backend's message.
-- `print` of a non-integral `double` is not byte-compatible yet: the WASM
-  formatter prints the integer part and reports `runtime error:`. A shortest
-  round-trip dtoa is PHASE 9.2; the parity fixture therefore prints only
-  integral doubles.
+- `print` of a non-integral `double` renders the integer part, `.`, and up to
+  17 fractional digits with trailing zeros trimmed. That matches `std::to_chars`
+  for JSON-sized values such as `3.5`, `-1.25` and `0.025`; a value whose
+  shortest form needs rounding rather than the exact binary expansion (`123456789.123`) or scientific notation (`1e10`) is a known divergence.
+  A shortest round-trip dtoa is PHASE 9.2.
 
 Testing: `tests/native_build_wasm.oskl` is compiled to a module and run under
 Node by `tests/wasm_case.cmake` (CTest `oskel.build_wasm`), which compares its
-output with the VM's byte for byte; `tests/wasm_reject_arrays.oskl` pins the
-build-time rejection (CTest `oskel.build_wasm_arrays_error`). The tests need
-Node and are skipped where it is absent.
+output with the VM's byte for byte. The fixture covers the scalar core, arrays,
+maps, slicing, variadics and `std/json`. The tests need Node and are skipped
+where it is absent.
 
 ### Post-1.0 — UI library
 

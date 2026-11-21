@@ -1,13 +1,16 @@
 // Runs an Oskel WebAssembly module and forwards its output.
 //
-// The module imports exactly two functions:
+// The module imports four functions:
 //
 //   (import "oskel" "write" (func (param i32 i32 i32) (result i32)))
 //   (import "oskel" "exit"  (func (param i32)))
+//   (import "oskel" "time"  (func (result i64)))
+//   (import "oskel" "clock" (func (result f64)))
 //
 // `write(fd, ptr, len)` reads `len` bytes of the module's exported `memory`
 // and writes them to the matching stream; `exit(code)` terminates the process
-// with `code`. `_start` is the entry point.
+// with `code`; `time()` is the epoch second and `clock()` a monotonic second
+// count. `_start` is the entry point.
 'use strict';
 
 const fs = require('fs');
@@ -32,6 +35,12 @@ const imports = {
     },
     exit(code) {
       throw new ExitSignal(code >>> 0);
+    },
+    time() {
+      return BigInt(Math.floor(Date.now() / 1000));
+    },
+    clock() {
+      return performance.now() / 1000;
     },
   },
 };

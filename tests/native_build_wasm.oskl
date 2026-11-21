@@ -4,11 +4,14 @@
 // `.wasm` module; `tests/wasm_case.cmake` runs the module under Node and
 // compares its output with the development VM's, byte for byte.
 //
-// Only the portable scalar core is exercised here: nil/bool/int/double/string,
-// ranges, every operator, control flow, globals, locals, functions, closures
-// and the builtins the WASM runtime binds. Arrays, maps, methods and variadic
-// functions are PHASE 9 and are rejected at build time; a fixture that used
-// them would fail the build rather than compare output.
+// The fixture covers the portable surface the WASM runtime binds: the scalar
+// core, ranges, every operator, control flow, globals, locals, functions,
+// closures, variadic functions, arrays, maps, slices and `std.json`. String
+// and collection *methods* and the FFI are still PHASE 9 work and are rejected
+// at build time, so they stay out of this file.
+
+import std.json;
+import std.json.*;
 
 print("wasm parity");
 
@@ -109,5 +112,61 @@ print(isError("not an error"), error("x") catch "recovered");
 assertEq(add(1, 2), 3);
 assert(1 < 2);
 assert(1 < 2, "one is less than two");
+
+
+// --- arrays ----------------------------------------------------------------
+var values = [1, 2, 3];
+print(values, len(values), values.length, values[0], values[-1]);
+values[3] = 4;
+values[0] = 10;
+print(values, len(values), str(values), repr(values));
+print(1 in values, 10 in values, 99 in values);
+print([1, 2] + [3, 4], [1, 2] == [1, 2], [1, 2] == [1, 3], [1, 2] == [1, 2, 3]);
+print(values[1:3], values[:2], values[2:], values[::-1]);
+
+var looped = "";
+for (item in values) { looped = looped + str(item) + ","; }
+print(looped);
+
+// --- maps ------------------------------------------------------------------
+var record = {"name": "Ada", "age": 36};
+print(record, record.name, record["age"], len(record), record.length);
+record.age = 37;
+record["city"] = "London";
+print(record.name, record.age, record.city, len(record));
+print("name" in record, "missing" in record);
+
+var pairs = "";
+for (key, value in record) { pairs = pairs + key + "=" + str(value) + ";"; }
+print(pairs);
+print(record == {"age": 37, "city": "London", "name": "Ada"});
+print(record == {"name": "Ada"});
+
+var nested = {"list": [1, {"deep": true}], "empty": {}};
+print(nested, nested.list[1].deep, len(nested.empty));
+
+// --- variadic functions ----------------------------------------------------
+fn collect(first, rest...) {
+  return str(first) + ":" + str(rest);
+}
+print(collect(1), collect(1, 2), collect("a", "b", "c", 4));
+
+// --- string-to-number parsing ---------------------------------------------
+print(int("  -42 "), int("+7"), int("0x1f"), int("0b101"), int("0o17"));
+print(double("3.5"), double("1e3"), float("0.5"));
+print(stringify(parse("3.5")), stringify(parse("[-1.25, 1e3, 2.5e-2]")));
+
+// --- std.json --------------------------------------------------------------
+var jsonDoc = {"name": "Ada", "age": 36, "tags": ["a", "b"], "meta": {"ok": true}};
+var jsonText = stringify(jsonDoc);
+print(jsonText);
+print(stringify(parse(jsonText)) == jsonText);
+print(stringify(parse("[1, 2, [3, null]]")));
+print(stringify({"a": [1, {"b": 2}]}, 2));
+print(isValid("{\"a\": 1}"), isValid("{bad}"));
+print(tryParse("[1, 2]").ok, tryParse("[1, 2").ok);
+
+// --- host clock ------------------------------------------------------------
+print(time() > 1704067200, clock() >= 0);
 
 print("wasm ok");
