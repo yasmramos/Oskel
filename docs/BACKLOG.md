@@ -294,8 +294,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     linker-resolved relocation. **Partial (7f.6)**: a `cstring`/`ptr` parameter
     and a `cstring` return now resolve too (a pointer argument materialises a
     NUL-terminated arena copy; a `cstring` return is scanned back into an
-    `AotString`). An opaque `ptr` return, a struct, a callback and a C variadic
-    still reject the build.
+    `AotString`). **Partial (7f.6b)**: an opaque `ptr` return now resolves in
+    the hosted mode too — the address comes back in `rax` and `emitVoidPtrBox`
+    boxes it as an `AotPtr` of kind `Void` carrying that address, which is
+    exactly what `intToPtr` builds, so `ptrToInt` reads it back and a later call
+    passes the real address. A NULL address becomes `nil`, the hosted engine's
+    own rule (`wrapPointerValue` returns an empty `Value` before it looks at the
+    type name), so `type()` reports `"nil"` and not `"ptr"`. A struct, a
+    callback and a C variadic still reject the build.
 20. **[P0] [done]** VM/AOT divergence in string iteration: `emitIterNext`'s
     `str` branch built the character but fell through into the `range` block,
     which overwrote `rax:rdx` with the cursor index, so `for c in "abc"`

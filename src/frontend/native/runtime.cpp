@@ -11521,6 +11521,48 @@ void emitCStringBox(CodeGen& cg, X64Reg addrReg, CodeGen::Label oom,
   cg.bind(returned);
 }
 
+// `AotValue emitVoidPtrBox(std::int64_t address)`: boxes a `ptr` returned by a C
+// function. `ptr` is opaque -- the AOT runtime never dereferences it -- so the
+// machine address is the whole value: it goes into an `AotPtr` of kind `Void`,
+// exactly what `intToPtr` builds, and a later `ptrToInt` reads it back. NULL is
+// `nil`, matching `wrapPointerValue` in the hosted engine, which returns a nil
+// `Value` for a zero address before it looks at the type name.
+void emitVoidPtrBox(CodeGen& cg, CodeGen::Label label, CodeGen::Label ptrNew,
+                    CodeGen::Label fail, const DataBlob& msgOom) {
+  CodeGen::Label null = cg.newLabel();
+  CodeGen::Label allocated = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.movReg(Rbx, Rdi);  // the address
+  cg.testReg(Rbx);
+  cg.jcc(Jcc::Eq, null);
+  cg.movImm(Rdi, kPtrKindVoid);
+  cg.xorReg(Rsi, Rsi);  // no owned bytes: a Void handle carries the token only
+  cg.callLabel(ptrNew);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, allocated);
+  emitFailCall(cg, fail, msgOom);
+
+  cg.bind(allocated);
+  cg.movToMem(Rax, kPtrDataOffset, Rbx);
+  cg.movReg(Rdx, Rax);
+  cg.movImm(Rax, kTagPtr);
+  cg.jmp(done);
+
+  cg.bind(null);
+  cg.movImm(Rax, kTagNil);
+  cg.xorReg(Rdx, Rdx);
+
+  cg.bind(done);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
 // Rebuilds the `AotMap` of a struct returned by value. The eightbytes come back
 // in the registers their class assigns: an INTEGER eightbyte in `rax` then
 // `rdx`, an SSE one in `xmm0` then `xmm1`. They are stashed in a stack buffer
@@ -11648,8 +11690,9 @@ void emitStructReturn(CodeGen& cg, const AotStructLayout& ret, std::int64_t bufD
 void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fail,
                      CodeGen::Label allocLabel, CodeGen::Label memberGet,
                      CodeGen::Label tableNew, CodeGen::Label memberSet,
-                     const DataBlob& msgArity, const DataBlob& msgType,
-                     const DataBlob& msgOom, const DataBlob& msgCStringTooLong) {
+                     CodeGen::Label voidPtrBox, const DataBlob& msgArity,
+                     const DataBlob& msgType, const DataBlob& msgOom,
+                     const DataBlob& msgCStringTooLong) {
   CodeGen::Label arityOk = cg.newLabel();
   CodeGen::Label oom = cg.newLabel();
 
@@ -11932,6 +11975,12 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     case ffi::ReturnClass::CString:
       // A `const char *` comes back in `rax`.
       emitCStringBox(cg, Rax, oom, allocLabel, fail, msgCStringTooLong);
+      break;
+    case ffi::ReturnClass::Ptr:
+      // An opaque `void *` comes back in `rax`; the box maps NULL to nil and
+      // keeps every other address as a `Void` handle.
+      cg.movReg(Rdi, Rax);
+      cg.callLabel(voidPtrBox);
       break;
     default:  // Int
       normalizeIntegerReturn(cg, thunk.returnType);
@@ -13318,6 +13367,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   // never references an unbound label.
   CodeGen::Label strNew = cg.newLabel();
   CodeGen::Label ptrNew = cg.newLabel();
+  CodeGen::Label voidPtrBox = cg.newLabel();
   CodeGen::Label ptrTextLen = cg.newLabel();
   CodeGen::Label failPath = cg.newLabel();
   CodeGen::Label failPathWrite = cg.newLabel();
@@ -13635,9 +13685,18 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitCall(cg, handles.call, fail, msgCallNonFunc);
   emitArityError(cg, handles.arityError, fail, msgArity);
   if (externThunks != nullptr) {
+    // The box is emitted only for a signature that needs it, so a program with
+    // no `ptr`-returning binding keeps its binary byte for byte.
+    for (const AotExternThunk& thunk : *externThunks) {
+      if (thunk.returns == ffi::ReturnClass::Ptr) {
+        emitVoidPtrBox(cg, voidPtrBox, ptrNew, fail, msgOom);
+        break;
+      }
+    }
     for (const AotExternThunk& thunk : *externThunks) {
       emitExternThunk(cg, thunk, fail, handles.alloc, handles.memberGet, handles.tableNew,
-                      handles.memberSet, msgArity, msgExternType, msgOom, msgCStringTooLong);
+                      handles.memberSet, voidPtrBox, msgArity, msgExternType, msgOom,
+                      msgCStringTooLong);
     }
   }
   emitPrintStrEsc(cg, printStrEsc, entry.write, textQuote, textEscQuote,

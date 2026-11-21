@@ -385,8 +385,11 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
         if (layout.isMemory) thunk.returnMemoryBytes = static_cast<std::int64_t>(layout.size);
       } else {
         ffi::ReturnClass ret = ffi::ReturnClass::Int;
+        // `Ptr` is supported: the thunk boxes the returned address as a `Void`
+        // handle (or nil for NULL). Only a by-value `struct` needs the layout
+        // path above, so a bare `Struct` here means the layout was missing.
         if (!ffi::classifyReturn(symbol.returnType.scalarType, ret) ||
-            ret == ffi::ReturnClass::Ptr || ret == ffi::ReturnClass::Struct) {
+            ret == ffi::ReturnClass::Struct) {
           continue;
         }
         thunk.returns = ret;

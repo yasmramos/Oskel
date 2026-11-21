@@ -1,0 +1,46 @@
+// Fixture for a `ptr` return across `extern "C"` (tests/build_hosted_extern.cmake).
+//
+// PHASE 7f.6 gave the thunk the pointer *parameter* and the `cstring` return;
+// an opaque `ptr` return was still rejected at build time. It is now boxed the
+// same way `intToPtr` builds one -- an `AotPtr` of kind `Void` carrying the
+// machine address -- and a NULL address becomes `nil`, which is what the hosted
+// engine's `wrapPointerValue` does before it even looks at the type name.
+//
+// `getenv`/`malloc`/`free`/`memset` are the shape this needs: a function that
+// hands out an address, one that takes it back, and one that writes through it,
+// so the test proves the address is the real one and not an invented token.
+extern "C" {
+  fn getenv(name: cstring): ptr;
+  fn malloc(n: size_t): ptr;
+  fn free(p: ptr): void;
+  fn memset(p: ptr, c: int, n: size_t): ptr;
+}
+
+// A NULL return is nil, and `type` reports "nil" for it -- not "ptr".
+let missing = getenv("OSKEL_TEST_VAR_THAT_IS_NOT_SET_4f2a");
+assertEq(missing == nil, true);
+assertEq(type(missing), "nil");
+
+// A real address comes back as an opaque handle.
+let block = malloc(16);
+assertEq(type(block), "ptr");
+assertEq(block != nil, true);
+
+// The address round-trips through an integer and back, and C still accepts it:
+// `memset` writing through the rebuilt handle is the proof that the payload is
+// the address and not a synthetic id.
+let token = ptrToInt(block);
+assertEq(type(token), "int");
+let rebuilt = intToPtr(token);
+memset(rebuilt, 65, 16);
+assertEq(rebuilt != nil, true);
+
+// `str`/`repr` render an opaque pointer as `<ptr>` in both engines.
+assertEq(str(block), "<ptr>");
+assertEq(repr(block), "<ptr>");
+
+// The rebuilt handle names the same address as the one `malloc` returned, so
+// freeing either one releases it; free exactly once.
+free(block);
+
+print("ptr return ok");

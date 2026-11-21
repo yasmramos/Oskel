@@ -21,6 +21,18 @@ may change between minor versions.
   the VM byte for byte. The methods that return a collection or call back into
   the program (`split`, `lines`, `chars`, `replace`, `replaceFirst`) still fail
   in AOT with "value has no such member" (BACKLOG §6).
+- **An opaque `ptr` returned by an `extern "C"` function now builds and runs in
+  the hosted AOT backend.** `ptr` was the last pointer shape PHASE 7f.6 left
+  out: a `cstring`/`ptr` parameter and a `cstring` return already crossed the
+  boundary, but a signature like `getenv(name: cstring): ptr` failed
+  `oskel build --mode hosted` with "cannot be resolved by the AOT backend". The
+  thunk now boxes the address in `rax` as an `AotPtr` of kind `Void`, the same
+  handle `intToPtr` builds, so `ptrToInt` recovers the address and feeding it
+  back to C works. A NULL return becomes `nil` (`type()` says `"nil"`, not
+  `"ptr"`), matching the hosted engine's `wrapPointerValue`.
+  `tests/native_build_extern_ptr_return.oskl` compares the binary's output with
+  the VM's, and `memset` through the rebuilt handle proves the payload is the
+  real address rather than a synthetic token.
 
 ### Fixed
 
