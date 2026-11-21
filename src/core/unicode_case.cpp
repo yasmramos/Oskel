@@ -5,17 +5,9 @@
 
 #include <cstddef>
 
-namespace {
-
-// One constant-delta run: every code point in [first, last] maps to
-// `codePoint + delta`.
-struct CaseRun {
-  uint32_t first;
-  uint32_t last;
-  int32_t delta;
-};
-
-const CaseRun kUpper[] = {
+// The runs are the exported tables declared in the header, so the AOT backend
+// emits exactly the same mapping.
+const UnicodeCaseRun kUnicodeUpperRuns[] = {
     {0x0061, 0x007A, -32},
     {0x00B5, 0x00B5, 743},
     {0x00E0, 0x00F6, -32},
@@ -696,7 +688,7 @@ const CaseRun kUpper[] = {
     {0x1E922, 0x1E943, -34},
 };
 
-const CaseRun kLower[] = {
+const UnicodeCaseRun kUnicodeLowerRuns[] = {
     {0x0041, 0x005A, 32},
     {0x00C0, 0x00D6, 32},
     {0x00D8, 0x00DE, 32},
@@ -1366,7 +1358,14 @@ const CaseRun kLower[] = {
     {0x1E900, 0x1E921, 34},
 };
 
-uint32_t mapThrough(const CaseRun* table, size_t count, uint32_t codePoint) {
+const std::size_t kUnicodeUpperRunCount =
+    sizeof(kUnicodeUpperRuns) / sizeof(kUnicodeUpperRuns[0]);
+const std::size_t kUnicodeLowerRunCount =
+    sizeof(kUnicodeLowerRuns) / sizeof(kUnicodeLowerRuns[0]);
+
+namespace {
+
+uint32_t mapThrough(const UnicodeCaseRun* table, size_t count, uint32_t codePoint) {
   size_t low = 0;
   size_t high = count;
   while (low < high) {
@@ -1389,7 +1388,7 @@ uint32_t toUpperCodePoint(uint32_t codePoint) {
     if (codePoint >= 'a' && codePoint <= 'z') return codePoint - 0x20;
     return codePoint;
   }
-  return mapThrough(kUpper, sizeof(kUpper) / sizeof(kUpper[0]), codePoint);
+  return mapThrough(kUnicodeUpperRuns, kUnicodeUpperRunCount, codePoint);
 }
 
 uint32_t toLowerCodePoint(uint32_t codePoint) {
@@ -1397,5 +1396,5 @@ uint32_t toLowerCodePoint(uint32_t codePoint) {
     if (codePoint >= 'A' && codePoint <= 'Z') return codePoint + 0x20;
     return codePoint;
   }
-  return mapThrough(kLower, sizeof(kLower) / sizeof(kLower[0]), codePoint);
+  return mapThrough(kUnicodeLowerRuns, kUnicodeLowerRunCount, codePoint);
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate include/unicode_case.h and src/unicode_case.cpp.
+"""Generate include/unicode_case.h and src/core/unicode_case.cpp.
 
 The simple case mapping (one code point -> one code point) of every Unicode
 code point is compressed into constant-delta runs, so a lookup is a binary
@@ -38,7 +38,7 @@ def runs(upper: bool):
 
 
 def table(name, entries):
-    lines = [f"const CaseRun {name}[] = {{"]
+    lines = [f"const UnicodeCaseRun {name}[] = {{"]
     for first, last, delta in entries:
         lines.append(f"    {{0x{first:04X}, 0x{last:04X}, {delta}}},")
     lines.append("};")
@@ -55,6 +55,7 @@ def main():
 #ifndef OSKEL_UNICODE_CASE_H
 #define OSKEL_UNICODE_CASE_H
 
+#include <cstddef>
 #include <cstdint>
 
 // Simple case mapping of a single code point (Unicode {version}). A code point
@@ -62,6 +63,21 @@ def main():
 // points) is returned unchanged.
 uint32_t toUpperCodePoint(uint32_t codePoint);
 uint32_t toLowerCodePoint(uint32_t codePoint);
+
+// The raw tables behind the two functions above, exposed so the AOT backend can
+// emit the same mapping into a compiled binary instead of duplicating it. One
+// run covers a contiguous code-point range: every code point in
+// `[first, last]` maps to `codePoint + delta`. The runs are sorted by `first`
+// and non-overlapping, which is what the binary search relies on.
+struct UnicodeCaseRun {{
+  uint32_t first;
+  uint32_t last;
+  int32_t delta;
+}};
+extern const UnicodeCaseRun kUnicodeUpperRuns[];
+extern const UnicodeCaseRun kUnicodeLowerRuns[];
+extern const std::size_t kUnicodeUpperRunCount;
+extern const std::size_t kUnicodeLowerRunCount;
 
 #endif  // OSKEL_UNICODE_CASE_H
 """
@@ -72,21 +88,20 @@ uint32_t toLowerCodePoint(uint32_t codePoint);
 
 #include <cstddef>
 
+// The runs are the exported tables declared in the header, so the AOT backend
+// emits exactly the same mapping.
+{table("kUnicodeUpperRuns", upper)}
+
+{table("kUnicodeLowerRuns", lower)}
+
+const std::size_t kUnicodeUpperRunCount =
+    sizeof(kUnicodeUpperRuns) / sizeof(kUnicodeUpperRuns[0]);
+const std::size_t kUnicodeLowerRunCount =
+    sizeof(kUnicodeLowerRuns) / sizeof(kUnicodeLowerRuns[0]);
+
 namespace {{
 
-// One constant-delta run: every code point in [first, last] maps to
-// `codePoint + delta`.
-struct CaseRun {{
-  uint32_t first;
-  uint32_t last;
-  int32_t delta;
-}};
-
-{table("kUpper", upper)}
-
-{table("kLower", lower)}
-
-uint32_t mapThrough(const CaseRun* table, size_t count, uint32_t codePoint) {{
+uint32_t mapThrough(const UnicodeCaseRun* table, size_t count, uint32_t codePoint) {{
   size_t low = 0;
   size_t high = count;
   while (low < high) {{
@@ -109,7 +124,7 @@ uint32_t toUpperCodePoint(uint32_t codePoint) {{
     if (codePoint >= 'a' && codePoint <= 'z') return codePoint - 0x20;
     return codePoint;
   }}
-  return mapThrough(kUpper, sizeof(kUpper) / sizeof(kUpper[0]), codePoint);
+  return mapThrough(kUnicodeUpperRuns, kUnicodeUpperRunCount, codePoint);
 }}
 
 uint32_t toLowerCodePoint(uint32_t codePoint) {{
@@ -117,12 +132,12 @@ uint32_t toLowerCodePoint(uint32_t codePoint) {{
     if (codePoint >= 'A' && codePoint <= 'Z') return codePoint + 0x20;
     return codePoint;
   }}
-  return mapThrough(kLower, sizeof(kLower) / sizeof(kLower[0]), codePoint);
+  return mapThrough(kUnicodeLowerRuns, kUnicodeLowerRunCount, codePoint);
 }}
 """
     with open("include/unicode_case.h", "w") as handle:
         handle.write(header)
-    with open("src/unicode_case.cpp", "w") as handle:
+    with open("src/core/unicode_case.cpp", "w") as handle:
         handle.write(source)
     print(f"Unicode {version}: {len(upper)} upper runs, {len(lower)} lower runs")
 

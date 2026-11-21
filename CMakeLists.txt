@@ -497,6 +497,20 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods_alloc.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # The bound string methods: `upper`, `lower`, `trim`/`trimStart`/`trimEnd`,
+    # `contains`, `startsWith`, `endsWith`, `indexOf`, `substr`, `reversed` and
+    # `repeat`. Same binding mechanism as `arr.push`, so the receiver is
+    # captured and each call returns a fresh string or a query result; the
+    # backend used to answer each with "value has no such member". Checked
+    # against the VM, so the Unicode case mapping, the code-point indexing and
+    # the byte-exact result are all pinned.
+    add_test(NAME oskel.build_binary_string_methods
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_string_methods"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_string_methods.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # The bound map methods (PHASE 7c.3g), the map twin of the array methods
     # above. Same binding mechanism as `arr.push`, so the receiver is captured
     # and the call mutates or scans it; the backend used to answer each with

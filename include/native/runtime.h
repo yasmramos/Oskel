@@ -287,6 +287,34 @@ struct AotRuntimeHandles {
   CodeGen::Label arrayReduceMethod;    // AotValue oskel_builtin_array_reduce(...)
   CodeGen::Label arraySumMethod;       // AotValue oskel_builtin_array_sum(...)
   CodeGen::Label arrayJoinMethod;      // AotValue oskel_builtin_array_join(...)
+  // Bound string methods (PHASE 7c.3i). `s.<method>` on a string yields a
+  // closure that captured its receiver in one upvalue cell, exactly like the
+  // array and map methods above and the hosted `bindString`. `bindStringMethod`
+  // builds that closure from the receiver (rdi:rsi) and a selector (rdx); the
+  // method bodies are ordinary builtins with the proto convention, so a `CALL`
+  // reaches them through `oskel_call`. The string helpers the bodies share
+  // (`strNew`, the builder primitives) are not handles: `CollectionEnv` holds
+  // them as labels local to `emitAotRuntime`.
+  CodeGen::Label bindStringMethod;     // AotValue oskel_bind_string_method(AotValue str, long which)
+  CodeGen::Label stringUpperMethod;    // AotValue oskel_builtin_string_upper(...)
+  CodeGen::Label stringLowerMethod;    // AotValue oskel_builtin_string_lower(...)
+  CodeGen::Label stringTrimMethod;     // AotValue oskel_builtin_string_trim(...)
+  CodeGen::Label stringTrimStartMethod;// AotValue oskel_builtin_string_trim_start(...)
+  CodeGen::Label stringTrimEndMethod;  // AotValue oskel_builtin_string_trim_end(...)
+  CodeGen::Label stringContainsMethod; // AotValue oskel_builtin_string_contains(...)
+  CodeGen::Label stringStartsWithMethod; // AotValue oskel_builtin_string_starts_with(...)
+  CodeGen::Label stringEndsWithMethod;   // AotValue oskel_builtin_string_ends_with(...)
+  CodeGen::Label stringIndexOfMethod;  // AotValue oskel_builtin_string_index_of(...)
+  CodeGen::Label stringSubstrMethod;   // AotValue oskel_builtin_string_substr(...)
+  CodeGen::Label stringReversedMethod; // AotValue oskel_builtin_string_reversed(...)
+  CodeGen::Label stringRepeatMethod;   // AotValue oskel_builtin_string_repeat(...)
+  // The Unicode simple case-mapping tables (PHASE 7c.3i), the same generated
+  // runs `src/core/unicode_case.cpp` holds: `upperTable`/`lowerTable` point at
+  // `{first, last, delta}` int32 triples. A code point in `[first, last]` maps to
+  // `codePoint + delta`. The counts live in `CollectionEnv`, which the emitters
+  // read, so this struct keeps its one-label-per-field invariant.
+  CodeGen::Label upperTable;
+  CodeGen::Label lowerTable;
   // Bound map methods (PHASE 7c.3g). `m.<method>` on a map yields a closure
   // that captured its receiver in one upvalue cell, exactly like the array
   // methods above and the hosted `bindMap`. `bindMapMethod` builds that closure

@@ -1,0 +1,89 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): the bound string
+// methods under the AOT backend (PHASE 7c.3i).
+//
+// Every method `bindString` exposes must behave exactly like the development
+// VM, so the fixture prints the result of each one and `build_binary.cmake`
+// compares the compiled binary's output with the VM's byte for byte. The cases
+// cover ASCII and multibyte UTF-8, the empty string, the optional arguments
+// (`substr` length, `repeat` count) and the edges the hosted implementation
+// defines: a negative `substr` start, a start past the end, a zero count.
+
+print("--- case mapping ---");
+print("upper ascii   =", "hello, world".upper());
+print("lower ascii   =", "HELLO, WORLD".lower());
+print("upper mixed   =", "Hello World 123".upper());
+print("lower mixed   =", "Hello World 123".lower());
+print("upper unicode =", "straße café".upper());
+print("lower unicode =", "STRASSE CAFÉ".lower());
+print("upper empty   =", "".upper());
+print("lower empty   =", "".lower());
+
+print("--- trim ---");
+print("trim          = [" + "  padded  ".trim() + "]");
+print("trimStart     = [" + "  padded  ".trimStart() + "]");
+print("trimEnd       = [" + "  padded  ".trimEnd() + "]");
+print("trim all      = [" + "     ".trim() + "]");
+print("trim none     = [" + "none".trim() + "]");
+print("trim tabs     = [" + "\t\n mixed \r\n".trim() + "]");
+
+print("--- search ---");
+print("contains yes  =", "hello world".contains("lo wo"));
+print("contains no   =", "hello world".contains("xyz"));
+print("contains self =", "abc".contains("abc"));
+print("startsWith y  =", "hello".startsWith("he"));
+print("startsWith n  =", "hello".startsWith("lo"));
+print("startsWith big=", "he".startsWith("hello"));
+print("endsWith y    =", "hello".endsWith("lo"));
+print("endsWith n    =", "hello".endsWith("he"));
+print("endsWith big  =", "lo".endsWith("hello"));
+print("indexOf found =", "hello world".indexOf("world"));
+print("indexOf first =", "abcabc".indexOf("abc"));
+print("indexOf miss  =", "hello".indexOf("xyz"));
+print("indexOf empty =", "hello".indexOf(""));
+print("indexOf uni   =", "héllo".indexOf("llo"));
+
+print("--- substr ---");
+print("substr start  =", "hello world".substr(6));
+print("substr len    =", "hello world".substr(0, 5));
+print("substr middle =", "hello world".substr(3, 4));
+print("substr neg    =", "hello".substr(-3));
+print("substr past   =", "hello".substr(10));
+print("substr zero   =", "hello".substr(1, 0));
+print("substr neglen =", "hello".substr(1, -2));
+print("substr uni    =", "héllo wörld".substr(2, 5));
+print("substr empty  = [" + "".substr(0) + "]");
+
+print("--- reversed ---");
+print("reversed ascii=", "hello".reversed());
+print("reversed uni  =", "héllo".reversed());
+print("reversed empty=", "".reversed());
+print("reversed one  =", "a".reversed());
+
+print("--- repeat ---");
+print("repeat 3      =", "ab".repeat(3));
+print("repeat 0      = [" + "ab".repeat(0) + "]");
+print("repeat 1      =", "ab".repeat(1));
+print("repeat empty  = [" + "".repeat(5) + "]");
+print("repeat uni    =", "é".repeat(3));
+
+print("--- chained ---");
+print("chain         =", "  Hello World  ".trim().lower().reversed());
+print("chain2        =", "abc".upper().repeat(2).substr(1, 3));
+
+print("--- empty needle and empty receiver ---");
+print("contains empty =", "abc".contains(""));
+print("startsWith emp =", "abc".startsWith(""));
+print("endsWith empty =", "abc".endsWith(""));
+print("empty contains =", "".contains(""));
+print("empty starts   =", "".startsWith(""));
+print("empty ends     =", "".endsWith(""));
+
+print("--- non-latin UTF-8 ---");
+print("indexOf greek  =", "αβγάβ".indexOf("άβ"));
+print("substr neg uni =", "αβγδε".substr(-2));
+print("substr len uni =", "αβγδε".substr(1, 2));
+print("upper turkish  =", "iığüşöç".upper());
+print("lower turkish  =", "IİĞÜŞÖÇ".lower());
+print("trim mixed uni = [" + " \t\n αβ \r\n ".trim() + "]");
+print("reversed greek =", "αβγ".reversed());
+print("chain unicode  =", "  ÄBC  ".trim().lower().reversed());
