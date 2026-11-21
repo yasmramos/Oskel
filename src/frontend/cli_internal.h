@@ -49,21 +49,28 @@ std::string hostedLinkerCommand();
 std::string shellQuote(const std::string& path);
 
 // Links a relocatable object into a hosted executable with the host C
-// compiler. Returns 0 on success, 65 when the toolchain is missing or the link
-// fails -- never a half-linked image.
+// compiler. `linkLibs` are library names (`SDL3`) passed as `-l<name>`, which
+// is how a program's `extern "C"` symbols in a third-party library resolve.
+// Returns 0 on success, 65 when the toolchain is missing or the link fails --
+// never a half-linked image.
 int linkHostedObject(const std::string& objectPath, const std::string& output,
-                     const std::string& tool);
+                     const std::string& tool,
+                     const std::vector<std::string>& linkLibs);
 
 // Compiles `source` (resolving imports) and writes a native binary to
 // `output`. Returns 0 on success, 65 for compile errors and 74 for a write
 // failure. `tool` names the binary in diagnostics (`oskel build` or `oskelc`).
+// `linkLibs` reaches the hosted linker; it is empty in freestanding mode.
 int buildBinary(const std::string& source, const std::string& name,
                 const std::string& output, const std::string& argv0,
-                const Target& target, LinkMode mode, const std::string& tool);
+                const Target& target, LinkMode mode,
+                const std::vector<std::string>& linkLibs,
+                const std::string& tool);
 
-// Parses the AOT command line (`<file.oskl> [-o <out>] [--target T] [--mode M]`)
-// and writes the binary. Shared by `oskel build` and by `oskelc`, so the two
-// cannot drift: `oskel build` is a thin alias over this function.
+// Parses the AOT command line
+// (`<file.oskl> [-o <out>] [--target T] [--mode M] [--link-lib L]`) and writes
+// the binary. Shared by `oskel build` and by `oskelc`, so the two cannot drift:
+// `oskel build` is a thin alias over this function.
 //
 // `tool` is the name used in diagnostics and in the usage line (`oskel build`
 // or `oskelc`).

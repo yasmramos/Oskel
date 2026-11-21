@@ -251,16 +251,34 @@ std::string shellQuote(const std::string &path) {
   return out;
 }
 
+// A library name `--link-lib` accepts. It becomes a `-l<name>` argument of the
+// host linker, so it must not smuggle a shell metacharacter or a path
+// separator into the command.
+bool isSafeLinkLibName(const std::string &name) {
+  if (name.empty()) return false;
+  for (char c : name) {
+    const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') || c == '_' || c == '+' ||
+                    c == '-' || c == '.';
+    if (!ok) return false;
+  }
+  return true;
+}
+
 // Links a relocatable object into a hosted executable by invoking the host C
 // compiler (PHASE 7f.4). `objectPath` is the `.o` just written and `output` the
 // requested executable; `-no-pie` keeps the fixed-address assumptions of the
 // backend and `-lm` provides the libm symbols a `std.math` extern may name.
-// Returns 0 on success, 65 when the toolchain is missing or the link fails --
-// never a half-linked image.
+// Each entry of `linkLibs` becomes `-l<name>` after the object, so the linker
+// sees the undefined symbols before it is asked for the library that defines
+// them. Returns 0 on success, 65 when the toolchain is missing or the link
+// fails -- never a half-linked image.
 int linkHostedObject(const std::string &objectPath, const std::string &output,
-                     const std::string &tool) {
-  const std::string command = hostedLinkerCommand() + " " + shellQuote(objectPath) +
-                              " -no-pie -o " + shellQuote(output) + " -lm";
+                     const std::string &tool,
+                     const std::vector<std::string> &linkLibs) {
+  std::string command = hostedLinkerCommand() + " " + shellQuote(objectPath) +
+                        " -no-pie -o " + shellQuote(output) + " -lm";
+  for (const std::string &lib : linkLibs) command += " -l" + lib;
   const int status = std::system(command.c_str());
   if (status != 0) {
     std::string message = tool + ": linking the hosted binary failed (command: " +
@@ -288,10 +306,15 @@ int linkHostedObject(const std::string &objectPath, const std::string &output,
 //
 // `tool` names the binary in diagnostics (`oskel build` or `oskelc`).
 //
+// `linkLibs` names the libraries the hosted link resolves `extern "C"` symbols
+// from (`SDL3` becomes `-lSDL3`); it is empty in freestanding mode.
+//
 // Returns 0 on success, 65 for compile errors and 74 for a write failure.
 int buildBinary(const std::string &source, const std::string &name,
                 const std::string &output, const std::string &argv0,
-                const Target &target, LinkMode mode, const std::string &tool) {
+                const Target &target, LinkMode mode,
+                const std::vector<std::string> &linkLibs,
+                const std::string &tool) {
   std::vector<Token> tokens;
   try {
     tokens = lex(source);
@@ -350,7 +373,7 @@ int buildBinary(const std::string &source, const std::string &name,
         platformPosix().writeErr(message.data(), message.size());
         return 74;
       }
-      const int linkStatus = linkHostedObject(objectPath, output, tool);
+      const int linkStatus = linkHostedObject(objectPath, output, tool, linkLibs);
       std::remove(objectPath.c_str());
       return linkStatus;
     }
@@ -383,9 +406,10 @@ int buildBinary(const std::string &source, const std::string &name,
   return 0;
 }
 
-// Parses `<file.oskl> [-o <out>] [--target T] [--mode M]` and writes the
-// binary. Both entry points call this, so `oskel build` and `oskelc` cannot
-// drift apart in their flags, their defaults or their exit codes.
+// Parses `<file.oskl> [-o <out>] [--target T] [--mode M] [--link-lib L]` and
+// writes the binary. Both entry points call this, so `oskel build` and
+// `oskelc` cannot drift apart in their flags, their defaults or their exit
+// codes.
 int runBuildCommand(const std::vector<std::string> &arguments,
                     const std::string &argv0, const std::string &tool,
                     const std::string &usage) {
@@ -393,6 +417,7 @@ int runBuildCommand(const std::vector<std::string> &arguments,
   std::string buildOutput;
   Target buildTarget = hostTarget();
   LinkMode buildMode = LinkMode::Freestanding;
+  std::vector<std::string> buildLinkLibs;
   for (size_t i = 0; i < arguments.size(); ++i) {
     const std::string &arg = arguments[i];
     if (arg == "-o" || arg == "--output") {
@@ -432,6 +457,20 @@ int runBuildCommand(const std::vector<std::string> &arguments,
       }
       continue;
     }
+    if (arg == "--link-lib") {
+      if (i + 1 >= arguments.size()) {
+        std::cerr << tool << ": option '" << arg << "' needs an argument\n";
+        return 64;
+      }
+      const std::string name = arguments[++i];
+      if (!isSafeLinkLibName(name)) {
+        std::cerr << tool << ": invalid library name '" << name
+                  << "' (letters, digits, '_', '+', '-', '.' only)\n";
+        return 64;
+      }
+      buildLinkLibs.push_back(name);
+      continue;
+    }
     if (arg == "-h" || arg == "--help") {
       std::cout << "Oskel " << kVersion << "\n\n" << usage;
       return 0;
@@ -450,6 +489,13 @@ int runBuildCommand(const std::vector<std::string> &arguments,
     std::cerr << tool << ": a source file is required\n";
     return 64;
   }
+  // `--link-lib` is a hosted-mode concept: the freestanding image has no host
+  // linker, so accepting it there would silently ignore a flag the user needs.
+  if (!buildLinkLibs.empty() && buildMode != LinkMode::Hosted) {
+    std::cerr << tool << ": '--link-lib' requires '--mode "
+              << linkModeName(LinkMode::Hosted) << "'\n";
+    return 64;
+  }
   if (buildOutput.empty()) {
     buildOutput = stripExtension(buildFile);
     // The output name follows the target: a Windows image is an `.exe`.
@@ -461,5 +507,5 @@ int runBuildCommand(const std::vector<std::string> &arguments,
     return 66;
   }
   return buildBinary(buildSource, buildFile, buildOutput, argv0, buildTarget,
-                     buildMode, tool);
+                     buildMode, buildLinkLibs, tool);
 }
