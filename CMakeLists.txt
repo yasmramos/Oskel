@@ -343,6 +343,15 @@ if(BUILD_TESTING)
       "-DBINDGEN_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/tests/bindgen/sample.h"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_bindgen_case.cmake")
 
+  # `--target` selects the C data model for `long`/`wchar_t`; the module it
+  # produces must still compile.
+  add_test(NAME bindgen.target
+    COMMAND ${CMAKE_COMMAND}
+      "-DBINDGEN_EXE=$<TARGET_FILE:bindgen>"
+      "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+      "-DBINDGEN_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/tests/bindgen/target.h"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_bindgen_target.cmake")
+
   # `oskelp` is standalone too, so its unit test links `oskelp_lib` directly.
   add_executable(oskelp_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/oskelp_test.cpp")
   target_link_libraries(oskelp_test PRIVATE oskelp_lib)

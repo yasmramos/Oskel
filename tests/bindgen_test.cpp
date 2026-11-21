@@ -68,6 +68,16 @@ int main() {
                   {"fn alloc(n: uint64): ptr;", "fn name(id: int32): cstring;",
                    "fn ints(): ptr;", "fn handles(): ptr;"});
 
+  // Only a plain `char *` is a NUL-terminated string; the explicitly signed
+  // forms are byte buffers and cross as `ptr`.
+  expectGenerated("byte pointers",
+                  "void text(char *out);\n"
+                  "void bytes(unsigned char *out);\n"
+                  "void sbytes(signed char *out);\n"
+                  "void texts(char **out);\n",
+                  {"fn text(out: cstring): void;", "fn bytes(out: ptr): void;",
+                   "fn sbytes(out: ptr): void;", "fn texts(out: ptr): void;"});
+
   // A typedef this header declared is resolved, including through pointers.
   expectGenerated("typedef",
                   "typedef unsigned long size_t;\n"
@@ -177,6 +187,70 @@ int main() {
     check(contains(result.text, "fn pick(seed: int32): int32;"),
           "an enum-typed function maps to int32");
     check(result.constants == 3, "the enum members are counted");
+  }
+
+  // An object-like macro whose replacement is a literal becomes a module
+  // constant. A function-like macro and an expression are not constants.
+  {
+    const bindgen::Result result = bindgen::generate(
+        "#define ANSWER 42\n"
+        "#define HEX 0xFF\n"
+        "#define OCT 0755\n"
+        "#define NEG -7\n"
+        "#define FLOAT 1.5f\n"
+        "#define EXP 1e3\n"
+        "#define STR \"ok\"\n"
+        "#define CH 'A'\n"
+        "#define FN(x) ((x)+1)\n"
+        "#define EXPR (1 << 2)\n"
+        "#define EMPTY\n"
+        "#define ATTR __attribute__((visibility(\"default\")))\n",
+        "t.h");
+    check(contains(result.text, "let ANSWER = 42;"), "an integer macro is a constant");
+    check(contains(result.text, "let HEX = 255;"), "a hex macro is emitted as decimal");
+    check(contains(result.text, "let OCT = 493;"), "an octal macro is emitted as decimal");
+    check(contains(result.text, "let NEG = -7;"), "a signed macro keeps its sign");
+    check(contains(result.text, "let FLOAT = 1.5;"), "a float suffix is dropped");
+    check(contains(result.text, "let EXP = 1.0e3;"), "an exponent-only float gets a dot");
+    check(contains(result.text, "let STR = \"ok\";"), "a string macro is kept");
+    check(contains(result.text, "let CH = 65;"), "a character macro is its integer code");
+    check(!contains(result.text, "let FN"), "a function-like macro is not a constant");
+    check(!contains(result.text, "let EXPR"), "an expression macro is not a constant");
+    check(!contains(result.text, "let EMPTY"), "a value-less macro is not a constant");
+    check(!contains(result.text, "let ATTR"), "an attribute macro is not a constant");
+    check(result.macroConstants == 8, "the literal macros are counted");
+  }
+
+  // A macro that collides with a function keeps the function, and a macro whose
+  // name is a reserved Oskel keyword cannot be a binding.
+  {
+    const bindgen::Result result = bindgen::generate(
+        "#define ANSWER 42\nint ANSWER(void);\n#define for 1\n", "t.h");
+    check(!contains(result.text, "let ANSWER"), "a colliding macro is not emitted");
+    check(contains(result.text, "fn ANSWER(): int32;"), "the function keeps the name");
+    check(!contains(result.text, "let for"), "a reserved keyword is not emitted");
+    check(result.macroConstants == 0, "the colliding macro is not counted");
+  }
+
+  // `long` and `wchar_t` follow the C data model.
+  {
+    const std::string header =
+        "long a(void);\nunsigned long b(void);\nlong long c(void);\n"
+        "unsigned long long d(void);\nwchar_t e(void);\n";
+    const bindgen::Result lp64 = bindgen::generate(header, "t.h");
+    check(contains(lp64.text, "fn a(): int64;"), "LP64 long is 64-bit");
+    check(contains(lp64.text, "fn b(): uint64;"), "LP64 unsigned long is 64-bit");
+    check(contains(lp64.text, "fn c(): int64;"), "long long is 64-bit");
+    check(contains(lp64.text, "fn d(): uint64;"), "unsigned long long is 64-bit");
+    check(contains(lp64.text, "fn e(): int32;"), "LP64 wchar_t is 32-bit");
+    bindgen::Options options;
+    options.target = bindgen::Target::Llp64;
+    const bindgen::Result llp64 = bindgen::generate(header, "t.h", options);
+    check(contains(llp64.text, "fn a(): int32;"), "LLP64 long is 32-bit");
+    check(contains(llp64.text, "fn b(): uint32;"), "LLP64 unsigned long is 32-bit");
+    check(contains(llp64.text, "fn c(): int64;"), "long long stays 64-bit on LLP64");
+    check(contains(llp64.text, "fn d(): uint64;"), "unsigned long long stays 64-bit on LLP64");
+    check(contains(llp64.text, "fn e(): uint16;"), "LLP64 wchar_t is 16-bit");
   }
 
   // A body the Oskel `struct` (a map of whole scalars) cannot lay out is
