@@ -244,9 +244,12 @@ it as a caveat:
 - A C callback (`fn(...): R` parameter) is a generated stub in the hosted
   backend (PHASE 7f.8), not a libffi closure. `oskel_callback_create` allocates
   a 32-byte context (closure tag/payload, the Oskel global base, a pointer to a
-  16-byte shared arena-state block) and a private RWX `mmap` page holding
-  `movabs r10, context; movabs r11, body; jmp r11`. The body saves the C
-  arguments, boxes `ptr`/`cstring`, calls the closure through `oskel_call` and
+  16-byte shared arena-state block) and a private `mmap` page holding
+  `movabs r10, context; movabs r11, body; jmp r11`. The page is mapped
+  read+write only while the stub is copied in, then `mprotect`ed to
+  read+execute (W^X); it is never writable and executable at the same time.
+  The body saves the C arguments, boxes `ptr`/`cstring`, calls the closure
+  through `oskel_call` and
   converts the result to the declared C return class. Three rules were bugs
   first: a C caller expects r13/r14/r15 preserved, so the body saves them, loads
   the Oskel arena cursor/end and global base from the context/state, runs, parks
@@ -261,8 +264,12 @@ it as a caveat:
   value and a callback with a struct parameter are rejected with dedicated
   messages; a stored callback works in AOT but not in the VM (the VM frees the
   libffi closure when the extern call returns), and both are BACKLOG §6 items
-  26/27. Tests: `tests/native_build_extern_callback.oskl` (`qsort`, VM parity)
-  and `tests/native_build_extern_callback_{stored,exit,many_args,returns}.oskl`
+  26/27. The stub page is process-lifetime: C may store the pointer (a stored
+  callback, including an `atexit` handler), so freeing it when the extern call
+  returns would break that contract; BACKLOG §6 item 28 tracks a pool or an
+  explicit release contract. Tests: `tests/native_build_extern_callback.oskl`
+  (`qsort`, VM parity) and
+  `tests/native_build_extern_callback_{stored,exit,wx,many_args,returns}.oskl`
   (AOT-only, `tests/hosted/*_helper.c`), plus
   `tests/errors/callback_struct_{return,param}.oskl`.
 - An `extern "C"` return class has a *box* per class, and adding one means

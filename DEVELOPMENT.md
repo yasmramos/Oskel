@@ -1687,7 +1687,7 @@ binary prints byte for byte what the VM prints).
     - **7f.8** (done) — C callbacks in the hosted backend. A parameter typed
       `fn(P...): R` is no longer left out: `oskel_callback_create` allocates a
       32-byte context (the closure, the Oskel global base and a pointer to a
-      shared arena-state block) and a private RWX `mmap` page holding
+      shared arena-state block) and a private `mmap` page holding
       `movabs r10, context; movabs r11, body; jmp r11`, so the C callee receives
       a real function pointer. The body saves the C arguments, boxes a
       `ptr`/`cstring` into a handle, calls the closure through `oskel_call`, and
@@ -1700,12 +1700,17 @@ binary prints byte for byte what the VM prints).
       current cursor/end before the call and reloads it afterwards, and the root
       epilogue publishes the final state, so a callback C stores for a later
       call (`atexit`, a setter/invoker pair) resumes from the program's current
-      arena. A callback returning a struct by value and a callback with a struct
+      arena. The page is mapped read+write while the stub is copied in, then
+      `mprotect`ed to read+execute (W^X); it is never W+X. It is
+      process-lifetime: C may store the pointer, so freeing it when the extern
+      call returns would break a stored callback (BACKLOG §6 item 28). A
+      callback returning a struct by value and a callback with a struct
       parameter are rejected with a dedicated build error; a C variadic remains
       7f work. Covered by `tests/native_build_extern_callback.oskl` (`qsort`,
       VM parity), `tests/native_build_extern_callback_stored.oskl`,
       `..._exit.oskl` (an `atexit` handler after the chunk returns),
-      `..._many_args.oskl` and `..._returns.oskl` (AOT-only helpers) and
+      `..._wx.oskl` (the stub page is not W+X), `..._many_args.oskl` and
+      `..._returns.oskl` (AOT-only helpers) and
       `tests/errors/callback_struct_{return,param}.oskl` (rejections).
   - **7g** (done) — bare-metal x86-64 (multiboot). A third target,
     `x86_64-freestanding-sysv` (`oskel build --target

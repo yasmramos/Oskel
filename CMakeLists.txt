@@ -848,6 +848,15 @@ if(BUILD_TESTING)
           "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_many_args_helper.c"
           "-DOSKEL_EXPECTED_OUTPUT=many args callback ok"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
+      # The stub page must be read+execute, never writable+executable.
+      add_test(NAME oskel.build_hosted_extern_callback_wx
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_callback_wx"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_callback_wx.oskl"
+          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_wx_helper.c"
+          "-DOSKEL_EXPECTED_OUTPUT=callback stub wx ok"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
       # C invokes this callback from an `atexit` handler after the chunk
       # returns; the root epilogue publishes the final arena state for it.
       add_test(NAME oskel.build_hosted_extern_callback_exit
@@ -1319,6 +1328,7 @@ if(BUILD_TESTING)
     # resolve; their hosted tests are the coverage.
     if(name STREQUAL "native_build_extern_callback_stored" OR
        name STREQUAL "native_build_extern_callback_exit" OR
+       name STREQUAL "native_build_extern_callback_wx" OR
        name STREQUAL "native_build_extern_callback_many_args" OR
        name STREQUAL "native_build_extern_callback_returns")
       continue()
