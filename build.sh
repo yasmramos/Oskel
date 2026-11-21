@@ -59,3 +59,9 @@ echo "Built build/oskelc"
 # shellcheck disable=SC2086
 "$CXX" -std=c++17 $CXXFLAGS -Wall -Wextra -Iinclude -Isrc -o build/bindgen tools/bindgen.cpp tools/bindgen_main.cpp
 echo "Built build/bindgen"
+
+# The project and package manager: another standalone tool, so it is built on
+# its own. It drives `oskel`/`oskelc` as child processes and links no engine
+# code.
+"$CXX" -std=c++17 $CXXFLAGS -Wall -Wextra -Iinclude -Isrc -o build/oskelp tools/oskelp.cpp tools/oskelp_main.cpp
+echo "Built build/oskelp"

@@ -11,6 +11,22 @@ may change between minor versions.
 
 ### Added
 
+- **`oskelp`, the project and package manager.** A Cargo-style tool that owns
+  the project instead of the language: `oskel.toml` (a strict TOML subset with
+  `[package]` and path `[dependencies]`), `oskel.lock`, recursive path
+  dependency resolution (cycles, duplicate names and name mismatches are
+  errors), and the `new`/`init`/`build`/`run`/`check`/`test`/`clean`/`tree`
+  commands. It is a standalone executable under `tools/` that drives
+  `oskel`/`oskelc` as child processes, so the engine carries no project or
+  dependency policy. A package lives under `src/<package>/`, imports stay
+  qualified (`import pkg.mod`), and dependencies are materialised under
+  `.oskel/deps/`; the compiler learns the project root through the new
+  `OSKEL_MODULE_ROOT` variable, honoured by `resolverFor` for both the VM and
+  the AOT backend. `oskelp test` runs every `tests/**/*.oskl` and exits 101 on a
+  failure; `--native` compiles each test and runs the binary, which makes the
+  suite an AOT parity check. Only path dependencies are supported for now; a
+  string dependency is a registry dependency and is refused with a dedicated
+  message (BACKLOG §20).
 - **`sort`/`sorted` now run under `oskel build`.** They were the last array
   methods the AOT backend answered with "value has no such member", and the
   only ones whose comparator is arbitrary program code: the body calls back

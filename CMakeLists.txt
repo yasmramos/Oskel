@@ -199,6 +199,27 @@ target_compile_options(bindgen PRIVATE ${OSKEL_WARNINGS})
 
 install(TARGETS bindgen RUNTIME DESTINATION bin)
 
+# --------------------------------------------------------------------------- oskelp
+# The project and package manager. Like `bindgen`, it is a standalone
+# executable: it links no engine code and drives `oskel`/`oskelc` as child
+# processes. Its sources live under `tools/`, outside the three `src/` globs, so
+# it never ends up inside `oskel` or `oskelc`.
+add_library(oskelp_lib STATIC "${CMAKE_CURRENT_SOURCE_DIR}/tools/oskelp.cpp")
+target_include_directories(oskelp_lib PUBLIC include src)
+target_compile_options(oskelp_lib PRIVATE ${OSKEL_WARNINGS})
+
+add_executable(oskelp "${CMAKE_CURRENT_SOURCE_DIR}/tools/oskelp_main.cpp")
+target_link_libraries(oskelp PRIVATE oskelp_lib)
+target_compile_options(oskelp PRIVATE ${OSKEL_WARNINGS})
+
+# `std::filesystem` needs an extra library on GCC 8; modern toolchains fold it
+# into libstdc++.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)
+  target_link_libraries(oskelp_lib PUBLIC stdc++fs)
+endif()
+
+install(TARGETS oskelp RUNTIME DESTINATION bin)
+
 # The standard library ships next to the binary: `standardLibraryDir` looks for
 # `../share/oskel/std` relative to the executable, so `import std.math` resolves
 # after `make install` and not only when running from the source tree.
@@ -274,6 +295,23 @@ if(BUILD_TESTING)
       "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
       "-DBINDGEN_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/tests/bindgen/sample.h"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_bindgen_case.cmake")
+
+  # `oskelp` is standalone too, so its unit test links `oskelp_lib` directly.
+  add_executable(oskelp_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/oskelp_test.cpp")
+  target_link_libraries(oskelp_test PRIVATE oskelp_lib)
+  target_compile_options(oskelp_test PRIVATE ${OSKEL_WARNINGS})
+  add_test(NAME oskelp_test COMMAND oskelp_test
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+  # End-to-end: the real binary through new/check/build/run/test, a path
+  # dependency, --locked, a cycle, a failing test, clean and init.
+  add_test(NAME oskelp.end_to_end
+    COMMAND ${CMAKE_COMMAND}
+      "-DOSKELP_EXE=$<TARGET_FILE:oskelp>"
+      "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+      "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+      "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/oskelp-e2e"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_oskelp_case.cmake")
 
   # --- REPL scripted test (clear) ---
   add_test(NAME repl.clear

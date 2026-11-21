@@ -137,9 +137,17 @@ std::string packagesDir() {
 // the directory of the file being compiled, or the current directory for
 // `-e`/stdin. A nested import resolves from the same root, so `modules.util`
 // names `<root>/modules/util.oskl` no matter which module declares it.
+//
+// `$OSKEL_MODULE_ROOT` overrides that root. `oskelp` sets it to a package's
+// `src/`, so `import pkg.mod` resolves to `<project>/src/pkg/mod.oskl` even
+// though the entry point lives in `src/pkg/`. Both engines go through this
+// function, so the VM and the AOT backend resolve imports identically.
 ModuleResolver resolverFor(const std::string &name, const std::string &argv0) {
   bool isFile = !name.empty() && name[0] != '<';
-  std::string projectDir = isFile ? directoryOf(name) : std::string(".");
+  const char *moduleRoot = std::getenv("OSKEL_MODULE_ROOT");
+  std::string projectDir = (moduleRoot != nullptr && *moduleRoot != '\0')
+                               ? std::string(moduleRoot)
+                               : (isFile ? directoryOf(name) : std::string("."));
   return ModuleResolver(projectDir, standardLibraryDir(argv0), packagesDir());
 }
 

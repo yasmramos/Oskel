@@ -46,6 +46,10 @@ if [ ! -x "$stage/bin/bindgen" ]; then
   echo "package-macos: $stage/bin/bindgen not found; did the install step run?" >&2
   exit 1
 fi
+if [ ! -x "$stage/bin/oskelp" ]; then
+  echo "package-macos: $stage/bin/oskelp not found; did the install step run?" >&2
+  exit 1
+fi
 if [ ! -f "$stage/share/oskel/std/math.oskl" ]; then
   echo "package-macos: $stage/share/oskel/std/math.oskl not found" >&2
   exit 1
@@ -60,6 +64,7 @@ payload="$work/payload"
 mkdir -p "$payload/usr/local/bin" "$payload/usr/local/share/oskel"
 install -m 0755 "$stage/bin/oskel" "$payload/usr/local/bin/oskel"
 install -m 0755 "$stage/bin/oskelc" "$payload/usr/local/bin/oskelc"
+install -m 0755 "$stage/bin/oskelp" "$payload/usr/local/bin/oskelp"
 install -m 0755 "$stage/bin/bindgen" "$payload/usr/local/bin/bindgen"
 cp -a "$stage/share/oskel/std" "$payload/usr/local/share/oskel/std"
 
@@ -106,6 +111,7 @@ echo "wrote $out/oskel-${version}.pkg"
 dmg_src="$work/dmg"
 mkdir -p "$dmg_src"
 install -m 0755 "$stage/bin/oskel" "$dmg_src/oskel"
+install -m 0755 "$stage/bin/oskelp" "$dmg_src/oskelp"
 install -m 0755 "$stage/bin/bindgen" "$dmg_src/bindgen"
 cp -a "$stage/share" "$dmg_src/share"
 ln -s /usr/local "$dmg_src/usr-local"

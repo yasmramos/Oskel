@@ -51,4 +51,16 @@ if errorlevel 1 (
 )
 
 echo Built build\bindgen.exe
+
+rem The project and package manager: another standalone tool that drives
+rem `oskel`/`oskelc` as child processes.
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build\oskelp.exe tools\oskelp.cpp tools\oskelp_main.cpp
+
+if errorlevel 1 (
+    echo.
+    echo Build failed.
+    exit /b 1
+)
+
+echo Built build\oskelp.exe
 endlocal
