@@ -12538,17 +12538,16 @@ void emitPrintRepr(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeLabel,
 
 // ------------------------------------------------------------------- extern thunks
 
-// The System V AMD64 integer argument registers, in order (PHASE 7f.5). A
-// scalar `extern "C"` signature has at most `kMaxExternArgs` (6) parameters, so
-// at most 6 of these 6 registers and 6 of the 8 SSE registers are used: the two
-// counters in `emitExternThunk` can never overrun.
+// The System V AMD64 integer argument registers, in order (PHASE 7f.5). The
+// first six integer/pointer eightbytes use these; any further one travels in
+// the outgoing stack-argument area (`AotThunkParam::stackOffset`). All eight
+// SSE registers stay available.
 constexpr X64Reg kIntArgRegs[] = {Rdi, Rsi, Rdx, Rcx, R8, R9};
 // A scratch xmm for the register-class conversions (a boxed number narrowed to
-// an integer, an integer widened to a float). It must not collide with an
-// argument xmm: a scalar signature uses at most xmm0-xmm5, so xmm7 is free. It
-// is kept in the xmm0-xmm7 range deliberately, so no instruction that uses it
-// needs a REX prefix.
-constexpr int XmmScratch = kXmmBase + 7;
+// an integer, an integer widened to a float). It sits outside xmm0-xmm7, the
+// eight SSE argument registers, so an SSE argument is never clobbered by a
+// later integer argument's conversion; the REX prefix is the price.
+constexpr int XmmScratch = kXmmBase + 15;
 
 // The hosted engine caps a returned `cstring` scan at 16 MiB (`src/ffi.cpp`):
 // past the cap the C `const char *` contract is broken and the read stops with
@@ -12943,14 +12942,16 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   prologue(cg);
   cg.push(Rbx);
   cg.push(R12);  // a callee-saved scratch: the `alloc`/`rep movsb` calls clobber rdi/rsi/rcx/r10/r11
-  // The integer arguments are staged here and loaded into their registers only
-  // just before the call, because marshalling a later pointer argument calls
-  // `alloc` and `rep movsb`, which clobber the argument registers. Six 8-byte
-  // slots keep the frame 16-byte aligned (48 is a multiple of 16).
+  // The integer arguments that fit the six GPRs are staged here and loaded into
+  // their registers only just before the call, because marshalling a later
+  // pointer argument calls `alloc` and `rep movsb`, which clobber the argument
+  // registers. Six 8-byte slots keep the frame 16-byte aligned (48 is a
+  // multiple of 16). A spilled GPR is written straight to the outgoing area.
   constexpr std::int32_t kArgStageBytes = 6 * 8;
-  // One 16-byte buffer per register-class struct (at most six, since a signature
-  // is bounded by six eightbytes and every struct contributes at least one).
-  constexpr std::int32_t kStructBufSlots = 6;
+  // One 16-byte buffer per register-class struct. The eightbyte bound allows at
+  // most `kMaxExternArgs` such structs (each contributes at least one); a struct
+  // that does not fit is passed wholly on the stack and needs no buffer.
+  constexpr std::int32_t kStructBufSlots = static_cast<std::int32_t>(ffi::kMaxExternArgs);
   constexpr std::int32_t kStructBufBytes = 16 * kStructBufSlots;
   // The frame below `rbp` is laid out top to bottom as: the staging slots, the
   // register-class struct buffers, the `sret` buffer, and finally the outgoing
@@ -13255,8 +13256,12 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         cg.bind(asIs);
         cg.movFromMem(R11, Rbx, base + 8);
         cg.bind(done);
-        cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
-        ++gpr;
+        if (param.stackOffset >= 0) {
+          cg.movToMem(Rsp, param.stackOffset, R11);
+        } else {
+          cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
+          ++gpr;
+        }
         break;
       }
       case ffi::ParamClass::Double: {
@@ -13358,8 +13363,12 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         cg.movImmByteToMem(Rdi, 0, 0);  // the terminating NUL
         cg.movReg(R11, Rax);
         cg.bind(staged);
-        cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
-        ++gpr;
+        if (param.stackOffset >= 0) {
+          cg.movToMem(Rsp, param.stackOffset, R11);
+        } else {
+          cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
+          ++gpr;
+        }
         break;
       }
       default:

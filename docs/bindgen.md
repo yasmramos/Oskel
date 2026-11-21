@@ -202,11 +202,11 @@ as active code. The current skips are:
 - a callback used where the engine does not accept one: **returned** by a
   function (`R (*f(...))(P...)`), **taking another callback**, **variadic**, or
   **returning a struct by value**. A callback *parameter* is generated.
-- a signature passing more than **six register-sized values** (the
+- a signature passing more than **eight register-sized values** (the
   `kMaxExternArgs` bound the FFI thunks enforce). The bound counts *eightbytes*,
-  not parameters, so a 16-byte struct spends two of the six; counting parameters
-  would emit a module `oskel -c` refuses. The compiler decides, and the tool
-  quotes its message.
+  not parameters, so a 16-byte struct spends two of the eight; counting
+  parameters would emit a module `oskel -c` refuses. The compiler decides, and
+  the tool quotes its message.
 - an **anonymous `struct { ... }`** written inline in a signature
   (`int g(struct { int x; } p);`). It has no name to spell, and falling back to
   the empty spelling would pass the struct by value as a scalar `int32`.

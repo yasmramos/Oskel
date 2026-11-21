@@ -43,13 +43,17 @@ enum class ReturnClass {
   Struct,
 };
 
-// Largest number of *eightbytes* the compile-time thunks cover. A scalar
-// argument or return value is one eightbyte; a `struct` counts one per 8 bytes
-// it spans (so a 16-byte struct is two). Bounding a signature by eightbytes,
-// not parameters, is what keeps the thunk's type alphabet at three C++ types
-// (a struct eightbyte is marshalled as a plain `int64_t` or `double`), so the
-// template recursion stays a few thousand instantiations instead of exploding.
-constexpr std::size_t kMaxExternArgs = 6;
+// Largest number of *eightbytes* a signature may pass. A scalar argument or
+// return value is one eightbyte; a `struct` counts one per 8 bytes it spans (so
+// a 16-byte struct is two). The bound is not an ABI limit: the AOT backend keeps
+// the first six integer/pointer eightbytes in the System V argument registers
+// and spills the rest to the outgoing stack area, while all eight SSE registers
+// stay available. It is the compile-time instantiation budget of the
+// development engine's typed `dispatch` (one type sequence per combination of
+// `int64_t`/`double`/`float`, so 3^N), which is why it is a constant and not a
+// runtime count. Eight covers `SDL_ReadSurfacePixel` (seven) with headroom while
+// keeping the template at a few thousand instantiations.
+constexpr std::size_t kMaxExternArgs = 8;
 
 // Whether a `struct` may cross the C boundary by value. The marshalling is
 // written for the System V AMD64 ABI, where a struct of up to 16 bytes travels
@@ -537,12 +541,13 @@ inline std::string validateSignature(const std::vector<TypeSpec>& params,
                                      const TypeSpec& returnType, bool variadic = false,
                                      const AbiCapabilities& caps = AbiCapabilities{}) {
   // The bound is on flattened eightbytes, not parameters: a struct contributes
-  // one per 8 bytes it spans. Keeping the total at or below the number of
-  // general-purpose argument registers guarantees every eightbyte lands in a
-  // register, so none spills to the stack (a partly-registered aggregate is
-  // passed wholly in memory, which the register thunks cannot express). A
-  // variadic call goes through libffi, which reproduces the stack layout, so
-  // the bound does not apply to it.
+  // one per 8 bytes it spans. The AOT backend keeps the first six GPR
+  // eightbytes in registers and spills the rest to the outgoing stack area; a
+  // register-class aggregate that does not fit wholly in the remaining
+  // registers is passed wholly on the stack, per the System V rule. All eight
+  // SSE registers remain available, so an SSE eightbyte never spills at this
+  // bound. A variadic call goes through libffi, which reproduces the stack
+  // layout, so the bound does not apply to it.
   std::size_t eightbytes = 0;
   for (const TypeSpec& spec : params) {
     if (spec.isStruct) {
