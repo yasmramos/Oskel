@@ -670,6 +670,20 @@ if(BUILD_TESTING)
             "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/memory_struct_helper.c"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_memory_struct.cmake")
       endif()
+      # A C variadic is walked at run time by the thunk (PHASE 7f.5): the tail
+      # continues the GPR/SSE allocation after the fixed prefix, spills to the
+      # outgoing stack area and sets `%al` to the vector-register count. The
+      # reference is the VM, whose `ffi_prep_cif_var` path needs libffi in the
+      # development engine, so the test is gated on the same flag as the VM
+      # variadic fixture rather than on the AOT capability alone.
+      if(OSKEL_FFI_VARIADIC)
+        add_test(NAME oskel.build_hosted_extern_variadic
+          COMMAND ${CMAKE_COMMAND}
+            "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_variadic"
+            "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+            "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_variadic.oskl"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+      endif()
     endif()
     # `std.json` is plain Oskel over the portable primitive surface, so it must
     # build to a native binary and agree with the VM. The fixture is the guard
@@ -1002,7 +1016,8 @@ if(BUILD_TESTING)
     endif()
     # C variadics need libffi plus the System V AMD64 ABI; the declaration is
     # rejected at compile time elsewhere, so the test is skipped.
-    if(name STREQUAL "53_ffi_variadic" AND NOT OSKEL_FFI_VARIADIC)
+    if((name STREQUAL "53_ffi_variadic" OR name STREQUAL "native_build_extern_variadic") AND
+       NOT OSKEL_FFI_VARIADIC)
       continue()
     endif()
     # Win32 `extern "C"` symbols live in kernel32.dll, which only exists on

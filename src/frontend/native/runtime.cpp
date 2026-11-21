@@ -12145,19 +12145,222 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   const std::int64_t sretBytes =
       thunk.returnMemoryBytes > 0 ? (thunk.returnMemoryBytes + 15) / 16 * 16 : 0;
   const std::int64_t sretBase = kStructBufBase - sretBytes;
+  // A C variadic carries its walk state in eight 8-byte slots, because the only
+  // operation that clobbers the argument registers (`alloc`, while a tail string
+  // is materialised) happens inside the walk. A fixed signature reserves none,
+  // so its frame -- and the freestanding image -- is unchanged.
+  constexpr std::int64_t kVarSlotBytes = 64;
+  const std::int64_t varBase = sretBase - (thunk.variadic ? kVarSlotBytes : 0);
+  const std::int64_t kVarRemaining = varBase + 0;    // tail arguments left
+  const std::int64_t kVarP = varBase + 8;            // current tail arg pointer
+  const std::int64_t kVarStageCur = varBase + 16;    // staging cursor
+  const std::int64_t kVarStageBase = varBase + 24;   // staging base
+  const std::int64_t kVarStackSlots = varBase + 32;  // tail args that spill
+  const std::int64_t kVarTailCount = varBase + 40;   // argc - arity
+  const std::int64_t kVarGpr = varBase + 48;         // next free GPR index
+  const std::int64_t kVarSse = varBase + 56;         // next free SSE index
   const std::int64_t stackArgsBytes = (thunk.stackArgBytes + 15) / 16 * 16;
   // A multiple of 16 in every term, so `rsp` stays 16-byte aligned at the call.
-  const std::int64_t frameBytes = kArgStageBytes + kStructBufBytes + sretBytes + stackArgsBytes;
+  const std::int64_t frameBytes = kArgStageBytes + kStructBufBytes + sretBytes +
+                                  (thunk.variadic ? kVarSlotBytes : 0) + stackArgsBytes;
   cg.subRegImm32(Rsp, static_cast<std::int32_t>(frameBytes));
   cg.movReg(Rbx, Rdi);  // args base; argument i lives at [rbx - 16*i]
+
+  // Undoes the frame and returns. A variadic thunk also reserved a
+  // run-time-sized outgoing area below the frame, so it restores `rsp` from
+  // `rbp` (a multiple of 16 in every term keeps the call aligned) instead of
+  // adding a constant.
+  auto restoreFrame = [&]() {
+    if (thunk.variadic) {
+      cg.movReg(Rsp, Rbp);
+      cg.subRegImm32(Rsp, static_cast<std::int32_t>(16 + frameBytes));
+    } else {
+      cg.addImm32(Rsp, static_cast<std::int32_t>(frameBytes));
+    }
+    cg.pop(R12);
+    cg.pop(Rbx);
+    epilogue(cg);
+  };
 
   // The thunk is the callee, so it checks its own arity, exactly like a user
   // function's prologue. A direct call is already arity-checked at compile time,
   // so this only fires through a first-class reference (`var f = abs; f(1, 2)`).
+  // A C variadic accepts the fixed prefix or more.
   cg.cmpImm32(Rsi, static_cast<std::int32_t>(thunk.arity));
-  cg.jcc(Jcc::Eq, arityOk);
+  cg.jcc(thunk.variadic ? Jcc::Ge : Jcc::Eq, arityOk);
   emitFailCall(cg, fail, msgArity);
   cg.bind(arityOk);
+
+  // --- C variadic: reserve the tail and materialise its strings ---------------
+  //
+  // The fixed prefix is marshalled below by the ordinary path (a variadic
+  // declaration is validated as scalars-only, so there are no structs and no
+  // `sret`). The tail is walked here, before any argument register is loaded,
+  // for two reasons: the number of tail arguments is a run-time value, so the
+  // outgoing stack area must be reserved dynamically, and a tail string calls
+  // `alloc`, which clobbers the argument registers.
+  //
+  // Pass 1 counts the arguments that do not fit the remaining GPR/SSE registers;
+  // they are the ones that spill to the outgoing stack area, whose size therefore
+  // depends on the call. The area also holds one staging slot per tail argument,
+  // so pass A can park a materialised string and pass B can read it back.
+  if (thunk.variadic) {
+    const std::int32_t fixedArity = static_cast<std::int32_t>(thunk.arity);
+    // The GPR/SSE allocation continues after the fixed prefix.
+    int fixedGpr = 0;
+    int fixedSse = 0;
+    for (const AotThunkParam& param : thunk.params) {
+      if (param.cls == ffi::ParamClass::Double || param.cls == ffi::ParamClass::Float) {
+        ++fixedSse;
+      } else {
+        ++fixedGpr;
+      }
+    }
+
+    // tailCount = argc - arity; the arity check above guaranteed it is >= 0.
+    cg.movReg(R11, Rsi);
+    cg.subRegImm32(R11, fixedArity);
+    cg.movToMem(Rbp, kVarTailCount, R11);
+    cg.movToMem(Rbp, kVarRemaining, R11);
+    // P walks the tail downward: `args[i]` is at `[rbx - 16*i]`.
+    cg.movReg(R12, Rbx);
+    if (fixedArity > 0) cg.subRegImm32(R12, 16 * fixedArity);
+    cg.movToMem(Rbp, kVarP, R12);
+    cg.movImm(R11, fixedGpr);
+    cg.movToMem(Rbp, kVarGpr, R11);
+    cg.movImm(R11, fixedSse);
+    cg.movToMem(Rbp, kVarSse, R11);
+    cg.movImm(R11, 0);
+    cg.movToMem(Rbp, kVarStackSlots, R11);
+
+    CodeGen::Label countLoop = cg.newLabel();
+    CodeGen::Label countDone = cg.newLabel();
+    CodeGen::Label countSse = cg.newLabel();
+    CodeGen::Label countSseFit = cg.newLabel();
+    CodeGen::Label countGpr = cg.newLabel();
+    CodeGen::Label countGprFit = cg.newLabel();
+    CodeGen::Label countSpill = cg.newLabel();
+    CodeGen::Label countNext = cg.newLabel();
+    cg.bind(countLoop);
+    cg.movFromMem(R11, Rbp, kVarRemaining);
+    cg.testReg(R11);
+    cg.jcc(Jcc::Eq, countDone);
+    cg.movFromMem(R10, Rbp, kVarP);
+    cg.movFromMem(R11, R10, 0);  // the value's tag
+    cg.cmpImm32(R11, static_cast<std::int32_t>(kTagFloat));
+    cg.jcc(Jcc::Eq, countSse);
+    cg.cmpImm32(R11, static_cast<std::int32_t>(kTagDouble));
+    cg.jcc(Jcc::Eq, countSse);
+    cg.cmpImm32(R11, static_cast<std::int32_t>(kTagInt));
+    cg.jcc(Jcc::Eq, countGpr);
+    cg.cmpImm32(R11, static_cast<std::int32_t>(kTagBool));
+    cg.jcc(Jcc::Eq, countGpr);
+    cg.cmpImm32(R11, static_cast<std::int32_t>(kTagStr));
+    cg.jcc(Jcc::Eq, countGpr);
+    cg.cmpImm32(R11, static_cast<std::int32_t>(kTagPtr));
+    cg.jcc(Jcc::Eq, countGpr);
+    cg.cmpImm32(R11, static_cast<std::int32_t>(kTagNil));
+    cg.jcc(Jcc::Eq, countGpr);
+    emitFailCall(cg, fail, msgType);
+    cg.bind(countSse);
+    cg.movFromMem(R11, Rbp, kVarSse);
+    cg.cmpImm32(R11, 8);
+    cg.jcc(Jcc::Lt, countSseFit);
+    cg.jmp(countSpill);
+    cg.bind(countSseFit);
+    cg.addImm32(R11, 1);
+    cg.movToMem(Rbp, kVarSse, R11);
+    cg.jmp(countNext);
+    cg.bind(countGpr);
+    cg.movFromMem(R11, Rbp, kVarGpr);
+    cg.cmpImm32(R11, 6);
+    cg.jcc(Jcc::Lt, countGprFit);
+    cg.jmp(countSpill);
+    cg.bind(countGprFit);
+    cg.addImm32(R11, 1);
+    cg.movToMem(Rbp, kVarGpr, R11);
+    cg.jmp(countNext);
+    cg.bind(countSpill);
+    cg.movFromMem(R11, Rbp, kVarStackSlots);
+    cg.addImm32(R11, 1);
+    cg.movToMem(Rbp, kVarStackSlots, R11);
+    cg.bind(countNext);
+    cg.movFromMem(R10, Rbp, kVarP);
+    cg.subRegImm32(R10, 16);
+    cg.movToMem(Rbp, kVarP, R10);
+    cg.movFromMem(R11, Rbp, kVarRemaining);
+    cg.subRegImm32(R11, 1);
+    cg.movToMem(Rbp, kVarRemaining, R11);
+    cg.jmp(countLoop);
+    cg.bind(countDone);
+
+    // dynamicBytes = align16((stackSlots + tailCount) * 8), so `rsp` stays
+    // 16-byte aligned at the call.
+    cg.movFromMem(R11, Rbp, kVarStackSlots);
+    cg.shlImm8(R11, 3);
+    cg.movFromMem(R10, Rbp, kVarTailCount);
+    cg.shlImm8(R10, 3);
+    cg.addReg(R11, R10);
+    cg.addImm32(R11, 15);
+    cg.andImm32(R11, -16);
+    cg.subReg(Rsp, R11);
+    // The staging array sits above the outgoing stack area.
+    cg.movFromMem(R10, Rbp, kVarStackSlots);
+    cg.shlImm8(R10, 3);
+    cg.movReg(R12, Rsp);
+    cg.addReg(R12, R10);
+    cg.movToMem(Rbp, kVarStageBase, R12);
+
+    // Pass A: every tail string becomes a NUL-terminated arena copy, parked in
+    // the staging slot for its position. `r12` holds the `AotString*` across the
+    // `alloc` call because it is callee-saved; the walk state lives in the frame.
+    cg.movFromMem(R11, Rbp, kVarTailCount);
+    cg.movToMem(Rbp, kVarRemaining, R11);
+    cg.movReg(R12, Rbx);
+    if (fixedArity > 0) cg.subRegImm32(R12, 16 * fixedArity);
+    cg.movToMem(Rbp, kVarP, R12);
+    cg.movFromMem(R11, Rbp, kVarStageBase);
+    cg.movToMem(Rbp, kVarStageCur, R11);
+
+    CodeGen::Label strLoop = cg.newLabel();
+    CodeGen::Label strDone = cg.newLabel();
+    CodeGen::Label strNext = cg.newLabel();
+    cg.bind(strLoop);
+    cg.movFromMem(R11, Rbp, kVarRemaining);
+    cg.testReg(R11);
+    cg.jcc(Jcc::Eq, strDone);
+    cg.movFromMem(R10, Rbp, kVarP);
+    cg.movFromMem(R11, R10, 0);
+    cg.cmpImm32(R11, static_cast<std::int32_t>(kTagStr));
+    cg.jcc(Jcc::Ne, strNext);
+    cg.movFromMem(R12, R10, 8);  // the AotString*
+    cg.movFromMem(Rdi, R12, 0);  // the byte length
+    cg.addImm32(Rdi, 1);         // plus the terminating NUL
+    cg.callLabel(allocLabel);    // rax = the block (or null)
+    cg.testReg(Rax);
+    cg.jcc(Jcc::Eq, oom);
+    cg.movReg(R11, Rax);
+    cg.movReg(Rdi, Rax);
+    cg.movReg(Rsi, R12);
+    cg.addImm32(Rsi, static_cast<std::int32_t>(kAotStringHeaderSize));
+    cg.movFromMem(Rcx, R12, 0);
+    cg.repMovsb();
+    cg.movImmByteToMem(Rdi, 0, 0);  // the terminating NUL
+    cg.movFromMem(R10, Rbp, kVarStageCur);
+    cg.movToMem(R10, 0, R11);
+    cg.bind(strNext);
+    cg.movFromMem(R11, Rbp, kVarStageCur);
+    cg.addImm32(R11, 8);
+    cg.movToMem(Rbp, kVarStageCur, R11);
+    cg.movFromMem(R10, Rbp, kVarP);
+    cg.subRegImm32(R10, 16);
+    cg.movToMem(Rbp, kVarP, R10);
+    cg.movFromMem(R11, Rbp, kVarRemaining);
+    cg.subRegImm32(R11, 1);
+    cg.movToMem(Rbp, kVarRemaining, R11);
+    cg.jmp(strLoop);
+    cg.bind(strDone);
+  }
 
   // Build every struct argument's bytes first: each field read calls
   // `oskel_member_get`, which clobbers the argument registers and the xmm
@@ -12355,6 +12558,154 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   for (int k = 0; k < gpr; ++k)
     cg.movFromMem(kIntArgRegs[k], Rbp, kStageBase + 8LL * k);
 
+  // --- C variadic: assign the tail --------------------------------------------
+  //
+  // Pass B runs after every `alloc` and after the fixed prefix is in its
+  // registers, and makes no calls, so it can write each tail argument straight
+  // to its destination: the next free GPR, the next free SSE register, or the
+  // outgoing stack area. Each value is promoted to its C type: an `int`/`bool`
+  // to 64 bits, a `float`/`double` to binary64 (the AOT payload already is), a
+  // string to the NUL-terminated copy pass A made, and a `ptr` to its address.
+  if (thunk.variadic) {
+    const std::int32_t fixedArity = static_cast<std::int32_t>(thunk.arity);
+    int fixedGpr = 0;
+    int fixedSse = 0;
+    for (const AotThunkParam& param : thunk.params) {
+      if (param.cls == ffi::ParamClass::Double || param.cls == ffi::ParamClass::Float) {
+        ++fixedSse;
+      } else {
+        ++fixedGpr;
+      }
+    }
+    cg.movFromMem(R11, Rbp, kVarTailCount);
+    cg.movToMem(Rbp, kVarRemaining, R11);
+    cg.movReg(R10, Rbx);
+    if (fixedArity > 0) cg.subRegImm32(R10, 16 * fixedArity);
+    cg.movToMem(Rbp, kVarP, R10);
+    cg.movFromMem(R11, Rbp, kVarStageBase);
+    cg.movToMem(Rbp, kVarStageCur, R11);
+    cg.movImm(R11, fixedGpr);
+    cg.movToMem(Rbp, kVarGpr, R11);
+    cg.movImm(R11, fixedSse);
+    cg.movToMem(Rbp, kVarSse, R11);
+    cg.movReg(R12, Rsp);  // the outgoing stack cursor
+
+    CodeGen::Label tailLoop = cg.newLabel();
+    CodeGen::Label tailDone = cg.newLabel();
+    CodeGen::Label tailNext = cg.newLabel();
+    CodeGen::Label tailInt = cg.newLabel();
+    CodeGen::Label tailFloat = cg.newLabel();
+    CodeGen::Label tailStr = cg.newLabel();
+    CodeGen::Label tailPtr = cg.newLabel();
+    CodeGen::Label tailNil = cg.newLabel();
+    CodeGen::Label assignGpr = cg.newLabel();
+    CodeGen::Label assignSse = cg.newLabel();
+    CodeGen::Label gprAssigned = cg.newLabel();
+    CodeGen::Label gprSpill = cg.newLabel();
+    CodeGen::Label sseAssigned = cg.newLabel();
+    CodeGen::Label sseSpill = cg.newLabel();
+
+    cg.bind(tailLoop);
+    cg.movFromMem(R11, Rbp, kVarRemaining);
+    cg.testReg(R11);
+    cg.jcc(Jcc::Eq, tailDone);
+    cg.movFromMem(R10, Rbp, kVarP);
+    cg.movFromMem(R11, R10, 0);  // the value's tag
+    cg.cmpImm32(R11, static_cast<std::int32_t>(kTagInt));
+    cg.jcc(Jcc::Eq, tailInt);
+    cg.cmpImm32(R11, static_cast<std::int32_t>(kTagBool));
+    cg.jcc(Jcc::Eq, tailInt);
+    cg.cmpImm32(R11, static_cast<std::int32_t>(kTagFloat));
+    cg.jcc(Jcc::Eq, tailFloat);
+    cg.cmpImm32(R11, static_cast<std::int32_t>(kTagDouble));
+    cg.jcc(Jcc::Eq, tailFloat);
+    cg.cmpImm32(R11, static_cast<std::int32_t>(kTagStr));
+    cg.jcc(Jcc::Eq, tailStr);
+    cg.cmpImm32(R11, static_cast<std::int32_t>(kTagPtr));
+    cg.jcc(Jcc::Eq, tailPtr);
+    cg.cmpImm32(R11, static_cast<std::int32_t>(kTagNil));
+    cg.jcc(Jcc::Eq, tailNil);
+    emitFailCall(cg, fail, msgType);
+
+    cg.bind(tailInt);
+    cg.movFromMem(R11, R10, 8);  // an int/bool payload is the 64-bit value
+    cg.jmp(assignGpr);
+    cg.bind(tailFloat);
+    cg.movFromMem(R11, R10, 8);  // a Float/Double payload is binary64 already
+    cg.jmp(assignSse);
+    cg.bind(tailStr);
+    cg.movFromMem(R10, Rbp, kVarStageCur);
+    cg.movFromMem(R11, R10, 0);  // the NUL-terminated copy pass A made
+    cg.jmp(assignGpr);
+    cg.bind(tailPtr);
+    cg.movFromMem(R11, R10, 8);              // the AotPtr*
+    cg.movFromMem(R11, R11, kPtrDataOffset); // its address
+    cg.jmp(assignGpr);
+    cg.bind(tailNil);
+    cg.xorReg(R11, R11);  // C's NULL
+    cg.jmp(assignGpr);
+
+    // The register index is a run-time value, so the destination is a small
+    // compare chain. The counters live in the frame and are read into `rax`,
+    // which is not an argument register, so no loaded argument is disturbed.
+    cg.bind(assignGpr);
+    cg.movFromMem(Rax, Rbp, kVarGpr);
+    for (int k = 0; k < 6; ++k) {
+      CodeGen::Label skip = cg.newLabel();
+      cg.cmpImm32(Rax, k);
+      cg.jcc(Jcc::Ne, skip);
+      cg.movReg(kIntArgRegs[k], R11);
+      cg.jmp(gprAssigned);
+      cg.bind(skip);
+    }
+    cg.jmp(gprSpill);
+    cg.bind(gprAssigned);
+    cg.addImm32(Rax, 1);
+    cg.movToMem(Rbp, kVarGpr, Rax);
+    cg.jmp(tailNext);
+
+    cg.bind(assignSse);
+    cg.movFromMem(Rax, Rbp, kVarSse);
+    for (int k = 0; k < 8; ++k) {
+      CodeGen::Label skip = cg.newLabel();
+      cg.cmpImm32(Rax, k);
+      cg.jcc(Jcc::Ne, skip);
+      cg.movqToXmm(kXmmBase + k, R11);
+      cg.jmp(sseAssigned);
+      cg.bind(skip);
+    }
+    cg.jmp(sseSpill);
+    cg.bind(sseAssigned);
+    cg.addImm32(Rax, 1);
+    cg.movToMem(Rbp, kVarSse, Rax);
+    cg.jmp(tailNext);
+
+    // No register left: the value goes to the outgoing stack area, in order.
+    cg.bind(gprSpill);
+    cg.movToMem(R12, 0, R11);
+    cg.addImm32(R12, 8);
+    cg.jmp(tailNext);
+    cg.bind(sseSpill);
+    cg.movToMem(R12, 0, R11);
+    cg.addImm32(R12, 8);
+
+    cg.bind(tailNext);
+    cg.movFromMem(R10, Rbp, kVarStageCur);
+    cg.addImm32(R10, 8);
+    cg.movToMem(Rbp, kVarStageCur, R10);
+    cg.movFromMem(R10, Rbp, kVarP);
+    cg.subRegImm32(R10, 16);
+    cg.movToMem(Rbp, kVarP, R10);
+    cg.movFromMem(R11, Rbp, kVarRemaining);
+    cg.subRegImm32(R11, 1);
+    cg.movToMem(Rbp, kVarRemaining, R11);
+    cg.jmp(tailLoop);
+    cg.bind(tailDone);
+
+    // `%al` is the number of vector registers a variadic callee may inspect.
+    cg.movFromMem(Rax, Rbp, kVarSse);
+  }
+
   cg.callExternal(thunk.symbol);
 
   // A struct return comes back in the registers its eightbyte classes assign
@@ -12366,10 +12717,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     emitStructReturn(cg, thunk.structs[static_cast<std::size_t>(thunk.returnStructIndex)],
                      thunk.returnMemoryBytes > 0 ? sretBase : kStructBufBase, tableNew,
                      memberSet, oom, allocLabel, fail, msgCStringTooLong);
-    cg.addImm32(Rsp, static_cast<std::int32_t>(frameBytes));
-    cg.pop(R12);
-    cg.pop(Rbx);
-    epilogue(cg);
+    restoreFrame();
     cg.bind(oom);
     emitFailCall(cg, fail, msgOom);
     return;
@@ -12415,10 +12763,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
       break;
   }
 
-  cg.addImm32(Rsp, static_cast<std::int32_t>(frameBytes));
-  cg.pop(R12);
-  cg.pop(Rbx);
-  epilogue(cg);
+  restoreFrame();
 
   cg.bind(oom);
   emitFailCall(cg, fail, msgOom);
