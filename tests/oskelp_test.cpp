@@ -298,6 +298,34 @@ static void testCycle() {
   fs::remove_all(root);
 }
 
+static void testCycleFromInMemoryRoot() {
+  fs::path root = makeTempDir();
+  makePackage(root / "a", "a", {{"b", "../b"}});
+  makePackage(root / "b", "b");
+
+  oskelp::Manifest b;
+  std::string error;
+  check(oskelp::loadManifest((root / "b" / "oskel.toml").string(), b, error),
+        "in-memory cycle: loads the root");
+
+  // `oskelp add` resolves before it writes, so the root's in-memory manifest
+  // already declares `a` while b's copy on disk does not declare it back.
+  oskelp::Dependency a;
+  a.name = "a";
+  a.path = "../a";
+  b.package.dependencies["a"] = a;
+
+  oskelp::Resolution resolution;
+  check(!oskelp::resolveDependencies(b, resolution, error),
+        "in-memory cycle: a dependency back to the root is rejected");
+  check(contains(error, "dependency cycle"),
+        "in-memory cycle: the error names the cycle");
+  check(contains(error, "b -> a -> b"),
+        "in-memory cycle: the error shows the path");
+
+  fs::remove_all(root);
+}
+
 static void testDuplicateLocation() {
   fs::path root = makeTempDir();
   makePackage(root / "a1", "a");
@@ -393,6 +421,118 @@ static void testVerifyLockfile() {
   fs::remove_all(root);
 }
 
+static void testManifestEditing() {
+  const std::string source =
+      "[package]\n"
+      "name = \"demo\"\n"
+      "version = \"0.1.0\"\n"
+      "\n"
+      "[dependencies]\n"
+      "alpha = { path = \"../alpha\" }\n"
+      "\n"
+      "[other]\n"
+      "keep = true\n";
+
+  oskelp::Dependency beta;
+  beta.name = "beta";
+  beta.path = "../beta";
+  std::string edited;
+  std::string error;
+  check(oskelp::addDependencyToManifest(source, beta, edited, error),
+        "edit: add to an existing section");
+  check(contains(edited, "alpha = { path = \"../alpha\" }"),
+        "edit: add keeps the existing dependency");
+  check(contains(edited, "beta = { path = \"../beta\" }"),
+        "edit: add writes the new dependency");
+  check(edited.find("beta") < edited.find("[other]"),
+        "edit: add stays inside [dependencies]");
+  check(contains(edited, "keep = true"), "edit: add keeps the next section");
+
+  oskelp::Dependency versioned;
+  versioned.name = "gamma";
+  versioned.path = "../gamma";
+  versioned.version = "1.2.3";
+  check(oskelp::addDependencyToManifest(source, versioned, edited, error),
+        "edit: add with a version");
+  check(contains(edited,
+                 "gamma = { path = \"../gamma\", version = \"1.2.3\" }"),
+        "edit: add writes the version");
+
+  const std::string noSection =
+      "[package]\n"
+      "name = \"demo\"\n"
+      "version = \"0.1.0\"\n";
+  check(oskelp::addDependencyToManifest(noSection, beta, edited, error),
+        "edit: add creates the section");
+  check(contains(edited, "[dependencies]\nbeta = { path = \"../beta\" }"),
+        "edit: add creates the section at the end");
+
+  std::string duplicate;
+  check(!oskelp::addDependencyToManifest(edited, beta, duplicate, error),
+        "edit: add refuses a duplicate");
+  check(contains(error, "already declared"),
+        "edit: duplicate error names the reason");
+
+  check(oskelp::removeDependencyFromManifest(source, "alpha", edited, error),
+        "edit: remove an existing dependency");
+  check(!contains(edited, "alpha ="), "edit: remove deletes the line");
+  check(contains(edited, "[dependencies]"), "edit: remove keeps the header");
+  check(contains(edited, "keep = true"), "edit: remove keeps other sections");
+
+  const std::string quoted =
+      "[dependencies]\n"
+      "\"alpha\" = { path = \"../alpha\" }\n"
+      "'beta' = { path = \"../beta\" }\n";
+  check(oskelp::removeDependencyFromManifest(quoted, "alpha", edited, error),
+        "edit: remove a quoted key");
+  check(!contains(edited, "alpha"), "edit: quoted key removed");
+  std::string without;
+  check(oskelp::removeDependencyFromManifest(edited, "beta", without, error),
+        "edit: remove a literal-quoted key");
+  check(!contains(without, "beta"), "edit: literal-quoted key removed");
+
+  check(!oskelp::removeDependencyFromManifest(source, "missing", edited, error),
+        "edit: remove refuses an absent dependency");
+  check(contains(error, "not declared"),
+        "edit: absent error names the reason");
+
+  const std::string multiline =
+      "[dependencies]\n"
+      "alpha = { path = \"../alpha\",\n"
+      "  version = \"1.0.0\" }\n";
+  check(!oskelp::removeDependencyFromManifest(multiline, "alpha", edited, error),
+        "edit: remove refuses a multi-line entry");
+  check(contains(error, "spans multiple lines"),
+        "edit: multi-line error names the reason");
+
+  const std::string crlf =
+      "[package]\r\n"
+      "name = \"demo\"\r\n"
+      "\r\n"
+      "[dependencies]\r\n"
+      "alpha = { path = \"../alpha\" }\r\n";
+  check(oskelp::addDependencyToManifest(crlf, beta, edited, error),
+        "edit: add to CRLF");
+  check(contains(edited, "beta = { path = \"../beta\" }\r\n"),
+        "edit: add keeps CRLF");
+  check(oskelp::removeDependencyFromManifest(crlf, "alpha", without, error),
+        "edit: remove from CRLF");
+  check(contains(without, "[dependencies]\r\n"),
+        "edit: remove keeps CRLF");
+  check(!contains(without, "alpha ="), "edit: CRLF line removed");
+
+  const std::string commented =
+      "[dependencies] # dependencies\n"
+      "# alpha is local\n"
+      "alpha = { path = \"../alpha\" } # keep me\n";
+  check(oskelp::addDependencyToManifest(commented, beta, edited, error),
+        "edit: add under a commented header");
+  check(contains(edited, "beta = { path = \"../beta\" }"),
+        "edit: commented header add writes the dependency");
+  check(contains(edited, "# alpha is local"),
+        "edit: commented header keeps the comment");
+}
+
 static void testRenderManifest() {
   oskelp::Package package;
   package.name = "demo";
@@ -429,9 +569,11 @@ int main() {
   testFindManifest();
   testResolution();
   testCycle();
+  testCycleFromInMemoryRoot();
   testDuplicateLocation();
   testLockfile();
   testVerifyLockfile();
+  testManifestEditing();
   testRenderManifest();
   testHelpers();
 

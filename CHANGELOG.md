@@ -27,6 +27,15 @@ may change between minor versions.
   suite an AOT parity check. Only path dependencies are supported for now; a
   string dependency is a registry dependency and is refused with a dedicated
   message (BACKLOG §20).
+- **`oskelp add` and `oskelp remove`.** They edit `[dependencies]` in place
+  instead of rewriting the manifest, so comments, blank lines and CRLF survive,
+  then refresh `oskel.lock` and `.oskel/deps`. `add` validates the dependency's
+  manifest name and optional exact `--version` before writing, so a failed add
+  leaves `oskel.toml` untouched; a duplicate add is a no-op, a new version for
+  the same path updates the entry, and omitting the name derives it from the
+  dependency's manifest. `remove` refuses an entry that spans multiple lines
+  rather than deleting a partial one. Both accept `--manifest-path`; only path
+  dependencies are supported.
 - **`sort`/`sorted` now run under `oskel build`.** They were the last array
   methods the AOT backend answered with "value has no such member", and the
   only ones whose comparator is arbitrary program code: the body calls back

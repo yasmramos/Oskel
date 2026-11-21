@@ -70,6 +70,24 @@ macro(require_contains label haystack needle)
   endif()
 endmacro()
 
+macro(require_file_contains path needle)
+  file(READ "${path}" contents)
+  string(FIND "${contents}" "${needle}" position)
+  if(position EQUAL -1)
+    message(FATAL_ERROR
+      "expected '${needle}' in ${path}:\n${contents}")
+  endif()
+endmacro()
+
+macro(require_file_not_contains path needle)
+  file(READ "${path}" contents)
+  string(FIND "${contents}" "${needle}" position)
+  if(NOT position EQUAL -1)
+    message(FATAL_ERROR
+      "did not expect '${needle}' in ${path}:\n${contents}")
+  endif()
+endmacro()
+
 # --- 1. `new` creates the layout -------------------------------------------
 run_oskelp("${WORK_DIR}" new demo)
 require_success("oskelp new demo")
@@ -151,7 +169,6 @@ version = "0.1.0"
 entry = "src/demo/main.oskl"
 
 [dependencies]
-utils = { path = "../utils" }
 ]=])
 
 file(WRITE "${WORK_DIR}/demo/src/demo/main.oskl" [=[
@@ -159,6 +176,42 @@ import utils.text;
 
 print(utils.text.shout("hello"));
 ]=])
+
+# `add` edits the manifest, refreshes the lockfile and materialises the tree.
+run_oskelp("${WORK_DIR}/demo" add utils --path ../utils)
+require_success("oskelp add a path dependency")
+require_contains("oskelp add a path dependency" "${run_out}" "added 'utils'")
+require_file_contains("${WORK_DIR}/demo/oskel.toml"
+                      "utils = { path = \"../utils\" }")
+require_file_contains("${WORK_DIR}/demo/oskel.lock" "packages.utils")
+
+run_oskelp("${WORK_DIR}/demo" add utils --path ../utils)
+require_success("oskelp add is idempotent")
+require_contains("oskelp add is idempotent" "${run_out}" "already present")
+
+run_oskelp("${WORK_DIR}/demo" add wrong --path ../utils)
+require_failure("oskelp add a mismatched name" "1")
+require_contains("oskelp add a mismatched name" "${run_err}" "is named 'utils'")
+
+run_oskelp("${WORK_DIR}/demo" add demo --path .)
+require_failure("oskelp add a self dependency" "1")
+require_contains("oskelp add a self dependency" "${run_err}"
+                 "cannot depend on itself")
+
+run_oskelp("${WORK_DIR}/demo" add missing --path ../missing)
+require_failure("oskelp add a missing path" "1")
+require_contains("oskelp add a missing path" "${run_err}" "has no oskel.toml")
+
+run_oskelp("${WORK_DIR}/demo" add utils --path ../utils --version 9.9.9)
+require_failure("oskelp add a mismatched version" "1")
+require_contains("oskelp add a mismatched version" "${run_err}"
+                 "is version '0.1.0'")
+
+run_oskelp("${WORK_DIR}/demo" add utils --path ../utils --version 0.1.0)
+require_success("oskelp add an exact version")
+require_contains("oskelp add an exact version" "${run_out}" "updated 'utils'")
+require_file_contains("${WORK_DIR}/demo/oskel.toml"
+                      "version = \"0.1.0\" }")
 
 run_oskelp("${WORK_DIR}/demo" build)
 require_success("oskelp build with a path dependency")
@@ -181,11 +234,38 @@ if(OSKEL_AOT_RUNNABLE)
   require_contains("dependency binary" "${dependency_out}" "hello!")
 endif()
 
+# --- 7a. `remove` drops the dependency and refreshes the tree --------------
+run_oskelp("${WORK_DIR}/demo" remove utils)
+require_success("oskelp remove utils")
+require_contains("oskelp remove utils" "${run_out}" "removed 'utils'")
+require_file_not_contains("${WORK_DIR}/demo/oskel.toml" "utils = {")
+require_file_not_contains("${WORK_DIR}/demo/oskel.lock" "packages.utils")
+if(EXISTS "${WORK_DIR}/demo/.oskel/deps/utils")
+  message(FATAL_ERROR "oskelp remove left .oskel/deps/utils behind")
+endif()
+
+run_oskelp("${WORK_DIR}/demo" remove utils)
+require_failure("oskelp remove an absent dependency" "1")
+require_contains("oskelp remove an absent dependency" "${run_err}"
+                 "is not declared")
+
+run_oskelp("${WORK_DIR}/demo" add --path ../utils)
+require_success("oskelp add derives the name")
+require_contains("oskelp add derives the name" "${run_out}" "added 'utils'")
+require_file_contains("${WORK_DIR}/demo/oskel.toml"
+                      "utils = { path = \"../utils\" }")
+
 run_oskelp("${WORK_DIR}/demo" tree)
 require_success("oskelp tree with a dependency")
 require_contains("oskelp tree with a dependency" "${run_out}" "utils v0.1.0")
 
 # --- 7b. `--manifest-path` runs a project from outside its directory -------
+run_oskelp("${WORK_DIR}" remove utils --manifest-path "${WORK_DIR}/demo/oskel.toml")
+require_success("oskelp remove --manifest-path")
+run_oskelp("${WORK_DIR}" add utils --path utils --manifest-path "${WORK_DIR}/demo/oskel.toml")
+require_success("oskelp add --manifest-path")
+require_file_contains("${WORK_DIR}/demo/oskel.toml"
+                      "utils = { path = \"../utils\" }")
 run_oskelp("${WORK_DIR}" build --manifest-path "${WORK_DIR}/demo/oskel.toml")
 require_success("oskelp build --manifest-path")
 
@@ -217,6 +297,16 @@ run_oskelp("${WORK_DIR}" new a)
 require_success("oskelp new a")
 run_oskelp("${WORK_DIR}" new b)
 require_success("oskelp new b")
+
+# `add` resolves the graph before it writes, so a cycle it would create leaves
+# the manifest untouched.
+run_oskelp("${WORK_DIR}/a" add b --path ../b)
+require_success("oskelp add b to a")
+run_oskelp("${WORK_DIR}/b" add a --path ../a)
+require_failure("oskelp add a dependency cycle" "1")
+require_contains("oskelp add a dependency cycle" "${run_err}"
+                 "dependency cycle")
+require_file_not_contains("${WORK_DIR}/b/oskel.toml" "a = {")
 
 file(WRITE "${WORK_DIR}/a/oskel.toml" [=[
 [package]
