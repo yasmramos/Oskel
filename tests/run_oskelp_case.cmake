@@ -10,12 +10,14 @@
 #   -DOSKELP_EXE=<path to the oskelp executable>
 #   -DOSKEL_EXE=<path to the oskel executable>
 #   -DOSKELC_EXE=<path to the oskelc executable>
+#   -DOSKEL_AOT_RUNNABLE=<ON|OFF, whether the AOT backend can run here>
 #   -DWORK_DIR=<scratch directory>
 
 if(NOT DEFINED OSKELP_EXE OR NOT DEFINED OSKEL_EXE OR NOT DEFINED OSKELC_EXE
-   OR NOT DEFINED WORK_DIR)
+   OR NOT DEFINED OSKEL_AOT_RUNNABLE OR NOT DEFINED WORK_DIR)
   message(FATAL_ERROR
-    "run_oskelp_case.cmake requires OSKELP_EXE, OSKEL_EXE, OSKELC_EXE and WORK_DIR")
+    "run_oskelp_case.cmake requires OSKELP_EXE, OSKEL_EXE, OSKELC_EXE, "
+    "OSKEL_AOT_RUNNABLE and WORK_DIR")
 endif()
 
 if(NOT EXISTS "${OSKELP_EXE}")
@@ -98,17 +100,19 @@ if(NOT EXISTS "${WORK_DIR}/demo/oskel.lock")
 endif()
 
 # --- 4. The native binary and the VM print the same greeting ---------------
-execute_process(
-  COMMAND "${WORK_DIR}/demo/target/demo${exe_suffix}"
-  WORKING_DIRECTORY "${WORK_DIR}/demo"
-  RESULT_VARIABLE native_exit
-  OUTPUT_VARIABLE native_out
-  ERROR_VARIABLE native_err)
-if(NOT native_exit EQUAL 0)
-  message(FATAL_ERROR
-    "the built binary failed (exit ${native_exit})\n--- stderr ---\n${native_err}")
+if(OSKEL_AOT_RUNNABLE)
+  execute_process(
+    COMMAND "${WORK_DIR}/demo/target/demo${exe_suffix}"
+    WORKING_DIRECTORY "${WORK_DIR}/demo"
+    RESULT_VARIABLE native_exit
+    OUTPUT_VARIABLE native_out
+    ERROR_VARIABLE native_err)
+  if(NOT native_exit EQUAL 0)
+    message(FATAL_ERROR
+      "the built binary failed (exit ${native_exit})\n--- stderr ---\n${native_err}")
+  endif()
+  require_contains("native binary" "${native_out}" "Hello, world!")
 endif()
-require_contains("native binary" "${native_out}" "Hello, world!")
 
 run_oskelp("${WORK_DIR}/demo" run)
 require_success("oskelp run")
@@ -119,9 +123,11 @@ run_oskelp("${WORK_DIR}/demo" test)
 require_success("oskelp test")
 require_contains("oskelp test" "${run_out}" "test result: ok")
 
-run_oskelp("${WORK_DIR}/demo" test --native)
-require_success("oskelp test --native")
-require_contains("oskelp test --native" "${run_out}" "test result: ok")
+if(OSKEL_AOT_RUNNABLE)
+  run_oskelp("${WORK_DIR}/demo" test --native)
+  require_success("oskelp test --native")
+  require_contains("oskelp test --native" "${run_out}" "test result: ok")
+endif()
 
 # --- 6. `tree` shows the root package --------------------------------------
 run_oskelp("${WORK_DIR}/demo" tree)
@@ -160,18 +166,20 @@ if(NOT EXISTS "${WORK_DIR}/demo/.oskel/deps/utils/text.oskl")
   message(FATAL_ERROR "the dependency was not materialised under .oskel/deps")
 endif()
 
-execute_process(
-  COMMAND "${WORK_DIR}/demo/target/demo${exe_suffix}"
-  WORKING_DIRECTORY "${WORK_DIR}/demo"
-  RESULT_VARIABLE dependency_exit
-  OUTPUT_VARIABLE dependency_out
-  ERROR_VARIABLE dependency_err)
-if(NOT dependency_exit EQUAL 0)
-  message(FATAL_ERROR
-    "the dependency binary failed (exit ${dependency_exit})\n"
-    "--- stderr ---\n${dependency_err}")
+if(OSKEL_AOT_RUNNABLE)
+  execute_process(
+    COMMAND "${WORK_DIR}/demo/target/demo${exe_suffix}"
+    WORKING_DIRECTORY "${WORK_DIR}/demo"
+    RESULT_VARIABLE dependency_exit
+    OUTPUT_VARIABLE dependency_out
+    ERROR_VARIABLE dependency_err)
+  if(NOT dependency_exit EQUAL 0)
+    message(FATAL_ERROR
+      "the dependency binary failed (exit ${dependency_exit})\n"
+      "--- stderr ---\n${dependency_err}")
+  endif()
+  require_contains("dependency binary" "${dependency_out}" "hello!")
 endif()
-require_contains("dependency binary" "${dependency_out}" "hello!")
 
 run_oskelp("${WORK_DIR}/demo" tree)
 require_success("oskelp tree with a dependency")

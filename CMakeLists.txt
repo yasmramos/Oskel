@@ -304,12 +304,21 @@ if(BUILD_TESTING)
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
   # End-to-end: the real binary through new/check/build/run/test, a path
-  # dependency, --locked, a cycle, a failing test, clean and init.
+  # dependency, --locked, a cycle, a failing test, clean and init. The AOT
+  # backend only runs on x86-64 Linux and Windows, so the native half of the
+  # test is gated the same way as the `oskel build` fixtures.
+  if((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32) AND
+     CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    set(OSKELP_AOT_RUNNABLE ON)
+  else()
+    set(OSKELP_AOT_RUNNABLE OFF)
+  endif()
   add_test(NAME oskelp.end_to_end
     COMMAND ${CMAKE_COMMAND}
       "-DOSKELP_EXE=$<TARGET_FILE:oskelp>"
       "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
       "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+      "-DOSKEL_AOT_RUNNABLE=${OSKELP_AOT_RUNNABLE}"
       "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/oskelp-e2e"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_oskelp_case.cmake")
 
