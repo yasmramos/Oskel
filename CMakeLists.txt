@@ -26,7 +26,11 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 if(MSVC)
-  set(OSKEL_WARNINGS /W4)
+  # `/bigobj` is required by `src/runtime/ffi.cpp`: the typed `dispatch`
+  # instantiates one function per 3^N class sequence, and at the
+  # eight-eightbyte bound MSVC's default object format runs out of sections
+  # (C1128).
+  set(OSKEL_WARNINGS /W4 /bigobj)
   # Match the 8 MiB main-thread stack Linux and macOS give by default. The
   # recursive-descent parser and the compiler's AST walk each hold a DepthGuard
   # (see src/frontend/parser.cpp and src/frontend/compiler.cpp) sized for that

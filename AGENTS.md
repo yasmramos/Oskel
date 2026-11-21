@@ -306,7 +306,8 @@ it as a caveat:
   `SDL_WriteSurfacePixel` are bound, and
   `tests/native_build_extern_many_args.oskl` pins the 7/8-argument and
   stack-struct shapes. A ninth value needs a wider bound and a check on the
-  VM's `3^N` template budget.
+  VM's `3^N` template budget; MSVC also needs `/bigobj` (already in
+  `OSKEL_WARNINGS`) at the eight-eightbyte bound.
 
 ## The VS Code extension
 
