@@ -1127,7 +1127,7 @@ binary prints byte for byte what the VM prints).
       through a shared
       `oskel_block_ensure` (next power-of-two capacity, arena copy). Printing a
       container uses a recursive `oskel_print_repr` (`[1, 2]`, `{"k": 1}`,
-      quoted strings, `<fn>`), depth-capped at 8 so a self-referential
+      quoted strings, `<fn name>`), depth-capped at 8 so a self-referential
       structure prints `...` instead of recursing forever; nested strings reuse
       the interpreter's escapes through `oskel_print_str_escaped`. Covered by
       `tests/freestanding_test.cpp` (arrays, maps, indexing, `.length`, `in`,
@@ -1294,9 +1294,10 @@ binary prints byte for byte what the VM prints).
       `<fn>`, depth capped at 8). `oskel_print_repr` renders into a stack
       builder and writes once; `oskel_repr_to_string` renders into an arena
       `AotString`. The string builder (`oskel_sb_*`, `AotStringBuilder`) grows
-      by doubling in the arena. A function's *name* is not part of the AOT
-      closure yet, so `$str`/`print` render `<fn>` where the VM renders
-      `<fn name>`; that is pre-existing and tracked separately. Covered by
+      by doubling in the arena. A `Func` renders the text its closure's
+      `display` field points at (`<fn name>`, `<native fn name>`), so
+      `$str`/`print` agree with the VM; a closure built with no name falls
+      back to the literal `<fn>` (BACKLOG §6.22). Covered by
       `tests/freestanding_test.cpp` and the `oskel build` fixture.
     - **7c.4c** (done) — the hidden `$range` helper for the range literals
       `a..b` / `a..=b`. A new `AotTag::Range` names a three-word arena header
