@@ -228,6 +228,20 @@ it as a caveat:
   matched to the VM's but cannot go in that fixture: a raised runtime error is
   not a value, so `try`/`catch` does not capture it and `build_binary.cmake`
   requires exit 0 from both engines.
+- An `extern "C"` return class has a *box* per class, and adding one means
+  adding its box: the thunk calls a helper that turns the raw register contents
+  into an `AotValue`. `cstring` had one (`emitCStringBox`) and `ptr` did not, so
+  `getenv(name: cstring): ptr` — the natural shape of an accessor — was rejected
+  at build time while `strchr` returning a `cstring` worked. A `ptr` return
+  boxes as an `AotPtr` of kind `Void` whose `data` is the address (what
+  `intToPtr` builds), and **NULL must map to `nil`, not to a `Void` handle of
+  zero**: `wrapPointerValue` in the hosted engine returns an empty `Value`
+  before it reads the type name, so `type()` says `"nil"` there and must say the
+  same here. `tests/native_build_extern_ptr_return.oskl` pins both halves, and
+  `memset` through a handle rebuilt by `ptrToInt`/`intToPtr` is what proves the
+  payload is the real address rather than a synthetic token — a box that stored
+  an invented id would pass every `type`/`== nil` assertion and fail only when C
+  dereferences it.
 - Windows code paths can be exercised locally without a Windows host: build the
   engine with `x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude -Isrc -static
   -o /tmp/win/oskel.exe src/main.cpp src/core/*.cpp src/frontend/*.cpp

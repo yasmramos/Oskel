@@ -605,6 +605,16 @@ if(BUILD_TESTING)
           "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted.oskl"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+      # An opaque `ptr` return (PHASE 7f.6b) is boxed as a `Void` handle whose
+      # payload is the address, and a NULL becomes nil -- the hosted engine's
+      # own rule. `getenv`/`malloc` hand one out and `memset` takes it back, so
+      # the fixture proves the address is real rather than a synthetic token.
+      add_test(NAME oskel.build_hosted_extern_ptr_return
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_ptr_return"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_ptr_return.oskl"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
       # A struct crossing the boundary by value (PHASE 7f.7) goes through the
       # same thunk machinery, so the hosted binary must agree with the VM there
       # too: `div`/`ldiv` return one and `cabs` takes one.
@@ -959,7 +969,8 @@ if(BUILD_TESTING)
     # the script is skipped there. The hosted fixture binds the same libc
     # symbols, so it is skipped there for the same reason.
     if((name STREQUAL "native_build_extern" OR
-        name STREQUAL "native_build_extern_hosted") AND WIN32)
+        name STREQUAL "native_build_extern_hosted" OR
+        name STREQUAL "native_build_extern_ptr_return") AND WIN32)
       continue()
     endif()
     # C variadics need libffi plus the System V AMD64 ABI; the declaration is
