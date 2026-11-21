@@ -11,6 +11,21 @@ may change between minor versions.
 
 ### Added
 
+- **`sort`/`sorted` now run under `oskel build`.** They were the last array
+  methods the AOT backend answered with "value has no such member", and the
+  only ones whose comparator is arbitrary program code: the body calls back
+  through `oskel_call` from inside a bottom-up stable merge sort. The algorithm
+  is stable, like the VM's `std::stable_sort`, so equal keys keep their input
+  order, and it is iterative, so a large array cannot deepen the program's
+  stack by log2(n) frames. Both forms sort a copy and commit only on success:
+  `sort` copies the sorted block back over the receiver and returns it, while
+  `sorted` leaves the receiver untouched and returns a new array. A comparator
+  that raises therefore leaves the array exactly as it was, matching the VM's
+  strong guarantee, and a comparator that does not return a `bool` fails with
+  the same "comparator must return a bool" message. `tests/native_build_sort_methods.oskl`
+  compares the compiled binary with the VM byte for byte, covering the default
+  order, stability on duplicate keys, the mutating and non-mutating forms, and
+  the strong guarantee (BACKLOG §6 item 1).
 - **The twelve pure string methods now run under `oskel build`.** `upper`,
   `lower`, `trim`, `trimStart`, `trimEnd`, `contains`, `startsWith`,
   `endsWith`, `indexOf`, `substr`, `reversed` and `repeat` are bound on the

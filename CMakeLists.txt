@@ -511,6 +511,19 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_string_methods.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `sort`/`sorted` (PHASE 7c.3j): the only collection methods whose comparator
+    # is arbitrary program code, so the AOT body calls back through `oskel_call`
+    # from inside a bottom-up stable merge sort. Checked against the VM, so the
+    # default order, the stability on equal keys, the receiver mutation of
+    # `sort` versus the fresh array of `sorted`, and the strong guarantee (a
+    # raising comparator leaves the receiver untouched) are all pinned.
+    add_test(NAME oskel.build_binary_sort_methods
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_sort_methods"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_sort_methods.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # The bound map methods (PHASE 7c.3g), the map twin of the array methods
     # above. Same binding mechanism as `arr.push`, so the receiver is captured
     # and the call mutates or scans it; the backend used to answer each with

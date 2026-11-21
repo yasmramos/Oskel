@@ -287,6 +287,13 @@ struct AotRuntimeHandles {
   CodeGen::Label arrayReduceMethod;    // AotValue oskel_builtin_array_reduce(...)
   CodeGen::Label arraySumMethod;       // AotValue oskel_builtin_array_sum(...)
   CodeGen::Label arrayJoinMethod;      // AotValue oskel_builtin_array_join(...)
+  // `sort`/`sorted` (PHASE 7c.3j). The only collection methods whose comparator
+  // is arbitrary program code, so the body calls back through `oskel_call` from
+  // inside its own merge pass. `sort` mutates the receiver and returns it;
+  // `sorted` leaves it untouched and returns a new array. Both are stable,
+  // matching the hosted `std::stable_sort`.
+  CodeGen::Label arraySortMethod;      // AotValue oskel_builtin_array_sort(...)
+  CodeGen::Label arraySortedMethod;    // AotValue oskel_builtin_array_sorted(...)
   // Bound string methods (PHASE 7c.3i). `s.<method>` on a string yields a
   // closure that captured its receiver in one upvalue cell, exactly like the
   // array and map methods above and the hosted `bindString`. `bindStringMethod`

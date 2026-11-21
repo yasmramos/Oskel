@@ -199,6 +199,8 @@ struct CollectionEnv {
   CodeGen::Label reduceMethod;
   CodeGen::Label sumMethod;
   CodeGen::Label joinMethod;
+  CodeGen::Label sortMethod;
+  CodeGen::Label sortedMethod;
   CodeGen::Label emptyString;    // data: an empty `AotString` (length 0)
   CodeGen::Label pushConst;      // data: the string "push"
   CodeGen::Label popConst;       // data: the string "pop"
@@ -222,6 +224,8 @@ struct CollectionEnv {
   CodeGen::Label reduceConst;    // data: the string "reduce"
   CodeGen::Label sumConst;       // data: the string "sum"
   CodeGen::Label joinConst;      // data: the string "join"
+  CodeGen::Label sortConst;      // data: the string "sort"
+  CodeGen::Label sortedConst;    // data: the string "sorted"
   // Bound string methods (PHASE 7c.3i): `oskel_member_get` returns a closure
   // for `s.upper`/`s.lower`/... built by `bindStringMethod`; the method bodies
   // are the `string*Method` labels below. Each takes the receiver from its
@@ -3360,6 +3364,410 @@ void emitArrayJoinMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv&
   emitFailCall(cg, env.fail, msgArgc);
 }
 
+// Stable merge sort over an array's items, shared by `sort` and `sorted`
+// (PHASE 7c.3j). The hosted engine sorts with `std::stable_sort`, so a merge
+// sort is the one algorithm that reproduces its result exactly: an unstable
+// sort would reorder equal items and diverge from the VM whenever a comparator
+// treats two distinct items as equal.
+//
+// Bottom-up rather than recursive: a recursive merge would deepen the program's
+// own stack by log2(n) frames. The auxiliary block is one arena allocation of
+// `n` values, taken *before* the first comparator call, because a callback
+// allocates and the arena cursor (r13) must not be snapshotted across it.
+//
+// Every comparator call goes through `oskel_call`, which clobbers the caller-
+// saved registers, so the whole sort state lives in these slots:
+//   -48 receiver, -56 count, -64 source block, -72 auxiliary block,
+//   -80/-88 comparator tag/payload, -96 hasComparator, -104 new array header
+//   (only for `sorted`), -128/-144 the two-value callback window (window[0] at
+//   the higher address because the register file grows down), -152 merge width,
+//   -160 run start, -168 middle, -176 run end, -184 left, -192 right,
+//   -200 output.
+void emitArraySortBody(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                       const DataBlob& msgArgc, const DataBlob& msgCmpType,
+                       bool mutateReceiver) {
+  constexpr std::int64_t kReceiver = -48;
+  constexpr std::int64_t kCount = -56;
+  constexpr std::int64_t kSource = -64;
+  constexpr std::int64_t kAux = -72;
+  constexpr std::int64_t kCbTag = -80;
+  constexpr std::int64_t kCbPayload = -88;
+  constexpr std::int64_t kHasCmp = -96;
+  constexpr std::int64_t kNewHeader = -104;
+  // The callback window is two AotValues. `args[i]` sits at `args - 16*i`, so
+  // window[0] is the higher address (-128/-120) and window[1] the lower
+  // (-144/-136); the merge state starts below them.
+  constexpr std::int64_t kWindow = -128;
+  constexpr std::int64_t kWidth = -152;
+  constexpr std::int64_t kRunStart = -160;
+  constexpr std::int64_t kMiddle = -168;
+  constexpr std::int64_t kRunEnd = -176;
+  constexpr std::int64_t kLeft = -184;
+  constexpr std::int64_t kRight = -192;
+  constexpr std::int64_t kOut = -200;
+  constexpr std::int32_t kFrameSize = 224;
+
+  CodeGen::Label noCmp = cg.newLabel();
+  CodeGen::Label cmpReady = cg.newLabel();
+  CodeGen::Label widthLoop = cg.newLabel();
+  CodeGen::Label runLoop = cg.newLabel();
+  CodeGen::Label middleClamped = cg.newLabel();
+  CodeGen::Label endClamped = cg.newLabel();
+  CodeGen::Label mergeLoop = cg.newLabel();
+  CodeGen::Label defaultCompare = cg.newLabel();
+  CodeGen::Label takeRight = cg.newLabel();
+  CodeGen::Label takeLeft = cg.newLabel();
+  CodeGen::Label drainLeft = cg.newLabel();
+  CodeGen::Label drainRight = cg.newLabel();
+  CodeGen::Label copyBack = cg.newLabel();
+  CodeGen::Label cloneLoop = cg.newLabel();
+  CodeGen::Label cloneDone = cg.newLabel();
+  CodeGen::Label backLoop = cg.newLabel();
+  CodeGen::Label backDone = cg.newLabel();
+  CodeGen::Label nextWidth = cg.newLabel();
+  CodeGen::Label commitLoop = cg.newLabel();
+  CodeGen::Label commitDone = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label badCmpType = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, kFrameSize);
+
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::A, badArgc);              // argc > 1
+  emitLoadArrayReceiver(cg, Rbx, Rdx);
+  cg.movToMem(Rbp, kReceiver, Rbx);
+
+  // The comparator is optional; absent means the default `lessThan` order, which
+  // `oskel_compare(Lt)` already implements with the same type rules and the
+  // same failure message.
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Eq, noCmp);
+  cg.movFromMem(Rax, Rdi, 0);           // comparator tag
+  cg.movToMem(Rbp, kCbTag, Rax);
+  cg.movFromMem(Rax, Rdi, 8);           // comparator payload
+  cg.movToMem(Rbp, kCbPayload, Rax);
+  cg.movImmToMem(Rbp, kHasCmp, 1);
+  cg.jmp(cmpReady);
+  cg.bind(noCmp);
+  cg.movImmToMem(Rbp, kHasCmp, 0);
+  cg.bind(cmpReady);
+
+  cg.movFromMem(Rax, Rbx, kTableLengthOffset);
+  cg.movToMem(Rbp, kCount, Rax);
+
+  // Both forms sort a *copy* and commit only on success. `std::stable_sort` in
+  // the hosted engine permutes the range in place, so it sorts a copy and
+  // assigns it back afterwards: a comparator that raises leaves the array
+  // untouched. Sorting the receiver's own block here would leave it partially
+  // ordered, so the merge always runs on this fresh block and `sort` copies it
+  // back once the pass is complete.
+  emitArrayAlloc(cg, env, kCount, kNewHeader, kSource, oom);
+  cg.movFromMem(R9, Rbx, kTableBlockOffset);   // src
+  cg.movFromMem(R10, Rbp, kSource);            // dst
+  cg.movFromMem(R11, Rbp, kCount);
+  cg.xorReg(R8, R8);
+  cg.bind(cloneLoop);
+  cg.cmpReg(R8, R11);
+  cg.jcc(Jcc::Ae, cloneDone);
+  cg.movReg(Rax, R8);
+  cg.shlImm8(Rax, 4);
+  cg.addReg(Rax, R9);
+  cg.movFromMem(Rcx, Rax, 0);
+  cg.movToMem(R10, 0, Rcx);
+  cg.movFromMem(Rcx, Rax, 8);
+  cg.movToMem(R10, 8, Rcx);
+  cg.addImm32(R10, 16);
+  cg.addImm32(R8, 1);
+  cg.jmp(cloneLoop);
+  cg.bind(cloneDone);
+
+  // One auxiliary block of `n` values, so a merge never allocates.
+  cg.movFromMem(Rdi, Rbp, kCount);
+  cg.shlImm8(Rdi, 4);
+  cg.callLabel(env.alloc);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rbp, kAux, Rax);
+
+  cg.movImmToMem(Rbp, kWidth, 1);
+  cg.bind(widthLoop);
+  cg.movFromMem(R8, Rbp, kWidth);
+  cg.movFromMem(R9, Rbp, kCount);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ae, done);                // width >= count: sorted
+  cg.movImmToMem(Rbp, kRunStart, 0);
+
+  cg.bind(runLoop);
+  cg.movFromMem(R8, Rbp, kRunStart);
+  cg.movFromMem(R9, Rbp, kCount);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ae, nextWidth);
+
+  // middle = min(runStart + width, count)
+  cg.movFromMem(Rax, Rbp, kWidth);
+  cg.addReg(Rax, R8);
+  cg.movFromMem(Rcx, Rbp, kCount);
+  cg.cmpReg(Rax, Rcx);
+  cg.jcc(Jcc::B, middleClamped);
+  cg.movReg(Rax, Rcx);
+  cg.bind(middleClamped);
+  cg.movToMem(Rbp, kMiddle, Rax);
+  // end = min(middle + width, count)
+  cg.movFromMem(Rcx, Rbp, kWidth);
+  cg.addReg(Rcx, Rax);
+  cg.movFromMem(R11, Rbp, kCount);
+  cg.cmpReg(Rcx, R11);
+  cg.jcc(Jcc::B, endClamped);
+  cg.movReg(Rcx, R11);
+  cg.bind(endClamped);
+  cg.movToMem(Rbp, kRunEnd, Rcx);
+
+  cg.movToMem(Rbp, kLeft, R8);          // left = runStart
+  cg.movToMem(Rbp, kRight, Rax);        // right = middle
+  cg.movToMem(Rbp, kOut, R8);           // out = runStart
+
+  cg.bind(mergeLoop);
+  cg.movFromMem(R8, Rbp, kLeft);
+  cg.movFromMem(R9, Rbp, kMiddle);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ae, drainRight);          // left run exhausted
+  cg.movFromMem(R10, Rbp, kRight);
+  cg.movFromMem(R11, Rbp, kRunEnd);
+  cg.cmpReg(R10, R11);
+  cg.jcc(Jcc::Ae, drainLeft);           // right run exhausted
+
+  // Both runs alive: take the right item only when it is strictly before the
+  // left one. On a tie the left item wins, which is what makes the sort stable.
+  cg.movFromMem(Rax, Rbp, kHasCmp);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, defaultCompare);
+
+  cg.movFromMem(R8, Rbp, kSource);      // src block
+  cg.movFromMem(R9, Rbp, kRight);
+  cg.shlImm8(R9, 4);
+  cg.addReg(R9, R8);                    // &src[right]
+  cg.movFromMem(Rax, R9, 0);
+  cg.movToMem(Rbp, kWindow, Rax);       // window[0] = src[right]
+  cg.movFromMem(Rax, R9, 8);
+  cg.movToMem(Rbp, kWindow + 8, Rax);
+  cg.movFromMem(R10, Rbp, kLeft);
+  cg.shlImm8(R10, 4);
+  cg.addReg(R10, R8);                   // &src[left]
+  cg.movFromMem(Rax, R10, 0);
+  cg.movToMem(Rbp, kWindow - 16, Rax);  // window[1] = src[left]
+  cg.movFromMem(Rax, R10, 8);
+  cg.movToMem(Rbp, kWindow - 8, Rax);
+
+  cg.movFromMem(Rdi, Rbp, kCbTag);
+  cg.movFromMem(Rsi, Rbp, kCbPayload);
+  cg.movImm(Rdx, 2);
+  cg.leaMem(Rcx, Rbp, kWindow);
+  cg.callLabel(env.call);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagBool));
+  cg.jcc(Jcc::Ne, badCmpType);
+  cg.testReg(Rdx);
+  cg.jcc(Jcc::Ne, takeRight);
+  cg.jmp(takeLeft);
+
+  cg.bind(defaultCompare);
+  cg.movFromMem(R8, Rbp, kSource);
+  cg.movFromMem(R9, Rbp, kRight);
+  cg.shlImm8(R9, 4);
+  cg.addReg(R9, R8);                    // &src[right]
+  cg.movFromMem(Rdi, R9, 0);            // right tag
+  cg.movFromMem(Rsi, R9, 8);            // right payload
+  cg.movFromMem(R10, Rbp, kLeft);
+  cg.shlImm8(R10, 4);
+  cg.addReg(R10, R8);                   // &src[left]
+  cg.movFromMem(Rdx, R10, 0);           // left tag
+  cg.movFromMem(Rcx, R10, 8);           // left payload
+  cg.movImm(R8, static_cast<std::int64_t>(AotCompareOp::Lt));
+  cg.callLabel(env.compare);            // rax:rdx = right < left
+  cg.testReg(Rdx);
+  cg.jcc(Jcc::Ne, takeRight);
+
+  cg.bind(takeLeft);
+  cg.movFromMem(R8, Rbp, kLeft);
+  cg.movFromMem(R9, Rbp, kSource);
+  cg.movReg(R10, R8);
+  cg.shlImm8(R10, 4);
+  cg.addReg(R10, R9);                   // &src[left]
+  cg.movFromMem(Rax, R10, 0);
+  cg.movFromMem(Rdx, R10, 8);
+  cg.movFromMem(R11, Rbp, kOut);
+  cg.shlImm8(R11, 4);
+  cg.movFromMem(R12, Rbp, kAux);
+  cg.addReg(R11, R12);                  // &aux[out]
+  cg.movToMem(R11, 0, Rax);
+  cg.movToMem(R11, 8, Rdx);
+  cg.addImm32(R8, 1);
+  cg.movToMem(Rbp, kLeft, R8);
+  cg.movFromMem(R8, Rbp, kOut);
+  cg.addImm32(R8, 1);
+  cg.movToMem(Rbp, kOut, R8);
+  cg.jmp(mergeLoop);
+
+  cg.bind(takeRight);
+  cg.movFromMem(R8, Rbp, kRight);
+  cg.movFromMem(R9, Rbp, kSource);
+  cg.movReg(R10, R8);
+  cg.shlImm8(R10, 4);
+  cg.addReg(R10, R9);                   // &src[right]
+  cg.movFromMem(Rax, R10, 0);
+  cg.movFromMem(Rdx, R10, 8);
+  cg.movFromMem(R11, Rbp, kOut);
+  cg.shlImm8(R11, 4);
+  cg.movFromMem(R12, Rbp, kAux);
+  cg.addReg(R11, R12);                  // &aux[out]
+  cg.movToMem(R11, 0, Rax);
+  cg.movToMem(R11, 8, Rdx);
+  cg.addImm32(R8, 1);
+  cg.movToMem(Rbp, kRight, R8);
+  cg.movFromMem(R8, Rbp, kOut);
+  cg.addImm32(R8, 1);
+  cg.movToMem(Rbp, kOut, R8);
+  cg.jmp(mergeLoop);
+
+  // Drain whichever run still has items, then copy the merged run back.
+  cg.bind(drainLeft);
+  cg.movFromMem(R8, Rbp, kLeft);
+  cg.movFromMem(R9, Rbp, kMiddle);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ae, copyBack);
+  cg.movFromMem(R10, Rbp, kSource);
+  cg.movReg(R11, R8);
+  cg.shlImm8(R11, 4);
+  cg.addReg(R11, R10);
+  cg.movFromMem(Rax, R11, 0);
+  cg.movFromMem(Rdx, R11, 8);
+  cg.movFromMem(R11, Rbp, kOut);
+  cg.shlImm8(R11, 4);
+  cg.movFromMem(R12, Rbp, kAux);
+  cg.addReg(R11, R12);
+  cg.movToMem(R11, 0, Rax);
+  cg.movToMem(R11, 8, Rdx);
+  cg.addImm32(R8, 1);
+  cg.movToMem(Rbp, kLeft, R8);
+  cg.movFromMem(R8, Rbp, kOut);
+  cg.addImm32(R8, 1);
+  cg.movToMem(Rbp, kOut, R8);
+  cg.jmp(drainLeft);
+
+  cg.bind(drainRight);
+  cg.movFromMem(R8, Rbp, kRight);
+  cg.movFromMem(R9, Rbp, kRunEnd);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ae, copyBack);
+  cg.movFromMem(R10, Rbp, kSource);
+  cg.movReg(R11, R8);
+  cg.shlImm8(R11, 4);
+  cg.addReg(R11, R10);
+  cg.movFromMem(Rax, R11, 0);
+  cg.movFromMem(Rdx, R11, 8);
+  cg.movFromMem(R11, Rbp, kOut);
+  cg.shlImm8(R11, 4);
+  cg.movFromMem(R12, Rbp, kAux);
+  cg.addReg(R11, R12);
+  cg.movToMem(R11, 0, Rax);
+  cg.movToMem(R11, 8, Rdx);
+  cg.addImm32(R8, 1);
+  cg.movToMem(Rbp, kRight, R8);
+  cg.movFromMem(R8, Rbp, kOut);
+  cg.addImm32(R8, 1);
+  cg.movToMem(Rbp, kOut, R8);
+  cg.jmp(drainRight);
+
+  // Copy the merged run [runStart, runEnd) from the auxiliary block back into
+  // the source block, then advance to the next pair.
+  cg.bind(copyBack);
+  cg.movFromMem(R8, Rbp, kRunStart);
+  cg.movFromMem(R9, Rbp, kRunEnd);
+  cg.bind(backLoop);
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ae, backDone);
+  cg.movReg(R10, R8);
+  cg.shlImm8(R10, 4);
+  cg.movFromMem(R11, Rbp, kAux);
+  cg.addReg(R10, R11);
+  cg.movFromMem(Rax, R10, 0);
+  cg.movFromMem(Rdx, R10, 8);
+  cg.movReg(R10, R8);
+  cg.shlImm8(R10, 4);
+  cg.movFromMem(R11, Rbp, kSource);
+  cg.addReg(R10, R11);
+  cg.movToMem(R10, 0, Rax);
+  cg.movToMem(R10, 8, Rdx);
+  cg.addImm32(R8, 1);
+  cg.jmp(backLoop);
+  cg.bind(backDone);
+  cg.movFromMem(R8, Rbp, kRunEnd);
+  cg.movToMem(Rbp, kRunStart, R8);
+  cg.jmp(runLoop);
+
+  cg.bind(nextWidth);
+  cg.movFromMem(R8, Rbp, kWidth);
+  cg.addReg(R8, R8);                    // width *= 2
+  cg.movToMem(Rbp, kWidth, R8);
+  cg.jmp(widthLoop);
+
+  cg.bind(done);
+  if (mutateReceiver) {
+    // Commit: copy the sorted block back over the receiver's items, so the
+    // array the caller holds becomes sorted and `sort` returns that same array.
+    cg.movFromMem(R8, Rbp, kReceiver);
+    cg.movFromMem(R9, R8, kTableBlockOffset);    // receiver block
+    cg.movFromMem(R10, Rbp, kSource);            // sorted block
+    cg.movFromMem(R11, Rbp, kCount);
+    cg.xorReg(Rax, Rax);
+    cg.bind(commitLoop);
+    cg.cmpReg(Rax, R11);
+    cg.jcc(Jcc::Ae, commitDone);
+    cg.movReg(Rcx, Rax);
+    cg.shlImm8(Rcx, 4);
+    cg.movReg(R12, Rcx);
+    cg.addReg(R12, R10);
+    cg.movFromMem(Rdi, R12, 0);
+    cg.movFromMem(Rsi, R12, 8);
+    cg.addReg(Rcx, R9);
+    cg.movToMem(Rcx, 0, Rdi);
+    cg.movToMem(Rcx, 8, Rsi);
+    cg.addImm32(Rax, 1);
+    cg.jmp(commitLoop);
+    cg.bind(commitDone);
+    cg.movFromMem(Rdx, Rbp, kReceiver);  // `sort` returns the receiver
+  } else {
+    cg.movFromMem(Rdx, Rbp, kNewHeader); // `sorted` returns the new array
+  }
+  cg.movImm(Rax, kTagArray);
+  cg.addImm32(Rsp, kFrameSize);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+
+  cg.bind(badArgc);
+  emitFailCall(cg, env.fail, msgArgc);
+  cg.bind(badCmpType);
+  emitFailCall(cg, env.fail, msgCmpType);
+  cg.bind(oom);
+  emitFailCall(cg, env.fail, *env.msgOom);
+}
+
+void emitArraySortMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                         const DataBlob& msgArgc, const DataBlob& msgCmpType) {
+  emitArraySortBody(cg, label, env, msgArgc, msgCmpType, true);
+}
+
+void emitArraySortedMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                           const DataBlob& msgArgc, const DataBlob& msgCmpType) {
+  emitArraySortBody(cg, label, env, msgArgc, msgCmpType, false);
+}
+
 // ---------------------------------------------------------- string method helpers
 //
 // The string methods below share four primitives. Writing them once keeps each
@@ -5613,6 +6021,8 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   CodeGen::Label bindReduce = cg.newLabel();
   CodeGen::Label bindSum = cg.newLabel();
   CodeGen::Label bindJoin = cg.newLabel();
+  CodeGen::Label bindSort = cg.newLabel();
+  CodeGen::Label bindSorted = cg.newLabel();
   CodeGen::Label bind = cg.newLabel();
   // The string methods, in selector order: the names are what `member_get`
   // compares against and the labels are where each match binds its closure.
@@ -5807,6 +6217,16 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.callLabel(env.strEq);
   cg.testReg(Rax);
   cg.jcc(Jcc::Ne, bindJoin);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.sortConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindSort);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.sortedConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindSorted);
   cg.jmp(failMember);
 
   // Every `bind*` block loads the receiver (r12), sets the selector in rdx and
@@ -5876,6 +6296,12 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.jmp(bind);
   cg.bind(bindJoin);
   cg.movImm(Rdx, 21);           // join
+  cg.jmp(bind);
+  cg.bind(bindSort);
+  cg.movImm(Rdx, 22);           // sort
+  cg.jmp(bind);
+  cg.bind(bindSorted);
+  cg.movImm(Rdx, 23);           // sorted
   cg.bind(bind);
   cg.movImm(Rdi, kTagArray);
   cg.movReg(Rsi, R12);
@@ -13065,6 +13491,10 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgSumArgc = addText("sum() expects 0 arguments");
   DataBlob msgSumType = addText("sum() expects an array of numbers");
   DataBlob msgJoinArgc = addText("join() expects between 0 and 1 arguments");
+  DataBlob msgSortArgc = addText("sort() expects between 0 and 1 arguments");
+  DataBlob msgSortedArgc = addText("sorted() expects between 0 and 1 arguments");
+  DataBlob msgSortCmp = addText("sort comparator must return a bool");
+  DataBlob msgSortedCmp = addText("sorted comparator must return a bool");
   DataBlob msgUpperArgc = addText("upper() expects 0 arguments");
   DataBlob msgLowerArgc = addText("lower() expects 0 arguments");
   DataBlob msgTrimArgc = addText("trim() expects 0 arguments");
@@ -13396,6 +13826,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   env.reduceMethod = handles.arrayReduceMethod;
   env.sumMethod = handles.arraySumMethod;
   env.joinMethod = handles.arrayJoinMethod;
+  env.sortMethod = handles.arraySortMethod;
+  env.sortedMethod = handles.arraySortedMethod;
   env.concat = handles.concat;
   env.strBuiltin = handles.strBuiltin;
   env.emptyString = cg.newLabel();
@@ -13408,6 +13840,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   env.reduceConst = cg.newLabel();
   env.sumConst = cg.newLabel();
   env.joinConst = cg.newLabel();
+  env.sortConst = cg.newLabel();
+  env.sortedConst = cg.newLabel();
   // The builder and `str_new` labels are local to this function; the handles
   // for them are separate labels nothing emits, so the string methods must
   // reference the ones actually bound below.
@@ -13548,7 +13982,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                        handles.arrayFilterMethod, handles.arrayEachMethod,
                        handles.arrayFindMethod, handles.arrayAnyMethod,
                        handles.arrayAllMethod, handles.arrayReduceMethod,
-                       handles.arraySumMethod, handles.arrayJoinMethod});
+                       handles.arraySumMethod, handles.arrayJoinMethod,
+                       handles.arraySortMethod, handles.arraySortedMethod});
   emitArrayPushMethod(cg, handles.arrayPushMethod, env);
   emitArrayPopMethod(cg, handles.arrayPopMethod, env, msgPopArgc);
   emitArrayShiftMethod(cg, handles.arrayShiftMethod, env, msgShiftArgc);
@@ -13575,6 +14010,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitArrayReduceMethod(cg, handles.arrayReduceMethod, env, msgReduceArgc, msgReduceEmpty);
   emitArraySumMethod(cg, handles.arraySumMethod, env, msgSumArgc, msgSumType);
   emitArrayJoinMethod(cg, handles.arrayJoinMethod, env, msgJoinArgc);
+  emitArraySortMethod(cg, handles.arraySortMethod, env, msgSortArgc, msgSortCmp);
+  emitArraySortedMethod(cg, handles.arraySortedMethod, env, msgSortedArgc, msgSortedCmp);
   // The bound map methods (PHASE 7c.3g). The binder shares `emitBindArrayMethod`
   // (the mechanism is identical); the ten bodies mirror the hosted `bindMap`.
   emitBindArrayMethod(cg, handles.bindMapMethod, handles.cellNew, handles.closure,
@@ -13925,6 +14362,10 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x03\x00\x00\x00\x00\x00\x00\x00" "sum"), 11);
   cg.bind(env.joinConst);
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x04\x00\x00\x00\x00\x00\x00\x00" "join"), 12);
+  cg.bind(env.sortConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x04\x00\x00\x00\x00\x00\x00\x00" "sort"), 12);
+  cg.bind(env.sortedConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x06\x00\x00\x00\x00\x00\x00\x00" "sorted"), 14);
   cg.bind(env.emptyString);
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x00\x00\x00\x00\x00\x00\x00\x00"), 8);
   // The string method names (PHASE 7c.3i), compared by `member_get`.
