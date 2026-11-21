@@ -867,10 +867,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `oskel.lock`, path dependencies and
    `new`/`init`/`add`/`remove`/`build`/`run`/`check`/`test`/`clean`/`tree`. The
    manifest is parsed by a small strict TOML subset in `tools/oskelp.cpp`; the
-   resolver rejects cycles, two locations for one package name, a name that
-   disagrees with its manifest and a registry dependency. The tool is standalone
-   and drives `oskel`/`oskelc` as child processes; `OSKEL_MODULE_ROOT` is the
-   only compiler-side hook.
+   resolver rejects cycles, two locations for one package name and a name that
+   disagrees with its manifest, and resolves a local-registry dependency from
+   `$OSKEL_REGISTRY`. The tool is standalone and drives `oskel`/`oskelc` as
+   child processes; `OSKEL_MODULE_ROOT` is the only compiler-side hook.
 8. **[P3]** Add a "hello world with UI" tutorial (needs the post-1.0 UI work).
 9. **[P2] [partial]** SDL3 bindings landed (post-1.0 UI): `std/sdl.oskl` binds
    the window, renderer and event surface, `docs/sdl.md` documents it, and
@@ -878,15 +878,19 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    layer (`Window`, `Column`, `Text`, `Button`, ...) and the Windows loaded-DLL
    symbol lookup (§18) are still open.
 10. **[P3]** Add `dlopen`/`dlsym` as a builtin for dynamic FFI.
-11. **[P1]** `oskelp`: add a local registry (`$OSKEL_REGISTRY`) with semver
-    ranges, so a dependency can be `utils = "1.2.0"` instead of a path. A
-    network registry is a separate decision: it needs HTTP/TLS, which the
-    standard library does not carry.
-12. **[P1] [partial]** `oskelp`: `add` and `remove` landed with an in-place
-    editor that preserves comments, blank lines and CRLF; a failed add resolves
-    the graph before it writes, so the manifest is never left half-edited.
-    `update` and `publish` remain; `update` becomes meaningful with the local
-    registry, and `publish` needs it too.
+11. **[P1] [done]** `oskelp`: the local registry (`$OSKEL_REGISTRY`) landed
+    with semver requirements (exact, `^`, `~`, comparators, wildcards and a
+    conjunction), so a dependency can be `utils = "^1.2.0"` instead of a path.
+    `oskel.lock` records `registry+<name>@<version>` and keeps the pin while it
+    satisfies the manifest. A network registry is still a separate decision: it
+    needs HTTP/TLS, which the standard library does not carry, plus checksums
+    and signatures.
+12. **[P1] [done]** `oskelp`: `add`, `remove`, `publish` and `update` landed.
+    `add` and `remove` use an in-place editor that preserves comments, blank
+    lines and CRLF; a failed add resolves the graph before it writes, so the
+    manifest is never left half-edited. `add` without `--path` writes a registry
+    requirement, `publish` copies a package into `$OSKEL_REGISTRY`, and
+    `update [<name>]` moves the lockfile pin and prints each change.
 13. **[P2]** `oskelp`: add build profiles. `target/<name>` is the only output
     today because the AOT backend has no optimization level to select; a
     `--release` that changes nothing would be a cosmetic lie.

@@ -48,9 +48,8 @@ may change between minor versions.
   `OSKEL_MODULE_ROOT` variable, honoured by `resolverFor` for both the VM and
   the AOT backend. `oskelp test` runs every `tests/**/*.oskl` and exits 101 on a
   failure; `--native` compiles each test and runs the binary, which makes the
-  suite an AOT parity check. Only path dependencies are supported for now; a
-  string dependency is a registry dependency and is refused with a dedicated
-  message (BACKLOG §20).
+  suite an AOT parity check. Path and local-registry dependencies are both
+  supported; a string dependency resolves from `$OSKEL_REGISTRY` (BACKLOG §20).
 - **`oskelp add` and `oskelp remove`.** They edit `[dependencies]` in place
   instead of rewriting the manifest, so comments, blank lines and CRLF survive,
   then refresh `oskel.lock` and `.oskel/deps`. `add` validates the dependency's
@@ -58,8 +57,20 @@ may change between minor versions.
   leaves `oskel.toml` untouched; a duplicate add is a no-op, a new version for
   the same path updates the entry, and omitting the name derives it from the
   dependency's manifest. `remove` refuses an entry that spans multiple lines
-  rather than deleting a partial one. Both accept `--manifest-path`; only path
-  dependencies are supported.
+  rather than deleting a partial one. Both accept `--manifest-path`; `add`
+  without `--path` writes a registry requirement instead.
+- **`oskelp` registry: semver requirements, `publish` and `update`.** A string
+  dependency (`utils = "^0.1.0"`) is resolved from the local registry named by
+  `OSKEL_REGISTRY` (`<root>/<name>/<version>/`), with exact versions, `^`, `~`,
+  comparators, wildcards and a comma/space-separated conjunction; a prerelease
+  is selected only by an exact requirement for it. `oskelp publish` copies
+  `oskel.toml` and `src/` into the registry and refuses to overwrite a version
+  or publish a package that keeps a path dependency. `oskel.lock` records
+  `registry+<name>@<version>` and a normal build keeps the pin while it
+  satisfies the manifest; `oskelp update [<name>]` moves it explicitly and
+  prints each change. The resolver is flat and does not backtrack, so two
+  incompatible requirements for one name are reported instead of silently
+  choosing one.
 - **SDL3 bindings: `std/sdl.oskl`.** The standard library now binds SDL3's
   window, renderer and event surface, so a program can open a window and draw
   into it on both engines. `bindings/sdl/sdl3_subset.h` is the curated C surface
