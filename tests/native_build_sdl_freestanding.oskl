@@ -1,0 +1,9 @@
+// Fixture for the `oskel build` rejection of SDL3 in freestanding mode.
+//
+// SDL3 is a host binding: the freestanding image has no host and no linker, so
+// the build must fail with the dedicated extern message and exit 65, never emit
+// a binary. The import is the module's own, so this also covers the rule that
+// an *unused* `extern "C"` is harmless while a used one fails cleanly.
+import std.sdl;
+
+print(std.sdl.initVideo());

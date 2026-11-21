@@ -1909,8 +1909,10 @@ moment a design needs inline caching or specialization, it is out of scope
 
 ### Post-1.0 — UI library
 
-- **Skia** as rendering backend.
-- **SDL2** for windows and events.
+- **SDL3** for windows, renderer and events: the low-level bindings landed as
+  `std/sdl.oskl` (slice 1, `docs/sdl.md`), and a native binary links them with
+  `oskel build --mode hosted --link-lib SDL3`.
+- **Skia** as an optional rendering backend on top of SDL3's window.
 - **Declarative UI** (SwiftUI/Flutter style): `Window`, `Column`, `Row`,
   `Text`, `Button`, `Input`, `Checkbox`, `Slider`, etc.
 

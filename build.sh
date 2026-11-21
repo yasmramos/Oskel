@@ -24,6 +24,20 @@ CXXFLAGS=${CXXFLAGS:--O2}
 
 mkdir -p build
 
+# SDL3 is optional: `std/sdl.oskl` binds it, and the development engine must
+# have the library loaded for `dlsym(RTLD_DEFAULT)` to resolve its symbols.
+# `--as-needed` would drop a shared library nothing references at link time, so
+# Linux forces it in; on macOS a linked dylib stays loaded.
+SDL3_CFLAGS=""
+SDL3_LIBS=""
+if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists sdl3; then
+    SDL3_CFLAGS=$(pkg-config --cflags sdl3)
+    SDL3_LIBS=$(pkg-config --libs sdl3)
+    if [ "$(uname -s)" = "Linux" ]; then
+        SDL3_LIBS="-Wl,--no-as-needed $SDL3_LIBS"
+    fi
+fi
+
 # The engine's sources split in three, exactly as CMakeLists.txt splits them.
 # The directory a file lives in is its classification, so a new file needs no
 # edit here (and no edit to CMake, which globs the same directories):
@@ -44,8 +58,8 @@ for source in src/runtime/*.cpp src/runtime/jit/*.cpp; do
 done
 
 # shellcheck disable=SC2086
-"$CXX" -std=c++17 $CXXFLAGS -Wall -Wextra -Iinclude -Isrc -o build/oskel \
-    src/main.cpp $FRONTEND_SOURCES $RUNTIME_SOURCES
+"$CXX" -std=c++17 $CXXFLAGS -Wall -Wextra -Iinclude -Isrc $SDL3_CFLAGS -o build/oskel \
+    src/main.cpp $FRONTEND_SOURCES $RUNTIME_SOURCES $SDL3_LIBS
 echo "Built build/oskel"
 
 # The host compiler: the same front end, no interpreter.

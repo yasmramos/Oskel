@@ -173,6 +173,34 @@ add_executable(oskel "${OSKEL_MAIN}")
 target_link_libraries(oskel PRIVATE oskel_lib)
 target_compile_options(oskel PRIVATE ${OSKEL_WARNINGS})
 
+# --------------------------------------------------------------------------- SDL3 (optional)
+# `std/sdl.oskl` binds SDL3's window, renderer and event surface. The module is
+# always installed; the development engine links SDL3 when CMake finds it, so
+# `import std.sdl` resolves the `SDL_*` symbols through `dlsym(RTLD_DEFAULT)`.
+# `oskelc` does not link it: it only compiles the module, and a native binary
+# gets the symbols from the hosted link (`--link-lib SDL3`).
+#
+# `--as-needed` drops a shared library nothing references at link time, and the
+# engine only names SDL3 through `dlsym`, so the library must be forced in.
+# `ENABLE_EXPORTS` adds the `-rdynamic`/`-export_dynamic` flag a static SDL3
+# build would need for the same lookup to find the symbols in the executable.
+option(OSKEL_ENABLE_SDL3 "Link the development engine against SDL3" ON)
+set(OSKEL_SDL3_FOUND FALSE)
+if(OSKEL_ENABLE_SDL3)
+  find_package(SDL3 QUIET)
+  if(SDL3_FOUND)
+    set(OSKEL_SDL3_FOUND TRUE)
+    target_link_libraries(oskel PRIVATE SDL3::SDL3)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      target_link_options(oskel PRIVATE "-Wl,--no-as-needed")
+    endif()
+    set_target_properties(oskel PROPERTIES ENABLE_EXPORTS ON)
+    message(STATUS "SDL3 found: std.sdl enabled in the development engine")
+  else()
+    message(STATUS "SDL3 not found: std.sdl tests skipped (set OSKEL_ENABLE_SDL3=OFF to silence)")
+  endif()
+endif()
+
 # `oskelc`: the host compiler. Sources in, a native image out; it links the front
 # end alone, so the shipped compiler carries neither the VM nor the JIT
 # (DEVELOPMENT.md §2). `tests/check_compiler_boundary.cmake` keeps the include
@@ -417,6 +445,34 @@ if(BUILD_TESTING)
       "-DOSKEL_EXE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}"
       "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/21_std_math.oskl"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_stdlib.cmake")
+
+  # --- SDL3 bindings (`std/sdl.oskl`) ---
+  # The module is always installed; these tests need the development engine to
+  # have SDL3 loaded, which CMake arranges above when it finds the library.
+  # `run_sdl_case.cmake` sets SDL_VIDEODRIVER=dummy, so no display is needed.
+  # The hosted fixture is Linux x86-64 only, like every hosted AOT test.
+  add_test(NAME sdl.bindgen
+    COMMAND ${CMAKE_COMMAND}
+      "-DBINDGEN=$<TARGET_FILE:bindgen>"
+      "-DHEADER=${CMAKE_CURRENT_SOURCE_DIR}/bindings/sdl/sdl3_subset.h"
+      "-DMODULE=${CMAKE_CURRENT_SOURCE_DIR}/std/sdl.oskl"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_sdl_bindings.cmake")
+  if(OSKEL_SDL3_FOUND)
+    add_test(NAME sdl.bindings
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/sdl_bindings.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_sdl_case.cmake")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+       CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+      add_test(NAME oskel.build_hosted_sdl
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_sdl"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/sdl_bindings.oskl"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_sdl.cmake")
+    endif()
+  endif()
 
   # --- `oskel build`: compile to a native binary and run it (PHASE 7d/7e) ---
   # The AOT backend has a Linux and a Windows target. One fixture list drives
@@ -982,6 +1038,24 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern.oskl"
         "-DEXPECTED_MESSAGE=extern \"C\" symbol 'getpid' cannot be resolved by the AOT backend"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+    # SDL3 is a host binding too: the freestanding backend must reject a used
+    # `SDL_*` symbol with the dedicated message and write no binary. The
+    # fixture imports the module, so it also pins the module's own rejection
+    # (the lowerer names one of its externs, whichever comes first).
+    add_test(NAME oskel.build_sdl_freestanding_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_sdl_freestanding_error"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_sdl_freestanding.oskl"
+        "-DEXPECTED_MESSAGE=extern \"C\" symbol 'SDL_[A-Za-z]+' cannot be resolved by the AOT backend"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+    # `--link-lib` without `--mode hosted`, and a name that is not a library
+    # name, are usage errors (exit 64), not silently accepted flags.
+    add_test(NAME oskel.build_link_lib_usage_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_sdl_freestanding.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_usage_error.cmake")
     # A `native fn` the AOT backend has no stub for fails the same way, with a
     # message that says `native fn` rather than `extern "C"` (PHASE 7f.1).
     add_test(NAME oskel.build_native_error
@@ -1024,6 +1098,17 @@ if(BUILD_TESTING)
   )
   foreach(script IN LISTS oskel_tests)
     get_filename_component(name "${script}" NAME_WE)
+    # `sdl_bindings` needs SDL3 loaded and the dummy video driver; it is
+    # registered above with its own runner, and skipped when the build has no
+    # SDL3.
+    if(name STREQUAL "sdl_bindings")
+      continue()
+    endif()
+    # `native_build_sdl_freestanding` is a `oskel build` rejection fixture, not
+    # a VM test: running it would try to open a window (and needs SDL3 loaded).
+    if(name STREQUAL "native_build_sdl_freestanding")
+      continue()
+    endif()
     # FFI callbacks need libffi in the dev engine; skip the callback test when
     # the build has no libffi (the feature reports a clear runtime error then).
     if(name STREQUAL "32_ffi_callback" AND NOT OSKEL_LIBFFI_FOUND)
