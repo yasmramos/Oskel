@@ -468,7 +468,9 @@ self-contained by construction, and a general `extern "C"` call is exactly the
 thing that breaks that property. So the rule is simple — **if a program uses
 FFI, build it hosted.** The development engine (`oskel`) is unaffected: it
 resolves the symbol through `Platform::lookupSymbol` and runs the same program
-either way.
+either way. When the symbol lives in a third-party library, name it with
+`--link-lib` (`--link-lib SDL3` becomes `-lSDL3`); libc and libm are already
+linked.
 
 **`extern "C"` blocks.** A C function is declared with `extern` (PHASE 6.6).
 Three spellings are accepted and compile to the same thing:
@@ -2843,6 +2845,7 @@ oskelc <file.oskl>         the same compiler without the interpreter
 | `-o`, `--output <file>` | Output path for `build`/`oskelc` (default: the script's base name). |
 | `--target <name>` | Build target for `build`/`oskelc` (default: the host). |
 | `--mode <name>` | Link mode for `build`/`oskelc` (default: `freestanding`). |
+| `--link-lib <name>` | Library for the hosted link, passed as `-l<name>` (repeatable). |
 | `--no-jit` | Disables the JIT (development engine only). |
 | `--` | End of options; the next argument is the file. |
 
@@ -2907,7 +2910,16 @@ compiles either way):
 oskel build app.oskl                       # freestanding (default)
 oskel build app.oskl --mode freestanding   # the same, stated explicitly
 oskel build app.oskl --mode hosted         # links libc (FFI; PHASE 7f.4)
+oskel build app.oskl --mode hosted --link-lib SDL3 -o app   # links SDL3 too
 ```
+
+`--link-lib <name>` adds a library to the hosted link as `-l<name>`, which is
+how an `extern "C"` symbol that lives in a third-party library resolves. It is
+repeatable, it is only meaningful with `--mode hosted` (the freestanding image
+has no linker), and the name is restricted to letters, digits, `_`, `+`, `-`
+and `.` so it cannot smuggle a shell metacharacter into the `$CC` command. The
+development engine does not use it: it links the library itself (CMake finds
+SDL3, for example) and resolves the symbol through `Platform::lookupSymbol`.
 
 The backend targets x86_64-linux-sysv today; on any other target `oskel build`
 reports the unsupported target instead of emitting bytes for an ABI it cannot

@@ -4,6 +4,21 @@ cd /d "%~dp0"
 
 if not exist build mkdir build
 
+rem SDL3 is optional: std\sdl.oskl binds it, and the development engine must
+rem have the library loaded for lookupSymbol to resolve its symbols. A
+rem pkg-config that knows sdl3 provides the flags; without it the engine still
+rem builds and the SDL3 tests are skipped.
+set "SDL3_CFLAGS="
+set "SDL3_LIBS="
+where pkg-config >nul 2>nul
+if not errorlevel 1 (
+  pkg-config --exists sdl3
+  if not errorlevel 1 (
+    for /f "delims=" %%i in ('pkg-config --cflags sdl3') do set "SDL3_CFLAGS=%%i"
+    for /f "delims=" %%i in ('pkg-config --libs sdl3') do set "SDL3_LIBS=%%i"
+  )
+)
+
 rem The engine's sources split in three, exactly as CMakeLists.txt and build.sh
 rem split them, and the directory a file lives in is its classification: core
 rem (Value, cycle collector, platform layer), front end (lexer, parser, bytecode
@@ -19,7 +34,7 @@ for %%f in (src\runtime\*.cpp src\runtime\jit\*.cpp) do (
     set "RUNTIME_SOURCES=!RUNTIME_SOURCES! %%f"
 )
 
-g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build\oskel.exe src\main.cpp !FRONTEND_SOURCES! %RUNTIME_SOURCES%
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc %SDL3_CFLAGS% -o build\oskel.exe src\main.cpp !FRONTEND_SOURCES! %RUNTIME_SOURCES% %SDL3_LIBS%
 
 if errorlevel 1 (
     echo.

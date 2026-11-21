@@ -1,0 +1,86 @@
+// A window, a renderer and a short animation with SDL3 (`std/sdl.oskl`).
+//
+// Run it on the development engine:
+//
+//   oskel examples/sdl/window.oskl
+//
+// or build a native binary (Linux x86-64, hosted link mode):
+//
+//   oskel build examples/sdl/window.oskl --mode hosted --link-lib SDL3 \
+//     -o window && ./window
+//
+// It exits on the window's close button, on Escape, or after 180 frames, so a
+// headless run (`SDL_VIDEODRIVER=dummy oskel examples/sdl/window.oskl`) always
+// terminates.
+
+import std.sdl;
+
+fn main() {
+  if (!std.sdl.initVideo()) {
+    panic("SDL_Init: " + std.sdl.lastError());
+  }
+  defer {
+    std.sdl.quit();
+  }
+
+  let window = std.sdl.SDL_CreateWindow(
+    "Oskel + SDL3", 640, 480, std.sdl.SDL_WINDOW_RESIZABLE);
+  if (window == nil) {
+    panic("SDL_CreateWindow: " + std.sdl.lastError());
+  }
+  defer {
+    std.sdl.SDL_DestroyWindow(window);
+  }
+
+  let renderer = std.sdl.SDL_CreateRenderer(window, nil);
+  if (renderer == nil) {
+    panic("SDL_CreateRenderer: " + std.sdl.lastError());
+  }
+  defer {
+    std.sdl.SDL_DestroyRenderer(renderer);
+  }
+
+  let event = std.sdl.eventBuffer();
+  let rect = std.sdl.fRectBuffer();
+  var frame = 0;
+  var running = true;
+
+  while (running && frame < 180) {
+    while (std.sdl.SDL_PollEvent(event)) {
+      let kind = std.sdl.eventType(event);
+      if (kind == std.sdl.SDL_EVENT_QUIT) {
+        running = false;
+      }
+      if (kind == std.sdl.SDL_EVENT_KEY_DOWN &&
+          std.sdl.keyCode(event) == std.sdl.SDLK_ESCAPE) {
+        running = false;
+      }
+    }
+
+    std.sdl.setColor(renderer, 18, 18, 24, 255);
+    std.sdl.clear(renderer);
+
+    // A filled panel that slides across the window.
+    let x = 40 + (frame * 3) % 480;
+    std.sdl.setFRect(rect, x, 80, 120, 90);
+    std.sdl.setColor(renderer, 220, 80, 60, 255);
+    std.sdl.fillRect(renderer, rect);
+
+    // Its outline.
+    std.sdl.setFRect(rect, x - 4, 76, 128, 98);
+    std.sdl.setColor(renderer, 250, 210, 120, 255);
+    std.sdl.drawRect(renderer, rect);
+
+    // A diagonal, to show the scalar-float call.
+    std.sdl.setColor(renderer, 80, 160, 220, 255);
+    std.sdl.drawLine(renderer, 0, 0, 640, 480);
+
+    std.sdl.present(renderer);
+    std.sdl.delayMs(16);
+    frame = frame + 1;
+  }
+
+  print("sdl window ok", frame);
+}
+
+main();

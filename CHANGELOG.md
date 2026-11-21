@@ -27,6 +27,25 @@ may change between minor versions.
   suite an AOT parity check. Only path dependencies are supported for now; a
   string dependency is a registry dependency and is refused with a dedicated
   message (BACKLOG §20).
+- **SDL3 bindings: `std/sdl.oskl`.** The standard library now binds SDL3's
+  window, renderer and event surface, so a program can open a window and draw
+  into it on both engines. `bindings/sdl/sdl3_subset.h` is the curated C surface
+  `bindgen` translates, and the module adds the constants, the `SDL_Event`
+  accessors (the union stays a 128-byte buffer, read at fixed offsets) and the
+  `SDL_FRect` helpers. SDL3's float rectangles and event coordinates are
+  encoded in Oskel (`storeF32`/`loadF32`), so no builtin was added and the VM
+  and the AOT backend agree by construction. The development engine links SDL3
+  when CMake finds it; a native binary uses
+  `oskel build --mode hosted --link-lib SDL3`. `tests/sdl_bindings.oskl` runs
+  headless under the dummy video driver and is also the AOT parity fixture;
+  `tests/check/sdl_import.oskl` type-checks the module on every platform. See
+  `docs/sdl.md`.
+- **`oskel build --link-lib <name>`.** The hosted link accepts a third-party
+  library as `-l<name>`, which is what lets an `extern "C"` symbol in SDL3 (or
+  any other library) resolve. The flag is repeatable, requires `--mode hosted`
+  (the freestanding image has no linker), and restricts the name to letters,
+  digits, `_`, `+`, `-` and `.` so it cannot inject a shell metacharacter. Both
+  entry points share the parser, so `oskelc` gains it too.
 - **`sort`/`sorted` now run under `oskel build`.** They were the last array
   methods the AOT backend answered with "value has no such member", and the
   only ones whose comparator is arbitrary program code: the body calls back
