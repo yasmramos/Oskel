@@ -438,6 +438,17 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     convention before the pointer builtins did, and the new arity guards follow
     it (the VM appends `, got N`).
 
+26. **[P1]** A callback that C stores for a later call works in AOT but not in
+    the VM: the development engine's `CallbackObj` is released when the
+    `extern "C"` call returns, while the AOT stub and its context live in the
+    arena. The AOT-only fixture `tests/native_build_extern_callback_stored.oskl`
+    covers it; keeping the VM closure alive would close the gap.
+27. **[P1]** A callback returning a struct by value is supported by the VM
+    (`libffi`) and rejected by the AOT backend with a dedicated message; the AOT
+    callback body does not rebuild the returned registers into a map. A struct
+    *parameter* is rejected by both. `tests/errors/callback_struct_{return,param}.oskl`
+    pin the AOT rejection.
+
 ---
 
 ## 7. FFI (`src/runtime/ffi.cpp`)

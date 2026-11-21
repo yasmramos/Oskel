@@ -1,0 +1,30 @@
+extern "C" {
+  fn store_void(cb: fn(): void): void;
+  fn invoke_void(): void;
+  fn store_int(cb: fn(int32): int32): void;
+  fn invoke_int(x: int32): int32;
+}
+
+var total = 0;
+
+fn add_one(x: int32): int32 {
+  var label = "value=" + str(x);
+  return x + 1;
+}
+
+fn bump(): void {
+  total = total + 1;
+}
+
+store_int(add_one);
+store_void(bump);
+
+// Allocate between registration and invocation: a stored callback must resume
+// from the program's current arena cursor, not the one at registration.
+var s = "x" + "y";
+print(invoke_int(41));
+invoke_void();
+invoke_void();
+print(total);
+assertEq(s, "xy");
+print("stored callback ok");

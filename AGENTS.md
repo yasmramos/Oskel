@@ -241,6 +241,30 @@ it as a caveat:
   matched to the VM's but cannot go in that fixture: a raised runtime error is
   not a value, so `try`/`catch` does not capture it and `build_binary.cmake`
   requires exit 0 from both engines.
+- A C callback (`fn(...): R` parameter) is a generated stub in the hosted
+  backend (PHASE 7f.8), not a libffi closure. `oskel_callback_create` allocates
+  a 32-byte context (closure tag/payload, the Oskel global base, a pointer to a
+  16-byte shared arena-state block) and a private RWX `mmap` page holding
+  `movabs r10, context; movabs r11, body; jmp r11`. The body saves the C
+  arguments, boxes `ptr`/`cstring`, calls the closure through `oskel_call` and
+  converts the result to the declared C return class. Three rules were bugs
+  first: a C caller expects r13/r14/r15 preserved, so the body saves them, loads
+  the Oskel arena cursor/end and global base from the context/state, runs, parks
+  the advanced cursor/end back and restores the C values; the stage base must
+  clear the five saved registers, or the SSE slots overwrite the saved r15; and
+  every extern thunk in a program with a callback publishes the current
+  cursor/end before the C call and reloads it afterwards (the root epilogue
+  publishes the final state), so a callback C stores for a later call resumes
+  from the program's current arena. The global table is an array of 16-byte
+  `AotValue` slots, so the state pointer lives at `16 * slot + 8`; using
+  `8 * slot` read the wrong slot and crashed. A callback returning a struct by
+  value and a callback with a struct parameter are rejected with dedicated
+  messages; a stored callback works in AOT but not in the VM (the VM frees the
+  libffi closure when the extern call returns), and both are BACKLOG §6 items
+  26/27. Tests: `tests/native_build_extern_callback.oskl` (`qsort`, VM parity)
+  and `tests/native_build_extern_callback_{stored,many_args,returns}.oskl`
+  (AOT-only, `tests/hosted/*_helper.c`), plus
+  `tests/errors/callback_struct_{return,param}.oskl`.
 - An `extern "C"` return class has a *box* per class, and adding one means
   adding its box: the thunk calls a helper that turns the raw register contents
   into an `AotValue`. `cstring` had one (`emitCStringBox`) and `ptr` did not, so

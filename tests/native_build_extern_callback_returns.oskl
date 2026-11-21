@@ -1,0 +1,39 @@
+extern "C" {
+  fn call_cstring(cb: fn(): cstring): cstring;
+  fn call_bool(cb: fn(): bool): int32;
+  fn call_double(cb: fn(double): double, x: double): double;
+  fn call_float(cb: fn(float): float, x: float): float;
+  fn call_ptr(cb: fn(): ptr): ptr;
+  fn memset(p: ptr, c: int32, n: size_t): ptr;
+}
+
+fn greet(): string {
+  return "hello";
+}
+
+fn yes(): bool {
+  return true;
+}
+
+fn twice(x: double): double {
+  return x * 2.0;
+}
+
+fn half(x: float): float {
+  return x / 2.0f;
+}
+
+var box = buffer(4);
+
+fn box_ptr(): ptr {
+  return box;
+}
+
+assertEq(cstr(call_cstring(greet)), "hello");
+assertEq(call_bool(yes), 1);
+assertEq(call_double(twice, 2.5), 5.0);
+assertEq(call_float(half, 3.0f), 1.5f);
+let p = call_ptr(box_ptr);
+memset(p, 42, 1);
+assertEq(loadByte(box, 0), 42);
+print("callback returns ok");
