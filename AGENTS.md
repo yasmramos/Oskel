@@ -241,6 +241,30 @@ it as a caveat:
   matched to the VM's but cannot go in that fixture: a raised runtime error is
   not a value, so `try`/`catch` does not capture it and `build_binary.cmake`
   requires exit 0 from both engines.
+- A C callback (`fn(...): R` parameter) is a generated stub in the hosted
+  backend (PHASE 7f.8), not a libffi closure. `oskel_callback_create` allocates
+  a 32-byte context (closure tag/payload, the Oskel global base, a pointer to a
+  16-byte shared arena-state block) and a private RWX `mmap` page holding
+  `movabs r10, context; movabs r11, body; jmp r11`. The body saves the C
+  arguments, boxes `ptr`/`cstring`, calls the closure through `oskel_call` and
+  converts the result to the declared C return class. Three rules were bugs
+  first: a C caller expects r13/r14/r15 preserved, so the body saves them, loads
+  the Oskel arena cursor/end and global base from the context/state, runs, parks
+  the advanced cursor/end back and restores the C values; the stage base must
+  clear the five saved registers, or the SSE slots overwrite the saved r15; and
+  every extern thunk in a program with a callback publishes the current
+  cursor/end before the C call and reloads it afterwards (the root epilogue
+  publishes the final state), so a callback C stores for a later call resumes
+  from the program's current arena. The global table is an array of 16-byte
+  `AotValue` slots, so the state pointer lives at `16 * slot + 8`; using
+  `8 * slot` read the wrong slot and crashed. A callback returning a struct by
+  value and a callback with a struct parameter are rejected with dedicated
+  messages; a stored callback works in AOT but not in the VM (the VM frees the
+  libffi closure when the extern call returns), and both are BACKLOG §6 items
+  26/27. Tests: `tests/native_build_extern_callback.oskl` (`qsort`, VM parity)
+  and `tests/native_build_extern_callback_{stored,exit,many_args,returns}.oskl`
+  (AOT-only, `tests/hosted/*_helper.c`), plus
+  `tests/errors/callback_struct_{return,param}.oskl`.
 - An `extern "C"` return class has a *box* per class, and adding one means
   adding its box: the thunk calls a helper that turns the raw register contents
   into an `AotValue`. `cstring` had one (`emitCStringBox`) and `ptr` did not, so
@@ -337,10 +361,21 @@ it as a caveat:
   `tests/*.oskl` glob and registered explicitly, because the environment has to
   be set and a build without SDL3 must skip it. The freestanding-rejection
   fixture is skipped too: it is a `oskel build` fixture, not a VM test.
-- Windows execution is still a gap: `lookupSymbol` does not search a loaded
-  third-party DLL (BACKLOG §18 item 7). The compile-only check runs everywhere.
-- `SDL_ReadSurfacePixel` has seven arguments and the FFI accepts six, so it is
-  absent; do not add a seven-argument extern without widening the ABI path.
+- Windows `lookupSymbol` walks every loaded module with
+  `CreateToolhelp32Snapshot`/`GetProcAddress`, so a third-party DLL the process
+  loaded resolves. The Windows-only `platform_lookup_test` loads a DLL with
+  `LoadLibrary` and resolves an export only it provides.
+- The FFI accepts up to **eight** register-sized values (`kMaxExternArgs`).
+  The VM's typed `dispatch` lets the C++ compiler spill the seventh and eighth
+  GPR arguments; the AOT thunk writes them to the outgoing stack area
+  (`AotThunkParam::stackOffset`). `XmmScratch` is xmm15 so it never collides
+  with an SSE argument, and a register-class struct that no longer fits the
+  remaining registers is passed wholly on the stack. `SDL_ReadSurfacePixel` and
+  `SDL_WriteSurfacePixel` are bound, and
+  `tests/native_build_extern_many_args.oskl` pins the 7/8-argument and
+  stack-struct shapes. A ninth value needs a wider bound and a check on the
+  VM's `3^N` template budget; MSVC also needs `/bigobj` (already in
+  `OSKEL_WARNINGS`) at the eight-eightbyte bound.
 
 ## The VS Code extension
 

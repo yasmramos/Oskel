@@ -463,6 +463,15 @@ struct AotThunkParam {
   int argIndex = 0;
   int eightbyte = -1;
   int structIndex = -1;
+  // >= 0 when this argument is a C callback (a function pointer). The thunk
+  // creates a runtime stub for the Oskel closure and passes its address; the
+  // entry indexes `AotCallbackSignature` in the surface's signature list.
+  int callbackSignature = -1;
+  // >= 0 when the argument does not fit the System V registers and travels in
+  // the outgoing stack-argument area at this byte offset from `rsp`. A struct
+  // is either wholly in registers (one entry per eightbyte) or wholly on the
+  // stack (no entries; it is in `AotExternThunk::stackArgs` instead).
+  std::int64_t stackOffset = -1;
 };
 
 // One by-value struct in a thunk's signature: its C layout plus one data-island
@@ -480,12 +489,35 @@ struct AotStructLayout {
   int bufSlot = -1;
 };
 
-// A class-MEMORY struct argument: it travels in the outgoing stack-argument
-// area at `offset` bytes past the call's `rsp`, in declaration order.
+// A struct passed in the outgoing stack-argument area: a class-MEMORY struct,
+// or a register-class one that did not fit the remaining registers. It travels
+// at `offset` bytes past the call's `rsp`, in declaration order.
 struct AotStackArg {
   int structIndex = -1;
   int argIndex = 0;
   std::int64_t offset = 0;
+};
+
+// One scalar parameter of a C callback, classified by the System V ABI from
+// the C side: the body reads it from a GPR, an SSE register, or the incoming
+// stack area (`stackOffset` bytes past `[rbp+16]`). `type` is the Oskel FFI
+// name the body boxes it as.
+struct AotCallbackParam {
+  ffi::ParamClass cls = ffi::ParamClass::Int;
+  std::string type;
+  int gpr = -1;                    // 0..5, or -1 when it is in an SSE register/stack
+  int sse = -1;                    // 0..7, or -1
+  std::int64_t stackOffset = -1;   // >= 0 when it is on the incoming stack
+};
+
+// One callback signature in an `extern "C"` declaration. The C function pointer
+// the thunk passes is a small runtime-created stub that loads the closure and
+// jumps to `body`, a shared machine-code function emitted once per signature.
+struct AotCallbackSignature {
+  std::vector<AotCallbackParam> params;
+  std::string returnType;              // Oskel FFI name, "void" for none
+  ffi::ReturnClass returns = ffi::ReturnClass::Int;
+  CodeGen::Label body;                 // bound by `emitAotRuntime`
 };
 
 struct AotExternThunk {
@@ -512,8 +544,9 @@ struct AotExternThunk {
   // return. Empty for a scalar-only signature.
   std::vector<AotStructLayout> structs;
   int returnStructIndex = -1;  // `structs` entry a struct return rebuilds
-  // The class-MEMORY arguments, in declaration order, and the size of the
-  // outgoing stack-argument area they occupy (0 when there are none).
+  // The structs passed in the outgoing stack-argument area, in declaration
+  // order, and the size of that area: scalar GPR spill slots plus whole structs
+  // (0 when there are none).
   std::vector<AotStackArg> stackArgs;
   std::int64_t stackArgBytes = 0;
   // The size of a class-MEMORY return (0 for none). Such a return does not come
@@ -583,6 +616,10 @@ struct AotRuntimeExtras {
   int argsSlot = -1;         // the hidden `$args` global, or -1
   bool hasArgv = false;      // the prelude hands the program argc/argv
   bool hasFiles = false;     // the prelude binds the file handles
+  // The hidden global that points at the shared arena state across a C
+  // callback, or -1 when the program passes no callback. The callback body
+  // parks r13/r14/r15 there because a C caller expects them preserved.
+  int callbackStateSlot = -1;
 };
 
 void emitAotRuntime(CodeGen& code, const AotRuntimeHandles& handles,
@@ -590,4 +627,5 @@ void emitAotRuntime(CodeGen& code, const AotRuntimeHandles& handles,
                     const std::vector<AotExternThunk>* externThunks = nullptr,
                     bool hosted = false, bool hasInput = false, bool bareMetal = false,
                     int randomStateSlot = -1, int pcallHandlerSlot = -1,
-                    const AotRuntimeExtras& extras = AotRuntimeExtras{});
+                    const AotRuntimeExtras& extras = AotRuntimeExtras{},
+                    const std::vector<AotCallbackSignature>* callbacks = nullptr);

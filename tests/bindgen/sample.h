@@ -14,6 +14,14 @@
 
 #define API __attribute__((visibility("default")))
 
+/* Object-like macros whose replacement is a single literal become module
+ * constants. The function-like macro and the attribute above are not constants
+ * and must not be emitted. */
+#define SAMPLE_ANSWER 42
+#define SAMPLE_HEX 0x2A
+#define SAMPLE_NAME "sample"
+#define SAMPLE_FN(x) ((x) + 1)
+
 typedef unsigned long size_t;
 
 struct Point {

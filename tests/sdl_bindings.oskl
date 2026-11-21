@@ -124,6 +124,24 @@ assertEq(pollType(received, std.sdl.SDL_EVENT_MOUSE_MOTION), true);
 assertEq(std.sdl.mouseX(received), 12.5f);
 assertEq(std.sdl.mouseY(received), -7.25f);
 
+// Seven-argument surface functions: the seventh integer argument spills to the
+// outgoing stack area in the AOT thunk, and the VM's typed call lets the C++
+// compiler place it there too. The surface is software, so no display is
+// needed.
+let surface = std.sdl.SDL_CreateSurface(2, 2, std.sdl.SDL_PIXELFORMAT_ABGR8888);
+assert(surface != nil);
+assertEq(std.sdl.SDL_WriteSurfacePixel(surface, 0, 0, 10, 20, 30, 255), true);
+let red = buffer(1);
+let green = buffer(1);
+let blue = buffer(1);
+let alpha = buffer(1);
+assertEq(std.sdl.SDL_ReadSurfacePixel(surface, 0, 0, red, green, blue, alpha), true);
+assertEq(loadByte(red, 0), 10);
+assertEq(loadByte(green, 0), 20);
+assertEq(loadByte(blue, 0), 30);
+assertEq(loadByte(alpha, 0), 255);
+std.sdl.SDL_DestroySurface(surface);
+
 std.sdl.SDL_DestroyRenderer(renderer);
 std.sdl.SDL_DestroyWindow(window);
 std.sdl.quit();

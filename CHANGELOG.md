@@ -49,6 +49,16 @@ may change between minor versions.
   headless under the dummy video driver and is also the AOT parity fixture;
   `tests/check/sdl_import.oskl` type-checks the module on every platform. See
   `docs/sdl.md`.
+- **FFI: up to eight register-sized values, with stack spill.** The
+  `kMaxExternArgs` bound moves from six to eight, so `SDL_ReadSurfacePixel` and
+  `SDL_WriteSurfacePixel` (seven arguments) are now bound and exercised by
+  `tests/sdl_bindings.oskl`. The VM's typed call lets the C++ compiler place the
+  seventh and eighth GPR arguments on the stack; the AOT thunk writes them to
+  the outgoing stack area (`AotThunkParam::stackOffset`), keeps all eight SSE
+  registers free (`XmmScratch` moved to xmm15), and passes a register-class
+  struct that no longer fits the remaining registers wholly on the stack.
+  `tests/native_build_extern_many_args.oskl` pins the 7/8-argument and
+  stack-struct shapes against a C helper.
 - **`oskel build --link-lib <name>`.** The hosted link accepts a third-party
   library as `-l<name>`, which is what lets an `extern "C"` symbol in SDL3 (or
   any other library) resolve. The flag is repeatable, requires `--mode hosted`
@@ -107,6 +117,13 @@ may change between minor versions.
   multiply/divide, so the candidate check cannot accept a value that does not
   round-trip. `tests/native_build_double_format.oskl` and
   `tests/native_build_math.oskl` pin the result against the VM.
+- **Windows `lookupSymbol` now searches every loaded module.** After the
+  process image, `kernel32.dll` and the CRT, `PlatformPosix::lookupSymbol`
+  walks the modules the process has loaded with `CreateToolhelp32Snapshot`
+  (`TH32CS_SNAPMODULE`) and resolves the name with `GetProcAddress`. A `std.sdl`
+  program linked against `SDL3.dll` can now find `SDL_*` at run time; the
+  Windows-only `platform_lookup_test` loads a DLL with `LoadLibrary` and
+  resolves an export only that DLL provides.
 - **Eight builtins read past the argument window instead of rejecting a wrong
   argument count, and `seed()` did not return `nil`.** The AOT builtins for
   `len`, `type`, `str`, `repr`, `bool`, `isError`, `ord` and `chr` never looked

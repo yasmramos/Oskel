@@ -36,6 +36,7 @@ typedef unsigned int SDL_InitFlags;
 
 typedef struct SDL_Window SDL_Window;
 typedef struct SDL_Renderer SDL_Renderer;
+typedef struct SDL_Surface SDL_Surface;
 typedef union SDL_Event SDL_Event;
 typedef struct SDL_FRect SDL_FRect;
 
@@ -48,6 +49,11 @@ void SDL_DestroyWindow(SDL_Window *window);
 bool SDL_SetWindowTitle(SDL_Window *window, const char *title);
 bool SDL_SetWindowPosition(SDL_Window *window, int x, int y);
 bool SDL_GetWindowSize(SDL_Window *window, int *w, int *h);
+
+SDL_Surface *SDL_CreateSurface(int width, int height, Uint32 format);
+void SDL_DestroySurface(SDL_Surface *surface);
+bool SDL_ReadSurfacePixel(SDL_Surface *surface, int x, int y, Uint8 *r, Uint8 *g, Uint8 *b, Uint8 *a);
+bool SDL_WriteSurfacePixel(SDL_Surface *surface, int x, int y, Uint8 r, Uint8 g, Uint8 b, Uint8 a);
 
 SDL_Renderer *SDL_CreateRenderer(SDL_Window *window, const char *name);
 void SDL_DestroyRenderer(SDL_Renderer *renderer);
