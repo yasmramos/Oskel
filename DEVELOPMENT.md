@@ -1731,32 +1731,36 @@ binary prints byte for byte what the VM prints).
       18-byte symbol table with a string table). `oskel build --mode hosted`
       picks the link line per target: `cc -no-pie -lm` on Linux,
       `cc -arch x86_64 -lm` on macOS (so an arm64 host can cross-link the
-      x86-64 object) and `cl /Fe:... /link /SUBSYSTEM:CONSOLE` on Windows, with
-      `$CC` overriding the compiler on all three. When `$CC` is a wrapper (the
-      Windows test drives `cl` through a `vcvarsall.bat` batch file), the file
-      name says nothing about the command line, so `$OSKEL_CC_KIND=msvc` (or
-      `posix`) names the dialect explicitly. macOS has no freestanding image,
-      so `runBuildCommand` defaults its mode to `hosted` when the target is
-      macOS and the user did not pass `--mode`; `oskelp build` therefore works
-      there without an extra flag. The Windows entry prelude is
-      separate (`emitWindowsHostedRuntime`) because the Microsoft x64 ABI uses
-      rcx/rdx/r8/r9 plus 32 bytes of shadow space and the UCRT spells the file
-      functions `_open`/`_read`/`_write`/`_close`; `time(NULL)` is the wall
-      clock and `GetTickCount64` the monotonic counter. `main` moves the CRT's
-      `(argc, argv)` from rcx/rdx to rdi/rsi before the chunk, so `args()` works
-      there too. The extern thunk takes the ABI as a parameter: four integer and
-      four SSE registers, shadow space, stack arguments from offset 32, and a
-      fifth SSE value spilled to the outgoing stack area. The scalar, `cstring`
-      and `ptr` classes are supported on Windows; a struct, a callback and a C
-      variadic are rejected with a dedicated message (the System V fixtures keep
-      covering those). macOS uses System V, so it shares the existing thunk
-      unchanged. Two Windows details are easy to miss: the UCRT opens stdout and
-      stderr in text mode, so `oskel_init_arena` calls
-      `_setmode(1/2, _O_BINARY)` before the first write -- otherwise every `\n`
-      becomes `\r\n` and the binary disagrees with the VM -- and CTest does not
-      inherit the environment `vcvarsall.bat` sets, so the test runner reaches
-      `cl` through a generated batch wrapper that calls it first (without
-      `LIB`, the link cannot find `libcmt.lib` even when `cl` is on `PATH`).
+      x86-64 object) and `cl /MT /Fe:... /link /SUBSYSTEM:CONSOLE` on Windows,
+      with `$CC` overriding the compiler on all three. The Windows object is
+      not produced by `cl`, so it carries no `.drectve` asking for the CRT; the
+      link names `libcmt.lib`, `libucrt.lib`, `libvcruntime.lib` and
+      `kernel32.lib` explicitly, or every runtime symbol stays unresolved.
+      When `$CC` is a wrapper (the Windows test drives `cl` through a
+      `vcvarsall.bat` batch file), the file name says nothing about the command
+      line, so `$OSKEL_CC_KIND=msvc` (or `posix`) names the dialect explicitly.
+      macOS has no freestanding image, so `runBuildCommand` defaults its mode
+      to `hosted` when the target is macOS and the user did not pass `--mode`;
+      `oskelp build` therefore works there without an extra flag. The Windows
+      entry prelude is separate (`emitWindowsHostedRuntime`) because the
+      Microsoft x64 ABI uses rcx/rdx/r8/r9 plus 32 bytes of shadow space and
+      the UCRT spells the file functions `_open`/`_read`/`_write`/`_close`;
+      `time(NULL)` is the wall clock and `GetTickCount64` the monotonic
+      counter. `main` moves the CRT's `(argc, argv)` from rcx/rdx to rdi/rsi
+      before the chunk, so `args()` works there too. The extern thunk takes the
+      ABI as a parameter: four integer and four SSE registers, shadow space,
+      stack arguments from offset 32, and a fifth SSE value spilled to the
+      outgoing stack area. The scalar, `cstring` and `ptr` classes are supported
+      on Windows; a struct, a callback and a C variadic are rejected with a
+      dedicated message (the System V fixtures keep covering those). macOS uses
+      System V, so it shares the existing thunk unchanged. Two Windows details
+      are easy to miss: the UCRT opens stdout and stderr in text mode, so
+      `oskel_init_arena` calls `_setmode(1/2, _O_BINARY)` before the first
+      write -- otherwise every `\n` becomes `\r\n` and the binary disagrees
+      with the VM -- and CTest does not inherit the environment `vcvarsall.bat`
+      sets, so the test runner reaches `cl` through a generated batch wrapper
+      that calls it first (without `LIB`, the link cannot find `libcmt.lib`
+      even when `cl` is on `PATH`).
       Covered by `tests/object_test.cpp` (all three containers),
       `tests/build_mode.cmake` on Linux, Windows and macOS (the macOS arm64
       runner builds the x86-64 image but skips running it, and checks

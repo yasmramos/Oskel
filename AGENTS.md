@@ -194,10 +194,13 @@ it as a caveat:
   `emitWindowsHostedRuntime` uses the UCRT's `_write`/`_read`/`_open`/`_close`
   and `GetTickCount64`. `oskel build --mode hosted` then invokes the host C
   compiler: `$CC` (default `cc`) with `-no-pie -lm` on Linux, `-arch x86_64
-  -lm` on macOS and `cl /Fe:... /link /SUBSYSTEM:CONSOLE` on Windows, writing
-  the temporary object beside the output and removing it either way.
-  `$OSKEL_CC_KIND=msvc|posix` names the command-line dialect when `$CC` is a
-  wrapper whose file name does not; the Windows CI wrapper is one. This makes
+  -lm` on macOS and `cl /MT /Fe:... /link /SUBSYSTEM:CONSOLE libcmt.lib
+  libucrt.lib libvcruntime.lib kernel32.lib` on Windows, writing the temporary
+  object beside the output and removing it either way. The Windows object is
+  not produced by `cl`, so it carries no `.drectve` asking for the CRT; the
+  libraries are named explicitly. `$OSKEL_CC_KIND=msvc|posix` names the
+  command-line dialect when `$CC` is a wrapper whose file name does not; the
+  Windows CI wrapper is one. This makes
   a C toolchain a *build-time* dependency of the hosted mode only; the
   freestanding path still needs no toolchain and emits no relocation. The
   extern thunk takes the ABI as a parameter: System V (Linux, macOS) keeps the

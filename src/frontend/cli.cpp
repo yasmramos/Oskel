@@ -370,8 +370,14 @@ int linkHostedObject(const std::string &objectPath, const std::string &output,
   const std::string compiler = hostedLinkerCommand();
   std::string command;
   if (target.os == Os::Windows && isMicrosoftCompiler(compiler)) {
-    command = shellQuote(compiler) + " /nologo " + shellQuote(objectPath) +
-              " /Fe:" + shellQuote(output) + " /link /SUBSYSTEM:CONSOLE";
+    // The object was not produced by `cl`, so it carries no `.drectve` section
+    // asking the linker for the CRT. Name the static CRT and kernel32
+    // explicitly: without them every runtime symbol (`mainCRTStartup`,
+    // `_write`, `malloc`, `GetTickCount64`, ...) stays unresolved.
+    command = shellQuote(compiler) + " /nologo /MT " + shellQuote(objectPath) +
+              " /Fe:" + shellQuote(output) +
+              " /link /SUBSYSTEM:CONSOLE"
+              " libcmt.lib libucrt.lib libvcruntime.lib kernel32.lib";
     for (const std::string &lib : linkLibs) {
       command += " " + shellQuote(lib + ".lib");
     }

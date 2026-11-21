@@ -2912,7 +2912,10 @@ compiles either way):
   (`write`/`exit`/`malloc`) and the program's entry is exported as the C `main`.
   When `$CC` is a wrapper (for example a batch file that calls `vcvarsall.bat`
   before `cl`), set `$OSKEL_CC_KIND=msvc` so the link builder uses the MSVC
-  command line; `$OSKEL_CC_KIND=posix` forces the `cc` form.
+  command line; `$OSKEL_CC_KIND=posix` forces the `cc` form. On Windows the
+  link names the static CRT (`libcmt.lib`, `libucrt.lib`, `libvcruntime.lib`)
+  and `kernel32.lib` explicitly, because the object is not produced by `cl`
+  and carries no `.drectve` requesting them.
 
 ```sh
 oskel build app.oskl                       # freestanding on Linux/Windows
