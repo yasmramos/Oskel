@@ -752,6 +752,7 @@ void lowerInstruction(const Instruction& instr, const Bytecode& proto, CodeGen& 
                       const AotRuntimeHandles& rt, const GlobalSlots& globals,
                       const FrameInfo& frame,
                       const std::unordered_map<const Bytecode*, CodeGen::Label>& protoEntry,
+                      const std::unordered_map<const Bytecode*, CodeGen::Label>& displayOf,
                       std::vector<StringConstant>& stringConstants) {
   const int fileRegisters = frame.fileRegisters;
   switch (instr.op) {
@@ -1000,10 +1001,13 @@ void lowerInstruction(const Instruction& instr, const Bytecode& proto, CodeGen& 
                             " is out of range");
       }
       const Bytecode* child = proto.children[static_cast<std::size_t>(instr.b)].get();
-      // oskel_closure(code, arity, upvalueCount) -> Func in rax:rdx.
+      // oskel_closure(code, arity, upvalueCount, display) -> Func in rax:rdx.
+      // `display` is the text `repr`/`str` render for the closure, matching the
+      // hosted engine's `<fn name>` for the same proto.
       cg.leaRipLabel(X64Reg::Rdi, protoEntry.at(child));
       cg.movImm(X64Reg::Rsi, child->numParams);
       cg.movImm(X64Reg::Rdx, static_cast<std::int64_t>(child->upvalues.size()));
+      cg.leaRipLabel(X64Reg::Rcx, displayOf.at(child));
       cg.callLabel(rt.closure);
       // The capture slots are the words after the header; the lowering fills
       // each with the cell pointer it resolved. The child's upvalue `i` points
@@ -1157,6 +1161,16 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   std::unordered_map<const Bytecode*, CodeGen::Label> protoEntry;
   for (const Bytecode* p : protos) {
     protoEntry[p] = (p == &proto) ? chunkEntry : cg.newLabel();
+  }
+
+  // The text `repr`/`str` render for each function value, one data island per
+  // proto: `<fn name>`, matching the hosted engine's `Value::writeValue`. A
+  // closure built from the proto points its `display` field here, so the render
+  // is a plain append and the closure keeps its fixed-size header.
+  std::unordered_map<const Bytecode*, CodeGen::Label> displayOf;
+  for (const Bytecode* p : protos) {
+    // The root chunk is never a value: only a `CLOSURE` names a proto.
+    if (p != &proto) displayOf[p] = cg.newLabel();
   }
 
   // The builtins the AOT runtime provides, keyed by the global name the hosted
@@ -1465,9 +1479,14 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   for (const auto& [name, code] : builtins) {
     auto slot = globals.slotOfName.find(name);
     if (slot == globals.slotOfName.end()) continue;
+    // A builtin is a native function in the hosted engine, so `repr` reads
+    // `<native fn name>`; the display island carries exactly that text.
+    StringConstant display{cg.newLabel(), "<native fn " + name + ">"};
     cg.leaRipLabel(X64Reg::Rdi, code);
     cg.movImm(X64Reg::Rsi, 0);  // arity
     cg.movImm(X64Reg::Rdx, 0);  // upvalueCount
+    cg.leaRipLabel(X64Reg::Rcx, display.label);
+    stringConstants.push_back(std::move(display));
     cg.callLabel(rt.closure);
     cg.movImm(X64Reg::Rdi, slot->second);
     cg.movReg(X64Reg::Rsi, X64Reg::Rax);
@@ -1482,9 +1501,14 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   for (const AotExternThunk& thunk : externThunks) {
     auto slot = globals.slotOfName.find(thunk.symbol);
     if (slot == globals.slotOfName.end()) continue;
+    // An `extern "C"` binding is a native function too: the hosted engine
+    // installs it through `makeNative`, so `repr` reads `<native fn symbol>`.
+    StringConstant display{cg.newLabel(), "<native fn " + thunk.symbol + ">"};
     cg.leaRipLabel(X64Reg::Rdi, thunk.label);
     cg.movImm(X64Reg::Rsi, 0);  // arity: the thunk checks its own argc
     cg.movImm(X64Reg::Rdx, 0);  // upvalueCount
+    cg.leaRipLabel(X64Reg::Rcx, display.label);
+    stringConstants.push_back(std::move(display));
     cg.callLabel(rt.closure);
     cg.movImm(X64Reg::Rdi, slot->second);
     cg.movReg(X64Reg::Rsi, X64Reg::Rax);
@@ -1503,7 +1527,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     for (std::size_t i = 0; i < proto.code.size(); ++i) {
       cg.bind(labels[i]);
       lowerInstruction(proto.code[i], proto, cg, labels, rt, globals, frame,
-                       protoEntry, stringConstants);
+                       protoEntry, displayOf, stringConstants);
     }
   }
 
@@ -1579,7 +1603,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     for (std::size_t i = 0; i < fn.code.size(); ++i) {
       cg.bind(labels[i]);
       lowerInstruction(fn.code[i], fn, cg, labels, rt, globals, frame,
-                       protoEntry, stringConstants);
+                       protoEntry, displayOf, stringConstants);
     }
   }
 
@@ -1633,6 +1657,10 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
                  extras, &callbackSignatures);
   // String constants last: their bytes are addressed by `lea` from the code
   // above, and no path falls through into them.
+  for (const auto& [child, label] : displayOf) {
+    StringConstant display{label, "<fn " + child->name + ">"};
+    stringConstants.push_back(std::move(display));
+  }
   emitStringConstants(cg, stringConstants);
 
   cg.finalize();

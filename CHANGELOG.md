@@ -11,6 +11,21 @@ may change between minor versions.
 
 ### Added
 
+- **A function value now renders its name under `oskel build`.** `print`,
+  `repr`, `str` and string interpolation used to render every function as the
+  literal `<fn>` in a compiled binary, where the VM renders `<fn add>` for a
+  named function and `<native fn array.map>` for a bound method. The AOT
+  closure header gained a fourth word, `display`, holding the address of a
+  static `AotString` with the exact text to render, so the closure keeps its
+  fixed size and the render is a plain append with no per-value allocation. The
+  text is emitted once per proto (`<fn ` + the proto's name + `>`), once per
+  builtin and once per `extern "C"` thunk (`<native fn ` + symbol + `>`), and
+  once per bound array/map/string method (`<native fn owner.method>`). A
+  closure built by a path with no name keeps the `<fn>` fallback.
+  `tests/native_build_function_repr.oskl` compares the compiled binary with the
+  VM byte for byte across a declared function, a lambda, a class method, a
+  builtin, a `native fn`, a bound method of each family and a function nested
+  in a container (BACKLOG §6 item 22).
 - **WebAssembly backend (PHASE 9).** `oskel build --target
   wasm32-freestanding-wasm` emits a freestanding `.wasm` module behind the
   existing `Target` descriptor. The value model is the AOT `(tag, payload)`
@@ -801,8 +816,9 @@ may change between minor versions.
   done (VM/AOT parity already runs through `tests/build_binary.cmake`), the JIT
   item is decided as *keep* (it ships on by default in `oskel` and gives ~420x
   on its integer leaf subset), and §6.22 plus `docs/language.md` §16 record the
-  one known parity gap: a function renders as `<fn name>` in the VM but `<fn>`
-  in the AOT binary, since the AOT closure object has no name field.
+  one known parity gap: a function rendered as `<fn name>` in the VM but `<fn>`
+  in the AOT binary, since the AOT closure object had no name field. (Closed
+  since: the closure carries a `display` pointer and both engines agree.)
 
 - **`docs/language.md` now states the real implementation status.** The
   reference claimed "collections (PHASE 6 done)" and "No JIT ... planned for
