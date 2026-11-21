@@ -262,7 +262,7 @@ it as a caveat:
   messages; a stored callback works in AOT but not in the VM (the VM frees the
   libffi closure when the extern call returns), and both are BACKLOG §6 items
   26/27. Tests: `tests/native_build_extern_callback.oskl` (`qsort`, VM parity)
-  and `tests/native_build_extern_callback_{stored,many_args,returns}.oskl`
+  and `tests/native_build_extern_callback_{stored,exit,many_args,returns}.oskl`
   (AOT-only, `tests/hosted/*_helper.c`), plus
   `tests/errors/callback_struct_{return,param}.oskl`.
 - An `extern "C"` return class has a *box* per class, and adding one means

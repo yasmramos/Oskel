@@ -848,6 +848,16 @@ if(BUILD_TESTING)
           "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_many_args_helper.c"
           "-DOSKEL_EXPECTED_OUTPUT=many args callback ok"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
+      # C invokes this callback from an `atexit` handler after the chunk
+      # returns; the root epilogue publishes the final arena state for it.
+      add_test(NAME oskel.build_hosted_extern_callback_exit
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_callback_exit"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_callback_exit.oskl"
+          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_exit_helper.c"
+          "-DOSKEL_EXPECTED_OUTPUT=late callback 1"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
       # Every scalar return class the marshalling supports, including a
       # `cstring` (a copy in the arena) and an opaque `ptr`.
       add_test(NAME oskel.build_hosted_extern_callback_returns
@@ -1236,6 +1246,7 @@ if(BUILD_TESTING)
     # The stored/many-args/returns callback fixtures bind helpers the VM cannot
     # resolve; their hosted tests are the coverage.
     if(name STREQUAL "native_build_extern_callback_stored" OR
+       name STREQUAL "native_build_extern_callback_exit" OR
        name STREQUAL "native_build_extern_callback_many_args" OR
        name STREQUAL "native_build_extern_callback_returns")
       continue()
