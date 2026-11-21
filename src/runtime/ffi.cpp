@@ -43,11 +43,13 @@
 // POD whose members land in `rax`/`rdx`/`xmm0`/`xmm1` exactly as the six class
 // shapes (`I`, `S`, `II`, `SS`, `IS`, `SI`) require.
 //
-// Bounding a signature by eightbytes (`kMaxExternArgs` = 6) rather than
-// parameters is deliberate: it is at most the number of general-purpose
-// registers System V passes arguments in, so every flattened eightbyte still
-// lands in a register and none spills to the stack, sidestepping the rule that
-// a partly-registered aggregate is passed wholly in memory.
+// Bounding a signature by eightbytes (`kMaxExternArgs` = 8) rather than
+// parameters is deliberate: the template recursion below instantiates one
+// sequence per combination of `int64_t`/`double`/`float`, so the bound is what
+// keeps it at a few thousand instead of exploding. It is not an ABI limit: the
+// typed function-pointer call lets the C++ compiler place the seventh and
+// eighth integer arguments on the stack, and the AOT backend emits the same
+// spill.
 //
 // The argument list is walked with a compile-time depth (`Index`), not a
 // runtime count: the recursion stops at `kMaxExternArgs`, so the compiler

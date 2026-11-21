@@ -11,6 +11,7 @@ already accept.
 bindgen <header.h>                 # write the module to stdout
 bindgen <header.h> -o <out.oskl>   # write it to a file
 bindgen -                          # read the header from stdin
+bindgen --target llp64 <header.h>  # Windows data model (default: lp64)
 ```
 
 `-h`/`--help` and `-v`/`--version` are also available. Exit codes follow the
@@ -64,16 +65,19 @@ like this:
 
 | C type | Oskel type | Notes |
 |--------|------------|-------|
-| `char` | `int8` | `unsigned char` is `uint8` |
+| `char` | `int8` | `unsigned char` is `uint8`; `signed char` is `int8` |
 | `short` | `int16` | `unsigned short` is `uint16` |
 | `int` | `int32` | `unsigned int` is `uint32` |
-| `long`, `long long` | `int64` | unsigned forms are `uint64` |
+| `long` | `int64` on LP64, `int32` on LLP64 | unsigned forms follow |
+| `long long` | `int64` | 64-bit on both data models |
+| `wchar_t` | `int32` on LP64, `uint16` on LLP64 | follows the C data model |
 | `float` | `float` | |
 | `double` | `double` | `long double` is skipped |
 | `_Bool`, `bool` | `bool` | |
 | `void` | `void` | return-only |
 | `void *` | `ptr` | any other pointer too |
 | `char *` | `cstring` | a NUL-terminated string |
+| `signed char *`, `unsigned char *` | `ptr` | a byte buffer, not a string |
 | `T[N]`, `T[]` | `ptr` | an array parameter decays |
 | `R (*)(P...)` | `fn(P...): R` | a callback parameter (see below) |
 | `R (**)(P...)`, `R (*[N])(P...)` | `ptr` | a pointer *to* a callback is opaque |
@@ -158,6 +162,39 @@ nested struct (one level only) are all `// skipped:` with the reason that
 applies. The emitted `struct` is exactly what a hand-written module would
 declare, so nothing about the language changes.
 
+### Object-like macros
+
+An object-like macro whose replacement is a single literal becomes a module
+constant:
+
+```c
+#define API_VERSION 3
+#define MAX_NAME 0x40
+#define SCALE 1.5f
+#define LIBRARY "mylib"
+#define FLAG 'A'
+```
+
+```oskel
+let API_VERSION = 3;
+let MAX_NAME = 64;
+let SCALE = 1.5;
+let LIBRARY = "mylib";
+let FLAG = 65;
+```
+
+An integer is emitted as decimal (a C octal `0755` becomes `493`, and a `u`/`l`
+suffix is dropped) and must fit the signed 64-bit Oskel integer. A floating
+literal loses its `f` suffix; a `long double` is skipped. A string is emitted
+only when its escapes are ones Oskel also understands. A character constant is
+emitted as its integer code, which is what a C character constant is.
+
+A **function-like** macro (`#define F(x) ...`), a replacement that is an
+**expression** (`#define X (A | B)`), a value-less macro (`#define GUARD`) and a
+macro whose name is a reserved Oskel keyword are not constants and are ignored.
+A macro that collides with a function or a struct keeps the declaration. The
+tool does not evaluate the C preprocessor: it only recognizes a literal.
+
 ### Enums
 
 A C enum is an `int` at the ABI (BACKLOG §7.10), so a declaration that mentions
@@ -202,11 +239,11 @@ as active code. The current skips are:
 - a callback used where the engine does not accept one: **returned** by a
   function (`R (*f(...))(P...)`), **taking another callback**, **variadic**, or
   **returning a struct by value**. A callback *parameter* is generated.
-- a signature passing more than **six register-sized values** (the
+- a signature passing more than **eight register-sized values** (the
   `kMaxExternArgs` bound the FFI thunks enforce). The bound counts *eightbytes*,
-  not parameters, so a 16-byte struct spends two of the six; counting parameters
-  would emit a module `oskel -c` refuses. The compiler decides, and the tool
-  quotes its message.
+  not parameters, so a 16-byte struct spends two of the eight; counting
+  parameters would emit a module `oskel -c` refuses. The compiler decides, and
+  the tool quotes its message.
 - an **anonymous `struct { ... }`** written inline in a signature
   (`int g(struct { int x; } p);`). It has no name to spell, and falling back to
   the empty spelling would pass the struct by value as a scalar `int32`.
@@ -258,10 +295,12 @@ the tool cannot drift from the compiler it targets.
 ## The preprocessor is not run
 
 `bindgen` tokenizes the header as written; it does not evaluate `#include`,
-`#define`, `#ifdef` or `#if`. Preprocessor lines and comments are ignored, and
+`#ifdef` or `#if`. Preprocessor lines and comments are otherwise ignored, and
 both branches of an `#ifdef` are tokenized (a declaration inside a conditional
-is usually one you want). An object-like macro that expands to nothing before a
-type is dropped when it is immediately followed by a real type, so the common
+is usually one you want). The one exception is the literal object-like macro
+described above: it is read from the raw source, not expanded into the
+declarations. An object-like macro that expands to nothing before a type is
+dropped when it is immediately followed by a real type, so the common
 `EXPORT int f(void);` still translates. For a header whose macros change the
 *type*, preprocess it first and pipe the result in:
 

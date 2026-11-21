@@ -1,7 +1,9 @@
 #include "bindgen.h"
 
 #include <cctype>
+#include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 #include <unordered_map>
@@ -159,6 +161,10 @@ struct Base {
   std::string spelling; // the C spelling, for a diagnostic
   bool ok = true;       // false when the vocabulary cannot express the type
   std::string reason;   // why, when `ok` is false
+  // A plain C `char`, as opposed to `signed char`/`unsigned char`. Only a plain
+  // `char *` is a NUL-terminated string (`cstring`); the two explicitly signed
+  // forms are byte buffers and cross as `ptr`.
+  bool plainChar = false;
   // A callback: a C function pointer (`R (*)(P...)`), whose Oskel spelling is
   // `fn(P...): R`. `callbackParams`/`callbackReturn` hold the Oskel FFI names.
   bool isCallback = false;
@@ -252,7 +258,7 @@ bool resolveWellKnown(const std::string& name, Base& out) {
       {"uint32_t", "uint32"}, {"uint64_t", "uint64"}, {"intptr_t", "int64"},
       {"uintptr_t", "uint64"}, {"intmax_t", "int64"}, {"uintmax_t", "uint64"},
       {"size_t", "size_t"},   {"ssize_t", "int64"},   {"ptrdiff_t", "int64"},
-      {"wchar_t", "int32"},   {"unsigned", "uint32"}, {"signed", "int32"},
+      {"unsigned", "uint32"}, {"signed", "int32"},
   };
   auto it = table.find(name);
   if (it == table.end()) return false;
@@ -272,12 +278,330 @@ bool resolveWellKnown(const std::string& name, Base& out) {
   return true;
 }
 
+// ------------------------------------------------------- object-like macros
+//
+// `#define NAME literal` is the C way to name a constant, and a header is full
+// of them. The tokenizer drops every preprocessor line (it cannot evaluate
+// conditionals), so the constants are collected from the raw source separately:
+// an object-like macro whose replacement is a single integer, float, string or
+// character literal becomes `let NAME = literal;`. A function-like macro and a
+// replacement that is an expression (`#define X (A | B)`) are not constants;
+// they are ignored, not guessed at, because the tool has no preprocessor.
+
+struct MacroConstant {
+  std::string name;
+  std::string value;
+};
+
+std::string trimCopy(const std::string& text) {
+  std::size_t begin = 0;
+  while (begin < text.size() && std::isspace(static_cast<unsigned char>(text[begin]))) ++begin;
+  std::size_t end = text.size();
+  while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1]))) --end;
+  return text.substr(begin, end - begin);
+}
+
+// Removes `//` and `/* ... */` comments from one logical line. Strings and
+// character literals are copied untouched, so a `//` inside `"..."` survives.
+// An unterminated block comment makes the whole line unusable (the caller skips
+// the macro) because its replacement cannot be read reliably.
+std::string stripLineComments(const std::string& line) {
+  std::string out;
+  bool inString = false;
+  bool inChar = false;
+  for (std::size_t i = 0; i < line.size(); ++i) {
+    const char c = line[i];
+    if (inString || inChar) {
+      out.push_back(c);
+      if (c == '\\' && i + 1 < line.size()) {
+        out.push_back(line[++i]);
+      } else if ((inString && c == '"') || (inChar && c == '\'')) {
+        inString = inChar = false;
+      }
+      continue;
+    }
+    if (c == '"') {
+      inString = true;
+      out.push_back(c);
+      continue;
+    }
+    if (c == '\'') {
+      inChar = true;
+      out.push_back(c);
+      continue;
+    }
+    if (c == '/' && i + 1 < line.size() && line[i + 1] == '/') break;
+    if (c == '/' && i + 1 < line.size() && line[i + 1] == '*') {
+      const std::size_t end = line.find("*/", i + 2);
+      if (end == std::string::npos) return std::string();
+      i = end + 1;
+      continue;
+    }
+    out.push_back(c);
+  }
+  return out;
+}
+
+// A single C integer literal (decimal, `0x` hex or leading-zero octal, with an
+// optional `u`/`l` suffix). The value is emitted as decimal and must fit the
+// signed 64-bit Oskel integer: a larger value would make `oskel -c` reject the
+// module, and a `#define` is a constant, not a bit-pattern assertion.
+bool parseIntegerLiteral(const std::string& text, std::string& out) {
+  if (text.empty()) return false;
+  std::size_t i = 0;
+  bool negative = false;
+  if (text[i] == '+' || text[i] == '-') {
+    negative = text[i] == '-';
+    ++i;
+  }
+  if (i >= text.size()) return false;
+  const std::size_t bodyStart = i;
+  int base = 10;
+  if (text[i] == '0' && i + 1 < text.size() && (text[i + 1] == 'x' || text[i + 1] == 'X')) {
+    base = 16;
+    i += 2;
+    const std::size_t digits = i;
+    while (i < text.size() && std::isxdigit(static_cast<unsigned char>(text[i]))) ++i;
+    if (i == digits) return false;
+  } else if (text[i] == '0') {
+    base = 8;
+    ++i;
+    while (i < text.size() && text[i] >= '0' && text[i] <= '7') ++i;
+  } else if (text[i] >= '1' && text[i] <= '9') {
+    base = 10;
+    ++i;
+    while (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i]))) ++i;
+  } else {
+    return false;
+  }
+  const std::size_t suffixStart = i;
+  while (i < text.size() &&
+         (text[i] == 'u' || text[i] == 'U' || text[i] == 'l' || text[i] == 'L')) {
+    ++i;
+  }
+  if (i != text.size()) return false;
+  const std::string body = text.substr(bodyStart, suffixStart - bodyStart);
+  errno = 0;
+  char* end = nullptr;
+  const unsigned long long magnitude = std::strtoull(body.c_str(), &end, base == 16 ? 0 : base);
+  if (errno == ERANGE || end == body.c_str() || *end != '\0') return false;
+  const unsigned long long limit = negative ? (1ULL << 63) : ((1ULL << 63) - 1);
+  if (magnitude > limit) return false;
+  if (magnitude == 0) {
+    out = "0";
+    return true;
+  }
+  out = negative ? "-" : "";
+  out += std::to_string(magnitude);
+  return true;
+}
+
+// A single C floating literal. The `f` suffix is dropped (Oskel has one float
+// literal, a binary64) and a `long double` suffix is rejected. A spelling with
+// an exponent but no dot is normalized to `1.0e3`, which every Oskel reader
+// accepts.
+bool parseFloatLiteral(const std::string& text, std::string& out) {
+  if (text.empty()) return false;
+  std::size_t i = 0;
+  bool negative = false;
+  if (text[i] == '+' || text[i] == '-') {
+    negative = text[i] == '-';
+    ++i;
+  }
+  const std::size_t bodyStart = i;
+  bool digitsBefore = false;
+  while (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i]))) {
+    ++i;
+    digitsBefore = true;
+  }
+  bool dot = false;
+  bool digitsAfter = false;
+  if (i < text.size() && text[i] == '.') {
+    dot = true;
+    ++i;
+    while (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i]))) {
+      ++i;
+      digitsAfter = true;
+    }
+  }
+  if (!digitsBefore && !digitsAfter) return false;
+  bool exponent = false;
+  if (i < text.size() && (text[i] == 'e' || text[i] == 'E')) {
+    exponent = true;
+    ++i;
+    if (i < text.size() && (text[i] == '+' || text[i] == '-')) ++i;
+    const std::size_t exponentDigits = i;
+    while (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i]))) ++i;
+    if (i == exponentDigits) return false;
+  }
+  bool floatSuffix = false;
+  if (i < text.size() && (text[i] == 'f' || text[i] == 'F')) {
+    floatSuffix = true;
+    ++i;
+  } else if (i < text.size() && (text[i] == 'l' || text[i] == 'L')) {
+    return false;  // `long double`: Oskel has no 80-bit type
+  }
+  if (i != text.size()) return false;
+  if (!dot && !exponent && !floatSuffix) return false;  // an integer, not a float
+  std::string body = text.substr(bodyStart, i - bodyStart);
+  if (floatSuffix) body.pop_back();
+  if (body.empty()) return false;
+  if (!dot && !exponent) body += ".0";
+  if (body.front() == '.') body.insert(body.begin(), '0');
+  if (body.back() == '.') body += '0';
+  const std::size_t exponentPos = body.find_first_of("eE");
+  if (exponentPos != std::string::npos && body.find('.') == std::string::npos) {
+    body.insert(exponentPos, ".0");
+  }
+  out = negative ? "-" : "";
+  out += body;
+  return true;
+}
+
+// A single double-quoted C string whose escapes Oskel also understands. A
+// concatenation (`"a" "b"`), a wide string (`L"a"`) and an escape with no Oskel
+// equivalent (`\a`, a three-digit `\x`) are not emitted.
+bool isCStringLiteral(const std::string& text) {
+  if (text.size() < 2 || text.front() != '"' || text.back() != '"') return false;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    if (text[i] == '\\') {
+      if (i + 1 >= text.size()) return false;
+      const char escape = text[i + 1];
+      if (escape == 'n' || escape == 't' || escape == 'r' || escape == '\\' ||
+          escape == '"' || escape == '\'' || escape == '0') {
+        ++i;
+        continue;
+      }
+      if (escape == 'x') {
+        if (i + 3 >= text.size() || !std::isxdigit(static_cast<unsigned char>(text[i + 2])) ||
+            !std::isxdigit(static_cast<unsigned char>(text[i + 3]))) {
+          return false;
+        }
+        // Oskel reads exactly two hex digits; a third would change the value.
+        if (i + 4 < text.size() && std::isxdigit(static_cast<unsigned char>(text[i + 4]))) {
+          return false;
+        }
+        i += 3;
+        continue;
+      }
+      if (escape == 'u') {
+        if (i + 5 >= text.size()) return false;
+        for (std::size_t k = 2; k <= 5; ++k) {
+          if (!std::isxdigit(static_cast<unsigned char>(text[i + k]))) return false;
+        }
+        if (i + 6 < text.size() && std::isxdigit(static_cast<unsigned char>(text[i + 6]))) {
+          return false;
+        }
+        i += 5;
+        continue;
+      }
+      return false;
+    }
+    if (text[i] == '"' && i != 0 && i != text.size() - 1) return false;
+  }
+  return true;
+}
+
+// A single C character literal, emitted as its integer code (a C character
+// constant is an `int`, which is exactly what a module constant holds).
+bool parseCharLiteral(const std::string& text, std::string& out) {
+  if (text.size() < 3 || text.front() != '\'' || text.back() != '\'') return false;
+  const std::string inner = text.substr(1, text.size() - 2);
+  unsigned int value = 0;
+  if (inner.size() == 1) {
+    value = static_cast<unsigned char>(inner[0]);
+  } else if (inner.size() == 2 && inner[0] == '\\') {
+    switch (inner[1]) {
+      case 'n': value = 10; break;
+      case 't': value = 9; break;
+      case 'r': value = 13; break;
+      case '0': value = 0; break;
+      case '\\': value = 92; break;
+      case '\'': value = 39; break;
+      case '"': value = 34; break;
+      default: return false;
+    }
+  } else {
+    return false;
+  }
+  out = std::to_string(value);
+  return true;
+}
+
+std::vector<MacroConstant> collectMacroConstants(const std::string& source) {
+  std::vector<MacroConstant> constants;
+  std::size_t i = 0;
+  while (i < source.size()) {
+    std::string line;
+    while (i < source.size()) {
+      const std::size_t end = source.find('\n', i);
+      std::string part =
+          source.substr(i, end == std::string::npos ? std::string::npos : end - i);
+      i = end == std::string::npos ? source.size() : end + 1;
+      if (!part.empty() && part.back() == '\r') part.pop_back();
+      if (!part.empty() && part.back() == '\\') {
+        part.pop_back();
+        line += part;
+        continue;
+      }
+      line += part;
+      break;
+    }
+    line = trimCopy(line);
+    if (line.empty() || line[0] != '#') continue;
+    std::size_t p = 1;
+    while (p < line.size() && std::isspace(static_cast<unsigned char>(line[p]))) ++p;
+    if (line.compare(p, 6, "define") != 0) continue;
+    p += 6;
+    if (p < line.size() && !std::isspace(static_cast<unsigned char>(line[p]))) continue;
+    while (p < line.size() && std::isspace(static_cast<unsigned char>(line[p]))) ++p;
+    const std::size_t nameStart = p;
+    if (p >= line.size() || !isIdentStart(line[p])) continue;
+    while (p < line.size() && isIdentPart(line[p])) ++p;
+    const std::string name = line.substr(nameStart, p - nameStart);
+    if (p < line.size() && line[p] == '(') continue;  // function-like macro
+    std::string value = trimCopy(stripLineComments(line.substr(p)));
+    if (value.empty()) continue;
+    // Strip balanced parentheses that wrap the whole replacement: `(1)`.
+    for (;;) {
+      if (value.size() < 2 || value.front() != '(' || value.back() != ')') break;
+      int depth = 0;
+      bool wraps = true;
+      for (std::size_t k = 0; k < value.size(); ++k) {
+        if (value[k] == '(') {
+          ++depth;
+        } else if (value[k] == ')') {
+          --depth;
+          if (depth == 0 && k + 1 != value.size()) {
+            wraps = false;
+            break;
+          }
+        }
+      }
+      if (!wraps || depth != 0) break;
+      value = trimCopy(value.substr(1, value.size() - 2));
+    }
+    if (value.empty()) continue;
+    std::string literal;
+    if (parseIntegerLiteral(value, literal) || parseFloatLiteral(value, literal) ||
+        isCStringLiteral(value) || parseCharLiteral(value, literal)) {
+      if (literal.empty()) literal = value;  // a string keeps its spelling
+      constants.push_back(MacroConstant{name, literal});
+    }
+  }
+  return constants;
+}
+
 // -------------------------------------------------------------- the parser
 
 class Bindgen {
  public:
-  Bindgen(std::vector<Token> tokens, std::string sourceName)
-      : tokens_(std::move(tokens)), sourceName_(std::move(sourceName)) {
+  Bindgen(std::vector<Token> tokens, std::vector<MacroConstant> macroConstants,
+          std::string sourceName, bindgen::Options options)
+      : tokens_(std::move(tokens)),
+        macroConstants_(std::move(macroConstants)),
+        sourceName_(std::move(sourceName)),
+        options_(options) {
     if (sourceName_.empty()) sourceName_ = "input";
   }
 
@@ -710,6 +1034,17 @@ class Bindgen {
     matchPunct("}");
   }
 
+  // The C `long` family is the one integer whose width depends on the data
+  // model: LP64 has a 64-bit `long`, LLP64 a 32-bit one. `long long` is 64-bit
+  // in both.
+  std::string longOskel(bool isUnsigned, int longCount, std::string& spelling) const {
+    const bool isLongLong = longCount >= 2;
+    const bool wide = isLongLong || options_.target == bindgen::Target::Lp64;
+    spelling = std::string(isUnsigned ? "unsigned " : "") + (isLongLong ? "long long" : "long");
+    if (wide) return isUnsigned ? "uint64" : "int64";
+    return isUnsigned ? "uint32" : "int32";
+  }
+
   // Turns a specifier list into a `Base`.
   Base baseFromSpec(const Spec& spec) {
     Base base;
@@ -763,8 +1098,7 @@ class Bindgen {
         base.oskel = spec.isUnsigned ? "uint16" : "int16";
         base.spelling = "short";
       } else if (spec.longCount > 0) {
-        base.oskel = spec.isUnsigned ? "uint64" : "int64";
-        base.spelling = "long";
+        base.oskel = longOskel(spec.isUnsigned, spec.longCount, base.spelling);
       } else {
         base.oskel = spec.isUnsigned ? "uint32" : "int32";
         base.spelling = "int";
@@ -778,8 +1112,10 @@ class Bindgen {
     }
     if (w == "char") {
       base.kind = Base::Kind::Char;
+      base.plainChar = !spec.isSigned && !spec.isUnsigned;
       base.oskel = spec.isUnsigned ? "uint8" : "int8";
-      base.spelling = std::string(spec.isUnsigned ? "unsigned " : "") + "char";
+      base.spelling = spec.isUnsigned ? "unsigned char"
+                                      : (spec.isSigned ? "signed char" : "char");
       return base;
     }
     if (w == "int") {
@@ -788,8 +1124,7 @@ class Bindgen {
         base.oskel = spec.isUnsigned ? "uint16" : "int16";
         base.spelling = std::string(spec.isUnsigned ? "unsigned " : "") + "short";
       } else if (spec.longCount > 0) {
-        base.oskel = spec.isUnsigned ? "uint64" : "int64";
-        base.spelling = std::string(spec.isUnsigned ? "unsigned " : "") + "long";
+        base.oskel = longOskel(spec.isUnsigned, spec.longCount, base.spelling);
       } else {
         base.oskel = spec.isUnsigned ? "uint32" : "int32";
         base.spelling = std::string(spec.isUnsigned ? "unsigned " : "") + "int";
@@ -820,6 +1155,15 @@ class Bindgen {
     // `stdint.h`/`stddef.h` names, then the Oskel vocabulary itself.
     auto alias = typedefs_.find(w);
     if (alias != typedefs_.end()) return alias->second;
+    if (w == "wchar_t") {
+      // `wchar_t` is a header typedef on every real platform, but the tool
+      // recognizes it without reading `<stddef.h>`. Its width follows the C
+      // data model: 32-bit on LP64, 16-bit on Windows.
+      base.kind = Base::Kind::Int;
+      base.oskel = options_.target == bindgen::Target::Llp64 ? "uint16" : "int32";
+      base.spelling = "wchar_t";
+      return base;
+    }
     if (resolveWellKnown(w, base)) return base;
     if (knownFfiName(w)) {
       base.kind = (w == "float")   ? Base::Kind::Float
@@ -867,13 +1211,15 @@ class Bindgen {
       base.spelling = "void *";
       return base;
     }
-    if (base.kind == Base::Kind::Char && stars == 1) {
+    if (base.kind == Base::Kind::Char && base.plainChar && stars == 1) {
       base.kind = Base::Kind::Unknown;
       base.ok = true;
       base.oskel = "cstring";
       base.spelling = "char *";
       return base;
     }
+    // A pointer to an explicitly signed/unsigned `char` is a byte buffer, not a
+    // NUL-terminated string, so it falls through to the opaque `ptr` below.
     // Any other pointer (including a multi-level one) is an opaque handle.
     base.kind = Base::Kind::Unknown;
     base.ok = true;
@@ -1434,16 +1780,37 @@ class Bindgen {
       text += "}\n\n";
     }
 
+    // Object-like macros are constants too, and the preprocessor runs before
+    // the declarations; emit them first. A name that is already a function,
+    // struct or the other kind of constant keeps the declaration: the header
+    // would be ambiguous, and a duplicate `let` would not compile.
+    int macroConstants = 0;
+    for (const MacroConstant& constant : macroConstants_) {
+      if (isOskelKeyword(constant.name)) continue;
+      if (!emittedNames_.insert(constant.name).second) continue;
+      text += "let ";
+      text += constant.name;
+      text += " = ";
+      text += constant.value;
+      text += ";\n";
+      ++macroConstants;
+    }
+    if (macroConstants > 0) text += "\n";
+
     // An enum is an `int` at the ABI; its members are module constants so the
     // program can name them.
+    int enumConstants = 0;
     for (const auto& constant : enumConstants_) {
+      if (isOskelKeyword(constant.name)) continue;
+      if (!emittedNames_.insert(constant.name).second) continue;
       text += "let ";
       text += constant.name;
       text += " = ";
       text += std::to_string(constant.value);
       text += ";\n";
+      ++enumConstants;
     }
-    if (!enumConstants_.empty()) text += "\n";
+    if (enumConstants > 0) text += "\n";
 
     text += "extern \"C\" {\n";
     for (const Function& fn : functions_) {
@@ -1487,7 +1854,8 @@ class Bindgen {
     result_.skipped = static_cast<int>(skipped_.size());
     result_.commented = commentedDeclarations_;
     result_.structs = static_cast<int>(structOrder_.size());
-    result_.constants = static_cast<int>(enumConstants_.size());
+    result_.constants = enumConstants;
+    result_.macroConstants = macroConstants;
   }
 
   static std::string quoteReason(const Base& base) {
@@ -1505,7 +1873,9 @@ class Bindgen {
   }
 
   std::vector<Token> tokens_;
+  std::vector<MacroConstant> macroConstants_;
   std::string sourceName_;
+  bindgen::Options options_;
   std::size_t pos_ = 0;
   std::unordered_map<std::string, Base> typedefs_;
   std::vector<Function> functions_;
@@ -1527,8 +1897,10 @@ class Bindgen {
 
 namespace bindgen {
 
-Result generate(const std::string& headerSource, const std::string& sourceName) {
-  Bindgen parser(tokenize(headerSource), sourceName);
+Result generate(const std::string& headerSource, const std::string& sourceName,
+                const Options& options) {
+  Bindgen parser(tokenize(headerSource), collectMacroConstants(headerSource), sourceName,
+                 options);
   return parser.run();
 }
 

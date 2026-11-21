@@ -34,7 +34,9 @@ const char* kUsage =
     "options:\n"
     "  -h, --help      show this help\n"
     "  -v, --version   show the version\n"
-    "  -o, --output    output path (default: stdout)\n";
+    "  -o, --output    output path (default: stdout)\n"
+    "  --target <model>  C data model for long/wchar_t:\n"
+    "                    lp64 (default) or llp64 (Windows)\n";
 
 }  // namespace
 
@@ -50,6 +52,7 @@ int main(int argc, char** argv) {
 
   std::string input;
   std::string output;
+  bindgen::Options options;
   for (std::size_t i = 0; i < arguments.size(); ++i) {
     const std::string& arg = arguments[i];
     if (arg == "-h" || arg == "--help") {
@@ -66,6 +69,23 @@ int main(int argc, char** argv) {
         return 64;
       }
       output = arguments[++i];
+      continue;
+    }
+    if (arg == "--target") {
+      if (i + 1 >= arguments.size()) {
+        std::cerr << "bindgen: option '" << arg << "' needs an argument\n";
+        return 64;
+      }
+      const std::string target = arguments[++i];
+      if (target == "lp64") {
+        options.target = bindgen::Target::Lp64;
+      } else if (target == "llp64" || target == "windows") {
+        options.target = bindgen::Target::Llp64;
+      } else {
+        std::cerr << "bindgen: unknown target '" << target
+                  << "' (expected lp64 or llp64)\n";
+        return 64;
+      }
       continue;
     }
     if (!arg.empty() && arg[0] == '-' && arg != "-") {
@@ -94,7 +114,7 @@ int main(int argc, char** argv) {
     return 66;
   }
 
-  const bindgen::Result result = bindgen::generate(source, input);
+  const bindgen::Result result = bindgen::generate(source, input, options);
 
   if (output.empty()) {
     std::cout << result.text;
@@ -122,6 +142,9 @@ int main(int argc, char** argv) {
     std::cerr << "bindgen: generated " << result.emitted << " declaration(s)";
     if (result.structs > 0) std::cerr << ", " << result.structs << " struct(s)";
     if (result.constants > 0) std::cerr << ", " << result.constants << " enum constant(s)";
+    if (result.macroConstants > 0) {
+      std::cerr << ", " << result.macroConstants << " macro constant(s)";
+    }
     if (result.commented > 0) {
       std::cerr << ", " << result.commented
                 << " commented out (this build cannot marshal it)";

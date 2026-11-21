@@ -32,6 +32,17 @@
 // because no build could accept it.
 namespace bindgen {
 
+// The C data model the header was written for. `long` and `wchar_t` are the
+// only common types whose width differs between the two 64-bit models: LP64
+// (Linux, macOS) has a 64-bit `long` and a 32-bit `wchar_t`, while LLP64
+// (Windows) has a 32-bit `long` and a 16-bit `wchar_t`. `long long` is 64-bit
+// in both, so it never depends on the target.
+enum class Target { Lp64, Llp64 };
+
+struct Options {
+  Target target = Target::Lp64;
+};
+
 // The generated module and a small tally the CLI reports on stderr.
 struct Result {
   // The Oskel source, ready to be written to a `.oskl` file.
@@ -54,10 +65,15 @@ struct Result {
   int structs = 0;
   // Number of `enum` members emitted as module constants.
   int constants = 0;
+  // Number of object-like `#define` macros emitted as module constants. A
+  // function-like macro or a replacement that is not a single literal is not a
+  // constant and is not counted.
+  int macroConstants = 0;
 };
 
 // Translates `headerSource` into an Oskel module. `sourceName` is the header's
 // name, used only in the leading comment of the output (empty becomes "input").
-Result generate(const std::string& headerSource, const std::string& sourceName = "");
+Result generate(const std::string& headerSource, const std::string& sourceName = "",
+                const Options& options = {});
 
 }  // namespace bindgen
