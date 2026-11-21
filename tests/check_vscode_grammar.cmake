@@ -16,6 +16,11 @@
 #
 # Usage: cmake -DROOT=<repository root> -P tests/check_vscode_grammar.cmake
 
+# A `-P` script does not inherit the project's policy floor, and this one leans
+# on `IN_LIST` (CMP0057) and `while(TRUE)` (CMP0012). Without a floor both are
+# parsed as plain arguments, so the `if()`/`while()` fail instead of evaluating.
+cmake_minimum_required(VERSION 3.15)
+
 if(NOT DEFINED ROOT)
   get_filename_component(ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 endif()
