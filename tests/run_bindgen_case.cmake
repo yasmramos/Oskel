@@ -42,10 +42,23 @@ endif()
 # returned callback) plus one commented variadic. The summary has to mention
 # every group, or a regression in one of them would go unnoticed.
 if(NOT bindgen_stderr MATCHES "skipped" OR NOT bindgen_stderr MATCHES "commented out"
-   OR NOT bindgen_stderr MATCHES "struct\\(s\\)" OR NOT bindgen_stderr MATCHES "enum constant\\(s\\)")
+   OR NOT bindgen_stderr MATCHES "struct\\(s\\)" OR NOT bindgen_stderr MATCHES "enum constant\\(s\\)"
+   OR NOT bindgen_stderr MATCHES "macro constant\\(s\\)")
   message(FATAL_ERROR
-    "the bindgen summary does not report every group (skipped/commented/structs/constants):\n"
+    "the bindgen summary does not report every group (skipped/commented/structs/constants/macros):\n"
     "--- stderr ---\n${bindgen_stderr}")
+endif()
+
+# The literal macros become module constants; the function-like macro does not.
+file(READ "${generated}" generated_text)
+foreach(expected "let SAMPLE_ANSWER = 42;" "let SAMPLE_HEX = 42;" "let SAMPLE_NAME = \"sample\";")
+  string(FIND "${generated_text}" "${expected}" found)
+  if(found EQUAL -1)
+    message(FATAL_ERROR "the generated module is missing '${expected}'\n--- generated ---\n${generated_text}")
+  endif()
+endforeach()
+if(generated_text MATCHES "let SAMPLE_FN")
+  message(FATAL_ERROR "a function-like macro was emitted as a constant:\n${generated_text}")
 endif()
 
 # --- 2. The generated module is accepted by the compiler ---

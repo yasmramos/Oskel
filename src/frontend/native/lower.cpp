@@ -83,7 +83,19 @@ void emitRootPrologue(CodeGen& cg, int fileRegisters, int fileLocals) {
   cg.subRegImm32(X64Reg::Rsp, static_cast<std::int32_t>(frameBytes(fileRegisters, fileLocals) + 8));
 }
 
-void emitRootEpilogue(CodeGen& cg) {
+void emitRootEpilogue(CodeGen& cg, int callbackStateSlot = -1) {
+  // A stored callback may run after the chunk returns (`atexit`), so publish
+  // the final arena cursor/end before the frame restores the process-boundary
+  // registers. A program that never registered a callback leaves the slot nil.
+  if (callbackStateSlot >= 0) {
+    CodeGen::Label noState = cg.newLabel();
+    cg.movFromMem(X64Reg::R10, X64Reg::R15, 16 * callbackStateSlot + 8);
+    cg.testReg(X64Reg::R10);
+    cg.jcc(Jcc::Eq, noState);
+    cg.movToMem(X64Reg::R10, 0, X64Reg::R13);
+    cg.movToMem(X64Reg::R10, 8, X64Reg::R14);
+    cg.bind(noState);
+  }
   cg.movReg(X64Reg::Rsp, X64Reg::Rbp);
   cg.pop(X64Reg::R15);
   cg.pop(X64Reg::R14);
@@ -263,6 +275,11 @@ struct GlobalSlots {
 // would have to be reserved across every helper. The name cannot collide with a
 // program's, because the lexer rejects `$` in an identifier.
 constexpr const char* kAotRandomStateGlobal = "$randomState";
+// The hidden global that points at the shared block holding the arena cursor and
+// end across a C callback. A C caller expects r13/r14/r15 preserved, but those
+// are the Oskel arena/global state, so the callback body parks them here while
+// C runs and reloads them for the next callback.
+constexpr const char* kAotCallbackStateGlobal = "$callbackState";
 
 // The name of the hidden global that holds the address of the innermost active
 // `pcall` handler record (BACKLOG §6 item 4). The error sink is reached by an
@@ -303,9 +320,75 @@ constexpr const char* kAotArgsGlobal = "$args";
 // them, seeded into the single global slot the name resolves to.
 std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
                                                 const std::vector<const Bytecode*>& protos,
-                                                std::unordered_set<std::string>& resolved) {
+                                                std::unordered_set<std::string>& resolved,
+                                                std::vector<AotCallbackSignature>& callbacks) {
   std::vector<AotExternThunk> thunks;
   std::unordered_set<std::string> seen;
+
+  // The C side of a callback: its scalar parameters classified by the System V
+  // ABI, and its return class. The body is a shared machine-code function, so
+  // two declarations of the same shape share one entry. A struct return is the
+  // one shape the AOT body does not build yet; reject it with a message rather
+  // than emitting a wrong callback.
+  auto callbackIndex = [&](const ffi::TypeSpec& spec) -> int {
+    if (spec.callbackReturnsStruct) {
+      throw LoweringError(
+          "lowering: a callback returning a struct by value is not supported by the "
+          "AOT backend yet");
+    }
+    AotCallbackSignature signature;
+    int gpr = 0;
+    int sse = 0;
+    std::int64_t stack = 0;
+    for (const std::string& declared : spec.callbackParams) {
+      const std::string type = declared.empty() ? "int32" : declared;
+      ffi::ParamClass cls = ffi::ParamClass::Int;
+      if (!ffi::classifyParam(type, cls)) {
+        throw LoweringError("lowering: callback parameter type '" + type +
+                            "' cannot cross the C boundary");
+      }
+      AotCallbackParam param;
+      param.cls = cls;
+      param.type = type;
+      if (cls == ffi::ParamClass::Float || cls == ffi::ParamClass::Double) {
+        if (sse < 8) {
+          param.sse = sse++;
+        } else {
+          param.stackOffset = stack;
+          stack += 8;
+        }
+      } else if (gpr < 6) {
+        param.gpr = gpr++;
+      } else {
+        param.stackOffset = stack;
+        stack += 8;
+      }
+      signature.params.push_back(std::move(param));
+    }
+    signature.returnType = spec.callbackReturn;
+    if (spec.callbackReturn.empty() || spec.callbackReturn == "void") {
+      signature.returns = ffi::ReturnClass::Void;
+    } else if (!ffi::classifyReturn(spec.callbackReturn, signature.returns) ||
+               signature.returns == ffi::ReturnClass::Struct) {
+      throw LoweringError("lowering: callback return type '" + spec.callbackReturn +
+                          "' cannot cross the C boundary");
+    }
+    for (std::size_t i = 0; i < callbacks.size(); ++i) {
+      if (callbacks[i].returnType != signature.returnType) continue;
+      if (callbacks[i].params.size() != signature.params.size()) continue;
+      bool same = true;
+      for (std::size_t k = 0; k < signature.params.size(); ++k) {
+        if (callbacks[i].params[k].type != signature.params[k].type) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return static_cast<int>(i);
+    }
+    signature.body = cg.newLabel();
+    callbacks.push_back(std::move(signature));
+    return static_cast<int>(callbacks.size() - 1);
+  };
   for (const Bytecode* proto : protos) {
     for (const ExternSymbol& symbol : proto->externs) {
       if (!seen.insert(symbol.name).second) continue;
@@ -341,8 +424,18 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
       for (int arg = 0; arg < argCount; ++arg) {
         const ffi::TypeSpec& param = symbol.paramTypes[static_cast<std::size_t>(arg)];
         if (param.isCallback) {
-          supported = false;
-          break;
+          AotThunkParam flat;
+          flat.cls = ffi::ParamClass::Pointer;
+          flat.argIndex = arg;
+          flat.callbackSignature = callbackIndex(param);
+          if (gpr < 6) {
+            ++gpr;
+          } else {
+            flat.stackOffset = (thunk.stackArgBytes + 7) / 8 * 8;
+            thunk.stackArgBytes = flat.stackOffset + 8;
+          }
+          thunk.params.push_back(flat);
+          continue;
         }
         if (param.isStruct) {
           ffi::StructLayout layout;
@@ -633,6 +726,9 @@ struct FrameInfo {
   int fileRegisters = 1;
   int fileLocals = 0;
   bool hasSelf = false;
+  // The root chunk's shared callback arena-state slot, or -1. A child proto
+  // never runs the root epilogue, so it stays -1 there.
+  int callbackStateSlot = -1;
   std::unordered_set<int> capturedSlots;
 };
 
@@ -805,7 +901,7 @@ void lowerInstruction(const Instruction& instr, const Bytecode& proto, CodeGen& 
       // System V ABI's two-register return), so the test harness can read both
       // the tag and the payload. The process entry discards it and exits 0.
       loadValue(cg, 0, X64Reg::Rax, X64Reg::Rdx);
-      emitRootEpilogue(cg);
+      emitRootEpilogue(cg, frame.callbackStateSlot);
       break;
 
     // Globals (7c.2a), locals (7c.2b) and calls/closures (7c.2c.1) are lowered.
@@ -895,7 +991,7 @@ void lowerInstruction(const Instruction& instr, const Bytecode& proto, CodeGen& 
       if (frame.hasSelf) {
         emitFunctionEpilogue(cg);
       } else {
-        emitRootEpilogue(cg);
+        emitRootEpilogue(cg, frame.callbackStateSlot);
       }
       break;
     case OpCode::CLOSURE: {
@@ -1257,9 +1353,10 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   // freestanding mode the list stays empty: the image carries no external
   // reference and an `extern "C"` use keeps the build rejection.
   std::vector<AotExternThunk> externThunks;
+  std::vector<AotCallbackSignature> callbackSignatures;
   std::unordered_set<std::string> resolvedExterns;
   if (mode == LinkMode::Hosted) {
-    externThunks = collectExternThunks(cg, protos, resolvedExterns);
+    externThunks = collectExternThunks(cg, protos, resolvedExterns, callbackSignatures);
     for (AotExternThunk& thunk : externThunks) thunk.label = cg.newLabel();
   }
 
@@ -1305,6 +1402,16 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   if (globals.slotOfName.count("args") != 0) {
     argsSlot = globals.count++;
     globals.slotOfName[kAotArgsGlobal] = argsSlot;
+  }
+
+  // A callback crosses a C boundary, where the C caller expects r13/r14/r15 to
+  // be preserved. Those are the Oskel arena cursor/end and global base, so the
+  // callback body parks them in a shared state block. The slot exists only when
+  // the program passes a callback, keeping every other image byte for byte.
+  int callbackStateSlot = -1;
+  if (!callbackSignatures.empty()) {
+    callbackStateSlot = globals.count++;
+    globals.slotOfName[kAotCallbackStateGlobal] = callbackStateSlot;
   }
 
   const std::uint64_t chunkOffset = cg.offset();
@@ -1388,6 +1495,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     frame.fileRegisters = rootRegisters;
     frame.fileLocals = rootLocals;
     frame.hasSelf = false;
+    frame.callbackStateSlot = callbackStateSlot;
     frame.capturedSlots = capturedLocalSlots(proto);
     std::vector<CodeGen::Label> labels;
     labels.reserve(proto.code.size());
@@ -1518,10 +1626,11 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   extras.argsSlot = argsSlot;
   extras.hasArgv = hasArgv;
   extras.hasFiles = hasFiles;
+  extras.callbackStateSlot = callbackStateSlot;
   emitAotRuntime(cg, rt, entry, externThunks.empty() ? nullptr : &externThunks,
                  mode == LinkMode::Hosted, hasInput,
                  target.os == Os::Freestanding, randomStateSlot, pcallHandlerSlot,
-                 extras);
+                 extras, &callbackSignatures);
   // String constants last: their bytes are addressed by `lea` from the code
   // above, and no path falls through into them.
   emitStringConstants(cg, stringConstants);

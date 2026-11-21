@@ -1,0 +1,44 @@
+// Fixture for the hosted callback test (tests/build_hosted_extern.cmake).
+//
+// A callback is a C function pointer: the VM marshals it through libffi, and
+// the AOT backend now binds the Oskel closure to a runtime-created stub, so the
+// same program must behave identically in both engines. `qsort` is a libc
+// symbol whose comparator is arbitrary program code, which is the point: the
+// callback is invoked from C, after the `extern "C"` call has returned control
+// to libc.
+extern "C" {
+  fn qsort(base: ptr, count: size_t, size: size_t, cmp: fn(ptr, ptr): int32): void;
+}
+
+fn loadInt(p: ptr, offset: int32): int32 {
+  return loadByte(p, offset) | (loadByte(p, offset + 1) << 8) |
+         (loadByte(p, offset + 2) << 16) | (loadByte(p, offset + 3) << 24);
+}
+
+fn storeInt(p: ptr, offset: int32, value: int32): void {
+  storeByte(p, offset, value & 255);
+  storeByte(p, offset + 1, (value >> 8) & 255);
+  storeByte(p, offset + 2, (value >> 16) & 255);
+  storeByte(p, offset + 3, (value >> 24) & 255);
+}
+
+var calls = 0;
+
+fn compare(a: ptr, b: ptr): int32 {
+  calls = calls + 1;
+  return 0;
+}
+
+let items = buffer(4 * 5);
+storeInt(items, 0, 5);
+storeInt(items, 4, 2);
+storeInt(items, 8, 4);
+storeInt(items, 12, 1);
+storeInt(items, 16, 3);
+qsort(items, 5, 4, compare);
+assert(calls > 0);
+for (var i = 0; i < 5; i = i + 1) {
+  print(loadInt(items, i * 4));
+}
+
+print("extern callback ok");

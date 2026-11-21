@@ -1,0 +1,17 @@
+// A struct parameter has no scalar C register class in the callback body, so
+// the AOT backend rejects the declaration instead of marshalling it wrongly.
+struct Point {
+  x: int;
+  y: int;
+}
+
+extern "C" {
+  fn call_struct(cb: fn(Point): int32): int32;
+}
+
+fn take(p: Point): int32 {
+  return p.x;
+}
+
+let r = call_struct(take);
+print(r);

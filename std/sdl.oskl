@@ -47,7 +47,7 @@ extern "C" {
   fn SDL_GetWindowSize(window: ptr, w: ptr, h: ptr): bool;
   fn SDL_CreateSurface(width: int32, height: int32, format: uint32): ptr;
   fn SDL_DestroySurface(surface: ptr): void;
-  fn SDL_ReadSurfacePixel(surface: ptr, x: int32, y: int32, r: cstring, g: cstring, b: cstring, a: cstring): bool;
+  fn SDL_ReadSurfacePixel(surface: ptr, x: int32, y: int32, r: ptr, g: ptr, b: ptr, a: ptr): bool;
   fn SDL_WriteSurfacePixel(surface: ptr, x: int32, y: int32, r: uint8, g: uint8, b: uint8, a: uint8): bool;
   fn SDL_CreateRenderer(window: ptr, name: cstring): ptr;
   fn SDL_DestroyRenderer(renderer: ptr): void;
