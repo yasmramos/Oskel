@@ -287,10 +287,16 @@ std::string shellQuote(const std::string &path) {
 #endif
 }
 
-// Whether the linker command names the Microsoft compiler driver. `cl` has a
-// different command line from a POSIX `cc` (an output flag `/Fe:` instead of
-// `-o`, and no `-lm`), so the link builder has to know which one it is.
+// Whether the linker command speaks the Microsoft compiler driver's command
+// line. `cl` has a different command line from a POSIX `cc` (an output flag
+// `/Fe:` instead of `-o`, and no `-lm`), so the link builder has to know which
+// one it is. `$OSKEL_CC_KIND=msvc` names the dialect explicitly, because `$CC`
+// may be a wrapper (`vcvarsall.bat` plus `cl`) whose file name says nothing.
 bool isMicrosoftCompiler(const std::string &compiler) {
+  if (const char *kind = std::getenv("OSKEL_CC_KIND")) {
+    if (std::string(kind) == "msvc") return true;
+    if (std::string(kind) == "posix") return false;
+  }
   std::string name = compiler;
   const std::size_t slash = name.find_last_of("/\\");
   if (slash != std::string::npos) name = name.substr(slash + 1);

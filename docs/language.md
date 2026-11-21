@@ -2900,9 +2900,9 @@ oskel build app.oskl -o app   # writes ./app
 (the mode is a deployment choice, never syntax in the source — the same program
 compiles either way):
 
-- `--mode freestanding` (the default) is the self-contained image described
-  above: it carries its own runtime, speaks to the kernel directly and has no
-  dynamic dependencies.
+- `--mode freestanding` (the default on Linux and Windows) is the
+  self-contained image described above: it carries its own runtime, speaks to
+  the kernel directly and has no dynamic dependencies.
 - `--mode hosted` links the compiled program against the host C library, so an
   `extern "C"` symbol resolves to the real C function at link time. This is the
   mode that makes FFI work, and the mode `oskelc` emits. It needs a C toolchain at build time and produces a binary
@@ -2910,10 +2910,13 @@ compiles either way):
   program in a relocatable object and the host C compiler (`$CC`, default `cc`)
   links it against libc; the entry prelude reaches the system through libc
   (`write`/`exit`/`malloc`) and the program's entry is exported as the C `main`.
+  When `$CC` is a wrapper (for example a batch file that calls `vcvarsall.bat`
+  before `cl`), set `$OSKEL_CC_KIND=msvc` so the link builder uses the MSVC
+  command line; `$OSKEL_CC_KIND=posix` forces the `cc` form.
 
 ```sh
-oskel build app.oskl                       # freestanding (default)
-oskel build app.oskl --mode freestanding   # the same, stated explicitly
+oskel build app.oskl                       # freestanding on Linux/Windows
+oskel build app.oskl --mode freestanding   # the same on Linux/Windows
 oskel build app.oskl --mode hosted         # links libc (FFI; PHASE 7f.4)
 oskel build app.oskl --mode hosted --link-lib SDL3 -o app   # links SDL3 too
 ```

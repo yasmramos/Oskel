@@ -52,6 +52,9 @@ function(oskel_prepare_hosted_cc)
         "if errorlevel 1 exit /b 1\r\n"
         "\"${native_cc}\" %*\r\n")
       set(ENV{CC} "${wrapper}")
+      # The wrapper's file name does not say `cl`, so tell the link builder
+      # which command line it speaks.
+      set(ENV{OSKEL_CC_KIND} "msvc")
       return()
     endif()
   endif()
