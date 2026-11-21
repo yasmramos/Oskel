@@ -140,11 +140,11 @@ it as a caveat:
   closures, variadic `rest...` and the operators. The AOT backend binds the
   array methods (`push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`,
   `slice`, `concat`, `join`, `contains`, `indexOf`, `map`, `filter`, `each`,
-  `find`, `any`, `all`, `reduce`, `sum`, `reversed`, `clone`, `clear`), the
-  ten map methods and the twelve *pure* string methods (`upper`, `lower`,
-  `trim`, `trimStart`, `trimEnd`, `contains`, `startsWith`, `endsWith`,
-  `indexOf`, `substr`, `reversed`, `repeat`), but not `sort`/`sorted` and not
-  the string methods that return a collection or call back into the program
+  `find`, `any`, `all`, `reduce`, `sum`, `reversed`, `clone`, `clear`,
+  `sort`, `sorted`), the ten map methods and the twelve *pure* string methods
+  (`upper`, `lower`, `trim`, `trimStart`, `trimEnd`, `contains`, `startsWith`,
+  `endsWith`, `indexOf`, `substr`, `reversed`, `repeat`), but not the string
+  methods that return a collection or call back into the program
   (`.split`, `.lines`, `.chars`, `.replace`, `.replaceFirst`) — those build
   (exit 0) but fault at run time with "value has no such member" / "cannot call
   a non-function value" — and it does not seed `pcall`/`error`/`readFile` at all,
@@ -155,6 +155,17 @@ it as a caveat:
   the reference, and `std/datetime.oskl` with `tests/native_build_datetime.oskl`
   is a second one (it also exercises the `time()` wall clock, the one builtin
   whose AOT binding differs per target).
+- `sort`/`sorted` are the only collection methods whose comparator is arbitrary
+  program code, so their AOT body calls back through `oskel_call` from inside a
+  bottom-up stable merge sort (a recursive one would deepen the program's stack
+  by log2(n) frames). The algorithm must stay *stable*: the VM sorts with
+  `std::stable_sort`, so an unstable sort would reorder equal keys and diverge
+  on any comparator that treats distinct items as equal. Both forms sort a
+  *copy* and commit only on success — `sort` copies the sorted block back over
+  the receiver and returns it, `sorted` returns the new array — so a comparator
+  that raises leaves the receiver untouched, exactly as in the VM. The auxiliary
+  block is allocated once before the first callback, because a callback
+  allocates and the arena cursor must not be snapshotted across it.
 - `time()` (epoch seconds, an `int`) is bound as the `now` runtime handle on
   every AOT path: syscall 201 on Linux, `time(NULL)` hosted, `GetSystemTimeAsFileTime`
   on Windows (a kernel32 import), and the CMOS RTC in bare metal. `clock()` is

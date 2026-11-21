@@ -186,9 +186,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `removeAt`/`contains`/`indexOf`/`clear` in PHASE 7c.3e, the allocating
    `slice`/`concat`/`reversed`/`clone` in PHASE 7c.3f, and the callback-taking
    `map`/`filter`/`each`/`find`/`any`/`all` plus the folding `reduce`/`sum`/
-   `join` in PHASE 7c.3h), and the ten map methods in PHASE 7c.3g. What is
-   still open is `sort`/`sorted` (they need a stable sort that calls a
-   comparator back into the program). The pure string methods bind too, in
+   `join` in PHASE 7c.3h), and the ten map methods in PHASE 7c.3g.
+   `sort`/`sorted` bind too, in PHASE 7c.3j: a bottom-up stable merge sort that
+   calls the program's comparator back through `oskel_call`. It reproduces
+   `std::stable_sort` exactly -- equal keys keep their input order -- and both
+   forms sort a copy and commit only on success, so a comparator that raises
+   leaves the receiver untouched, as in the VM. The pure string methods bind in
    PHASE 7c.3i: `upper`, `lower`, `trim`, `trimStart`, `trimEnd`, `contains`,
    `startsWith`, `endsWith`, `indexOf`, `substr`, `reversed` and `repeat` run
    on both engines over the same portable primitive surface. The methods that
