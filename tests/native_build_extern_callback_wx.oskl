@@ -1,0 +1,11 @@
+extern "C" {
+  fn callback_stub_is_wx(cb: fn(): void): int;
+}
+
+fn noop(): void {}
+
+// The thunk creates a fresh stub for this call and hands it to C, which reads
+// /proc/self/maps for the address. A W+X page reports 1, a read+execute page 0.
+let wx = callback_stub_is_wx(noop);
+assertEq(wx, 0);
+print("callback stub wx ok");

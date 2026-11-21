@@ -601,7 +601,9 @@ the stack, so the trampoline is alive for the whole call; storing the function
 pointer for a later call is out of scope in the development engine. The AOT
 backend's stub and context live in the arena, so a callback C stores for a later
 call -- including one invoked from an `atexit` handler after the chunk returns
--- works there (BACKLOG §6). `nil` is the NULL function pointer.
+-- works there (BACKLOG §6). The executable stub page is W^X (read+execute,
+never writable and executable) and lives until the process exits. `nil` is the
+NULL function pointer.
 
 A callback can only be a **parameter**; a C function that returns a function
 pointer is not supported. A callback may return a **struct by value** (its
