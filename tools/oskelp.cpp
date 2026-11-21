@@ -2572,7 +2572,13 @@ int commandPublish(const std::string& manifestPath,
 
   fs::path target = fs::path(absolutePath(root)) / manifest.package.name /
                     manifest.package.version;
-  if (fs::exists(target, ec)) {
+  ec.clear();
+  bool targetExists = fs::exists(target, ec);
+  if (ec) {
+    reportError("cannot inspect '" + target.string() + "': " + ec.message());
+    return kIoError;
+  }
+  if (targetExists) {
     reportError("'" + manifest.package.name + "' " + manifest.package.version +
                 " is already published at '" + target.string() + "'");
     return kFailure;
