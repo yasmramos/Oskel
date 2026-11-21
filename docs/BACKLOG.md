@@ -188,9 +188,13 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `map`/`filter`/`each`/`find`/`any`/`all` plus the folding `reduce`/`sum`/
    `join` in PHASE 7c.3h), and the ten map methods in PHASE 7c.3g. What is
    still open is `sort`/`sorted` (they need a stable sort that calls a
-   comparator back into the program) and the string methods
-   (`upper`/`lower`/`trim`/`split`/`lines`/`replace`/...), which still work in
-   the VM and fail in AOT with "no such member".
+   comparator back into the program). The pure string methods bind too, in
+   PHASE 7c.3i: `upper`, `lower`, `trim`, `trimStart`, `trimEnd`, `contains`,
+   `startsWith`, `endsWith`, `indexOf`, `substr`, `reversed` and `repeat` run
+   on both engines over the same portable primitive surface. The methods that
+   return a collection or need a callback still fail in AOT with "no such
+   member": `split`, `lines`, `chars`, `replace`, `replaceFirst` and the
+   callback forms.
 2. **[P0] [done]** VM/AOT divergence in structural equality: `[1,2] == [1,2]`
    is true in the VM (content) and false in AOT (identity). The equality helper
    in `oskel_compare` now descends into arrays and maps (equal length, equal
@@ -228,8 +232,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 8. **[P1] [done]** `emitContains` for arrays uses `AotCompareOp::Eq`, which
    used to be identity for arrays/maps; now that equality is structural, `in`
    over an array of arrays matches the VM (fixed with item 2).
-9. **[P1]** `emitMemberGet` for a string supports only `.length`, no methods
-   — the string half of item 1, still open.
+9. **[P1] [done]** `emitMemberGet` for a string binds the twelve pure methods
+   (PHASE 7c.3i, item 1). `split`/`lines`/`chars`/`replace`/`replaceFirst` and
+   the callback forms stay open: they return a collection or call back into the
+   program.
 10. **[P1]** `emitIterNext` for `str` allocates a string per character — same
     as item 7.
 11. **[P1]** `collectGlobals` does not detect name-resolution cycles: a

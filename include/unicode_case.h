@@ -4,6 +4,7 @@
 #ifndef OSKEL_UNICODE_CASE_H
 #define OSKEL_UNICODE_CASE_H
 
+#include <cstddef>
 #include <cstdint>
 
 // Simple case mapping of a single code point (Unicode 15.1.0). A code point
@@ -11,5 +12,20 @@
 // points) is returned unchanged.
 uint32_t toUpperCodePoint(uint32_t codePoint);
 uint32_t toLowerCodePoint(uint32_t codePoint);
+
+// The raw tables behind the two functions above, exposed so the AOT backend can
+// emit the same mapping into a compiled binary instead of duplicating it. One
+// run covers a contiguous code-point range: every code point in
+// `[first, last]` maps to `codePoint + delta`. The runs are sorted by `first`
+// and non-overlapping, which is what the binary search relies on.
+struct UnicodeCaseRun {
+  uint32_t first;
+  uint32_t last;
+  int32_t delta;
+};
+extern const UnicodeCaseRun kUnicodeUpperRuns[];
+extern const UnicodeCaseRun kUnicodeLowerRuns[];
+extern const std::size_t kUnicodeUpperRunCount;
+extern const std::size_t kUnicodeLowerRunCount;
 
 #endif  // OSKEL_UNICODE_CASE_H

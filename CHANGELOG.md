@@ -11,6 +11,16 @@ may change between minor versions.
 
 ### Added
 
+- **The twelve pure string methods now run under `oskel build`.** `upper`,
+  `lower`, `trim`, `trimStart`, `trimEnd`, `contains`, `startsWith`,
+  `endsWith`, `indexOf`, `substr`, `reversed` and `repeat` are bound on the
+  AOT backend with the same semantics as the VM: Unicode simple case mapping
+  through the shared `unicode_case` tables, code-point (not byte) indexing for
+  `indexOf` and `substr`, and the same empty-string and negative-bound edges.
+  `tests/native_build_string_methods.oskl` compares the compiled binary with
+  the VM byte for byte. The methods that return a collection or call back into
+  the program (`split`, `lines`, `chars`, `replace`, `replaceFirst`) still fail
+  in AOT with "value has no such member" (BACKLOG §6).
 - **An opaque `ptr` returned by an `extern "C"` function now builds and runs in
   the hosted AOT backend.** `ptr` was the last pointer shape PHASE 7f.6 left
   out: a `cstring`/`ptr` parameter and a `cstring` return already crossed the
