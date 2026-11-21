@@ -86,6 +86,16 @@ constexpr std::uint32_t kMapEntryTagOffset = 8;
 constexpr std::uint32_t kMapEntryPayloadOffset = 16;
 constexpr std::uint32_t kMapEntrySize = 24;
 
+// mt19937_64 state (PHASE 9.3): 312 words followed by the cursor, the same
+// layout the x86-64 runtime uses, so a seeded stream is identical on both
+// backends and in the VM.
+constexpr std::uint32_t kMtWords = 312;
+constexpr std::uint32_t kMtMiddleWord = 156;
+constexpr std::uint32_t kMtStateBytes = kMtWords * 8;
+constexpr std::uint32_t kMtCursorOffset = kMtStateBytes;
+constexpr std::uint32_t kMtStateTotal = kMtStateBytes + 8;
+constexpr std::uint64_t kMtDefaultSeed = 5489ULL;
+
 // --------------------------------------------------------------- module model
 struct FuncType {
   std::vector<std::uint8_t> params;
@@ -598,6 +608,8 @@ struct Runtime {
                 sCloseParen = 0;
   std::uint32_t sBadArity = 0, sRangeBounds = 0, sChrRange = 0, sChrSurrogate = 0,
                 sOrdSingle = 0, sSqrtNegative = 0, sIntString = 0, sIntNonFinite = 0,
+                sRandomHigh = 0, sRandomBounds = 0, sRandomArgc = 0,
+                sRandomType = 0, sSeedArgc = 0, sSeedType = 0,
                 sIntRange = 0, sFloatString = 0, sAssertFailed = 0, sPanic = 0,
                 sNonNull = 0, sLenType = 0;
   std::uint32_t sMessage = 0, sCode = 0, sNoMember = 0, sCannotIndex = 0,
@@ -609,6 +621,10 @@ struct Runtime {
   std::uint32_t sArrayIndexInt = 0, sMapKeyString = 0, sStringIndexInt = 0,
                 sArrayRange = 0, sMapMembership = 0, sStringMembership = 0,
                 sCannotAssignIndex = 0;
+
+  std::uint32_t randomState = 0, randomSeedFn = 0, randomTwistFn = 0,
+                randomNextFn = 0;
+  int randomStateSlot = -1;
 
   std::uint32_t alloc = 0, fail = 0, writeStr = 0, utf8Len = 0, newStr = 0,
                 concat = 0, strCmp = 0, fmtInt = 0, fmtDouble = 0, fmtRange = 0,
@@ -757,6 +773,15 @@ struct Runtime {
     sMapMembership = pool.addString("map membership requires a string key");
     sStringMembership = pool.addString("string membership requires a string operand");
     sCannotAssignIndex = pool.addString("cannot assign to an index of this value");
+    if (randomStateSlot >= 0) {
+      sRandomHigh = pool.addString("random() bound must be positive");
+      sRandomBounds = pool.addString(
+          "random() needs an upper bound greater than the lower bound");
+      sRandomArgc = pool.addString("random() expects between 0 and 2 arguments");
+      sRandomType = pool.addString("random() expects an integer argument");
+      sSeedArgc = pool.addString("seed() expects 1 argument");
+      sSeedType = pool.addString("seed() expects an integer argument");
+    }
   }
 
   // (tag, payload) -> bool value on the stack.
@@ -786,6 +811,10 @@ struct Runtime {
   }
 
   std::uint32_t emitAlloc();
+  std::uint32_t emitRandomSeed();
+  std::uint32_t emitRandomTwist();
+  std::uint32_t emitRandomNext();
+  std::uint32_t emitRandomState();
   std::uint32_t emitFail();
   std::uint32_t emitWriteStr();
   std::uint32_t emitUtf8Len();
@@ -6440,6 +6469,282 @@ void Runtime::emitCore() {
   unNeg = emitUnary(0);
   unNot = emitUnary(1);
   unBitNot = emitUnary(2);
+  if (randomStateSlot >= 0) {
+    randomSeedFn = emitRandomSeed();
+    randomTwistFn = emitRandomTwist();
+    randomNextFn = emitRandomNext();
+    randomState = emitRandomState();
+  }
+}
+
+// --- mt19937_64 (PHASE 9.3) --------------------------------------------------
+//
+// The generator is emitted as ordinary WASM functions, exactly like the x86-64
+// runtime emits it as machine code: the standard fully specifies the bit
+// stream, so `random()`/`seed()` reproduce the VM's seeded sequence. The state
+// is a 312-word block plus a cursor, allocated from the arena and cached in the
+// hidden `$randomState` global's payload.
+
+std::uint32_t Runtime::emitRandomSeed() {
+  std::uint32_t type = m.typeFor({kI32, kI64}, {});
+  std::uint32_t index = m.reserveFunction(type);
+  Func f(m, index, {kI32, kI64});
+  std::uint32_t k = f.addLocal(kI32), prev = f.addLocal(kI64),
+                val = f.addLocal(kI64);
+
+  f.lget(0);
+  f.lget(1);
+  f.i64Store(0);  // s[0] = seed
+  f.i32c(1);
+  f.lset(k);
+  f.block();
+  f.loop();
+  f.lget(k);
+  f.i32c(static_cast<std::int32_t>(kMtWords));
+  f.i32GeS();
+  f.brIf(1);
+  // prev = s[k-1]
+  f.lget(0);
+  f.lget(k);
+  f.i32c(1);
+  f.i32Sub();
+  f.i32c(8);
+  f.i32Mul();
+  f.i32Add();
+  f.i64Load(0);
+  f.lset(prev);
+  // s[k] = 6364136223846793005 * (prev ^ (prev >> 62)) + k
+  f.lget(prev);
+  f.lget(prev);
+  f.i64c(62);
+  f.i64ShrU();
+  f.i64Xor();
+  f.i64c(static_cast<std::int64_t>(6364136223846793005ULL));
+  f.i64Mul();
+  f.lget(k);
+  f.i64ExtendI32S();
+  f.i64Add();
+  f.lset(val);
+  f.lget(0);
+  f.lget(k);
+  f.i32c(8);
+  f.i32Mul();
+  f.i32Add();
+  f.lget(val);
+  f.i64Store(0);
+  f.lget(k);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(k);
+  f.br(0);
+  f.end();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kMtWords));
+  f.i64Store(kMtCursorOffset);  // the first draw twists
+  return index;
+}
+
+std::uint32_t Runtime::emitRandomTwist() {
+  std::uint32_t type = m.typeFor({kI32}, {});
+  std::uint32_t index = m.reserveFunction(type);
+  Func f(m, index, {kI32});
+  std::uint32_t k = f.addLocal(kI32), succ = f.addLocal(kI32),
+                mid = f.addLocal(kI32), x = f.addLocal(kI64),
+                xa = f.addLocal(kI64);
+
+  f.i32c(0);
+  f.lset(k);
+  f.block();
+  f.loop();
+  f.lget(k);
+  f.i32c(static_cast<std::int32_t>(kMtWords));
+  f.i32GeS();
+  f.brIf(1);
+  // x = (s[k] & UM) | (s[(k+1) % N] & LM)
+  f.lget(0);
+  f.lget(k);
+  f.i32c(8);
+  f.i32Mul();
+  f.i32Add();
+  f.i64Load(0);
+  f.i64c(static_cast<std::int64_t>(0xFFFFFFFF80000000ULL));
+  f.i64And();
+  f.lset(x);
+  f.lget(k);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(succ);
+  f.lget(succ);
+  f.i32c(static_cast<std::int32_t>(kMtWords));
+  f.i32GeS();
+  f.if_();
+  f.i32c(0);
+  f.lset(succ);
+  f.end();
+  f.lget(0);
+  f.lget(succ);
+  f.i32c(8);
+  f.i32Mul();
+  f.i32Add();
+  f.i64Load(0);
+  f.i64c(0x7FFFFFFF);
+  f.i64And();
+  f.lget(x);
+  f.i64Or();
+  f.lset(x);
+  // xa = x >> 1; if (x & 1) xa ^= MATRIX_A.
+  f.lget(x);
+  f.i64c(1);
+  f.i64ShrU();
+  f.lset(xa);
+  f.lget(x);
+  f.i64c(1);
+  f.i64And();
+  f.i64Eqz();
+  f.i32Eqz();
+  f.if_();
+  f.lget(xa);
+  f.i64c(static_cast<std::int64_t>(0xB5026F5AA96619E9ULL));
+  f.i64Xor();
+  f.lset(xa);
+  f.end();
+  // s[k] = s[(k + M) % N] ^ xa.
+  f.lget(k);
+  f.i32c(static_cast<std::int32_t>(kMtMiddleWord));
+  f.i32Add();
+  f.lset(mid);
+  f.lget(mid);
+  f.i32c(static_cast<std::int32_t>(kMtWords));
+  f.i32GeS();
+  f.if_();
+  f.lget(mid);
+  f.i32c(static_cast<std::int32_t>(kMtWords));
+  f.i32Sub();
+  f.lset(mid);
+  f.end();
+  f.lget(0);
+  f.lget(k);
+  f.i32c(8);
+  f.i32Mul();
+  f.i32Add();
+  f.lget(0);
+  f.lget(mid);
+  f.i32c(8);
+  f.i32Mul();
+  f.i32Add();
+  f.i64Load(0);
+  f.lget(xa);
+  f.i64Xor();
+  f.i64Store(0);
+  f.lget(k);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(k);
+  f.br(0);
+  f.end();
+  f.end();
+  f.lget(0);
+  f.i64c(0);
+  f.i64Store(kMtCursorOffset);
+  return index;
+}
+
+std::uint32_t Runtime::emitRandomNext() {
+  std::uint32_t type = m.typeFor({kI32}, {kI64});
+  std::uint32_t index = m.reserveFunction(type);
+  Func f(m, index, {kI32});
+  std::uint32_t cursor = f.addLocal(kI32), y = f.addLocal(kI64);
+
+  f.lget(0);
+  f.i64Load(kMtCursorOffset);
+  f.i32WrapI64();
+  f.lset(cursor);
+  f.lget(cursor);
+  f.i32c(static_cast<std::int32_t>(kMtWords));
+  f.i32GeS();
+  f.if_();
+  f.lget(0);
+  f.call(randomTwistFn);
+  f.end();
+  f.lget(0);
+  f.i64Load(kMtCursorOffset);
+  f.i32WrapI64();
+  f.lset(cursor);
+  // y = s[cursor]
+  f.lget(0);
+  f.lget(cursor);
+  f.i32c(8);
+  f.i32Mul();
+  f.i32Add();
+  f.i64Load(0);
+  f.lset(y);
+  f.lget(0);
+  f.lget(cursor);
+  f.i32c(1);
+  f.i32Add();
+  f.i64ExtendI32S();
+  f.i64Store(kMtCursorOffset);
+  // The standard's tempering.
+  f.lget(y);
+  f.lget(y);
+  f.i64c(29);
+  f.i64ShrU();
+  f.i64c(static_cast<std::int64_t>(0x5555555555555555ULL));
+  f.i64And();
+  f.i64Xor();
+  f.lset(y);
+  f.lget(y);
+  f.lget(y);
+  f.i64c(17);
+  f.i64Shl();
+  f.i64c(static_cast<std::int64_t>(0x71D67FFFEDA60000ULL));
+  f.i64And();
+  f.i64Xor();
+  f.lset(y);
+  f.lget(y);
+  f.lget(y);
+  f.i64c(37);
+  f.i64Shl();
+  f.i64c(static_cast<std::int64_t>(0xFFF7EEE000000000ULL));
+  f.i64And();
+  f.i64Xor();
+  f.lset(y);
+  f.lget(y);
+  f.lget(y);
+  f.i64c(43);
+  f.i64ShrU();
+  f.i64Xor();
+  return index;
+}
+
+std::uint32_t Runtime::emitRandomState() {
+  std::uint32_t type = m.typeFor({}, {kI32});
+  std::uint32_t index = m.reserveFunction(type);
+  Func f(m, index, {});
+  std::uint32_t ptr = f.addLocal(kI32);
+  const std::uint32_t slot = static_cast<std::uint32_t>(randomStateSlot * 16);
+
+  f.i32c(static_cast<std::int32_t>(slot + 8));
+  f.i64Load(0);
+  f.i32WrapI64();
+  f.lset(ptr);
+  f.lget(ptr);
+  f.i32Eqz();
+  f.if_();
+  f.i32c(static_cast<std::int32_t>(kMtStateTotal));
+  f.call(alloc);
+  f.lset(ptr);
+  f.i32c(static_cast<std::int32_t>(slot + 8));
+  f.lget(ptr);
+  f.i64ExtendI32U();
+  f.i64Store(0);
+  f.lget(ptr);
+  f.i64c(static_cast<std::int64_t>(kMtDefaultSeed));
+  f.call(randomSeedFn);
+  f.end();
+  f.lget(ptr);
+  return index;
 }
 
 std::uint32_t Runtime::emitTrapBuiltin(const std::string& name) {
@@ -7406,6 +7711,108 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
     return index;
   }
 
+  if (name == "seed") {
+    f.lget(1);
+    f.i32c(1);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sSeedArgc);
+    f.end();
+    argTag(0);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sSeedType);
+    f.end();
+    f.call(randomState);
+    argPayload(0);
+    f.call(randomSeedFn);
+    retNil();
+    return index;
+  }
+
+  if (name == "random") {
+    f.lget(1);
+    f.i32c(2);
+    f.i32GtS();
+    f.if_();
+    emitFailStatic(f, sRandomArgc);
+    f.end();
+    // No argument: the top 53 bits over 2^53, the VM's formula.
+    f.lget(1);
+    f.i32Eqz();
+    f.if_();
+    f.i64c(static_cast<std::int64_t>(kDouble));
+    f.call(randomState);
+    f.call(randomNextFn);
+    f.i64c(11);
+    f.i64ShrU();
+    f.f64ConvertI64U();
+    f.f64c(9007199254740992.0);
+    f.f64Div();
+    f.i64ReinterpretF64();
+    f.ret();
+    f.end();
+    // One argument: an integer in [0, high).
+    f.lget(1);
+    f.i32c(1);
+    f.i32Eq();
+    f.if_();
+    argTag(0);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sRandomType);
+    f.end();
+    argPayload(0);
+    f.i64c(0);
+    f.i64LeS();
+    f.if_();
+    emitFailStatic(f, sRandomHigh);
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.call(randomState);
+    f.call(randomNextFn);
+    argPayload(0);
+    f.i64RemU();
+    f.ret();
+    f.end();
+    // Two arguments: low + next() % (high - low).
+    argTag(0);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sRandomType);
+    f.end();
+    argTag(1);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sRandomType);
+    f.end();
+    argPayload(1);
+    argPayload(0);
+    f.i64LeS();
+    f.if_();
+    emitFailStatic(f, sRandomBounds);
+    f.end();
+    std::uint32_t low = f.addLocal(kI64), span = f.addLocal(kI64);
+    argPayload(0);
+    f.lset(low);
+    argPayload(1);
+    f.lget(low);
+    f.i64Sub();
+    f.lset(span);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.call(randomState);
+    f.call(randomNextFn);
+    f.lget(span);
+    f.i64RemU();
+    f.lget(low);
+    f.i64Add();
+    return index;
+  }
+
   if (name == "exit") {
     arityBetween(0, 1);
     f.lget(1);
@@ -7436,7 +7843,7 @@ const std::unordered_set<std::string>& supportedBuiltins() {
       "int", "float", "double", "bool", "chr", "ord", "floor", "ceil",
       "round", "sqrt", "assert", "assertEq", "panic", "error", "isError",
       "$isError", "$nonNull", "$range", "range", "exit", "$slice",
-      "time", "clock",
+      "time", "clock", "random", "seed",
   };
   return names;
 }
@@ -7451,7 +7858,7 @@ const std::unordered_set<std::string>& vmBuiltinNames() {
       "repr", "int", "float", "double", "bool", "chr", "ord", "floor",
       "ceil", "round", "sqrt", "pow", "sin", "cos", "tan", "log", "exp",
       "random", "seed", "clock", "time", "memSize", "assert", "assertEq",
-      "panic", "pcall", "error", "isError", "$isError", "exit", "args",
+            "panic", "pcall", "error", "isError", "$isError", "exit", "args",
       "readFile", "writeFile", "fileExists", "range", "$range", "$nonNull",
       "$slice", "cstring", "buffer", "cstr", "byteLen", "loadByte",
       "storeByte", "intToPtr", "ptrToInt", "free",
@@ -7554,6 +7961,10 @@ void Lowering::planGlobals() {
       const std::string& name = wasmNameOf(*proto, instr.b);
       if (builtins.find(name) != builtins.end()) assign(name);
     }
+  }
+  if (globalSlot.find("random") != globalSlot.end() ||
+      globalSlot.find("seed") != globalSlot.end()) {
+    assign("$randomState");
   }
   for (const std::string& name : hostBindings) assign(name);
   auto isHostBindingShape = [&](const Bytecode& proto, std::size_t index) {
@@ -8211,6 +8622,9 @@ void Lowering::emitProto(const Bytecode& proto, std::size_t protoIndex) {
 std::vector<std::uint8_t> Lowering::run() {
   collectProtos(root, protos);
   planGlobals();
+  rt.randomStateSlot = globalSlot.find("$randomState") != globalSlot.end()
+                           ? globalSlot.at("$randomState")
+                           : -1;
 
   pool.base = static_cast<std::uint32_t>(globalCount * 16);
   rt.declareTypes();
