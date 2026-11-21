@@ -201,8 +201,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    included), `lines` (one trailing `'\r'` dropped per segment, no empty tail),
    `chars`, `replace`, `replaceFirst`, `padStart` and `padEnd` (a `width` in
    code points, the fill repeated whole and then clipped, both ordering
-   branches). The callback forms (`map`-style on strings) remain the only
-   string members with no AOT binding.
+   branches). There is no callback form on a string: `"abc".map`/`.each`/
+   `.filter` are rejected by the VM too (`type 'string' has no member 'map'`),
+   so the string method surface has no AOT gap left.
 2. **[P0] [done]** VM/AOT divergence in structural equality: `[1,2] == [1,2]`
    is true in the VM (content) and false in AOT (identity). The equality helper
    in `oskel_compare` now descends into arrays and maps (equal length, equal
@@ -326,14 +327,22 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     length (via `oskel_utf8_len`) before the lookup; an out-of-range index still
     reports the error. Pinned by `tests/freestanding_test.cpp`
     (`test_negative_string_index`).
-22. **[P1]** VM/AOT divergence in a function's text representation: `repr`/`str`
-    of a named function is `<fn name>` in the VM (`<native fn name>` for a host
-    binding) but `<fn>` in the AOT binary, because the AOT closure object is
-    `(code, arity, upvalueCount)` with no name field. Fixing it means widening
-    the closure object and every site that builds one (`emitClosure`, the bound
-    array methods, the lowerer's capture stores) and threading the proto name
-    into the emitter. The AOT form is pinned by `tests/freestanding_test.cpp`;
-    the parity fixtures avoid printing a bare function until then.
+22. **[P1] [done]** VM/AOT divergence in a function's text representation:
+    `repr`/`str` of a named function is `<fn name>` in the VM (`<native fn
+    name>` for a host binding) but used to be the bare `<fn>` in the AOT
+    binary, because the AOT closure object carried no name. The closure header
+    gained a fourth word, `display`, holding the address of a static
+    `AotString` with the exact text to render (`"<fn add>"`,
+    `"<native fn array.map>"`, `"<native fn getpid>"`); a null `display` keeps
+    the old `<fn>` fallback for a closure built by a path with no name. The
+    text is a data island, so the closure stays four words and `emitReprInto`
+    renders it with one append -- no per-value allocation. One island per proto
+    is emitted by the lowerer (`<fn ` + `Bytecode::name` + `>`), one per builtin
+    and one per `extern "C"` thunk (`<native fn ` + symbol + `>`), and the
+    bound array/map/string methods carry their `owner.method` form from the
+    binder. `tests/native_build_function_repr.oskl` pins the parity for a
+    declared function, a lambda, a class method, a builtin, a `native fn`, a
+    bound method of each family and a function nested in a container.
 23. **[P1] [done]** VM/AOT divergence in the value of a returned `cstring`
     (PHASE 7f.6). `emitExternThunk` scanned a returned `const char *` and boxed
     it as the existing `Str`, so `type()` reported `"string"` where the VM
@@ -856,12 +865,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 7. **[P2] [done]** Add an `oskel.toml` for native dependencies.
    `oskelp` (the project and package manager) landed with `oskel.toml`,
    `oskel.lock`, path dependencies and
-   `new`/`init`/`build`/`run`/`check`/`test`/`clean`/`tree`. The manifest is
-   parsed by a small strict TOML subset in `tools/oskelp.cpp`; the resolver
-   rejects cycles, two locations for one package name, a name that disagrees
-   with its manifest and a registry dependency. The tool is standalone and
-   drives `oskel`/`oskelc` as child processes; `OSKEL_MODULE_ROOT` is the only
-   compiler-side hook.
+   `new`/`init`/`add`/`remove`/`build`/`run`/`check`/`test`/`clean`/`tree`. The
+   manifest is parsed by a small strict TOML subset in `tools/oskelp.cpp`; the
+   resolver rejects cycles, two locations for one package name and a name that
+   disagrees with its manifest, and resolves a local-registry dependency from
+   `$OSKEL_REGISTRY`. The tool is standalone and drives `oskel`/`oskelc` as
+   child processes; `OSKEL_MODULE_ROOT` is the only compiler-side hook.
 8. **[P3]** Add a "hello world with UI" tutorial (needs the post-1.0 UI work).
 9. **[P2] [partial]** SDL3 bindings landed (post-1.0 UI): `std/sdl.oskl` binds
    the window, renderer and event surface, `docs/sdl.md` documents it, and
@@ -869,13 +878,19 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    layer (`Window`, `Column`, `Text`, `Button`, ...) and the Windows loaded-DLL
    symbol lookup (§18) are still open.
 10. **[P3]** Add `dlopen`/`dlsym` as a builtin for dynamic FFI.
-11. **[P1]** `oskelp`: add a local registry (`$OSKEL_REGISTRY`) with semver
-    ranges, so a dependency can be `utils = "1.2.0"` instead of a path. A
-    network registry is a separate decision: it needs HTTP/TLS, which the
-    standard library does not carry.
-12. **[P1]** `oskelp`: add `add`, `remove`, `update` and `publish`. The manifest
-    editor must preserve comments and unrelated lines; rewriting the file is not
-    acceptable.
+11. **[P1] [done]** `oskelp`: the local registry (`$OSKEL_REGISTRY`) landed
+    with semver requirements (exact, `^`, `~`, comparators, wildcards and a
+    conjunction), so a dependency can be `utils = "^1.2.0"` instead of a path.
+    `oskel.lock` records `registry+<name>@<version>` and keeps the pin while it
+    satisfies the manifest. A network registry is still a separate decision: it
+    needs HTTP/TLS, which the standard library does not carry, plus checksums
+    and signatures.
+12. **[P1] [done]** `oskelp`: `add`, `remove`, `publish` and `update` landed.
+    `add` and `remove` use an in-place editor that preserves comments, blank
+    lines and CRLF; a failed add resolves the graph before it writes, so the
+    manifest is never left half-edited. `add` without `--path` writes a registry
+    requirement, `publish` copies a package into `$OSKEL_REGISTRY`, and
+    `update [<name>]` moves the lockfile pin and prints each change.
 13. **[P2]** `oskelp`: add build profiles. `target/<name>` is the only output
     today because the AOT backend has no optimization level to select; a
     `--release` that changes nothing would be a cosmetic lie.

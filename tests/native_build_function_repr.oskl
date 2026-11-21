@@ -1,0 +1,47 @@
+// `repr`/`str` of a function value (BACKLOG §6.22). The VM renders
+// `<fn name>` for a user function and `<native fn name>` for a native one,
+// bound methods included (`<native fn array.map>`). The AOT backend used to
+// render every function as the literal `<fn>`, so this fixture pins the name
+// on both engines: a declared function, a lambda, a class method, a builtin,
+// a `native fn` declaration, an array/map/string bound method, and the
+// nested case inside a container.
+fn add(a: int, b: int): int { return a + b; }
+
+native fn sqrt(x: double): double;
+
+class Counter {
+  fn value(): int { return 1; }
+}
+
+let counter = Counter();
+let lambda = (x: int) => x + 1;
+
+print(repr(add));
+print(repr(lambda));
+print(repr(counter.value));
+print(repr(print));
+print(repr(len));
+print(repr(sqrt));
+
+let items = [1, 2, 3];
+let table = {"k": 1};
+let text = "hi";
+print(repr(items.push));
+print(repr(items.sorted));
+print(repr(table.keys));
+print(repr(table.merge));
+print(repr(text.upper));
+print(repr(text.padEnd));
+
+// `str` and `print` go through the same renderer, and a function nested in a
+// container must keep its name too.
+print(str(add));
+print(str(print));
+print([add, print, items.push]);
+print({"f": add, "g": table.keys});
+
+// A closure keeps the name of the proto it was built from.
+fn makeAdder(): fn(int): int {
+  return (x: int) => x + 1;
+}
+print(repr(makeAdder()));

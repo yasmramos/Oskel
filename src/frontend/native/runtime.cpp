@@ -177,6 +177,15 @@ struct CollectionEnv {
   // member names are the data islands `*Const` (raw `AotString`s, like
   // `lengthConst`).
   CodeGen::Label bindArrayMethod;
+  // The text `repr`/`str` render for each bound method value, in selector
+  // order: `"<native fn array.push>"`, `"<native fn array.pop>"`, ... The
+  // binder hands the matching label to `oskel_closure` as its `display`.
+  std::vector<CodeGen::Label> arrayMethodDisplays;
+  std::vector<CodeGen::Label> mapMethodDisplays;
+  std::vector<CodeGen::Label> stringMethodDisplays;
+  std::vector<std::string> arrayDisplayTexts;
+  std::vector<std::string> mapDisplayTexts;
+  std::vector<std::string> stringDisplayTexts;
   CodeGen::Label pushMethod;
   CodeGen::Label popMethod;
   CodeGen::Label shiftMethod;
@@ -2016,7 +2025,8 @@ void emitArrayConcat(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
 // preserved across the helper calls.
 void emitBindArrayMethod(CodeGen& cg, CodeGen::Label label, CodeGen::Label cellNew,
                          CodeGen::Label closure,
-                         const std::vector<CodeGen::Label>& methods) {
+                         const std::vector<CodeGen::Label>& methods,
+                         const std::vector<CodeGen::Label>& displays) {
   std::vector<CodeGen::Label> use(methods.size());
   for (CodeGen::Label& l : use) l = cg.newLabel();
   CodeGen::Label haveCode = cg.newLabel();
@@ -2038,10 +2048,12 @@ void emitBindArrayMethod(CodeGen& cg, CodeGen::Label label, CodeGen::Label cellN
     cg.jcc(Jcc::Eq, use[i]);
   }
   cg.leaRipLabel(Rdi, methods.back());
+  cg.leaRipLabel(Rcx, displays.back());  // the text repr/str renders
   cg.jmp(haveCode);
   for (std::size_t i = 0; i + 1 < methods.size(); ++i) {
     cg.bind(use[i]);
     cg.leaRipLabel(Rdi, methods[i]);
+    cg.leaRipLabel(Rcx, displays[i]);
     cg.jmp(haveCode);
   }
   cg.bind(haveCode);
@@ -6008,12 +6020,14 @@ void emitGlobalGet(CodeGen& cg, CodeGen::Label label) {
   cg.retInsn();
 }
 
-// `AotValue oskel_closure(void* code, long arity, long upvalueCount)`: allocate
-// an `AotClosure` (code, arity, upvalueCount) followed by `upvalueCount` cell
-// pointers in the arena and return it as a `Func` value (rax:rdx). The slot
-// area is left for the lowering to fill: it knows which cells the child
-// captures and writes each pointer with a plain store, so the helper does not
-// need the descriptor table.
+// `AotValue oskel_closure(void* code, long arity, long upvalueCount,
+// void* display)`: allocate an `AotClosure` (code, arity, upvalueCount,
+// display) followed by `upvalueCount` cell pointers in the arena and return it
+// as a `Func` value (rax:rdx). `display` is the address of a static `AotString`
+// holding the text `repr`/`str` render for the closure, or 0 to fall back to
+// the literal `<fn>`. The slot area is left for the lowering to fill: it knows
+// which cells the child captures and writes each pointer with a plain store,
+// so the helper does not need the descriptor table.
 void emitClosure(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
                  CodeGen::Label fail, const DataBlob& msgOom) {
   CodeGen::Label oom = cg.newLabel();
@@ -6022,10 +6036,11 @@ void emitClosure(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
   prologue(cg);
   cg.push(Rbx);
   cg.push(R12);
-  cg.subRegImm32(Rsp, 16);  // scratch slot for the capture count (keeps rsp aligned)
+  cg.subRegImm32(Rsp, 32);  // scratch slots (rsp stays 16-byte aligned)
   cg.movReg(Rbx, Rdi);      // code address
   cg.movReg(R12, Rsi);      // arity
   cg.movToMem(Rbp, -24, Rdx);  // stash upvalueCount
+  cg.movToMem(Rbp, -32, Rcx);  // stash display
   cg.movReg(Rdi, Rdx);
   cg.shlImm8(Rdi, 3);       // count * 8 bytes of cell pointers
   cg.addImm32(Rdi, static_cast<std::int32_t>(kAotClosureHeaderSize));
@@ -6037,9 +6052,11 @@ void emitClosure(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
   cg.movToMem(Rax, 8, R12);             // arity
   cg.movFromMem(R11, Rbp, -24);
   cg.movToMem(Rax, 16, R11);            // upvalueCount
+  cg.movFromMem(R11, Rbp, -32);
+  cg.movToMem(Rax, static_cast<std::int64_t>(kAotClosureDisplayOffset), R11);
   cg.movReg(Rdx, Rax);                  // payload
   cg.movImm(Rax, kTagFunc);             // tag
-  cg.addImm32(Rsp, 16);
+  cg.addImm32(Rsp, 32);
   cg.pop(R12);
   cg.pop(Rbx);
   cg.movReg(Rsp, Rbp);
@@ -11957,6 +11974,7 @@ void emitReprInto(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbAppend,
   CodeGen::Label asStr = cg.newLabel();
   CodeGen::Label asNum = cg.newLabel();
   CodeGen::Label asFunc = cg.newLabel();
+  CodeGen::Label funcPlain = cg.newLabel();
   CodeGen::Label asArray = cg.newLabel();
   CodeGen::Label asMap = cg.newLabel();
   CodeGen::Label asRange = cg.newLabel();
@@ -12129,6 +12147,20 @@ void emitReprInto(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbAppend,
   cg.jmp(done);
 
   cg.bind(asFunc);
+  // A closure carries the text to render in its `display` field (a static
+  // `AotString`, PHASE 7c.2c.1); a null field falls back to the literal `<fn>`.
+  cg.movFromMem(Rax, Rbp, -40);        // closure
+  cg.movFromMem(Rax, Rax, static_cast<std::int64_t>(kAotClosureDisplayOffset));
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, funcPlain);
+  cg.movFromMem(Rdx, Rax, 0);          // AotString length
+  cg.addImm32(Rax, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movReg(Rsi, Rax);
+  cg.movReg(Rdi, Rbx);
+  cg.callLabel(sbAppend);
+  cg.jmp(done);
+
+  cg.bind(funcPlain);
   cg.movReg(Rdi, Rbx);
   cg.leaRipLabel(Rsi, textFunc.label);
   cg.movImm(Rdx, static_cast<std::int64_t>(textFunc.text.size()));
@@ -15499,6 +15531,32 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   env.printStrEsc = printStrEsc;
   env.lengthConst = cg.newLabel();
   env.bindArrayMethod = handles.bindArrayMethod;
+  // One display island per bound method, in the same order `member_get`
+  // assigns selectors, so `repr(a.push)` reads `"<native fn array.push>"`.
+  const auto nameDisplay = [](const char* owner, const char* method) {
+    return std::string("<native fn ") + owner + "." + method + ">";
+  };
+  for (const char* method : {"push", "pop", "shift", "unshift", "insert",
+                             "removeAt", "contains", "indexOf", "clear",
+                             "slice", "concat", "reversed", "clone", "map",
+                             "filter", "each", "find", "any", "all", "reduce",
+                             "sum", "join", "sort", "sorted"}) {
+    env.arrayMethodDisplays.push_back(cg.newLabel());
+    env.arrayDisplayTexts.emplace_back(nameDisplay("array", method));
+  }
+  for (const char* method : {"keys", "values", "entries", "has", "get", "set",
+                             "delete", "clear", "merge", "clone"}) {
+    env.mapMethodDisplays.push_back(cg.newLabel());
+    env.mapDisplayTexts.emplace_back(nameDisplay("map", method));
+  }
+  for (const char* method : {"upper", "lower", "trim", "trimStart", "trimEnd",
+                             "contains", "startsWith", "endsWith", "indexOf",
+                             "substr", "reversed", "repeat", "split", "lines",
+                             "chars", "replace", "replaceFirst", "padStart",
+                             "padEnd"}) {
+    env.stringMethodDisplays.push_back(cg.newLabel());
+    env.stringDisplayTexts.emplace_back(nameDisplay("string", method));
+  }
   env.pushMethod = handles.arrayPushMethod;
   env.popMethod = handles.arrayPopMethod;
   env.shiftMethod = handles.arrayShiftMethod;
@@ -15729,7 +15787,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                        handles.arrayFindMethod, handles.arrayAnyMethod,
                        handles.arrayAllMethod, handles.arrayReduceMethod,
                        handles.arraySumMethod, handles.arrayJoinMethod,
-                       handles.arraySortMethod, handles.arraySortedMethod});
+                       handles.arraySortMethod, handles.arraySortedMethod},
+                      env.arrayMethodDisplays);
   emitArrayPushMethod(cg, handles.arrayPushMethod, env);
   emitArrayPopMethod(cg, handles.arrayPopMethod, env, msgPopArgc);
   emitArrayShiftMethod(cg, handles.arrayShiftMethod, env, msgShiftArgc);
@@ -15765,7 +15824,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                        handles.mapEntriesMethod, handles.mapHasMethod,
                        handles.mapGetMethod, handles.mapSetMethod,
                        handles.mapDeleteMethod, handles.mapClearMethod,
-                       handles.mapMergeMethod, handles.mapCloneMethod});
+                       handles.mapMergeMethod, handles.mapCloneMethod},
+                      env.mapMethodDisplays);
   emitMapKeysMethod(cg, handles.mapKeysMethod, env, msgMapKeysArgc);
   emitMapValuesMethod(cg, handles.mapValuesMethod, env, msgMapValuesArgc);
   emitMapEntriesMethod(cg, handles.mapEntriesMethod, env, msgMapEntriesArgc);
@@ -15796,7 +15856,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                        handles.stringSplitMethod, handles.stringLinesMethod,
                        handles.stringCharsMethod, handles.stringReplaceMethod,
                        handles.stringReplaceFirstMethod, handles.stringPadStartMethod,
-                       handles.stringPadEndMethod});
+                       handles.stringPadEndMethod},
+                      env.stringMethodDisplays);
   emitStringUpperMethod(cg, handles.stringUpperMethod, env, msgUpperArgc);
   emitStringLowerMethod(cg, handles.stringLowerMethod, env, msgLowerArgc);
   emitStringTrimMethod(cg, handles.stringTrimMethod, env, msgTrimArgc, true, true);
@@ -16201,6 +16262,17 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitNameConst(env.padStartConst, "padStart");
   emitNameConst(env.padEndConst, "padEnd");
   emitNameConst(env.spaceConst, " ");
+  // The `repr`/`str` text of each bound method value, the same raw `AotString`
+  // layout. A `Func` value renders the closure's `display` field verbatim.
+  for (std::size_t i = 0; i < env.arrayMethodDisplays.size(); ++i) {
+    emitNameConst(env.arrayMethodDisplays[i], env.arrayDisplayTexts[i].c_str());
+  }
+  for (std::size_t i = 0; i < env.mapMethodDisplays.size(); ++i) {
+    emitNameConst(env.mapMethodDisplays[i], env.mapDisplayTexts[i].c_str());
+  }
+  for (std::size_t i = 0; i < env.stringMethodDisplays.size(); ++i) {
+    emitNameConst(env.stringMethodDisplays[i], env.stringDisplayTexts[i].c_str());
+  }
   // The Unicode case tables, as `{first, last, delta}` int32 triples, the same
   // layout `UnicodeCaseRun` has on the host.
   auto emitCaseTable = [&](CodeGen::Label lbl, const UnicodeCaseRun* runs,

@@ -78,14 +78,22 @@ constexpr std::size_t kAotStringHeaderSize = sizeof(std::uint64_t);
 // the captured cells through it. This differs from a runtime helper (which
 // takes two `AotValue`s in rdi:rsi/rdx:rcx) on purpose: a function has a
 // variable argument count, which does not fit the two-register value ABI.
+//
+// `display` points at a static `AotString` holding the text `repr`/`str` render
+// for the value (`"<fn add>"`, `"<native fn array.map>"`, ...), or 0 when the
+// closure was built by a path that has no name to show; a null `display` falls
+// back to the literal `<fn>`. The text lives in the image, so the closure
+// carries one word, never a copy, and the render is a plain append of it.
 struct AotClosure {
   std::uint64_t code;          // address of the function's machine code
   std::uint64_t arity;         // number of declared parameters
   std::uint64_t upvalueCount;  // number of captured cells that follow
+  std::uint64_t display;       // address of a static `AotString`, or 0
   // The captured cells (pointers to 16-byte `AotValue` slots) follow.
 };
 
-constexpr std::size_t kAotClosureHeaderSize = 3 * sizeof(std::uint64_t);
+constexpr std::size_t kAotClosureHeaderSize = 4 * sizeof(std::uint64_t);
+constexpr std::size_t kAotClosureDisplayOffset = 3 * sizeof(std::uint64_t);
 
 // On-image layout of an array (PHASE 7c.3): a live length, a capacity and the
 // address of the items block (an array of 16-byte `AotValue`s). The arena never

@@ -667,6 +667,19 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_map_methods.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `repr`/`str` of a function value (BACKLOG §6.22). The VM renders
+    # `<fn name>` for a user function and `<native fn name>` for a native one,
+    # bound methods included; the AOT backend used to render the bare literal
+    # `<fn>`. The closure now carries a `display` pointer to a static
+    # `AotString`, so the name survives and the fixture compares both engines
+    # byte for byte.
+    add_test(NAME oskel.build_binary_function_repr
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_function_repr"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_function_repr.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `**` with a float/double operand or a negative exponent (PHASE 7c.1d.2).
     # It used to lower only for int/int with a non-negative exponent; every
     # other numeric pair failed with the unsupported-operand error, so a program
