@@ -848,6 +848,15 @@ if(BUILD_TESTING)
           "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_many_args_helper.c"
           "-DOSKEL_EXPECTED_OUTPUT=many args callback ok"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
+      # The stub page must be read+execute, never writable+executable.
+      add_test(NAME oskel.build_hosted_extern_callback_wx
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_callback_wx"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_callback_wx.oskl"
+          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_wx_helper.c"
+          "-DOSKEL_EXPECTED_OUTPUT=callback stub wx ok"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
       # C invokes this callback from an `atexit` handler after the chunk
       # returns; the root epilogue publishes the final arena state for it.
       add_test(NAME oskel.build_hosted_extern_callback_exit
@@ -1205,6 +1214,78 @@ if(BUILD_TESTING)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.cmake")
   endif()
 
+  # --- WebAssembly backend (PHASE 9) ---
+  # The WASM target is platform-independent: the module runs on any host with a
+  # WebAssembly engine, so these tests are not behind the x86-64 guard above.
+  # They need Node (the host for the two imports the module declares); where
+  # Node is absent the tests are skipped, like `vscode_diagnostics`.
+  find_program(OSKEL_NODE_EXE NAMES node nodejs)
+  if(OSKEL_NODE_EXE)
+    add_test(NAME oskel.build_wasm
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_wasm.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `std.datetime` is deterministic apart from `time()`/`clock()`, which the
+    # fixture only observes through stable predicates, so the module must agree
+    # with the VM byte for byte too.
+    add_test(NAME oskel.build_wasm_datetime
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_datetime"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_datetime.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `std.collections` is pure Oskel over arrays, maps, slicing and closures,
+    # so the WASM backend must reproduce it without a special case.
+    add_test(NAME oskel.build_wasm_collections
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_collections"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_collections.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `std.math` exercises the shared shortest round-trip formatter through
+    # `PI`, `E` and `sqrt`, including the scientific and subnormal forms.
+    add_test(NAME oskel.build_wasm_math
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_math"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_math.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # The shortest round-trip formatter itself, over the whole double range.
+    add_test(NAME oskel.build_wasm_double_format
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_double_format"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_double_format.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # A mis-lowered loop must fail the test, not hang the suite: the Node run
+    # gets a hard timeout in `wasm_case.cmake`, and CTest bounds the driver.
+    set_tests_properties(oskel.build_wasm oskel.build_wasm_datetime
+      oskel.build_wasm_collections oskel.build_wasm_math
+      oskel.build_wasm_double_format PROPERTIES TIMEOUT 120)
+  endif()
+
   # --- .oskl script tests (auto-detected) ---
   file(GLOB oskel_tests CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.oskl"
@@ -1247,6 +1328,7 @@ if(BUILD_TESTING)
     # resolve; their hosted tests are the coverage.
     if(name STREQUAL "native_build_extern_callback_stored" OR
        name STREQUAL "native_build_extern_callback_exit" OR
+       name STREQUAL "native_build_extern_callback_wx" OR
        name STREQUAL "native_build_extern_callback_many_args" OR
        name STREQUAL "native_build_extern_callback_returns")
       continue()

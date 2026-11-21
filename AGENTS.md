@@ -244,9 +244,12 @@ it as a caveat:
 - A C callback (`fn(...): R` parameter) is a generated stub in the hosted
   backend (PHASE 7f.8), not a libffi closure. `oskel_callback_create` allocates
   a 32-byte context (closure tag/payload, the Oskel global base, a pointer to a
-  16-byte shared arena-state block) and a private RWX `mmap` page holding
-  `movabs r10, context; movabs r11, body; jmp r11`. The body saves the C
-  arguments, boxes `ptr`/`cstring`, calls the closure through `oskel_call` and
+  16-byte shared arena-state block) and a private `mmap` page holding
+  `movabs r10, context; movabs r11, body; jmp r11`. The page is mapped
+  read+write only while the stub is copied in, then `mprotect`ed to
+  read+execute (W^X); it is never writable and executable at the same time.
+  The body saves the C arguments, boxes `ptr`/`cstring`, calls the closure
+  through `oskel_call` and
   converts the result to the declared C return class. Three rules were bugs
   first: a C caller expects r13/r14/r15 preserved, so the body saves them, loads
   the Oskel arena cursor/end and global base from the context/state, runs, parks
@@ -261,8 +264,12 @@ it as a caveat:
   value and a callback with a struct parameter are rejected with dedicated
   messages; a stored callback works in AOT but not in the VM (the VM frees the
   libffi closure when the extern call returns), and both are BACKLOG §6 items
-  26/27. Tests: `tests/native_build_extern_callback.oskl` (`qsort`, VM parity)
-  and `tests/native_build_extern_callback_{stored,exit,many_args,returns}.oskl`
+  26/27. The stub page is process-lifetime: C may store the pointer (a stored
+  callback, including an `atexit` handler), so freeing it when the extern call
+  returns would break that contract; BACKLOG §6 item 28 tracks a pool or an
+  explicit release contract. Tests: `tests/native_build_extern_callback.oskl`
+  (`qsort`, VM parity) and
+  `tests/native_build_extern_callback_{stored,exit,wx,many_args,returns}.oskl`
   (AOT-only, `tests/hosted/*_helper.c`), plus
   `tests/errors/callback_struct_{return,param}.oskl`.
 - An `extern "C"` return class has a *box* per class, and adding one means
@@ -288,6 +295,50 @@ it as a caveat:
   the PE image were checked before CI. CI still gates the merge, since Wine is
   not Windows: a green Wine run is a signal, not a substitute for the
   `windows-latest` job.
+
+## The WebAssembly backend (PHASE 9)
+
+- `oskel build --target wasm32-freestanding-wasm` emits a `.wasm` module. The
+  target is `Target::wasm32()` (`Arch::Wasm32`, `Os::Freestanding`, `Abi::Wasm`)
+  and the backend is `include/native/wasm.h` + `src/frontend/native/wasm.cpp`.
+  `isWasmTarget()` routes it in `src/frontend/cli.cpp`; `isSupportedTarget()`
+  deliberately stays x86-64-only, because `requireSupportedTarget` guards the
+  x86-64 emitter.
+- The module imports `oskel.write(fd, ptr, len) -> i32`, `oskel.exit(code)`,
+  `oskel.time() -> i64` and `oskel.clock() -> f64`, and exports `_start`.
+  `tests/run_wasm.cjs` is the Node host that supplies all four; the tests are
+  skipped where Node is absent.
+- The runtime helpers (`print`, `toStr`, `repr`, the operators, iteration,
+  member access, the builtins) are ordinary WASM functions emitted by
+  `Runtime` in the same file, not a hand-written blob. Registers are `(i64 tag,
+  i64 payload)` local pairs; the globals table is 16 bytes per slot at offset 0,
+  followed by the static pool and the bump arena.
+- The collection half of the language is supported too: `NEWTABLE` creates an
+  array or a map, `GETTABLE`/`SETTABLE` dispatch to `indexGet`/`indexSet`
+  (array/string/map) or `memberGet`/`memberSet` (error fields, map fields,
+  `length`), `for ... in` walks arrays and maps (with the key/value pair), `in`
+  covers both, `==` is structural (with the cycle-safe visited list), and a
+  variadic proto packs its extras into an array bound to the last parameter.
+  `$slice` and the string-to-number forms of `int`/`float`/`double` are bound,
+  so `std/json`, `std/datetime` and `std/collections` build and match the VM
+  byte for byte; `time()`/`clock()` read the host imports.
+- A construct the backend cannot lower yet must fail cleanly, never emit a
+  mis-compiled module: an unbound builtin is seeded as a trapping closure, and
+  a used `extern "C"`/`native fn` symbol with no stub is a build error (exit
+  65). `tests/native_build_wasm.oskl` pins the supported surface against the VM
+  byte for byte.
+- `double` printing is the same shortest round-trip form `std::to_chars`
+  produces, not a fixed-point approximation: `fmtDouble` generates 18
+  significant digits by scaling with the 633-entry `pow10` table
+  (`1e-324`..`1e308`, built with `strtod` so every entry is the correctly
+  rounded double), rounds the 18th into the 17th, then tries every shorter
+  precision and re-parses the candidate with `parseDoubleStr`. It emits the
+  shorter of fixed and scientific (fixed on a tie), and handles `-0`,
+  subnormals and `e±NN`. `parseDoubleStr` combines the fraction into one
+  `mantissa / scale` division (a term-by-term sum rounds twice and accepts a
+  15-digit prefix that does not round-trip) and applies the exponent with one
+  table multiply/divide. `tests/native_build_double_format.oskl` pins the
+  whole range and `tests/native_build_math.oskl` pins `PI`/`E`/`sqrt`.
 
 ## SDL3 bindings (`std/sdl.oskl`)
 
