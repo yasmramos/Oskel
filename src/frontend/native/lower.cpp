@@ -6,6 +6,7 @@
 #include "native/runtime.h"
 #include "native/value.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <unordered_map>
@@ -1476,9 +1477,14 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   // store it into the global slot. A builtin has no captured cells, so the
   // closure is a plain code pointer with arity 0 (the runtime entry checks no
   // arity itself; `print`/`write`/`eprint` accept any count).
-  for (const auto& [name, code] : builtins) {
+  std::vector<std::string> builtinOrder;
+  builtinOrder.reserve(builtins.size());
+  for (const auto& entry : builtins) builtinOrder.push_back(entry.first);
+  std::sort(builtinOrder.begin(), builtinOrder.end());
+  for (const std::string& name : builtinOrder) {
     auto slot = globals.slotOfName.find(name);
     if (slot == globals.slotOfName.end()) continue;
+    const CodeGen::Label code = builtins.at(name);
     // A builtin is a native function in the hosted engine, so `repr` reads
     // `<native fn name>`; the display island carries exactly that text.
     StringConstant display{cg.newLabel(), "<native fn " + name + ">"};
@@ -1657,8 +1663,9 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
                  extras, &callbackSignatures);
   // String constants last: their bytes are addressed by `lea` from the code
   // above, and no path falls through into them.
-  for (const auto& [child, label] : displayOf) {
-    StringConstant display{label, "<fn " + child->name + ">"};
+  for (const Bytecode* child : protos) {
+    if (child == &proto) continue;
+    StringConstant display{displayOf.at(child), "<fn " + child->name + ">"};
     stringConstants.push_back(std::move(display));
   }
   emitStringConstants(cg, stringConstants);

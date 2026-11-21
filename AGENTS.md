@@ -565,20 +565,35 @@ it as a caveat:
   is `OSKEL_MODULE_ROOT`, honoured by `resolverFor`, which makes a package's
   `src/` the module root for both engines. `oskelp` generates `oskel.lock`,
   `target/` and `.oskel/deps/`; the last two belong in `.gitignore`, while
-  `oskel.lock` is committed. Only `path` dependencies are
-  supported: a string dependency is a registry dependency and is refused with a
-  dedicated message, and the registry is BACKLOG §20 work. `oskelp add` and
-  `oskelp remove` edit `[dependencies]` as text, never by rewriting the
-  manifest: comments, blank lines and CRLF survive, a duplicate add is a no-op
-  (a new `--version` for the same path updates the entry), and a failed add
-  leaves the file untouched because the graph is resolved before the write.
+  `oskel.lock` is committed. Dependencies are either `path` tables or a
+  version requirement string resolved from the **local registry** named by
+  `OSKEL_REGISTRY` (`<root>/<name>/<version>/`, holding `oskel.toml` and
+  `src/`); a network registry is still BACKLOG §20 work. The semver parser
+  accepts an exact version, `^`, `~`, `>=`/`>`/`<=`/`<`/`=`, `*`/`x`
+  wildcards and a comma/space-separated conjunction; a prerelease is selected
+  only by an exact requirement for it. The lockfile records
+  `registry+<name>@<version>` and a normal build prefers that pin while it
+  still satisfies the manifest, so `oskelp update [<name>]` is the explicit
+  upgrade. The namespace is flat and the resolver does not backtrack: two
+  incompatible requirements for one name are an error, not a silent pick.
+  `oskelp add` and `oskelp remove` edit `[dependencies]` as text, never by
+  rewriting the manifest: comments, blank lines and CRLF survive, a duplicate
+  add is a no-op (a new `--version` for the same path updates the entry), and a
+  failed add leaves the file untouched because the graph is resolved before
+  the write. `add` without `--path` writes a registry requirement.
   `remove` refuses an entry that spans multiple lines instead of deleting a
-  partial one. `oskelp build` uses
+  partial one. `oskelp publish [--registry <dir>]` copies the manifest and
+  `src/` into the registry and refuses to overwrite a version or publish a
+  package that keeps a path dependency. A registry dependency has no `path`,
+  so `oskelp tree` must load each child from the **resolution**
+  (`ResolvedPackage::dir`), never from `manifest.dir / dependency.path`; the
+  latter reads the root manifest again and prints a bogus `(cycle)`.
+  `oskelp build` uses
   `oskelc` (falling back to `oskel build`), `oskelp run` uses the VM unless
   `--native` is given, and `oskelp test` runs every `tests/**/*.oskl` and exits
   101 when one fails. `tests/run_oskelp_case.cmake` drives the real binary
-  through the whole workflow, so a change to the manifest, the lockfile or a
-  command must keep that test green.
+  through the whole workflow, including publish/consume/update/`--locked`, so a
+  change to the manifest, the lockfile or a command must keep that test green.
 
 ## Commit authorship
 

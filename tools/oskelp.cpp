@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -83,23 +84,283 @@ bool allDigits(const std::string& text) {
   return true;
 }
 
-// A package version is `major.minor.patch` with an optional `-suffix` or
-// `+build`. The tool only compares versions for equality today, so a strict
-// shape is enough and keeps a typo from becoming a dependency identity.
-bool isSemver(const std::string& version) {
-  size_t cut = version.find_first_of("-+");
-  std::string core = version.substr(0, cut == std::string::npos ? version.size() : cut);
-  int parts = 0;
+// A package version is `major.minor.patch` with an optional `-prerelease` and
+// `+build`. Requirements add `^`, `~`, comparators and wildcards; the parser
+// below is shared by the manifest, the lockfile and the registry selector.
+std::string trimCopy(const std::string& text);  // defined below
+
+namespace {
+
+bool parseNumericComponent(const std::string& text, int& out) {
+  if (text.empty() || !allDigits(text)) return false;
+  if (text.size() > 1 && text[0] == '0') return false;
+  long long value = 0;
+  for (char c : text) {
+    value = value * 10 + (c - '0');
+    if (value > INT_MAX) return false;
+  }
+  out = static_cast<int>(value);
+  return true;
+}
+
+bool isWildcardComponent(const std::string& text) {
+  return text == "*" || text == "x" || text == "X";
+}
+
+bool parsePrerelease(const std::string& text) {
+  if (text.empty()) return false;
   size_t start = 0;
-  for (size_t i = 0; i <= core.size(); ++i) {
-    if (i == core.size() || core[i] == '.') {
-      if (!allDigits(core.substr(start, i - start))) return false;
-      ++parts;
-      start = i + 1;
+  while (true) {
+    size_t dot = text.find('.', start);
+    std::string identifier =
+        text.substr(start, dot == std::string::npos ? std::string::npos
+                                                    : dot - start);
+    if (identifier.empty()) return false;
+    bool numeric = true;
+    for (char c : identifier) {
+      if (!std::isalnum(static_cast<unsigned char>(c)) && c != '-') {
+        return false;
+      }
+      if (!std::isdigit(static_cast<unsigned char>(c))) numeric = false;
+    }
+    if (numeric && identifier.size() > 1 && identifier[0] == '0') {
+      return false;
+    }
+    if (dot == std::string::npos) break;
+    start = dot + 1;
+  }
+  return true;
+}
+
+struct PartialVersion {
+  bool hasMajor = false;
+  bool hasMinor = false;
+  bool hasPatch = false;
+  bool majorWild = false;
+  bool minorWild = false;
+  bool patchWild = false;
+  int major = 0;
+  int minor = 0;
+  int patch = 0;
+  std::string prerelease;
+
+  int specified() const {
+    if (majorWild || !hasMajor) return 0;
+    if (minorWild || !hasMinor) return 1;
+    if (patchWild || !hasPatch) return 2;
+    return 3;
+  }
+};
+
+bool parsePartialVersion(const std::string& text, PartialVersion& out) {
+  out = PartialVersion{};
+  std::string value = trimCopy(text);
+  if (value.empty()) return false;
+  size_t plus = value.find('+');
+  if (plus != std::string::npos) {
+    if (plus + 1 >= value.size()) return false;
+    value = value.substr(0, plus);
+  }
+  size_t dash = value.find('-');
+  std::string core = value;
+  if (dash != std::string::npos) {
+    core = value.substr(0, dash);
+    out.prerelease = value.substr(dash + 1);
+    if (!parsePrerelease(out.prerelease)) return false;
+  }
+  std::vector<std::string> parts;
+  size_t start = 0;
+  while (true) {
+    size_t dot = core.find('.', start);
+    parts.push_back(core.substr(start, dot == std::string::npos
+                                           ? std::string::npos
+                                           : dot - start));
+    if (dot == std::string::npos) break;
+    start = dot + 1;
+  }
+  if (parts.empty() || parts.size() > 3) return false;
+  bool wildcardSeen = false;
+  for (size_t i = 0; i < parts.size(); ++i) {
+    const std::string& part = parts[i];
+    if (isWildcardComponent(part)) {
+      wildcardSeen = true;
+      if (i == 0) out.majorWild = true;
+      else if (i == 1) out.minorWild = true;
+      else out.patchWild = true;
+      continue;
+    }
+    if (wildcardSeen) return false;
+    int number = 0;
+    if (!parseNumericComponent(part, number)) return false;
+    if (i == 0) {
+      out.hasMajor = true;
+      out.major = number;
+    } else if (i == 1) {
+      out.hasMinor = true;
+      out.minor = number;
+    } else {
+      out.hasPatch = true;
+      out.patch = number;
     }
   }
-  return parts == 3;
+  if (!out.hasMajor && !out.majorWild) return false;
+  if (!out.prerelease.empty() && out.specified() != 3) return false;
+  return true;
 }
+
+struct Bound {
+  bool present = false;
+  bool inclusive = true;
+  SemVer version;
+};
+
+struct Range {
+  Bound lower;
+  Bound upper;
+};
+
+bool makeRange(const std::string& token, Range& out) {
+  out = Range{};
+  std::string text = trimCopy(token);
+  if (text.empty()) return false;
+  std::string op;
+  for (const std::string& candidate :
+       {std::string(">="), std::string("<="), std::string(">"),
+        std::string("<"), std::string("="), std::string("^"),
+        std::string("~")}) {
+    if (text.compare(0, candidate.size(), candidate) == 0) {
+      op = candidate;
+      text = trimCopy(text.substr(candidate.size()));
+      break;
+    }
+  }
+  if (text.empty()) return false;
+  if (op.empty() && (text[0] == '>' || text[0] == '<' || text[0] == '=' ||
+                     text[0] == '^' || text[0] == '~')) {
+    return false;
+  }
+  PartialVersion partial;
+  if (!parsePartialVersion(text, partial)) return false;
+  int specified = partial.specified();
+  if (specified == 0) return op.empty() || op == "=";
+
+  SemVer base;
+  base.major = partial.major;
+  base.minor = partial.minor;
+  base.patch = partial.patch;
+  base.prerelease = partial.prerelease;
+  auto nextMajor = [&]() {
+    SemVer version = base;
+    version.major += 1;
+    version.minor = 0;
+    version.patch = 0;
+    version.prerelease.clear();
+    return version;
+  };
+  auto nextMinor = [&]() {
+    SemVer version = base;
+    version.minor += 1;
+    version.patch = 0;
+    version.prerelease.clear();
+    return version;
+  };
+  auto nextPatch = [&]() {
+    SemVer version = base;
+    version.patch += 1;
+    version.prerelease.clear();
+    return version;
+  };
+
+  if (op.empty() || op == "=") {
+    out.lower = Bound{true, true, base};
+    if (specified == 3) {
+      out.upper = Bound{true, true, base};
+    } else if (specified == 2) {
+      out.upper = Bound{true, false, nextMinor()};
+    } else {
+      out.upper = Bound{true, false, nextMajor()};
+    }
+    return true;
+  }
+  if (op == ">=") {
+    out.lower = Bound{true, true, base};
+    return true;
+  }
+  if (op == ">") {
+    if (specified == 3) out.lower = Bound{true, false, base};
+    else if (specified == 2) out.lower = Bound{true, true, nextMinor()};
+    else out.lower = Bound{true, true, nextMajor()};
+    return true;
+  }
+  if (op == "<") {
+    out.upper = Bound{true, false, base};
+    return true;
+  }
+  if (op == "<=") {
+    if (specified == 3) out.upper = Bound{true, true, base};
+    else if (specified == 2) out.upper = Bound{true, false, nextMinor()};
+    else out.upper = Bound{true, false, nextMajor()};
+    return true;
+  }
+  if (op == "^") {
+    if (partial.majorWild || partial.minorWild || partial.patchWild) return false;
+    out.lower = Bound{true, true, base};
+    if (partial.major > 0) {
+      out.upper = Bound{true, false, nextMajor()};
+    } else if (specified == 1) {
+      out.upper = Bound{true, false, nextMajor()};
+    } else if (partial.minor > 0) {
+      out.upper = Bound{true, false, nextMinor()};
+    } else if (specified == 3) {
+      out.upper = Bound{true, false, nextPatch()};
+    } else {
+      out.upper = Bound{true, false, nextMinor()};
+    }
+    return true;
+  }
+  if (op == "~") {
+    if (partial.majorWild || partial.minorWild || partial.patchWild) return false;
+    out.lower = Bound{true, true, base};
+    if (specified == 1) out.upper = Bound{true, false, nextMajor()};
+    else out.upper = Bound{true, false, nextMinor()};
+    return true;
+  }
+  return false;
+}
+
+bool matchesRange(const Range& range, const SemVer& version) {
+  if (range.lower.present) {
+    int cmp = compareSemVer(version, range.lower.version);
+    if (cmp < 0 || (cmp == 0 && !range.lower.inclusive)) return false;
+  }
+  if (range.upper.present) {
+    int cmp = compareSemVer(version, range.upper.version);
+    if (cmp > 0 || (cmp == 0 && !range.upper.inclusive)) return false;
+  }
+  return true;
+}
+
+std::vector<std::string> requirementTokens(const std::string& requirement) {
+  std::vector<std::string> tokens;
+  std::string normalized = requirement;
+  for (char& c : normalized) {
+    if (c == ',') c = ' ';
+  }
+  std::istringstream stream(normalized);
+  std::string token;
+  while (stream >> token) {
+    if (token == ">=" || token == "<=" || token == ">" || token == "<" ||
+        token == "=" || token == "^" || token == "~") {
+      std::string next;
+      if (!(stream >> next)) return {};
+      token += next;
+    }
+    tokens.push_back(token);
+  }
+  return tokens;
+}
+
+}  // namespace
 
 std::string escapeToml(const std::string& text) {
   std::string out;
@@ -158,6 +419,92 @@ std::string derivePackageName(const std::string& directory) {
 }
 
 }  // namespace
+
+bool parseSemVer(const std::string& text, SemVer& out) {
+  PartialVersion partial;
+  if (!parsePartialVersion(text, partial) || partial.specified() != 3) {
+    return false;
+  }
+  out.major = partial.major;
+  out.minor = partial.minor;
+  out.patch = partial.patch;
+  out.prerelease = partial.prerelease;
+  return true;
+}
+
+int compareSemVer(const SemVer& a, const SemVer& b) {
+  if (a.major != b.major) return a.major < b.major ? -1 : 1;
+  if (a.minor != b.minor) return a.minor < b.minor ? -1 : 1;
+  if (a.patch != b.patch) return a.patch < b.patch ? -1 : 1;
+  if (a.prerelease == b.prerelease) return 0;
+  if (a.prerelease.empty()) return 1;
+  if (b.prerelease.empty()) return -1;
+  size_t aStart = 0;
+  size_t bStart = 0;
+  while (true) {
+    size_t aDot = a.prerelease.find('.', aStart);
+    size_t bDot = b.prerelease.find('.', bStart);
+    std::string aId =
+        a.prerelease.substr(aStart, aDot == std::string::npos
+                                       ? std::string::npos
+                                       : aDot - aStart);
+    std::string bId =
+        b.prerelease.substr(bStart, bDot == std::string::npos
+                                       ? std::string::npos
+                                       : bDot - bStart);
+    bool aNumeric = allDigits(aId);
+    bool bNumeric = allDigits(bId);
+    if (aNumeric && bNumeric) {
+      if (aId.size() != bId.size()) return aId.size() < bId.size() ? -1 : 1;
+      if (aId != bId) return aId < bId ? -1 : 1;
+    } else if (aNumeric != bNumeric) {
+      return aNumeric ? -1 : 1;
+    } else if (aId != bId) {
+      return aId < bId ? -1 : 1;
+    }
+    bool aDone = aDot == std::string::npos;
+    bool bDone = bDot == std::string::npos;
+    if (aDone && bDone) return 0;
+    if (aDone) return -1;
+    if (bDone) return 1;
+    aStart = aDot + 1;
+    bStart = bDot + 1;
+  }
+}
+
+bool isValidRequirement(const std::string& requirement) {
+  if (requirement.find("||") != std::string::npos) return false;
+  std::vector<std::string> tokens = requirementTokens(requirement);
+  if (tokens.empty()) return false;
+  for (const std::string& token : tokens) {
+    Range range;
+    if (!makeRange(token, range)) return false;
+  }
+  return true;
+}
+
+bool satisfiesRequirement(const std::string& requirement, const SemVer& version) {
+  if (requirement.find("||") != std::string::npos) return false;
+  if (!version.prerelease.empty()) {
+    SemVer exact;
+    std::string text = trimCopy(requirement);
+    if (!text.empty() && text[0] == '=') text = trimCopy(text.substr(1));
+    return parseSemVer(text, exact) && compareSemVer(exact, version) == 0;
+  }
+  std::vector<std::string> tokens = requirementTokens(requirement);
+  if (tokens.empty()) return false;
+  for (const std::string& token : tokens) {
+    Range range;
+    if (!makeRange(token, range)) return false;
+    if (!matchesRange(range, version)) return false;
+  }
+  return true;
+}
+
+bool isSemver(const std::string& version) {
+  SemVer parsed;
+  return parseSemVer(version, parsed);
+}
 
 // ---------------------------------------------------------------------------
 // TOML subset
@@ -564,13 +911,20 @@ bool loadManifest(const std::string& path, Manifest& out, std::string& error) {
       Dependency dependency;
       dependency.name = name;
       if (value.isString()) {
-        error = "dependency '" + name +
-                "': registry dependencies are not supported yet; use "
-                "{ path = \"...\" }";
-        return false;
+        dependency.requirement = value.text;
+        if (!isValidRequirement(dependency.requirement)) {
+          error = "dependency '" + name +
+                  "' has an invalid version requirement '" +
+                  dependency.requirement +
+                  "'; use a version, ^, ~, a comparator or a wildcard";
+          return false;
+        }
+        out.package.dependencies.emplace(name, std::move(dependency));
+        continue;
       }
       if (!value.isTable()) {
-        error = "dependency '" + name + "' must be an inline table";
+        error = "dependency '" + name +
+                "' must be an inline table or a version requirement string";
         return false;
       }
       auto pathIt = value.table.find("path");
@@ -647,6 +1001,10 @@ std::string renderManifest(const Package& package) {
   }
   out << "\n[dependencies]\n";
   for (const auto& [name, dependency] : package.dependencies) {
+    if (dependency.isRegistry()) {
+      out << name << " = \"" << escapeToml(dependency.requirement) << "\"\n";
+      continue;
+    }
     out << name << " = { path = \"" << escapeToml(dependency.path) << '"';
     if (!dependency.version.empty()) {
       out << ", version = \"" << escapeToml(dependency.version) << '"';
@@ -774,12 +1132,17 @@ bool findDependenciesSection(const std::vector<std::string>& lines,
 }
 
 std::string dependencyLine(const Dependency& dependency, bool crlf) {
-  std::string line = dependency.name + " = { path = \"" +
-                     escapeToml(dependency.path) + '"';
-  if (!dependency.version.empty()) {
-    line += ", version = \"" + escapeToml(dependency.version) + '"';
+  std::string line;
+  if (dependency.isRegistry()) {
+    line = dependency.name + " = \"" + escapeToml(dependency.requirement) + '"';
+  } else {
+    line = dependency.name + " = { path = \"" +
+           escapeToml(dependency.path) + '"';
+    if (!dependency.version.empty()) {
+      line += ", version = \"" + escapeToml(dependency.version) + '"';
+    }
+    line += " }";
   }
-  line += " }";
   if (crlf) line += '\r';
   return line;
 }
@@ -960,10 +1323,110 @@ bool loadDependencyManifest(const Manifest& parent,
   return true;
 }
 
+std::string registryRoot() {
+  const char* value = std::getenv("OSKEL_REGISTRY");
+  return value == nullptr ? std::string() : std::string(value);
+}
+
+// Picks the version a registry dependency resolves to: the lockfile's pin when
+// it still satisfies the requirement and exists, otherwise the highest
+// published version that satisfies it.
+bool selectRegistryVersion(const Dependency& dependency,
+                           const std::map<std::string, std::string>& preferred,
+                           std::string& version, fs::path& directory,
+                           std::string& error) {
+  std::string root = registryRoot();
+  if (root.empty()) {
+    error = "dependency '" + dependency.name +
+            "' is a registry dependency; set OSKEL_REGISTRY to the registry "
+            "directory";
+    return false;
+  }
+  fs::path packageDir = fs::path(root) / dependency.name;
+  std::error_code ec;
+  if (!fs::is_directory(packageDir, ec)) {
+    error = "the registry at '" + root + "' has no package '" +
+            dependency.name + "'";
+    return false;
+  }
+
+  std::vector<std::pair<SemVer, std::string>> candidates;
+  std::vector<std::string> published;
+  for (fs::directory_iterator it(packageDir, ec), end; !ec && it != end;
+       it.increment(ec)) {
+    if (!it->is_directory()) continue;
+    std::string candidate = it->path().filename().string();
+    SemVer parsed;
+    if (!parseSemVer(candidate, parsed)) continue;
+    published.push_back(candidate);
+    if (satisfiesRequirement(dependency.requirement, parsed)) {
+      candidates.emplace_back(parsed, candidate);
+    }
+  }
+  std::sort(published.begin(), published.end());
+  if (candidates.empty()) {
+    std::string available;
+    for (const std::string& candidate : published) {
+      if (!available.empty()) available += ", ";
+      available += candidate;
+    }
+    error = "no version of '" + dependency.name + "' satisfies '" +
+            dependency.requirement + "' in '" + root + "'";
+    if (!available.empty()) error += " (published: " + available + ")";
+    return false;
+  }
+
+  std::string chosen;
+  auto pinned = preferred.find(dependency.name);
+  if (pinned != preferred.end()) {
+    SemVer parsed;
+    std::error_code entryError;
+    if (parseSemVer(pinned->second, parsed) &&
+        satisfiesRequirement(dependency.requirement, parsed) &&
+        fs::is_directory(packageDir / pinned->second, entryError)) {
+      chosen = pinned->second;
+    }
+  }
+  if (chosen.empty()) {
+    auto best = std::max_element(
+        candidates.begin(), candidates.end(),
+        [](const auto& a, const auto& b) {
+          return compareSemVer(a.first, b.first) < 0;
+        });
+    chosen = best->second;
+  }
+
+  fs::path chosenDir = packageDir / chosen;
+  std::error_code canonicalError;
+  directory = fs::weakly_canonical(chosenDir, canonicalError);
+  if (canonicalError) directory = chosenDir.lexically_normal();
+  version = chosen;
+  return true;
+}
+
+bool loadPreferredVersions(const Manifest& manifest,
+                           std::map<std::string, std::string>& preferred,
+                           std::string& error) {
+  fs::path lockPath = fs::path(manifest.dir) / "oskel.lock";
+  std::string source;
+  if (!readSourceFile(lockPath.string(), source)) return true;
+  Lockfile lock;
+  std::string lockError;
+  if (!parseLockfile(source, lock, lockError)) {
+    error = "oskel.lock:" + lockError;
+    return false;
+  }
+  for (const auto& [name, package] : lock.packages) {
+    preferred[name] = package.version;
+  }
+  return true;
+}
+
 }  // namespace
 
-bool resolveDependencies(const Manifest& root, Resolution& out,
-                         std::string& error) {
+bool resolveDependencies(
+    const Manifest& root, Resolution& out, std::string& error,
+    const std::map<std::string, std::string>& preferred) {
   out.packages.clear();
   std::map<std::string, int> state;  // 1 = visiting, 2 = done
   std::map<std::string, ResolvedPackage> resolved;
@@ -982,17 +1445,41 @@ bool resolveDependencies(const Manifest& root, Resolution& out,
   std::function<bool(const Manifest&)> visit =
       [&](const Manifest& manifest) -> bool {
     for (const auto& [name, dependency] : manifest.package.dependencies) {
-      fs::path directory = fs::path(manifest.dir) / dependency.path;
-      std::error_code ec;
-      fs::path canonical = fs::weakly_canonical(directory, ec);
-      if (ec) canonical = directory.lexically_normal();
+      fs::path canonical;
+      std::string source;
+      std::string selectedVersion;
+      if (dependency.isRegistry()) {
+        if (!selectRegistryVersion(dependency, preferred, selectedVersion,
+                                   canonical, error)) {
+          return false;
+        }
+        source = "registry+" + name + "@" + selectedVersion;
+      } else {
+        fs::path directory = fs::path(manifest.dir) / dependency.path;
+        std::error_code ec;
+        canonical = fs::weakly_canonical(directory, ec);
+        if (ec) canonical = directory.lexically_normal();
+        source = "path+" + normalizeSlashes(dependency.path);
+      }
 
       auto known = resolved.find(name);
-      if (known != resolved.end() && !samePath(known->second.dir, canonical)) {
-        error = "package '" + name +
-                "' is required from two different locations: '" +
-                known->second.dir + "' and '" + canonical.string() + "'";
-        return false;
+      if (known != resolved.end()) {
+        if (dependency.isRegistry()) {
+          SemVer knownVersion;
+          if (parseSemVer(known->second.version, knownVersion) &&
+              !satisfiesRequirement(dependency.requirement, knownVersion)) {
+            error = "package '" + name + "' is resolved at " +
+                    known->second.version + " but '" + manifest.package.name +
+                    "' requires '" + dependency.requirement + "'";
+            return false;
+          }
+        }
+        if (!samePath(known->second.dir, canonical)) {
+          error = "package '" + name +
+                  "' is required from two different locations: '" +
+                  known->second.dir + "' and '" + canonical.string() + "'";
+          return false;
+        }
       }
 
       int& status = state[name];
@@ -1013,8 +1500,26 @@ bool resolveDependencies(const Manifest& root, Resolution& out,
 
       Manifest dependencyManifest;
       std::string loadError;
-      if (!loadDependencyManifest(manifest, dependency, dependencyManifest,
-                                  loadError)) {
+      if (dependency.isRegistry()) {
+        if (!loadManifest((canonical / "oskel.toml").string(),
+                          dependencyManifest, loadError)) {
+          error = "dependency '" + name + "': " + loadError;
+          return false;
+        }
+        if (dependencyManifest.package.name != name) {
+          error = "dependency '" + name +
+                  "' points to a package named '" +
+                  dependencyManifest.package.name + "'";
+          return false;
+        }
+        if (dependencyManifest.package.version != selectedVersion) {
+          error = "registry entry '" + name + "/" + selectedVersion +
+                  "' declares version '" +
+                  dependencyManifest.package.version + "'";
+          return false;
+        }
+      } else if (!loadDependencyManifest(manifest, dependency,
+                                         dependencyManifest, loadError)) {
         error = loadError;
         return false;
       }
@@ -1024,7 +1529,7 @@ bool resolveDependencies(const Manifest& root, Resolution& out,
       ResolvedPackage package;
       package.name = name;
       package.version = dependencyManifest.package.version;
-      package.source = "path+" + normalizeSlashes(dependency.path);
+      package.source = source;
       package.dir = canonical.string();
       resolved[name] = package;
       out.packages.push_back(package);
@@ -1074,18 +1579,30 @@ bool verifyLockfile(const Manifest& root, const Resolution& resolution,
               " but the manifest resolves to " + package.version;
       return false;
     }
-    std::string sourcePath;
-    if (!stripPathSource(entry->second.source, sourcePath)) {
-      error = "the lockfile source for '" + name + "' is not a path source";
+    const ResolvedPackage* resolved = resolution.find(name);
+    if (resolved == nullptr) {
+      error = "the lockfile contains '" + name +
+              "', which the manifest no longer resolves";
       return false;
     }
-    const ResolvedPackage* resolved = resolution.find(name);
-    if (resolved == nullptr ||
-        !samePath(fs::path(root.dir) / sourcePath, fs::path(resolved->dir))) {
-      error = "the lockfile points '" + name + "' at '" + sourcePath +
-              "', but the manifest resolves it to '" +
-              (resolved != nullptr ? resolved->dir : std::string("nothing")) +
-              "'";
+    std::string sourcePath;
+    if (stripPathSource(entry->second.source, sourcePath)) {
+      if (!samePath(fs::path(root.dir) / sourcePath,
+                    fs::path(resolved->dir))) {
+        error = "the lockfile points '" + name + "' at '" + sourcePath +
+                "', but the manifest resolves it to '" + resolved->dir + "'";
+        return false;
+      }
+    } else if (startsWith(entry->second.source, "registry+")) {
+      if (entry->second.source != package.source) {
+        error = "the lockfile source for '" + name + "' is '" +
+                entry->second.source + "', but the manifest resolves it to '" +
+                package.source + "'";
+        return false;
+      }
+    } else {
+      error = "the lockfile source for '" + name +
+              "' is neither a path nor a registry source";
       return false;
     }
   }
@@ -1435,7 +1952,11 @@ int prepareProject(const std::string& manifestPath, const BuildOptions& options,
   if (!loadManifest(manifestPath, manifest, error)) return kIoError;
   printWarnings(manifest);
 
-  if (!resolveDependencies(manifest, resolution, error)) return kFailure;
+  std::map<std::string, std::string> preferred;
+  if (!loadPreferredVersions(manifest, preferred, error)) return kIoError;
+  if (!resolveDependencies(manifest, resolution, error, preferred)) {
+    return kFailure;
+  }
 
   if (options.locked) {
     fs::path lockPath = fs::path(manifest.dir) / "oskel.lock";
@@ -1714,10 +2235,103 @@ int commandAdd(const std::string& manifestPath, const std::string& name,
   printWarnings(manifest);
 
   if (path.empty()) {
-    reportError(
-        "a --path is required; registry dependencies are not supported yet");
-    return kUsage;
+    if (name.empty()) {
+      reportError(
+          "a registry dependency needs a name: oskelp add <name> --version "
+          "<requirement>");
+      return kUsage;
+    }
+    if (!isIdentifier(name)) {
+      reportError("'" + name + "' is not a valid dependency name");
+      return kUsage;
+    }
+    if (version.empty()) {
+      reportError("a registry dependency needs --version <requirement>");
+      return kUsage;
+    }
+    if (!isValidRequirement(version)) {
+      reportError("version requirement '" + version +
+                  "' is not supported; use a version, ^, ~, a comparator or "
+                  "a wildcard");
+      return kUsage;
+    }
+    if (registryRoot().empty()) {
+      reportError(
+          "a registry dependency needs OSKEL_REGISTRY to name the registry "
+          "directory");
+      return kFailure;
+    }
+    if (name == manifest.package.name) {
+      reportError("a package cannot depend on itself");
+      return kFailure;
+    }
+
+    Dependency declaration;
+    declaration.name = name;
+    declaration.requirement = version;
+
+    bool updating = false;
+    auto existing = manifest.package.dependencies.find(name);
+    if (existing != manifest.package.dependencies.end()) {
+      if (!existing->second.isRegistry()) {
+        reportError("dependency '" + name +
+                    "' is already declared as a path dependency; remove it "
+                    "first");
+        return kFailure;
+      }
+      if (existing->second.requirement == declaration.requirement) {
+        std::cout << "dependency '" << name << "' is already present\n";
+        return kOk;
+      }
+      updating = true;
+    }
+
+    std::string source;
+    if (!readSourceFile(manifest.path, source)) {
+      reportError("cannot read '" + manifest.path + "'");
+      return kIoError;
+    }
+    std::string edited = source;
+    if (updating) {
+      std::string without;
+      if (!removeDependencyFromManifest(edited, name, without, error)) {
+        reportError(error);
+        return kFailure;
+      }
+      edited = without;
+    }
+    std::string added;
+    if (!addDependencyToManifest(edited, declaration, added, error)) {
+      reportError(error);
+      return kFailure;
+    }
+    edited = added;
+
+    Manifest updated = manifest;
+    updated.package.dependencies[name] = declaration;
+    Resolution resolution;
+    std::map<std::string, std::string> preferred;
+    if (!loadPreferredVersions(updated, preferred, error)) {
+      reportError(error);
+      return kIoError;
+    }
+    if (!resolveDependencies(updated, resolution, error, preferred)) {
+      reportError(error);
+      return kFailure;
+    }
+
+    if (!writeTextFile(manifest.path, edited, error) ||
+        !writeLockfile(updated, resolution, error) ||
+        !materializeDependencies(updated, resolution, error)) {
+      reportError(error);
+      return kIoError;
+    }
+
+    std::cout << (updating ? "updated '" : "added '") << name << "' ("
+              << declaration.requirement << ")\n";
+    return kOk;
   }
+
   if (!name.empty() && !isIdentifier(name)) {
     reportError("'" + name + "' is not a valid dependency name");
     return kUsage;
@@ -1787,6 +2401,12 @@ int commandAdd(const std::string& manifestPath, const std::string& name,
   bool updating = false;
   auto existing = manifest.package.dependencies.find(dependencyName);
   if (existing != manifest.package.dependencies.end()) {
+    if (existing->second.isRegistry()) {
+      reportError("dependency '" + dependencyName +
+                  "' is already declared as a registry dependency; remove it "
+                  "first");
+      return kFailure;
+    }
     fs::path existingDir = fs::path(manifest.dir) / existing->second.path;
     if (!samePath(existingDir, dependency)) {
       reportError("dependency '" + dependencyName + "' is already declared at '" +
@@ -1824,7 +2444,12 @@ int commandAdd(const std::string& manifestPath, const std::string& name,
   Manifest updated = manifest;
   updated.package.dependencies[dependencyName] = declaration;
   Resolution resolution;
-  if (!resolveDependencies(updated, resolution, error)) {
+  std::map<std::string, std::string> preferred;
+  if (!loadPreferredVersions(updated, preferred, error)) {
+    reportError(error);
+    return kIoError;
+  }
+  if (!resolveDependencies(updated, resolution, error, preferred)) {
     reportError(error);
     return kFailure;
   }
@@ -1874,7 +2499,12 @@ int commandRemove(const std::string& manifestPath, const std::string& name) {
   Manifest updated = manifest;
   updated.package.dependencies.erase(name);
   Resolution resolution;
-  if (!resolveDependencies(updated, resolution, error)) {
+  std::map<std::string, std::string> preferred;
+  if (!loadPreferredVersions(updated, preferred, error)) {
+    reportError(error);
+    return kIoError;
+  }
+  if (!resolveDependencies(updated, resolution, error, preferred)) {
     reportError(error);
     return kFailure;
   }
@@ -1887,6 +2517,177 @@ int commandRemove(const std::string& manifestPath, const std::string& name) {
   }
 
   std::cout << "removed '" << name << "'\n";
+  return kOk;
+}
+
+int commandPublish(const std::string& manifestPath,
+                   const std::string& registry) {
+  Manifest manifest;
+  std::string error;
+  if (!loadManifest(manifestPath, manifest, error)) {
+    reportError(error);
+    return kIoError;
+  }
+  printWarnings(manifest);
+
+  std::string root = registry.empty() ? registryRoot() : registry;
+  if (root.empty()) {
+    reportError(
+        "publish needs a registry: set OSKEL_REGISTRY or pass --registry "
+        "<directory>");
+    return kFailure;
+  }
+  for (const auto& [name, dependency] : manifest.package.dependencies) {
+    if (name == manifest.package.name) {
+      reportError("cannot publish a package that depends on itself");
+      return kFailure;
+    }
+    if (!dependency.isRegistry()) {
+      reportError("cannot publish '" + manifest.package.name +
+                  "' with path dependency '" + name +
+                  "'; publish it and depend on a version");
+      return kFailure;
+    }
+  }
+
+  std::error_code ec;
+  fs::path entryPath(manifest.package.entry);
+  auto firstComponent = entryPath.begin();
+  if (entryPath.is_absolute() || firstComponent == entryPath.end() ||
+      *firstComponent != fs::path("src")) {
+    reportError("publish supports only an entry under 'src/'; got '" +
+                manifest.package.entry + "'");
+    return kFailure;
+  }
+  if (!fs::is_regular_file(fs::path(manifest.dir) / entryPath, ec)) {
+    reportError("entry '" + manifest.package.entry + "' does not exist");
+    return kFailure;
+  }
+  fs::path sourceRoot = fs::path(manifest.dir) / "src" / manifest.package.name;
+  if (!fs::is_directory(sourceRoot, ec)) {
+    reportError("the package has no 'src/" + manifest.package.name +
+                "' directory");
+    return kFailure;
+  }
+
+  fs::path target = fs::path(absolutePath(root)) / manifest.package.name /
+                    manifest.package.version;
+  ec.clear();
+  bool targetExists = fs::exists(target, ec);
+  if (ec) {
+    reportError("cannot inspect '" + target.string() + "': " + ec.message());
+    return kIoError;
+  }
+  if (targetExists) {
+    reportError("'" + manifest.package.name + "' " + manifest.package.version +
+                " is already published at '" + target.string() + "'");
+    return kFailure;
+  }
+  auto abortPublish = [&](const std::string& message) {
+    std::error_code cleanup;
+    fs::remove_all(target, cleanup);
+    reportError(message);
+    return kIoError;
+  };
+  ec.clear();
+  fs::create_directories(target, ec);
+  if (ec) {
+    return abortPublish("cannot create '" + target.string() + "': " +
+                        ec.message());
+  }
+  ec.clear();
+  fs::copy_file(manifest.path, target / "oskel.toml",
+                fs::copy_options::overwrite_existing, ec);
+  if (ec) {
+    return abortPublish("cannot copy the manifest to '" + target.string() +
+                        "': " + ec.message());
+  }
+  ec.clear();
+  fs::copy(fs::path(manifest.dir) / "src", target / "src",
+           fs::copy_options::recursive | fs::copy_options::overwrite_existing,
+           ec);
+  if (ec) {
+    return abortPublish("cannot copy 'src' to '" + target.string() + "': " +
+                        ec.message());
+  }
+
+  std::cout << "published " << manifest.package.name << " "
+            << manifest.package.version << " to " << target.string() << "\n";
+  return kOk;
+}
+
+int commandUpdate(const std::string& manifestPath, const std::string& name) {
+  if (!name.empty() && !isIdentifier(name)) {
+    reportError("'" + name + "' is not a valid dependency name");
+    return kUsage;
+  }
+  Manifest manifest;
+  std::string error;
+  if (!loadManifest(manifestPath, manifest, error)) {
+    reportError(error);
+    return kIoError;
+  }
+  printWarnings(manifest);
+
+  Lockfile previous;
+  std::map<std::string, std::string> preferred;
+  fs::path lockPath = fs::path(manifest.dir) / "oskel.lock";
+  std::string source;
+  if (readSourceFile(lockPath.string(), source)) {
+    std::string lockError;
+    if (!parseLockfile(source, previous, lockError)) {
+      reportError("oskel.lock:" + lockError);
+      return kIoError;
+    }
+    for (const auto& [packageName, package] : previous.packages) {
+      preferred[packageName] = package.version;
+    }
+  }
+
+  if (!name.empty()) {
+    if (manifest.package.dependencies.count(name) == 0 &&
+        preferred.count(name) == 0) {
+      reportError("package '" + name + "' is not in the dependency graph");
+      return kFailure;
+    }
+    preferred.erase(name);
+  } else {
+    preferred.clear();
+  }
+
+  Resolution resolution;
+  if (!resolveDependencies(manifest, resolution, error, preferred)) {
+    reportError(error);
+    return kFailure;
+  }
+  if (!writeLockfile(manifest, resolution, error) ||
+      !materializeDependencies(manifest, resolution, error)) {
+    reportError(error);
+    return kIoError;
+  }
+
+  Lockfile current = buildLockfile(resolution);
+  bool changed = false;
+  for (const auto& [packageName, package] : current.packages) {
+    auto old = previous.packages.find(packageName);
+    if (old == previous.packages.end()) {
+      std::cout << "added " << packageName << " " << package.version << "\n";
+      changed = true;
+    } else if (old->second.version != package.version ||
+               old->second.source != package.source) {
+      std::cout << "updated " << packageName << " " << old->second.version
+                << " -> " << package.version << "\n";
+      changed = true;
+    }
+  }
+  for (const auto& [packageName, package] : previous.packages) {
+    (void)package;
+    if (current.packages.count(packageName) == 0) {
+      std::cout << "removed " << packageName << "\n";
+      changed = true;
+    }
+  }
+  if (!changed) std::cout << "everything is up to date\n";
   return kOk;
 }
 
@@ -2086,8 +2887,9 @@ int commandClean(const std::string& manifestPath, const std::string& argv0) {
 
 namespace {
 
-void printTreeNode(const Manifest& manifest, const std::string& prefix,
-                   bool last, bool root, std::set<std::string>& visiting) {
+void printTreeNode(const Manifest& manifest, const Resolution& resolution,
+                   const std::string& prefix, bool last, bool root,
+                   std::set<std::string>& visiting) {
   if (root) {
     std::cout << manifest.package.name << " v" << manifest.package.version
               << "\n";
@@ -2099,6 +2901,7 @@ void printTreeNode(const Manifest& manifest, const std::string& prefix,
       root ? std::string() : prefix + (last ? "    " : "|   ");
   size_t index = 0;
   for (const auto& [name, dependency] : manifest.package.dependencies) {
+    (void)dependency;
     ++index;
     bool isLast = index == manifest.package.dependencies.size();
     if (visiting.count(name) != 0) {
@@ -2107,14 +2910,16 @@ void printTreeNode(const Manifest& manifest, const std::string& prefix,
       continue;
     }
     visiting.insert(name);
-    fs::path directory = fs::path(manifest.dir) / dependency.path;
+    const ResolvedPackage* resolved = resolution.find(name);
     Manifest child;
     std::string error;
-    if (!loadManifest((directory / "oskel.toml").string(), child, error)) {
+    if (resolved == nullptr ||
+        !loadManifest((fs::path(resolved->dir) / "oskel.toml").string(), child,
+                      error)) {
       std::cout << childPrefix << (isLast ? "`-- " : "|-- ") << name
                 << " (missing)\n";
     } else {
-      printTreeNode(child, childPrefix, isLast, false, visiting);
+      printTreeNode(child, resolution, childPrefix, isLast, false, visiting);
     }
     visiting.erase(name);
   }
@@ -2131,13 +2936,18 @@ int commandTree(const std::string& manifestPath, const std::string& argv0) {
     return kIoError;
   }
   Resolution resolution;
-  if (!resolveDependencies(manifest, resolution, error)) {
+  std::map<std::string, std::string> preferred;
+  if (!loadPreferredVersions(manifest, preferred, error)) {
+    reportError(error);
+    return kIoError;
+  }
+  if (!resolveDependencies(manifest, resolution, error, preferred)) {
     reportError(error);
     return kFailure;
   }
   std::set<std::string> visiting;
   visiting.insert(manifest.package.name);
-  printTreeNode(manifest, std::string(), true, true, visiting);
+  printTreeNode(manifest, resolution, std::string(), true, true, visiting);
   return kOk;
 }
 

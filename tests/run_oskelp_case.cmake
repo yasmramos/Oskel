@@ -359,19 +359,155 @@ run_oskelp("${WORK_DIR}" --help)
 require_success("oskelp --help")
 require_contains("oskelp --help" "${run_out}" "usage:")
 
-# --- 14. A registry dependency is refused with an explanation --------------
-file(WRITE "${WORK_DIR}/demo/oskel.toml" [=[
-[package]
-name = "demo"
-version = "0.1.0"
-entry = "src/demo/main.oskl"
+# --- 14. The local registry: publish, consume, update, --locked ------------
+set(REGISTRY "${WORK_DIR}/registry")
+unset(ENV{OSKEL_REGISTRY})
 
-[dependencies]
-utils = "1.2.3"
+# A registry dependency without OSKEL_REGISTRY fails with the variable name,
+# not with the generic "global is read but never assigned".
+run_oskelp("${WORK_DIR}" new registry_app)
+require_success("oskelp new registry_app")
+file(WRITE "${WORK_DIR}/registry_app/src/registry_app/main.oskl" [=[
+import utils.text;
+
+print(utils.text.shout("registry"));
 ]=])
-run_oskelp("${WORK_DIR}/demo" build)
-require_failure("a registry dependency" "66")
-require_contains("a registry dependency" "${run_err}"
-                 "registry dependencies are not supported")
+run_oskelp("${WORK_DIR}/registry_app" add utils --version "0.1.0")
+require_failure("oskelp add without OSKEL_REGISTRY" "1")
+require_contains("oskelp add without OSKEL_REGISTRY" "${run_err}"
+                 "OSKEL_REGISTRY")
+
+# Publish 0.1.0 and 0.2.0 into the local registry. The assertions use the
+# filesystem, not stdout: `string(FIND` parses escapes in the expanded
+# haystack, so a Windows path (`D:\a\...`) would fail with "Invalid character
+# escape '\a'".
+run_oskelp("${WORK_DIR}/utils" publish --registry "${REGISTRY}")
+require_success("oskelp publish 0.1.0")
+if(NOT EXISTS "${REGISTRY}/utils/0.1.0/oskel.toml" OR
+   NOT EXISTS "${REGISTRY}/utils/0.1.0/src/utils/text.oskl")
+  message(FATAL_ERROR "oskelp publish did not copy the manifest and src/")
+endif()
+
+run_oskelp("${WORK_DIR}/utils" publish --registry "${REGISTRY}")
+require_failure("oskelp publish a duplicate" "1")
+require_file_contains("${REGISTRY}/utils/0.1.0/oskel.toml"
+                      "version = \"0.1.0\"")
+
+file(READ "${WORK_DIR}/utils/oskel.toml" utils_manifest)
+string(REPLACE "version = \"0.1.0\"" "version = \"0.2.0\"" utils_manifest
+       "${utils_manifest}")
+file(WRITE "${WORK_DIR}/utils/oskel.toml" "${utils_manifest}")
+run_oskelp("${WORK_DIR}/utils" publish --registry "${REGISTRY}")
+require_success("oskelp publish 0.2.0")
+
+# A path dependency cannot be published: the consumer would resolve it
+# relative to the registry copy.
+run_oskelp("${WORK_DIR}/demo" publish --registry "${REGISTRY}")
+require_failure("oskelp publish with a path dependency" "1")
+require_contains("oskelp publish with a path dependency" "${run_err}"
+                 "path dependency 'utils'")
+
+# Consume the registry package by version.
+set(ENV{OSKEL_REGISTRY} "${REGISTRY}")
+run_oskelp("${WORK_DIR}/registry_app" add utils --version "0.1.0")
+require_success("oskelp add a registry dependency")
+require_contains("oskelp add a registry dependency" "${run_out}"
+                 "added 'utils'")
+require_file_contains("${WORK_DIR}/registry_app/oskel.toml"
+                      "utils = \"0.1.0\"")
+require_file_contains("${WORK_DIR}/registry_app/oskel.lock"
+                      "source = \"registry+utils@0.1.0\"")
+if(NOT EXISTS "${WORK_DIR}/registry_app/.oskel/deps/utils/text.oskl")
+  message(FATAL_ERROR "the registry dependency was not materialised")
+endif()
+
+run_oskelp("${WORK_DIR}/registry_app" add utils --version "0.1.0")
+require_success("oskelp add a registry dependency is idempotent")
+require_contains("oskelp add a registry dependency is idempotent" "${run_out}"
+                 "already present")
+
+run_oskelp("${WORK_DIR}/registry_app" add utils --version ">=9.0.0")
+require_failure("oskelp add an unsatisfiable requirement" "1")
+require_file_contains("${WORK_DIR}/registry_app/oskel.toml"
+                      "utils = \"0.1.0\"")
+
+run_oskelp("${WORK_DIR}/registry_app" build)
+require_success("oskelp build with a registry dependency")
+if(OSKEL_AOT_RUNNABLE)
+  execute_process(
+    COMMAND "${WORK_DIR}/registry_app/target/registry_app${exe_suffix}"
+    WORKING_DIRECTORY "${WORK_DIR}/registry_app"
+    RESULT_VARIABLE registry_exit
+    OUTPUT_VARIABLE registry_out
+    ERROR_VARIABLE registry_err)
+  if(NOT registry_exit EQUAL 0)
+    message(FATAL_ERROR
+      "the registry binary failed (exit ${registry_exit})\n"
+      "--- stderr ---\n${registry_err}")
+  endif()
+  require_contains("registry binary" "${registry_out}" "registry!")
+endif()
+
+# The lockfile pins 0.1.0: a later 0.2.0 does not upgrade a build.
+run_oskelp("${WORK_DIR}/registry_app" build --locked)
+require_success("oskelp build --locked with a registry pin")
+
+# A manifest change to 0.2.0 no longer satisfies the pin; --locked fails
+# instead of silently upgrading.
+file(READ "${WORK_DIR}/registry_app/oskel.toml" registry_manifest)
+string(REPLACE "utils = \"0.1.0\"" "utils = \"0.2.0\"" registry_manifest
+       "${registry_manifest}")
+file(WRITE "${WORK_DIR}/registry_app/oskel.toml" "${registry_manifest}")
+run_oskelp("${WORK_DIR}/registry_app" build --locked)
+require_failure("oskelp build --locked after a requirement change" "1")
+require_contains("oskelp build --locked after a requirement change" "${run_err}"
+                 "pins 'utils' at 0.1.0")
+
+# `update` moves the pin and refreshes the materialised tree.
+run_oskelp("${WORK_DIR}/registry_app" update utils)
+require_success("oskelp update utils")
+require_contains("oskelp update utils" "${run_out}"
+                 "updated utils 0.1.0 -> 0.2.0")
+require_file_contains("${WORK_DIR}/registry_app/oskel.lock"
+                      "source = \"registry+utils@0.2.0\"")
+run_oskelp("${WORK_DIR}/registry_app" build --locked)
+require_success("oskelp build --locked after update")
+
+run_oskelp("${WORK_DIR}/registry_app" update)
+require_success("oskelp update everything")
+require_contains("oskelp update everything" "${run_out}"
+                 "everything is up to date")
+
+run_oskelp("${WORK_DIR}/registry_app" update missing)
+require_failure("oskelp update an unknown package" "1")
+require_contains("oskelp update an unknown package" "${run_err}"
+                 "not in the dependency graph")
+
+run_oskelp("${WORK_DIR}/registry_app" tree)
+require_success("oskelp tree with a registry dependency")
+require_contains("oskelp tree with a registry dependency" "${run_out}"
+                 "utils v0.2.0")
+
+# Removing the last registry dependency drops the lock entry.
+run_oskelp("${WORK_DIR}/registry_app" remove utils)
+require_success("oskelp remove a registry dependency")
+require_file_not_contains("${WORK_DIR}/registry_app/oskel.toml" "utils =")
+require_file_not_contains("${WORK_DIR}/registry_app/oskel.lock"
+                          "packages.utils")
+if(EXISTS "${WORK_DIR}/registry_app/.oskel/deps/utils")
+  message(FATAL_ERROR
+    "oskelp remove left the registry dependency materialised")
+endif()
+
+# Without OSKEL_REGISTRY a registry dependency fails with the variable name.
+unset(ENV{OSKEL_REGISTRY})
+file(READ "${WORK_DIR}/registry_app/oskel.toml" registry_manifest)
+string(REPLACE "[dependencies]" "[dependencies]\nutils = \"0.1.0\""
+       registry_manifest "${registry_manifest}")
+file(WRITE "${WORK_DIR}/registry_app/oskel.toml" "${registry_manifest}")
+run_oskelp("${WORK_DIR}/registry_app" build)
+require_failure("oskelp build without OSKEL_REGISTRY" "1")
+require_contains("oskelp build without OSKEL_REGISTRY" "${run_err}"
+                 "OSKEL_REGISTRY")
 
 message(STATUS "oskelp end-to-end: all checks passed")
