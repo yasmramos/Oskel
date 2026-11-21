@@ -449,6 +449,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     callback body does not rebuild the returned registers into a map. A struct
     *parameter* is rejected by both. `tests/errors/callback_struct_{return,param}.oskl`
     pin the AOT rejection.
+28. **[P2]** A callback stub is one `mmap` page per registration and lives
+    until the process exits. Freeing it when the extern call returns is not
+    safe: C may store the function pointer (a stored callback, including an
+    `atexit` handler), and Oskel has no reference count for the C side. A pool
+    of stubs (one page per N registrations) or an explicit release contract
+    would bound the memory of a long-running program. The page is W^X today:
+    read+write while the stub is written, then `mprotect`ed to read+execute;
+    `tests/native_build_extern_callback_wx.oskl` asserts the final mapping is
+    not writable.
 
 ---
 

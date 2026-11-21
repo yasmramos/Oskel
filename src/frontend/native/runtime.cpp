@@ -13669,14 +13669,18 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
 //
 // The context is 32 bytes in the arena: the closure tag and payload, the Oskel
 // global base, and a pointer to the shared arena state. The body reads it from
-// r10. The stub lives in a private RWX `mmap` page, because the image's own text
-// is not writable and the compiler cannot know a runtime closure's address. This
-// helper exists only in the hosted mode, where libc provides `mmap`.
+// r10. The stub lives in a private `mmap` page, because the image's own text is
+// not writable and the compiler cannot know a runtime closure's address. The
+// page is mapped read+write, filled, and then `mprotect`ed to read+execute:
+// it is never writable and executable at the same time (W^X), exactly like the
+// JIT's `JitCode::assign`. This helper exists only in the hosted mode, where
+// libc provides `mmap` and `mprotect`.
 void emitCallbackCreate(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
                         CodeGen::Label fail, const DataBlob& msgOom,
                         const DataBlob& msgCallback, int stateSlot) {
   CodeGen::Label oom = cg.newLabel();
   CodeGen::Label mmapFailed = cg.newLabel();
+  CodeGen::Label protectFailed = cg.newLabel();
   CodeGen::Label haveState = cg.newLabel();
 
   cg.bind(label);
@@ -13720,12 +13724,12 @@ void emitCallbackCreate(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocL
   cg.movToMem(R10, 0, R13);
   cg.movToMem(R10, 8, R14);
 
-  // mmap(NULL, 4096, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS,
-  //      -1, 0). W+X keeps the page writable for the stub and executable for the
-  //      C caller; the hosted mode is Linux x86-64 only.
+  // mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0).
+  // The page is writable only while the stub is copied in; `mprotect` below
+  // turns it read+execute before the function returns, so it is never W+X.
   cg.xorReg(Rdi, Rdi);
   cg.movImm(Rsi, 4096);
-  cg.movImm(Rdx, 7);
+  cg.movImm(Rdx, 3);
   cg.movImm(Rcx, 0x22);
   cg.movImm(R8, -1);
   cg.xorReg(R9, R9);
@@ -13745,6 +13749,21 @@ void emitCallbackCreate(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocL
   cg.movImmByteToMem(Rbx, 21, 0xFF);
   cg.movImmByteToMem(Rbx, 22, 0xE3);
 
+  // mprotect(page, 4096, PROT_READ|PROT_EXEC): drop write permission now that
+  // the stub is complete. A failure unmaps the page and reports a clean build
+  // error; a stub that is still writable must never reach C.
+  cg.movReg(Rdi, Rbx);
+  cg.movImm(Rsi, 4096);
+  cg.movImm(Rdx, 5);
+  cg.callExternal("mprotect");
+  cg.cmpImm32(Rax, -1);
+  cg.jcc(Jcc::Eq, protectFailed);
+
+  // The page is intentionally process-lifetime. C may store the function
+  // pointer for a later call (a stored callback, including an `atexit`
+  // handler), and Oskel has no way to learn when C is done with it; freeing
+  // it here would break that contract. The OS reclaims the mapping at exit.
+  // BACKLOG §6 item 28 tracks pooling or an explicit release contract.
   cg.movReg(Rax, Rbx);
   cg.addImm32(Rsp, 32);
   cg.pop(R12);
@@ -13754,6 +13773,13 @@ void emitCallbackCreate(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocL
   cg.bind(oom);
   emitFailCall(cg, fail, msgOom);
   cg.bind(mmapFailed);
+  emitFailCall(cg, fail, msgCallback);
+  cg.bind(protectFailed);
+  // The stub was written but could not be made executable; unmap it before
+  // reporting so a failed registration does not leave a writable page behind.
+  cg.movReg(Rdi, Rbx);
+  cg.movImm(Rsi, 4096);
+  cg.callExternal("munmap");
   emitFailCall(cg, fail, msgCallback);
 }
 
