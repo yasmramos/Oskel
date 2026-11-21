@@ -169,3 +169,18 @@ print("split space   =", "a b".split(" "));
 print("split sp edge =", " a b ".split(" "));
 print("split overlap =", "aaa".split("aa"));
 print("split overlap2=", "aaaa".split("aa"));
+
+print("--- multibyte separators and text ---");
+print("split uni sep =", "α,β,γ".split(","));
+print("split uni mid =", "αβγ".split("β"));
+print("split cjk     =", "日本語".split("本"));
+print("replace uni   =", "αβγ".replace("β", "X"));
+print("replaceFirst u=", "αβγ".replaceFirst("β", "XY"));
+print("split uni x   =", "αXβXγ".split("X"));
+print("split accented=", "aé,bé".split(","));
+print("replace accent=", "héllo".replace("é", "e"));
+print("lines uni     =", "αβγ".lines());
+print("lines uni nl  =", "α\nβ".lines());
+print("split uni chr =", "αβγ".split(""));
+print("padStart uni  =", "αβγ".padStart(5, "·"));
+print("padEnd uni    =", "αβ".padEnd(4, "·"));
