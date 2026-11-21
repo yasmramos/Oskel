@@ -194,10 +194,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    leaves the receiver untouched, as in the VM. The pure string methods bind in
    PHASE 7c.3i: `upper`, `lower`, `trim`, `trimStart`, `trimEnd`, `contains`,
    `startsWith`, `endsWith`, `indexOf`, `substr`, `reversed` and `repeat` run
-   on both engines over the same portable primitive surface. The methods that
-   return a collection or need a callback still fail in AOT with "no such
-   member": `split`, `lines`, `chars`, `replace`, `replaceFirst` and the
-   callback forms.
+   on both engines over the same portable primitive surface. The string
+   methods that return a collection bind too, in PHASE 7c.3k: `split` (all
+   three modes -- whitespace runs, an empty separator yielding the `chars`
+   array, and a non-empty separator keeping every field, the empty ones
+   included), `lines` (one trailing `'\r'` dropped per segment, no empty tail),
+   `chars`, `replace`, `replaceFirst`, `padStart` and `padEnd` (a `width` in
+   code points, the fill repeated whole and then clipped, both ordering
+   branches). The callback forms (`map`-style on strings) remain the only
+   string members with no AOT binding.
 2. **[P0] [done]** VM/AOT divergence in structural equality: `[1,2] == [1,2]`
    is true in the VM (content) and false in AOT (identity). The equality helper
    in `oskel_compare` now descends into arrays and maps (equal length, equal
