@@ -1704,6 +1704,7 @@ binary prints byte for byte what the VM prints).
       parameter are rejected with a dedicated build error; a C variadic remains
       7f work. Covered by `tests/native_build_extern_callback.oskl` (`qsort`,
       VM parity), `tests/native_build_extern_callback_stored.oskl`,
+      `..._exit.oskl` (an `atexit` handler after the chunk returns),
       `..._many_args.oskl` and `..._returns.oskl` (AOT-only helpers) and
       `tests/errors/callback_struct_{return,param}.oskl` (rejections).
   - **7g** (done) — bare-metal x86-64 (multiboot). A third target,
