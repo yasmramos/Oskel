@@ -155,13 +155,15 @@ skipped.
 ### oskelp (the project and package manager)
 
 `oskelp` is the Cargo-style project layer: a manifest (`oskel.toml`), a
-lockfile, dependency resolution and the `new`/`build`/`run`/`check`/`test`
-workflow. It is a standalone tool that drives `oskel` and `oskelc` as child
-processes, so the engine carries no project or dependency policy:
+lockfile, dependency resolution and the
+`new`/`init`/`add`/`remove`/`build`/`run`/`check`/`test` workflow. It is a
+standalone tool that drives `oskel` and `oskelc` as child processes, so the
+engine carries no project or dependency policy:
 
 ```sh
 ./build/oskelp new hello
 cd hello
+../build/oskelp add utils --path ../utils  # ../utils is another package
 ../build/oskelp run          # the VM, for the fast development loop
 ../build/oskelp build        # target/hello, the native binary
 ../build/oskelp test         # every tests/**/*.oskl
@@ -180,6 +182,8 @@ oskel -c <file.oskl>       compiles the script without running it
 oskel build <file.oskl>    compiles the script to a native binary (AOT)
 oskelc <file.oskl>         the same compiler without the interpreter
 oskelp new <dir>           creates a project (oskel.toml, src/<name>/...)
+oskelp add <name> --path <dir>  adds a path dependency to oskel.toml
+oskelp remove <name>       removes a dependency from oskel.toml
 oskelp build               builds the project to target/<name>
 oskelp run                 runs the project (--native for the AOT binary)
 oskelp test                runs every tests/**/*.oskl

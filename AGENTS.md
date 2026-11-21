@@ -567,7 +567,13 @@ it as a caveat:
   `target/` and `.oskel/deps/`; the last two belong in `.gitignore`, while
   `oskel.lock` is committed. Only `path` dependencies are
   supported: a string dependency is a registry dependency and is refused with a
-  dedicated message, and the registry is BACKLOG §20 work. `oskelp build` uses
+  dedicated message, and the registry is BACKLOG §20 work. `oskelp add` and
+  `oskelp remove` edit `[dependencies]` as text, never by rewriting the
+  manifest: comments, blank lines and CRLF survive, a duplicate add is a no-op
+  (a new `--version` for the same path updates the entry), and a failed add
+  leaves the file untouched because the graph is resolved before the write.
+  `remove` refuses an entry that spans multiple lines instead of deleting a
+  partial one. `oskelp build` uses
   `oskelc` (falling back to `oskel build`), `oskelp run` uses the VM unless
   `--native` is given, and `oskelp test` runs every `tests/**/*.oskl` and exits
   101 when one fails. `tests/run_oskelp_case.cmake` drives the real binary

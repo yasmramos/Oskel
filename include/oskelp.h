@@ -101,6 +101,18 @@ bool findManifest(const std::string& startDir, std::string& manifestPath);
 // Canonical text for a fresh manifest.
 std::string renderManifest(const Package& package);
 
+// Edits a manifest's text in place, preserving comments, blank lines and line
+// endings. `addDependencyToManifest` inserts the entry at the end of
+// `[dependencies]` (creating the section when missing) and refuses a duplicate;
+// `removeDependencyFromManifest` deletes the entry and refuses one that spans
+// multiple lines, because deleting a partial line would corrupt the file.
+bool addDependencyToManifest(const std::string& source,
+                             const Dependency& dependency, std::string& out,
+                             std::string& error);
+bool removeDependencyFromManifest(const std::string& source,
+                                  const std::string& name, std::string& out,
+                                  std::string& error);
+
 // ---------------------------------------------------------------------------
 // Lockfile
 
@@ -164,6 +176,12 @@ int commandNew(const std::string& directory, const std::string& name,
                const std::string& vcs, const std::string& argv0);
 int commandInit(const std::string& directory, const std::string& name,
                 const std::string& vcs, const std::string& argv0);
+// `add` requires a `--path` today; `version` is the optional exact version
+// assertion stored beside it. Both edit the manifest, then re-resolve and
+// refresh the lockfile and `.oskel/deps`; neither runs the compiler.
+int commandAdd(const std::string& manifestPath, const std::string& name,
+               const std::string& path, const std::string& version);
+int commandRemove(const std::string& manifestPath, const std::string& name);
 int commandBuild(const std::string& manifestPath, const BuildOptions& options,
                  const std::string& argv0);
 int commandRun(const std::string& manifestPath, const BuildOptions& options,

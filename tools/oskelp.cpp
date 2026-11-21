@@ -656,6 +656,206 @@ std::string renderManifest(const Package& package) {
   return out.str();
 }
 
+namespace {
+
+std::string trimCopy(const std::string& text) {
+  size_t begin = 0;
+  while (begin < text.size() &&
+         std::isspace(static_cast<unsigned char>(text[begin])) != 0) {
+    ++begin;
+  }
+  size_t end = text.size();
+  while (end > begin &&
+         std::isspace(static_cast<unsigned char>(text[end - 1])) != 0) {
+    --end;
+  }
+  return text.substr(begin, end - begin);
+}
+
+std::vector<std::string> splitLines(const std::string& source) {
+  std::vector<std::string> lines;
+  size_t start = 0;
+  while (true) {
+    size_t newline = source.find('\n', start);
+    if (newline == std::string::npos) {
+      lines.push_back(source.substr(start));
+      return lines;
+    }
+    lines.push_back(source.substr(start, newline - start));
+    start = newline + 1;
+  }
+}
+
+std::string joinLines(const std::vector<std::string>& lines) {
+  std::string out;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    if (i != 0) out += '\n';
+    out += lines[i];
+  }
+  return out;
+}
+
+// A table header is `[name]`, optionally followed by a comment.
+bool sectionHeaderName(const std::string& line, std::string& name) {
+  std::string trimmed = trimCopy(line);
+  if (trimmed.empty() || trimmed[0] != '[') return false;
+  size_t close = trimmed.find(']');
+  if (close == std::string::npos) return false;
+  std::string after = trimCopy(trimmed.substr(close + 1));
+  if (!after.empty() && after[0] != '#') return false;
+  name = trimCopy(trimmed.substr(1, close - 1));
+  return true;
+}
+
+// `key = value` at the start of a line. The key may be bare or quoted; the
+// value is returned as written, so the caller can inspect it.
+bool parseDependencyLine(const std::string& line, std::string& key,
+                         std::string& value) {
+  key.clear();
+  size_t i = 0;
+  while (i < line.size() &&
+         std::isspace(static_cast<unsigned char>(line[i])) != 0) {
+    ++i;
+  }
+  if (i >= line.size() || line[i] == '#' || line[i] == '[') return false;
+  if (line[i] == '"' || line[i] == '\'') {
+    char quote = line[i++];
+    bool closed = false;
+    while (i < line.size()) {
+      char c = line[i++];
+      if (c == quote) {
+        closed = true;
+        break;
+      }
+      if (quote == '"' && c == '\\' && i < line.size()) {
+        key += line[i++];
+      } else {
+        key += c;
+      }
+    }
+    if (!closed) return false;
+  } else {
+    size_t start = i;
+    while (i < line.size() &&
+           std::isspace(static_cast<unsigned char>(line[i])) == 0 &&
+           line[i] != '=') {
+      ++i;
+    }
+    if (i == start) return false;
+    key = line.substr(start, i - start);
+  }
+  while (i < line.size() &&
+         std::isspace(static_cast<unsigned char>(line[i])) != 0) {
+    ++i;
+  }
+  if (i >= line.size() || line[i] != '=') return false;
+  value = line.substr(i + 1);
+  return true;
+}
+
+bool findDependenciesSection(const std::vector<std::string>& lines,
+                             size_t& header, size_t& end) {
+  for (size_t i = 0; i < lines.size(); ++i) {
+    std::string name;
+    if (!sectionHeaderName(lines[i], name) || name != "dependencies") {
+      continue;
+    }
+    header = i;
+    end = lines.size();
+    for (size_t j = i + 1; j < lines.size(); ++j) {
+      if (sectionHeaderName(lines[j], name)) {
+        end = j;
+        break;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+std::string dependencyLine(const Dependency& dependency, bool crlf) {
+  std::string line = dependency.name + " = { path = \"" +
+                     escapeToml(dependency.path) + '"';
+  if (!dependency.version.empty()) {
+    line += ", version = \"" + escapeToml(dependency.version) + '"';
+  }
+  line += " }";
+  if (crlf) line += '\r';
+  return line;
+}
+
+}  // namespace
+
+bool addDependencyToManifest(const std::string& source,
+                             const Dependency& dependency, std::string& out,
+                             std::string& error) {
+  bool crlf = source.find("\r\n") != std::string::npos;
+  std::vector<std::string> lines = splitLines(source);
+  size_t header = 0;
+  size_t end = 0;
+  if (!findDependenciesSection(lines, header, end)) {
+    if (!lines.empty() && !lines.back().empty()) {
+      lines.push_back(crlf ? "\r" : "");
+    }
+    lines.push_back("[dependencies]" + std::string(crlf ? "\r" : ""));
+    lines.push_back(dependencyLine(dependency, crlf));
+    out = joinLines(lines);
+    return true;
+  }
+
+  for (size_t i = header + 1; i < end; ++i) {
+    std::string key;
+    std::string value;
+    if (parseDependencyLine(lines[i], key, value) && key == dependency.name) {
+      error = "dependency '" + dependency.name + "' is already declared";
+      return false;
+    }
+  }
+
+  size_t insert = header + 1;
+  for (size_t i = header + 1; i < end; ++i) {
+    if (!trimCopy(lines[i]).empty()) insert = i + 1;
+  }
+  lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(insert),
+               dependencyLine(dependency, crlf));
+  out = joinLines(lines);
+  return true;
+}
+
+bool removeDependencyFromManifest(const std::string& source,
+                                  const std::string& name, std::string& out,
+                                  std::string& error) {
+  std::vector<std::string> lines = splitLines(source);
+  size_t header = 0;
+  size_t end = 0;
+  if (!findDependenciesSection(lines, header, end)) {
+    error = "no [dependencies] section";
+    return false;
+  }
+
+  for (size_t i = header + 1; i < end; ++i) {
+    std::string key;
+    std::string value;
+    if (!parseDependencyLine(lines[i], key, value) || key != name) continue;
+    std::string trimmed = trimCopy(value);
+    bool opens =
+        !trimmed.empty() && (trimmed[0] == '{' || trimmed[0] == '[');
+    char close =
+        trimmed.empty() ? '\0' : (trimmed[0] == '{' ? '}' : ']');
+    if (opens && trimmed.find(close) == std::string::npos) {
+      error = "dependency '" + name +
+              "' spans multiple lines; remove it by hand";
+      return false;
+    }
+    lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(i));
+    out = joinLines(lines);
+    return true;
+  }
+
+  error = "dependency '" + name + "' is not declared";
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Lockfile
 
@@ -768,6 +968,16 @@ bool resolveDependencies(const Manifest& root, Resolution& out,
   std::map<std::string, int> state;  // 1 = visiting, 2 = done
   std::map<std::string, ResolvedPackage> resolved;
   std::vector<std::string> stack;
+
+  // Seed the root so a dependency that leads back to it is a cycle even when
+  // the root's in-memory manifest is newer than the one on disk (`oskelp add`
+  // resolves before it writes).
+  ResolvedPackage rootEntry;
+  rootEntry.name = root.package.name;
+  rootEntry.dir = root.dir;
+  state[root.package.name] = 1;
+  stack.push_back(root.package.name);
+  resolved[root.package.name] = rootEntry;
 
   std::function<bool(const Manifest&)> visit =
       [&](const Manifest& manifest) -> bool {
@@ -1490,6 +1700,193 @@ int commandInit(const std::string& directory, const std::string& name,
 
   std::cout << "initialized " << root.string() << " (package " << packageName
             << ")\n";
+  return kOk;
+}
+
+int commandAdd(const std::string& manifestPath, const std::string& name,
+               const std::string& path, const std::string& version) {
+  Manifest manifest;
+  std::string error;
+  if (!loadManifest(manifestPath, manifest, error)) {
+    reportError(error);
+    return kIoError;
+  }
+  printWarnings(manifest);
+
+  if (path.empty()) {
+    reportError(
+        "a --path is required; registry dependencies are not supported yet");
+    return kUsage;
+  }
+  if (!name.empty() && !isIdentifier(name)) {
+    reportError("'" + name + "' is not a valid dependency name");
+    return kUsage;
+  }
+  if (!version.empty() && !isSemver(version)) {
+    reportError("version '" + version + "' is not 'major.minor.patch'");
+    return kUsage;
+  }
+
+  std::error_code ec;
+  fs::path dependencyDir(path);
+  if (dependencyDir.is_relative()) {
+    fs::path cwd = fs::current_path(ec);
+    if (!ec) dependencyDir = cwd / dependencyDir;
+  }
+  ec.clear();
+  fs::path dependency = fs::weakly_canonical(dependencyDir, ec);
+  if (ec) dependency = dependencyDir.lexically_normal();
+  ec.clear();
+  fs::path project = fs::weakly_canonical(fs::path(manifest.dir), ec);
+  if (ec) project = fs::path(manifest.dir).lexically_normal();
+
+  if (samePath(project, dependency)) {
+    reportError("a package cannot depend on itself");
+    return kFailure;
+  }
+  ec.clear();
+  if (!fs::is_regular_file(dependency / "oskel.toml", ec)) {
+    reportError("'" + path + "' has no oskel.toml");
+    return kFailure;
+  }
+
+  Manifest dependencyManifest;
+  if (!loadManifest((dependency / "oskel.toml").string(), dependencyManifest,
+                    error)) {
+    reportError("dependency: " + error);
+    return kFailure;
+  }
+  std::string dependencyName =
+      name.empty() ? dependencyManifest.package.name : name;
+  if (dependencyManifest.package.name != dependencyName) {
+    reportError("the package at '" + path + "' is named '" +
+                dependencyManifest.package.name + "', not '" + dependencyName +
+                "'");
+    return kFailure;
+  }
+  if (!version.empty() && dependencyManifest.package.version != version) {
+    reportError("dependency '" + dependencyName + "' is version '" +
+                dependencyManifest.package.version + "', not '" + version +
+                "'");
+    return kFailure;
+  }
+
+  ec.clear();
+  fs::path relative = fs::relative(dependency, project, ec);
+  Dependency declaration;
+  declaration.name = dependencyName;
+  if (ec || relative.empty()) {
+    reportWarning("dependency '" + dependencyName +
+                  "' is outside the project tree; storing its absolute path");
+    declaration.path = normalizeSlashes(dependency.generic_string());
+  } else {
+    declaration.path = normalizeSlashes(relative.generic_string());
+  }
+  declaration.version = version;
+
+  bool updating = false;
+  auto existing = manifest.package.dependencies.find(dependencyName);
+  if (existing != manifest.package.dependencies.end()) {
+    fs::path existingDir = fs::path(manifest.dir) / existing->second.path;
+    if (!samePath(existingDir, dependency)) {
+      reportError("dependency '" + dependencyName + "' is already declared at '" +
+                  existing->second.path + "'; remove it first");
+      return kFailure;
+    }
+    if (existing->second.version == declaration.version) {
+      std::cout << "dependency '" << dependencyName << "' is already present\n";
+      return kOk;
+    }
+    updating = true;
+  }
+
+  std::string source;
+  if (!readSourceFile(manifest.path, source)) {
+    reportError("cannot read '" + manifest.path + "'");
+    return kIoError;
+  }
+  std::string edited = source;
+  if (updating) {
+    std::string without;
+    if (!removeDependencyFromManifest(edited, dependencyName, without, error)) {
+      reportError(error);
+      return kFailure;
+    }
+    edited = without;
+  }
+  std::string added;
+  if (!addDependencyToManifest(edited, declaration, added, error)) {
+    reportError(error);
+    return kFailure;
+  }
+  edited = added;
+
+  Manifest updated = manifest;
+  updated.package.dependencies[dependencyName] = declaration;
+  Resolution resolution;
+  if (!resolveDependencies(updated, resolution, error)) {
+    reportError(error);
+    return kFailure;
+  }
+
+  if (!writeTextFile(manifest.path, edited, error) ||
+      !writeLockfile(updated, resolution, error) ||
+      !materializeDependencies(updated, resolution, error)) {
+    reportError(error);
+    return kIoError;
+  }
+
+  std::cout << (updating ? "updated '" : "added '") << dependencyName
+            << "' (path " << declaration.path << ")\n";
+  return kOk;
+}
+
+int commandRemove(const std::string& manifestPath, const std::string& name) {
+  if (!isIdentifier(name)) {
+    reportError("'" + name + "' is not a valid dependency name");
+    return kUsage;
+  }
+  Manifest manifest;
+  std::string error;
+  if (!loadManifest(manifestPath, manifest, error)) {
+    reportError(error);
+    return kIoError;
+  }
+  printWarnings(manifest);
+
+  if (manifest.package.dependencies.find(name) ==
+      manifest.package.dependencies.end()) {
+    reportError("dependency '" + name + "' is not declared");
+    return kFailure;
+  }
+
+  std::string source;
+  if (!readSourceFile(manifest.path, source)) {
+    reportError("cannot read '" + manifest.path + "'");
+    return kIoError;
+  }
+  std::string edited;
+  if (!removeDependencyFromManifest(source, name, edited, error)) {
+    reportError(error);
+    return kFailure;
+  }
+
+  Manifest updated = manifest;
+  updated.package.dependencies.erase(name);
+  Resolution resolution;
+  if (!resolveDependencies(updated, resolution, error)) {
+    reportError(error);
+    return kFailure;
+  }
+
+  if (!writeTextFile(manifest.path, edited, error) ||
+      !writeLockfile(updated, resolution, error) ||
+      !materializeDependencies(updated, resolution, error)) {
+    reportError(error);
+    return kIoError;
+  }
+
+  std::cout << "removed '" << name << "'\n";
   return kOk;
 }
 
