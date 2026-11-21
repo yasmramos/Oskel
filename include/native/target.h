@@ -56,6 +56,14 @@ struct Target {
   static constexpr Target bareMetalX64() {
     return Target{Arch::X86_64, Os::Freestanding, Abi::SysV};
   }
+  // WebAssembly (PHASE 9). The image is a `.wasm` module, not an executable:
+  // it is emitted by `native/wasm.cpp`, which shares the value model with the
+  // x86-64 backend but none of its emission code. The OS component is
+  // `Freestanding` because the module reaches the outside world only through
+  // the two imports it declares, never through an operating system.
+  static constexpr Target wasm32() {
+    return Target{Arch::Wasm32, Os::Freestanding, Abi::Wasm};
+  }
 };
 
 inline const char* archName(Arch arch) {
@@ -113,6 +121,16 @@ inline bool isSupportedTarget(const Target& target) {
   return false;
 }
 
+// The WebAssembly target has its own lowering (`native/wasm.h`) and is kept
+// out of `isSupportedTarget` on purpose: `requireSupportedTarget` guards the
+// x86-64 emitter, and accepting a wasm target there would emit x86 bytes into
+// a `.wasm` file. The CLI dispatches on this predicate before choosing the
+// backend.
+inline bool isWasmTarget(const Target& target) {
+  return target.arch == Arch::Wasm32 && target.os == Os::Freestanding &&
+         target.abi == Abi::Wasm;
+}
+
 // Fails loudly instead of emitting bytes for an ABI the encoder does not know.
 // Callers construct their backend with a Target; a missing target is a
 // configuration error, not a reason to silently fall back to Linux.
@@ -163,6 +181,7 @@ inline const char* linkModeName(LinkMode mode) {
 // and are later work), so the CLI can report the unsupported pair instead of
 // emitting bytes it cannot close.
 inline bool isSupportedLinkMode(const Target& target, LinkMode mode) {
+  if (isWasmTarget(target)) return mode == LinkMode::Freestanding;
   if (!isSupportedTarget(target)) return false;
   switch (mode) {
     case LinkMode::Freestanding:

@@ -1936,6 +1936,94 @@ reference. Everything stays 1:1 with the bytecode in the sense above; the
 moment a design needs inline caching or specialization, it is out of scope
 (§6).
 
+### PHASE 9 — WebAssembly backend 🔶 in progress
+
+The same bytecode that the VM runs and the x86-64 backend compiles can also be
+emitted as a `.wasm` module. This is a **new backend behind the existing
+`Target` descriptor**, not a rewrite: `Target::wasm32()` is
+`{Arch::Wasm32, Os::Freestanding, Abi::Wasm}`, `targetName()` already prints
+`wasm32-freestanding-wasm`, and `oskel build --target wasm32-freestanding-wasm`
+selects it. `isWasmTarget()` gates the dispatch in `src/frontend/cli.cpp`;
+`isSupportedTarget()` stays x86-64-only on purpose, because
+`requireSupportedTarget` guards the x86-64 emitter and would otherwise emit x86
+bytes into a `.wasm` file.
+
+The backend lives in `include/native/wasm.h` and
+`src/frontend/native/wasm.cpp`. It shares the **value model** with the AOT
+backend but none of its emission code:
+
+- A small module builder writes the LEB128-encoded sections (type, import,
+  function, table, memory, global, export, element, data, code).
+- A `Runtime` emits a WASM helper per operation the x86-64 runtime implements
+  in machine code: allocation, string formatting, `toStr`/`repr`, truthiness,
+  iteration, type names, every binary/unary/comparison operator, `in`, member
+  access, and the builtins. The helpers are ordinary WASM functions, so the
+  engine validates and compiles them; there is no hand-written binary blob.
+- Each Oskel register is a pair of WASM locals (an `i64` tag and an `i64`
+  payload). The module memory holds the globals table (16 bytes per slot, at
+  offset 0), the static string pool and the bump arena; a string is an 8-byte
+  length followed by UTF-8 bytes, and a closure is a 40-byte block
+  (`table slot`, arity, upvalue count, name address, flags) followed by one
+  cell pointer per upvalue.
+- Control flow is a `loop` + `br_table` dispatcher over basic blocks: the
+  lowering splits each proto into blocks at jump targets and after terminators,
+  keeps the program counter in a local, and branches back to the dispatcher.
+  Calls go through one `call_indirect` type
+  `(i32 args, i32 argc, i32 self) -> (i64, i64)`; the callee's table slot is
+  read from its closure, so builtins and program functions share one table.
+- The module imports `oskel.write(fd, ptr, len) -> i32`, `oskel.exit(code)`,
+  `oskel.time() -> i64` and `oskel.clock() -> f64`, and exports `_start`.
+  `tests/run_wasm.cjs` is the Node host that supplies them.
+
+Supported today (PHASE 9.1): `nil`/`bool`/`int`/`float`/`double`/`string`,
+ranges, every operator (`+ - * / % ** & | ^ << >>`, unary `- ! ~`, the six
+comparisons, `in`), `for`/`while`/`do`/`switch`/`break`/`continue`, globals,
+locals, closures and upvalues (captured locals are boxed in cells), error
+values with `message`/`code`, character indexing, arrays and maps (literals,
+indexing with negative indices, assignment/append, `length`, `for ... in`
+including the key/value form, `in`, structural `==`, array concatenation,
+`str`/`repr`), slicing through `$slice` (arrays and UTF-8 strings, positive and
+negative steps, Python clamping), variadic functions (`rest...` is packed into
+an array), and the builtins `print`, `write`, `eprint`, `len`, `type`, `str`,
+`$str`, `repr`, `int`, `float`, `double`, `bool`, `chr`, `ord`, `floor`,
+`ceil`, `round`, `sqrt`, `assert`, `assertEq`, `panic`, `error`, `isError`,
+`$isError`, `$nonNull`, `range`, `$range`, `$slice`, `time`, `clock` and
+`exit`. The array, map and string methods are bound too (the same list as the
+x86-64 backend), so `std/json`, `std/datetime`, `std/collections`, `std/path`
+and the bound half of `std.math` build and agree with the VM byte for byte; the
+host clock is what lets `std/datetime` read `time()`/`clock()`.
+
+Still open, and each reported rather than mis-compiled:
+
+- **Transcendental builtins** (`sin`, `cos`, `tan`, `log`, `exp`, ...) are not
+  bound yet; `std.math` builds and its `abs`/`min`/`max`/`clamp`/`sqrt`/`PI`/`E`
+  subset agrees with the VM, but a call to an unbound name reports the gap.
+- A builtin the backend does not bind is **seeded as a closure that raises a
+  clear runtime error when called**, not left unseeded: a module that merely
+  *declares* `native fn sin` (through `import std.math`) still builds, while a
+  call to `sin` reports the gap. The list of unbound names is
+  `supportedBuiltins()` in `src/frontend/native/wasm.cpp`.
+- A used `extern "C"` or `native fn` symbol with no builtin stub is a build
+  error, the WASM counterpart of the AOT backend's message.
+- `double` printing is the shortest round-trip form `std::to_chars` produces:
+  `fmtDouble` scales with a 633-entry `pow10` table, generates 18 significant
+  digits, rounds the 18th into the 17th, tries every shorter precision and
+  re-parses each candidate with `parseDoubleStr`, then emits the shorter of
+  fixed and scientific (fixed on a tie), including `-0`, subnormals and
+  `e±NN`. `parseDoubleStr` combines the fraction into one `mantissa / scale`
+  division and applies the exponent with one table multiply/divide.
+  `tests/native_build_double_format.oskl` and `tests/native_build_math.oskl`
+  pin it.
+
+Testing: `tests/native_build_wasm.oskl` is compiled to a module and run under
+Node by `tests/wasm_case.cmake` (CTest `oskel.build_wasm`), which compares its
+output with the VM's byte for byte. The fixture covers the scalar core, arrays,
+maps, slicing and variadics; `oskel.build_wasm_datetime`,
+`oskel.build_wasm_collections`, `oskel.build_wasm_math` and
+`oskel.build_wasm_double_format` add `std/datetime`, `std/collections`,
+`std/math` and the full-range double formatter. The tests need Node and are
+skipped where it is absent.
+
 ### Post-1.0 — UI library
 
 - **SDL3** for windows, renderer and events: the low-level bindings landed as

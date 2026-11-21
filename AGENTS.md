@@ -296,6 +296,50 @@ it as a caveat:
   not Windows: a green Wine run is a signal, not a substitute for the
   `windows-latest` job.
 
+## The WebAssembly backend (PHASE 9)
+
+- `oskel build --target wasm32-freestanding-wasm` emits a `.wasm` module. The
+  target is `Target::wasm32()` (`Arch::Wasm32`, `Os::Freestanding`, `Abi::Wasm`)
+  and the backend is `include/native/wasm.h` + `src/frontend/native/wasm.cpp`.
+  `isWasmTarget()` routes it in `src/frontend/cli.cpp`; `isSupportedTarget()`
+  deliberately stays x86-64-only, because `requireSupportedTarget` guards the
+  x86-64 emitter.
+- The module imports `oskel.write(fd, ptr, len) -> i32`, `oskel.exit(code)`,
+  `oskel.time() -> i64` and `oskel.clock() -> f64`, and exports `_start`.
+  `tests/run_wasm.cjs` is the Node host that supplies all four; the tests are
+  skipped where Node is absent.
+- The runtime helpers (`print`, `toStr`, `repr`, the operators, iteration,
+  member access, the builtins) are ordinary WASM functions emitted by
+  `Runtime` in the same file, not a hand-written blob. Registers are `(i64 tag,
+  i64 payload)` local pairs; the globals table is 16 bytes per slot at offset 0,
+  followed by the static pool and the bump arena.
+- The collection half of the language is supported too: `NEWTABLE` creates an
+  array or a map, `GETTABLE`/`SETTABLE` dispatch to `indexGet`/`indexSet`
+  (array/string/map) or `memberGet`/`memberSet` (error fields, map fields,
+  `length`), `for ... in` walks arrays and maps (with the key/value pair), `in`
+  covers both, `==` is structural (with the cycle-safe visited list), and a
+  variadic proto packs its extras into an array bound to the last parameter.
+  `$slice` and the string-to-number forms of `int`/`float`/`double` are bound,
+  so `std/json`, `std/datetime` and `std/collections` build and match the VM
+  byte for byte; `time()`/`clock()` read the host imports.
+- A construct the backend cannot lower yet must fail cleanly, never emit a
+  mis-compiled module: an unbound builtin is seeded as a trapping closure, and
+  a used `extern "C"`/`native fn` symbol with no stub is a build error (exit
+  65). `tests/native_build_wasm.oskl` pins the supported surface against the VM
+  byte for byte.
+- `double` printing is the same shortest round-trip form `std::to_chars`
+  produces, not a fixed-point approximation: `fmtDouble` generates 18
+  significant digits by scaling with the 633-entry `pow10` table
+  (`1e-324`..`1e308`, built with `strtod` so every entry is the correctly
+  rounded double), rounds the 18th into the 17th, then tries every shorter
+  precision and re-parses the candidate with `parseDoubleStr`. It emits the
+  shorter of fixed and scientific (fixed on a tie), and handles `-0`,
+  subnormals and `e±NN`. `parseDoubleStr` combines the fraction into one
+  `mantissa / scale` division (a term-by-term sum rounds twice and accepts a
+  15-digit prefix that does not round-trip) and applies the exponent with one
+  table multiply/divide. `tests/native_build_double_format.oskl` pins the
+  whole range and `tests/native_build_math.oskl` pins `PI`/`E`/`sqrt`.
+
 ## SDL3 bindings (`std/sdl.oskl`)
 
 - The module binds **SDL3**, not SDL2: `SDL_CreateWindow(title, w, h, flags)`,

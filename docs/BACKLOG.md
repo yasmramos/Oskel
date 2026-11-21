@@ -438,13 +438,31 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     convention before the pointer builtins did, and the new arity guards follow
     it (the VM appends `, got N`).
 
-26. **[P1]** A callback that C stores for a later call works in AOT but not in
+26. **[P1]** WebAssembly backend gaps (PHASE 9). The backend behind
+    `Target::wasm32()` (`src/frontend/native/wasm.cpp`) covers the scalar core,
+    arrays, maps, slicing, variadic functions, the array/map/string methods,
+    `std/json`, `std/datetime`, `std/collections`, `std/path` and the bound half
+    of `std.math`, and its `double` printing is the same shortest round-trip
+    form as `std::to_chars`. What is still open:
+    - A builtin with no WASM body is seeded as a trapping closure: declaring it
+      is harmless, calling it reports the gap. The unbound names are the
+      complement of `supportedBuiltins()`; the transcendental `pow`, `sin`,
+      `cos`, `tan`, `log` and `exp`, plus `random`, `seed`, `input`, `pcall`,
+      `args`, the file builtins and the pointer builtins are in that set today.
+    - A used `extern "C"` or `native fn` symbol with no builtin stub is a build
+      error, mirroring the AOT backend's message.
+    Each gap fails cleanly (build error 65 or a runtime error), never a
+    mis-compiled module. `tests/native_build_wasm.oskl`,
+    `tests/native_build_datetime.oskl`, `tests/native_build_collections.oskl`,
+    `tests/native_build_math.oskl` and `tests/native_build_double_format.oskl`
+    pin the supported surface against the VM byte for byte.
+27. **[P1]** A callback that C stores for a later call works in AOT but not in
     the VM: the development engine's `CallbackObj` is released when the
     `extern "C"` call returns, while the AOT stub and its context live in the
     arena. The AOT-only fixtures `tests/native_build_extern_callback_stored.oskl`
     and `..._exit.oskl` (an `atexit` handler after the chunk returns) cover it;
     keeping the VM closure alive would close the gap.
-27. **[P1]** A callback returning a struct by value is supported by the VM
+28. **[P1]** A callback returning a struct by value is supported by the VM
     (`libffi`) and rejected by the AOT backend with a dedicated message; the AOT
     callback body does not rebuild the returned registers into a map. A struct
     *parameter* is rejected by both. `tests/errors/callback_struct_{return,param}.oskl`
