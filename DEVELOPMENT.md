@@ -109,6 +109,14 @@ generator (`docs/bindgen.md`). It reads a C header and writes an Oskel
 under `tools/`, outside the three `src/` globs that build the engine, so it can
 be built and shipped on its own.
 
+A fourth standalone binary is `oskelp`, the project and package manager
+(`docs/oskelp.md`). Like `bindgen` it lives under `tools/` and links no engine
+code; it drives `oskel`/`oskelc` as child processes. It owns the manifest
+(`oskel.toml`), the lockfile, path-dependency resolution and the
+`new`/`build`/`run`/`check`/`test` workflow. The only compiler-side hook is
+`OSKEL_MODULE_ROOT`: `resolverFor` honours it so a package's `src/` is the
+module root, and both engines resolve imports identically.
+
 Boundary rule: no source in `src/frontend/` may include `vm.h`, `jit/jit.h`,
 `builtins.h`, `ops.h`, `ffi_marshal.h` or libffi, and `src/frontend/compiler.*`
 plus `src/frontend/native/*` must also stay clear of `interpreter.h`. Enforced
@@ -1913,7 +1921,10 @@ moment a design needs inline caching or specialization, it is out of scope
 - **Dynamic FFI** (`dlopen`, `dlsym`, runtime stubs with the project's own JIT).
 - **Hot reload** (1.1+).
 - **Extended stdlib**: JSON, dates, bytes, regex, networking.
-- **Package manager** (`oskel install foo`) and registry.
+- **Package manager** (`oskelp`, the Cargo-style project layer): the MVP landed
+  with `oskel.toml`, `oskel.lock`, path dependencies and
+  `new`/`init`/`build`/`run`/`check`/`test`/`clean`/`tree`; a local registry,
+  `add`/`remove`/`update`/`publish` and a network registry are still pending.
 - **Windows and macOS** (1.2+).
 - **Embedded VM** (`--embed-vm`): AOT binary + VM for plugins, hot reload.
 
@@ -1937,7 +1948,7 @@ Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.7 done, scalar, `cstring`/`ptr` and struct-by-value `extern "C"` (register and class-MEMORY) resolve in the hosted backend; a C variadic and a callback argument are still open. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
-Post-1.0: ⬜ pending (UI, Cosmopolitan, package manager, VM embedded)
+Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending
 2.0: ⬜ future (static with `@Dynamic`)
 
 Bugs are tracked in the git history and the regression tests; there is no

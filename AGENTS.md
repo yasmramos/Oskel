@@ -387,7 +387,7 @@ it as a caveat:
   `Jit::`, `registerBuiltins`, `ops::binary` or `Runtime::fail` in the compiler
   **or in `liboskel_frontend.a`** — the archive matters because an unreferenced
   object never reaches the binary, so a binary-only check cannot see it.
-  Every packaging format ships `oskelc` beside `oskel` and `bindgen`.
+  Every packaging format ships `oskelc` beside `oskel`, `oskelp` and `bindgen`.
 - **A builtin must exist in both engines.** `tests/check_builtin_parity.cmake`
   reads `addNative(...)` out of `src/runtime/builtins.cpp` and the `builtins`
   map out of `src/frontend/native/lower.cpp` and compares the name sets. Each
@@ -438,6 +438,22 @@ it as a caveat:
   from the written one. A CMake test cannot see that by capturing stdout with
   `OUTPUT_VARIABLE` — CMake normalizes CRLF to LF there — so a byte-exact
   comparison must go through `OUTPUT_FILE` and `cmake -E compare_files`.
+- `oskelp` (the project and package manager, `docs/oskelp.md`) is a third
+  standalone executable under `tools/`. It links no engine code and drives
+  `oskel`/`oskelc` as child processes; `nm build/oskel | grep oskelp` must stay
+  empty. Every packaging format must ship it (`/usr/bin/oskelp`,
+  `/usr/local/bin/oskelp`, `{app}\bin\oskelp.exe`). The only compiler-side hook
+  is `OSKEL_MODULE_ROOT`, honoured by `resolverFor`, which makes a package's
+  `src/` the module root for both engines. `oskelp` generates `oskel.lock`,
+  `target/` and `.oskel/deps/`; the last two belong in `.gitignore`, while
+  `oskel.lock` is committed. Only `path` dependencies are
+  supported: a string dependency is a registry dependency and is refused with a
+  dedicated message, and the registry is BACKLOG §20 work. `oskelp build` uses
+  `oskelc` (falling back to `oskel build`), `oskelp run` uses the VM unless
+  `--native` is given, and `oskelp test` runs every `tests/**/*.oskl` and exits
+  101 when one fails. `tests/run_oskelp_case.cmake` drives the real binary
+  through the whole workflow, so a change to the manifest, the lockfile or a
+  command must keep that test green.
 
 ## Commit authorship
 

@@ -803,7 +803,28 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    updated before each tag (see `docs/RELEASING.md`).
 6. **[P2]** Add `CONTRIBUTING.md` (the rules now live only in
    `DEVELOPMENT.md`/`AGENTS.md`).
-7. **[P2]** Add a `oskel.toml` for native dependencies.
+7. **[P2] [done]** Add an `oskel.toml` for native dependencies.
+   `oskelp` (the project and package manager) landed with `oskel.toml`,
+   `oskel.lock`, path dependencies and
+   `new`/`init`/`build`/`run`/`check`/`test`/`clean`/`tree`. The manifest is
+   parsed by a small strict TOML subset in `tools/oskelp.cpp`; the resolver
+   rejects cycles, two locations for one package name, a name that disagrees
+   with its manifest and a registry dependency. The tool is standalone and
+   drives `oskel`/`oskelc` as child processes; `OSKEL_MODULE_ROOT` is the only
+   compiler-side hook.
 8. **[P3]** Add a "hello world with UI" tutorial (needs the post-1.0 UI work).
 9. **[P3]** Add a C wrapper for Skia/SDL2 (post-1.0 UI).
 10. **[P3]** Add `dlopen`/`dlsym` as a builtin for dynamic FFI.
+11. **[P1]** `oskelp`: add a local registry (`$OSKEL_REGISTRY`) with semver
+    ranges, so a dependency can be `utils = "1.2.0"` instead of a path. A
+    network registry is a separate decision: it needs HTTP/TLS, which the
+    standard library does not carry.
+12. **[P1]** `oskelp`: add `add`, `remove`, `update` and `publish`. The manifest
+    editor must preserve comments and unrelated lines; rewriting the file is not
+    acceptable.
+13. **[P2]** `oskelp`: add build profiles. `target/<name>` is the only output
+    today because the AOT backend has no optimization level to select; a
+    `--release` that changes nothing would be a cosmetic lie.
+14. **[P2]** `oskelp`: add workspaces (several packages sharing one lockfile)
+    and a `@Test` attribute, so a test file is not limited to a whole program
+    that exits `0`.

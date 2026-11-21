@@ -25,6 +25,14 @@ if(NOT DEFINED ROOT)
   get_filename_component(ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 endif()
 
+# `IN_LIST` is the operator this check uses, and the loops use `while(TRUE)`.
+# Setting the project's minimum version enables the policies that make both
+# work; `CMP0130` (3.24+) is opted in explicitly when it exists.
+cmake_minimum_required(VERSION 3.15)
+if(POLICY CMP0130)
+  cmake_policy(SET CMP0130 NEW)
+endif()
+
 set(extension "${ROOT}/editors/vscode")
 set(grammar_path "${extension}/syntaxes/oskel.tmLanguage.json")
 

@@ -103,10 +103,14 @@ g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskel \
 # the host compiler (AOT only, no interpreter)
 g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskelc \
     src/oskelc.cpp src/core/*.cpp src/frontend/*.cpp src/frontend/native/*.cpp
+
+# the project and package manager (standalone)
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskelp \
+    tools/oskelp.cpp tools/oskelp_main.cpp
 ```
 
-`./build.sh` and `build.bat` run both commands for you, and `CMakeLists.txt`
-builds both targets.
+`./build.sh` and `build.bat` run these commands for you, and `CMakeLists.txt`
+builds the same four targets (`oskel`, `oskelc`, `bindgen`, `oskelp`).
 
 ### oskelc (the host compiler)
 
@@ -144,6 +148,24 @@ g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/bindgen tools/bindgen.
 See [docs/bindgen.md](docs/bindgen.md) for the C → Oskel type mapping and what is
 skipped.
 
+### oskelp (the project and package manager)
+
+`oskelp` is the Cargo-style project layer: a manifest (`oskel.toml`), a
+lockfile, dependency resolution and the `new`/`build`/`run`/`check`/`test`
+workflow. It is a standalone tool that drives `oskel` and `oskelc` as child
+processes, so the engine carries no project or dependency policy:
+
+```sh
+./build/oskelp new hello
+cd hello
+../build/oskelp run          # the VM, for the fast development loop
+../build/oskelp build        # target/hello, the native binary
+../build/oskelp test         # every tests/**/*.oskl
+```
+
+See [docs/oskelp.md](docs/oskelp.md) for the project layout, the manifest, the
+dependency model and every command.
+
 ## Usage
 
 ```text
@@ -153,6 +175,10 @@ oskel -e "<code>"          runs code from the command line
 oskel -c <file.oskl>       compiles the script without running it
 oskel build <file.oskl>    compiles the script to a native binary (AOT)
 oskelc <file.oskl>         the same compiler without the interpreter
+oskelp new <dir>           creates a project (oskel.toml, src/<name>/...)
+oskelp build               builds the project to target/<name>
+oskelp run                 runs the project (--native for the AOT binary)
+oskelp test                runs every tests/**/*.oskl
 ```
 
 Options:
