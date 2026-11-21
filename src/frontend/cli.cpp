@@ -31,6 +31,7 @@
 #include "native/object.h"
 #include "native/pe.h"
 #include "native/target.h"
+#include "native/wasm.h"
 #include "platform.h"
 #include "version.h"
 
@@ -196,6 +197,10 @@ bool parseTargetName(const std::string &name, Target &out) {
     out = Target::bareMetalX64();
     return true;
   }
+  if (name == targetName(Target::wasm32())) {
+    out = Target::wasm32();
+    return true;
+  }
   return false;
 }
 
@@ -358,6 +363,15 @@ int buildBinary(const std::string &source, const std::string &name,
   std::vector<std::uint8_t> image;
   try {
     requireSupportedLinkMode(target, mode);
+    if (isWasmTarget(target)) {
+      image = lowerToWasm(target, bytecode);
+      if (!writeBinaryFile(output, image)) {
+        std::string message = tool + ": cannot write '" + output + "'\n";
+        platformPosix().writeErr(message.data(), message.size());
+        return 74;
+      }
+      return 0;
+    }
     LoweredChunk chunk = lowerToX64(target, bytecode, CodeGen{}, mode);
     if (mode == LinkMode::Hosted) {
       // The hosted image is an object the linker closes against libc (PHASE
@@ -438,7 +452,8 @@ int runBuildCommand(const std::vector<std::string> &arguments,
         std::cerr << tool << ": unknown target '" << name << "' (supported: "
                   << targetName(Target::linuxX64()) << ", "
                   << targetName(Target::winX64()) << ", "
-                  << targetName(Target::bareMetalX64()) << ")\n";
+                  << targetName(Target::bareMetalX64()) << ", "
+                  << targetName(Target::wasm32()) << ")\n";
         return 64;
       }
       continue;
@@ -496,10 +511,16 @@ int runBuildCommand(const std::vector<std::string> &arguments,
               << linkModeName(LinkMode::Hosted) << "'\n";
     return 64;
   }
+  if (isWasmTarget(buildTarget) && buildMode != LinkMode::Freestanding) {
+    std::cerr << tool << ": the WebAssembly target supports only '--mode "
+              << linkModeName(LinkMode::Freestanding) << "'\n";
+    return 64;
+  }
   if (buildOutput.empty()) {
     buildOutput = stripExtension(buildFile);
     // The output name follows the target: a Windows image is an `.exe`.
     if (buildTarget.os == Os::Windows) buildOutput += ".exe";
+    if (isWasmTarget(buildTarget)) buildOutput += ".wasm";
   }
   std::string buildSource;
   if (!readSourceFile(buildFile, buildSource)) {

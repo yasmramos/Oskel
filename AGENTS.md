@@ -265,6 +265,30 @@ it as a caveat:
   not Windows: a green Wine run is a signal, not a substitute for the
   `windows-latest` job.
 
+## The WebAssembly backend (PHASE 9)
+
+- `oskel build --target wasm32-freestanding-wasm` emits a `.wasm` module. The
+  target is `Target::wasm32()` (`Arch::Wasm32`, `Os::Freestanding`, `Abi::Wasm`)
+  and the backend is `include/native/wasm.h` + `src/frontend/native/wasm.cpp`.
+  `isWasmTarget()` routes it in `src/frontend/cli.cpp`; `isSupportedTarget()`
+  deliberately stays x86-64-only, because `requireSupportedTarget` guards the
+  x86-64 emitter.
+- The module imports only `oskel.write(fd, ptr, len) -> i32` and
+  `oskel.exit(code)`, and exports `_start`. `tests/run_wasm.cjs` is the Node
+  host that supplies both; the tests are skipped where Node is absent.
+- The runtime helpers (`print`, `toStr`, `repr`, the operators, iteration,
+  member access, the builtins) are ordinary WASM functions emitted by
+  `Runtime` in the same file, not a hand-written blob. Registers are `(i64 tag,
+  i64 payload)` local pairs; the globals table is 16 bytes per slot at offset 0,
+  followed by the static pool and the bump arena.
+- A construct the backend cannot lower yet must fail cleanly, never emit a
+  mis-compiled module: `NEWTABLE` and variadic protos are build errors (exit
+  65) with dedicated messages, and an unbound builtin is seeded as a trapping
+  closure. `tests/wasm_reject_arrays.oskl` pins the array rejection;
+  `tests/native_build_wasm.oskl` pins the supported surface against the VM
+  byte for byte. Non-integral `double` printing is still PHASE 9.2; the parity
+  fixture prints only integral doubles.
+
 ## SDL3 bindings (`std/sdl.oskl`)
 
 - The module binds **SDL3**, not SDL2: `SDL_CreateWindow(title, w, h, flags)`,

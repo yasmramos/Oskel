@@ -1092,6 +1092,39 @@ if(BUILD_TESTING)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.cmake")
   endif()
 
+  # --- WebAssembly backend (PHASE 9) ---
+  # The WASM target is platform-independent: the module runs on any host with a
+  # WebAssembly engine, so these tests are not behind the x86-64 guard above.
+  # They need Node (the host for the two imports the module declares); where
+  # Node is absent the tests are skipped, like `vscode_diagnostics`.
+  find_program(OSKEL_NODE_EXE NAMES node nodejs)
+  if(OSKEL_NODE_EXE)
+    add_test(NAME oskel.build_wasm
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_wasm.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # A construct the backend cannot lower yet must fail the build with a
+    # dedicated message and write no `.wasm`, never emit a mis-compiled module.
+    add_test(NAME oskel.build_wasm_arrays_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_arrays_error"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_reject_arrays.oskl"
+        "-DOSKEL_TARGET=wasm32-freestanding-wasm"
+        "-DEXPECTED_MESSAGE=arrays and maps are not supported by the WebAssembly backend"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+    # A mis-lowered loop must fail the test, not hang the suite: the Node run
+    # gets a hard timeout in `wasm_case.cmake`, and CTest bounds the driver.
+    set_tests_properties(oskel.build_wasm oskel.build_wasm_arrays_error
+      PROPERTIES TIMEOUT 120)
+  endif()
+
   # --- .oskl script tests (auto-detected) ---
   file(GLOB oskel_tests CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.oskl"
@@ -1107,6 +1140,11 @@ if(BUILD_TESTING)
     # `native_build_sdl_freestanding` is a `oskel build` rejection fixture, not
     # a VM test: running it would try to open a window (and needs SDL3 loaded).
     if(name STREQUAL "native_build_sdl_freestanding")
+      continue()
+    endif()
+    # `wasm_reject_arrays` is a `oskel build --target wasm32-...` rejection
+    # fixture: it is registered only as `oskel.build_wasm_arrays_error`.
+    if(name STREQUAL "wasm_reject_arrays")
       continue()
     endif()
     # FFI callbacks need libffi in the dev engine; skip the callback test when

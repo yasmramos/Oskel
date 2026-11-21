@@ -438,6 +438,34 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     convention before the pointer builtins did, and the new arity guards follow
     it (the VM appends `, got N`).
 
+26. **[P1]** WebAssembly backend gaps (PHASE 9). The backend behind
+    `Target::wasm32()` (`src/frontend/native/wasm.cpp`) covers the scalar core
+    but not yet the collection half of the language:
+    - `NEWTABLE` is a build error (exit 65), so arrays and maps cannot be
+      created. `GETTABLE`/`SETTABLE` are lowered only for error fields and
+      string character indexing; other shapes raise a runtime error. This is
+      what keeps `for ... in` over an array and every collection method
+      (`push`, `map`, `sort`, ...) out of reach.
+    - Variadic functions (`rest...`) are a build error, because a variadic call
+      materialises an array. `std.math` defines `min`/`max` as variadic, so
+      `import std.math` does not build yet even when those functions are unused.
+    - A builtin with no WASM body is seeded as a trapping closure: declaring it
+      is harmless, calling it reports the gap. The unbound names are the
+      complement of `supportedBuiltins()`; `pow`, `sin`, `cos`, `tan`, `log`,
+      `exp`, `random`, `seed`, `clock`, `time`, `input`, `pcall`, `args`, the
+      file builtins, the pointer builtins and `$slice` are in that set today.
+    - `print` of a non-integral `double` is not byte-compatible: the formatter
+      prints the integer part and raises `runtime error:`. A shortest
+      round-trip dtoa (the WASM twin of `src/frontend/native/dtoa.cpp`) is
+      PHASE 9.2. The parity fixture avoids printing non-integral doubles until
+      then.
+    - A used `extern "C"` or `native fn` symbol with no builtin stub is a build
+      error, mirroring the AOT backend's message.
+    Each gap fails cleanly (build error 65 or a runtime error), never a
+    mis-compiled module. `tests/native_build_wasm.oskl` and
+    `tests/wasm_reject_arrays.oskl` pin the supported surface and the
+    rejection.
+
 ---
 
 ## 7. FFI (`src/runtime/ffi.cpp`)

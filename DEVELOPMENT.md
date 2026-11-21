@@ -1907,6 +1907,82 @@ reference. Everything stays 1:1 with the bytecode in the sense above; the
 moment a design needs inline caching or specialization, it is out of scope
 (§6).
 
+### PHASE 9 — WebAssembly backend 🔶 in progress
+
+The same bytecode that the VM runs and the x86-64 backend compiles can also be
+emitted as a `.wasm` module. This is a **new backend behind the existing
+`Target` descriptor**, not a rewrite: `Target::wasm32()` is
+`{Arch::Wasm32, Os::Freestanding, Abi::Wasm}`, `targetName()` already prints
+`wasm32-freestanding-wasm`, and `oskel build --target wasm32-freestanding-wasm`
+selects it. `isWasmTarget()` gates the dispatch in `src/frontend/cli.cpp`;
+`isSupportedTarget()` stays x86-64-only on purpose, because
+`requireSupportedTarget` guards the x86-64 emitter and would otherwise emit x86
+bytes into a `.wasm` file.
+
+The backend lives in `include/native/wasm.h` and
+`src/frontend/native/wasm.cpp`. It shares the **value model** with the AOT
+backend but none of its emission code:
+
+- A small module builder writes the LEB128-encoded sections (type, import,
+  function, table, memory, global, export, element, data, code).
+- A `Runtime` emits a WASM helper per operation the x86-64 runtime implements
+  in machine code: allocation, string formatting, `toStr`/`repr`, truthiness,
+  iteration, type names, every binary/unary/comparison operator, `in`, member
+  access, and the builtins. The helpers are ordinary WASM functions, so the
+  engine validates and compiles them; there is no hand-written binary blob.
+- Each Oskel register is a pair of WASM locals (an `i64` tag and an `i64`
+  payload). The module memory holds the globals table (16 bytes per slot, at
+  offset 0), the static string pool and the bump arena; a string is an 8-byte
+  length followed by UTF-8 bytes, and a closure is a 40-byte block
+  (`table slot`, arity, upvalue count, name address, flags) followed by one
+  cell pointer per upvalue.
+- Control flow is a `loop` + `br_table` dispatcher over basic blocks: the
+  lowering splits each proto into blocks at jump targets and after terminators,
+  keeps the program counter in a local, and branches back to the dispatcher.
+  Calls go through one `call_indirect` type
+  `(i32 args, i32 argc, i32 self) -> (i64, i64)`; the callee's table slot is
+  read from its closure, so builtins and program functions share one table.
+- The module imports exactly `oskel.write(fd, ptr, len) -> i32` and
+  `oskel.exit(code)` and exports `_start`. `tests/run_wasm.cjs` is the Node
+  host that supplies them.
+
+Supported today (PHASE 9.1): `nil`/`bool`/`int`/`float`/`double`/`string`,
+ranges, every operator (`+ - * / % ** & | ^ << >>`, unary `- ! ~`, the six
+comparisons, `in`), `for`/`while`/`do`/`switch`/`break`/`continue`, globals,
+locals, closures and upvalues (captured locals are boxed in cells), error
+values with `message`/`code`, character indexing, and the builtins `print`,
+`write`, `eprint`, `len`, `type`, `str`, `$str`, `repr`, `int`, `float`,
+`double`, `bool`, `chr`, `ord`, `floor`, `ceil`, `round`, `sqrt`, `assert`,
+`assertEq`, `panic`, `error`, `isError`, `$isError`, `$nonNull`, `range`,
+`$range` and `exit`.
+
+Still open, and each rejected or reported rather than mis-compiled:
+
+- **Arrays and maps** (`NEWTABLE`) are a build error (exit 65) with a dedicated
+  message. `GETTABLE`/`SETTABLE` are lowered, but only for the shapes that exist
+  without a collection: error fields and string character indexing; anything
+  else raises a runtime error.
+- **Variadic functions** (`rest...`) are a build error, because a variadic call
+  materialises an array. `std.math` defines `min`/`max` as variadic, so importing
+  it does not build yet.
+- A builtin the backend does not bind is **seeded as a closure that raises a
+  clear runtime error when called**, not left unseeded: a module that merely
+  *declares* `native fn sin` (through `import std.math`) still builds, while a
+  call to `sin` reports the gap. The list of unbound names is
+  `supportedBuiltins()` in `src/frontend/native/wasm.cpp`.
+- A used `extern "C"` or `native fn` symbol with no builtin stub is a build
+  error, the WASM counterpart of the AOT backend's message.
+- `print` of a non-integral `double` is not byte-compatible yet: the WASM
+  formatter prints the integer part and reports `runtime error:`. A shortest
+  round-trip dtoa is PHASE 9.2; the parity fixture therefore prints only
+  integral doubles.
+
+Testing: `tests/native_build_wasm.oskl` is compiled to a module and run under
+Node by `tests/wasm_case.cmake` (CTest `oskel.build_wasm`), which compares its
+output with the VM's byte for byte; `tests/wasm_reject_arrays.oskl` pins the
+build-time rejection (CTest `oskel.build_wasm_arrays_error`). The tests need
+Node and are skipped where it is absent.
+
 ### Post-1.0 — UI library
 
 - **SDL3** for windows, renderer and events: the low-level bindings landed as

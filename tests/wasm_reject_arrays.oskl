@@ -1,0 +1,8 @@
+// WebAssembly rejection fixture (PHASE 9): arrays are not supported yet.
+//
+// Registered only as `oskel.build_wasm_arrays_error`, which runs
+// `oskel build --target wasm32-freestanding-wasm` and expects exit 65 with the
+// dedicated message and no `.wasm` file. The VM can run it (the array is valid
+// Oskel), so the auto-detected script glob skips it by name.
+var values = [1, 2, 3];
+print(values);

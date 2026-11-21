@@ -1,0 +1,113 @@
+// WebAssembly backend parity fixture (PHASE 9).
+//
+// `oskel build --target wasm32-freestanding-wasm` compiles this file to a
+// `.wasm` module; `tests/wasm_case.cmake` runs the module under Node and
+// compares its output with the development VM's, byte for byte.
+//
+// Only the portable scalar core is exercised here: nil/bool/int/double/string,
+// ranges, every operator, control flow, globals, locals, functions, closures
+// and the builtins the WASM runtime binds. Arrays, maps, methods and variadic
+// functions are PHASE 9 and are rejected at build time; a fixture that used
+// them would fail the build rather than compare output.
+
+print("wasm parity");
+
+// --- arithmetic and numeric promotion -------------------------------------
+print(1 + 2 * 3, (1 + 2) * 3, 2 ** 10, 7 / 2, -7 / 2, 7 % 3, -7 % 3);
+print(10 == 10.0, 2 < 2.5, 1.5 + 2.5, 3.0 * 2.0, 2 ** -1 + 0.5);
+print(9223372036854775807 + 1);
+
+// --- bitwise and shifts ----------------------------------------------------
+print(0xFF & 0x0F, 0x01 | 0x02, 0x03 ^ 0x01, 1 << 4, 256 >> 4);
+
+// --- unary -----------------------------------------------------------------
+print(-5, !false, !0, ~0, !nil);
+
+// --- strings ---------------------------------------------------------------
+var text = "héllo";
+print(text, len(text), text[0], text[1], text[-1]);
+print("a" + "b" + "c", ord("A"), chr(66), ord("é"), chr(233));
+print("needle" in "haystack", "hay" in "haystack");
+
+// --- ranges ----------------------------------------------------------------
+var ascending = "";
+for (i in 0..5) { ascending = ascending + str(i); }
+var inclusive = "";
+for (i in 0..=3) { inclusive = inclusive + str(i); }
+var descending = "";
+for (i in 3..0) { descending = descending + str(i); }
+print(ascending, inclusive, descending);
+print(len(0..5), len(0..=5), len(5..0));
+print(5 in 0..10, 5 in 0..=5, 9 in 0..5);
+
+// --- control flow ----------------------------------------------------------
+var whileSum = 0;
+var i = 0;
+while (i < 10) {
+  i = i + 1;
+  if (i == 5) { continue; }
+  whileSum = whileSum + i;
+}
+print(whileSum);
+
+var doCount = 0;
+do {
+  doCount = doCount + 1;
+} while (doCount < 3);
+print(doCount);
+
+var switched = "";
+switch (2) {
+  case 1: { switched = "one"; }
+  case 2: { switched = "two"; }
+  default: { switched = "other"; }
+}
+print(switched);
+
+// --- functions, recursion and closures -------------------------------------
+fn add(a, b) { return a + b; }
+
+fn fib(n) {
+  if (n < 2) { return n; }
+  return fib(n - 1) + fib(n - 2);
+}
+
+var counter = 0;
+fn bump() {
+  counter = counter + 1;
+  return counter;
+}
+
+fn makeAdder(n) {
+  return (x) => x + n;
+}
+
+fn nested(a) {
+  fn middle(b) {
+    return () => a + b;
+  }
+  return middle(10);
+}
+
+print(add(2, 3), fib(10), bump(), bump());
+print(makeAdder(10)(7), nested(5)());
+
+// --- conversions and type names -------------------------------------------
+print(type(1), type(1.5), type("x"), type(true), type(nil), type(0..1), type(add));
+print(int(3.9), int(true), float(2), double(3), bool(0), bool(nil));
+print(str(42), str(nil), repr("hi"), repr("a\nb"));
+
+// --- exact math builtins ---------------------------------------------------
+print(floor(3.7), ceil(3.2), round(2.5), round(-2.5), sqrt(81));
+
+// --- error values ----------------------------------------------------------
+var failure = error("bad", 7);
+print(type(failure), isError(failure), failure.message, failure.code, repr(failure));
+print(isError("not an error"), error("x") catch "recovered");
+
+// --- assertions ------------------------------------------------------------
+assertEq(add(1, 2), 3);
+assert(1 < 2);
+assert(1 < 2, "one is less than two");
+
+print("wasm ok");
