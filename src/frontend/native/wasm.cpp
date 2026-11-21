@@ -86,6 +86,35 @@ constexpr std::uint32_t kMapEntryTagOffset = 8;
 constexpr std::uint32_t kMapEntryPayloadOffset = 16;
 constexpr std::uint32_t kMapEntrySize = 24;
 
+// Dragon4 scratch (PHASE 9.3): bignum state plus the digit buffer and the
+// input fields. Byte offsets are kept explicit because the emitted helpers
+// address the block directly.
+constexpr std::uint32_t kDtoaLimbs = 48;
+constexpr std::uint32_t kDtoaLimbStride = 8;
+constexpr std::uint32_t kDtoaBnW = 8;
+constexpr std::uint32_t kDtoaBnBytes = kDtoaBnW + kDtoaLimbs * kDtoaLimbStride;
+constexpr std::uint32_t kDtoaR = 0;
+constexpr std::uint32_t kDtoaS = kDtoaR + kDtoaBnBytes;
+constexpr std::uint32_t kDtoaMp = kDtoaS + kDtoaBnBytes;
+constexpr std::uint32_t kDtoaMm = kDtoaMp + kDtoaBnBytes;
+constexpr std::uint32_t kDtoaT = kDtoaMm + kDtoaBnBytes;
+constexpr std::uint32_t kDtoaDigits = kDtoaT + kDtoaBnBytes;
+constexpr std::uint32_t kDtoaNd = kDtoaDigits + 64;
+constexpr std::uint32_t kDtoaK = kDtoaNd + 8;
+constexpr std::uint32_t kDtoaF = kDtoaK + 8;
+constexpr std::uint32_t kDtoaE = kDtoaF + 8;
+constexpr std::uint32_t kDtoaP = kDtoaE + 8;
+constexpr std::uint32_t kDtoaP2 = kDtoaP + 8;
+constexpr std::uint32_t kDtoaMinE = kDtoaP2 + 8;
+constexpr std::uint32_t kDtoaSign = kDtoaMinE + 8;
+constexpr std::uint32_t kDtoaBoundary = kDtoaSign + 8;
+constexpr std::uint32_t kDtoaOddM = kDtoaBoundary + 8;
+constexpr std::uint32_t kDtoaLow = kDtoaOddM + 8;
+constexpr std::uint32_t kDtoaHigh = kDtoaLow + 8;
+constexpr std::uint32_t kDtoaD = kDtoaHigh + 8;
+constexpr std::uint32_t kDtoaScratchBytes = kDtoaD + 8;
+
+
 // --------------------------------------------------------------- module model
 struct FuncType {
   std::vector<std::uint8_t> params;
@@ -345,6 +374,7 @@ class Func {
   void i64GeS() { op(0x59); }
   void i64GeU() { op(0x5A); }
   void i64Eqz() { op(0x50); }
+  void i64Clz() { op(0x79); }
   void i64ExtendI32S() { op(0xAC); }
   void i64ExtendI32U() { op(0xAD); }
   void i32WrapI64() { op(0xA7); }
@@ -529,6 +559,13 @@ struct StaticPool {
     return address;
   }
 
+  std::uint32_t addZeros(std::uint32_t size) {
+    alignTo(8);
+    std::uint32_t address = base + static_cast<std::uint32_t>(bytes.size());
+    bytes.resize(bytes.size() + size, 0);
+    return address;
+  }
+
   std::uint32_t addDoubles(const std::vector<double>& values) {
     alignTo(8);
     std::uint32_t address = base + static_cast<std::uint32_t>(bytes.size());
@@ -572,7 +609,7 @@ struct Runtime {
   StaticPool& pool;
 
   std::uint32_t tWrite = 0, tExit = 0, tTime = 0, tClock = 0, tValue = 0,
-                tStart = 0, tBin = 0,
+                tStart = 0, tBin = 0, tFmtDouble = 0,
                 tUn = 0, tTruthy = 0, tAlloc = 0, tIter = 0, tFmtInt = 0,
                 tNewArray = 0, tNewMap = 0, tArrayPush = 0, tArrayGet = 0,
                 tArraySet = 0, tMapFind = 0, tMapSet = 0, tMapGet = 0,
@@ -610,6 +647,12 @@ struct Runtime {
                 sArrayRange = 0, sMapMembership = 0, sStringMembership = 0,
                 sCannotAssignIndex = 0;
 
+  std::uint32_t dtoaScratch = 0, dtoaGenerate = 0;
+  std::uint32_t bnSetU64 = 0, bnSetU32 = 0, bnCopy = 0, bnCmp = 0,
+                bnMulSmall = 0, bnShl = 0, bnSub = 0, bnAdd = 0,
+                bnMulPow10 = 0, bnDivMod = 0;
+
+
   std::uint32_t alloc = 0, fail = 0, writeStr = 0, utf8Len = 0, newStr = 0,
                 concat = 0, strCmp = 0, fmtInt = 0, fmtDouble = 0, fmtRange = 0,
                 toStr = 0, quote = 0, reprStr = 0, truthy = 0, iterStep = 0,
@@ -640,6 +683,7 @@ struct Runtime {
     tIter = m.typeFor({kI64, kI64, kI64, kI64, kI32},
                       {kI64, kI64, kI64, kI64, kI32, kI64, kI64});
     tFmtInt = m.typeFor({kI64}, {kI32});
+    tFmtDouble = m.typeFor({kI64, kI64}, {kI32});
     tNewArray = m.typeFor({kI64}, {kI64, kI64});
     tNewMap = m.typeFor({}, {kI64, kI64});
     tArrayPush = m.typeFor({kI32, kI64, kI64}, {});
@@ -786,6 +830,8 @@ struct Runtime {
   }
 
   std::uint32_t emitAlloc();
+  void emitDtoaHelpers();
+
   std::uint32_t emitFail();
   std::uint32_t emitWriteStr();
   std::uint32_t emitUtf8Len();
@@ -1183,23 +1229,487 @@ std::uint32_t Runtime::emitFmtInt() {
   return index;
 }
 
+void Runtime::emitDtoaHelpers() {
+  // bn_set_u64(Bignum* bn, long value)
+  bnSetU64 = m.reserveFunction(m.typeFor({kI32, kI64}, {}));
+  {
+    Func f(m, bnSetU64, {kI32, kI64});
+    std::uint32_t hi = f.addLocal(kI64);
+    f.lget(0); f.i64c(0); f.i64Store(0);
+    f.lget(1); f.i64Eqz(); f.if_(); f.ret(); f.end();
+    f.lget(0); f.lget(1); f.i32WrapI64(); f.i64ExtendI32U(); f.i64Store(kDtoaBnW);
+    f.lget(1); f.i64c(32); f.i64ShrU(); f.lset(hi);
+    f.lget(hi); f.i64Eqz(); f.if_();
+    f.lget(0); f.i64c(1); f.i64Store(0);
+    f.else_();
+    f.lget(0); f.lget(hi); f.i64Store(kDtoaBnW + 8);
+    f.lget(0); f.i64c(2); f.i64Store(0);
+    f.end();
+  }
+
+  // bn_set_u32(Bignum* bn, long value)
+  bnSetU32 = m.reserveFunction(m.typeFor({kI32, kI64}, {}));
+  {
+    Func f(m, bnSetU32, {kI32, kI64});
+    f.lget(0); f.i64c(0); f.i64Store(0);
+    f.lget(1); f.i64Eqz(); f.if_(); f.ret(); f.end();
+    f.lget(0); f.lget(1); f.i32WrapI64(); f.i64ExtendI32U(); f.i64Store(kDtoaBnW);
+    f.lget(0); f.i64c(1); f.i64Store(0);
+  }
+
+  // bn_copy(Bignum* dst, const Bignum* src)
+  bnCopy = m.reserveFunction(m.typeFor({kI32, kI32}, {}));
+  {
+    Func f(m, bnCopy, {kI32, kI32});
+    std::uint32_t n = f.addLocal(kI64), i = f.addLocal(kI32);
+    f.lget(1); f.i64Load(0); f.lset(n);
+    f.lget(0); f.lget(n); f.i64Store(0);
+    f.i32c(0); f.lset(i);
+    f.block(); f.loop();
+    f.lget(i); f.i64ExtendI32U(); f.lget(n); f.i64GeU(); f.brIf(1);
+    f.lget(0); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add();
+    f.lget(1); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add(); f.i64Load(kDtoaBnW);
+    f.i64Store(kDtoaBnW);
+    f.lget(i); f.i32c(1); f.i32Add(); f.lset(i);
+    f.br(0); f.end(); f.end();
+  }
+
+  // long bn_cmp(const Bignum* a, const Bignum* b)
+  bnCmp = m.reserveFunction(m.typeFor({kI32, kI32}, {kI32}));
+  {
+    Func f(m, bnCmp, {kI32, kI32});
+    std::uint32_t na = f.addLocal(kI64), nb = f.addLocal(kI64),
+                  i = f.addLocal(kI32), av = f.addLocal(kI64), bv = f.addLocal(kI64);
+    f.lget(0); f.i64Load(0); f.lset(na);
+    f.lget(1); f.i64Load(0); f.lset(nb);
+    f.lget(na); f.lget(nb); f.i64Ne(); f.if_();
+    f.lget(na); f.lget(nb); f.i64GtU(); f.ifResult(kI32);
+    f.i32c(1); f.else_(); f.i32c(-1); f.end(); f.ret();
+    f.end();
+    f.lget(na); f.i32WrapI64(); f.i32c(1); f.i32Sub(); f.lset(i);
+    f.block(); f.loop();
+    f.lget(i); f.i32c(0); f.i32LtS(); f.brIf(1);
+    f.lget(0); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add(); f.i64Load(kDtoaBnW); f.lset(av);
+    f.lget(1); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add(); f.i64Load(kDtoaBnW); f.lset(bv);
+    f.lget(av); f.lget(bv); f.i64GtU(); f.if_(); f.i32c(1); f.ret(); f.end();
+    f.lget(av); f.lget(bv); f.i64LtU(); f.if_(); f.i32c(-1); f.ret(); f.end();
+    f.lget(i); f.i32c(1); f.i32Sub(); f.lset(i);
+    f.br(0); f.end(); f.end();
+    f.i32c(0);
+  }
+
+  // void bn_mul_small(Bignum* bn, long m)
+  bnMulSmall = m.reserveFunction(m.typeFor({kI32, kI64}, {}));
+  {
+    Func f(m, bnMulSmall, {kI32, kI64});
+    std::uint32_t n = f.addLocal(kI64), i = f.addLocal(kI32),
+                  carry = f.addLocal(kI64), prod = f.addLocal(kI64), mm = f.addLocal(kI64);
+    f.lget(1); f.lset(mm);
+    f.lget(0); f.i64Load(0); f.lset(n);
+    f.i32c(0); f.lset(i);
+    f.i64c(0); f.lset(carry);
+    f.block(); f.loop();
+    f.lget(i); f.i64ExtendI32U(); f.lget(n); f.i64GeU(); f.brIf(1);
+    f.lget(0); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add(); f.i64Load(kDtoaBnW);
+    f.lget(mm); f.i64Mul(); f.lget(carry); f.i64Add(); f.lset(prod);
+    f.lget(0); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add();
+    f.lget(prod); f.i64c(0xFFFFFFFFLL); f.i64And(); f.i64Store(kDtoaBnW);
+    f.lget(prod); f.i64c(32); f.i64ShrU(); f.lset(carry);
+    f.lget(i); f.i32c(1); f.i32Add(); f.lset(i);
+    f.br(0); f.end(); f.end();
+    f.block(); f.loop();
+    f.lget(carry); f.i64Eqz(); f.brIf(1);
+    f.lget(0); f.lget(n); f.i32WrapI64(); f.i32c(8); f.i32Mul(); f.i32Add();
+    f.lget(carry); f.i64c(0xFFFFFFFFLL); f.i64And(); f.i64Store(kDtoaBnW);
+    f.lget(carry); f.i64c(32); f.i64ShrU(); f.lset(carry);
+    f.lget(n); f.i64c(1); f.i64Add(); f.lset(n);
+    f.br(0); f.end(); f.end();
+    f.lget(0); f.lget(n); f.i64Store(0);
+  }
+
+  // void bn_shl(Bignum* bn, long bits)
+  bnShl = m.reserveFunction(m.typeFor({kI32, kI64}, {}));
+  {
+    Func f(m, bnShl, {kI32, kI64});
+    std::uint32_t n = f.addLocal(kI64), limbs = f.addLocal(kI64), rem = f.addLocal(kI64),
+                  i = f.addLocal(kI32), limb = f.addLocal(kI64), carry = f.addLocal(kI64);
+    f.lget(0); f.i64Load(0); f.lset(n);
+    f.lget(n); f.i64Eqz(); f.if_(); f.ret(); f.end();
+    f.lget(1); f.i64Eqz(); f.if_(); f.ret(); f.end();
+    f.lget(1); f.i64c(5); f.i64ShrU(); f.lset(limbs);
+    f.lget(1); f.i64c(31); f.i64And(); f.lset(rem);
+    f.lget(n); f.i32WrapI64(); f.i32c(1); f.i32Sub(); f.lset(i);
+    f.block(); f.loop();
+    f.lget(i); f.i32c(0); f.i32LtS(); f.brIf(1);
+    f.lget(0); f.lget(i); f.lget(limbs); f.i32WrapI64(); f.i32Add(); f.i32c(8); f.i32Mul(); f.i32Add();
+    f.lget(0); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add(); f.i64Load(kDtoaBnW);
+    f.i64Store(kDtoaBnW);
+    f.lget(i); f.i32c(1); f.i32Sub(); f.lset(i);
+    f.br(0); f.end(); f.end();
+    f.i32c(0); f.lset(i);
+    f.block(); f.loop();
+    f.lget(i); f.i64ExtendI32U(); f.lget(limbs); f.i64GeU(); f.brIf(1);
+    f.lget(0); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add(); f.i64c(0); f.i64Store(kDtoaBnW);
+    f.lget(i); f.i32c(1); f.i32Add(); f.lset(i);
+    f.br(0); f.end(); f.end();
+    f.lget(n); f.lget(limbs); f.i64Add(); f.lset(n);
+    f.lget(rem); f.i64Eqz(); f.if_();
+    f.lget(0); f.lget(n); f.i64Store(0); f.ret();
+    f.end();
+    f.i64c(0); f.lset(carry);
+    f.i32c(0); f.lset(i);
+    f.block(); f.loop();
+    f.lget(i); f.i64ExtendI32U(); f.lget(n); f.i64GeU(); f.brIf(1);
+    f.lget(0); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add(); f.i64Load(kDtoaBnW); f.lset(limb);
+    f.lget(0); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add();
+    f.lget(limb); f.lget(rem); f.i64Shl(); f.lget(carry); f.i64Or();
+    f.i64c(0xFFFFFFFFLL); f.i64And(); f.i64Store(kDtoaBnW);
+    f.lget(limb); f.i64c(32); f.lget(rem); f.i64Sub(); f.i64ShrU(); f.lset(carry);
+    f.lget(i); f.i32c(1); f.i32Add(); f.lset(i);
+    f.br(0); f.end(); f.end();
+    f.lget(carry); f.i64Eqz(); f.if_();
+    f.lget(0); f.lget(n); f.i64Store(0); f.ret();
+    f.end();
+    f.lget(0); f.lget(n); f.i32WrapI64(); f.i32c(8); f.i32Mul(); f.i32Add();
+    f.lget(carry); f.i64Store(kDtoaBnW);
+    f.lget(n); f.i64c(1); f.i64Add(); f.lset(n);
+    f.lget(0); f.lget(n); f.i64Store(0);
+  }
+
+  // void bn_sub(Bignum* a, const Bignum* b)
+  bnSub = m.reserveFunction(m.typeFor({kI32, kI32}, {}));
+  {
+    Func f(m, bnSub, {kI32, kI32});
+    std::uint32_t na = f.addLocal(kI64), nb = f.addLocal(kI64), i = f.addLocal(kI32),
+                  borrow = f.addLocal(kI64), av = f.addLocal(kI64), bv = f.addLocal(kI64),
+                  diff = f.addLocal(kI64);
+    f.lget(0); f.i64Load(0); f.lset(na);
+    f.lget(1); f.i64Load(0); f.lset(nb);
+    f.i32c(0); f.lset(i);
+    f.i64c(0); f.lset(borrow);
+    f.block(); f.loop();
+    f.lget(i); f.i64ExtendI32U(); f.lget(na); f.i64GeU(); f.brIf(1);
+    f.lget(0); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add(); f.i64Load(kDtoaBnW); f.lset(av);
+    f.i64c(0); f.lset(bv);
+    f.lget(i); f.i64ExtendI32U(); f.lget(nb); f.i64LtU(); f.if_();
+    f.lget(1); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add(); f.i64Load(kDtoaBnW); f.lset(bv);
+    f.end();
+    f.lget(av); f.lget(bv); f.i64Sub(); f.lget(borrow); f.i64Sub(); f.lset(diff);
+    f.lget(0); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add();
+    f.lget(diff); f.i64c(0xFFFFFFFFLL); f.i64And(); f.i64Store(kDtoaBnW);
+    f.lget(diff); f.i64c(63); f.i64ShrS(); f.i64c(1); f.i64And(); f.lset(borrow);
+    f.lget(i); f.i32c(1); f.i32Add(); f.lset(i);
+    f.br(0); f.end(); f.end();
+    f.block(); f.loop();
+    f.lget(na); f.i64Eqz(); f.brIf(1);
+    f.lget(0); f.lget(na); f.i32WrapI64(); f.i32c(1); f.i32Sub(); f.i32c(8); f.i32Mul(); f.i32Add();
+    f.i64Load(kDtoaBnW); f.i64Eqz(); f.i32Eqz(); f.brIf(1);
+    f.lget(na); f.i64c(1); f.i64Sub(); f.lset(na);
+    f.br(0); f.end(); f.end();
+    f.lget(0); f.lget(na); f.i64Store(0);
+  }
+
+  // void bn_add(Bignum* a, const Bignum* b)
+  bnAdd = m.reserveFunction(m.typeFor({kI32, kI32}, {}));
+  {
+    Func f(m, bnAdd, {kI32, kI32});
+    std::uint32_t na = f.addLocal(kI64), nb = f.addLocal(kI64), n = f.addLocal(kI64),
+                  i = f.addLocal(kI32), carry = f.addLocal(kI64),
+                  av = f.addLocal(kI64), bv = f.addLocal(kI64), sum = f.addLocal(kI64);
+    f.lget(0); f.i64Load(0); f.lset(na);
+    f.lget(1); f.i64Load(0); f.lset(nb);
+    f.lget(na); f.lset(n);
+    f.lget(n); f.lget(nb); f.i64LtU(); f.if_(); f.lget(nb); f.lset(n); f.end();
+    f.i32c(0); f.lset(i);
+    f.i64c(0); f.lset(carry);
+    f.block(); f.loop();
+    f.lget(i); f.i64ExtendI32U(); f.lget(n); f.i64GeU(); f.brIf(1);
+    f.i64c(0); f.lset(av);
+    f.lget(i); f.i64ExtendI32U(); f.lget(na); f.i64LtU(); f.if_();
+    f.lget(0); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add(); f.i64Load(kDtoaBnW); f.lset(av);
+    f.end();
+    f.i64c(0); f.lset(bv);
+    f.lget(i); f.i64ExtendI32U(); f.lget(nb); f.i64LtU(); f.if_();
+    f.lget(1); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add(); f.i64Load(kDtoaBnW); f.lset(bv);
+    f.end();
+    f.lget(av); f.lget(bv); f.i64Add(); f.lget(carry); f.i64Add(); f.lset(sum);
+    f.lget(0); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add();
+    f.lget(sum); f.i64c(0xFFFFFFFFLL); f.i64And(); f.i64Store(kDtoaBnW);
+    f.lget(sum); f.i64c(32); f.i64ShrU(); f.lset(carry);
+    f.lget(i); f.i32c(1); f.i32Add(); f.lset(i);
+    f.br(0); f.end(); f.end();
+    f.lget(carry); f.i64Eqz(); f.if_(); f.lget(0); f.lget(n); f.i64Store(0); f.ret(); f.end();
+    f.lget(0); f.lget(n); f.i32WrapI64(); f.i32c(8); f.i32Mul(); f.i32Add();
+    f.lget(carry); f.i64Store(kDtoaBnW);
+    f.lget(n); f.i64c(1); f.i64Add(); f.lset(n);
+    f.lget(0); f.lget(n); f.i64Store(0);
+  }
+
+  // void bn_mul_pow10(Bignum* bn, long k)
+  bnMulPow10 = m.reserveFunction(m.typeFor({kI32, kI64}, {}));
+  {
+    Func f(m, bnMulPow10, {kI32, kI64});
+    std::uint32_t k = f.addLocal(kI64);
+    f.lget(1); f.lset(k);
+    f.block(); f.loop();
+    f.lget(k); f.i64c(9); f.i64LtS(); f.brIf(1);
+    f.lget(0); f.i64c(1000000000LL); f.call(bnMulSmall);
+    f.lget(k); f.i64c(9); f.i64Sub(); f.lset(k);
+    f.br(0); f.end(); f.end();
+    f.block(); f.loop();
+    f.lget(k); f.i64Eqz(); f.brIf(1);
+    f.lget(0); f.i64c(10); f.call(bnMulSmall);
+    f.lget(k); f.i64c(1); f.i64Sub(); f.lset(k);
+    f.br(0); f.end(); f.end();
+  }
+
+  // long bn_divmod_small(Bignum* bn, long divisor)
+  bnDivMod = m.reserveFunction(m.typeFor({kI32, kI64}, {kI64}));
+  {
+    Func f(m, bnDivMod, {kI32, kI64});
+    std::uint32_t n = f.addLocal(kI64), i = f.addLocal(kI32), rem = f.addLocal(kI64),
+                  cur = f.addLocal(kI64), q = f.addLocal(kI64), d = f.addLocal(kI64);
+    f.lget(1); f.lset(d);
+    f.lget(0); f.i64Load(0); f.lset(n);
+    f.lget(n); f.i32WrapI64(); f.i32c(1); f.i32Sub(); f.lset(i);
+    f.i64c(0); f.lset(rem);
+    f.block(); f.loop();
+    f.lget(i); f.i32c(0); f.i32LtS(); f.brIf(1);
+    f.lget(rem); f.i64c(32); f.i64Shl();
+    f.lget(0); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add(); f.i64Load(kDtoaBnW);
+    f.i64Or(); f.lset(cur);
+    f.lget(cur); f.lget(d); f.i64DivU(); f.lset(q);
+    f.lget(cur); f.lget(d); f.i64RemU(); f.lset(rem);
+    f.lget(0); f.lget(i); f.i32c(8); f.i32Mul(); f.i32Add();
+    f.lget(q); f.i64c(0xFFFFFFFFLL); f.i64And(); f.i64Store(kDtoaBnW);
+    f.lget(i); f.i32c(1); f.i32Sub(); f.lset(i);
+    f.br(0); f.end(); f.end();
+    f.block(); f.loop();
+    f.lget(n); f.i64Eqz(); f.brIf(1);
+    f.lget(0); f.lget(n); f.i32WrapI64(); f.i32c(1); f.i32Sub(); f.i32c(8); f.i32Mul(); f.i32Add();
+    f.i64Load(kDtoaBnW); f.i64Eqz(); f.i32Eqz(); f.brIf(1);
+    f.lget(n); f.i64c(1); f.i64Sub(); f.lset(n);
+    f.br(0); f.end(); f.end();
+    f.lget(0); f.lget(n); f.i64Store(0);
+    f.lget(rem);
+  }
+
+  // void generate(Scratch* s): Dragon4 free-format digits.
+  dtoaGenerate = m.reserveFunction(m.typeFor({kI32}, {}));
+  {
+    Func f(m, dtoaGenerate, {kI32});
+    std::uint32_t boundary = f.addLocal(kI32),
+                  k = f.addLocal(kI64), nd = f.addLocal(kI64), d = f.addLocal(kI64),
+                  low = f.addLocal(kI32), high = f.addLocal(kI32), i = f.addLocal(kI32),
+                  mval = f.addLocal(kI64), q = f.addLocal(kI64),
+                  cmp = f.addLocal(kI32), shift = f.addLocal(kI64),
+                  roundUp = f.addLocal(kI32), carry = f.addLocal(kI64),
+                  digit = f.addLocal(kI64);
+
+    auto addr = [&](std::uint32_t off) {
+      f.lget(0);
+      if (off != 0) { f.i32c(static_cast<std::int32_t>(off)); f.i32Add(); }
+    };
+    auto load = [&](std::uint32_t off) { addr(off); f.i64Load(0); };
+
+    // boundary = (f == p2) && (e > minE)
+    load(kDtoaF); load(kDtoaP2); f.i64Eq(); f.lset(boundary);
+    load(kDtoaE); load(kDtoaMinE); f.i64GtS(); f.lget(boundary); f.i32And(); f.lset(boundary);
+
+    load(kDtoaE); f.i64c(0); f.i64GeS(); f.if_();
+      // r = f << (boundary ? e+2 : e+1)
+      addr(kDtoaR); load(kDtoaF); f.call(bnSetU64);
+      load(kDtoaE); f.i64c(1); f.i64Add(); f.lset(shift);
+      f.lget(boundary); f.if_(); f.lget(shift); f.i64c(1); f.i64Add(); f.lset(shift); f.end();
+      addr(kDtoaR); f.lget(shift); f.call(bnShl);
+      f.lget(boundary); f.if_();
+        addr(kDtoaS); f.i64c(4); f.call(bnSetU32);
+        addr(kDtoaMp); f.i64c(1); f.call(bnSetU32);
+        addr(kDtoaMp); load(kDtoaE); f.i64c(1); f.i64Add(); f.call(bnShl);
+        addr(kDtoaMm); f.i64c(1); f.call(bnSetU32);
+        addr(kDtoaMm); load(kDtoaE); f.call(bnShl);
+      f.else_();
+        addr(kDtoaS); f.i64c(2); f.call(bnSetU32);
+        addr(kDtoaMp); f.i64c(1); f.call(bnSetU32);
+        addr(kDtoaMp); load(kDtoaE); f.call(bnShl);
+        addr(kDtoaMm); addr(kDtoaMp); f.call(bnCopy);
+      f.end();
+    f.else_();
+      // e < 0: r = f << (boundary ? 2 : 1)
+      addr(kDtoaR); load(kDtoaF); f.call(bnSetU64);
+      f.lget(boundary); f.i64ExtendI32U(); f.i64c(1); f.i64Add(); f.lset(shift);
+      addr(kDtoaR); f.lget(shift); f.call(bnShl);
+      f.lget(boundary); f.if_();
+        addr(kDtoaS); f.i64c(1); f.call(bnSetU32);
+        addr(kDtoaS); load(kDtoaE); f.i64c(-1); f.i64Mul(); f.i64c(2); f.i64Add(); f.call(bnShl);
+        addr(kDtoaMp); f.i64c(2); f.call(bnSetU32);
+        addr(kDtoaMm); f.i64c(1); f.call(bnSetU32);
+      f.else_();
+        addr(kDtoaS); f.i64c(1); f.call(bnSetU32);
+        addr(kDtoaS); load(kDtoaE); f.i64c(-1); f.i64Mul(); f.i64c(1); f.i64Add(); f.call(bnShl);
+        addr(kDtoaMp); f.i64c(1); f.call(bnSetU32);
+        addr(kDtoaMm); f.i64c(1); f.call(bnSetU32);
+      f.end();
+    f.end();
+
+    // m = e + bsr(f); q = floor(m*30103/100000); k = q + 1
+    f.i64c(63); load(kDtoaF); f.i64Clz(); f.i64Sub();
+    load(kDtoaE); f.i64Add(); f.lset(mval);
+    f.lget(mval); f.i64c(30103); f.i64Mul(); f.i64c(100000); f.i64DivS(); f.lset(q);
+    f.lget(mval); f.i64c(30103); f.i64Mul(); f.i64c(100000); f.i64RemS(); f.i64Eqz();
+    f.if_();
+    f.else_();
+      f.lget(mval); f.i64c(0); f.i64LtS(); f.if_();
+      f.lget(q); f.i64c(1); f.i64Sub(); f.lset(q);
+      f.end();
+    f.end();
+    f.lget(q); f.i64c(1); f.i64Add(); f.lset(k);
+
+    f.lget(k); f.i64c(0); f.i64GeS(); f.if_();
+      addr(kDtoaS); f.lget(k); f.call(bnMulPow10);
+    f.else_();
+      f.lget(k); f.i64c(-1); f.i64Mul(); f.lset(shift);
+      addr(kDtoaR); f.lget(shift); f.call(bnMulPow10);
+      addr(kDtoaMp); f.lget(shift); f.call(bnMulPow10);
+      addr(kDtoaMm); f.lget(shift); f.call(bnMulPow10);
+    f.end();
+
+    // while (r >= s) { s *= 10; k++ }
+    f.block(); f.loop();
+    addr(kDtoaR); addr(kDtoaS); f.call(bnCmp); f.i32c(0); f.i32LtS(); f.brIf(1);
+    addr(kDtoaS); f.i64c(10); f.call(bnMulSmall);
+    f.lget(k); f.i64c(1); f.i64Add(); f.lset(k);
+    f.br(0); f.end(); f.end();
+
+    // while (r*10 < s) { r,mp,mm *= 10; k-- }
+    f.block(); f.loop();
+    addr(kDtoaT); addr(kDtoaR); f.call(bnCopy);
+    addr(kDtoaT); f.i64c(10); f.call(bnMulSmall);
+    addr(kDtoaT); addr(kDtoaS); f.call(bnCmp); f.i32c(0); f.i32GeS(); f.brIf(1);
+    addr(kDtoaR); f.i64c(10); f.call(bnMulSmall);
+    addr(kDtoaMp); f.i64c(10); f.call(bnMulSmall);
+    addr(kDtoaMm); f.i64c(10); f.call(bnMulSmall);
+    f.lget(k); f.i64c(1); f.i64Sub(); f.lset(k);
+    f.br(0); f.end(); f.end();
+
+    f.i64c(0); f.lset(nd);
+    f.block(); f.loop();  // outer digit loop
+      addr(kDtoaR); f.i64c(10); f.call(bnMulSmall);
+      addr(kDtoaMp); f.i64c(10); f.call(bnMulSmall);
+      addr(kDtoaMm); f.i64c(10); f.call(bnMulSmall);
+      f.i64c(0); f.lset(d);
+      f.block(); f.loop();  // inner subtraction loop
+        addr(kDtoaR); addr(kDtoaS); f.call(bnCmp); f.lset(cmp);
+        f.lget(cmp); f.i32c(0); f.i32LtS(); f.brIf(1);
+        addr(kDtoaR); addr(kDtoaS); f.call(bnSub);
+        f.lget(d); f.i64c(1); f.i64Add(); f.lset(d);
+        f.br(0);
+      f.end(); f.end();
+      addr(kDtoaDigits); f.lget(nd); f.i32WrapI64(); f.i32Add();
+      f.lget(d); f.i32WrapI64(); f.i32Store8(0);
+      f.lget(nd); f.i64c(1); f.i64Add(); f.lset(nd);
+
+      // low = oddM ? (r < mm) : (r <= mm)
+      addr(kDtoaR); addr(kDtoaMm); f.call(bnCmp); f.lset(cmp);
+      load(kDtoaOddM); f.i64Eqz(); f.if_();
+        f.lget(cmp); f.i32c(0); f.i32LeS(); f.lset(low);
+      f.else_();
+        f.lget(cmp); f.i32c(0); f.i32LtS(); f.lset(low);
+      f.end();
+
+      // high = oddM ? (r+mp > s) : (r+mp >= s)
+      addr(kDtoaT); addr(kDtoaR); f.call(bnCopy);
+      addr(kDtoaT); addr(kDtoaMp); f.call(bnAdd);
+      addr(kDtoaT); addr(kDtoaS); f.call(bnCmp); f.lset(cmp);
+      load(kDtoaOddM); f.i64Eqz(); f.if_();
+        f.lget(cmp); f.i32c(0); f.i32GeS(); f.lset(high);
+      f.else_();
+        f.lget(cmp); f.i32c(0); f.i32GtS(); f.lset(high);
+      f.end();
+
+      f.lget(low); f.i32Eqz(); f.lget(high); f.i32Eqz(); f.i32And();
+      f.if_(); f.br(1); f.end();
+
+      // roundUp = (low != high) ? high : (2r > s) || (2r == s && last digit odd)
+      f.i32c(0); f.lset(roundUp);
+      f.lget(low); f.lget(high); f.i32Ne(); f.if_();
+        f.lget(high); f.lset(roundUp);
+      f.else_();
+        addr(kDtoaT); addr(kDtoaR); f.call(bnCopy);
+        addr(kDtoaT); addr(kDtoaR); f.call(bnAdd);
+        addr(kDtoaT); addr(kDtoaS); f.call(bnCmp); f.lset(cmp);
+        f.lget(cmp); f.i32c(0); f.i32GtS(); f.if_();
+          f.i32c(1); f.lset(roundUp);
+        f.else_();
+          f.lget(cmp); f.i32c(0); f.i32Eq(); f.if_();
+            f.lget(nd); f.i32WrapI64(); f.i32c(1); f.i32Sub(); f.lset(i);
+            addr(kDtoaDigits); f.lget(i); f.i32Add(); f.i32Load8u(0); f.i32c(1); f.i32And(); f.lset(roundUp);
+          f.end();
+        f.end();
+      f.end();
+
+      f.lget(roundUp); f.if_();
+        f.lget(nd); f.i32WrapI64(); f.i32c(1); f.i32Sub(); f.lset(i);
+        f.i64c(1); f.lset(carry);
+        f.block(); f.loop();
+          f.lget(i); f.i32c(0); f.i32LtS(); f.brIf(1);
+          f.lget(carry); f.i64Eqz(); f.brIf(1);
+          addr(kDtoaDigits); f.lget(i); f.i32Add(); f.i32Load8u(0); f.i64ExtendI32U(); f.lset(digit);
+          f.lget(digit); f.i64c(9); f.i64Eq(); f.if_();
+            addr(kDtoaDigits); f.lget(i); f.i32Add(); f.i32c(0); f.i32Store8(0);
+            f.lget(i); f.i32c(1); f.i32Sub(); f.lset(i);
+          f.else_();
+            addr(kDtoaDigits); f.lget(i); f.i32Add(); f.lget(digit); f.i32WrapI64(); f.i32c(1); f.i32Add(); f.i32Store8(0);
+            f.i64c(0); f.lset(carry);
+          f.end();
+          f.br(0);
+        f.end(); f.end();
+        f.lget(carry); f.i64Eqz(); f.i32Eqz(); f.if_();
+          f.lget(nd); f.i32WrapI64(); f.lset(i);
+          f.block(); f.loop();
+            f.lget(i); f.i32c(0); f.i32LeS(); f.brIf(1);
+            addr(kDtoaDigits); f.lget(i); f.i32Add();
+            addr(kDtoaDigits); f.lget(i); f.i32c(1); f.i32Sub(); f.i32Add(); f.i32Load8u(0);
+            f.i32Store8(0);
+            f.lget(i); f.i32c(1); f.i32Sub(); f.lset(i);
+            f.br(0);
+          f.end(); f.end();
+          addr(kDtoaDigits); f.i32c(1); f.i32Store8(0);
+          f.lget(nd); f.i64c(1); f.i64Add(); f.lset(nd);
+          f.lget(k); f.i64c(1); f.i64Add(); f.lset(k);
+        f.end();
+      f.end();
+      f.br(1);
+    f.end(); f.end();
+
+    // strip trailing zeros
+    f.block(); f.loop();
+    f.lget(nd); f.i64c(1); f.i64LeS(); f.brIf(1);
+    f.lget(nd); f.i32WrapI64(); f.i32c(1); f.i32Sub(); f.lset(i);
+    addr(kDtoaDigits); f.lget(i); f.i32Add(); f.i32Load8u(0); f.i32Eqz(); f.i32Eqz(); f.brIf(1);
+    f.lget(nd); f.i64c(1); f.i64Sub(); f.lset(nd);
+    f.br(0); f.end(); f.end();
+
+    addr(kDtoaNd); f.lget(nd); f.i64Store(0);
+    addr(kDtoaK); f.lget(k); f.i64Store(0);
+  }
+
+}
+
 std::uint32_t Runtime::emitFmtDouble() {
-  std::uint32_t index = m.reserveFunction(tFmtInt);
-  Func f(m, index, {kI64});
+  std::uint32_t index = m.reserveFunction(tFmtDouble);
+  Func f(m, index, {kI64, kI64});
   std::uint32_t bits = f.addLocal(kI64), d = f.addLocal(kF64),
-                sign = f.addLocal(kI32), e10 = f.addLocal(kI32),
-                m10 = f.addLocal(kF64), digits = f.addLocal(kI64),
-                count = f.addLocal(kI32), p = f.addLocal(kI32),
-                q = f.addLocal(kI64), qq = f.addLocal(kI64),
-                pow10 = f.addLocal(kI64), rem = f.addLocal(kI64),
-                half = f.addLocal(kI64), tenP = f.addLocal(kI64),
+                sign = f.addLocal(kI32), qq = f.addLocal(kI64),
                 i = f.addLocal(kI32), bestP = f.addLocal(kI32),
                 bestQ = f.addLocal(kI64), bestE = f.addLocal(kI32),
-                candE = f.addLocal(kI32), cand = f.addLocal(kI32),
                 pos = f.addLocal(kI32), outFixed = f.addLocal(kI32),
                 outSci = f.addLocal(kI32), lenFixed = f.addLocal(kI32),
                 lenSci = f.addLocal(kI32), exp = f.addLocal(kI32),
-                digit = f.addLocal(kI64), noSign = f.addLocal(kI32);
+                digit = f.addLocal(kI64),
+                be = f.addLocal(kI64), frac = f.addLocal(kI64), fv = f.addLocal(kI64),
+                ev = f.addLocal(kI64), pv = f.addLocal(kI64), minEv = f.addLocal(kI64),
+                p2v = f.addLocal(kI64), oddMv = f.addLocal(kI64);
 
   auto put = [&](std::uint32_t str, std::uint32_t at, int ch) {
     f.lget(str);
@@ -1629,7 +2139,7 @@ std::uint32_t Runtime::emitFmtDouble() {
     f.end();
   };
 
-  f.lget(0);
+  f.lget(1);
   f.lset(bits);
   f.lget(bits);
   f.f64ReinterpretI64();
@@ -1676,344 +2186,40 @@ std::uint32_t Runtime::emitFmtDouble() {
   f.end();
   f.end();
 
-  f.lget(d);
-  f.f64Abs();
-  f.lset(m10);
-  f.i32c(0);
-  f.lset(e10);
-  f.block();
-  f.loop();
-  f.lget(m10);
-  f.f64c(10.0);
-  f.f64Ge();
-  f.i32Eqz();
-  f.brIf(1);
-  f.lget(m10);
-  f.f64c(10.0);
-  f.f64Div();
-  f.lset(m10);
-  f.lget(e10);
-  f.i32c(1);
-  f.i32Add();
-  f.lset(e10);
-  f.br(0);
-  f.end();
-  f.end();
-  f.block();
-  f.loop();
-  f.lget(m10);
-  f.f64c(1.0);
-  f.f64Ge();
-  f.brIf(1);
-  f.lget(m10);
-  f.f64c(10.0);
-  f.f64Mul();
-  f.lset(m10);
-  f.lget(e10);
-  f.i32c(1);
-  f.i32Sub();
-  f.lset(e10);
-  f.br(0);
-  f.end();
-  f.end();
-  f.lget(e10);
-  f.i32c(-323);
-  f.i32GeS();
-  f.if_();
-  f.lget(d);
-  f.f64Abs();
-  f.i32c(static_cast<std::int32_t>(pow10Table));
-  f.lget(e10);
-  f.i32c(324);
-  f.i32Add();
-  f.i32c(3);
-  f.i32Shl();
-  f.i32Add();
-  f.f64Load(0);
-  f.f64Div();
-  f.lset(m10);
-  f.end();
-
-  f.i64c(0);
-  f.lset(digits);
-  f.i32c(0);
-  f.lset(count);
-  f.block();
-  f.loop();
-  f.lget(count);
-  f.i32c(18);
-  f.i32GeS();
-  f.brIf(1);
-  f.lget(m10);
-  f.f64Floor();
-  f.i64TruncSatF64S();
-  f.lset(digit);
-  f.lget(digits);
-  f.i64c(10);
-  f.i64Mul();
-  f.lget(digit);
-  f.i64Add();
-  f.lset(digits);
-  f.lget(m10);
-  f.lget(digit);
-  f.f64ConvertI64S();
-  f.f64Sub();
-  f.f64c(10.0);
-  f.f64Mul();
-  f.lset(m10);
-  f.lget(count);
-  f.i32c(1);
-  f.i32Add();
-  f.lset(count);
-  f.lget(m10);
-  f.f64c(0.0);
-  f.f64Eq();
-  f.brIf(1);
-  f.br(0);
-  f.end();
-  f.end();
-  f.lget(count);
-  f.i32c(18);
-  f.i32Eq();
-  f.if_();
-  f.lget(digits);
-  f.i64c(10);
-  f.i64RemU();
-  f.lset(rem);
-  f.lget(digits);
-  f.i64c(10);
-  f.i64DivU();
-  f.lset(digits);
-  f.lget(count);
-  f.i32c(1);
-  f.i32Sub();
-  f.lset(count);
-  f.lget(rem);
-  f.i64c(5);
-  f.i64GeU();
-  f.if_();
-  f.lget(digits);
-  f.i64c(1);
-  f.i64Add();
-  f.lset(digits);
-  f.lget(digits);
-  f.i64c(100000000000000000LL);
-  f.i64GeU();
-  f.if_();
-  f.lget(digits);
-  f.i64c(10);
-  f.i64DivU();
-  f.lset(digits);
-  f.lget(e10);
-  f.i32c(1);
-  f.i32Add();
-  f.lset(e10);
-  f.end();
-  f.end();
-  f.end();
-  f.block();
-  f.loop();
-  f.lget(count);
-  f.i32c(1);
-  f.i32LeS();
-  f.brIf(1);
-  f.lget(digits);
-  f.i64c(10);
-  f.i64RemU();
-  f.i64Eqz();
-  f.i32Eqz();
-  f.brIf(1);
-  f.lget(digits);
-  f.i64c(10);
-  f.i64DivU();
-  f.lset(digits);
-  f.lget(count);
-  f.i32c(1);
-  f.i32Sub();
-  f.lset(count);
-  f.br(0);
-  f.end();
-  f.end();
-
-  f.lget(count);
-  f.lset(bestP);
-  f.lget(digits);
-  f.lset(bestQ);
-  f.lget(e10);
-  f.lset(bestE);
-  f.lget(count);
-  f.i32c(1);
-  f.i32GtS();
-  f.if_();
-  f.i32c(1);
-  f.lset(p);
-  f.block();
-  f.loop();
-  f.lget(p);
-  f.lget(count);
-  f.i32GtS();
-  f.brIf(1);
-  f.i64c(1);
-  f.lset(pow10);
-  f.i32c(0);
-  f.lset(i);
-  f.block();
-  f.loop();
-  f.lget(i);
-  f.lget(count);
-  f.lget(p);
-  f.i32Sub();
-  f.i32GeS();
-  f.brIf(1);
-  f.lget(pow10);
-  f.i64c(10);
-  f.i64Mul();
-  f.lset(pow10);
-  f.lget(i);
-  f.i32c(1);
-  f.i32Add();
-  f.lset(i);
-  f.br(0);
-  f.end();
-  f.end();
-  f.lget(digits);
-  f.lget(pow10);
-  f.i64DivU();
-  f.lset(q);
-  f.lget(digits);
-  f.lget(pow10);
-  f.i64RemU();
-  f.lset(rem);
-  f.lget(pow10);
-  f.i64c(2);
-  f.i64DivU();
-  f.lset(half);
-  f.lget(pow10);
-  f.i64c(1);
-  f.i64GtU();
-  f.lget(rem);
-  f.lget(half);
-  f.i64GtU();
-  f.lget(rem);
-  f.lget(half);
-  f.i64Eq();
-  f.lget(q);
-  f.i64c(2);
-  f.i64RemU();
-  f.i64c(1);
-  f.i64Eq();
-  f.i32And();
-  f.i32Or();
-  f.i32And();
-  f.if_();
-  f.lget(q);
-  f.i64c(1);
-  f.i64Add();
-  f.lset(q);
-  f.end();
-  f.i64c(1);
-  f.lset(tenP);
-  f.i32c(0);
-  f.lset(i);
-  f.block();
-  f.loop();
-  f.lget(i);
-  f.lget(p);
-  f.i32GeS();
-  f.brIf(1);
-  f.lget(tenP);
-  f.i64c(10);
-  f.i64Mul();
-  f.lset(tenP);
-  f.lget(i);
-  f.i32c(1);
-  f.i32Add();
-  f.lset(i);
-  f.br(0);
-  f.end();
-  f.end();
-  f.lget(e10);
-  f.lset(candE);
-  f.lget(q);
-  f.lget(tenP);
-  f.i64GeU();
-  f.if_();
-  f.lget(q);
-  f.i64c(10);
-  f.i64DivU();
-  f.lset(q);
-  f.lget(candE);
-  f.i32c(1);
-  f.i32Add();
-  f.lset(candE);
-  f.end();
-  f.lget(cand);
-  f.i32Eqz();
-  f.if_();
-  f.i32c(64);
-  f.call(newStr);
-  f.lset(cand);
-  f.end();
-  f.i32c(0);
-  f.lset(noSign);
-  f.lget(candE);
-  f.i32c(-20);
-  f.i32GeS();
-  f.lget(candE);
-  f.i32c(17);
-  f.i32LeS();
-  f.i32And();
-  f.if_();
-  emitFixed(cand, q, p, candE, noSign, pos);
+  // Dragon4: extract the binary64 significand/exponent, generate the
+  // shortest round-trip digits, and hand them to the fixed/scientific builders.
+  f.lget(bits); f.i64c(52); f.i64ShrU(); f.i64c(0x7FFLL); f.i64And(); f.lset(be);
+  f.lget(bits); f.i64c(0xFFFFFFFFFFFFFLL); f.i64And(); f.lset(frac);
+  f.lget(be); f.i64Eqz(); f.if_();
+    f.lget(frac); f.lset(fv);
+    f.i64c(-1074); f.lset(ev);
   f.else_();
-  emitSci(cand, q, p, candE, noSign, pos);
+    f.lget(frac); f.i64c(0x10000000000000LL); f.i64Or(); f.lset(fv);
+    f.lget(be); f.i64c(1075); f.i64Sub(); f.lset(ev);
   f.end();
-  storeLen(cand, pos);
-  f.lget(cand);
-  f.call(parseDoubleStr);
-  f.i64ReinterpretF64();
-  f.lget(bits);
-  f.i64Eq();
-  f.if_();
-  f.lget(p);
-  f.lset(bestP);
-  f.lget(q);
-  f.lset(bestQ);
-  f.lget(candE);
-  f.lset(bestE);
-  f.br(2);
-  f.end();
-  f.lget(p);
-  f.i32c(1);
-  f.i32Add();
-  f.lset(p);
-  f.br(0);
-  f.end();
-  f.end();
-  f.end();
-  f.block();
-  f.loop();
-  f.lget(bestP);
-  f.i32c(1);
-  f.i32LeS();
-  f.brIf(1);
-  f.lget(bestQ);
-  f.i64c(10);
-  f.i64RemU();
-  f.i64Eqz();
-  f.i32Eqz();
-  f.brIf(1);
-  f.lget(bestQ);
-  f.i64c(10);
-  f.i64DivU();
-  f.lset(bestQ);
-  f.lget(bestP);
-  f.i32c(1);
-  f.i32Sub();
-  f.lset(bestP);
-  f.br(0);
-  f.end();
-  f.end();
+  f.i64c(53); f.lset(pv);
+  f.i64c(-1074); f.lset(minEv);
+  f.i64c(1); f.i64c(52); f.i64Shl(); f.lset(p2v);
+  f.lget(fv); f.i64c(1); f.i64And(); f.lset(oddMv);
+  f.i32c(dtoaScratch + kDtoaF); f.lget(fv); f.i64Store(0);
+  f.i32c(dtoaScratch + kDtoaE); f.lget(ev); f.i64Store(0);
+  f.i32c(dtoaScratch + kDtoaP); f.lget(pv); f.i64Store(0);
+  f.i32c(dtoaScratch + kDtoaMinE); f.lget(minEv); f.i64Store(0);
+  f.i32c(dtoaScratch + kDtoaP2); f.lget(p2v); f.i64Store(0);
+  f.i32c(dtoaScratch + kDtoaOddM); f.lget(oddMv); f.i64Store(0);
+  f.i32c(dtoaScratch); f.call(dtoaGenerate);
+
+  f.i32c(dtoaScratch + kDtoaNd); f.i64Load(0); f.i32WrapI64(); f.lset(bestP);
+  f.i32c(dtoaScratch + kDtoaK); f.i64Load(0); f.i32WrapI64(); f.i32c(1); f.i32Sub(); f.lset(bestE);
+  f.i64c(0); f.lset(bestQ);
+  f.i32c(0); f.lset(i);
+  f.block(); f.loop();
+  f.lget(i); f.lget(bestP); f.i32GeS(); f.brIf(1);
+  f.lget(bestQ); f.i64c(10); f.i64Mul();
+  f.i32c(dtoaScratch + kDtoaDigits); f.lget(i); f.i32Add(); f.i32Load8u(0); f.i64ExtendI32U();
+  f.i64Add(); f.lset(bestQ);
+  f.lget(i); f.i32c(1); f.i32Add(); f.lset(i);
+  f.br(0); f.end(); f.end();
 
   f.i32c(64);
   f.call(newStr);
@@ -4948,6 +5154,7 @@ std::uint32_t Runtime::emitToStrDepthBody(std::uint32_t index) {
   f.i64c(static_cast<std::int64_t>(kFloat));
   f.i64Eq();
   f.if_();
+  f.lget(0);
   f.lget(1);
   f.call(fmtDouble);
   f.ret();
@@ -4956,6 +5163,7 @@ std::uint32_t Runtime::emitToStrDepthBody(std::uint32_t index) {
   f.i64c(static_cast<std::int64_t>(kDouble));
   f.i64Eq();
   f.if_();
+  f.lget(0);
   f.lget(1);
   f.call(fmtDouble);
   f.ret();
@@ -6391,6 +6599,7 @@ void Runtime::emitCore() {
   fmtInt = emitFmtInt();
   parseIntStr = emitParseIntStr();
   parseDoubleStr = emitParseDoubleStr();
+  emitDtoaHelpers();
   fmtDouble = emitFmtDouble();
   fmtFunc = emitFmtFunc();
   fmtRange = emitFmtRange();
@@ -8216,6 +8425,7 @@ std::vector<std::uint8_t> Lowering::run() {
   rt.declareTypes();
   rt.addImports();
   rt.addStaticStrings();
+  rt.dtoaScratch = pool.addZeros(kDtoaScratchBytes);
   rt.emitCore();
 
   // One static string per string constant and per proto name, created before
