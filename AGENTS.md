@@ -141,20 +141,19 @@ it as a caveat:
   array methods (`push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`,
   `slice`, `concat`, `join`, `contains`, `indexOf`, `map`, `filter`, `each`,
   `find`, `any`, `all`, `reduce`, `sum`, `reversed`, `clone`, `clear`,
-  `sort`, `sorted`), the ten map methods and the twelve *pure* string methods
+  `sort`, `sorted`), the ten map methods and every string method
   (`upper`, `lower`, `trim`, `trimStart`, `trimEnd`, `contains`, `startsWith`,
-  `endsWith`, `indexOf`, `substr`, `reversed`, `repeat`), but not the string
-  methods that return a collection or call back into the program
-  (`.split`, `.lines`, `.chars`, `.replace`, `.replaceFirst`) — those build
-  (exit 0) but fault at run time with "value has no such member" / "cannot call
-  a non-function value" — and it does not seed `pcall`/`error`/`readFile` at all,
-  so a module function that calls one fails `oskel build` with "global 'pcall'
-  is read but never assigned" (exit 65) even when the function is unused. A
-  module written over the portable surface behaves identically on the VM and
-  under `oskel build`; `std/json.oskl` and `tests/native_build_json.oskl` are
-  the reference, and `std/datetime.oskl` with `tests/native_build_datetime.oskl`
-  is a second one (it also exercises the `time()` wall clock, the one builtin
-  whose AOT binding differs per target).
+  `endsWith`, `indexOf`, `substr`, `reversed`, `repeat`, `split`, `lines`,
+  `chars`, `replace`, `replaceFirst`, `padStart`, `padEnd`), so no string
+  member builds and then faults at run time. It does not seed
+  `pcall`/`error`/`readFile` at all, so a module function that calls one fails
+  `oskel build` with "global 'pcall' is read but never assigned" (exit 65) even
+  when the function is unused. A module written over the portable surface
+  behaves identically on the VM and under `oskel build`; `std/json.oskl` and
+  `tests/native_build_json.oskl` are the reference, and `std/datetime.oskl`
+  with `tests/native_build_datetime.oskl` is a second one (it also exercises
+  the `time()` wall clock, the one builtin whose AOT binding differs per
+  target).
 - `sort`/`sorted` are the only collection methods whose comparator is arbitrary
   program code, so their AOT body calls back through `oskel_call` from inside a
   bottom-up stable merge sort (a recursive one would deepen the program's stack
