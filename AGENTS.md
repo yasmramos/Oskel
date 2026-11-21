@@ -293,10 +293,21 @@ it as a caveat:
   `tests/*.oskl` glob and registered explicitly, because the environment has to
   be set and a build without SDL3 must skip it. The freestanding-rejection
   fixture is skipped too: it is a `oskel build` fixture, not a VM test.
-- Windows execution is still a gap: `lookupSymbol` does not search a loaded
-  third-party DLL (BACKLOG §18 item 7). The compile-only check runs everywhere.
-- `SDL_ReadSurfacePixel` has seven arguments and the FFI accepts six, so it is
-  absent; do not add a seven-argument extern without widening the ABI path.
+- Windows `lookupSymbol` walks every loaded module with
+  `CreateToolhelp32Snapshot`/`GetProcAddress`, so a third-party DLL the process
+  loaded resolves. The Windows-only `platform_lookup_test` loads a DLL with
+  `LoadLibrary` and resolves an export only it provides.
+- The FFI accepts up to **eight** register-sized values (`kMaxExternArgs`).
+  The VM's typed `dispatch` lets the C++ compiler spill the seventh and eighth
+  GPR arguments; the AOT thunk writes them to the outgoing stack area
+  (`AotThunkParam::stackOffset`). `XmmScratch` is xmm15 so it never collides
+  with an SSE argument, and a register-class struct that no longer fits the
+  remaining registers is passed wholly on the stack. `SDL_ReadSurfacePixel` and
+  `SDL_WriteSurfacePixel` are bound, and
+  `tests/native_build_extern_many_args.oskl` pins the 7/8-argument and
+  stack-struct shapes. A ninth value needs a wider bound and a check on the
+  VM's `3^N` template budget; MSVC also needs `/bigobj` (already in
+  `OSKEL_WARNINGS`) at the eight-eightbyte bound.
 
 ## The VS Code extension
 

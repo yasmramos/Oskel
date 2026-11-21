@@ -424,15 +424,15 @@ int main() {
   // rather than emitted. A variadic is exempt (it goes through libffi).
   {
     const bindgen::Result result = bindgen::generate(
-        "int six(int a, int b, int c, int d, int e, int f);\n"
         "int seven(int a, int b, int c, int d, int e, int f, int g);\n"
+        "int nine(int a, int b, int c, int d, int e, int f, int g, int h, int i);\n"
         "void vlog(const char *fmt, ...);\n",
         "t.h");
-    check(contains(result.text, "fn six(a: int32, b: int32, c: int32, d: int32, e: int32, f: int32): int32;"),
-          "a six-value signature is within the register budget");
-    check(contains(result.text, "// skipped: seven: an 'extern' function may pass at most 6 "
+    check(contains(result.text, "fn seven(a: int32, b: int32, c: int32, d: int32, e: int32, f: int32, g: int32): int32;"),
+          "a seven-value signature is within the eightbyte budget");
+    check(contains(result.text, "// skipped: nine: an 'extern' function may pass at most 8 "
                                 "register-sized values"),
-          "a seven-value signature is skipped");
+          "a nine-value signature is skipped");
     check(contains(result.text, "// fn vlog(fmt: cstring, ...): void;"),
           "a variadic is exempt from the budget");
     if (ffi::kCVariadicSupported) {
@@ -442,20 +442,20 @@ int main() {
   }
 
   // The budget is on eightbytes, not parameters: a 16-byte struct spends two,
-  // so five scalars plus it is seven and over the six the thunks cover. Counting
-  // parameters instead would emit a signature `oskel -c` rejects.
+  // so seven scalars plus it is nine and over the eight the thunks cover.
+  // Counting parameters instead would emit a signature `oskel -c` rejects.
   {
     const bindgen::Result result = bindgen::generate(
         "struct Q { double x; double y; };\n"
-        "int five(int a, int b, int c, int d, int e, struct Q q);\n"
-        "int four(int a, int b, int c, int d, struct Q q);\n",
+        "int seven(int a, int b, int c, int d, int e, int f, int g, struct Q q);\n"
+        "int six(int a, int b, int c, int d, int e, int f, struct Q q);\n",
         "t.h");
-    check(contains(result.text, "// skipped: five: an 'extern' function may pass at most 6 "
+    check(contains(result.text, "// skipped: seven: an 'extern' function may pass at most 8 "
                                 "register-sized values"),
           "a struct's eightbytes count toward the budget");
-    check(contains(result.text, "fn four(a: int32, b: int32, c: int32, d: int32, q: Q): int32;") ||
-              contains(result.text, "// fn four(a: int32, b: int32, c: int32, d: int32, q: Q): int32;"),
-          "four scalars plus a 16-byte struct is exactly six");
+    check(contains(result.text, "fn six(a: int32, b: int32, c: int32, d: int32, e: int32, f: int32, q: Q): int32;") ||
+              contains(result.text, "// fn six(a: int32, b: int32, c: int32, d: int32, e: int32, f: int32, q: Q): int32;"),
+          "six scalars plus a 16-byte struct is exactly eight");
   }
 
   // An anonymous `struct { ... }` inline has no name a signature could spell:

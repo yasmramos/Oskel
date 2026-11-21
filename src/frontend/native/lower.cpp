@@ -288,7 +288,10 @@ constexpr const char* kAotArgsGlobal = "$args";
 // needs the flattened register classes, so this walks every proto's externs and
 // produces one `AotExternThunk` per symbol whose every parameter and return is
 // expressible: a scalar, or a struct that fits in two eightbytes (a class-MEMORY
-// struct is still stack-passed, so it stays 7f work). A callback is left out:
+// struct is stack-passed, and supported too). The first six integer/pointer
+// eightbytes use the System V GPRs and any further one spills to the outgoing
+// stack area; a register-class struct that does not fit the remaining registers
+// is passed wholly on the stack. A callback is left out:
 // `collectGlobals` then rejects it exactly as before, so the unsupported shapes
 // keep their clean build error instead of compiling to a thunk that would
 // marshal the wrong registers. A C variadic is expressible (PHASE 7f.5): its
@@ -310,6 +313,29 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
       thunk.symbol = symbol.name;
       thunk.arity = symbol.paramTypes.size();
       thunk.variadic = symbol.variadic;
+      // A class-MEMORY return reserves `rdi` for the hidden `sret` pointer, so
+      // the integer argument registers start one later. Compute it before the
+      // parameters because their register/stack assignment depends on it.
+      bool returnMemory = false;
+      if (symbol.returnType.isStruct) {
+        ffi::StructLayout layout;
+        std::string reason;
+        if (ffi::buildStructLayout(symbol.returnType.fields, layout, reason)) {
+          returnMemory = layout.isMemory;
+        }
+      }
+      int gpr = returnMemory ? 1 : 0;  // the six System V integer registers
+      int sse = 0;                     // the eight System V SSE registers
+      int nextBufSlot = 0;             // register-class struct staging buffers
+      auto addStackStruct = [&](int index, int arg, int size) {
+        thunk.stackArgBytes = (thunk.stackArgBytes + 7) / 8 * 8;
+        AotStackArg stacked;
+        stacked.structIndex = index;
+        stacked.argIndex = arg;
+        stacked.offset = thunk.stackArgBytes;
+        thunk.stackArgBytes += static_cast<std::int64_t>(size);
+        thunk.stackArgs.push_back(stacked);
+      };
       bool supported = true;
       const int argCount = static_cast<int>(symbol.paramTypes.size());
       for (int arg = 0; arg < argCount; ++arg) {
@@ -334,22 +360,35 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
           if (layout.isMemory) {
             // Class MEMORY: the whole struct travels in the outgoing stack
             // argument area, 8-byte aligned, after every earlier stack argument.
-            thunk.stackArgBytes = (thunk.stackArgBytes + 7) / 8 * 8;
-            AotStackArg stacked;
-            stacked.structIndex = index;
-            stacked.argIndex = arg;
-            stacked.offset = thunk.stackArgBytes;
-            thunk.stackArgBytes += static_cast<std::int64_t>(layout.size);
-            thunk.stackArgs.push_back(stacked);
+            addStackStruct(index, arg, static_cast<int>(layout.size));
           } else {
-            entry.bufSlot = index;
+            // A register-class struct is passed wholly in registers when its
+            // eightbytes fit the remaining GPR/SSE registers, and wholly on the
+            // stack otherwise (the System V rule for a partly-registered
+            // aggregate). A variadic tail cannot carry a stack-passed fixed
+            // prefix, so that shape stays unsupported there.
+            int needGpr = 0;
+            int needSse = 0;
             for (int e = 0; e < layout.eightbyteCount; ++e) {
-              AotThunkParam flat;
-              flat.cls = layout.eightbyte[e] == 'S' ? ffi::ParamClass::Double : ffi::ParamClass::Int;
-              flat.argIndex = arg;
-              flat.eightbyte = e;
-              flat.structIndex = index;
-              thunk.params.push_back(flat);
+              if (layout.eightbyte[e] == 'S') ++needSse; else ++needGpr;
+            }
+            if (gpr + needGpr <= 6 && sse + needSse <= 8) {
+              entry.bufSlot = nextBufSlot++;
+              for (int e = 0; e < layout.eightbyteCount; ++e) {
+                AotThunkParam flat;
+                flat.cls = layout.eightbyte[e] == 'S' ? ffi::ParamClass::Double : ffi::ParamClass::Int;
+                flat.argIndex = arg;
+                flat.eightbyte = e;
+                flat.structIndex = index;
+                thunk.params.push_back(flat);
+              }
+              gpr += needGpr;
+              sse += needSse;
+            } else if (symbol.variadic) {
+              supported = false;
+              break;
+            } else {
+              addStackStruct(index, arg, static_cast<int>(layout.size));
             }
           }
           thunk.structs.push_back(std::move(entry));
@@ -363,6 +402,27 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
         AotThunkParam flat;
         flat.cls = cls;
         flat.argIndex = arg;
+        if (cls == ffi::ParamClass::Float || cls == ffi::ParamClass::Double) {
+          // The eightbyte bound keeps every SSE value in xmm0-xmm7, so an SSE
+          // spill is unreachable; reject rather than emit an unhandled shape.
+          if (sse >= 8) {
+            supported = false;
+            break;
+          }
+          ++sse;
+        } else if (gpr < 6) {
+          ++gpr;
+        } else if (symbol.variadic) {
+          // The variadic tail's stack area is allocated below the fixed frame,
+          // so the fixed prefix must stay in registers.
+          supported = false;
+          break;
+        } else {
+          // The seventh and eighth GPR eightbytes travel in the outgoing stack
+          // argument area, at `[rsp + stackOffset]` before the call.
+          flat.stackOffset = (thunk.stackArgBytes + 7) / 8 * 8;
+          thunk.stackArgBytes = flat.stackOffset + 8;
+        }
         thunk.params.push_back(flat);
       }
       if (!supported) continue;

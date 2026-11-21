@@ -463,6 +463,11 @@ struct AotThunkParam {
   int argIndex = 0;
   int eightbyte = -1;
   int structIndex = -1;
+  // >= 0 when the argument does not fit the System V registers and travels in
+  // the outgoing stack-argument area at this byte offset from `rsp`. A struct
+  // is either wholly in registers (one entry per eightbyte) or wholly on the
+  // stack (no entries; it is in `AotExternThunk::stackArgs` instead).
+  std::int64_t stackOffset = -1;
 };
 
 // One by-value struct in a thunk's signature: its C layout plus one data-island
@@ -480,8 +485,9 @@ struct AotStructLayout {
   int bufSlot = -1;
 };
 
-// A class-MEMORY struct argument: it travels in the outgoing stack-argument
-// area at `offset` bytes past the call's `rsp`, in declaration order.
+// A struct passed in the outgoing stack-argument area: a class-MEMORY struct,
+// or a register-class one that did not fit the remaining registers. It travels
+// at `offset` bytes past the call's `rsp`, in declaration order.
 struct AotStackArg {
   int structIndex = -1;
   int argIndex = 0;
@@ -512,8 +518,9 @@ struct AotExternThunk {
   // return. Empty for a scalar-only signature.
   std::vector<AotStructLayout> structs;
   int returnStructIndex = -1;  // `structs` entry a struct return rebuilds
-  // The class-MEMORY arguments, in declaration order, and the size of the
-  // outgoing stack-argument area they occupy (0 when there are none).
+  // The structs passed in the outgoing stack-argument area, in declaration
+  // order, and the size of that area: scalar GPR spill slots plus whole structs
+  // (0 when there are none).
   std::vector<AotStackArg> stackArgs;
   std::int64_t stackArgBytes = 0;
   // The size of a class-MEMORY return (0 for none). Such a return does not come

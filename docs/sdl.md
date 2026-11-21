@@ -173,16 +173,17 @@ explicitly, so a malformed coordinate cannot spin the normalization loop.
 
 ## Limits
 
-- **Six register-sized values per `extern "C"` call.** `SDL_ReadSurfacePixel`
-  has seven arguments, so it is deliberately absent from the subset. The
-  window, renderer and event functions fit; pixel readback would need a C
-  helper or a wider ABI path (`docs/BACKLOG.md` §7 item 17).
-- **Windows execution is not wired yet.** The development engine's
-  `lookupSymbol` searches the process image, `kernel32.dll` and the CRT, but not
-  a third-party DLL the process loaded, so a `std.sdl` program linked against
-  `SDL3.dll` does not resolve `SDL_*` there. The module compiles everywhere;
-  the execution tests are Linux/macOS and the Windows gap is
-  `docs/BACKLOG.md` §18 item 7.
+- **Eight register-sized values per `extern "C"` call.** `SDL_ReadSurfacePixel`
+  and `SDL_WriteSurfacePixel` have seven arguments; the seventh GPR spills to
+  the outgoing stack area in the AOT backend, and the VM's typed call does the
+  same. `tests/sdl_bindings.oskl` writes and reads a 2x2 surface pixel to pin
+  it. A ninth value would need a wider `kMaxExternArgs` (`docs/BACKLOG.md` §7
+  item 17).
+- **Windows execution searches loaded DLLs.** The development engine's
+  `lookupSymbol` walks every module the process has loaded, so a `std.sdl`
+  program linked against `SDL3.dll` resolves `SDL_*` there too; the
+  Windows-only `platform_lookup_test` covers the walk. The module compiles
+  everywhere.
 - **`SDL_Event`'s size is 128 bytes in SDL3 3.x.** The module reads the fields
   above; it does not need the rest of the union.
 
@@ -191,7 +192,7 @@ explicitly, so a malformed coordinate cannot spin the normalization loop.
 | CTest name | What it proves |
 | --- | --- |
 | `sdl.bindgen` | The module's `extern "C"` block is exactly what `bindgen` emits from `bindings/sdl/sdl3_subset.h` (a header edit that was not regenerated fails here). |
-| `sdl.bindings` | The VM opens a window and a software renderer under `SDL_VIDEODRIVER=dummy`, draws, pushes/polls every event kind and reads the `SDL_FRect` bits. |
+| `sdl.bindings` | The VM opens a window and a software renderer under `SDL_VIDEODRIVER=dummy`, draws, pushes/polls every event kind, reads the `SDL_FRect` bits, and writes/reads a surface pixel (the seven-argument `SDL_ReadSurfacePixel`/`SDL_WriteSurfacePixel`, the AOT stack spill). |
 | `oskel.build_hosted_sdl` | The same script compiled with `--mode hosted --link-lib SDL3` prints byte-for-byte the VM's output, and `ldd` shows `libSDL3`. |
 | `oskel.check.sdl_import` | `oskel -c` type-checks the module on every platform, without SDL3. |
 | `oskel.build_sdl_freestanding_error` | A freestanding build rejects a used `SDL_*` symbol with the dedicated message, exit 65, and writes no binary. |

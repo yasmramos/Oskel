@@ -26,7 +26,11 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 if(MSVC)
-  set(OSKEL_WARNINGS /W4)
+  # `/bigobj` is required by `src/runtime/ffi.cpp`: the typed `dispatch`
+  # instantiates one function per 3^N class sequence, and at the
+  # eight-eightbyte bound MSVC's default object format runs out of sections
+  # (C1128).
+  set(OSKEL_WARNINGS /W4 /bigobj)
   # Match the 8 MiB main-thread stack Linux and macOS give by default. The
   # recursive-descent parser and the compiler's AST walk each hold a DepthGuard
   # (see src/frontend/parser.cpp and src/frontend/compiler.cpp) sized for that
@@ -306,6 +310,21 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(lower_test)
   oskel_add_cpp_test(freestanding_test)
   oskel_add_cpp_test(bare_metal_test)
+
+  # Windows only: `lookupSymbol` must search a DLL loaded after startup, not
+  # just the process image, kernel32 and the CRT. The test loads the DLL CMake
+  # builds beside it and resolves its export.
+  if(WIN32)
+    add_library(oskel_lookup_test_dll SHARED
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/platform_lookup_dll.cpp")
+    add_executable(platform_lookup_test
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/platform_lookup_test.cpp")
+    target_link_libraries(platform_lookup_test PRIVATE oskel_lib)
+    target_compile_options(platform_lookup_test PRIVATE ${OSKEL_WARNINGS})
+    add_test(NAME platform_lookup_test
+      COMMAND platform_lookup_test "$<TARGET_FILE:oskel_lookup_test_dll>"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  endif()
 
   # The binding generator is a standalone tool, not part of `oskel_lib`, so its
   # unit test links `bindgen_lib` directly instead of the helper above.
@@ -771,8 +790,22 @@ if(BUILD_TESTING)
             "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
             "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_memory_struct.oskl"
             "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/memory_struct_helper.c"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_memory_struct.cmake")
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
       endif()
+      # The seventh and eighth integer arguments do not fit the six System V
+      # GPRs, so the thunk spills them to the outgoing stack area; a
+      # register-class struct that no longer fits is passed wholly on the stack.
+      # No libc symbol exercises those shapes, so the fixture links its own C
+      # helper. It needs no libffi (there is no struct-by-value *return*), just
+      # the hosted link mode.
+      add_test(NAME oskel.build_hosted_extern_many_args
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_many_args"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_many_args.oskl"
+          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/many_args_helper.c"
+          "-DOSKEL_EXPECTED_OUTPUT=ffi many args ok"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
       # A C variadic is walked at run time by the thunk (PHASE 7f.5): the tail
       # continues the GPR/SSE allocation after the fixed prefix, spills to the
       # outgoing stack area and sets `%al` to the vector-register count. The
@@ -1123,6 +1156,11 @@ if(BUILD_TESTING)
     # VM cannot resolve (its host registry knows libc, not the test helper). It
     # is covered end-to-end by `oskel.build_hosted_extern_memory_struct`.
     if(name STREQUAL "native_build_extern_memory_struct")
+      continue()
+    endif()
+    # The many-args fixture binds a helper too; the VM has no registry entry for
+    # those symbols, so it is covered by `oskel.build_hosted_extern_many_args`.
+    if(name STREQUAL "native_build_extern_many_args")
       continue()
     endif()
     # The two `native fn` rejection fixtures are inputs for

@@ -1,23 +1,26 @@
-# End-to-end test for class-MEMORY struct-by-value `extern "C"` marshalling in
-# the hosted AOT backend (PHASE 7f.7).
+# End-to-end test for a hosted `extern "C"` fixture that needs a C helper.
 #
-# A struct larger than 16 bytes is stack-passed and `sret`-returned, a shape no
-# libc symbol exercises, so the fixture binds functions from
-# `tests/hosted/memory_struct_helper.c`. `oskel build --mode hosted` links with
-# `$CC`, so the helper is compiled to an object and a wrapper script appends it
-# to the link command; that keeps the backend's own command line untouched.
+# The fixture binds functions no libc symbol provides: class-MEMORY structs
+# (PHASE 7f.7) and seven/eight-argument stack spills (PHASE 7f.5). `oskel build
+# --mode hosted` links with `$CC`, so the helper is compiled to an object and a
+# wrapper script appends it to the link command; that keeps the backend's own
+# command line untouched.
 #
 # Registered by CMakeLists.txt on Linux x86-64 only. Expects:
 #   -DOSKEL_EXE=<path to the oskel executable>
 #   -DOSKEL_SCRIPT=<the .oskl file to build>
 #   -DOSKEL_HELPER=<the C helper source to compile in>
 #   -DOSKEL_TEST_NAME=<the CTest name, used for unique output paths>
+#   -DOSKEL_EXPECTED_OUTPUT=<the fixture's final line, default "ffi memory struct ok">
 
 if(NOT DEFINED OSKEL_EXE OR NOT DEFINED OSKEL_SCRIPT OR NOT DEFINED OSKEL_TEST_NAME OR
    NOT DEFINED OSKEL_HELPER)
   message(FATAL_ERROR
-    "build_hosted_memory_struct.cmake requires OSKEL_EXE, OSKEL_SCRIPT, "
+    "build_hosted_helper.cmake requires OSKEL_EXE, OSKEL_SCRIPT, "
     "OSKEL_HELPER and OSKEL_TEST_NAME")
+endif()
+if(NOT DEFINED OSKEL_EXPECTED_OUTPUT)
+  set(OSKEL_EXPECTED_OUTPUT "ffi memory struct ok")
 endif()
 
 find_program(CC_BIN NAMES cc gcc clang REQUIRED)
@@ -74,6 +77,6 @@ endif()
 
 # The fixture asserts its own expectations, so its final line is the whole
 # contract; the VM cannot run it (it has no registry entry for these symbols).
-if(NOT run_stdout MATCHES "ffi memory struct ok")
+if(NOT run_stdout MATCHES "${OSKEL_EXPECTED_OUTPUT}")
   message(FATAL_ERROR "the hosted binary did not report success:\n${run_stdout}")
 endif()
