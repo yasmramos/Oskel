@@ -2900,9 +2900,9 @@ oskel build app.oskl -o app   # writes ./app
 (the mode is a deployment choice, never syntax in the source — the same program
 compiles either way):
 
-- `--mode freestanding` (the default) is the self-contained image described
-  above: it carries its own runtime, speaks to the kernel directly and has no
-  dynamic dependencies.
+- `--mode freestanding` (the default on Linux and Windows) is the
+  self-contained image described above: it carries its own runtime, speaks to
+  the kernel directly and has no dynamic dependencies.
 - `--mode hosted` links the compiled program against the host C library, so an
   `extern "C"` symbol resolves to the real C function at link time. This is the
   mode that makes FFI work, and the mode `oskelc` emits. It needs a C toolchain at build time and produces a binary
@@ -2910,10 +2910,16 @@ compiles either way):
   program in a relocatable object and the host C compiler (`$CC`, default `cc`)
   links it against libc; the entry prelude reaches the system through libc
   (`write`/`exit`/`malloc`) and the program's entry is exported as the C `main`.
+  When `$CC` is a wrapper (for example a batch file that calls `vcvarsall.bat`
+  before `cl`), set `$OSKEL_CC_KIND=msvc` so the link builder uses the MSVC
+  command line; `$OSKEL_CC_KIND=posix` forces the `cc` form. On Windows the
+  link names the static CRT (`libcmt.lib`, `libucrt.lib`, `libvcruntime.lib`)
+  and `kernel32.lib` explicitly, because the object is not produced by `cl`
+  and carries no `.drectve` requesting them.
 
 ```sh
-oskel build app.oskl                       # freestanding (default)
-oskel build app.oskl --mode freestanding   # the same, stated explicitly
+oskel build app.oskl                       # freestanding on Linux/Windows
+oskel build app.oskl --mode freestanding   # the same on Linux/Windows
 oskel build app.oskl --mode hosted         # links libc (FFI; PHASE 7f.4)
 oskel build app.oskl --mode hosted --link-lib SDL3 -o app   # links SDL3 too
 ```
@@ -2926,10 +2932,13 @@ and `.` so it cannot smuggle a shell metacharacter into the `$CC` command. The
 development engine does not use it: it links the library itself (CMake finds
 SDL3, for example) and resolves the symbol through `Platform::lookupSymbol`.
 
-The backend targets x86_64-linux-sysv today; on any other target `oskel build`
-reports the unsupported target instead of emitting bytes for an ABI it cannot
-produce. The hosted mode is Linux x86-64 only for now; an unsupported
-(target, mode) pair is reported, never emitted.
+The backend targets `x86_64-linux-sysv`, `x86_64-windows-win64`,
+`x86_64-macos-sysv` and the bare-metal `x86_64-freestanding-sysv`; on any other
+target `oskel build` reports the unsupported target instead of emitting bytes
+for an ABI it cannot produce. The hosted mode is available on Linux, Windows
+and macOS x86-64; macOS has no freestanding image, so its default mode is
+`hosted` and an explicit `--mode freestanding` is reported as unsupported. An
+unsupported (target, mode) pair is reported, never emitted.
 
 A compiled binary carries the standard-library builtins that need no libm:
 `print`/`write`/`eprint`, `len`, `type`, `str`, `repr`, `bool`, `ord`, `chr`,
@@ -2992,7 +3001,7 @@ features of this release.
 - No `++`, `--` or default parameters. A trailing `rest...` parameter makes a function variadic (see §7.1). `switch` on literals and ranges is supported (see §6.10), and so is the post-test loop `do { ... } while (cond);` (see §6.4).
 - Optional types and nullability are implemented for declarations and expressions (PHASE 6.5). Type annotations (`let x: int = 5`), local inference, the nullable `T?` annotation, and the null-safe expressions `?.`, `??` and `!!` are checked at compile time. `struct` is implemented (see §4.7) and so is `native fn` (see §7.6), the typed declaration of a host-provided function.
 - FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the System V AMD64 ABI without `libffi` for scalars and structs by value. A `fn(P...): R` parameter is a callback: the development engine builds a `libffi` closure that re-enters the VM (its `R` may be a scalar or a struct by value). A trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...): int`), which applies the C default argument promotions and goes through `libffi`; like a class-MEMORY struct it needs the System V AMD64 ABI plus `libffi`, and is rejected at compile time elsewhere.
-- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.8 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux x86-64 only), where the program is linked against libc; the freestanding mode, which is the default, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — both register-class and class-MEMORY — are lowered (7f.6, 7f.7); C variadics are not, and `native fn` declarations the backend has no stub for fail the build with a dedicated message. Callbacks are lowered (7f.8): a scalar parameter or return crosses through a generated stub; a struct return or a struct parameter is rejected with a dedicated message.
+- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.9 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux, Windows and macOS x86-64), where the program is linked against the host C library; the freestanding mode, which is the default on Linux and Windows, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — both register-class and class-MEMORY — are lowered on the System V targets (Linux and macOS, 7f.6, 7f.7); the Windows x86-64 backend supports the scalar, `cstring` and `ptr` classes and rejects a struct, a callback or a C variadic with a dedicated message. A C variadic is lowered on the System V targets (Linux and macOS), and `native fn` declarations the backend has no stub for fail the build with a dedicated message. Callbacks are lowered on System V (7f.8): a scalar parameter or return crosses through a generated stub; a struct return or a struct parameter is rejected with a dedicated message.
 - A function's text representation is the same on both engines: `<fn name>` for a named function, `<native fn name>` for a host binding (a builtin, a `native fn`, an `extern "C"` symbol or a bound collection method such as `<native fn array.map>`), and `<fn <anonymous>>` for a lambda. The AOT closure carries a `display` pointer to a static `AotString` with that exact text, so `print`, `repr`, `str` and string interpolation all agree byte for byte (BACKLOG §6.22, `tests/native_build_function_repr.oskl`).
 - No UI library yet. Skia + SDL2 + declarative UI is planned for post-1.0.
 - No async/await, generics, full pattern matching, generators, or transactions. These are out of scope (see `DEVELOPMENT.md`).

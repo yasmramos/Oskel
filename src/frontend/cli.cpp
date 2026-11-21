@@ -193,6 +193,10 @@ bool parseTargetName(const std::string &name, Target &out) {
     out = Target::winX64();
     return true;
   }
+  if (name == targetName(Target::macX64())) {
+    out = Target::macX64();
+    return true;
+  }
   if (name == targetName(Target::bareMetalX64())) {
     out = Target::bareMetalX64();
     return true;
@@ -207,15 +211,22 @@ bool parseTargetName(const std::string &name, Target &out) {
 Target hostTarget() {
 #ifdef _WIN32
   return Target::winX64();
+#elif defined(__APPLE__)
+  // macOS only has the hosted backend: the image is Mach-O and the host
+  // toolchain closes it. Returning the macOS target makes `oskel build --mode
+  // hosted` produce a native image without a `--target` flag.
+  return Target::macX64();
 #else
   return Target::linuxX64();
 #endif
 }
 
 // The link modes `--mode` accepts, keyed by the name `linkModeName()` prints.
-// The default is `freestanding`, the mode every target supports and the one
-// that keeps the "not a dynamic executable" invariant, so an existing command
-// line keeps producing the same binary.
+// The default is `freestanding`, the mode Linux, Windows and bare metal support
+// and the one that keeps the "not a dynamic executable" invariant, so an
+// existing command line keeps producing the same binary. macOS has only the
+// hosted backend, so its default is `hosted` (and an explicit `--mode
+// freestanding` is reported as unsupported).
 bool parseLinkModeName(const std::string &name, LinkMode &out) {
   if (name == linkModeName(LinkMode::Freestanding)) {
     out = LinkMode::Freestanding;
@@ -231,19 +242,38 @@ bool parseLinkModeName(const std::string &name, LinkMode &out) {
 // The C compiler the hosted link drives (PHASE 7f.4). It is a *build-time*
 // dependency, never a runtime one: the compiler turns the relocatable object
 // into an executable by linking it against the host C library, which is what
-// lets an `extern "C"` symbol resolve. `$CC` overrides it (so a musl or
-// cross toolchain can be selected), falling back to `cc`.
+// lets an `extern "C"` symbol resolve. `$CC` overrides it (so a musl or cross
+// toolchain can be selected), falling back to `cl` on Windows (the MSVC
+// toolchain the CI and a default Visual Studio install provide) and `cc`
+// elsewhere.
 std::string hostedLinkerCommand() {
   if (const char *cc = std::getenv("CC")) {
     if (*cc != '\0') return cc;
   }
+#ifdef _WIN32
+  return "cl";
+#else
   return "cc";
+#endif
 }
 
-// Quotes a path for a POSIX shell (the hosted link only runs on Linux today).
-// A single quote is the only character a single-quoted string cannot contain,
-// so each one is closed, escaped and reopened.
+// Quotes a path for the shell the link command runs under. POSIX gets the
+// single-quote form (the only character a single-quoted string cannot contain
+// is the quote itself, so each one is closed, escaped and reopened); Windows
+// `cmd.exe` gets double quotes, which is what it understands.
 std::string shellQuote(const std::string &path) {
+#ifdef _WIN32
+  std::string out = "\"";
+  for (char c : path) {
+    if (c == '"') {
+      out += "\\\"";
+    } else {
+      out += c;
+    }
+  }
+  out += "\"";
+  return out;
+#else
   std::string out = "'";
   for (char c : path) {
     if (c == '\'') {
@@ -254,6 +284,29 @@ std::string shellQuote(const std::string &path) {
   }
   out += "'";
   return out;
+#endif
+}
+
+// Whether the linker command speaks the Microsoft compiler driver's command
+// line. `cl` has a different command line from a POSIX `cc` (an output flag
+// `/Fe:` instead of `-o`, and no `-lm`), so the link builder has to know which
+// one it is. `$OSKEL_CC_KIND=msvc` names the dialect explicitly, because `$CC`
+// may be a wrapper (`vcvarsall.bat` plus `cl`) whose file name says nothing.
+bool isMicrosoftCompiler(const std::string &compiler) {
+  if (const char *kind = std::getenv("OSKEL_CC_KIND")) {
+    if (std::string(kind) == "msvc") return true;
+    if (std::string(kind) == "posix") return false;
+  }
+  std::string name = compiler;
+  const std::size_t slash = name.find_last_of("/\\");
+  if (slash != std::string::npos) name = name.substr(slash + 1);
+  for (char &c : name) {
+    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+  }
+  if (name.size() > 4 && name.compare(name.size() - 4, 4, ".exe") == 0) {
+    name.resize(name.size() - 4);
+  }
+  return name == "cl" || name == "clang-cl";
 }
 
 // A library name `--link-lib` accepts. It becomes a `-l<name>` argument of the
@@ -270,21 +323,73 @@ bool isSafeLinkLibName(const std::string &name) {
   return true;
 }
 
+// Runs a link command and returns its exit status. On Windows `std::system`
+// routes through `cmd.exe`, whose `/c` quote handling strips the first and last
+// quote of a command that starts with a quoted path -- every path here is
+// quoted, and the compiler path itself may contain spaces. `CreateProcess`
+// passes the command line through unchanged, so the documented `cmd /c
+// "<command>"` form is used and cmd removes exactly the outer pair.
+int runHostedLinkCommand(const std::string &command) {
+#ifdef _WIN32
+  std::string line = "cmd.exe /c \"" + command + "\"";
+  STARTUPINFOA startup{};
+  startup.cb = sizeof(startup);
+  PROCESS_INFORMATION process{};
+  std::vector<char> mutableLine(line.begin(), line.end());
+  mutableLine.push_back('\0');
+  if (!CreateProcessA(nullptr, mutableLine.data(), nullptr, nullptr, TRUE, 0,
+                      nullptr, nullptr, &startup, &process)) {
+    return -1;
+  }
+  WaitForSingleObject(process.hProcess, INFINITE);
+  DWORD status = 1;
+  GetExitCodeProcess(process.hProcess, &status);
+  CloseHandle(process.hProcess);
+  CloseHandle(process.hThread);
+  return static_cast<int>(status);
+#else
+  return std::system(command.c_str());
+#endif
+}
+
 // Links a relocatable object into a hosted executable by invoking the host C
-// compiler (PHASE 7f.4). `objectPath` is the `.o` just written and `output` the
-// requested executable; `-no-pie` keeps the fixed-address assumptions of the
-// backend and `-lm` provides the libm symbols a `std.math` extern may name.
-// Each entry of `linkLibs` becomes `-l<name>` after the object, so the linker
-// sees the undefined symbols before it is asked for the library that defines
-// them. Returns 0 on success, 65 when the toolchain is missing or the link
-// fails -- never a half-linked image.
+// compiler (PHASE 7f.4). `objectPath` is the object just written and `output`
+// the requested executable. On Linux `-no-pie` keeps the fixed-address
+// assumptions of the backend and `-lm` provides the libm symbols a `std.math`
+// extern may name; macOS needs neither (`-lm` is part of libSystem and the
+// Mach-O relocations are PC-relative) and gets `-arch x86_64` so an arm64 host
+// can cross-link the x86-64 object. Windows drives `cl`, whose output flag is
+// `/Fe:` and whose default libraries already carry the CRT. Each entry of
+// `linkLibs` is appended after the object, so the linker sees the undefined
+// symbols before it is asked for the library that defines them. Returns 0 on
+// success, 65 when the toolchain is missing or the link fails -- never a
+// half-linked image.
 int linkHostedObject(const std::string &objectPath, const std::string &output,
-                     const std::string &tool,
+                     const Target &target, const std::string &tool,
                      const std::vector<std::string> &linkLibs) {
-  std::string command = hostedLinkerCommand() + " " + shellQuote(objectPath) +
-                        " -no-pie -o " + shellQuote(output) + " -lm";
-  for (const std::string &lib : linkLibs) command += " -l" + lib;
-  const int status = std::system(command.c_str());
+  const std::string compiler = hostedLinkerCommand();
+  std::string command;
+  if (target.os == Os::Windows && isMicrosoftCompiler(compiler)) {
+    // The object was not produced by `cl`, so it carries no `.drectve` section
+    // asking the linker for the CRT. Name the static CRT and kernel32
+    // explicitly: without them every runtime symbol (`mainCRTStartup`,
+    // `_write`, `malloc`, `GetTickCount64`, ...) stays unresolved.
+    command = shellQuote(compiler) + " /nologo /MT " + shellQuote(objectPath) +
+              " /Fe:" + shellQuote(output) +
+              " /link /SUBSYSTEM:CONSOLE"
+              " libcmt.lib libucrt.lib libvcruntime.lib kernel32.lib";
+    for (const std::string &lib : linkLibs) {
+      command += " " + shellQuote(lib + ".lib");
+    }
+  } else {
+    command = shellQuote(compiler) + " " + shellQuote(objectPath) + " -o " +
+              shellQuote(output);
+    if (target.os == Os::Linux) command += " -no-pie";
+    if (target.os == Os::MacOs) command += " -arch x86_64";
+    command += " -lm";
+    for (const std::string &lib : linkLibs) command += " -l" + lib;
+  }
+  const int status = runHostedLinkCommand(command);
   if (status != 0) {
     std::string message = tool + ": linking the hosted binary failed (command: " +
                           command + ")\n";
@@ -381,13 +486,14 @@ int buildBinary(const std::string &source, const std::string &name,
       // beside the output and is removed whether the link succeeds or fails.
       std::vector<std::uint8_t> object = buildRelocatableObject(
           target, chunk.code, {}, chunk.externals, chunk.exports);
-      const std::string objectPath = output + ".oskel.tmp.o";
+      const std::string objectPath =
+          output + (target.os == Os::Windows ? ".oskel.tmp.obj" : ".oskel.tmp.o");
       if (!writeBinaryFile(objectPath, object)) {
         std::string message = tool + ": cannot write temporary object '" + objectPath + "'\n";
         platformPosix().writeErr(message.data(), message.size());
         return 74;
       }
-      const int linkStatus = linkHostedObject(objectPath, output, tool, linkLibs);
+      const int linkStatus = linkHostedObject(objectPath, output, target, tool, linkLibs);
       std::remove(objectPath.c_str());
       return linkStatus;
     }
@@ -431,6 +537,7 @@ int runBuildCommand(const std::vector<std::string> &arguments,
   std::string buildOutput;
   Target buildTarget = hostTarget();
   LinkMode buildMode = LinkMode::Freestanding;
+  bool buildModeExplicit = false;
   std::vector<std::string> buildLinkLibs;
   for (size_t i = 0; i < arguments.size(); ++i) {
     const std::string &arg = arguments[i];
@@ -452,6 +559,7 @@ int runBuildCommand(const std::vector<std::string> &arguments,
         std::cerr << tool << ": unknown target '" << name << "' (supported: "
                   << targetName(Target::linuxX64()) << ", "
                   << targetName(Target::winX64()) << ", "
+                  << targetName(Target::macX64()) << ", "
                   << targetName(Target::bareMetalX64()) << ", "
                   << targetName(Target::wasm32()) << ")\n";
         return 64;
@@ -470,6 +578,7 @@ int runBuildCommand(const std::vector<std::string> &arguments,
                   << linkModeName(LinkMode::Hosted) << ")\n";
         return 64;
       }
+      buildModeExplicit = true;
       continue;
     }
     if (arg == "--link-lib") {
@@ -503,6 +612,13 @@ int runBuildCommand(const std::vector<std::string> &arguments,
   if (buildFile.empty()) {
     std::cerr << tool << ": a source file is required\n";
     return 64;
+  }
+  // macOS has no freestanding image, so its default is the mode it can close.
+  // An explicit `--mode freestanding` still reaches the support check and is
+  // reported there instead of being silently replaced.
+  if (!buildModeExplicit && buildTarget.os == Os::MacOs &&
+      !isWasmTarget(buildTarget)) {
+    buildMode = LinkMode::Hosted;
   }
   // `--link-lib` is a hosted-mode concept: the freestanding image has no host
   // linker, so accepting it there would silently ignore a flag the user needs.

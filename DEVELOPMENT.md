@@ -1589,9 +1589,10 @@ binary prints byte for byte what the VM prints).
       language syntax: the same source compiles in either mode and the choice
       lives on the command line (`oskel build --mode freestanding|hosted`,
       default `freestanding`). `isSupportedLinkMode`/`requireSupportedLinkMode`
-      pin the (target, mode) matrix — freestanding for all three targets, hosted
-      for Linux x86-64 only for now — so an unsupported pair is reported instead
-      of emitting bytes. This slice changes no code path for freestanding: the
+      pin the (target, mode) matrix — freestanding for Linux, Windows and bare
+      metal, hosted for Linux, Windows and macOS x86-64 (macOS has no
+      freestanding image) — so an unsupported pair is reported instead of
+      emitting bytes. This slice changes no code path for freestanding: the
       emitted binary is byte for byte identical to before. Covered by
       `tests/build_mode.cmake`.
     - **7f.4** (done) — the hosted image: a relocatable object plus a link
@@ -1599,23 +1600,28 @@ binary prints byte for byte what the VM prints).
       `include/native/codegen.h`): `callExternal` emits `call rel32` to an
       undefined symbol and records the displacement slot, and `leaRipExternal`
       does the same for an address; `exportSymbol` records a defined symbol
-      (the program's `main`). `src/frontend/native/object.cpp` wraps the code buffer in
-      an ELF64 `ET_REL` object — `.text`, `.rodata`, `.rela.text` (one
-      relocation per reference: `R_X86_64_PLT32` for a call, `R_X86_64_PC32` for
-      an address, both with addend `-4` because the CPU measures the
-      displacement from the slot's end), `.symtab`/`.strtab` and `.shstrtab`,
-      with the local symbols before the global ones as the ABI requires.
-      `emitHostedRuntime` (`src/frontend/native/entry.cpp`) binds the same three entry
-      handles the runtime already references but reaches the system through libc
-      (`write`/`exit`/`malloc`) instead of a raw syscall, and exports the
+      (the program's `main`). `src/frontend/native/object.cpp` wraps the code
+      buffer in the target's container: ELF64 `ET_REL` on Linux (`.text`,
+      `.rodata`, `.rela.text` with `R_X86_64_PLT32` for a call and
+      `R_X86_64_PC32` for an address, both addend `-4`), Mach-O `MH_OBJECT` on
+      macOS (`__text`/`__const`, `X86_64_RELOC_BRANCH`/`X86_64_RELOC_SIGNED`,
+      `LC_SYMTAB`, underscore-prefixed names) and COFF
+      `IMAGE_FILE_MACHINE_AMD64` on Windows (`.text`/`.rdata`,
+      `IMAGE_REL_AMD64_REL32`, an 18-byte symbol table and its string table).
+      `emitHostedRuntime` (`src/frontend/native/entry.cpp`) binds the same entry
+      handles the runtime already references but reaches the system through the
+      host C library (`write`/`exit`/`malloc` on Linux and macOS,
+      `_write`/`exit`/`malloc` plus `_open`/`_read`/`_close` and
+      `GetTickCount64` on Windows) instead of a raw syscall, and exports the
       program entry as the C `main` the C runtime calls — the lowering's `main`
       already has the `int main(void)` shape, so no thunk is needed. `oskel
       build --mode hosted` writes the object beside the output and links it with
-      the host C compiler (`$CC`, default `cc`, `-no-pie -lm`), removing the
+      the host C compiler (`$CC`, default `cc`, `-no-pie -lm` on Linux;
+      `-arch x86_64 -lm` on macOS; `cl /Fe:...` on Windows), removing the
       temporary object either way. The freestanding path is untouched and its
       binary is byte for byte identical; a hosted binary agrees with the
-      development VM byte for byte. Covered by `tests/object_test.cpp` (the
-      object's structure) and `tests/build_mode.cmake` (the hosted build runs and
+      development VM byte for byte. Covered by `tests/object_test.cpp` (all
+      three containers) and `tests/build_mode.cmake` (the hosted build runs and
       is dynamically linked). General `extern "C"` marshalling is 7f.5.
     - **7f.5** (done) — scalar `extern "C"` resolution in the hosted backend.
       With the object emitter and the hosted link in place, an `extern "C"`
@@ -1713,6 +1719,53 @@ binary prints byte for byte what the VM prints).
       `..._wx.oskl` (the stub page is not W+X), `..._many_args.oskl` and
       `..._returns.oskl` (AOT-only helpers) and
       `tests/errors/callback_struct_{return,param}.oskl` (rejections).
+    - **7f.9** (done) — hosted mode on Windows and macOS. The hosted object and
+      link were Linux-only because both halves named the platform: the emitter
+      always wrote ELF64 and the linker command always drove a POSIX `cc`. The
+      container now follows the target: Mach-O `MH_OBJECT` for
+      `x86_64-macos-sysv` (one `LC_SEGMENT_64` with `__text`/`__const`,
+      `LC_BUILD_VERSION` for macOS 10.15, `LC_SYMTAB`, pcrel
+      `X86_64_RELOC_BRANCH`/`X86_64_RELOC_SIGNED` and the leading-underscore
+      names the Mach-O ABI expects) and COFF `IMAGE_FILE_MACHINE_AMD64` for
+      `x86_64-windows-win64` (`.text`/`.rdata`, `IMAGE_REL_AMD64_REL32`, an
+      18-byte symbol table with a string table). `oskel build --mode hosted`
+      picks the link line per target: `cc -no-pie -lm` on Linux,
+      `cc -arch x86_64 -lm` on macOS (so an arm64 host can cross-link the
+      x86-64 object) and `cl /MT /Fe:... /link /SUBSYSTEM:CONSOLE` on Windows,
+      with `$CC` overriding the compiler on all three. The Windows object is
+      not produced by `cl`, so it carries no `.drectve` asking for the CRT; the
+      link names `libcmt.lib`, `libucrt.lib`, `libvcruntime.lib` and
+      `kernel32.lib` explicitly, or every runtime symbol stays unresolved.
+      When `$CC` is a wrapper (the Windows test drives `cl` through a
+      `vcvarsall.bat` batch file), the file name says nothing about the command
+      line, so `$OSKEL_CC_KIND=msvc` (or `posix`) names the dialect explicitly.
+      macOS has no freestanding image, so `runBuildCommand` defaults its mode
+      to `hosted` when the target is macOS and the user did not pass `--mode`;
+      `oskelp build` therefore works there without an extra flag. The Windows
+      entry prelude is separate (`emitWindowsHostedRuntime`) because the
+      Microsoft x64 ABI uses rcx/rdx/r8/r9 plus 32 bytes of shadow space and
+      the UCRT spells the file functions `_open`/`_read`/`_write`/`_close`;
+      `time(NULL)` is the wall clock and `GetTickCount64` the monotonic
+      counter. `main` moves the CRT's `(argc, argv)` from rcx/rdx to rdi/rsi
+      before the chunk, so `args()` works there too. The extern thunk takes the
+      ABI as a parameter: four integer and four SSE registers, shadow space,
+      stack arguments from offset 32, and a fifth SSE value spilled to the
+      outgoing stack area. The scalar, `cstring` and `ptr` classes are supported
+      on Windows; a struct, a callback and a C variadic are rejected with a
+      dedicated message (the System V fixtures keep covering those). macOS uses
+      System V, so it shares the existing thunk unchanged. Two Windows details
+      are easy to miss: the UCRT opens stdout and stderr in text mode, so
+      `oskel_init_arena` calls `_setmode(1/2, _O_BINARY)` before the first
+      write -- otherwise every `\n` becomes `\r\n` and the binary disagrees
+      with the VM -- and CTest does not inherit the environment `vcvarsall.bat`
+      sets, so the test runner reaches `cl` through a generated batch wrapper
+      that calls it first (without `LIB`, the link cannot find `libcmt.lib`
+      even when `cl` is on `PATH`).
+      Covered by `tests/object_test.cpp` (all three containers),
+      `tests/build_mode.cmake` on Linux, Windows and macOS (the macOS arm64
+      runner builds the x86-64 image but skips running it, and checks
+      `otool -L` for libSystem), and
+      `tests/native_build_extern_hosted_windows.oskl` on Windows.
   - **7g** (done) — bare-metal x86-64 (multiboot). A third target,
     `x86_64-freestanding-sysv` (`oskel build --target
     x86_64-freestanding-sysv`), emits a multiboot 1 kernel that a boot loader
@@ -2066,7 +2119,7 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.8 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY) and callbacks resolve in the hosted backend; a C variadic is still open. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.9 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY) and callbacks resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface on Windows; a C variadic is still open. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending
 2.0: ⬜ future (static with `@Dynamic`)

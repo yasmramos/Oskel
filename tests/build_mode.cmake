@@ -8,6 +8,7 @@
 # Registered by CMakeLists.txt. Expects:
 #   -DOSKEL_EXE=<path to the oskel executable>
 #   -DOSKEL_SCRIPT=<the .oskl file to build>
+#   -DOSKEL_CC=<the C compiler the hosted link should drive, optional>
 #
 # It asserts:
 #   1. `--mode freestanding` behaves exactly like the default: it builds a
@@ -21,6 +22,12 @@
 if(NOT DEFINED OSKEL_EXE OR NOT DEFINED OSKEL_SCRIPT)
   message(FATAL_ERROR "build_mode.cmake requires OSKEL_EXE and OSKEL_SCRIPT")
 endif()
+
+# The hosted link reads `$CC` at run time. Point it at the compiler CMake found
+# so the test does not depend on `cl` (Windows) or `cc` (Unix) being on PATH in
+# the `ctest` environment.
+include("${CMAKE_CURRENT_LIST_DIR}/hosted_cc.cmake")
+oskel_prepare_hosted_cc()
 
 if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
   set(exe_suffix ".exe")
@@ -38,15 +45,6 @@ execute_process(
   OUTPUT_VARIABLE fs_stdout
   ERROR_VARIABLE fs_stderr
 )
-if(NOT fs_exit EQUAL 0)
-  message(FATAL_ERROR
-    "oskel build --mode freestanding exited ${fs_exit}\n--- stdout ---\n${fs_stdout}\n"
-    "--- stderr ---\n${fs_stderr}")
-endif()
-if(NOT EXISTS "${out_freestanding}")
-  message(FATAL_ERROR "oskel build --mode freestanding did not create '${out_freestanding}'")
-endif()
-
 # The reference output is the development VM's: the AOT binary must agree.
 execute_process(
   COMMAND "${OSKEL_EXE}" "${OSKEL_SCRIPT}"
@@ -56,46 +54,73 @@ execute_process(
 if(NOT vm_exit EQUAL 0)
   message(FATAL_ERROR "the VM failed to run the fixture (exit ${vm_exit})")
 endif()
-execute_process(
-  COMMAND "${out_freestanding}"
-  RESULT_VARIABLE fs_run_exit
-  OUTPUT_VARIABLE fs_run_stdout
-  ERROR_VARIABLE fs_run_stderr
-)
-if(NOT fs_run_exit EQUAL 0)
-  message(FATAL_ERROR
-    "the freestanding binary exited ${fs_run_exit}\n--- stdout ---\n${fs_run_stdout}\n"
-    "--- stderr ---\n${fs_run_stderr}")
-endif()
-if(NOT fs_run_stdout STREQUAL vm_stdout)
-  message(FATAL_ERROR
-    "the freestanding binary disagrees with the VM\n--- vm ---\n${vm_stdout}\n"
-    "--- binary ---\n${fs_run_stdout}")
-endif()
 
-# A freestanding image must stay free of a shared runtime, exactly like the
-# default build. The check needs `ldd`, so it is guarded by UNIX.
-if(UNIX)
+if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+  # macOS has no freestanding backend: the default mode must be refused
+  # cleanly, name the mode, and write no image.
+  if(NOT fs_exit EQUAL 65)
+    message(FATAL_ERROR
+      "oskel build --mode freestanding exited ${fs_exit}, expected 65 on macOS\n"
+      "--- stdout ---\n${fs_stdout}\n--- stderr ---\n${fs_stderr}")
+  endif()
+  if(EXISTS "${out_freestanding}")
+    message(FATAL_ERROR "oskel build --mode freestanding wrote '${out_freestanding}' despite the error")
+  endif()
+  if(NOT fs_stderr MATCHES "freestanding")
+    message(FATAL_ERROR
+      "the unsupported-mode error does not name the mode:\n--- stderr ---\n${fs_stderr}")
+  endif()
+else()
+  if(NOT fs_exit EQUAL 0)
+    message(FATAL_ERROR
+      "oskel build --mode freestanding exited ${fs_exit}\n--- stdout ---\n${fs_stdout}\n"
+      "--- stderr ---\n${fs_stderr}")
+  endif()
+  if(NOT EXISTS "${out_freestanding}")
+    message(FATAL_ERROR "oskel build --mode freestanding did not create '${out_freestanding}'")
+  endif()
   execute_process(
-    COMMAND ldd "${out_freestanding}"
-    RESULT_VARIABLE ldd_exit
-    OUTPUT_VARIABLE ldd_out
-    ERROR_VARIABLE ldd_err
+    COMMAND "${out_freestanding}"
+    RESULT_VARIABLE fs_run_exit
+    OUTPUT_VARIABLE fs_run_stdout
+    ERROR_VARIABLE fs_run_stderr
   )
-  set(ldd_text "${ldd_out}${ldd_err}")
-  if(NOT ldd_text MATCHES "not a dynamic executable|statically linked")
-    message(FATAL_ERROR "the freestanding binary is dynamically linked:\n${ldd_text}")
+  if(NOT fs_run_exit EQUAL 0)
+    message(FATAL_ERROR
+      "the freestanding binary exited ${fs_run_exit}\n--- stdout ---\n${fs_run_stdout}\n"
+      "--- stderr ---\n${fs_run_stderr}")
+  endif()
+  if(NOT fs_run_stdout STREQUAL vm_stdout)
+    message(FATAL_ERROR
+      "the freestanding binary disagrees with the VM\n--- vm ---\n${vm_stdout}\n"
+      "--- binary ---\n${fs_run_stdout}")
+  endif()
+
+  # A freestanding image must stay free of a shared runtime, exactly like the
+  # default build. The check needs `ldd`, so it is guarded by UNIX.
+  if(UNIX)
+    execute_process(
+      COMMAND ldd "${out_freestanding}"
+      RESULT_VARIABLE ldd_exit
+      OUTPUT_VARIABLE ldd_out
+      ERROR_VARIABLE ldd_err
+    )
+    set(ldd_text "${ldd_out}${ldd_err}")
+    if(NOT ldd_text MATCHES "not a dynamic executable|statically linked")
+      message(FATAL_ERROR "the freestanding binary is dynamically linked:\n${ldd_text}")
+    endif()
   endif()
 endif()
 
 # --- 2. `--mode hosted` links against libc (PHASE 7f.4) ---
 #
-# Hosted mode is Linux x86-64 only for now: it needs a C toolchain at build
-# time and a host C library to link against. The runner does not detect the
-# platform itself (a CMake script has no reliable processor variable): it lets
-# the build decide. A success must produce a binary that runs and agrees with
-# the VM and is dynamically linked (the whole point of the mode); a refusal must
-# be the clean exit 65 with no binary and a message that names the mode.
+# Hosted mode needs a C toolchain at build time and a host C library to link
+# against; Linux, Windows and macOS x86-64 have a backend. The runner does not
+# detect the platform itself (a CMake script has no reliable processor
+# variable): it lets the build decide. A success must produce a binary that runs
+# and agrees with the VM and is dynamically linked (the whole point of the
+# mode); a refusal must be the clean exit 65 with no binary and a message that
+# names the mode.
 set(out_hosted "${CMAKE_CURRENT_BINARY_DIR}/oskel_build_mode_hosted_${script_stem}${exe_suffix}")
 file(REMOVE "${out_hosted}")
 execute_process(
@@ -109,25 +134,46 @@ if(hosted_exit EQUAL 0)
   if(NOT EXISTS "${out_hosted}")
     message(FATAL_ERROR "oskel build --mode hosted did not create '${out_hosted}'")
   endif()
-  execute_process(
-    COMMAND "${out_hosted}"
-    RESULT_VARIABLE hosted_run_exit
-    OUTPUT_VARIABLE hosted_run_stdout
-    ERROR_VARIABLE hosted_run_stderr
-  )
-  if(NOT hosted_run_exit EQUAL 0)
-    message(FATAL_ERROR
-      "the hosted binary exited ${hosted_run_exit}\n--- stdout ---\n${hosted_run_stdout}\n"
-      "--- stderr ---\n${hosted_run_stderr}")
+  # The backend emits x86-64. On an arm64 macOS host the image links, but it
+  # only runs under Rosetta; do not make the test depend on that being
+  # installed.
+  set(can_run_hosted TRUE)
+  if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin" AND
+     NOT CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
+    set(can_run_hosted FALSE)
   endif()
-  if(NOT hosted_run_stdout STREQUAL vm_stdout)
-    message(FATAL_ERROR
-      "the hosted binary disagrees with the VM\n--- vm ---\n${vm_stdout}\n"
-      "--- binary ---\n${hosted_run_stdout}")
+  if(can_run_hosted)
+    execute_process(
+      COMMAND "${out_hosted}"
+      RESULT_VARIABLE hosted_run_exit
+      OUTPUT_VARIABLE hosted_run_stdout
+      ERROR_VARIABLE hosted_run_stderr
+    )
+    if(NOT hosted_run_exit EQUAL 0)
+      message(FATAL_ERROR
+        "the hosted binary exited ${hosted_run_exit}\n--- stdout ---\n${hosted_run_stdout}\n"
+        "--- stderr ---\n${hosted_run_stderr}")
+    endif()
+    if(NOT hosted_run_stdout STREQUAL vm_stdout)
+      message(FATAL_ERROR
+        "the hosted binary disagrees with the VM\n--- vm ---\n${vm_stdout}\n"
+        "--- binary ---\n${hosted_run_stdout}")
+    endif()
   endif()
   # The hosted image depends on the host C library -- that is the difference
   # from the freestanding one, and what lets an `extern "C"` symbol resolve.
-  if(UNIX)
+  if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
+    execute_process(
+      COMMAND otool -L "${out_hosted}"
+      RESULT_VARIABLE hosted_ldd_exit
+      OUTPUT_VARIABLE hosted_ldd_out
+      ERROR_VARIABLE hosted_ldd_err
+    )
+    set(hosted_ldd_text "${hosted_ldd_out}${hosted_ldd_err}")
+    if(NOT hosted_ldd_text MATCHES "libSystem")
+      message(FATAL_ERROR "the hosted binary is not linked against libSystem:\n${hosted_ldd_text}")
+    endif()
+  elseif(UNIX)
     execute_process(
       COMMAND ldd "${out_hosted}"
       RESULT_VARIABLE hosted_ldd_exit

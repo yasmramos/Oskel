@@ -322,9 +322,18 @@ constexpr const char* kAotArgsGlobal = "$args";
 std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
                                                 const std::vector<const Bytecode*>& protos,
                                                 std::unordered_set<std::string>& resolved,
-                                                std::vector<AotCallbackSignature>& callbacks) {
+                                                std::vector<AotCallbackSignature>& callbacks,
+                                                Abi abi) {
   std::vector<AotExternThunk> thunks;
   std::unordered_set<std::string> seen;
+  // The Microsoft x64 ABI uses four integer and four SSE argument registers,
+  // reserves 32 bytes of shadow space and passes a struct by reference; the
+  // thunk supports the scalar/pointer surface there and rejects the aggregate
+  // and callback shapes with a dedicated message instead of marshalling the
+  // wrong registers.
+  const bool win64 = abi == Abi::Win64;
+  const int gprLimit = win64 ? 4 : 6;
+  const int sseLimit = win64 ? 4 : 8;
 
   // The C side of a callback: its scalar parameters classified by the System V
   // ABI, and its return class. The body is a shared machine-code function, so
@@ -397,6 +406,16 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
       thunk.symbol = symbol.name;
       thunk.arity = symbol.paramTypes.size();
       thunk.variadic = symbol.variadic;
+      if (win64 && symbol.variadic) {
+        throw LoweringError(
+            "lowering: C variadic '" + symbol.name +
+            "' is not supported on the Windows x86-64 hosted backend yet");
+      }
+      if (win64 && symbol.returnType.isStruct) {
+        throw LoweringError(
+            "lowering: a struct return from '" + symbol.name +
+            "' is not supported on the Windows x86-64 hosted backend yet");
+      }
       // A class-MEMORY return reserves `rdi` for the hidden `sret` pointer, so
       // the integer argument registers start one later. Compute it before the
       // parameters because their register/stack assignment depends on it.
@@ -408,9 +427,12 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
           returnMemory = layout.isMemory;
         }
       }
-      int gpr = returnMemory ? 1 : 0;  // the six System V integer registers
-      int sse = 0;                     // the eight System V SSE registers
+      int gpr = returnMemory ? 1 : 0;  // the integer argument registers
+      int sse = 0;                     // the SSE argument registers
       int nextBufSlot = 0;             // register-class struct staging buffers
+      // The Microsoft ABI reserves 32 bytes of shadow space below the outgoing
+      // stack arguments, so a Win64 stack argument starts at offset 32.
+      thunk.stackArgBytes = win64 ? 32 : 0;
       auto addStackStruct = [&](int index, int arg, int size) {
         thunk.stackArgBytes = (thunk.stackArgBytes + 7) / 8 * 8;
         AotStackArg stacked;
@@ -425,11 +447,16 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
       for (int arg = 0; arg < argCount; ++arg) {
         const ffi::TypeSpec& param = symbol.paramTypes[static_cast<std::size_t>(arg)];
         if (param.isCallback) {
+          if (win64) {
+            throw LoweringError(
+                "lowering: a callback parameter to '" + symbol.name +
+                "' is not supported on the Windows x86-64 hosted backend yet");
+          }
           AotThunkParam flat;
           flat.cls = ffi::ParamClass::Pointer;
           flat.argIndex = arg;
           flat.callbackSignature = callbackIndex(param);
-          if (gpr < 6) {
+          if (gpr < gprLimit) {
             ++gpr;
           } else {
             flat.stackOffset = (thunk.stackArgBytes + 7) / 8 * 8;
@@ -439,6 +466,11 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
           continue;
         }
         if (param.isStruct) {
+          if (win64) {
+            throw LoweringError(
+                "lowering: a struct parameter to '" + symbol.name +
+                "' is not supported on the Windows x86-64 hosted backend yet");
+          }
           ffi::StructLayout layout;
           std::string reason;
           if (!ffi::buildStructLayout(param.fields, layout, reason)) {
@@ -466,7 +498,7 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
             for (int e = 0; e < layout.eightbyteCount; ++e) {
               if (layout.eightbyte[e] == 'S') ++needSse; else ++needGpr;
             }
-            if (gpr + needGpr <= 6 && sse + needSse <= 8) {
+            if (gpr + needGpr <= gprLimit && sse + needSse <= sseLimit) {
               entry.bufSlot = nextBufSlot++;
               for (int e = 0; e < layout.eightbyteCount; ++e) {
                 AotThunkParam flat;
@@ -497,14 +529,21 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
         flat.cls = cls;
         flat.argIndex = arg;
         if (cls == ffi::ParamClass::Float || cls == ffi::ParamClass::Double) {
-          // The eightbyte bound keeps every SSE value in xmm0-xmm7, so an SSE
-          // spill is unreachable; reject rather than emit an unhandled shape.
-          if (sse >= 8) {
+          if (sse < sseLimit) {
+            ++sse;
+          } else if (win64) {
+            // The Microsoft ABI spills a fifth or later SSE argument to the
+            // outgoing stack area; the thunk stores the narrowed value there.
+            flat.stackOffset = (thunk.stackArgBytes + 7) / 8 * 8;
+            thunk.stackArgBytes = flat.stackOffset + 8;
+          } else {
+            // The eightbyte bound keeps every System V SSE value in xmm0-xmm7,
+            // so an SSE spill is unreachable; reject rather than emit an
+            // unhandled shape.
             supported = false;
             break;
           }
-          ++sse;
-        } else if (gpr < 6) {
+        } else if (gpr < gprLimit) {
           ++gpr;
         } else if (symbol.variadic) {
           // The variadic tail's stack area is allocated below the fixed frame,
@@ -512,8 +551,9 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
           supported = false;
           break;
         } else {
-          // The seventh and eighth GPR eightbytes travel in the outgoing stack
-          // argument area, at `[rsp + stackOffset]` before the call.
+          // A later GPR eightbyte travels in the outgoing stack argument area,
+          // at `[rsp + stackOffset]` before the call (past the shadow space on
+          // Win64).
           flat.stackOffset = (thunk.stackArgBytes + 7) / 8 * 8;
           thunk.stackArgBytes = flat.stackOffset + 8;
         }
@@ -1371,7 +1411,8 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   std::vector<AotCallbackSignature> callbackSignatures;
   std::unordered_set<std::string> resolvedExterns;
   if (mode == LinkMode::Hosted) {
-    externThunks = collectExternThunks(cg, protos, resolvedExterns, callbackSignatures);
+    externThunks =
+        collectExternThunks(cg, protos, resolvedExterns, callbackSignatures, target.abi);
     for (AotExternThunk& thunk : externThunks) thunk.label = cg.newLabel();
   }
 
@@ -1624,8 +1665,14 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   // `rdi`/`rsi` are still the `(argc, argv)` the process entry handed this
   // function -- `_start` on Linux, the C runtime in the hosted mode -- and the
   // chunk reads them to build `args()`. `push rbp`/`mov rbp, rsp` touch neither,
-  // so they reach the chunk intact. On Windows and bare metal the entry passes
-  // nothing and `args` is not seeded there.
+  // so they reach the chunk intact. A Windows hosted `main` receives them in
+  // the Microsoft x64 registers instead, so they are moved to the lowering's
+  // own pair before the chunk sees them. On freestanding Windows and bare metal
+  // the entry passes nothing and `args` is not seeded there.
+  if (mode == LinkMode::Hosted && target.os == Os::Windows) {
+    cg.movReg(X64Reg::Rdi, X64Reg::Rcx);
+    cg.movReg(X64Reg::Rsi, X64Reg::Rdx);
+  }
   cg.callLabel(chunkEntry);
   cg.xorReg(X64Reg::Rax, X64Reg::Rax);
   cg.movReg(X64Reg::Rsp, X64Reg::Rbp);
@@ -1642,7 +1689,9 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   // for every combination. The prelude binds the `entry` handles the runtime
   // already references (write/exit/init_arena).
   std::uint64_t startOffset = bareMetalEntry;
-  if (mode == LinkMode::Hosted) {
+  if (mode == LinkMode::Hosted && target.os == Os::Windows) {
+    startOffset = emitWindowsHostedRuntime(cg, entry, mainEntry);
+  } else if (mode == LinkMode::Hosted) {
     startOffset = emitHostedRuntime(cg, entry, mainEntry);
   } else if (target.os == Os::Windows) {
     startOffset = emitWindowsRuntime(cg, entry, mainEntry);
@@ -1657,6 +1706,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   extras.hasArgv = hasArgv;
   extras.hasFiles = hasFiles;
   extras.callbackStateSlot = callbackStateSlot;
+  extras.abi = target.abi;
   emitAotRuntime(cg, rt, entry, externThunks.empty() ? nullptr : &externThunks,
                  mode == LinkMode::Hosted, hasInput,
                  target.os == Os::Freestanding, randomStateSlot, pcallHandlerSlot,

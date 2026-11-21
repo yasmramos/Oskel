@@ -7,7 +7,8 @@
 //
 // Every target backs this one -- the origin comes from `clock_gettime`, libc,
 // `GetTickCount64` or the bare-metal PIT counter -- so the fixture carries no
-// `args()`: that builtin is Linux-only and lives in `native_build_args.oskl`.
+// `args()`: that builtin is seeded where the entry receives argv (Linux and the
+// hosted targets) and lives in `native_build_args.oskl`.
 
 var a = clock();
 print("clock type", type(a));

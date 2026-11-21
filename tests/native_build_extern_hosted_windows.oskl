@@ -1,0 +1,29 @@
+// Fixture for the Windows x86-64 hosted `extern "C"` surface.
+//
+// The Microsoft x64 ABI has four integer and four SSE argument registers, so
+// this fixture deliberately stays inside that window: `abs` (int), `fabs` and
+// `fmod` (double) and `strlen`/`strcmp` (cstring) exercise the three scalar
+// classes the thunk marshals on Windows. A struct, a callback or a C variadic
+// is rejected with a dedicated message there; the Linux fixture covers those
+// System V shapes.
+//
+// The names are the UCRT's, which the development VM resolves through its own
+// host registry and the hosted binary resolves through the linker, so both
+// engines must print the same lines.
+extern "C" {
+  fn abs(x: int): int;
+  fn fabs(x: double): double;
+  fn fmod(a: double, b: double): double;
+  fn strlen(s: cstring): size_t;
+  fn strcmp(a: cstring, b: cstring): int;
+}
+
+assertEq(abs(-7), 7);
+assertEq(fabs(-2.5), 2.5);
+assertEq(fmod(7.5, 2.0), 1.5);
+assertEq(strlen("hello"), 5);
+assertEq(strlen(""), 0);
+assertEq(strcmp("abc", "abc"), 0);
+assertEq(strcmp("abc", "abd") < 0, true);
+
+print("extern hosted windows ok");

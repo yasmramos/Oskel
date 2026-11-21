@@ -620,6 +620,11 @@ struct AotRuntimeExtras {
   // callback, or -1 when the program passes no callback. The callback body
   // parks r13/r14/r15 there because a C caller expects them preserved.
   int callbackStateSlot = -1;
+  // The C ABI the extern thunks marshal. The embedded runtime itself always
+  // uses the lowering's System V convention; only the boundary changes, so a
+  // Windows hosted image gets the Microsoft x64 register file and 32 bytes of
+  // shadow space. The default keeps every existing caller on System V.
+  Abi abi = Abi::SysV;
 };
 
 void emitAotRuntime(CodeGen& code, const AotRuntimeHandles& handles,
