@@ -760,15 +760,18 @@ if(BUILD_TESTING)
     add_test(NAME oskel.build_mode
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_CC=${CMAKE_C_COMPILER}"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_mode.cmake")
 
     # A scalar `extern "C"` declaration resolves through the system linker in
     # the hosted mode (PHASE 7f.5): the backend emits a marshalling thunk per
-    # symbol, seeds it as a function and lets `cc` resolve the name. Linux x86-64
-    # only: the link needs a host C toolchain and the thunk marshalling is the
-    # System V AMD64 ABI. The same fixture must still fail the freestanding build
-    # (that backend has no host), which `oskel.build_extern_error` checks.
+    # symbol, seeds it as a function and lets the host C compiler resolve the
+    # name. These fixtures cover the full System V AMD64 surface (structs,
+    # callbacks and a C variadic), so they stay Linux x86-64 only; Windows gets
+    # the scalar/pointer fixture below. The same fixture must still fail the
+    # freestanding build (that backend has no host), which
+    # `oskel.build_extern_error` checks.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       add_test(NAME oskel.build_hosted_extern
         COMMAND ${CMAKE_COMMAND}
@@ -923,6 +926,40 @@ if(BUILD_TESTING)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
       endif()
     endif()
+
+    # macOS uses the same System V thunks as Linux but a Mach-O object and
+    # libSystem. The image is x86-64, so an arm64 host builds it but does not
+    # run it (that would need Rosetta); the link and `otool -L` still prove the
+    # Mach-O relocation and the libSystem dependency.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+      set(OSKEL_MACOS_SKIP_RUN 0)
+      if(NOT CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
+        set(OSKEL_MACOS_SKIP_RUN 1)
+      endif()
+      add_test(NAME oskel.build_hosted_extern_macos
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_macos"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_CC=${CMAKE_C_COMPILER}"
+          "-DOSKEL_SKIP_RUN=${OSKEL_MACOS_SKIP_RUN}"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted.oskl"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+    endif()
+
+    # Windows x86-64 has the same hosted link, but the Microsoft x64 ABI: the
+    # scalar/cstring/pointer surface is supported and the fixture stays inside
+    # it. Structs, callbacks and C variadics are rejected there with a dedicated
+    # message (PHASE 7f.5), so the Linux fixtures keep covering those shapes.
+    if(WIN32)
+      add_test(NAME oskel.build_hosted_extern_windows
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_windows"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_CC=${CMAKE_C_COMPILER}"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted_windows.oskl"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+    endif()
+
     # `std.json` is plain Oskel over the portable primitive surface, so it must
     # build to a native binary and agree with the VM. The fixture is the guard
     # that keeps the module off the collection/string methods and

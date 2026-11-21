@@ -680,3 +680,194 @@ std::uint64_t emitHostedRuntime(CodeGen& code, const RuntimeHandles& handles,
   code.exportSymbol("main", mainOffset);
   return mainOffset;
 }
+
+std::uint64_t emitWindowsHostedRuntime(CodeGen& code, const RuntimeHandles& handles,
+                                       CodeGen::Label programEntry) {
+  // Every call into the UCRT is a Microsoft x64 call: the first four integer
+  // arguments travel in rcx/rdx/r8/r9 and the caller reserves 32 bytes of
+  // shadow space. `sub rsp, 32` after the frame leaves rsp 16-byte aligned at
+  // the call, which is what the ABI requires. The embedded runtime keeps the
+  // lowering's System V convention; only these thunks cross the boundary.
+  //
+  // `_write` returns an `int`, and the upper half of rax is undefined. The
+  // shl/sar pair re-extends the low 32 bits before the loop compares it, or a
+  // -1 would look like a large positive count.
+  code.bind(handles.write);
+  {
+    CodeGen::Label loop = code.newLabel();
+    CodeGen::Label done = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.subRegImm32(X64Reg::Rsp, 96);  // shadow space plus four frame slots
+    code.movToMem(X64Reg::Rbp, -64, X64Reg::Rdi);  // fd
+    code.movToMem(X64Reg::Rbp, -56, X64Reg::Rsi);  // buf
+    code.movToMem(X64Reg::Rbp, -48, X64Reg::Rdx);  // remaining
+    code.movImmToMem(X64Reg::Rbp, -40, 0);         // total written
+    code.bind(loop);
+    code.movFromMem(X64Reg::R11, X64Reg::Rbp, -48);
+    code.testReg(X64Reg::R11);
+    code.jcc(Jcc::Le, done);
+    code.movFromMem(X64Reg::Rcx, X64Reg::Rbp, -64);
+    code.movFromMem(X64Reg::Rdx, X64Reg::Rbp, -56);
+    code.movFromMem(X64Reg::R8, X64Reg::Rbp, -48);
+    code.callExternal("_write");
+    code.shlImm8(X64Reg::Rax, 32);
+    code.sarImm8(X64Reg::Rax, 32);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Le, done);  // error or no progress
+    code.movFromMem(X64Reg::R11, X64Reg::Rbp, -40);
+    code.addReg(X64Reg::R11, X64Reg::Rax);
+    code.movToMem(X64Reg::Rbp, -40, X64Reg::R11);
+    code.movFromMem(X64Reg::R11, X64Reg::Rbp, -56);
+    code.addReg(X64Reg::R11, X64Reg::Rax);
+    code.movToMem(X64Reg::Rbp, -56, X64Reg::R11);
+    code.movFromMem(X64Reg::R11, X64Reg::Rbp, -48);
+    code.subReg(X64Reg::R11, X64Reg::Rax);
+    code.movToMem(X64Reg::Rbp, -48, X64Reg::R11);
+    code.jmp(loop);
+    code.bind(done);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, -40);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
+  // --- void oskel_exit(long code) ---
+  code.bind(handles.exit);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, 32);
+  code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+  code.callExternal("exit");
+  code.ud2();  // unreachable: exit never returns
+
+  // --- void oskel_init_arena(void) ---
+  // `malloc` owns the region; the runtime's bump allocator serves every
+  // allocation from it and the CRT frees it at exit.
+  code.bind(handles.initArena);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, 32);
+  // The CRT opens stdout/stderr in text mode, which turns every `\n` into
+  // `\r\n`; the VM writes the bytes it built, so the binary would disagree with
+  // it. Switch both descriptors to binary before the first write.
+  code.movImm(X64Reg::Rcx, 1);
+  code.movImm(X64Reg::Rdx, 0x8000);  // _O_BINARY
+  code.callExternal("_setmode");
+  code.movImm(X64Reg::Rcx, 2);
+  code.movImm(X64Reg::Rdx, 0x8000);
+  code.callExternal("_setmode");
+  code.movImm(X64Reg::Rcx, kAotArenaSize);
+  code.callExternal("malloc");
+  code.addImm32(X64Reg::Rsp, 32);
+  code.movReg(kAotArenaCursor, X64Reg::Rax);
+  code.addImm32(kAotArenaCursor, static_cast<std::int32_t>(kAotArenaFirstOffset));
+  code.movReg(kAotArenaEnd, X64Reg::Rax);
+  code.addImm32(kAotArenaEnd, static_cast<std::int32_t>(kAotArenaSize));
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  // --- long oskel_time(void) ---
+  code.bind(handles.now);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, 32);
+  code.xorReg(X64Reg::Rcx, X64Reg::Rcx);  // tloc = NULL
+  code.callExternal("time");
+  code.addImm32(X64Reg::Rsp, 32);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  // --- long oskel_monotonic(void) ---
+  // `GetTickCount64` is milliseconds; multiply to the nanosecond unit the
+  // `clock()` builtin subtracts, so only differences matter.
+  code.bind(handles.monotonic);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, 32);
+  code.callExternal("GetTickCount64");
+  code.addImm32(X64Reg::Rsp, 32);
+  code.imulImm32(X64Reg::Rax, X64Reg::Rax, 1000000);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  // --- the file system, through the UCRT ---
+  // `_open(path, flags, pmode)`: `_O_BINARY` keeps byte counts exact, `_O_WRONLY
+  // | _O_CREAT | _O_TRUNC` is the write mode and `_S_IREAD | _S_IWRITE` is the
+  // pmode. The other three are the plain `_read`/`_write`/`_close` calls.
+  code.bind(handles.open);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, 32);
+  code.movReg(X64Reg::Rcx, X64Reg::Rdi);  // path
+  code.testReg(X64Reg::Rsi);              // mode: 0 reads, else writes
+  CodeGen::Label reading = code.newLabel();
+  CodeGen::Label opened = code.newLabel();
+  code.jcc(Jcc::Eq, reading);
+  code.movImm(X64Reg::Rdx, 0x8301);  // _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY
+  code.jmp(opened);
+  code.bind(reading);
+  code.movImm(X64Reg::Rdx, 0x8000);  // _O_RDONLY | _O_BINARY
+  code.bind(opened);
+  code.movImm(X64Reg::R8, 0x0180);   // _S_IREAD | _S_IWRITE
+  // `_open` is declared variadic, so the Microsoft ABI requires `al` to name
+  // the number of vector registers used; zero here.
+  code.xorReg(X64Reg::Rax, X64Reg::Rax);
+  code.callExternal("_open");
+  code.shlImm8(X64Reg::Rax, 32);
+  code.sarImm8(X64Reg::Rax, 32);
+  code.addImm32(X64Reg::Rsp, 32);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.readFd);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, 32);
+  code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+  code.movReg(X64Reg::R8, X64Reg::Rdx);
+  code.movReg(X64Reg::Rdx, X64Reg::Rsi);
+  code.callExternal("_read");
+  code.shlImm8(X64Reg::Rax, 32);
+  code.sarImm8(X64Reg::Rax, 32);
+  code.addImm32(X64Reg::Rsp, 32);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.writeFd);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, 32);
+  code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+  code.movReg(X64Reg::R8, X64Reg::Rdx);
+  code.movReg(X64Reg::Rdx, X64Reg::Rsi);
+  code.callExternal("_write");
+  code.shlImm8(X64Reg::Rax, 32);
+  code.sarImm8(X64Reg::Rax, 32);
+  code.addImm32(X64Reg::Rsp, 32);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.close);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, 32);
+  code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+  code.callExternal("_close");
+  code.shlImm8(X64Reg::Rax, 32);
+  code.sarImm8(X64Reg::Rax, 32);
+  code.addImm32(X64Reg::Rsp, 32);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  const std::size_t mainOffset = code.labelOffset(programEntry);
+  code.exportSymbol("main", mainOffset);
+  return mainOffset;
+}

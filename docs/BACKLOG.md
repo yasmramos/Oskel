@@ -406,11 +406,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     - **`args`**. Reads a hidden `$args` global the chunk fills from the
       `(argc, argv)` the process entry passes, skipping `argv[0]` exactly like
       the VM. Only the targets whose entry receives an argument vector seed it
-      -- freestanding Linux and hosted -- while Windows (the loader calls the
-      entry with no arguments) and bare metal reject it by name.
-      Fixture: `tests/native_build_args.oskl` (Linux and hosted only; Windows
-      and bare metal pin the rejection with `tests/native_build_args_error.oskl`
-      instead), and `tests/native_build_clock.oskl` covers `clock`.
+      -- freestanding Linux and every hosted target (the C runtime passes
+      `argc`/`argv` to `main`) -- while freestanding Windows (the loader calls
+      the entry with no arguments) and bare metal reject it by name.
+      Fixture: `tests/native_build_args.oskl` (Linux and hosted only;
+      freestanding Windows and bare metal pin the rejection with
+      `tests/native_build_args_error.oskl` instead), and
+      `tests/native_build_clock.oskl` covers `clock`. The hosted Windows path
+      reads the CRT's `argv`, which is in the process code page rather than
+      UTF-8; non-ASCII arguments are a known gap there.
     - **Done earlier**: `pcall` (§6 item 4) and `random`/`seed` (PHASE
       7c.5b.6).
     A target that cannot back a builtin now fails with a message that names the
@@ -581,15 +585,18 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     deep module trees.~~ **Done**: `VM::installExterns` now walks the module
     tree with an explicit stack.
 20. **[P0] Decided: FFI under `oskel build` is hosted-only.** A program that
-    uses `extern "C"` compiles with `oskel build --mode hosted` (Linux x86-64),
-    which links it against libc so the symbol resolves to the real C function.
-    The freestanding mode — the default — has no host to resolve against and
-    reports the unresolved symbol (exit 65) instead of emitting a broken binary.
-    This is the design, not a temporary gap: the freestanding image is
-    self-contained by construction and a general `extern "C"` call is what
-    breaks that. The remaining 7f work (pointers, structs by value, callbacks
-    and C variadics in the AOT backend) is scoped to the hosted mode. Documented
-    in `docs/language.md` §4.5 and §16.
+    uses `extern "C"` compiles with `oskel build --mode hosted` (Linux x86-64,
+    Windows x86-64 and macOS x86-64), which links it against the host C library
+    so the symbol resolves to the real C function. The freestanding mode — the
+    default on Linux and Windows — has no host to resolve against and reports
+    the unresolved symbol (exit 65) instead of emitting a broken binary. macOS
+    has no freestanding image at all. This is the design, not a temporary gap:
+    the freestanding image is self-contained by construction and a general
+    `extern "C"` call is what breaks that. The full 7f surface (structs by
+    value, callbacks and C variadics) is implemented on the System V targets
+    (Linux and macOS); Windows supports the scalar, `cstring` and `ptr` classes
+    and rejects the aggregate, callback and variadic shapes with a dedicated
+    message. Documented in `docs/language.md` §4.5 and §16.
 
 ---
 

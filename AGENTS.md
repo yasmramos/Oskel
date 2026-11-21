@@ -130,9 +130,11 @@ it as a caveat:
   self-contained image every target emits today (no libc, no linker, `ldd` says
   "not a dynamic executable"); `hosted` links against the host C library so an
   `extern "C"` symbol resolves to the real C function — the mode that makes FFI
-  work. `isSupportedLinkMode` pins the matrix (freestanding: all targets;
-  hosted: Linux x86-64 only, for now) and an unsupported pair is reported, never
-  emitted. A change to the freestanding path must keep the emitted binary byte
+  work. `isSupportedLinkMode` pins the matrix (freestanding: Linux, Windows and
+  bare metal; hosted: Linux, Windows and macOS x86-64) and an unsupported pair is
+  reported, never emitted. macOS has no freestanding image, so there the default
+  `freestanding` mode is reported as unsupported and `--mode hosted` is
+  required. A change to the freestanding path must keep the emitted binary byte
   for byte identical; `oskel build --mode freestanding` is the explicit form.
 - A standard-library module that must work on both engines stays on the
   **portable primitive surface**: indexing and slicing (`s[i]`, `s[a:b]`),
@@ -177,18 +179,37 @@ it as a caveat:
   keep its saved state *above* the outgoing stack slots (`[rbp-16]` in a 72-byte
   frame), never at `[rbp-48]`, and must read a length out of `rdx` before reusing
   `rdx` for `lpBuffer` -- both were real bugs in the file thunks.
-- The hosted image is an object plus a link (PHASE 7f.4), not a closed binary
-  the emitter writes. `native/object.h` emits an ELF64 `ET_REL` object whose
-  `.rela.text` carries one relocation per external reference (`R_X86_64_PLT32`
-  for a call, `R_X86_64_PC32` for an address, both addend `-4`) and whose
-  `.symtab` exports the program's `main`; `emitHostedRuntime` binds the same
-  three entry handles as the freestanding prelude but reaches the system through
-  libc (`write`/`exit`/`malloc`). `oskel build --mode hosted` then invokes the
-  host C compiler (`$CC`, default `cc`, `-no-pie -lm`) to link the object
-  against libc, writing the temporary `.o` beside the output and removing it
-  either way. This makes a C toolchain a *build-time* dependency of the hosted
-  mode only; the freestanding path still needs no toolchain and emits no
-  relocation. General `extern "C"` marshalling is PHASE 7f.5.
+- The hosted image is an object plus a link (PHASE 7f.4/7f.9), not a closed
+  binary the emitter writes. `native/object.h` emits the target's container:
+  ELF64 `ET_REL` on Linux (`.rela.text`, `R_X86_64_PLT32` for a call and
+  `R_X86_64_PC32` for an address, addend `-4`), Mach-O `MH_OBJECT` on macOS
+  (`LC_SEGMENT_64` with `__text`/`__const`, `LC_BUILD_VERSION`, `LC_SYMTAB`,
+  pcrel `X86_64_RELOC_BRANCH`/`X86_64_RELOC_SIGNED`, underscore-prefixed names)
+  and COFF `IMAGE_FILE_MACHINE_AMD64` on Windows (`.text`/`.rdata`,
+  `IMAGE_REL_AMD64_REL32`, the 18-byte symbol table and its string table). The
+  `.symtab`/COFF symbol table exports the program's `main`; `emitHostedRuntime`
+  binds the same entry handles as the freestanding prelude but reaches the
+  system through libc (`write`/`exit`/`malloc`) on Linux and macOS, while
+  `emitWindowsHostedRuntime` uses the UCRT's `_write`/`_read`/`_open`/`_close`
+  and `GetTickCount64`. `oskel build --mode hosted` then invokes the host C
+  compiler: `$CC` (default `cc`) with `-no-pie -lm` on Linux, `-arch x86_64
+  -lm` on macOS and `cl /Fe:... /link /SUBSYSTEM:CONSOLE` on Windows, writing
+  the temporary object beside the output and removing it either way. This makes
+  a C toolchain a *build-time* dependency of the hosted mode only; the
+  freestanding path still needs no toolchain and emits no relocation. The
+  extern thunk takes the ABI as a parameter: System V (Linux, macOS) keeps the
+  six GPRs/eight SSE registers and the struct/callback/variadic surface;
+  Win64 uses four of each, 32 bytes of shadow space and stack arguments from
+  offset 32, supports the scalar/`cstring`/`ptr` classes and rejects a struct,
+  a callback or a C variadic with a dedicated message. `main` on Windows moves
+  the CRT's `(argc, argv)` from rcx/rdx to rdi/rsi before the chunk so `args()`
+  works there too. The UCRT opens stdout/stderr in text mode, so
+  `oskel_init_arena` calls `_setmode(1/2, _O_BINARY)` before the first write;
+  without it every `\n` becomes `\r\n` and the hosted binary diverges from the
+  VM. `tests/hosted_cc.cmake` wraps `cl` in a batch file that calls
+  `vcvarsall.bat` first, because CTest does not inherit the `PATH`/`INCLUDE`/
+  `LIB` the build step had -- a bare `cl` link fails with "cannot open
+  libcmt.lib" even when `cl.exe` is found.
 - A `struct` crossing `extern "C"` by value is supported in the hosted backend
   in both ABI classes (PHASE 7f.7). A struct of 16 bytes or fewer is flattened
   to its System V eightbytes and travels in registers; a larger one is class
@@ -478,8 +499,10 @@ it as a caveat:
   rewrites `~` to `.` in asset names (which breaks `SHA256SUMS`), so the `.deb`
   file name avoids `~` while its control file keeps it.
 - `macos-latest` is the Apple Silicon image (arm64). The dev engine is portable
-  C++; the native backend stays x86-64 Linux only (DEVELOPMENT.md PHASE 7), and its
-  execution tests skip on other platforms.
+  C++; the native backend emits x86-64 (Linux, Windows and hosted macOS, plus
+  bare metal), and its execution tests run only where that image can run. The
+  macOS arm64 runner builds the hosted Mach-O image and checks its libSystem
+  dependency, but skips running it (that needs Rosetta).
 - To verify the release path without a real release, push a throwaway tag
   (`v0.1.0-<something>test`), confirm the assets and `sha256sum -c SHA256SUMS`,
   then delete the release *and* the tag. A failed run can leave a draft release

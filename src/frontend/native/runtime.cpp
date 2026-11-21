@@ -12570,11 +12570,20 @@ void emitPrintRepr(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeLabel,
 
 // ------------------------------------------------------------------- extern thunks
 
-// The System V AMD64 integer argument registers, in order (PHASE 7f.5). The
-// first six integer/pointer eightbytes use these; any further one travels in
-// the outgoing stack-argument area (`AotThunkParam::stackOffset`). All eight
-// SSE registers stay available.
-constexpr X64Reg kIntArgRegs[] = {Rdi, Rsi, Rdx, Rcx, R8, R9};
+// The integer argument registers of the two C ABIs the hosted backend can
+// target. System V uses six GPRs and eight SSE registers; the Microsoft x64
+// ABI uses four of each and reserves 32 bytes of shadow space, which the
+// lowerer accounts for by starting `stackOffset` at 32. The thunk is emitted
+// once per signature, so the ABI is a parameter, not a global mode.
+constexpr X64Reg kSysVIntArgRegs[] = {Rdi, Rsi, Rdx, Rcx, R8, R9};
+constexpr X64Reg kWin64IntArgRegs[] = {Rcx, Rdx, R8, R9};
+
+const X64Reg* intArgRegsFor(Abi abi) {
+  return abi == Abi::Win64 ? kWin64IntArgRegs : kSysVIntArgRegs;
+}
+
+int intArgCountFor(Abi abi) { return abi == Abi::Win64 ? 4 : 6; }
+int sseArgCountFor(Abi abi) { return abi == Abi::Win64 ? 4 : 8; }
 // A scratch xmm for the register-class conversions (a boxed number narrowed to
 // an integer, an integer widened to a float). It sits outside xmm0-xmm7, the
 // eight SSE argument registers, so an SSE argument is never clobbered by a
@@ -12968,9 +12977,12 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
                      const DataBlob& msgType, const DataBlob& msgOom,
                      const DataBlob& msgCStringTooLong,
                      const std::vector<AotCallbackSignature>* callbacks,
-                     CodeGen::Label callbackCreate, int callbackStateSlot) {
+                     CodeGen::Label callbackCreate, int callbackStateSlot, Abi abi) {
   CodeGen::Label arityOk = cg.newLabel();
   CodeGen::Label oom = cg.newLabel();
+  const X64Reg* intArgRegs = intArgRegsFor(abi);
+  const int intArgCount = intArgCountFor(abi);
+  const int sseArgCount = sseArgCountFor(abi);
 
   cg.bind(thunk.label);
   prologue(cg);
@@ -13116,7 +13128,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     emitFailCall(cg, fail, msgType);
     cg.bind(countSse);
     cg.movFromMem(R11, Rbp, kVarSse);
-    cg.cmpImm32(R11, 8);
+    cg.cmpImm32(R11, sseArgCount);
     cg.jcc(Jcc::Lt, countSseFit);
     cg.jmp(countSpill);
     cg.bind(countSseFit);
@@ -13125,7 +13137,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     cg.jmp(countNext);
     cg.bind(countGpr);
     cg.movFromMem(R11, Rbp, kVarGpr);
-    cg.cmpImm32(R11, 6);
+    cg.cmpImm32(R11, intArgCount);
     cg.jcc(Jcc::Lt, countGprFit);
     cg.jmp(countSpill);
     cg.bind(countGprFit);
@@ -13300,10 +13312,13 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
       }
       case ffi::ParamClass::Double: {
         // A number; an int is widened to binary64. A Float/Double payload is
-        // already the binary64 bit pattern, so it moves verbatim.
+        // already the binary64 bit pattern, so it moves verbatim. A Win64
+        // argument past the fourth SSE register travels on the stack as an
+        // eight-byte slot.
         CodeGen::Label asIs = cg.newLabel();
         CodeGen::Label asInt = cg.newLabel();
         CodeGen::Label done = cg.newLabel();
+        const bool onStack = param.stackOffset >= 0;
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagFloat));
         cg.jcc(Jcc::Eq, asIs);
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagDouble));
@@ -13313,20 +13328,32 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         emitFailCall(cg, fail, msgType);
         cg.bind(asInt);
         cg.movFromMem(R11, Rbx, base + 8);
-        cg.cvtsi2sd(kXmmBase + sse, R11);
+        if (onStack) {
+          cg.cvtsi2sd(XmmScratch, R11);
+          cg.movqFromXmm(R11, XmmScratch);
+          cg.movToMem(Rsp, param.stackOffset, R11);
+        } else {
+          cg.cvtsi2sd(kXmmBase + sse, R11);
+        }
         cg.jmp(done);
         cg.bind(asIs);
         cg.movFromMem(R11, Rbx, base + 8);
-        cg.movqToXmm(kXmmBase + sse, R11);
+        if (onStack) {
+          cg.movToMem(Rsp, param.stackOffset, R11);
+        } else {
+          cg.movqToXmm(kXmmBase + sse, R11);
+        }
         cg.bind(done);
-        ++sse;
+        if (!onStack) ++sse;
         break;
       }
       case ffi::ParamClass::Float: {
-        // A number narrowed to binary32 (the ABI passes it in an SSE register).
+        // A number narrowed to binary32. An SSE register holds the low 32 bits
+        // of the xmm; a Win64 stack slot holds the four-byte value.
         CodeGen::Label asIs = cg.newLabel();
         CodeGen::Label asInt = cg.newLabel();
         CodeGen::Label done = cg.newLabel();
+        const bool onStack = param.stackOffset >= 0;
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagFloat));
         cg.jcc(Jcc::Eq, asIs);
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagDouble));
@@ -13336,15 +13363,29 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         emitFailCall(cg, fail, msgType);
         cg.bind(asInt);
         cg.movFromMem(R11, Rbx, base + 8);
-        cg.cvtsi2sd(XmmScratch, R11);
-        cg.cvtsd2ss(kXmmBase + sse, XmmScratch);
+        if (onStack) {
+          cg.cvtsi2sd(XmmScratch, R11);
+          cg.cvtsd2ss(XmmScratch, XmmScratch);
+          cg.movqFromXmm(R11, XmmScratch);
+          cg.movToMem32(Rsp, param.stackOffset, R11);
+        } else {
+          cg.cvtsi2sd(XmmScratch, R11);
+          cg.cvtsd2ss(kXmmBase + sse, XmmScratch);
+        }
         cg.jmp(done);
         cg.bind(asIs);
         cg.movFromMem(R11, Rbx, base + 8);
-        cg.movqToXmm(kXmmBase + sse, R11);
-        cg.cvtsd2ss(kXmmBase + sse, kXmmBase + sse);
+        if (onStack) {
+          cg.movqToXmm(XmmScratch, R11);
+          cg.cvtsd2ss(XmmScratch, XmmScratch);
+          cg.movqFromXmm(R11, XmmScratch);
+          cg.movToMem32(Rsp, param.stackOffset, R11);
+        } else {
+          cg.movqToXmm(kXmmBase + sse, R11);
+          cg.cvtsd2ss(kXmmBase + sse, kXmmBase + sse);
+        }
         cg.bind(done);
-        ++sse;
+        if (!onStack) ++sse;
         break;
       }
       case ffi::ParamClass::Pointer: {
@@ -13447,7 +13488,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   // Load the staged integer arguments into their registers now that every
   // `alloc`/`rep movsb` has run. The SSE arguments are already in place.
   for (int k = 0; k < gpr; ++k)
-    cg.movFromMem(kIntArgRegs[k], Rbp, kStageBase + 8LL * k);
+    cg.movFromMem(intArgRegs[k], Rbp, kStageBase + 8LL * k);
 
   // --- C variadic: assign the tail --------------------------------------------
   //
@@ -13541,11 +13582,11 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     // which is not an argument register, so no loaded argument is disturbed.
     cg.bind(assignGpr);
     cg.movFromMem(Rax, Rbp, kVarGpr);
-    for (int k = 0; k < 6; ++k) {
+    for (int k = 0; k < intArgCount; ++k) {
       CodeGen::Label skip = cg.newLabel();
       cg.cmpImm32(Rax, k);
       cg.jcc(Jcc::Ne, skip);
-      cg.movReg(kIntArgRegs[k], R11);
+      cg.movReg(intArgRegs[k], R11);
       cg.jmp(gprAssigned);
       cg.bind(skip);
     }
@@ -13557,7 +13598,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
 
     cg.bind(assignSse);
     cg.movFromMem(Rax, Rbp, kVarSse);
-    for (int k = 0; k < 8; ++k) {
+    for (int k = 0; k < sseArgCount; ++k) {
       CodeGen::Label skip = cg.newLabel();
       cg.cmpImm32(Rax, k);
       cg.jcc(Jcc::Ne, skip);
@@ -13758,7 +13799,9 @@ void emitCallbackCreate(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocL
 
   // mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0).
   // The page is writable only while the stub is copied in; `mprotect` below
-  // turns it read+execute before the function returns, so it is never W+X.
+  // turns it read+execute before the function returns, so it is never W+X. A
+  // callback is a System V shape, emitted on the Linux and macOS hosted
+  // targets; Windows rejects the parameter.
   cg.xorReg(Rdi, Rdi);
   cg.movImm(Rsi, 4096);
   cg.movImm(Rdx, 3);
@@ -13863,7 +13906,7 @@ void emitCallbackBody(CodeGen& cg, const AotCallbackSignature& sig,
 
   // Save the C arguments before any helper call. The SSE slots keep the raw
   // bits: a `float` is narrowed back to binary32 below, a `double` is verbatim.
-  for (int i = 0; i < 6; ++i) cg.movToMem(Rbp, kStageBase + 8 * i, kIntArgRegs[i]);
+  for (int i = 0; i < 6; ++i) cg.movToMem(Rbp, kStageBase + 8 * i, kSysVIntArgRegs[i]);
   for (int i = 0; i < 8; ++i) {
     cg.movqFromXmm(R11, kXmmBase + i);
     cg.movToMem(Rbp, kStageBase + 8 * (6 + i), R11);
@@ -15939,7 +15982,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
       emitExternThunk(cg, thunk, fail, handles.alloc, handles.memberGet, handles.tableNew,
                       handles.memberSet, voidPtrBox, msgArity, msgExternType, msgOom,
                       msgCStringTooLong, callbacks, callbackCreate,
-                      extras.callbackStateSlot);
+                      extras.callbackStateSlot, extras.abi);
     }
   }
   emitPrintStrEsc(cg, printStrEsc, entry.write, textQuote, textEscQuote,
