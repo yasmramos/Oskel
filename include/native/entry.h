@@ -135,3 +135,14 @@ std::uint64_t emitWindowsRuntime(CodeGen& code, const RuntimeHandles& handles,
 // program entry; the object's real entry point is the linker's `_start`.
 std::uint64_t emitHostedRuntime(CodeGen& code, const RuntimeHandles& handles,
                                 CodeGen::Label programEntry);
+
+// Windows hosted entry prelude. Same contract as `emitHostedRuntime` -- it
+// exports the program entry as the C `main` and returns its offset -- but the
+// host C library is reached with the Microsoft x64 ABI (rcx/rdx/r8/r9 plus 32
+// bytes of shadow space) and the UCRT's underscore-prefixed file functions.
+// `_write`/`_read`/`_open`/`_close` carry the file system, `malloc` the arena,
+// `exit` the process, `time` the wall clock and `GetTickCount64` the monotonic
+// counter (the CRT has no `clock_gettime`). The embedded runtime itself keeps
+// the lowering's System V convention; only these thunks cross the ABI.
+std::uint64_t emitWindowsHostedRuntime(CodeGen& code, const RuntimeHandles& handles,
+                                       CodeGen::Label programEntry);

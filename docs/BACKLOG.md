@@ -201,8 +201,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    included), `lines` (one trailing `'\r'` dropped per segment, no empty tail),
    `chars`, `replace`, `replaceFirst`, `padStart` and `padEnd` (a `width` in
    code points, the fill repeated whole and then clipped, both ordering
-   branches). The callback forms (`map`-style on strings) remain the only
-   string members with no AOT binding.
+   branches). There is no callback form on a string: `"abc".map`/`.each`/
+   `.filter` are rejected by the VM too (`type 'string' has no member 'map'`),
+   so the string method surface has no AOT gap left.
 2. **[P0] [done]** VM/AOT divergence in structural equality: `[1,2] == [1,2]`
    is true in the VM (content) and false in AOT (identity). The equality helper
    in `oskel_compare` now descends into arrays and maps (equal length, equal
@@ -326,14 +327,22 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     length (via `oskel_utf8_len`) before the lookup; an out-of-range index still
     reports the error. Pinned by `tests/freestanding_test.cpp`
     (`test_negative_string_index`).
-22. **[P1]** VM/AOT divergence in a function's text representation: `repr`/`str`
-    of a named function is `<fn name>` in the VM (`<native fn name>` for a host
-    binding) but `<fn>` in the AOT binary, because the AOT closure object is
-    `(code, arity, upvalueCount)` with no name field. Fixing it means widening
-    the closure object and every site that builds one (`emitClosure`, the bound
-    array methods, the lowerer's capture stores) and threading the proto name
-    into the emitter. The AOT form is pinned by `tests/freestanding_test.cpp`;
-    the parity fixtures avoid printing a bare function until then.
+22. **[P1] [done]** VM/AOT divergence in a function's text representation:
+    `repr`/`str` of a named function is `<fn name>` in the VM (`<native fn
+    name>` for a host binding) but used to be the bare `<fn>` in the AOT
+    binary, because the AOT closure object carried no name. The closure header
+    gained a fourth word, `display`, holding the address of a static
+    `AotString` with the exact text to render (`"<fn add>"`,
+    `"<native fn array.map>"`, `"<native fn getpid>"`); a null `display` keeps
+    the old `<fn>` fallback for a closure built by a path with no name. The
+    text is a data island, so the closure stays four words and `emitReprInto`
+    renders it with one append -- no per-value allocation. One island per proto
+    is emitted by the lowerer (`<fn ` + `Bytecode::name` + `>`), one per builtin
+    and one per `extern "C"` thunk (`<native fn ` + symbol + `>`), and the
+    bound array/map/string methods carry their `owner.method` form from the
+    binder. `tests/native_build_function_repr.oskl` pins the parity for a
+    declared function, a lambda, a class method, a builtin, a `native fn`, a
+    bound method of each family and a function nested in a container.
 23. **[P1] [done]** VM/AOT divergence in the value of a returned `cstring`
     (PHASE 7f.6). `emitExternThunk` scanned a returned `const char *` and boxed
     it as the existing `Str`, so `type()` reported `"string"` where the VM
@@ -397,11 +406,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     - **`args`**. Reads a hidden `$args` global the chunk fills from the
       `(argc, argv)` the process entry passes, skipping `argv[0]` exactly like
       the VM. Only the targets whose entry receives an argument vector seed it
-      -- freestanding Linux and hosted -- while Windows (the loader calls the
-      entry with no arguments) and bare metal reject it by name.
-      Fixture: `tests/native_build_args.oskl` (Linux and hosted only; Windows
-      and bare metal pin the rejection with `tests/native_build_args_error.oskl`
-      instead), and `tests/native_build_clock.oskl` covers `clock`.
+      -- freestanding Linux and every hosted target (the C runtime passes
+      `argc`/`argv` to `main`) -- while freestanding Windows (the loader calls
+      the entry with no arguments) and bare metal reject it by name.
+      Fixture: `tests/native_build_args.oskl` (Linux and hosted only;
+      freestanding Windows and bare metal pin the rejection with
+      `tests/native_build_args_error.oskl` instead), and
+      `tests/native_build_clock.oskl` covers `clock`. The hosted Windows path
+      reads the CRT's `argv`, which is in the process code page rather than
+      UTF-8; non-ASCII arguments are a known gap there.
     - **Done earlier**: `pcall` (§6 item 4) and `random`/`seed` (PHASE
       7c.5b.6).
     A target that cannot back a builtin now fails with a message that names the
@@ -438,17 +451,44 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     convention before the pointer builtins did, and the new arity guards follow
     it (the VM appends `, got N`).
 
-26. **[P1]** A callback that C stores for a later call works in AOT but not in
+26. **[P1]** WebAssembly backend gaps (PHASE 9). The backend behind
+    `Target::wasm32()` (`src/frontend/native/wasm.cpp`) covers the scalar core,
+    arrays, maps, slicing, variadic functions, the array/map/string methods,
+    `std/json`, `std/datetime`, `std/collections`, `std/path` and the bound half
+    of `std.math`, and its `double` printing is the same shortest round-trip
+    form as `std::to_chars`. What is still open:
+    - A builtin with no WASM body is seeded as a trapping closure: declaring it
+      is harmless, calling it reports the gap. The unbound names are the
+      complement of `supportedBuiltins()`; the transcendental `pow`, `sin`,
+      `cos`, `tan`, `log` and `exp`, plus `random`, `seed`, `input`, `pcall`,
+      `args`, the file builtins and the pointer builtins are in that set today.
+    - A used `extern "C"` or `native fn` symbol with no builtin stub is a build
+      error, mirroring the AOT backend's message.
+    Each gap fails cleanly (build error 65 or a runtime error), never a
+    mis-compiled module. `tests/native_build_wasm.oskl`,
+    `tests/native_build_datetime.oskl`, `tests/native_build_collections.oskl`,
+    `tests/native_build_math.oskl` and `tests/native_build_double_format.oskl`
+    pin the supported surface against the VM byte for byte.
+27. **[P1]** A callback that C stores for a later call works in AOT but not in
     the VM: the development engine's `CallbackObj` is released when the
     `extern "C"` call returns, while the AOT stub and its context live in the
     arena. The AOT-only fixtures `tests/native_build_extern_callback_stored.oskl`
     and `..._exit.oskl` (an `atexit` handler after the chunk returns) cover it;
     keeping the VM closure alive would close the gap.
-27. **[P1]** A callback returning a struct by value is supported by the VM
+28. **[P1]** A callback returning a struct by value is supported by the VM
     (`libffi`) and rejected by the AOT backend with a dedicated message; the AOT
     callback body does not rebuild the returned registers into a map. A struct
     *parameter* is rejected by both. `tests/errors/callback_struct_{return,param}.oskl`
     pin the AOT rejection.
+28. **[P2]** A callback stub is one `mmap` page per registration and lives
+    until the process exits. Freeing it when the extern call returns is not
+    safe: C may store the function pointer (a stored callback, including an
+    `atexit` handler), and Oskel has no reference count for the C side. A pool
+    of stubs (one page per N registrations) or an explicit release contract
+    would bound the memory of a long-running program. The page is W^X today:
+    read+write while the stub is written, then `mprotect`ed to read+execute;
+    `tests/native_build_extern_callback_wx.oskl` asserts the final mapping is
+    not writable.
 
 ---
 
@@ -545,15 +585,18 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     deep module trees.~~ **Done**: `VM::installExterns` now walks the module
     tree with an explicit stack.
 20. **[P0] Decided: FFI under `oskel build` is hosted-only.** A program that
-    uses `extern "C"` compiles with `oskel build --mode hosted` (Linux x86-64),
-    which links it against libc so the symbol resolves to the real C function.
-    The freestanding mode — the default — has no host to resolve against and
-    reports the unresolved symbol (exit 65) instead of emitting a broken binary.
-    This is the design, not a temporary gap: the freestanding image is
-    self-contained by construction and a general `extern "C"` call is what
-    breaks that. The remaining 7f work (pointers, structs by value, callbacks
-    and C variadics in the AOT backend) is scoped to the hosted mode. Documented
-    in `docs/language.md` §4.5 and §16.
+    uses `extern "C"` compiles with `oskel build --mode hosted` (Linux x86-64,
+    Windows x86-64 and macOS x86-64), which links it against the host C library
+    so the symbol resolves to the real C function. The freestanding mode — the
+    default on Linux and Windows — has no host to resolve against and reports
+    the unresolved symbol (exit 65) instead of emitting a broken binary. macOS
+    has no freestanding image at all. This is the design, not a temporary gap:
+    the freestanding image is self-contained by construction and a general
+    `extern "C"` call is what breaks that. The full 7f surface (structs by
+    value, callbacks and C variadics) is implemented on the System V targets
+    (Linux and macOS); Windows supports the scalar, `cstring` and `ptr` classes
+    and rejects the aggregate, callback and variadic shapes with a dedicated
+    message. Documented in `docs/language.md` §4.5 and §16.
 
 ---
 
@@ -829,12 +872,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 7. **[P2] [done]** Add an `oskel.toml` for native dependencies.
    `oskelp` (the project and package manager) landed with `oskel.toml`,
    `oskel.lock`, path dependencies and
-   `new`/`init`/`build`/`run`/`check`/`test`/`clean`/`tree`. The manifest is
-   parsed by a small strict TOML subset in `tools/oskelp.cpp`; the resolver
-   rejects cycles, two locations for one package name, a name that disagrees
-   with its manifest and a registry dependency. The tool is standalone and
-   drives `oskel`/`oskelc` as child processes; `OSKEL_MODULE_ROOT` is the only
-   compiler-side hook.
+   `new`/`init`/`add`/`remove`/`build`/`run`/`check`/`test`/`clean`/`tree`. The
+   manifest is parsed by a small strict TOML subset in `tools/oskelp.cpp`; the
+   resolver rejects cycles, two locations for one package name and a name that
+   disagrees with its manifest, and resolves a local-registry dependency from
+   `$OSKEL_REGISTRY`. The tool is standalone and drives `oskel`/`oskelc` as
+   child processes; `OSKEL_MODULE_ROOT` is the only compiler-side hook.
 8. **[P3]** Add a "hello world with UI" tutorial (needs the post-1.0 UI work).
 9. **[P2] [partial]** SDL3 bindings landed (post-1.0 UI): `std/sdl.oskl` binds
    the window, renderer and event surface, `docs/sdl.md` documents it, and
@@ -842,13 +885,19 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    layer (`Window`, `Column`, `Text`, `Button`, ...) and the Windows loaded-DLL
    symbol lookup (§18) are still open.
 10. **[P3]** Add `dlopen`/`dlsym` as a builtin for dynamic FFI.
-11. **[P1]** `oskelp`: add a local registry (`$OSKEL_REGISTRY`) with semver
-    ranges, so a dependency can be `utils = "1.2.0"` instead of a path. A
-    network registry is a separate decision: it needs HTTP/TLS, which the
-    standard library does not carry.
-12. **[P1]** `oskelp`: add `add`, `remove`, `update` and `publish`. The manifest
-    editor must preserve comments and unrelated lines; rewriting the file is not
-    acceptable.
+11. **[P1] [done]** `oskelp`: the local registry (`$OSKEL_REGISTRY`) landed
+    with semver requirements (exact, `^`, `~`, comparators, wildcards and a
+    conjunction), so a dependency can be `utils = "^1.2.0"` instead of a path.
+    `oskel.lock` records `registry+<name>@<version>` and keeps the pin while it
+    satisfies the manifest. A network registry is still a separate decision: it
+    needs HTTP/TLS, which the standard library does not carry, plus checksums
+    and signatures.
+12. **[P1] [done]** `oskelp`: `add`, `remove`, `publish` and `update` landed.
+    `add` and `remove` use an in-place editor that preserves comments, blank
+    lines and CRLF; a failed add resolves the graph before it writes, so the
+    manifest is never left half-edited. `add` without `--path` writes a registry
+    requirement, `publish` copies a package into `$OSKEL_REGISTRY`, and
+    `update [<name>]` moves the lockfile pin and prints each change.
 13. **[P2]** `oskelp`: add build profiles. `target/<name>` is the only output
     today because the AOT backend has no optimization level to select; a
     `--release` that changes nothing would be a cosmetic lie.

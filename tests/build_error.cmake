@@ -7,6 +7,7 @@
 #   -DOSKEL_SCRIPT=<the .oskl file to build>
 #   -DOSKEL_TEST_NAME=<the CTest name, used for a unique output path>
 #   -DEXPECTED_MESSAGE=<regex the stderr must match>
+#   -DOSKEL_TARGET=<optional --target value, e.g. wasm32-freestanding-wasm>
 #   -DOSKEL_BUILD_MODE=<optional `--mode` value; the default is freestanding>
 #
 # It asserts:
@@ -26,18 +27,26 @@ if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows")
 else()
   set(exe_suffix "")
 endif()
+if(DEFINED OSKEL_TARGET AND OSKEL_TARGET MATCHES "wasm32")
+  set(exe_suffix ".wasm")
+endif()
 # The output path embeds the test name (see build_binary.cmake): parallel tests
 # share `CMAKE_CURRENT_BINARY_DIR`, so a fixed name would collide.
 set(out "${CMAKE_CURRENT_BINARY_DIR}/${OSKEL_TEST_NAME}${exe_suffix}")
 file(REMOVE "${out}")
 
+if(DEFINED OSKEL_TARGET)
+  set(target_args --target "${OSKEL_TARGET}")
+else()
+  set(target_args)
+endif()
 set(mode_args "")
 if(DEFINED OSKEL_BUILD_MODE AND NOT OSKEL_BUILD_MODE STREQUAL "")
   set(mode_args "--mode" "${OSKEL_BUILD_MODE}")
 endif()
 
 execute_process(
-  COMMAND "${OSKEL_EXE}" build "${OSKEL_SCRIPT}" ${mode_args} -o "${out}"
+  COMMAND "${OSKEL_EXE}" build ${target_args} "${OSKEL_SCRIPT}" ${mode_args} -o "${out}"
   RESULT_VARIABLE build_exit
   OUTPUT_VARIABLE build_stdout
   ERROR_VARIABLE build_stderr

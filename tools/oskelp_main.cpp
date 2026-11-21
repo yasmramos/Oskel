@@ -17,6 +17,13 @@ const char* kUsage =
     "usage:\n"
     "  oskelp new <dir> [--name <name>] [--vcs none|git]\n"
     "  oskelp init [dir] [--name <name>] [--vcs none|git]\n"
+    "  oskelp add <name> --path <path> [--version <v>]\n"
+    "             [--manifest-path <file>]\n"
+    "  oskelp add --path <path> [--version <v>] [--manifest-path <file>]\n"
+    "  oskelp add <name> --version <requirement> [--manifest-path <file>]\n"
+    "  oskelp remove <name> [--manifest-path <file>]\n"
+    "  oskelp publish [--registry <dir>] [--manifest-path <file>]\n"
+    "  oskelp update [<name>] [--manifest-path <file>]\n"
     "  oskelp build [--target <name>] [--mode <name>] [--locked]\n"
     "               [--manifest-path <file>]\n"
     "  oskelp run [--native] [--target <name>] [--mode <name>] [--locked]\n"
@@ -31,9 +38,15 @@ const char* kUsage =
     "  -h, --help      show this help\n"
     "  -v, --version   show the version\n"
     "\n"
-    "`oskelp build` compiles the project's entry point to a native binary;\n"
-    "`oskelp run` runs it on the VM unless --native is given. Both resolve the\n"
-    "`path` dependencies in oskel.toml and materialise them under .oskel/deps.\n";
+    "`oskelp add` and `oskelp remove` edit oskel.toml in place and refresh\n"
+    "oskel.lock and .oskel/deps. `add` takes `--path` for a path dependency or\n"
+    "`--version <requirement>` for one from the registry named by\n"
+    "OSKEL_REGISTRY. `oskelp publish` copies the package to that registry and\n"
+    "`oskelp update` re-resolves every package, or only <name>, and rewrites\n"
+    "oskel.lock. `oskelp build` compiles the project's entry point to a native\n"
+    "binary; `oskelp run` runs it on the VM unless --native is given. Both\n"
+    "resolve the dependencies in oskel.toml and materialise them under\n"
+    ".oskel/deps.\n";
 
 bool takeValue(const std::vector<std::string>& arguments, size_t& index,
                const std::string& option, std::string& value) {
@@ -127,6 +140,141 @@ int commandInit(const std::vector<std::string>& arguments,
   return oskelp::commandInit(directory, name, vcs, argv0);
 }
 
+int commandAdd(const std::vector<std::string>& arguments) {
+  std::string name;
+  std::string path;
+  std::string version;
+  std::string manifestPath;
+  for (size_t i = 1; i < arguments.size(); ++i) {
+    const std::string& arg = arguments[i];
+    if (arg == "-h" || arg == "--help") {
+      std::cout << "oskelp " << OSKEL_VERSION << "\n\n" << kUsage;
+      return oskelp::kOk;
+    }
+    if (arg == "--path") {
+      if (!takeValue(arguments, i, arg, path)) return oskelp::kUsage;
+      continue;
+    }
+    if (arg == "--version") {
+      if (!takeValue(arguments, i, arg, version)) return oskelp::kUsage;
+      continue;
+    }
+    if (arg == "--manifest-path") {
+      if (!takeValue(arguments, i, arg, manifestPath)) return oskelp::kUsage;
+      continue;
+    }
+    if (!arg.empty() && arg[0] == '-') {
+      std::cerr << "oskelp add: unknown option '" << arg << "'\n";
+      return oskelp::kUsage;
+    }
+    if (!name.empty()) {
+      std::cerr << "oskelp add: a single dependency name is expected\n";
+      return oskelp::kUsage;
+    }
+    name = arg;
+  }
+  if (name.empty() && path.empty()) {
+    std::cerr << "oskelp add: a dependency name or --path is required\n";
+    return oskelp::kUsage;
+  }
+  std::string manifest;
+  int status = resolveManifest(manifestPath, manifest);
+  if (status != oskelp::kOk) return status;
+  return oskelp::commandAdd(manifest, name, path, version);
+}
+
+int commandRemove(const std::vector<std::string>& arguments) {
+  std::string name;
+  std::string manifestPath;
+  for (size_t i = 1; i < arguments.size(); ++i) {
+    const std::string& arg = arguments[i];
+    if (arg == "-h" || arg == "--help") {
+      std::cout << "oskelp " << OSKEL_VERSION << "\n\n" << kUsage;
+      return oskelp::kOk;
+    }
+    if (arg == "--manifest-path") {
+      if (!takeValue(arguments, i, arg, manifestPath)) return oskelp::kUsage;
+      continue;
+    }
+    if (!arg.empty() && arg[0] == '-') {
+      std::cerr << "oskelp remove: unknown option '" << arg << "'\n";
+      return oskelp::kUsage;
+    }
+    if (!name.empty()) {
+      std::cerr << "oskelp remove: a single dependency name is expected\n";
+      return oskelp::kUsage;
+    }
+    name = arg;
+  }
+  if (name.empty()) {
+    std::cerr << "oskelp remove: a dependency name is required\n";
+    return oskelp::kUsage;
+  }
+  std::string manifest;
+  int status = resolveManifest(manifestPath, manifest);
+  if (status != oskelp::kOk) return status;
+  return oskelp::commandRemove(manifest, name);
+}
+
+int commandPublish(const std::vector<std::string>& arguments) {
+  std::string registry;
+  std::string manifestPath;
+  for (size_t i = 1; i < arguments.size(); ++i) {
+    const std::string& arg = arguments[i];
+    if (arg == "-h" || arg == "--help") {
+      std::cout << "oskelp " << OSKEL_VERSION << "\n\n" << kUsage;
+      return oskelp::kOk;
+    }
+    if (arg == "--registry") {
+      if (!takeValue(arguments, i, arg, registry)) return oskelp::kUsage;
+      continue;
+    }
+    if (arg == "--manifest-path") {
+      if (!takeValue(arguments, i, arg, manifestPath)) return oskelp::kUsage;
+      continue;
+    }
+    if (!arg.empty() && arg[0] == '-') {
+      std::cerr << "oskelp publish: unknown option '" << arg << "'\n";
+      return oskelp::kUsage;
+    }
+    std::cerr << "oskelp publish: unexpected argument '" << arg << "'\n";
+    return oskelp::kUsage;
+  }
+  std::string manifest;
+  int status = resolveManifest(manifestPath, manifest);
+  if (status != oskelp::kOk) return status;
+  return oskelp::commandPublish(manifest, registry);
+}
+
+int commandUpdate(const std::vector<std::string>& arguments) {
+  std::string name;
+  std::string manifestPath;
+  for (size_t i = 1; i < arguments.size(); ++i) {
+    const std::string& arg = arguments[i];
+    if (arg == "-h" || arg == "--help") {
+      std::cout << "oskelp " << OSKEL_VERSION << "\n\n" << kUsage;
+      return oskelp::kOk;
+    }
+    if (arg == "--manifest-path") {
+      if (!takeValue(arguments, i, arg, manifestPath)) return oskelp::kUsage;
+      continue;
+    }
+    if (!arg.empty() && arg[0] == '-') {
+      std::cerr << "oskelp update: unknown option '" << arg << "'\n";
+      return oskelp::kUsage;
+    }
+    if (!name.empty()) {
+      std::cerr << "oskelp update: a single package name is expected\n";
+      return oskelp::kUsage;
+    }
+    name = arg;
+  }
+  std::string manifest;
+  int status = resolveManifest(manifestPath, manifest);
+  if (status != oskelp::kOk) return status;
+  return oskelp::commandUpdate(manifest, name);
+}
+
 // Parses the options shared by build/run/check/test. `allowArguments` lets
 // `run` collect the program's own arguments; every other command rejects a
 // positional argument.
@@ -216,6 +364,10 @@ int main(int argc, char** argv) {
 
   if (command == "new") return commandNew(arguments, argv[0]);
   if (command == "init") return commandInit(arguments, argv[0]);
+  if (command == "add") return commandAdd(arguments);
+  if (command == "remove") return commandRemove(arguments);
+  if (command == "publish") return commandPublish(arguments);
+  if (command == "update") return commandUpdate(arguments);
 
   oskelp::BuildOptions options;
   std::string manifestPath;

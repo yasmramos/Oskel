@@ -81,8 +81,10 @@ oskel build examples/sdl/window.oskl --mode hosted --link-lib SDL3 -o window
 it requires `--mode hosted` (the freestanding image has no linker), and the name
 is restricted to letters, digits, `_`, `+`, `-` and `.`. See
 `docs/language.md` for the flag and `docs/BACKLOG.md` §7 for the FFI limits.
-The hosted mode is Linux x86-64 today; on any other target the pair is rejected
-before an image is written.
+The hosted link is available on Linux, Windows and macOS x86-64. The SDL3
+module is exercised on Linux; a target whose FFI surface the module needs (a
+struct by value or a callback) is rejected with a dedicated message before an
+image is written.
 
 A freestanding build of a program that uses SDL3 fails with the dedicated
 message and exit 65, never with a mis-compiled binary:

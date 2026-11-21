@@ -177,6 +177,15 @@ struct CollectionEnv {
   // member names are the data islands `*Const` (raw `AotString`s, like
   // `lengthConst`).
   CodeGen::Label bindArrayMethod;
+  // The text `repr`/`str` render for each bound method value, in selector
+  // order: `"<native fn array.push>"`, `"<native fn array.pop>"`, ... The
+  // binder hands the matching label to `oskel_closure` as its `display`.
+  std::vector<CodeGen::Label> arrayMethodDisplays;
+  std::vector<CodeGen::Label> mapMethodDisplays;
+  std::vector<CodeGen::Label> stringMethodDisplays;
+  std::vector<std::string> arrayDisplayTexts;
+  std::vector<std::string> mapDisplayTexts;
+  std::vector<std::string> stringDisplayTexts;
   CodeGen::Label pushMethod;
   CodeGen::Label popMethod;
   CodeGen::Label shiftMethod;
@@ -2016,7 +2025,8 @@ void emitArrayConcat(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
 // preserved across the helper calls.
 void emitBindArrayMethod(CodeGen& cg, CodeGen::Label label, CodeGen::Label cellNew,
                          CodeGen::Label closure,
-                         const std::vector<CodeGen::Label>& methods) {
+                         const std::vector<CodeGen::Label>& methods,
+                         const std::vector<CodeGen::Label>& displays) {
   std::vector<CodeGen::Label> use(methods.size());
   for (CodeGen::Label& l : use) l = cg.newLabel();
   CodeGen::Label haveCode = cg.newLabel();
@@ -2038,10 +2048,12 @@ void emitBindArrayMethod(CodeGen& cg, CodeGen::Label label, CodeGen::Label cellN
     cg.jcc(Jcc::Eq, use[i]);
   }
   cg.leaRipLabel(Rdi, methods.back());
+  cg.leaRipLabel(Rcx, displays.back());  // the text repr/str renders
   cg.jmp(haveCode);
   for (std::size_t i = 0; i + 1 < methods.size(); ++i) {
     cg.bind(use[i]);
     cg.leaRipLabel(Rdi, methods[i]);
+    cg.leaRipLabel(Rcx, displays[i]);
     cg.jmp(haveCode);
   }
   cg.bind(haveCode);
@@ -6008,12 +6020,14 @@ void emitGlobalGet(CodeGen& cg, CodeGen::Label label) {
   cg.retInsn();
 }
 
-// `AotValue oskel_closure(void* code, long arity, long upvalueCount)`: allocate
-// an `AotClosure` (code, arity, upvalueCount) followed by `upvalueCount` cell
-// pointers in the arena and return it as a `Func` value (rax:rdx). The slot
-// area is left for the lowering to fill: it knows which cells the child
-// captures and writes each pointer with a plain store, so the helper does not
-// need the descriptor table.
+// `AotValue oskel_closure(void* code, long arity, long upvalueCount,
+// void* display)`: allocate an `AotClosure` (code, arity, upvalueCount,
+// display) followed by `upvalueCount` cell pointers in the arena and return it
+// as a `Func` value (rax:rdx). `display` is the address of a static `AotString`
+// holding the text `repr`/`str` render for the closure, or 0 to fall back to
+// the literal `<fn>`. The slot area is left for the lowering to fill: it knows
+// which cells the child captures and writes each pointer with a plain store,
+// so the helper does not need the descriptor table.
 void emitClosure(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
                  CodeGen::Label fail, const DataBlob& msgOom) {
   CodeGen::Label oom = cg.newLabel();
@@ -6022,10 +6036,11 @@ void emitClosure(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
   prologue(cg);
   cg.push(Rbx);
   cg.push(R12);
-  cg.subRegImm32(Rsp, 16);  // scratch slot for the capture count (keeps rsp aligned)
+  cg.subRegImm32(Rsp, 32);  // scratch slots (rsp stays 16-byte aligned)
   cg.movReg(Rbx, Rdi);      // code address
   cg.movReg(R12, Rsi);      // arity
   cg.movToMem(Rbp, -24, Rdx);  // stash upvalueCount
+  cg.movToMem(Rbp, -32, Rcx);  // stash display
   cg.movReg(Rdi, Rdx);
   cg.shlImm8(Rdi, 3);       // count * 8 bytes of cell pointers
   cg.addImm32(Rdi, static_cast<std::int32_t>(kAotClosureHeaderSize));
@@ -6037,9 +6052,11 @@ void emitClosure(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
   cg.movToMem(Rax, 8, R12);             // arity
   cg.movFromMem(R11, Rbp, -24);
   cg.movToMem(Rax, 16, R11);            // upvalueCount
+  cg.movFromMem(R11, Rbp, -32);
+  cg.movToMem(Rax, static_cast<std::int64_t>(kAotClosureDisplayOffset), R11);
   cg.movReg(Rdx, Rax);                  // payload
   cg.movImm(Rax, kTagFunc);             // tag
-  cg.addImm32(Rsp, 16);
+  cg.addImm32(Rsp, 32);
   cg.pop(R12);
   cg.pop(Rbx);
   cg.movReg(Rsp, Rbp);
@@ -11957,6 +11974,7 @@ void emitReprInto(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbAppend,
   CodeGen::Label asStr = cg.newLabel();
   CodeGen::Label asNum = cg.newLabel();
   CodeGen::Label asFunc = cg.newLabel();
+  CodeGen::Label funcPlain = cg.newLabel();
   CodeGen::Label asArray = cg.newLabel();
   CodeGen::Label asMap = cg.newLabel();
   CodeGen::Label asRange = cg.newLabel();
@@ -12129,6 +12147,20 @@ void emitReprInto(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbAppend,
   cg.jmp(done);
 
   cg.bind(asFunc);
+  // A closure carries the text to render in its `display` field (a static
+  // `AotString`, PHASE 7c.2c.1); a null field falls back to the literal `<fn>`.
+  cg.movFromMem(Rax, Rbp, -40);        // closure
+  cg.movFromMem(Rax, Rax, static_cast<std::int64_t>(kAotClosureDisplayOffset));
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, funcPlain);
+  cg.movFromMem(Rdx, Rax, 0);          // AotString length
+  cg.addImm32(Rax, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movReg(Rsi, Rax);
+  cg.movReg(Rdi, Rbx);
+  cg.callLabel(sbAppend);
+  cg.jmp(done);
+
+  cg.bind(funcPlain);
   cg.movReg(Rdi, Rbx);
   cg.leaRipLabel(Rsi, textFunc.label);
   cg.movImm(Rdx, static_cast<std::int64_t>(textFunc.text.size()));
@@ -12538,11 +12570,20 @@ void emitPrintRepr(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeLabel,
 
 // ------------------------------------------------------------------- extern thunks
 
-// The System V AMD64 integer argument registers, in order (PHASE 7f.5). The
-// first six integer/pointer eightbytes use these; any further one travels in
-// the outgoing stack-argument area (`AotThunkParam::stackOffset`). All eight
-// SSE registers stay available.
-constexpr X64Reg kIntArgRegs[] = {Rdi, Rsi, Rdx, Rcx, R8, R9};
+// The integer argument registers of the two C ABIs the hosted backend can
+// target. System V uses six GPRs and eight SSE registers; the Microsoft x64
+// ABI uses four of each and reserves 32 bytes of shadow space, which the
+// lowerer accounts for by starting `stackOffset` at 32. The thunk is emitted
+// once per signature, so the ABI is a parameter, not a global mode.
+constexpr X64Reg kSysVIntArgRegs[] = {Rdi, Rsi, Rdx, Rcx, R8, R9};
+constexpr X64Reg kWin64IntArgRegs[] = {Rcx, Rdx, R8, R9};
+
+const X64Reg* intArgRegsFor(Abi abi) {
+  return abi == Abi::Win64 ? kWin64IntArgRegs : kSysVIntArgRegs;
+}
+
+int intArgCountFor(Abi abi) { return abi == Abi::Win64 ? 4 : 6; }
+int sseArgCountFor(Abi abi) { return abi == Abi::Win64 ? 4 : 8; }
 // A scratch xmm for the register-class conversions (a boxed number narrowed to
 // an integer, an integer widened to a float). It sits outside xmm0-xmm7, the
 // eight SSE argument registers, so an SSE argument is never clobbered by a
@@ -12936,9 +12977,12 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
                      const DataBlob& msgType, const DataBlob& msgOom,
                      const DataBlob& msgCStringTooLong,
                      const std::vector<AotCallbackSignature>* callbacks,
-                     CodeGen::Label callbackCreate, int callbackStateSlot) {
+                     CodeGen::Label callbackCreate, int callbackStateSlot, Abi abi) {
   CodeGen::Label arityOk = cg.newLabel();
   CodeGen::Label oom = cg.newLabel();
+  const X64Reg* intArgRegs = intArgRegsFor(abi);
+  const int intArgCount = intArgCountFor(abi);
+  const int sseArgCount = sseArgCountFor(abi);
 
   cg.bind(thunk.label);
   prologue(cg);
@@ -13084,7 +13128,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     emitFailCall(cg, fail, msgType);
     cg.bind(countSse);
     cg.movFromMem(R11, Rbp, kVarSse);
-    cg.cmpImm32(R11, 8);
+    cg.cmpImm32(R11, sseArgCount);
     cg.jcc(Jcc::Lt, countSseFit);
     cg.jmp(countSpill);
     cg.bind(countSseFit);
@@ -13093,7 +13137,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     cg.jmp(countNext);
     cg.bind(countGpr);
     cg.movFromMem(R11, Rbp, kVarGpr);
-    cg.cmpImm32(R11, 6);
+    cg.cmpImm32(R11, intArgCount);
     cg.jcc(Jcc::Lt, countGprFit);
     cg.jmp(countSpill);
     cg.bind(countGprFit);
@@ -13268,10 +13312,13 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
       }
       case ffi::ParamClass::Double: {
         // A number; an int is widened to binary64. A Float/Double payload is
-        // already the binary64 bit pattern, so it moves verbatim.
+        // already the binary64 bit pattern, so it moves verbatim. A Win64
+        // argument past the fourth SSE register travels on the stack as an
+        // eight-byte slot.
         CodeGen::Label asIs = cg.newLabel();
         CodeGen::Label asInt = cg.newLabel();
         CodeGen::Label done = cg.newLabel();
+        const bool onStack = param.stackOffset >= 0;
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagFloat));
         cg.jcc(Jcc::Eq, asIs);
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagDouble));
@@ -13281,20 +13328,32 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         emitFailCall(cg, fail, msgType);
         cg.bind(asInt);
         cg.movFromMem(R11, Rbx, base + 8);
-        cg.cvtsi2sd(kXmmBase + sse, R11);
+        if (onStack) {
+          cg.cvtsi2sd(XmmScratch, R11);
+          cg.movqFromXmm(R11, XmmScratch);
+          cg.movToMem(Rsp, param.stackOffset, R11);
+        } else {
+          cg.cvtsi2sd(kXmmBase + sse, R11);
+        }
         cg.jmp(done);
         cg.bind(asIs);
         cg.movFromMem(R11, Rbx, base + 8);
-        cg.movqToXmm(kXmmBase + sse, R11);
+        if (onStack) {
+          cg.movToMem(Rsp, param.stackOffset, R11);
+        } else {
+          cg.movqToXmm(kXmmBase + sse, R11);
+        }
         cg.bind(done);
-        ++sse;
+        if (!onStack) ++sse;
         break;
       }
       case ffi::ParamClass::Float: {
-        // A number narrowed to binary32 (the ABI passes it in an SSE register).
+        // A number narrowed to binary32. An SSE register holds the low 32 bits
+        // of the xmm; a Win64 stack slot holds the four-byte value.
         CodeGen::Label asIs = cg.newLabel();
         CodeGen::Label asInt = cg.newLabel();
         CodeGen::Label done = cg.newLabel();
+        const bool onStack = param.stackOffset >= 0;
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagFloat));
         cg.jcc(Jcc::Eq, asIs);
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagDouble));
@@ -13304,15 +13363,29 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         emitFailCall(cg, fail, msgType);
         cg.bind(asInt);
         cg.movFromMem(R11, Rbx, base + 8);
-        cg.cvtsi2sd(XmmScratch, R11);
-        cg.cvtsd2ss(kXmmBase + sse, XmmScratch);
+        if (onStack) {
+          cg.cvtsi2sd(XmmScratch, R11);
+          cg.cvtsd2ss(XmmScratch, XmmScratch);
+          cg.movqFromXmm(R11, XmmScratch);
+          cg.movToMem32(Rsp, param.stackOffset, R11);
+        } else {
+          cg.cvtsi2sd(XmmScratch, R11);
+          cg.cvtsd2ss(kXmmBase + sse, XmmScratch);
+        }
         cg.jmp(done);
         cg.bind(asIs);
         cg.movFromMem(R11, Rbx, base + 8);
-        cg.movqToXmm(kXmmBase + sse, R11);
-        cg.cvtsd2ss(kXmmBase + sse, kXmmBase + sse);
+        if (onStack) {
+          cg.movqToXmm(XmmScratch, R11);
+          cg.cvtsd2ss(XmmScratch, XmmScratch);
+          cg.movqFromXmm(R11, XmmScratch);
+          cg.movToMem32(Rsp, param.stackOffset, R11);
+        } else {
+          cg.movqToXmm(kXmmBase + sse, R11);
+          cg.cvtsd2ss(kXmmBase + sse, kXmmBase + sse);
+        }
         cg.bind(done);
-        ++sse;
+        if (!onStack) ++sse;
         break;
       }
       case ffi::ParamClass::Pointer: {
@@ -13415,7 +13488,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   // Load the staged integer arguments into their registers now that every
   // `alloc`/`rep movsb` has run. The SSE arguments are already in place.
   for (int k = 0; k < gpr; ++k)
-    cg.movFromMem(kIntArgRegs[k], Rbp, kStageBase + 8LL * k);
+    cg.movFromMem(intArgRegs[k], Rbp, kStageBase + 8LL * k);
 
   // --- C variadic: assign the tail --------------------------------------------
   //
@@ -13509,11 +13582,11 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     // which is not an argument register, so no loaded argument is disturbed.
     cg.bind(assignGpr);
     cg.movFromMem(Rax, Rbp, kVarGpr);
-    for (int k = 0; k < 6; ++k) {
+    for (int k = 0; k < intArgCount; ++k) {
       CodeGen::Label skip = cg.newLabel();
       cg.cmpImm32(Rax, k);
       cg.jcc(Jcc::Ne, skip);
-      cg.movReg(kIntArgRegs[k], R11);
+      cg.movReg(intArgRegs[k], R11);
       cg.jmp(gprAssigned);
       cg.bind(skip);
     }
@@ -13525,7 +13598,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
 
     cg.bind(assignSse);
     cg.movFromMem(Rax, Rbp, kVarSse);
-    for (int k = 0; k < 8; ++k) {
+    for (int k = 0; k < sseArgCount; ++k) {
       CodeGen::Label skip = cg.newLabel();
       cg.cmpImm32(Rax, k);
       cg.jcc(Jcc::Ne, skip);
@@ -13669,14 +13742,18 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
 //
 // The context is 32 bytes in the arena: the closure tag and payload, the Oskel
 // global base, and a pointer to the shared arena state. The body reads it from
-// r10. The stub lives in a private RWX `mmap` page, because the image's own text
-// is not writable and the compiler cannot know a runtime closure's address. This
-// helper exists only in the hosted mode, where libc provides `mmap`.
+// r10. The stub lives in a private `mmap` page, because the image's own text is
+// not writable and the compiler cannot know a runtime closure's address. The
+// page is mapped read+write, filled, and then `mprotect`ed to read+execute:
+// it is never writable and executable at the same time (W^X), exactly like the
+// JIT's `JitCode::assign`. This helper exists only in the hosted mode, where
+// libc provides `mmap` and `mprotect`.
 void emitCallbackCreate(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
                         CodeGen::Label fail, const DataBlob& msgOom,
                         const DataBlob& msgCallback, int stateSlot) {
   CodeGen::Label oom = cg.newLabel();
   CodeGen::Label mmapFailed = cg.newLabel();
+  CodeGen::Label protectFailed = cg.newLabel();
   CodeGen::Label haveState = cg.newLabel();
 
   cg.bind(label);
@@ -13720,12 +13797,14 @@ void emitCallbackCreate(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocL
   cg.movToMem(R10, 0, R13);
   cg.movToMem(R10, 8, R14);
 
-  // mmap(NULL, 4096, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_PRIVATE|MAP_ANONYMOUS,
-  //      -1, 0). W+X keeps the page writable for the stub and executable for the
-  //      C caller; the hosted mode is Linux x86-64 only.
+  // mmap(NULL, 4096, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0).
+  // The page is writable only while the stub is copied in; `mprotect` below
+  // turns it read+execute before the function returns, so it is never W+X. A
+  // callback is a System V shape, emitted on the Linux and macOS hosted
+  // targets; Windows rejects the parameter.
   cg.xorReg(Rdi, Rdi);
   cg.movImm(Rsi, 4096);
-  cg.movImm(Rdx, 7);
+  cg.movImm(Rdx, 3);
   cg.movImm(Rcx, 0x22);
   cg.movImm(R8, -1);
   cg.xorReg(R9, R9);
@@ -13745,6 +13824,21 @@ void emitCallbackCreate(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocL
   cg.movImmByteToMem(Rbx, 21, 0xFF);
   cg.movImmByteToMem(Rbx, 22, 0xE3);
 
+  // mprotect(page, 4096, PROT_READ|PROT_EXEC): drop write permission now that
+  // the stub is complete. A failure unmaps the page and reports a clean build
+  // error; a stub that is still writable must never reach C.
+  cg.movReg(Rdi, Rbx);
+  cg.movImm(Rsi, 4096);
+  cg.movImm(Rdx, 5);
+  cg.callExternal("mprotect");
+  cg.cmpImm32(Rax, -1);
+  cg.jcc(Jcc::Eq, protectFailed);
+
+  // The page is intentionally process-lifetime. C may store the function
+  // pointer for a later call (a stored callback, including an `atexit`
+  // handler), and Oskel has no way to learn when C is done with it; freeing
+  // it here would break that contract. The OS reclaims the mapping at exit.
+  // BACKLOG §6 item 28 tracks pooling or an explicit release contract.
   cg.movReg(Rax, Rbx);
   cg.addImm32(Rsp, 32);
   cg.pop(R12);
@@ -13754,6 +13848,13 @@ void emitCallbackCreate(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocL
   cg.bind(oom);
   emitFailCall(cg, fail, msgOom);
   cg.bind(mmapFailed);
+  emitFailCall(cg, fail, msgCallback);
+  cg.bind(protectFailed);
+  // The stub was written but could not be made executable; unmap it before
+  // reporting so a failed registration does not leave a writable page behind.
+  cg.movReg(Rdi, Rbx);
+  cg.movImm(Rsi, 4096);
+  cg.callExternal("munmap");
   emitFailCall(cg, fail, msgCallback);
 }
 
@@ -13805,7 +13906,7 @@ void emitCallbackBody(CodeGen& cg, const AotCallbackSignature& sig,
 
   // Save the C arguments before any helper call. The SSE slots keep the raw
   // bits: a `float` is narrowed back to binary32 below, a `double` is verbatim.
-  for (int i = 0; i < 6; ++i) cg.movToMem(Rbp, kStageBase + 8 * i, kIntArgRegs[i]);
+  for (int i = 0; i < 6; ++i) cg.movToMem(Rbp, kStageBase + 8 * i, kSysVIntArgRegs[i]);
   for (int i = 0; i < 8; ++i) {
     cg.movqFromXmm(R11, kXmmBase + i);
     cg.movToMem(Rbp, kStageBase + 8 * (6 + i), R11);
@@ -15473,6 +15574,32 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   env.printStrEsc = printStrEsc;
   env.lengthConst = cg.newLabel();
   env.bindArrayMethod = handles.bindArrayMethod;
+  // One display island per bound method, in the same order `member_get`
+  // assigns selectors, so `repr(a.push)` reads `"<native fn array.push>"`.
+  const auto nameDisplay = [](const char* owner, const char* method) {
+    return std::string("<native fn ") + owner + "." + method + ">";
+  };
+  for (const char* method : {"push", "pop", "shift", "unshift", "insert",
+                             "removeAt", "contains", "indexOf", "clear",
+                             "slice", "concat", "reversed", "clone", "map",
+                             "filter", "each", "find", "any", "all", "reduce",
+                             "sum", "join", "sort", "sorted"}) {
+    env.arrayMethodDisplays.push_back(cg.newLabel());
+    env.arrayDisplayTexts.emplace_back(nameDisplay("array", method));
+  }
+  for (const char* method : {"keys", "values", "entries", "has", "get", "set",
+                             "delete", "clear", "merge", "clone"}) {
+    env.mapMethodDisplays.push_back(cg.newLabel());
+    env.mapDisplayTexts.emplace_back(nameDisplay("map", method));
+  }
+  for (const char* method : {"upper", "lower", "trim", "trimStart", "trimEnd",
+                             "contains", "startsWith", "endsWith", "indexOf",
+                             "substr", "reversed", "repeat", "split", "lines",
+                             "chars", "replace", "replaceFirst", "padStart",
+                             "padEnd"}) {
+    env.stringMethodDisplays.push_back(cg.newLabel());
+    env.stringDisplayTexts.emplace_back(nameDisplay("string", method));
+  }
   env.pushMethod = handles.arrayPushMethod;
   env.popMethod = handles.arrayPopMethod;
   env.shiftMethod = handles.arrayShiftMethod;
@@ -15703,7 +15830,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                        handles.arrayFindMethod, handles.arrayAnyMethod,
                        handles.arrayAllMethod, handles.arrayReduceMethod,
                        handles.arraySumMethod, handles.arrayJoinMethod,
-                       handles.arraySortMethod, handles.arraySortedMethod});
+                       handles.arraySortMethod, handles.arraySortedMethod},
+                      env.arrayMethodDisplays);
   emitArrayPushMethod(cg, handles.arrayPushMethod, env);
   emitArrayPopMethod(cg, handles.arrayPopMethod, env, msgPopArgc);
   emitArrayShiftMethod(cg, handles.arrayShiftMethod, env, msgShiftArgc);
@@ -15739,7 +15867,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                        handles.mapEntriesMethod, handles.mapHasMethod,
                        handles.mapGetMethod, handles.mapSetMethod,
                        handles.mapDeleteMethod, handles.mapClearMethod,
-                       handles.mapMergeMethod, handles.mapCloneMethod});
+                       handles.mapMergeMethod, handles.mapCloneMethod},
+                      env.mapMethodDisplays);
   emitMapKeysMethod(cg, handles.mapKeysMethod, env, msgMapKeysArgc);
   emitMapValuesMethod(cg, handles.mapValuesMethod, env, msgMapValuesArgc);
   emitMapEntriesMethod(cg, handles.mapEntriesMethod, env, msgMapEntriesArgc);
@@ -15770,7 +15899,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                        handles.stringSplitMethod, handles.stringLinesMethod,
                        handles.stringCharsMethod, handles.stringReplaceMethod,
                        handles.stringReplaceFirstMethod, handles.stringPadStartMethod,
-                       handles.stringPadEndMethod});
+                       handles.stringPadEndMethod},
+                      env.stringMethodDisplays);
   emitStringUpperMethod(cg, handles.stringUpperMethod, env, msgUpperArgc);
   emitStringLowerMethod(cg, handles.stringLowerMethod, env, msgLowerArgc);
   emitStringTrimMethod(cg, handles.stringTrimMethod, env, msgTrimArgc, true, true);
@@ -15852,7 +15982,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
       emitExternThunk(cg, thunk, fail, handles.alloc, handles.memberGet, handles.tableNew,
                       handles.memberSet, voidPtrBox, msgArity, msgExternType, msgOom,
                       msgCStringTooLong, callbacks, callbackCreate,
-                      extras.callbackStateSlot);
+                      extras.callbackStateSlot, extras.abi);
     }
   }
   emitPrintStrEsc(cg, printStrEsc, entry.write, textQuote, textEscQuote,
@@ -16175,6 +16305,17 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitNameConst(env.padStartConst, "padStart");
   emitNameConst(env.padEndConst, "padEnd");
   emitNameConst(env.spaceConst, " ");
+  // The `repr`/`str` text of each bound method value, the same raw `AotString`
+  // layout. A `Func` value renders the closure's `display` field verbatim.
+  for (std::size_t i = 0; i < env.arrayMethodDisplays.size(); ++i) {
+    emitNameConst(env.arrayMethodDisplays[i], env.arrayDisplayTexts[i].c_str());
+  }
+  for (std::size_t i = 0; i < env.mapMethodDisplays.size(); ++i) {
+    emitNameConst(env.mapMethodDisplays[i], env.mapDisplayTexts[i].c_str());
+  }
+  for (std::size_t i = 0; i < env.stringMethodDisplays.size(); ++i) {
+    emitNameConst(env.stringMethodDisplays[i], env.stringDisplayTexts[i].c_str());
+  }
   // The Unicode case tables, as `{first, last, delta}` int32 triples, the same
   // layout `UnicodeCaseRun` has on the host.
   auto emitCaseTable = [&](CodeGen::Label lbl, const UnicodeCaseRun* runs,

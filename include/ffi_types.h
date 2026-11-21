@@ -131,8 +131,8 @@ inline constexpr AbiCapabilities kFullAbiCapabilities{true, true, true};
 // built. The backend emits its own thunks (`native/runtime.cpp`), so it never
 // calls libffi: a class-MEMORY struct travels in the outgoing stack area and
 // comes back through an `sret` pointer, and a register-class struct goes through
-// the eightbyte buffers. Its thunks hard-code the System V argument registers,
-// which is why the hosted link mode is Linux x86-64 only.
+// the eightbyte buffers. Its thunks follow the target's C ABI: System V on
+// Linux and macOS, Microsoft x64 on Windows (scalar/pointer classes only).
 //
 // A C variadic is lowered too (PHASE 7f.5): the thunk walks the tail at run
 // time, promotes each value by its tag, continues the GPR/SSE allocation after

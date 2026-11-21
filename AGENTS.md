@@ -126,14 +126,17 @@ it as a caveat:
   label". A new non-label field must trip the `static_assert`, not shift every
   handle by one.
 - The AOT backend has two link modes (`LinkMode`, PHASE 7f.3/7f.4), chosen on
-  the command line and never in the source: `freestanding` (the default) is the
-  self-contained image every target emits today (no libc, no linker, `ldd` says
-  "not a dynamic executable"); `hosted` links against the host C library so an
-  `extern "C"` symbol resolves to the real C function — the mode that makes FFI
-  work. `isSupportedLinkMode` pins the matrix (freestanding: all targets;
-  hosted: Linux x86-64 only, for now) and an unsupported pair is reported, never
-  emitted. A change to the freestanding path must keep the emitted binary byte
-  for byte identical; `oskel build --mode freestanding` is the explicit form.
+  the command line and never in the source: `freestanding` (the default on
+  Linux and Windows) is the self-contained image (no libc, no linker, `ldd`
+  says "not a dynamic executable"); `hosted` links against the host C library
+  so an `extern "C"` symbol resolves to the real C function — the mode that
+  makes FFI work. `isSupportedLinkMode` pins the matrix (freestanding: Linux,
+  Windows and bare metal; hosted: Linux, Windows and macOS x86-64) and an
+  unsupported pair is reported, never emitted. macOS has no freestanding image,
+  so `runBuildCommand` defaults its mode to `hosted` there (and an explicit
+  `--mode freestanding` is reported as unsupported). A change to the
+  freestanding path must keep the emitted binary byte for byte identical;
+  `oskel build --mode freestanding` is the explicit form.
 - A standard-library module that must work on both engines stays on the
   **portable primitive surface**: indexing and slicing (`s[i]`, `s[a:b]`),
   `len`, `ord`/`chr`, `int`/`double`/`str`/`type`, `panic`, `for ... in`,
@@ -177,18 +180,42 @@ it as a caveat:
   keep its saved state *above* the outgoing stack slots (`[rbp-16]` in a 72-byte
   frame), never at `[rbp-48]`, and must read a length out of `rdx` before reusing
   `rdx` for `lpBuffer` -- both were real bugs in the file thunks.
-- The hosted image is an object plus a link (PHASE 7f.4), not a closed binary
-  the emitter writes. `native/object.h` emits an ELF64 `ET_REL` object whose
-  `.rela.text` carries one relocation per external reference (`R_X86_64_PLT32`
-  for a call, `R_X86_64_PC32` for an address, both addend `-4`) and whose
-  `.symtab` exports the program's `main`; `emitHostedRuntime` binds the same
-  three entry handles as the freestanding prelude but reaches the system through
-  libc (`write`/`exit`/`malloc`). `oskel build --mode hosted` then invokes the
-  host C compiler (`$CC`, default `cc`, `-no-pie -lm`) to link the object
-  against libc, writing the temporary `.o` beside the output and removing it
-  either way. This makes a C toolchain a *build-time* dependency of the hosted
-  mode only; the freestanding path still needs no toolchain and emits no
-  relocation. General `extern "C"` marshalling is PHASE 7f.5.
+- The hosted image is an object plus a link (PHASE 7f.4/7f.9), not a closed
+  binary the emitter writes. `native/object.h` emits the target's container:
+  ELF64 `ET_REL` on Linux (`.rela.text`, `R_X86_64_PLT32` for a call and
+  `R_X86_64_PC32` for an address, addend `-4`), Mach-O `MH_OBJECT` on macOS
+  (`LC_SEGMENT_64` with `__text`/`__const`, `LC_BUILD_VERSION`, `LC_SYMTAB`,
+  pcrel `X86_64_RELOC_BRANCH`/`X86_64_RELOC_SIGNED`, underscore-prefixed names)
+  and COFF `IMAGE_FILE_MACHINE_AMD64` on Windows (`.text`/`.rdata`,
+  `IMAGE_REL_AMD64_REL32`, the 18-byte symbol table and its string table). The
+  `.symtab`/COFF symbol table exports the program's `main`; `emitHostedRuntime`
+  binds the same entry handles as the freestanding prelude but reaches the
+  system through libc (`write`/`exit`/`malloc`) on Linux and macOS, while
+  `emitWindowsHostedRuntime` uses the UCRT's `_write`/`_read`/`_open`/`_close`
+  and `GetTickCount64`. `oskel build --mode hosted` then invokes the host C
+  compiler: `$CC` (default `cc`) with `-no-pie -lm` on Linux, `-arch x86_64
+  -lm` on macOS and `cl /MT /Fe:... /link /SUBSYSTEM:CONSOLE libcmt.lib
+  libucrt.lib libvcruntime.lib kernel32.lib` on Windows, writing the temporary
+  object beside the output and removing it either way. The Windows object is
+  not produced by `cl`, so it carries no `.drectve` asking for the CRT; the
+  libraries are named explicitly. `$OSKEL_CC_KIND=msvc|posix` names the
+  command-line dialect when `$CC` is a wrapper whose file name does not; the
+  Windows CI wrapper is one. This makes
+  a C toolchain a *build-time* dependency of the hosted mode only; the
+  freestanding path still needs no toolchain and emits no relocation. The
+  extern thunk takes the ABI as a parameter: System V (Linux, macOS) keeps the
+  six GPRs/eight SSE registers and the struct/callback/variadic surface;
+  Win64 uses four of each, 32 bytes of shadow space and stack arguments from
+  offset 32, supports the scalar/`cstring`/`ptr` classes and rejects a struct,
+  a callback or a C variadic with a dedicated message. `main` on Windows moves
+  the CRT's `(argc, argv)` from rcx/rdx to rdi/rsi before the chunk so `args()`
+  works there too. The UCRT opens stdout/stderr in text mode, so
+  `oskel_init_arena` calls `_setmode(1/2, _O_BINARY)` before the first write;
+  without it every `\n` becomes `\r\n` and the hosted binary diverges from the
+  VM. `tests/hosted_cc.cmake` wraps `cl` in a batch file that calls
+  `vcvarsall.bat` first, because CTest does not inherit the `PATH`/`INCLUDE`/
+  `LIB` the build step had -- a bare `cl` link fails with "cannot open
+  libcmt.lib" even when `cl.exe` is found.
 - A `struct` crossing `extern "C"` by value is supported in the hosted backend
   in both ABI classes (PHASE 7f.7). A struct of 16 bytes or fewer is flattened
   to its System V eightbytes and travels in registers; a larger one is class
@@ -244,9 +271,12 @@ it as a caveat:
 - A C callback (`fn(...): R` parameter) is a generated stub in the hosted
   backend (PHASE 7f.8), not a libffi closure. `oskel_callback_create` allocates
   a 32-byte context (closure tag/payload, the Oskel global base, a pointer to a
-  16-byte shared arena-state block) and a private RWX `mmap` page holding
-  `movabs r10, context; movabs r11, body; jmp r11`. The body saves the C
-  arguments, boxes `ptr`/`cstring`, calls the closure through `oskel_call` and
+  16-byte shared arena-state block) and a private `mmap` page holding
+  `movabs r10, context; movabs r11, body; jmp r11`. The page is mapped
+  read+write only while the stub is copied in, then `mprotect`ed to
+  read+execute (W^X); it is never writable and executable at the same time.
+  The body saves the C arguments, boxes `ptr`/`cstring`, calls the closure
+  through `oskel_call` and
   converts the result to the declared C return class. Three rules were bugs
   first: a C caller expects r13/r14/r15 preserved, so the body saves them, loads
   the Oskel arena cursor/end and global base from the context/state, runs, parks
@@ -261,8 +291,12 @@ it as a caveat:
   value and a callback with a struct parameter are rejected with dedicated
   messages; a stored callback works in AOT but not in the VM (the VM frees the
   libffi closure when the extern call returns), and both are BACKLOG §6 items
-  26/27. Tests: `tests/native_build_extern_callback.oskl` (`qsort`, VM parity)
-  and `tests/native_build_extern_callback_{stored,exit,many_args,returns}.oskl`
+  26/27. The stub page is process-lifetime: C may store the pointer (a stored
+  callback, including an `atexit` handler), so freeing it when the extern call
+  returns would break that contract; BACKLOG §6 item 28 tracks a pool or an
+  explicit release contract. Tests: `tests/native_build_extern_callback.oskl`
+  (`qsort`, VM parity) and
+  `tests/native_build_extern_callback_{stored,exit,wx,many_args,returns}.oskl`
   (AOT-only, `tests/hosted/*_helper.c`), plus
   `tests/errors/callback_struct_{return,param}.oskl`.
 - An `extern "C"` return class has a *box* per class, and adding one means
@@ -288,6 +322,50 @@ it as a caveat:
   the PE image were checked before CI. CI still gates the merge, since Wine is
   not Windows: a green Wine run is a signal, not a substitute for the
   `windows-latest` job.
+
+## The WebAssembly backend (PHASE 9)
+
+- `oskel build --target wasm32-freestanding-wasm` emits a `.wasm` module. The
+  target is `Target::wasm32()` (`Arch::Wasm32`, `Os::Freestanding`, `Abi::Wasm`)
+  and the backend is `include/native/wasm.h` + `src/frontend/native/wasm.cpp`.
+  `isWasmTarget()` routes it in `src/frontend/cli.cpp`; `isSupportedTarget()`
+  deliberately stays x86-64-only, because `requireSupportedTarget` guards the
+  x86-64 emitter.
+- The module imports `oskel.write(fd, ptr, len) -> i32`, `oskel.exit(code)`,
+  `oskel.time() -> i64` and `oskel.clock() -> f64`, and exports `_start`.
+  `tests/run_wasm.cjs` is the Node host that supplies all four; the tests are
+  skipped where Node is absent.
+- The runtime helpers (`print`, `toStr`, `repr`, the operators, iteration,
+  member access, the builtins) are ordinary WASM functions emitted by
+  `Runtime` in the same file, not a hand-written blob. Registers are `(i64 tag,
+  i64 payload)` local pairs; the globals table is 16 bytes per slot at offset 0,
+  followed by the static pool and the bump arena.
+- The collection half of the language is supported too: `NEWTABLE` creates an
+  array or a map, `GETTABLE`/`SETTABLE` dispatch to `indexGet`/`indexSet`
+  (array/string/map) or `memberGet`/`memberSet` (error fields, map fields,
+  `length`), `for ... in` walks arrays and maps (with the key/value pair), `in`
+  covers both, `==` is structural (with the cycle-safe visited list), and a
+  variadic proto packs its extras into an array bound to the last parameter.
+  `$slice` and the string-to-number forms of `int`/`float`/`double` are bound,
+  so `std/json`, `std/datetime` and `std/collections` build and match the VM
+  byte for byte; `time()`/`clock()` read the host imports.
+- A construct the backend cannot lower yet must fail cleanly, never emit a
+  mis-compiled module: an unbound builtin is seeded as a trapping closure, and
+  a used `extern "C"`/`native fn` symbol with no stub is a build error (exit
+  65). `tests/native_build_wasm.oskl` pins the supported surface against the VM
+  byte for byte.
+- `double` printing is the same shortest round-trip form `std::to_chars`
+  produces, not a fixed-point approximation: `fmtDouble` generates 18
+  significant digits by scaling with the 633-entry `pow10` table
+  (`1e-324`..`1e308`, built with `strtod` so every entry is the correctly
+  rounded double), rounds the 18th into the 17th, then tries every shorter
+  precision and re-parses the candidate with `parseDoubleStr`. It emits the
+  shorter of fixed and scientific (fixed on a tie), and handles `-0`,
+  subnormals and `e±NN`. `parseDoubleStr` combines the fraction into one
+  `mantissa / scale` division (a term-by-term sum rounds twice and accepts a
+  15-digit prefix that does not round-trip) and applies the exponent with one
+  table multiply/divide. `tests/native_build_double_format.oskl` pins the
+  whole range and `tests/native_build_math.oskl` pins `PI`/`E`/`sqrt`.
 
 ## SDL3 bindings (`std/sdl.oskl`)
 
@@ -427,8 +505,10 @@ it as a caveat:
   rewrites `~` to `.` in asset names (which breaks `SHA256SUMS`), so the `.deb`
   file name avoids `~` while its control file keeps it.
 - `macos-latest` is the Apple Silicon image (arm64). The dev engine is portable
-  C++; the native backend stays x86-64 Linux only (DEVELOPMENT.md PHASE 7), and its
-  execution tests skip on other platforms.
+  C++; the native backend emits x86-64 (Linux, Windows and hosted macOS, plus
+  bare metal), and its execution tests run only where that image can run. The
+  macOS arm64 runner builds the hosted Mach-O image and checks its libSystem
+  dependency, but skips running it (that needs Rosetta).
 - To verify the release path without a real release, push a throwaway tag
   (`v0.1.0-<something>test`), confirm the assets and `sha256sum -c SHA256SUMS`,
   then delete the release *and* the tag. A failed run can leave a draft release
@@ -514,14 +594,35 @@ it as a caveat:
   is `OSKEL_MODULE_ROOT`, honoured by `resolverFor`, which makes a package's
   `src/` the module root for both engines. `oskelp` generates `oskel.lock`,
   `target/` and `.oskel/deps/`; the last two belong in `.gitignore`, while
-  `oskel.lock` is committed. Only `path` dependencies are
-  supported: a string dependency is a registry dependency and is refused with a
-  dedicated message, and the registry is BACKLOG §20 work. `oskelp build` uses
+  `oskel.lock` is committed. Dependencies are either `path` tables or a
+  version requirement string resolved from the **local registry** named by
+  `OSKEL_REGISTRY` (`<root>/<name>/<version>/`, holding `oskel.toml` and
+  `src/`); a network registry is still BACKLOG §20 work. The semver parser
+  accepts an exact version, `^`, `~`, `>=`/`>`/`<=`/`<`/`=`, `*`/`x`
+  wildcards and a comma/space-separated conjunction; a prerelease is selected
+  only by an exact requirement for it. The lockfile records
+  `registry+<name>@<version>` and a normal build prefers that pin while it
+  still satisfies the manifest, so `oskelp update [<name>]` is the explicit
+  upgrade. The namespace is flat and the resolver does not backtrack: two
+  incompatible requirements for one name are an error, not a silent pick.
+  `oskelp add` and `oskelp remove` edit `[dependencies]` as text, never by
+  rewriting the manifest: comments, blank lines and CRLF survive, a duplicate
+  add is a no-op (a new `--version` for the same path updates the entry), and a
+  failed add leaves the file untouched because the graph is resolved before
+  the write. `add` without `--path` writes a registry requirement.
+  `remove` refuses an entry that spans multiple lines instead of deleting a
+  partial one. `oskelp publish [--registry <dir>]` copies the manifest and
+  `src/` into the registry and refuses to overwrite a version or publish a
+  package that keeps a path dependency. A registry dependency has no `path`,
+  so `oskelp tree` must load each child from the **resolution**
+  (`ResolvedPackage::dir`), never from `manifest.dir / dependency.path`; the
+  latter reads the root manifest again and prints a bogus `(cycle)`.
+  `oskelp build` uses
   `oskelc` (falling back to `oskel build`), `oskelp run` uses the VM unless
   `--native` is given, and `oskelp test` runs every `tests/**/*.oskl` and exits
   101 when one fails. `tests/run_oskelp_case.cmake` drives the real binary
-  through the whole workflow, so a change to the manifest, the lockfile or a
-  command must keep that test green.
+  through the whole workflow, including publish/consume/update/`--locked`, so a
+  change to the manifest, the lockfile or a command must keep that test green.
 
 ## Commit authorship
 
