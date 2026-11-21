@@ -87,3 +87,85 @@ print("lower turkish  =", "IİĞÜŞÖÇ".lower());
 print("trim mixed uni = [" + " \t\n αβ \r\n ".trim() + "]");
 print("reversed greek =", "αβγ".reversed());
 print("chain unicode  =", "  ÄBC  ".trim().lower().reversed());
+
+print("--- split ---");
+print("split sep     =", "a,b,c".split(","));
+print("split empty f =", "a,,b".split(","));
+print("split leading =", ",".split(","));
+print("split trailing=", "a,".split(","));
+print("split empty   =", "".split(","));
+print("split miss    =", "no-sep".split("x"));
+print("split whole   =", "abc".split("abc"));
+print("split multi   =", "a::b::c".split("::"));
+print("split ws      =", "  a  b  ".split());
+print("split ws empty=", "".split());
+print("split ws blank=", "   ".split());
+print("split chars   =", "abc".split(""));
+print("split chars sp=", "a b".split(""));
+print("split chars u =", "héllo".split(""));
+
+print("--- lines ---");
+print("lines plain   =", "a\nb".lines());
+print("lines empty   =", "".lines());
+print("lines trailing=", "a\n".lines());
+print("lines blank   =", "a\n\nb".lines());
+print("lines crlf    =", "a\r\nb\r\n".lines());
+print("lines only nl =", "\n".lines());
+print("lines one     =", "abc".lines());
+print("lines cr mid  =", "a\r\n\r\nb".lines());
+
+print("--- chars ---");
+print("chars ascii   =", "abc".chars());
+print("chars empty   =", "".chars());
+print("chars uni     =", "héllo".chars());
+print("chars greek   =", "αβγ".chars());
+print("chars len     =", len("αβγ".chars()));
+
+print("--- replace / replaceFirst ---");
+print("replace one   =", "abc".replace("b", "X"));
+print("replace all   =", "aaa".replace("a", "bb"));
+print("replace none  =", "abc".replace("z", "X"));
+print("replace empty =", "abc".replace("abc", ""));
+print("replaceFirst  =", "aaa".replaceFirst("a", "bb"));
+print("replaceFirst n=", "abc".replaceFirst("z", "X"));
+print("replaceFirst e=", "abc".replaceFirst("abc", "xyz"));
+
+print("--- padStart / padEnd ---");
+print("padStart zero =", "5".padStart(3, "0"));
+print("padEnd zero   =", "5".padEnd(3, "0"));
+print("padStart clip =", "ab".padStart(5, "xy"));
+print("padEnd clip   =", "ab".padEnd(5, "xy"));
+print("padStart space=", "[" + "ab".padStart(5) + "]");
+print("padEnd space  =", "[" + "ab".padEnd(5) + "]");
+print("padStart wide =", "abcdef".padStart(3));
+print("padEnd wide   =", "abcdef".padEnd(3));
+print("padStart empty=", "".padStart(3, "-"));
+print("padEnd empty  =", "".padEnd(3, "-"));
+print("padStart exact=", "abc".padStart(3, "0"));
+print("padStart uni   =", "日本".padStart(5, "-"));
+print("padStart ufill =", "a".padStart(4, "日本"));
+
+print("--- chained collection methods ---");
+print("chain split   =", "a,b,c".split(",").reversed());
+print("chain lines   =", "a\nb\nc".lines());
+print("chain chars   =", "x".repeat(3).split(""));
+print("chain replace =", "aaa".replace("a", "bb").lines());
+print("chain len     =", len("a b c".split()));
+print("chain loop    =");
+var parts = "1-2-3".split("-");
+for p in parts { print("  part =", p); }
+
+print("--- pad and split edges ---");
+print("padStart neg  =", "[" + "abc".padStart(-5) + "]");
+print("padEnd neg    =", "[" + "abc".padEnd(-5) + "]");
+print("padStart zero =", "[" + "abc".padStart(0) + "]");
+print("padEnd ufill  =", "[" + "a".padEnd(5, "日本") + "]");
+print("padStart multi=", "[" + "a".padStart(6, "abc") + "]");
+print("padEnd multi  =", "[" + "a".padEnd(6, "abc") + "]");
+print("lines cr only =", "\r".lines());
+print("lines trail cr=", "a\r".lines());
+print("lines crnl    =", "\r\n".lines());
+print("split space   =", "a b".split(" "));
+print("split sp edge =", " a b ".split(" "));
+print("split overlap =", "aaa".split("aa"));
+print("split overlap2=", "aaaa".split("aa"));

@@ -315,6 +315,13 @@ struct AotRuntimeHandles {
   CodeGen::Label stringSubstrMethod;   // AotValue oskel_builtin_string_substr(...)
   CodeGen::Label stringReversedMethod; // AotValue oskel_builtin_string_reversed(...)
   CodeGen::Label stringRepeatMethod;   // AotValue oskel_builtin_string_repeat(...)
+  CodeGen::Label stringSplitMethod;    // AotValue oskel_builtin_string_split(...)
+  CodeGen::Label stringLinesMethod;    // AotValue oskel_builtin_string_lines(...)
+  CodeGen::Label stringCharsMethod;    // AotValue oskel_builtin_string_chars(...)
+  CodeGen::Label stringReplaceMethod;  // AotValue oskel_builtin_string_replace(...)
+  CodeGen::Label stringReplaceFirstMethod; // AotValue oskel_builtin_string_replace_first(...)
+  CodeGen::Label stringPadStartMethod; // AotValue oskel_builtin_string_pad_start(...)
+  CodeGen::Label stringPadEndMethod;   // AotValue oskel_builtin_string_pad_end(...)
   // The Unicode simple case-mapping tables (PHASE 7c.3i), the same generated
   // runs `src/core/unicode_case.cpp` holds: `upperTable`/`lowerTable` point at
   // `{first, last, delta}` int32 triples. A code point in `[first, last]` maps to
