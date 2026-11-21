@@ -288,10 +288,12 @@ constexpr const char* kAotArgsGlobal = "$args";
 // needs the flattened register classes, so this walks every proto's externs and
 // produces one `AotExternThunk` per symbol whose every parameter and return is
 // expressible: a scalar, or a struct that fits in two eightbytes (a class-MEMORY
-// struct is still stack-passed, so it stays 7f work). A callback, an opaque
-// pointer return or a C variadic is left out: `collectGlobals` then rejects it
-// exactly as before, so the unsupported shapes keep their clean build error
-// instead of compiling to a thunk that would marshal the wrong registers.
+// struct is still stack-passed, so it stays 7f work). A callback is left out:
+// `collectGlobals` then rejects it exactly as before, so the unsupported shapes
+// keep their clean build error instead of compiling to a thunk that would
+// marshal the wrong registers. A C variadic is expressible (PHASE 7f.5): its
+// declared parameters are the fixed prefix and the thunk walks the tail at run
+// time, so the signature is validated as scalars-only by `validateSignature`.
 //
 // Deduplicated by symbol name: several protos may declare the same C function
 // (`std.math` and a user block both naming `abs`), and one thunk serves all of
@@ -304,10 +306,10 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
   for (const Bytecode* proto : protos) {
     for (const ExternSymbol& symbol : proto->externs) {
       if (!seen.insert(symbol.name).second) continue;
-      if (symbol.variadic) continue;
       AotExternThunk thunk;
       thunk.symbol = symbol.name;
       thunk.arity = symbol.paramTypes.size();
+      thunk.variadic = symbol.variadic;
       bool supported = true;
       const int argCount = static_cast<int>(symbol.paramTypes.size());
       for (int arg = 0; arg < argCount; ++arg) {

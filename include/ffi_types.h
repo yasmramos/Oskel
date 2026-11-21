@@ -128,8 +128,14 @@ inline constexpr AbiCapabilities kFullAbiCapabilities{true, true, true};
 // calls libffi: a class-MEMORY struct travels in the outgoing stack area and
 // comes back through an `sret` pointer, and a register-class struct goes through
 // the eightbyte buffers. Its thunks hard-code the System V argument registers,
-// which is why the hosted link mode is Linux x86-64 only, and a C variadic is
-// not lowered (PHASE 7f.5): the variable argument list changes per call.
+// which is why the hosted link mode is Linux x86-64 only.
+//
+// A C variadic is lowered too (PHASE 7f.5): the thunk walks the tail at run
+// time, promotes each value by its tag, continues the GPR/SSE allocation after
+// the fixed prefix, spills the overflow to the outgoing stack area and sets
+// `%al` to the vector-register count. The declaration is accepted for the AOT
+// destination even when the development engine has no libffi, because the
+// backend does not need it.
 //
 // The compiler validates `extern "C"` against the *destination*: `oskel build`
 // asks with these capabilities, so a shape the backend can emit is not rejected
@@ -137,7 +143,7 @@ inline constexpr AbiCapabilities kFullAbiCapabilities{true, true, true};
 // interpreter asks with `AbiCapabilities{}`, the build's own.
 inline constexpr AbiCapabilities kAotAbiCapabilities{/*structByValue=*/true,
                                                      /*memoryStructs=*/true,
-                                                     /*variadic=*/false};
+                                                     /*variadic=*/true};
 
 // One field of a struct crossing the C boundary. `type` is an FFI scalar type
 // name (the same vocabulary as a parameter annotation); a nested struct is not

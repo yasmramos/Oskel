@@ -488,8 +488,14 @@ struct AotExternThunk {
   CodeGen::Label label;
   std::string symbol;                  // the C symbol, e.g. "abs"
   // The declared parameters, one per argument (a struct is one entry here, not
-  // one per eightbyte): the thunk's arity check counts these.
+  // one per eightbyte): the thunk's arity check counts these. For a C variadic
+  // this is the fixed prefix, and the tail is walked at run time.
   std::size_t arity = 0;
+  // A C variadic (`fn printf(fmt: cstring, ...): int`): the thunk accepts any
+  // count at or above `arity` and marshals the extra arguments with the System V
+  // default promotions (`float`->`double`, `bool`/`int`->`int64`, a string to a
+  // `const char *`), continuing the GPR/SSE allocation after the fixed prefix.
+  bool variadic = false;
   std::vector<AotThunkParam> params;   // flattened to eightbytes, in ABI order
   ffi::ReturnClass returns = ffi::ReturnClass::Int;
   // The declared spellings, read only to truncate the returned integer to its

@@ -2476,8 +2476,8 @@ void testExternValidatedAgainstDestinationAbi() {
   // how the engine was built. The AOT backend emits its own thunks, so it
   // marshals a class-MEMORY struct even on an engine built without libffi: a
   // build that can only reject it in the interpreter must still accept it for
-  // `oskel build`. The reverse also holds — a variadic is not lowered by the
-  // backend, so it stays rejected for the AOT destination regardless of libffi.
+  // `oskel build`. The same holds for a C variadic, which the backend walks at
+  // run time without libffi (PHASE 7f.5).
   const std::string memoryStruct =
       "struct Big { a: int64; b: int64; c: int64; }\n"
       "extern \"C\" { fn f(x: Big): int64; }\n";
@@ -2516,9 +2516,17 @@ void testExternValidatedAgainstDestinationAbi() {
     const std::string message = compileErrorFor(memoryStruct, ffi::AbiCapabilities{});
     assert(message.find("MEMORY") != std::string::npos);
   }
-  // A variadic is not lowered by the AOT backend, whatever this build has.
-  const std::string variadicAot = compileErrorFor(variadic, ffi::kAotAbiCapabilities);
-  assert(variadicAot.find("variadic") != std::string::npos);
+  // A C variadic is lowered by the AOT backend, so it is accepted for that
+  // destination on every build.
+  compileFor(variadic, ffi::kAotAbiCapabilities);
+  // The interpreter keeps this build's capability: where libffi provides the
+  // marshalling it is accepted, otherwise the rejection names the reason.
+  if (ffi::kCVariadicSupported) {
+    compileFor(variadic, ffi::AbiCapabilities{});
+  } else {
+    const std::string message = compileErrorFor(variadic, ffi::AbiCapabilities{});
+    assert(message.find("variadic") != std::string::npos);
+  }
 }
 
 void testExternRejectsLargeStructAtCompileTime() {
