@@ -703,6 +703,20 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods_inplace.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # The exact wording of the guards that assemble their message at run time
+    # (`array index 9 out of range (length 3)`, `loadByte() index 9 is out of
+    # range`, `insert() index out of range (length 3)`, ...). Each one used to
+    # trap with a bare "index out of range", so a program that printed the
+    # caught message differed between the engines; the fixture catches every
+    # error with `pcall` and prints its text, so a word, a space or a number
+    # that drifts fails the comparison against the VM.
+    add_test(NAME oskel.build_binary_error_messages
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_error_messages"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_error_messages.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # The allocating array methods (PHASE 7c.3f): `slice`, `concat`, `reversed`
     # and `clone`. Each returns a new array and leaves the receiver untouched,
     # so the backend must allocate a fresh header plus items block. Checked
