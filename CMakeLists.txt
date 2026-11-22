@@ -1068,9 +1068,9 @@ if(BUILD_TESTING)
       # Win64 the tail continues the argument-position allocation, so a float
       # in a register position goes in both the SSE and the integer register,
       # and position four onward spills to the outgoing stack area after the
-      # shadow space. The development VM has no libffi variadic path on
-      # Windows, so the fixture asserts its own expectations and the binary's
-      # final line is the contract.
+      # shadow space. The Windows VM's symbol lookup does not resolve the
+      # fixture's `snprintf`, so the fixture asserts its own expectations and
+      # the binary's final line is the contract.
       add_test(NAME oskel.build_hosted_extern_variadic_windows
         COMMAND ${CMAKE_COMMAND}
           "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_variadic_windows"

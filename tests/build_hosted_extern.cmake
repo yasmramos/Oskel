@@ -65,9 +65,9 @@ if(NOT DEFINED OSKEL_SKIP_RUN OR NOT OSKEL_SKIP_RUN)
   endif()
 
   if(DEFINED OSKEL_EXPECTED_OUTPUT)
-    # The development VM cannot run this fixture on this host (a Windows VM has
-    # no libffi variadic path, for instance), so the fixture asserts its own
-    # expectations and only its final line is the contract.
+    # The development VM cannot run this fixture on this host (a Windows VM
+    # cannot resolve its `snprintf`, for instance), so the fixture asserts its
+    # own expectations and only its final line is the contract.
     if(NOT run_stdout MATCHES "${OSKEL_EXPECTED_OUTPUT}")
       message(FATAL_ERROR
         "the hosted binary did not report success:\n${run_stdout}")
