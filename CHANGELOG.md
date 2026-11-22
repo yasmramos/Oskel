@@ -22,6 +22,22 @@ may change between minor versions.
   helper and its table. `tests/wasm_tree_shake.cmake` pins both the size and
   the VM parity.
 
+- **Class modules: a PascalCase module binds its class.** A module whose last
+  path segment starts with an uppercase letter is a class module: it must
+  export exactly one public name, the file name, and every other top-level
+  name starts with `_`. `import std.io.StringReader;` now binds the class
+  itself (the full path and the short name), `as` binds it under the alias, and
+  `.*`/selective already bind the one export. Lowercase modules keep the
+  namespace semantics, so `ns.deep.leaf.leaf()` and
+  `std.io.text.splitLines(...)` are unchanged. `std.io` is split into
+  `std/io/StringReader.oskl` and `std/io/StringWriter.oskl` (class modules),
+  `std/io/reader.oskl`, `std/io/writer.oskl` and `std/io/text.oskl` (namespace
+  modules) and the `std/io.oskl` facade; `import std.io.*` and the existing
+  four import forms keep working. A parent module imported after one of its
+  children now merges its public names into the namespace table instead of
+  replacing it, so the facade and its submodules can be imported in either
+  order. See `docs/language.md` §18.6 and `tests/module_test.cpp`.
+
 - **The WebAssembly backend binds the string methods.** `upper`, `lower`,
   `trim`, `trimStart`, `trimEnd`, `split`, `lines`, `replace`, `replaceFirst`,
   `startsWith`, `endsWith`, `contains`, `indexOf`, `substr`, `chars`,

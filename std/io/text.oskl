@@ -1,0 +1,61 @@
+// Shared text primitives for `std.io`.
+//
+// A module cannot import a name that starts with `_` from another module, so
+// `isSpace` and `stripCR` are public here. `std.io` re-exports only the line
+// helpers; the class modules use the two primitives internally.
+
+// ASCII whitespace, the separator `readToken` uses.
+fn isSpace(c: string): bool {
+  return c == " " || c == "\t" || c == "\n" || c == "\r";
+}
+
+// Drops one trailing `\r`, so a CRLF line has the same text as an LF one.
+fn stripCR(line: string): string {
+  if (len(line) > 0 && line[len(line) - 1] == "\r") {
+    return line[0:len(line) - 1];
+  }
+  return line;
+}
+
+// Splits text on `\n`, dropping one trailing `\r` from each line. A trailing
+// newline does not produce an extra empty line, so `joinLines` round-trips
+// text that has no trailing newline.
+//
+//   splitLines("a\r\nb\n") -> ["a", "b"]
+//   splitLines("") -> []
+//   splitLines("\n") -> [""]
+@MustUse
+fn splitLines(text: string): array {
+  var out = [];
+  var start = 0;
+  var i = 0;
+  while (i < len(text)) {
+    if (text[i] == "\n") {
+      out[len(out)] = stripCR(text[start:i]);
+      start = i + 1;
+    }
+    i = i + 1;
+  }
+  if (start < len(text)) {
+    out[len(out)] = stripCR(text[start:len(text)]);
+  }
+  return out;
+}
+
+// Joins lines with `\n` between them, without a trailing newline.
+//
+//   joinLines(["a", "b"]) -> "a\nb"
+//   joinLines([]) -> ""
+@MustUse
+fn joinLines(lines: array): string {
+  var out = "";
+  var i = 0;
+  while (i < len(lines)) {
+    if (i > 0) {
+      out = out + "\n";
+    }
+    out = out + lines[i];
+    i = i + 1;
+  }
+  return out;
+}

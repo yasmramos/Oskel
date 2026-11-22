@@ -1,0 +1,7 @@
+// Fixture for the class-module error: a PascalCase module must export the
+// single public name in its file name. `_hidden` is private, so this module
+// exports nothing.
+
+fn _hidden(): int {
+  return 1;
+}
