@@ -422,11 +422,15 @@ previous one.
   compile error rather than a stack overflow. A module's own imports are
   private to it: a namespace, alias or wildcard name it creates never reaches
   the importing program's globals, and never collides with the importer's own
-  wildcard bindings. Resolution tries the project directory first, then the
-  packages root (`$OSKEL_PACKAGES`, else `~/.oskel/packages`), so a project module
-  shadows an installed package of the same path. `require` (Lua-style) is
-  **dropped**: `import` is the only module form. See `docs/language.md` §18,
-  `tests/13_modules.oskl` and `tests/module_test.cpp`.
+  wildcard bindings. A module whose last path segment is PascalCase is a
+  **class module**: it exports exactly one public name (the file name), and a
+  qualified import binds that class instead of the module table, so
+  `import std.io.StringReader;` makes `StringReader(...)` callable. Lowercase
+  modules keep the namespace semantics. Resolution tries the project directory
+  first, then the packages root (`$OSKEL_PACKAGES`, else `~/.oskel/packages`), so
+  a project module shadows an installed package of the same path. `require`
+  (Lua-style) is **dropped**: `import` is the only module form. See
+  `docs/language.md` §18, `tests/13_modules.oskl` and `tests/module_test.cpp`.
 - **`struct`** (data only, no methods) — **done**: a named, module-level map
   shape with optional field types. The declaration emits no bytecode and adds
   no opcode; a `Point { x: 1, y: 2 }` literal is checked against the
@@ -544,13 +548,18 @@ previous one.
   classes. `StringReader` walks a string by code point (`readLine`, `read`,
   `readChar`, `readToken`, `readWhile`, `lines`, ...); `StringWriter`
   accumulates chunks (`write`, `writeln`, `writeAll`, `writeLines`, `toString`).
-  `splitLines`/`joinLines` are the free-function line helpers. File access
-  deliberately stays with the `readFile`/`writeFile`/`fileExists` builtins: the
-  freestanding AOT backend does not seed them, so a module that mentions one
-  fails `oskel build` even when the function is unused. No new runtime type,
-  opcode or builtin; classes are maps with closures, so the VM, the AOT backend
-  and WebAssembly agree. See `docs/language.md` §12.14/§18,
-  `tests/62_std_io.oskl` and the AOT/WASM fixture `tests/native_build_io.oskl`.
+  `splitLines`/`joinLines` are the free-function line helpers. The module is
+  split into class modules (`std/io/StringReader.oskl`,
+  `std/io/StringWriter.oskl`), namespace modules (`std/io/reader.oskl`,
+  `std/io/writer.oskl`, `std/io/text.oskl`) and the `std/io.oskl` facade, so
+  `import std.io.StringReader;` binds the class and `import std.io.*` keeps the
+  grouped surface. File access deliberately stays with the
+  `readFile`/`writeFile`/`fileExists` builtins: the freestanding AOT backend
+  does not seed them, so a module that mentions one fails `oskel build` even
+  when the function is unused. No new runtime type, opcode or builtin; classes
+  are maps with closures, so the VM, the AOT backend and WebAssembly agree. See
+  `docs/language.md` §12.14/§18, `tests/62_std_io.oskl` and the AOT/WASM
+  fixture `tests/native_build_io.oskl`.
 
 ### PHASE 6.6 — FFI with C (1.0)
 

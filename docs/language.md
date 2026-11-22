@@ -2656,10 +2656,30 @@ the development VM, under `oskel build` and on WebAssembly.
 
 ### 12.14 I/O
 
-`import std.io;` adds **in-memory text streams**: a `StringReader` that walks a
-string by code point and a `StringWriter` that accumulates text. They are
-ordinary classes (§4.8), so an instance is a map with methods and can be passed
-to a function like any other value.
+`std.io` adds **in-memory text streams**: a `StringReader` that walks a string
+by code point and a `StringWriter` that accumulates text. They are ordinary
+classes (§4.8), so an instance is a map with methods and can be passed to a
+function like any other value.
+
+The module is split into focused files. The two classes are **class modules**
+(§18.6): their PascalCase file name is the class name, so a qualified import
+binds the class itself.
+
+| Import | What it binds |
+| --- | --- |
+| `import std.io;` | The facade table (`std.io.splitLines`, `std.io.StringReader`, ...). |
+| `import std.io.*;` | `StringReader`, `StringWriter`, `splitLines` and `joinLines` directly. |
+| `import std.io.StringReader;` | The class, as `StringReader(...)` and `std.io.StringReader(...)`. |
+| `import std.io.StringWriter;` | The class, as `StringWriter(...)` and `std.io.StringWriter(...)`. |
+| `import std.io.reader;` | The `reader` namespace (`reader.StringReader(...)`). |
+| `import std.io.writer;` | The `writer` namespace (`writer.StringWriter(...)`). |
+| `import std.io.text;` | The line helpers (`text.splitLines(...)`, `text.joinLines(...)`); `isSpace` and `stripCR` are public there for the class modules. |
+
+`std/io.oskl` is the facade: it re-exports the two classes and wraps
+`splitLines`/`joinLines` over `std.io.text`. The class implementations live in
+`std/io/StringReader.oskl` and `std/io/StringWriter.oskl`;
+`std/io/reader.oskl` and `std/io/writer.oskl` are namespace re-exports of those
+classes.
 
 File access stays with the `readFile`/`writeFile`/`fileExists` builtins rather
 than this module. Those builtins need a file system: the AOT freestanding
@@ -2684,6 +2704,16 @@ print(r.readLine());           // "alpha"
 print(r.readLine());           // "beta"
 print(r.eof());                // false
 print(r.readAll());            // "gamma"
+```
+
+The same classes are reachable through their own modules, without the facade:
+
+```oskl
+import std.io.StringReader;
+import std.io.reader as reader;
+
+let direct = StringReader("hola");          // class module
+let grouped = reader.StringReader("mundo"); // namespace module
 ```
 
 `StringReader` methods:
@@ -3232,9 +3262,9 @@ import { sqrt, pow } from std.math; // selective: access is sqrt and pow
 
 | Form | Meaning |
 | --- | --- |
-| `import a.b;` | Load `a/b.oskl`, bind it to the namespace `a.b`, and also bind the last segment `b` when that name is free. Access is `a.b.name` or `b.name`. |
+| `import a.b;` | Load `a/b.oskl`, bind it to the namespace `a.b`, and also bind the last segment `b` when that name is free. Access is `a.b.name` or `b.name`. If `b` is PascalCase the file is a **class module** (§18.6): both bindings are its single export, the class itself. |
 | `import a.b.*;` | Load `a/b.oskl` and add all its public names to the current scope. Access is `name`. |
-| `import a.b as c;` | Load `a/b.oskl` and bind it to `c`. Access is `c.name`. An explicit alias suppresses the short name. |
+| `import a.b as c;` | Load `a/b.oskl` and bind it to `c`. Access is `c.name`. An explicit alias suppresses the short name. A class module binds its class under `c`. |
 | `import { x, y } from a.b;` | Load `a/b.oskl` and bind only `x` and `y`. Access is `x` and `y`. |
 
 The short name is the module's last path segment: `import std.sdl;` makes both
@@ -3242,6 +3272,12 @@ The short name is the module's last path segment: `import std.sdl;` makes both
 top-level declaration of the importing file owns the name, and a second import
 that would bind the same short name to a different module is a compile error
 (§18.3); use `as` to choose the name in that case.
+
+A parent module imported after one of its children does not replace the
+namespace table: the parent's public names are merged into the existing table,
+so `import std.io.text;` then `import std.io;` keeps both `std.io.text` and
+`std.io.splitLines`. The reverse order works too, because a child import reads
+the parent table instead of creating a fresh namespace.
 
 ### 18.2 What a module exports
 
@@ -3317,8 +3353,11 @@ print(sqrt(25));            // 5
 
 The standard library ships `std.math` (§12.3), `std.json` (§12.9),
 `std.datetime` (§12.10), `std.path` (§12.11), `std.collections` (§12.12),
-`std.strings` (§12.13) and `std.io` (§12.14). All are ordinary modules, so the
-same four import forms apply:
+`std.strings` (§12.13) and `std.io` (§12.14). `std.io` is split into class
+modules (`std.io.StringReader`, `std.io.StringWriter`) and namespace modules
+(`std.io.reader`, `std.io.writer`, `std.io.text`) behind the `std.io` facade;
+the four import forms above apply to the facade, and the class modules add the
+direct form of §18.6. All of them are modules:
 
 ```oskel
 import std.json;             // std.json.parse and json.parse, ...
@@ -3326,6 +3365,53 @@ import std.json.*;           // parse, stringify, ...
 import std.json as json;     // json.parse, json.stringify, ...
 import { parse, stringify } from std.json;
 ```
+
+### 18.6 Class modules
+
+A module whose last path segment starts with an uppercase letter is a **class
+module**. It is one file with one public name, the same as the file name; every
+other top-level name starts with `_`. The compiler enforces the shape:
+
+```oskel
+// std/io/StringReader.oskl
+class StringReader {
+  ...
+}
+```
+
+Without an alias, `import std.io.StringReader;` binds the class itself, not the
+module table: both the full path and the short name are the class, so
+`StringReader(...)` and `std.io.StringReader(...)` construct one. `as` binds the
+class under the alias:
+
+```oskel
+import std.io.StringReader;           // StringReader(...)
+import std.io.StringReader as Reader; // Reader(...)
+```
+
+A wildcard or selective import already binds the single export, so it needs no
+special case:
+
+```oskel
+import std.io.StringReader.*;                     // StringReader(...)
+import { StringReader } from std.io.StringReader; // StringReader(...)
+```
+
+A lowercase last segment keeps the namespace semantics of §18.1: the import
+binds the module table. This is why `import ns.deep.leaf;` still exposes
+`ns.deep.leaf.leaf()`, and why `std.io.text` remains a namespace module.
+
+The rule is opt-in through the file name. A PascalCase module that exports zero
+or several public names, or a single public name that does not match the file
+name, is a compile error:
+
+```text
+class module 'std.io.StringReader' must export exactly one public name 'StringReader'
+```
+
+A class module's module table is not part of its public surface: the class is the
+only export. The module body still runs once, like any other module. A private
+helper (`_helper`) stays reachable from the class methods but is never exported.
 
 ---
 

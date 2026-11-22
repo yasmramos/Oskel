@@ -1,0 +1,8 @@
+// Namespace module for the writer half of `std.io`.
+//
+// The class lives in its own PascalCase module so `import std.io.StringWriter;`
+// can bind it directly; this module keeps the grouped
+// `std.io.writer.StringWriter` spelling for callers that import a namespace.
+import std.io.StringWriter as SW;
+
+let StringWriter = SW;

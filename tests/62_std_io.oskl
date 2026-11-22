@@ -10,6 +10,11 @@ import std.io;
 import std.io.*;
 import std.io as io;
 import { splitLines, joinLines, StringReader, StringWriter } from std.io;
+import std.io.StringReader;
+import std.io.StringWriter;
+import std.io.reader as reader;
+import std.io.writer as writer;
+import std.io.text;
 
 // --- splitLines / joinLines -------------------------------------------------
 
@@ -181,6 +186,14 @@ assertEq(StringReader("ok").readAll(), "ok");
 let selective = StringWriter();
 selective.write("ok");
 assertEq(selective.toString(), "ok");
+
+// Class modules, namespace modules and the facade expose the same classes.
+assertEq(std.io.StringReader("class").readAll(), "class");
+assertEq(std.io.StringWriter().write("w").toString(), "w");
+assertEq(reader.StringReader("namespace").readAll(), "namespace");
+assertEq(writer.StringWriter().write("n").toString(), "n");
+assertEq(std.io.text.splitLines("x\ny"), ["x", "y"]);
+assertEq(std.io.text.joinLines(["x", "y"]), "x\ny");
 
 // `_isSpace`, `_stripCR` and `_concatRange` are private and are not exported.
 assertEq(std.io._isSpace, nil);

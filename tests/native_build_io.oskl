@@ -10,10 +10,15 @@
 // Every line is deterministic and prints a value (the harness compares stdout),
 // so the fixture never relies on an assertion alone.
 
+import std.io.text;
+import std.io.StringReader;
 import std.io;
 import std.io.*;
 import std.io as io;
 import { splitLines, joinLines } from std.io;
+import std.io.StringWriter;
+import std.io.reader as reader;
+import std.io.writer as writer;
 
 let text = "alpha\r\nbeta\ngamma\n";
 
@@ -90,3 +95,8 @@ print("fill =", fill(StringWriter()).toString());
 print("qualified =", io.joinLines(["x", "y"]), io.splitLines("x\ny"));
 print("selective =", joinLines(["p", "q"]));
 print("input =", splitLines(text));
+print("class =", std.io.StringReader("class").readAll(),
+      std.io.StringWriter().write("w").toString());
+print("namespace =", reader.StringReader("namespace").readAll(),
+      writer.StringWriter().write("n").toString());
+print("textModule =", std.io.text.splitLines("x\ny"), std.io.text.joinLines(["x", "y"]));

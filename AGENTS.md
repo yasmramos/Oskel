@@ -167,6 +167,26 @@ it as a caveat:
   mentions one fails `oskel build` even when the function is unused.
   `tests/62_std_io.oskl` is the VM test and `tests/native_build_io.oskl` the
   VM/AOT/WASM parity fixture.
+- A module whose last path segment is **PascalCase** is a **class module**
+  (`docs/language.md` §18.6). It exports exactly one public name, the file name,
+  and every other top-level name starts with `_`. `import std.io.StringReader;`
+  binds the class itself, not the module table, so `StringReader(...)` works;
+  `as` binds the class under the alias, and `.*`/selective already bind the one
+  export. A lowercase module keeps the namespace semantics, which is why
+  `ns.deep.leaf.leaf()` and `std.io.text.splitLines(...)` still work. The
+  compiler enforces the shape: a PascalCase module with zero or several public
+  names, or a different name, is a compile error. `std/io/` is the reference:
+  `StringReader.oskl`/`StringWriter.oskl` are class modules,
+  `reader.oskl`/`writer.oskl`/`text.oskl` are namespace modules, and
+  `std/io.oskl` is the facade. The facade imports
+  `std.io.reader as reader;` and aliases `reader.StringReader`, so keep that
+  shape when adding a class to the module.
+- A parent module imported after one of its children **merges** its public names
+  into the existing namespace table instead of replacing it, so `std.io` and
+  `std.io.text` work in either order. `compileQualifiedImport` records a module
+  leaf in `namespaces_` and `ensureNamespace` reads the existing table; do not
+  put back a bare `SETTABLE` for the leaf, because that drops the child paths
+  (and a class path such as `std.io.StringReader` that was bound first).
 - `sort`/`sorted` are the only collection methods whose comparator is arbitrary
   program code, so their AOT body calls back through `oskel_call` from inside a
   bottom-up stable merge sort (a recursive one would deepen the program's stack
