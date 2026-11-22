@@ -915,16 +915,23 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    disagrees with its manifest, and resolves a local-registry dependency from
    `$OSKEL_REGISTRY`. The tool is standalone and drives `oskel`/`oskelc` as
    child processes; `OSKEL_MODULE_ROOT` is the only compiler-side hook.
-8. **[P3]** Add a "hello world with UI" tutorial (needs the post-1.0 UI work).
+8. **[P3]** Add a "hello world with UI" tutorial. The first headless widget
+   layer exists (`std/ui.oskl`, `docs/ui.md`); the tutorial should wait for
+   presenting a Skia surface into an SDL3 window.
 9. **[P2] [partial]** SDL3 bindings landed (post-1.0 UI): `std/sdl.oskl` binds
    the window, renderer and event surface, `docs/sdl.md` documents it, and
    `oskel build --mode hosted --link-lib SDL3` compiles it. The C++ bridge
    (`bindgen --cxx`, `docs/cxxbind.md`) now generates Oskel classes plus a C++
    shim from a descriptor. Factory objects, `sk_sp`/`unique_ptr` and value
    returns, borrowed handles and `Class&` parameters landed, and
-   `bindings/skia/skia.oskelbind` is the Skia descriptor; compiling its shim
-   needs a Skia checkout. The declarative UI layer (`Window`, `Column`, `Text`,
-   `Button`, ...) is the next slice.
+   `bindings/skia/skia.oskelbind` compiles against a real Skia build; the
+   opt-in `cxxbind.skia` test draws, reads pixels and renders a widget tree on
+   the VM and the hosted AOT binary. `std/ui.oskl` is the first declarative
+   layer (`window`, `column`, `row`, `padding`, `spacer`, `text`, `button`;
+   layout, `rect`/`text` display list and hit testing), and
+   `bindings/skia/skia_ui.oskl` renders it. Still pending: presenting that
+   raster surface into an SDL3 window, an event loop, input widgets, real font
+   metrics and text wrapping.
 10. **[P3]** Add `dlopen`/`dlsym` as a builtin for dynamic FFI.
 11. **[P1] [done]** `oskelp`: the local registry (`$OSKEL_REGISTRY`) landed
     with semver requirements (exact, `^`, `~`, comparators, wildcards and a

@@ -1,0 +1,40 @@
+import skia;
+import skia_ui;
+import std.ui as ui;
+
+fn assertEq(actual: int, expected: int) {
+  if (actual != expected) {
+    panic("expected " + str(expected) + ", got " + str(actual));
+  }
+}
+
+let root = ui.window("Demo", 120, 80,
+  ui.column(8, [
+    ui.text("Hi", 16),
+    ui.button("OK", () => nil),
+  ]));
+ui.layout(root, 120, 80);
+
+let commands = ui.commands(root);
+assertEq(len(commands), 4);
+assertEq(commands[0].kind, "rect");
+assertEq(commands[1].kind, "text");
+assertEq(commands[2].kind, "rect");
+assertEq(commands[3].kind, "text");
+
+let hit = ui.hitTest(root, 10, 40);
+assert(hit != nil);
+assertEq(hit.label, "OK");
+assert(ui.hitTest(root, 100, 75) == nil);
+
+let surface = skia.Surfaces.raster(120, 80);
+let canvas = surface.getCanvas();
+skia_ui.render(commands, canvas);
+
+let image = surface.makeImageSnapshot();
+assertEq(skia.imagePixel(image, 100, 75), 0xFFFFFFFF);
+assertEq(skia.imagePixel(image, 10, 40), 0xFF2563EB);
+image.close();
+canvas.close();
+surface.close();
+print("skia ui ok");

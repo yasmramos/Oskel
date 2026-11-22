@@ -1,0 +1,37 @@
+import skia;
+
+fn assertEq(actual: int, expected: int) {
+  if (actual != expected) {
+    panic("expected " + str(expected) + ", got " + str(actual));
+  }
+}
+
+let surface = skia.Surfaces.raster(8, 8);
+assert(surface.valid());
+let canvas = surface.getCanvas();
+
+canvas.clear(0xFFFF0000);
+let red = surface.makeImageSnapshot();
+assertEq(skia.imagePixel(red, 0, 0), 0xFFFF0000);
+red.close();
+
+let paint = skia.Paint();
+paint.setAntiAlias(true);
+paint.setColor(0xFF0000FF);
+canvas.drawRect(skia.Rects.make(0.0, 0.0, 4.0, 4.0), paint);
+
+let blue = surface.makeImageSnapshot();
+assertEq(skia.imagePixel(blue, 1, 1), 0xFF0000FF);
+assertEq(skia.imagePixel(blue, 7, 7), 0xFFFF0000);
+blue.close();
+
+paint.setColor(0xFF00FF00);
+canvas.drawCircle(4.5, 4.5, 1.0, paint);
+let green = surface.makeImageSnapshot();
+assertEq(skia.imagePixel(green, 4, 4), 0xFF00FF00);
+green.close();
+
+paint.close();
+canvas.close();
+surface.close();
+print("skia ok");

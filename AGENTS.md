@@ -156,7 +156,8 @@ it as a caveat:
   `tests/native_build_json.oskl` are the reference, and `std/datetime.oskl`
   with `tests/native_build_datetime.oskl` is a second one (it also exercises
   the `time()` wall clock, the one builtin whose AOT binding differs per
-  target).
+  target). `std/ui.oskl` is the declarative widget/layout layer over the same
+  surface; `tests/native_build_ui.oskl` is its VM/AOT fixture.
 - `sort`/`sorted` are the only collection methods whose comparator is arbitrary
   program code, so their AOT body calls back through `oskel_call` from inside a
   bottom-up stable merge sort (a recursive one would deepen the program's stack
@@ -613,9 +614,25 @@ it as a caveat:
   `Class&`/`const Class&` parameters cross as handles and the shim dereferences
   them. `bindings/skia/skia.oskelbind` is the first real descriptor; its shim
   needs a Skia checkout, while `cxxbind.generate` checks generation and
-  `oskel -c` on every platform. The bridge still rejects string returns,
-  overload sets, templates, callbacks, default arguments, C++ enums and `std::`
-  containers.
+  `oskel -c` on every platform. `bindings/skia/skia_facade.h` keeps the three
+  calls the descriptor cannot spell: `SkSurfaces::Raster` (the factory moved
+  from `SkSurface::MakeRasterN32Premul` at milestone 115), `drawString` (it
+  takes an explicit `SkFont`), and `readPixels` (it takes an `SkImageInfo`).
+  `cxxbind.skia` is opt-in through `OSKEL_SKIA_DIR`/`OSKEL_SKIA_LIB`: it compiles
+  the shim against a real Skia, then checks drawing, text and the widget
+  display list on the VM and the hosted AOT binary. The bridge still rejects
+  string returns, overload sets, templates, callbacks, default arguments, C++
+  enums and `std::` containers.
+- `std/ui.oskl` is a widget tree over maps, not a new runtime type:
+  `window`/`column`/`row`/`padding`/`spacer`/`text`/`button` construct maps,
+  `layout` attaches a frame, `commands` returns `rect`/`text` display-list maps
+  and `hitTest` returns the deepest button. It is pure Oskel over the portable
+  primitive surface, so `tests/native_build_ui.oskl` and
+  `oskel.build_binary_ui` keep the VM and AOT outputs identical. The Skia
+  backend is `bindings/skia/skia_ui.oskl`; `docs/ui.md` describes the scope.
+  Text measurement is a fixed `0.6 * size` advance, not a font engine, and the
+  module has no event loop: SDL3 owns the window and the application dispatches
+  `onClick` after `hitTest`.
 - `oskelp` (the project and package manager, `docs/oskelp.md`) is a third
   standalone executable under `tools/`. It links no engine code and drives
   `oskel`/`oskelc` as child processes; `nm build/oskel | grep oskelp` must stay

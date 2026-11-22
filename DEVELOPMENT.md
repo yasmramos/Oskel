@@ -2114,11 +2114,19 @@ skipped where it is absent.
   map of functions, class returns carry `owned`/`borrow`/`sp`/`value`, and a
   class chooses `release "delete"`, `"unref"` or `"none"`. `Class&` parameters
   are dereferenced by the shim. The C++ ABI stays in the shim; the engine still
-  speaks C. `bindings/skia/skia.oskelbind` is the first real descriptor; the
-  declarative widget layer is the next slice.
+  speaks C. `bindings/skia/skia.oskelbind` is the first real descriptor and it
+  compiles against a real Skia build; `tests/cxxbind/skia_test.oskl` checks
+  drawing and pixel readback on the VM and the hosted AOT binary.
 - **Skia** as the rendering backend for the widgets, on top of SDL3's window.
-- **Declarative UI** (SwiftUI/Flutter style): `Window`, `Column`, `Row`,
-  `Text`, `Button`, `Input`, `Checkbox`, `Slider`, etc.
+  `bindings/skia/skia_ui.oskl` renders the `std/ui` display list; the first
+  slice targets a raster surface, and presenting that surface into an SDL3
+  window is the next slice.
+- **Declarative UI** (SwiftUI/Flutter style), first slice: `std/ui.oskl` has
+  `window`, `column`, `row`, `padding`, `spacer`, `text` and `button`, a
+  deterministic layout, a `rect`/`text` display list and button hit testing.
+  `tests/native_build_ui.oskl` proves it on the VM and under `oskel build`.
+  Input widgets (`Input`, `Checkbox`, `Slider`), an event loop and real font
+  metrics are still pending.
 
 ### Post-1.0 — Other features
 

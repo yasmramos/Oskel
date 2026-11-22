@@ -15,6 +15,13 @@ object Surfaces {
   function raster(w: int, h: int): Surface sp cpp "skia_bridge::makeRaster"
 }
 
+# Read one pixel back from a snapshot (BGRA little-endian, i.e. 0xAARRGGBB).
+function imagePixel(img: Image, x: int, y: int): uint32 cpp "skia_bridge::readPixel"
+
+# `SkCanvas::drawString` takes an explicit `SkFont`; the facade keeps the
+# paint/font split out of the descriptor.
+function drawText(canvas: Canvas, text: string, x: float, y: float, font: const Font&, paint: const Paint&): void cpp "skia_bridge::drawText"
+
 class Rect {
   cpp "SkRect"
   release "delete"
@@ -30,6 +37,13 @@ class Paint {
   dtor
   method setColor(color: uint32): void
   method setAntiAlias(aa: bool): void
+}
+
+class Font {
+  cpp "SkFont"
+  ctor()
+  dtor
+  method setSize(size: float): void
 }
 
 class Canvas {

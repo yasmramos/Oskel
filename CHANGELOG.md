@@ -11,6 +11,26 @@ may change between minor versions.
 
 ### Added
 
+- **The Skia bridge compiles and runs against a real Skia build.** The
+  generated shim now covers text (`SkFont` + `drawString`) and one-pixel
+  readback (`SkImage::readPixels`), and `skia_facade.h` selects
+  `SkSurfaces::Raster` or the pre-milestone-115 `MakeRasterN32Premul` factory.
+  `tests/cxxbind/skia_test.oskl` clears a surface, draws a rectangle and a
+  circle, and checks the pixels; the VM and the hosted AOT binary agree.
+  `tests/cxxbind/skia_ui_test.oskl` renders a widget tree and checks the window
+  and button pixels. `cxxbind.skia` is opt-in with `OSKEL_SKIA_DIR` /
+  `OSKEL_SKIA_LIB`, so a checkout without Skia keeps the suite green.
+
+- **The first declarative UI layer: `std/ui.oskl`.** `window`, `column`, `row`,
+  `padding`, `spacer`, `text` and `button` build a widget tree; `layout`
+  attaches deterministic frames; `commands` emits a `rect`/`text` display list;
+  `hitTest` returns the deepest button. The module is pure Oskel over the
+  portable primitive surface, so `tests/native_build_ui.oskl` and
+  `oskel.build_binary_ui` keep the VM and AOT outputs identical.
+  `bindings/skia/skia_ui.oskl` is the Skia renderer for the display list.
+  `docs/ui.md` documents the widget set, layout rules, display list and limits
+  (no event loop, input widgets, font metrics or SDL presentation yet).
+
 - **The C++ bridge now generates factories and owned class returns.**
   `bindgen --cxx` accepts an `object` of functions (emitted as a map, so
   `Surfaces.raster(...)` reads like a namespace), `sp` returns for

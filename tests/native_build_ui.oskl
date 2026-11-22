@@ -1,0 +1,62 @@
+// `std.ui` is pure Oskel over the portable primitive surface: layout, display
+// list and hit testing must agree on the VM and under `oskel build`.
+import std.ui as ui;
+
+fn assertEq(actual, expected) {
+  if (actual != expected) {
+    panic("expected " + str(expected) + ", got " + str(actual));
+  }
+}
+
+let root = ui.window("Demo", 200, 120,
+  ui.column(8, [
+    ui.text("Hello", 20),
+    ui.button("OK", () => nil),
+  ]));
+ui.layout(root, 200, 120);
+
+let commands = ui.commands(root);
+assertEq(len(commands), 4);
+assertEq(commands[0].kind, "rect");
+assertEq(commands[1].kind, "text");
+assertEq(commands[1].text, "Hello");
+assertEq(commands[2].kind, "rect");
+assertEq(commands[3].kind, "text");
+assertEq(commands[3].text, "OK");
+assertEq(commands[2].color, 0xFF2563EB);
+
+let hit = ui.hitTest(root, 10, 40);
+assert(hit != nil);
+assertEq(hit.label, "OK");
+assert(ui.hitTest(root, 190, 110) == nil);
+
+// A row with a padded button and a spacer.
+let bar = ui.window("Bar", 100, 40,
+  ui.row(4, [
+    ui.text("A", 10),
+    ui.padding(2, ui.button("B", () => nil)),
+    ui.spacer(5),
+  ]));
+ui.layout(bar, 100, 40);
+let barCommands = ui.commands(bar);
+assertEq(len(barCommands), 4);
+assertEq(barCommands[1].text, "A");
+assertEq(barCommands[2].x, 12);
+assertEq(barCommands[3].text, "B");
+let barHit = ui.hitTest(bar, 20, 20);
+assert(barHit != nil);
+assertEq(barHit.label, "B");
+
+// Explicit colours: text and button styles.
+let styled = ui.window("Styled", 60, 30,
+  ui.buttonStyle("S", () => nil, 0xFF000000, 0xFFFFFFFF));
+ui.layout(styled, 60, 30);
+let styledCommands = ui.commands(styled);
+assertEq(styledCommands[1].color, 0xFF000000);
+assertEq(styledCommands[2].color, 0xFFFFFFFF);
+
+let tinted = ui.window("Tinted", 40, 20, ui.textColor("T", 10, 0xFF00FF00));
+ui.layout(tinted, 40, 20);
+assertEq(ui.commands(tinted)[1].color, 0xFF00FF00);
+
+print("ui ok");

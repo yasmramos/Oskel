@@ -374,6 +374,28 @@ if(BUILD_TESTING)
       "-DBINDGEN_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/tests/bindgen/target.h"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_bindgen_target.cmake")
 
+  # The Skia bridge needs a real Skia root for the shim and the pixel test.
+  # Both are opt-in: a checkout without Skia still runs the generator half.
+  set(OSKEL_SKIA_DIR "" CACHE PATH
+      "Skia root with include/core/SkSurface.h (enables cxxbind.skia)")
+  set(OSKEL_SKIA_LIB "" CACHE FILEPATH
+      "Path to libskia.a or libskia.so (enables cxxbind.skia)")
+  set(OSKEL_SKIA_LIBS "-lpthread -ldl -lm" CACHE STRING
+      "Extra link arguments for the Skia shim")
+  if(OSKEL_SKIA_DIR AND NOT OSKEL_SKIA_LIB)
+    foreach(_skia_candidate
+        "${OSKEL_SKIA_DIR}/out/Release/libskia.a"
+        "${OSKEL_SKIA_DIR}/out/Release-x64/libskia.a"
+        "${OSKEL_SKIA_DIR}/out/Release/libskia.so"
+        "${OSKEL_SKIA_DIR}/out/Release-x64/libskia.so")
+      if(EXISTS "${_skia_candidate}")
+        set(OSKEL_SKIA_LIB "${_skia_candidate}" CACHE FILEPATH
+            "Path to libskia.a or libskia.so (enables cxxbind.skia)" FORCE)
+        break()
+      endif()
+    endforeach()
+  endif()
+
   # `--cxx` generates the module, the C header and the C++ shim. The generation
   # and `oskel -c` half runs everywhere; the shim compile plus VM/AOT execution
   # is Linux-only (LD_PRELOAD, hosted AOT).
@@ -397,6 +419,22 @@ if(BUILD_TESTING)
         "-DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/cxxbind-end-to-end"
         "-DRUN_RUNTIME=ON"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_cxxbind_case.cmake")
+  endif()
+
+  if(OSKEL_SKIA_DIR AND OSKEL_SKIA_LIB AND
+     CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+     CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    add_test(NAME cxxbind.skia
+      COMMAND ${CMAKE_COMMAND}
+        "-DBINDGEN_EXE=$<TARGET_FILE:bindgen>"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/cxxbind-skia"
+        "-DSKIA_DIR=${OSKEL_SKIA_DIR}"
+        "-DSKIA_LIB=${OSKEL_SKIA_LIB}"
+        "-DSKIA_LIBS=${OSKEL_SKIA_LIBS}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_skia_case.cmake")
   endif()
 
   # `oskelp` is standalone too, so its unit test links `oskelp_lib` directly.
@@ -1044,6 +1082,15 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_TEST_NAME=oskel.build_binary_datetime"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_datetime.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `std.ui` is plain Oskel over the portable primitive surface: the widget
+    # tree, layout, display list and hit testing must agree with the VM.
+    add_test(NAME oskel.build_binary_ui
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_ui"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_ui.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
     # `std.path` is plain Oskel over the portable primitive surface, so it must
