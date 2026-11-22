@@ -170,9 +170,9 @@ target_link_libraries(oskel PRIVATE oskel_lib)
 target_compile_options(oskel PRIVATE ${OSKEL_WARNINGS})
 
 # --------------------------------------------------------------------------- SDL3 (optional)
-# `std/sdl.oskl` binds SDL3's window, renderer and event surface. The module is
+# `std/internal/sdl.oskl` binds SDL3's window, renderer and event surface. The module is
 # always installed; the development engine links SDL3 when CMake finds it, so
-# `import std.sdl` resolves the `SDL_*` symbols through `dlsym(RTLD_DEFAULT)`.
+# `import std.internal.sdl` resolves the `SDL_*` symbols through `dlsym(RTLD_DEFAULT)`.
 # `oskelc` does not link it: it only compiles the module, and a native binary
 # gets the symbols from the hosted link (`--link-lib SDL3`).
 #
@@ -191,9 +191,9 @@ if(OSKEL_ENABLE_SDL3)
       target_link_options(oskel PRIVATE "-Wl,--no-as-needed")
     endif()
     set_target_properties(oskel PROPERTIES ENABLE_EXPORTS ON)
-    message(STATUS "SDL3 found: std.sdl enabled in the development engine")
+    message(STATUS "SDL3 found: std.internal.sdl enabled in the development engine")
   else()
-    message(STATUS "SDL3 not found: std.sdl tests skipped (set OSKEL_ENABLE_SDL3=OFF to silence)")
+    message(STATUS "SDL3 not found: std.internal.sdl tests skipped (set OSKEL_ENABLE_SDL3=OFF to silence)")
   endif()
 endif()
 
@@ -413,6 +413,7 @@ if(BUILD_TESTING)
         "-DSKIA_DIR=${OSKEL_SKIA_DIR}"
         "-DSKIA_LIB=${OSKEL_SKIA_LIB}"
         "-DSKIA_LIBS=${OSKEL_SKIA_LIBS}"
+        "-DSDL3_FOUND=${OSKEL_SDL3_FOUND}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_skia_case.cmake")
   endif()
 
@@ -547,7 +548,7 @@ if(BUILD_TESTING)
       "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/21_std_math.oskl"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_stdlib.cmake")
 
-  # --- SDL3 bindings (`std/sdl.oskl`) ---
+  # --- SDL3 bindings (`std/internal/sdl.oskl`) ---
   # The module is always installed; these tests need the development engine to
   # have SDL3 loaded, which CMake arranges above when it finds the library.
   # `run_sdl_case.cmake` sets SDL_VIDEODRIVER=dummy, so no display is needed.
@@ -556,7 +557,7 @@ if(BUILD_TESTING)
     COMMAND ${CMAKE_COMMAND}
       "-DBINDGEN=$<TARGET_FILE:bindgen>"
       "-DHEADER=${CMAKE_CURRENT_SOURCE_DIR}/bindings/sdl/sdl3_subset.h"
-      "-DMODULE=${CMAKE_CURRENT_SOURCE_DIR}/std/sdl.oskl"
+      "-DMODULE=${CMAKE_CURRENT_SOURCE_DIR}/std/internal/sdl.oskl"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_sdl_bindings.cmake")
   if(OSKEL_SDL3_FOUND)
     add_test(NAME sdl.bindings
@@ -864,6 +865,18 @@ if(BUILD_TESTING)
         "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_mode.cmake")
+
+    # The hosted prelude reaches the position through `lseek`/`_lseeki64` and
+    # opens an append stream with `O_APPEND`/`_O_APPEND`; the freestanding
+    # fixture above covers the syscall/kernel32 path.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32)
+      add_test(NAME oskel.build_fs_hosted
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_fs_hosted"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_fs.oskl"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+    endif()
 
     # A scalar `extern "C"` declaration resolves through the system linker in
     # the hosted mode (PHASE 7f.5): the backend emits a marshalling thunk per
@@ -1367,6 +1380,16 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_files.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # Streaming file handles behind `std.fs.File` (PHASE 7g): open/read/write/
+    # seek/close, append, and the whole-file helpers. The fixture uses the same
+    # path in both runs, so `writeText` truncates the file before each one.
+    add_test(NAME oskel.build_binary_fs
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_fs"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_fs.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `clock()` reads the `entry.monotonic` handle and subtracts the origin the
     # chunk captured at entry, so it reports elapsed time. Every target backs it,
     # and only the shape is compared: the two runs happen at different times.
@@ -1398,6 +1421,18 @@ if(BUILD_TESTING)
           "-DEXPECTED_MESSAGE=args\\(\\) needs a process argument vector"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
     endif()
+
+    # The directory half of `std.fs` is VM-only for now. The AOT backend has no
+    # prelude handles for it, so a used name must fail the build with a message
+    # that names the module, not the generic unassigned-global error a typo
+    # produces.
+    add_test(NAME oskel.build_fs_dir_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_fs_dir_error"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/errors/fs_dir_vm_only.oskl"
+        "-DEXPECTED_MESSAGE=std.fs.dir is VM-only for now"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
 
     # The field-type check runs in the compiler, so `oskel build` rejects a
     # mistyped field assignment exactly as the VM does, with the same message
@@ -1681,6 +1716,18 @@ if(BUILD_TESTING)
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
 
+    # Runtime tree-shaking (PHASE 9.4): a program that never reads a bound
+    # method must not carry the method helpers or the Unicode case tables, and
+    # a static member read must keep the helper it needs. The fixture is
+    # generated by the script so it does not enter the VM's script glob.
+    add_test(NAME oskel.build_wasm_tree_shake
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_tree_shake.cmake")
+
     # `std.io` is pure Oskel over strings and classes (maps with closures), so
     # the WASM backend must reproduce it without a special case.
     add_test(NAME oskel.build_wasm_io
@@ -1725,7 +1772,7 @@ if(BUILD_TESTING)
       oskel.build_wasm_map_methods oskel.build_wasm_datetime
       oskel.build_wasm_collections oskel.build_wasm_strings
       oskel.build_wasm_string_methods oskel.build_wasm_io oskel.build_wasm_math
-      oskel.build_wasm_double_format PROPERTIES TIMEOUT 120)
+      oskel.build_wasm_double_format oskel.build_wasm_tree_shake PROPERTIES TIMEOUT 120)
   endif()
 
   # --- .oskl script tests (auto-detected) ---

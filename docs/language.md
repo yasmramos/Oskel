@@ -2340,7 +2340,8 @@ emitting a binary that returns a wrong number.
 
 A path is handed to the OS as a NUL-terminated C string, so a path containing an
 embedded NUL (`"a\0b"`) is rejected with a runtime error instead of silently
-operating on the truncated path.
+operating on the truncated path. These three read or write a whole file; use
+`std.fs` (§12.15) for a streaming handle, append mode and line reads.
 
 ### 12.7 Assertions and control
 
@@ -2656,10 +2657,30 @@ the development VM, under `oskel build` and on WebAssembly.
 
 ### 12.14 I/O
 
-`import std.io;` adds **in-memory text streams**: a `StringReader` that walks a
-string by code point and a `StringWriter` that accumulates text. They are
-ordinary classes (§4.8), so an instance is a map with methods and can be passed
-to a function like any other value.
+`std.io` adds **in-memory text streams**: a `StringReader` that walks a string
+by code point and a `StringWriter` that accumulates text. They are ordinary
+classes (§4.8), so an instance is a map with methods and can be passed to a
+function like any other value.
+
+The module is split into focused files. The two classes are **class modules**
+(§18.6): their PascalCase file name is the class name, so a qualified import
+binds the class itself.
+
+| Import | What it binds |
+| --- | --- |
+| `import std.io;` | The facade table (`std.io.splitLines`, `std.io.StringReader`, ...). |
+| `import std.io.*;` | `StringReader`, `StringWriter`, `splitLines` and `joinLines` directly. |
+| `import std.io.StringReader;` | The class, as `StringReader(...)` and `std.io.StringReader(...)`. |
+| `import std.io.StringWriter;` | The class, as `StringWriter(...)` and `std.io.StringWriter(...)`. |
+| `import std.io.reader;` | The `reader` namespace (`reader.StringReader(...)`). |
+| `import std.io.writer;` | The `writer` namespace (`writer.StringWriter(...)`). |
+| `import std.io.text;` | The line helpers (`text.splitLines(...)`, `text.joinLines(...)`); `isSpace` and `stripCR` are public there for the class modules. |
+
+`std/io.oskl` is the facade: it re-exports the two classes and wraps
+`splitLines`/`joinLines` over `std.io.text`. The class implementations live in
+`std/io/StringReader.oskl` and `std/io/StringWriter.oskl`;
+`std/io/reader.oskl` and `std/io/writer.oskl` are namespace re-exports of those
+classes.
 
 File access stays with the `readFile`/`writeFile`/`fileExists` builtins rather
 than this module. Those builtins need a file system: the AOT freestanding
@@ -2684,6 +2705,16 @@ print(r.readLine());           // "alpha"
 print(r.readLine());           // "beta"
 print(r.eof());                // false
 print(r.readAll());            // "gamma"
+```
+
+The same classes are reachable through their own modules, without the facade:
+
+```oskl
+import std.io.StringReader;
+import std.io.reader as reader;
+
+let direct = StringReader("hola");          // class module
+let grouped = reader.StringReader("mundo"); // namespace module
 ```
 
 `StringReader` methods:
@@ -2731,6 +2762,65 @@ text length; use `size()`.
 
 The module is pure Oskel over strings and classes, so it behaves identically on
 the development VM, under `oskel build` and on WebAssembly.
+
+### 12.15 Filesystem
+
+`std.fs` is the disk counterpart of `std.io`. It has four import surfaces:
+
+| Import | Binds |
+| --- | --- |
+| `import std.fs;` | The facade table: `std.fs.readText`, `std.fs.File`, ... |
+| `import std.fs.*;` | `readText`, `writeText`, `open`, `File`, ... directly. |
+| `import std.fs.File;` | The class module (§18.6): `File(...)`. |
+| `import std.fs.dir;` | The directory namespace: `std.fs.dir.listDir(...)`. |
+
+The streaming half is deliberately small and works on both engines:
+
+| Function / method | Description |
+| --- | --- |
+| `open(path, mode)` / `File(path, mode)` | Opens `"r"`, `"w"` (truncate) or `"a"` (append). |
+| `readText(path)` | Reads the whole file and closes it. |
+| `writeText(path, text)` | Creates or truncates `path` and writes `text`. |
+| `appendText(path, text)` | Creates `path` if needed and appends `text`. |
+| `exists(path)` | True when `path` can be opened for reading. |
+| `File.read(count)` | Up to `count` bytes; a negative count reads to the end. |
+| `File.readAll()` | The rest of the file. |
+| `File.readLine()` | One line without the newline; `""` at EOF. |
+| `File.write(text)` / `File.writeln(text)` | Writes all bytes / adds `"\n"`. |
+| `File.seek(offset, origin)` | `origin` is `"start"`, `"current"` or `"end"`; returns the new position. |
+| `File.position()` / `File.size()` / `File.eof()` | Position, total size, and whether the position is at the end. |
+| `File.close()` / `File.isClosed()` | Closes once (a second call is a no-op) / reports the state. |
+
+```oskl
+import std.fs;
+
+fn main() {
+  std.fs.writeText("notes.txt", "one\n");
+  std.fs.appendText("notes.txt", "two\n");
+
+  let file = std.fs.open("notes.txt", "r");
+  defer { file.close(); }
+  print(file.readLine());   // one
+  print(file.size());       // 8
+}
+```
+
+`std.fs.dir` holds the operations that need a host directory API:
+`remove`, `rename`, `makeDir`, `removeDir`, `listDir`, `stat`, `exists`,
+`isDir`, `currentDir` and `changeDir`. `stat` returns
+`{size, modified, isFile, isDir}` with `modified` in epoch seconds.
+
+**Engine support.** The streaming surface is implemented by the VM and by
+`oskel build` on every target with a file system: freestanding Linux, Windows
+(PE/kernel32) and the hosted modes. A bare-metal image has no file system, so
+`oskel build` rejects a used `fs*` builtin by name. `std.fs.dir` is VM-only for
+now; the x86-64 AOT backend rejects it with a dedicated message instead of a
+mis-compiled image. WebAssembly builds seed every `fs*` name as a trapping
+builtin, so a call fails at run time with the backend's "not supported" message.
+
+Paths are UTF-8 and are handed to the OS as NUL-terminated C strings, so an
+embedded NUL is a runtime error. `File` owns its handle and `close` is
+idempotent; use `defer` so a `panic` still closes it.
 
 ---
 
@@ -3166,9 +3256,9 @@ features of this release.
 - The first UI layer is `std/ui.oskl` (`docs/ui.md`): a declarative widget
   tree, deterministic layout, a `rect`/`text` display list and button hit
   testing, all plain Oskel over the portable primitive surface. Skia renders it
-  through `bindings/skia/skia_ui.oskl` (`docs/cxxbind.md`); SDL3 still owns the
-  OS window and events. Input widgets, a real event loop, font metrics and
-  presenting Skia into an SDL3 window are post-1.0 work.
+  through `std/internal/skia_ui.oskl` (`docs/cxxbind.md`); `std.ui.window`
+  presents it in an SDL3 window and runs the event loop. Input widgets, real
+  font metrics, text wrapping and dirty-region redraw are post-1.0 work.
 - No async/await, generics, full pattern matching, generators, or transactions. These are out of scope (see `DEVELOPMENT.md`).
 - Map keys are always strings. Literals accept identifier, string, scalar (`int`, `float`, `double`, `true`, `false`, `nil`) and computed `[expr]` keys; non-string keys are canonicalized to their string form.
 - A body of `if`, `while`, `for` or `for-in` may be a block or a single statement without braces; a brace-less body is wrapped in a block, so its bytecode and scoping match the brace form. `switch` arms always require braces.
@@ -3232,16 +3322,22 @@ import { sqrt, pow } from std.math; // selective: access is sqrt and pow
 
 | Form | Meaning |
 | --- | --- |
-| `import a.b;` | Load `a/b.oskl`, bind it to the namespace `a.b`, and also bind the last segment `b` when that name is free. Access is `a.b.name` or `b.name`. |
+| `import a.b;` | Load `a/b.oskl`, bind it to the namespace `a.b`, and also bind the last segment `b` when that name is free. Access is `a.b.name` or `b.name`. If `b` is PascalCase the file is a **class module** (§18.6): both bindings are its single export, the class itself. |
 | `import a.b.*;` | Load `a/b.oskl` and add all its public names to the current scope. Access is `name`. |
-| `import a.b as c;` | Load `a/b.oskl` and bind it to `c`. Access is `c.name`. An explicit alias suppresses the short name. |
+| `import a.b as c;` | Load `a/b.oskl` and bind it to `c`. Access is `c.name`. An explicit alias suppresses the short name. A class module binds its class under `c`. |
 | `import { x, y } from a.b;` | Load `a/b.oskl` and bind only `x` and `y`. Access is `x` and `y`. |
 
-The short name is the module's last path segment: `import std.sdl;` makes both
-`std.sdl.delayMs(...)` and `sdl.delayMs(...)` valid. It is skipped when a
+The short name is the module's last path segment: `import std.math;` makes both
+`std.math.sqrt(...)` and `math.sqrt(...)` valid. It is skipped when a
 top-level declaration of the importing file owns the name, and a second import
 that would bind the same short name to a different module is a compile error
 (§18.3); use `as` to choose the name in that case.
+
+A parent module imported after one of its children does not replace the
+namespace table: the parent's public names are merged into the existing table,
+so `import std.io.text;` then `import std.io;` keeps both `std.io.text` and
+`std.io.splitLines`. The reverse order works too, because a child import reads
+the parent table instead of creating a fresh namespace.
 
 ### 18.2 What a module exports
 
@@ -3317,8 +3413,24 @@ print(sqrt(25));            // 5
 
 The standard library ships `std.math` (§12.3), `std.json` (§12.9),
 `std.datetime` (§12.10), `std.path` (§12.11), `std.collections` (§12.12),
-`std.strings` (§12.13) and `std.io` (§12.14). All are ordinary modules, so the
-same four import forms apply:
+`std.strings` (§12.13), `std.io` (§12.14) and `std.fs` (§12.15). `std.io` is
+split into class modules (`std.io.StringReader`, `std.io.StringWriter`) and
+namespace modules (`std.io.reader`, `std.io.writer`, `std.io.text`) behind the
+`std.io` facade; `std.fs` is split the same way, with `std.fs.File` as its class
+module and `std.fs.dir` as its directory namespace. The four import forms above
+apply to the facades, and the class modules add the direct form of §18.6.
+`std.ui` (widgets) and `std.ui.window` (SDL3 window and event loop) are the UI
+layer (`docs/ui.md`).
+
+Modules under `std.internal/` are implementation details of a public module
+(SDL3 and Skia, for example); import the public module instead:
+
+```oskel
+import std.ui as ui;                 // widgets
+import std.ui.window as ui_window;   // SDL3 window and event loop
+```
+
+All of them are modules:
 
 ```oskel
 import std.json;             // std.json.parse and json.parse, ...
@@ -3326,6 +3438,53 @@ import std.json.*;           // parse, stringify, ...
 import std.json as json;     // json.parse, json.stringify, ...
 import { parse, stringify } from std.json;
 ```
+
+### 18.6 Class modules
+
+A module whose last path segment starts with an uppercase letter is a **class
+module**. It is one file with one public name, the same as the file name; every
+other top-level name starts with `_`. The compiler enforces the shape:
+
+```oskel
+// std/io/StringReader.oskl
+class StringReader {
+  ...
+}
+```
+
+Without an alias, `import std.io.StringReader;` binds the class itself, not the
+module table: both the full path and the short name are the class, so
+`StringReader(...)` and `std.io.StringReader(...)` construct one. `as` binds the
+class under the alias:
+
+```oskel
+import std.io.StringReader;           // StringReader(...)
+import std.io.StringReader as Reader; // Reader(...)
+```
+
+A wildcard or selective import already binds the single export, so it needs no
+special case:
+
+```oskel
+import std.io.StringReader.*;                     // StringReader(...)
+import { StringReader } from std.io.StringReader; // StringReader(...)
+```
+
+A lowercase last segment keeps the namespace semantics of §18.1: the import
+binds the module table. This is why `import ns.deep.leaf;` still exposes
+`ns.deep.leaf.leaf()`, and why `std.io.text` remains a namespace module.
+
+The rule is opt-in through the file name. A PascalCase module that exports zero
+or several public names, or a single public name that does not match the file
+name, is a compile error:
+
+```text
+class module 'std.io.StringReader' must export exactly one public name 'StringReader'
+```
+
+A class module's module table is not part of its public surface: the class is the
+only export. The module body still runs once, like any other module. A private
+helper (`_helper`) stays reachable from the class methods but is never exported.
 
 ---
 

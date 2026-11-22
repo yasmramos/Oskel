@@ -1322,6 +1322,11 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     builtins.emplace("readFile", rt.readFileBuiltin);
     builtins.emplace("writeFile", rt.writeFileBuiltin);
     builtins.emplace("fileExists", rt.fileExistsBuiltin);
+    builtins.emplace("fsOpen", rt.fsOpenBuiltin);
+    builtins.emplace("fsRead", rt.fsReadBuiltin);
+    builtins.emplace("fsWrite", rt.fsWriteBuiltin);
+    builtins.emplace("fsSeek", rt.fsSeekBuiltin);
+    builtins.emplace("fsClose", rt.fsCloseBuiltin);
   }
   if (hasArgv) builtins.emplace("args", rt.argsBuiltin);
   // `random()`/`seed()` (PHASE 7c.5b.6) work on every target: the generator is
@@ -1392,12 +1397,24 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   // The file builtins need the `open`/`readFd`/`writeFd`/`close` handles, which
   // a bare-metal image has no file system for.
   if (!hasFiles) {
-    for (const char* name : {"readFile", "writeFile", "fileExists"}) {
+    for (const char* name : {"readFile", "writeFile", "fileExists", "fsOpen",
+                             "fsRead", "fsWrite", "fsSeek", "fsClose"}) {
       if (!unassignedRead(name)) continue;
       throw LoweringError(std::string("lowering: ") + name +
                           "() needs a file system, which the bare-metal target "
                           "does not have");
     }
+  }
+  // Directory and metadata operations are VM-only for now: the streaming file
+  // builtins above carry the disk surface into an AOT image, while the
+  // directory half of `std.fs.dir` still needs target-specific prelude handles.
+  // The failure is named so it cannot be mistaken for a typo.
+  for (const char* name : {"fsRemove", "fsRename", "fsMkdir", "fsRmdir", "fsList",
+                           "fsStat", "fsCwd", "fsChdir"}) {
+    if (!unassignedRead(name)) continue;
+    throw LoweringError(
+        "lowering: std.fs.dir is VM-only for now: the AOT backend has no "
+        "directory handles");
   }
 
   // The scalar `extern "C"` surface, hosted only (PHASE 7f.5): each symbol gets
@@ -1706,7 +1723,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   if (mode == LinkMode::Hosted && target.os == Os::Windows) {
     startOffset = emitWindowsHostedRuntime(cg, entry, mainEntry);
   } else if (mode == LinkMode::Hosted) {
-    startOffset = emitHostedRuntime(cg, entry, mainEntry);
+    startOffset = emitHostedRuntime(cg, entry, mainEntry, target.os == Os::MacOs);
   } else if (target.os == Os::Windows) {
     startOffset = emitWindowsRuntime(cg, entry, mainEntry);
   } else if (target.os == Os::Freestanding) {

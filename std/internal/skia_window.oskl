@@ -1,0 +1,133 @@
+// Internal: present a `std.ui` tree through Skia and SDL3.
+//
+// `std.ui.window` is the public entry point. This module owns the SDL window,
+// the streaming texture and the raster Skia surface; it never appears in user
+// code or in the public documentation.
+//
+// A frame is: draw the display list into the Skia canvas, snapshot it, copy the
+// whole snapshot into one tightly packed BGRA buffer, upload that buffer to the
+// SDL texture and present the renderer. `maxFrames <= 0` runs until the user
+// closes the window or presses Escape; a positive value makes the loop finite
+// for a headless test.
+
+import std.internal.sdl as sdl;
+import std.internal.skia as skia;
+import std.internal.skia_ui as skia_ui;
+import std.ui as ui;
+
+fn frame(root, width, height, surface, canvas, pixels, texture, renderer): bool {
+  canvas.clear(0xFFFFFFFF);
+  skia_ui.render(ui.commands(root), canvas);
+
+  let image = surface.makeImageSnapshot();
+  if (!image.valid()) {
+    image.close();
+    return false;
+  }
+  let rowBytes = width * 4;
+  if (!skia.readPixels(image, pixels, rowBytes)) {
+    image.close();
+    return false;
+  }
+  image.close();
+
+  if (!sdl.updateTexture(texture, pixels, rowBytes)) {
+    return false;
+  }
+  if (!sdl.renderTexture(renderer, texture)) {
+    return false;
+  }
+  return sdl.present(renderer);
+}
+
+// Dispatch a click at window coordinates to the deepest button. Returns true
+// when a handler ran, so the caller can lay the tree out again.
+fn click(root, x, y): bool {
+  let hit = ui.hitTest(root, x, y);
+  if (hit == nil) {
+    return false;
+  }
+  let handler = hit.onClick;
+  handler();
+  return true;
+}
+
+fn run(title, root, width, height, maxFrames): int {
+  if (!sdl.initVideo()) {
+    panic("SDL_Init: " + sdl.lastError());
+  }
+  defer {
+    sdl.quit();
+  }
+
+  let window = sdl.SDL_CreateWindow(title, width, height, 0);
+  if (window == nil) {
+    panic("SDL_CreateWindow: " + sdl.lastError());
+  }
+  defer {
+    sdl.SDL_DestroyWindow(window);
+  }
+
+  let renderer = sdl.SDL_CreateRenderer(window, nil);
+  if (renderer == nil) {
+    panic("SDL_CreateRenderer: " + sdl.lastError());
+  }
+  defer {
+    sdl.SDL_DestroyRenderer(renderer);
+  }
+
+  let texture = sdl.createTexture(
+    renderer, sdl.SDL_PIXELFORMAT_ARGB8888,
+    sdl.SDL_TEXTUREACCESS_STREAMING, width, height);
+  if (texture == nil) {
+    panic("SDL_CreateTexture: " + sdl.lastError());
+  }
+  defer {
+    sdl.destroyTexture(texture);
+  }
+
+  let surface = skia.Surfaces.raster(width, height);
+  if (!surface.valid()) {
+    panic("Skia: could not create a raster surface");
+  }
+  defer {
+    surface.close();
+  }
+
+  let canvas = surface.getCanvas();
+  let pixels = buffer(width * height * 4);
+  let event = sdl.eventBuffer();
+  ui.layout(root, width, height);
+
+  var running = true;
+  var frames = 0;
+  while (running && (maxFrames <= 0 || frames < maxFrames)) {
+    while (sdl.SDL_PollEvent(event)) {
+      let kind = sdl.eventType(event);
+      if (kind == sdl.SDL_EVENT_QUIT) {
+        running = false;
+      }
+      if (kind == sdl.SDL_EVENT_KEY_DOWN &&
+          sdl.keyCode(event) == sdl.SDLK_ESCAPE) {
+        running = false;
+      }
+      if (kind == sdl.SDL_EVENT_MOUSE_BUTTON_DOWN &&
+          sdl.mouseButton(event) == sdl.SDL_BUTTON_LEFT &&
+          sdl.mouseButtonDown(event)) {
+        if (click(root, int(sdl.mouseX(event)), int(sdl.mouseY(event)))) {
+          ui.layout(root, width, height);
+        }
+      }
+    }
+
+    if (!running) {
+      break;
+    }
+    if (!frame(root, width, height, surface, canvas, pixels, texture, renderer)) {
+      panic("Skia/SDL: could not present a frame");
+    }
+    frames = frames + 1;
+    sdl.delayMs(16);
+  }
+  return frames;
+}

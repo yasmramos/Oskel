@@ -101,6 +101,22 @@ float marshalFloat(Runtime& rt, const Value& value, const std::string& typeName)
   return static_cast<float>(marshalDouble(rt, value, typeName));
 }
 
+// An SSE argument travels in an xmm register: a `double` fills it, a `float`
+// occupies its low 32 bits. Returning the float's bit pattern zero-extended into
+// a `double` slot is therefore what a callee expecting `float` reads, and it lets
+// the dispatch walk carry one branch for the whole SSE class instead of one per
+// floating-point width (3^N thunks become 2^N).
+double marshalSseBits(Runtime& rt, const Value& value, const std::string& typeName) {
+  if (typeName != "float") return marshalDouble(rt, value, typeName);
+  const float f = marshalFloat(rt, value, typeName);
+  std::uint32_t bits = 0;
+  std::memcpy(&bits, &f, sizeof(bits));
+  const std::uint64_t wide = bits;
+  double slot = 0;
+  std::memcpy(&slot, &wide, sizeof(slot));
+  return slot;
+}
+
 // -------------------------------------------------------------------- results
 
 // Truncates the raw `rax` to the width the declaration named, so a C `int` is
@@ -305,11 +321,10 @@ Value dispatch(void* address, ReturnClass rc, StructShape shape, const StructLay
                                    rt, built...,
                                    marshalGpr(rt, values[Index], classes[Index], types[Index]));
       case ParamClass::Float:
-        return dispatch<Index + 1>(address, rc, shape, layout, returnType, classes, types, values,
-                                   rt, built..., marshalFloat(rt, values[Index], types[Index]));
       case ParamClass::Double:
         return dispatch<Index + 1>(address, rc, shape, layout, returnType, classes, types, values,
-                                   rt, built..., marshalDouble(rt, values[Index], types[Index]));
+                                   rt, built...,
+                                   marshalSseBits(rt, values[Index], types[Index]));
       case ParamClass::Callback:
         // A callback is marshalled to an `int64` trampoline address before the
         // dispatch walk, so it never reaches here; fail rather than fall

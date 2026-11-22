@@ -20,9 +20,24 @@
 class Platform {
  public:
   enum class OpenMode {
-    Read,   // open an existing file for reading; fails if it does not exist
-    Write,  // create or truncate for writing
+    Read,    // open an existing file for reading; fails if it does not exist
+    Write,   // create or truncate for writing
+    Append,  // create if needed and write at the end
   };
+
+  // The subset of file metadata `std.fs.stat` exposes. `modified` is epoch
+  // seconds, the same unit as `time()`, so `std.datetime` can format it without
+  // a second conversion.
+  struct FileInfo {
+    std::uint64_t size = 0;
+    std::int64_t modified = 0;
+    bool isFile = false;
+    bool isDirectory = false;
+  };
+
+  // Called once per entry by `listDirectory`. The name is a basename, not a
+  // path, and is only valid for the duration of the call.
+  using DirectoryVisitor = void (*)(void* user, const char* name, bool isDirectory);
 
   enum class SeekOrigin {
     Start,    // offset from the beginning of the file
@@ -72,6 +87,25 @@ class Platform {
   // backward seeks are expressible; the freestanding implementation maps
   // SeekOrigin to the Linux whence values (0/1/2).
   virtual bool seek(int fd, std::int64_t offset, SeekOrigin origin) = 0;
+  // The current offset, or -1 when the descriptor cannot report one.
+  virtual std::int64_t tell(int /*fd*/) { return -1; }
+
+  // Filesystem operations behind `std.fs`. They are byte-oriented like the rest
+  // of the contract and return false instead of throwing, so the caller can
+  // turn a host failure into a runtime error that names the path. A platform
+  // that has no filesystem keeps the defaults, which report every operation as
+  // unavailable.
+  virtual bool remove(const char*) { return false; }
+  virtual bool rename(const char*, const char*) { return false; }
+  virtual bool makeDirectory(const char*) { return false; }
+  virtual bool removeDirectory(const char*) { return false; }
+  virtual bool fileStat(const char*, FileInfo&) { return false; }
+  virtual bool listDirectory(const char*, DirectoryVisitor, void*) { return false; }
+  // Copies the current working directory into `buffer` (NUL-terminated) and
+  // returns false when it does not fit. `changeDirectory` fails when the host
+  // rejects the path.
+  virtual bool currentDirectory(char*, std::size_t) { return false; }
+  virtual bool changeDirectory(const char*) { return false; }
 
   // Terminates the process. A test implementation may throw instead of
   // returning; either way it never returns normally.

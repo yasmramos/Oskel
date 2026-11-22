@@ -1,0 +1,73 @@
+// Standard library: directories and file metadata.
+//
+// This is the half of `std.fs` that needs a host directory API. It is VM-only
+// for now: the AOT backend implements the streaming file primitives
+// (`std.fs.File`) on every target with a file system, but the directory and
+// metadata primitives still need per-target prelude handles, so `oskel build`
+// reports a named error when this module is used (BACKLOG §6).
+//
+//   import std.fs.dir;
+//   std.fs.dir.makeDir("out");
+//   let names = std.fs.dir.listDir("out");
+//   let info = std.fs.dir.stat("out");
+//
+// Paths are ordinary strings, so `std.path.join` composes with every function.
+// A NUL byte is rejected at the primitive.
+
+// Removes a file or an empty directory.
+fn remove(path: string) {
+  fsRemove(path);
+}
+
+// Renames or moves a file or directory.
+fn rename(from: string, to: string) {
+  fsRename(from, to);
+}
+
+// Creates one directory. The parent must already exist.
+fn makeDir(path: string) {
+  fsMkdir(path);
+}
+
+// Removes an empty directory.
+fn removeDir(path: string) {
+  fsRmdir(path);
+}
+
+// The entry names in `path`, sorted. The names are basenames, not paths.
+@MustUse
+fn listDir(path: string): array {
+  return fsList(path);
+}
+
+// Metadata for `path`: `{size, modified, isFile, isDir}`. `modified` is epoch
+// seconds, the same unit as `time()`.
+@MustUse
+fn stat(path: string): map {
+  return fsStat(path);
+}
+
+// True when `path` names a file or a directory.
+@MustUse
+fn exists(path: string): bool {
+  let result = pcall(() => fsStat(path));
+  return result.ok;
+}
+
+// True when `path` names a directory.
+@MustUse
+fn isDir(path: string): bool {
+  let result = pcall(() => fsStat(path));
+  return result.ok && result.value.isDir;
+}
+
+// The current working directory.
+@MustUse
+fn currentDir(): string {
+  return fsCwd();
+}
+
+// Changes the current working directory.
+fn changeDir(path: string) {
+  fsChdir(path);
+}

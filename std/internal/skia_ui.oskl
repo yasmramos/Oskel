@@ -1,20 +1,11 @@
-// Skia backend for the display list produced by `std.ui`.
+// Internal Skia backend for the display list produced by `std.ui`.
 //
-// Import it beside the generated `skia.oskl`:
-//
-//   import skia;
-//   import skia_ui;
-//   import std.ui;
-//
-//   let root = ui.window("Demo", 320, 200, ui.column(8, [ui.text("Hello", 24)]));
-//   ui.layout(root, 320, 200);
-//   skia_ui.render(ui.commands(root), canvas);
-//
-// The backend owns the Skia objects it creates and closes them before it
-// returns. It only understands the two commands `std.ui` emits today: `rect`
-// and `text`.
+// `std.ui.window` reaches this module through `std.internal.skia_window`; it
+// is not public API. The backend owns the Skia objects it creates and closes
+// them before it returns. It only understands the two commands `std.ui` emits
+// today: `rect` and `text`.
 
-import skia;
+import std.internal.skia as skia;
 
 fn render(commands, canvas) {
   for cmd in commands {

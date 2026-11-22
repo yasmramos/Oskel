@@ -1,0 +1,134 @@
+// `std.fs`: streaming files and the VM directory/metadata surface.
+//
+// The streaming half is covered against the AOT backend by
+// `tests/native_build_fs.oskl`; this fixture adds the directory half and the
+// error paths the VM reports, which a `oskel build` fixture cannot assert
+// because a raised runtime error is not a value.
+import std.fs;
+import std.fs.File as DirectFile;
+import std.fs.dir;
+
+let dir = "oskel_fs_test_dir";
+
+fn clean() {
+  if (std.fs.dir.exists(dir)) {
+    for name in std.fs.dir.listDir(dir) {
+      std.fs.dir.remove(dir + "/" + name);
+    }
+    std.fs.dir.removeDir(dir);
+  }
+}
+
+fn testFileClass() {
+  let writer = std.fs.File("lines.txt", "w");
+  writer.write("one\n");
+  writer.writeln("two");
+  assertEq(writer.size(), 8);
+  assert(!writer.isClosed());
+  writer.close();
+  writer.close();
+  assert(writer.isClosed());
+
+  let direct = DirectFile("lines.txt", "r");
+  assertEq(direct.read(3), "one");
+  direct.close();
+
+  let reader = std.fs.open("lines.txt", "r");
+  assertEq(reader.readLine(), "one");
+  assertEq(reader.readLine(), "two");
+  assertEq(reader.readLine(), "");
+  assert(reader.eof());
+  assertEq(reader.position(), 8);
+  assertEq(reader.seek(0, "start"), 0);
+  assertEq(reader.read(3), "one");
+  assertEq(reader.position(), 3);
+  assertEq(reader.size(), 8);
+  assertEq(reader.position(), 3);
+  reader.close();
+}
+
+fn testDirectories() {
+  std.fs.writeText("a.txt", "one\ntwo\n");
+  std.fs.appendText("a.txt", "three\n");
+  assertEq(std.fs.readText("a.txt"), "one\ntwo\nthree\n");
+
+  std.fs.dir.makeDir("sub");
+  assert(std.fs.dir.exists("sub"));
+  assert(std.fs.dir.isDir("sub"));
+  assert(std.fs.dir.stat("sub").isDir);
+  assert(!std.fs.dir.stat("sub").isFile);
+
+  let info = std.fs.dir.stat("a.txt");
+  assert(info.isFile);
+  assert(!info.isDir);
+  assertEq(info.size, 14);
+  assert(info.modified > 0);
+
+  assertEq(std.fs.dir.listDir("."), ["a.txt", "lines.txt", "sub"]);
+
+  std.fs.dir.rename("a.txt", "b.txt");
+  assert(!std.fs.dir.exists("a.txt"));
+  assert(std.fs.dir.exists("b.txt"));
+  std.fs.dir.remove("b.txt");
+  assert(!std.fs.dir.exists("b.txt"));
+
+  std.fs.dir.removeDir("sub");
+  assert(!std.fs.dir.exists("sub"));
+  assertEq(std.fs.dir.listDir("."), ["lines.txt"]);
+}
+
+fn testErrors() {
+  let missing = pcall(() => std.fs.open("does-not-exist.txt", "r"));
+  assert(!missing.ok);
+  assert(missing.error.message.contains("cannot open file"));
+
+  let badMode = pcall(() => std.fs.open("lines.txt", "z"));
+  assert(!badMode.ok);
+  assert(badMode.error.message.contains("mode must be"));
+
+  let reader = std.fs.open("lines.txt", "r");
+  reader.close();
+  let closed = pcall(() => reader.read(1));
+  assert(!closed.ok);
+  assert(closed.error.message.contains("closed"));
+
+  let badSeek = pcall(() => reader.seek(0, "sideways"));
+  assert(!badSeek.ok);
+  assert(badSeek.error.message.contains("closed"));
+
+  let openReader = std.fs.open("lines.txt", "r");
+  let badOrigin = pcall(() => openReader.seek(0, "sideways"));
+  assert(!badOrigin.ok);
+  assert(badOrigin.error.message.contains("seek origin"));
+  openReader.close();
+
+  let removeMissing = pcall(() => std.fs.dir.remove("missing.txt"));
+  assert(!removeMissing.ok);
+  assert(removeMissing.error.message.contains("cannot remove"));
+
+  let listMissing = pcall(() => std.fs.dir.listDir("missing-dir"));
+  assert(!listMissing.ok);
+  assert(listMissing.error.message.contains("cannot list directory"));
+
+  let statMissing = pcall(() => std.fs.dir.stat("missing-dir"));
+  assert(!statMissing.ok);
+  assert(statMissing.error.message.contains("cannot stat"));
+}
+
+fn main() {
+  clean();
+  std.fs.dir.makeDir(dir);
+  let original = std.fs.dir.currentDir();
+  std.fs.dir.changeDir(dir);
+  assert(std.fs.dir.currentDir() != original);
+
+  testFileClass();
+  testDirectories();
+  testErrors();
+
+  std.fs.dir.changeDir(original);
+  clean();
+  print("std.fs ok");
+}
+
+main();

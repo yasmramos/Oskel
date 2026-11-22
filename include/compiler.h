@@ -53,6 +53,13 @@ struct ImportedModule {
   std::string path;                    // dotted module path, e.g. "std.math"
   std::shared_ptr<Bytecode> code;      // module body, run once per program
   std::vector<std::string> symbols;    // public names, in declaration order
+  // A class module is a module whose last path segment starts with an uppercase
+  // letter. It must export exactly one public name, equal to that segment; a
+  // qualified import binds the export itself (the class constructor), not the
+  // module table, so `import std.io.StringReader;` makes `StringReader(...)`
+  // callable. `className` is the single public name when `classModule` is true.
+  bool classModule = false;
+  std::string className;
   // Signature of every public native export, keyed by export name (PHASE 7f.2).
   // The public names that are host bindings (`native fn` or `extern "C"`) are
   // exactly the keys: the AOT backend has no host to resolve one against, so a
@@ -746,6 +753,13 @@ class Compiler {
   // name, instead of reporting the collision an explicit binding would.
   void compileQualifiedImport(const ImportedModule& module, const std::string& boundName,
                               int line, int col, bool implicitShortAlias = false);
+
+  // Compiles a qualified import of a class module: the module table is read
+  // once, but the binding is the single export (`module.className`) instead of
+  // the table. A dotted `boundName` binds that value at the namespace leaf; a
+  // bare name (alias or the convenience short name) binds it as a global.
+  void compileClassImport(const ImportedModule& module, const std::string& boundName,
+                          int line, int col, bool implicitShortAlias = false);
 
   // Compiles a wildcard or selective import, binding each imported name to a
   // global. Reports an ambiguity when two `.*` imports export the same name.

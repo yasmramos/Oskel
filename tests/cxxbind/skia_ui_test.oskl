@@ -1,5 +1,5 @@
-import skia;
-import skia_ui;
+import std.internal.skia as skia;
+import std.internal.skia_ui as skia_ui;
 import std.ui as ui;
 
 fn assertEq(actual: int, expected: int) {

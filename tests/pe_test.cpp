@@ -172,7 +172,7 @@ int main() {
   // instead of leaving a hard-coded count behind.
   const char* expected[] = {"WriteFile", "GetStdHandle", "ExitProcess", "VirtualAlloc",
                             "GetSystemTimeAsFileTime", "GetTickCount64", "CreateFileA",
-                            "ReadFile", "CloseHandle"};
+                            "ReadFile", "CloseHandle", "SetFilePointerEx"};
   static_assert(sizeof(expected) / sizeof(expected[0]) ==
                     static_cast<std::size_t>(PeImport::Count),
                 "every PeImport needs its name here");

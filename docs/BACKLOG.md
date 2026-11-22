@@ -387,9 +387,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     were not seeded by the AOT backend, so a program that called one failed
     `oskel build` with "global 'X' is read but never assigned" (exit 65) while
     the VM ran it. `tests/check_builtin_parity.cmake` enumerates the set from
-    both sides, so a new builtin cannot be added to one engine alone; its
-    exception list is now empty. Every one is implemented, each with the parity
-    fixture that pins it:
+    both sides, so a new builtin cannot be added to one engine alone. Its
+    exception list now holds only the `std.fs.dir` directory builtins below.
+    Every original one is implemented, each with the parity fixture that pins
+    it:
     - **Pointers** (`cstring`, `cstr`, `buffer`, `byteLen`, `loadByte`,
       `storeByte`, `intToPtr`, `ptrToInt`, `free`). The VM keeps them in a
       reference-counted `PtrObj`; the image keeps an `AotPtr` in the arena
@@ -405,6 +406,22 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
       themselves are target-independent. A bare-metal image has no file system,
       so it binds none of the handles and the lowerer rejects the three by
       name. Fixture: `tests/native_build_files.oskl`.
+    - **Streaming files** (`fsOpen`, `fsRead`, `fsWrite`, `fsSeek`, `fsClose`),
+      the primitives behind `std.fs.File`. `oskel_open` gained the append mode
+      (`O_APPEND`/`_O_APPEND`/`FILE_APPEND_DATA`) and the prelude gained
+      `oskel_seek`/`oskel_tell` (`lseek`, `SetFilePointerEx`, `_lseeki64`), so
+      the builtins stay target-independent. They are seeded wherever
+      `readFile` is, and rejected by name on bare metal. Fixtures:
+      `tests/native_build_fs.oskl` (freestanding, VM parity) and
+      `oskel.build_fs_hosted` (the same fixture through libc/`_lseeki64`).
+      The directory half (`fsRemove`, `fsRename`, `fsMkdir`, `fsRmdir`,
+      `fsList`, `fsStat`, `fsCwd`, `fsChdir`) is **VM-only for now**; it is the
+      documented `vm_only` list in `tests/check_builtin_parity.cmake`, and a
+      used name makes `oskel build` fail with "std.fs.dir is VM-only for now"
+      instead of the generic unassigned-global error. `PlatformFreestanding`
+      already implements the Linux syscalls, but the AOT prelude does not emit
+      those handles and no builtin is seeded; wiring that side is the next
+      step.
     - **`clock`**. Reads the `entry.monotonic` handle, which every prelude
       binds (Linux `clock_gettime(CLOCK_MONOTONIC)`, hosted the same through
       libc, Windows `GetTickCount64`, bare metal the PIT tick counter), and
@@ -846,7 +863,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 6. **[P3]** `rawSyscall` uses inline asm with a `"memory"` clobber and is not
    MSVC-portable; note the constraint where it is used.
 7. ~~**[P2]** `PlatformPosix::lookupSymbol` on Windows does not search the other
-   DLLs the process has loaded, so a `std.sdl` program linked against
+   DLLs the process has loaded, so a `std.internal.sdl` program linked against
    `SDL3.dll` still fails to resolve `SDL_*` at run time.~~ **Done**: after the
    process image, `kernel32.dll` and the CRT, the Windows path walks every
    loaded module with `CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, ...)` and
@@ -936,10 +953,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    disagrees with its manifest, and resolves a local-registry dependency from
    `$OSKEL_REGISTRY`. The tool is standalone and drives `oskel`/`oskelc` as
    child processes; `OSKEL_MODULE_ROOT` is the only compiler-side hook.
-8. **[P3]** Add a "hello world with UI" tutorial. The first headless widget
-   layer exists (`std/ui.oskl`, `docs/ui.md`); the tutorial should wait for
-   presenting a Skia surface into an SDL3 window.
-9. **[P2] [partial]** SDL3 bindings landed (post-1.0 UI): `std/sdl.oskl` binds
+8. **[P3]** Add a "hello world with UI" tutorial. The widget layer
+   (`std/ui.oskl`) and the public window loop (`std.ui.window`) exist now, so
+   the tutorial can use `examples/ui/window.oskl` as its starting point.
+9. **[P2] [partial]** SDL3 bindings landed (post-1.0 UI): `std/internal/sdl.oskl` binds
    the window, renderer and event surface, `docs/sdl.md` documents it, and
    `oskel build --mode hosted --link-lib SDL3` compiles it. The C++ bridge
    (`bindgen --cxx`, `docs/cxxbind.md`) now generates Oskel classes plus a C++
@@ -950,9 +967,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    the VM and the hosted AOT binary. `std/ui.oskl` is the first declarative
    layer (`window`, `column`, `row`, `padding`, `spacer`, `text`, `button`;
    layout, `rect`/`text` display list and hit testing), and
-   `bindings/skia/skia_ui.oskl` renders it. Still pending: presenting that
-   raster surface into an SDL3 window, an event loop, input widgets, real font
-   metrics and text wrapping.
+   `std/internal/skia_ui.oskl` renders it. `std.ui.window` now presents the
+   raster surface through a streaming `SDL_Texture`, runs the event loop and
+   dispatches left clicks through `hitTest`; `std.internal.sdl` and the Skia
+   modules stay internal. Still pending: input widgets beyond a button, real
+   font metrics, text wrapping and a dirty-region redraw.
 10. **[P3]** Add `dlopen`/`dlsym` as a builtin for dynamic FFI.
 11. **[P1] [done]** `oskelp`: the local registry (`$OSKEL_REGISTRY`) landed
     with semver requirements (exact, `^`, `~`, comparators, wildcards and a

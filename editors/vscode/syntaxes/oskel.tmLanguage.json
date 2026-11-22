@@ -273,7 +273,7 @@
         {
           "comment": "Every `addNative` name in src/builtins.cpp. `tests/check_vscode_grammar.cmake` fails when this list and the compiler drift apart.",
           "name": "support.function.builtin.oskl",
-          "match": "\\b(?:print|write|eprint|input|len|type|repr|str|int|float|double|bool|error|isError|panic|pcall|assert|assertEq|range|chr|ord|sqrt|pow|exp|log|sin|cos|tan|ceil|floor|round|random|seed|clock|time|memSize|exit|args|cstring|cstr|ptrToInt|intToPtr|byteLen|loadByte|storeByte|readFile|writeFile|fileExists|free|buffer)\\b(?=\\s*\\()"
+          "match": "\\b(?:print|write|eprint|input|len|type|repr|str|int|float|double|bool|error|isError|panic|pcall|assert|assertEq|range|chr|ord|sqrt|pow|exp|log|sin|cos|tan|ceil|floor|round|random|seed|clock|time|memSize|exit|args|cstring|cstr|ptrToInt|intToPtr|byteLen|loadByte|storeByte|readFile|writeFile|fileExists|fsOpen|fsRead|fsWrite|fsSeek|fsClose|fsRemove|fsRename|fsMkdir|fsRmdir|fsList|fsStat|fsCwd|fsChdir|free|buffer)\\b(?=\\s*\\()"
         }
       ]
     },

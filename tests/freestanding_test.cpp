@@ -125,6 +125,20 @@ static void test_platform_roundtrip() {
   check(platform.read(fd, &first, 1) == 1 && first == 'h', "seek repositions the cursor");
   platform.close(fd);
 
+  // Append creates when needed and writes at the end; tell reports the
+  // resulting position.
+  fd = platform.open(path, Platform::OpenMode::Append);
+  check(fd != Platform::kInvalidFd, "open(Append) returns a descriptor");
+  platform.write(fd, "more\n", 5);
+  platform.close(fd);
+  fd = platform.open(path, Platform::OpenMode::Read);
+  check(platform.tell(fd) == 0, "tell starts at the beginning");
+  check(platform.seek(fd, 0, Platform::SeekOrigin::End), "seek(End) succeeds");
+  check(platform.tell(fd) == static_cast<std::int64_t>(std::strlen(payload) + 5),
+        "append wrote at the end and tell reports it");
+  platform.close(fd);
+  check(platform.remove(path), "remove deletes the file");
+
   // Missing file: Read does not create.
   check(platform.open("/tmp/oskel_does_not_exist_12345", Platform::OpenMode::Read) ==
             Platform::kInvalidFd,
@@ -136,6 +150,61 @@ static void test_platform_roundtrip() {
   check(p1 != nullptr && p2 != nullptr && p1 != p2, "platform alloc returns distinct blocks");
   check(reinterpret_cast<std::uintptr_t>(p1) % 16 == 0, "platform alloc honours alignment");
   platform.dealloc(p1);  // no-op, must not crash
+}
+
+struct DirectoryEntries {
+  std::vector<std::string> names;
+};
+
+static void collectDirectoryEntry(void* user, const char* name, bool /*isDirectory*/) {
+  static_cast<DirectoryEntries*>(user)->names.emplace_back(name);
+}
+
+static void test_platform_directories() {
+  PlatformFreestanding platform;
+  const char* dir = "/tmp/oskel_freestanding_dir";
+  const char* file = "/tmp/oskel_freestanding_dir/a.txt";
+  const char* renamed = "/tmp/oskel_freestanding_dir/b.txt";
+
+  platform.remove(renamed);
+  platform.remove(file);
+  platform.removeDirectory(dir);
+
+  check(platform.makeDirectory(dir), "makeDirectory creates a directory");
+  int fd = platform.open(file, Platform::OpenMode::Write);
+  check(fd != Platform::kInvalidFd, "open creates a file in the new directory");
+  platform.write(fd, "hello", 5);
+  platform.close(fd);
+
+  Platform::FileInfo info;
+  check(platform.fileStat(file, info) && info.isFile && !info.isDirectory &&
+            info.size == 5,
+        "fileStat reports a five-byte regular file");
+  check(platform.fileStat(dir, info) && info.isDirectory && !info.isFile,
+        "fileStat reports a directory");
+
+  DirectoryEntries entries;
+  check(platform.listDirectory(dir, collectDirectoryEntry, &entries),
+        "listDirectory walks the directory");
+  bool found = false;
+  for (const std::string& name : entries.names) {
+    if (name == "a.txt") found = true;
+  }
+  check(found, "listDirectory reports the file basename");
+
+  char original[4096];
+  check(platform.currentDirectory(original, sizeof original),
+        "currentDirectory reports the working directory");
+  check(platform.changeDirectory(dir), "changeDirectory enters the new directory");
+  char inside[4096];
+  check(platform.currentDirectory(inside, sizeof inside) &&
+            std::string(inside) == std::string(dir),
+        "currentDirectory reflects changeDirectory");
+  check(platform.changeDirectory(original), "changeDirectory restores the original directory");
+
+  check(platform.rename(file, renamed), "rename moves the file");
+  check(platform.remove(renamed), "remove deletes the renamed file");
+  check(platform.removeDirectory(dir), "removeDirectory removes the empty directory");
 }
 
 // A signal delivered while `read` blocks on a pipe returns EINTR. The platform
@@ -2010,6 +2079,7 @@ int main() {
   test_arena();
 #ifdef FREESTANDING_EXEC_TESTS
   test_platform_roundtrip();
+  test_platform_directories();
   test_read_retries_on_eintr();
   test_end_to_end();
   test_boxed_runtime_print();

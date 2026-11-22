@@ -1,0 +1,84 @@
+// `std.io.StringWriter` is a class module: one file, one public class. The
+// PascalCase file name is what makes `import std.io.StringWriter;` bind the
+// class itself instead of the module table (docs/language.md §18.6).
+//
+// Concatenates `chunks[lo:hi]` with a balanced tree, so `k` chunks cost
+// O(total * log k) instead of O(total * k) when the prefix is copied per write.
+fn _concatRange(chunks: array, lo: int, hi: int): string {
+  if (hi - lo == 1) {
+    return chunks[lo];
+  }
+  let mid = lo + (hi - lo) / 2;
+  return _concatRange(chunks, lo, mid) + _concatRange(chunks, mid, hi);
+}
+
+// A growable text buffer. Writes never re-scan the accumulated text; `toString`
+// concatenates the chunks with a balanced tree.
+//
+//   let w = StringWriter();
+//   w.write("a").writeln("b");
+//   w.toString()   // "a\nb\n"
+class StringWriter {
+  chunks: array;
+  count: int;
+
+  fn init() {
+    self.chunks = [];
+    self.count = 0;
+  }
+
+  // Appends `s`; returns `self` for chaining.
+  fn write(s: string) {
+    self.chunks[len(self.chunks)] = s;
+    self.count = self.count + len(s);
+    return self;
+  }
+
+  // Appends `s` followed by a newline; returns `self`.
+  fn writeln(s: string) {
+    self.write(s);
+    self.write("\n");
+    return self;
+  }
+
+  // Appends every element of `xs`; returns `self`.
+  fn writeAll(xs: array) {
+    for x in xs {
+      self.write(x);
+    }
+    return self;
+  }
+
+  // Appends every element of `xs` followed by a newline; returns `self`.
+  fn writeLines(xs: array) {
+    for x in xs {
+      self.writeln(x);
+    }
+    return self;
+  }
+
+  // The number of code points written so far.
+  fn size(): int {
+    return self.count;
+  }
+
+  // True when nothing has been written.
+  fn isEmpty(): bool {
+    return self.count == 0;
+  }
+
+  // The accumulated text.
+  fn toString(): string {
+    if (len(self.chunks) == 0) {
+      return "";
+    }
+    return _concatRange(self.chunks, 0, len(self.chunks));
+  }
+
+  // Discards everything; returns `self`.
+  fn clear() {
+    self.chunks = [];
+    self.count = 0;
+    return self;
+  }
+}

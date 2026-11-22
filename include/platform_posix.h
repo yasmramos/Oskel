@@ -22,6 +22,16 @@ class PlatformPosix final : public Platform {
   int open(const char* path, OpenMode mode) override;
   void close(int fd) override;
   bool seek(int fd, std::int64_t offset, SeekOrigin origin) override;
+  std::int64_t tell(int fd) override;
+
+  bool remove(const char* path) override;
+  bool rename(const char* from, const char* to) override;
+  bool makeDirectory(const char* path) override;
+  bool removeDirectory(const char* path) override;
+  bool fileStat(const char* path, FileInfo& out) override;
+  bool listDirectory(const char* path, DirectoryVisitor visit, void* user) override;
+  bool currentDirectory(char* buffer, std::size_t size) override;
+  bool changeDirectory(const char* path) override;
 
   [[noreturn]] void exit(int code) override;
 

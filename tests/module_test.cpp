@@ -481,6 +481,93 @@ void testStructImportNameConflict() {
   check(globalInt(vm, "got") == 14, "a struct and a differently named import coexist");
 }
 
+void testClassModuleImports() {
+  {
+    VM vm;
+    compileAndRun("import modules.Point;\nlet got = Point(2, 3).sum();\n", fixtureResolver(),
+                  vm);
+    check(globalInt(vm, "got") == 5, "class module: qualified import binds the class");
+  }
+  {
+    VM vm;
+    compileAndRun("import modules.Point;\nlet got = modules.Point(4, 5).sum();\n",
+                  fixtureResolver(), vm);
+    check(globalInt(vm, "got") == 9, "class module: the full path is the class");
+  }
+  {
+    VM vm;
+    compileAndRun("import modules.Point as P;\nlet got = P(1, 1).sum();\n", fixtureResolver(),
+                  vm);
+    check(globalInt(vm, "got") == 2, "class module: an alias binds the class");
+  }
+  {
+    VM vm;
+    compileAndRun("import modules.Point.*;\nlet got = Point(3, 3).sum();\n", fixtureResolver(),
+                  vm);
+    check(globalInt(vm, "got") == 6, "class module: a wildcard binds the class");
+  }
+  {
+    VM vm;
+    compileAndRun("import { Point } from modules.Point;\nlet got = Point(0, 7).sum();\n",
+                  fixtureResolver(), vm);
+    check(globalInt(vm, "got") == 7, "class module: a selective import binds the class");
+  }
+}
+
+void testClassModuleValidation() {
+  auto errorFor = [](const std::string& source) {
+    Compiler compiler;
+    ModuleResolver resolver = fixtureResolver();
+    compiler.setImportLoader(loaderFor(resolver));
+    try {
+      compiler.compile(parseSource(source));
+    } catch (const CompileError& error) {
+      return error.message;
+    }
+    return std::string();
+  };
+
+  const std::string multi = errorFor("import modules.Multi;\n");
+  check(multi.find("class module 'modules.Multi' must export exactly one public name 'Multi'") !=
+            std::string::npos,
+        "a PascalCase module with two public names is rejected");
+
+  const std::string wrong = errorFor("import modules.WrongName;\n");
+  check(wrong.find(
+            "class module 'modules.WrongName' must export exactly one public name 'WrongName'") !=
+            std::string::npos,
+        "a PascalCase module must export the name in its file name");
+
+  const std::string empty = errorFor("import modules.Empty;\n");
+  check(empty.find("class module 'modules.Empty' must export exactly one public name 'Empty'") !=
+            std::string::npos,
+        "a PascalCase module with no public name is rejected");
+}
+
+void testParentChildImportOrder() {
+  {
+    VM vm;
+    compileAndRun("import std.io.text;\nimport std.io;\n"
+                  "let got = len(std.io.text.splitLines(\"a\\nb\"));\n",
+                  fixtureResolver(), vm);
+    check(globalInt(vm, "got") == 2, "a child import before its parent keeps std.io.text");
+  }
+  {
+    VM vm;
+    compileAndRun("import std.io;\nimport std.io.text;\n"
+                  "let got = len(std.io.text.splitLines(\"a\\nb\"));\n",
+                  fixtureResolver(), vm);
+    check(globalInt(vm, "got") == 2, "a child import after its parent keeps std.io.text");
+  }
+  {
+    VM vm;
+    compileAndRun("import std.io.StringReader;\nimport std.io;\n"
+                  "let got = len(std.io.StringReader(\"abc\").readAll());\n",
+                  fixtureResolver(), vm);
+    check(globalInt(vm, "got") == 3, "a class import before its parent keeps the class path");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -494,6 +581,9 @@ int main() {
   testAlias();
   testWildcard();
   testSelective();
+  testClassModuleImports();
+  testClassModuleValidation();
+  testParentChildImportOrder();
   testPrivateNameIsNotExported();
   testAmbiguityIsCompileError();
   testModuleRunsOnce();

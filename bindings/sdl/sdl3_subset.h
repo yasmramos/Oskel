@@ -1,5 +1,5 @@
 /*
- * The SDL3 surface `bindgen` translates into `std/sdl.oskl`.
+ * The SDL3 surface `bindgen` translates into `std/internal/sdl.oskl`.
  *
  * This header is not a copy of SDL3's public headers: it is the curated subset
  * the Oskel module exposes, written with the exact C types of the real API so
@@ -12,8 +12,8 @@
  *   ./build/bindgen bindings/sdl/sdl3_subset.h
  *
  * and replace the block between the `extern "C" {` and its closing `}` in
- * `std/sdl.oskl`. The helpers below that block are hand-written and are not
- * touched by the generator.
+ * `std/internal/sdl.oskl`. The helpers below that block are hand-written and
+ * are not touched by the generator.
  *
  * SDL3 specifics this subset encodes:
  *   - `SDL_Init` and the renderer/event predicates return `bool`.
@@ -24,6 +24,9 @@
  *   - The renderer's rectangle is `SDL_FRect` (floats), passed by pointer.
  *   - `SDL_Event` is a union, so it is opaque here; the Oskel helpers read its
  *     fixed offsets from a 128-byte buffer.
+ *   - A streaming `SDL_Texture` is the presentation path for a rendered
+ *     surface: `SDL_UpdateTexture` copies a tightly packed pixel buffer and
+ *     `SDL_RenderTexture` draws it.
  */
 
 #include <stdbool.h>
@@ -37,8 +40,10 @@ typedef unsigned int SDL_InitFlags;
 typedef struct SDL_Window SDL_Window;
 typedef struct SDL_Renderer SDL_Renderer;
 typedef struct SDL_Surface SDL_Surface;
+typedef struct SDL_Texture SDL_Texture;
 typedef union SDL_Event SDL_Event;
 typedef struct SDL_FRect SDL_FRect;
+typedef struct SDL_Rect SDL_Rect;
 
 bool SDL_Init(SDL_InitFlags flags);
 void SDL_Quit(void);
@@ -65,6 +70,11 @@ bool SDL_RenderLine(SDL_Renderer *renderer, float x1, float y1, float x2, float 
 bool SDL_RenderRect(SDL_Renderer *renderer, const SDL_FRect *rect);
 bool SDL_RenderFillRect(SDL_Renderer *renderer, const SDL_FRect *rect);
 bool SDL_RenderPresent(SDL_Renderer *renderer);
+
+SDL_Texture *SDL_CreateTexture(SDL_Renderer *renderer, Uint32 format, int access, int w, int h);
+void SDL_DestroyTexture(SDL_Texture *texture);
+bool SDL_UpdateTexture(SDL_Texture *texture, const SDL_Rect *rect, const void *pixels, int pitch);
+bool SDL_RenderTexture(SDL_Renderer *renderer, SDL_Texture *texture, const SDL_FRect *srcrect, const SDL_FRect *dstrect);
 
 bool SDL_PollEvent(SDL_Event *event);
 bool SDL_PushEvent(SDL_Event *event);

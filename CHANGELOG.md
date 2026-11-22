@@ -11,6 +11,45 @@ may change between minor versions.
 
 ### Added
 
+- **The WebAssembly backend tree-shakes the runtime (PHASE 9.4).** A bound
+  method is only reachable through a static member read (`a.push`, `a?.push`);
+  indexing (`a[k]`) is an index, never a method. The compiler records those
+  names on the proto (`Bytecode::usedMethods`) and the WASM lowering keeps a
+  body only for the reachable helpers, replacing the rest with an `unreachable`
+  stub and omitting the Unicode case table a program never uses. A
+  `print("hello")` module drops from 60,384 to 34,179 bytes (gzip: 24,141 to
+  15,473), while a program that reads `"abc".upper` keeps exactly the upper
+  helper and its table. `tests/wasm_tree_shake.cmake` pins both the size and
+  the VM parity.
+
+- **`std.ui.window` presents widgets through SDL3 and Skia.** The public entry
+  point opens the window, draws the `std.ui` display list into a raster Skia
+  surface, copies the whole surface into one tightly packed BGRA buffer
+  (`SkImage::readPixels`, one FFI call per frame), uploads it to a streaming
+  `SDL_Texture`, presents the renderer, polls events and dispatches a left click
+  through `ui.hitTest`. `maxFrames` bounds the loop for a headless test.
+  `std.internal.sdl` now binds `SDL_Texture`, `SDL_CreateTexture`,
+  `SDL_UpdateTexture` and `SDL_RenderTexture`. `tests/sdl_bindings.oskl`,
+  `tests/cxxbind/skia_test.oskl` and the new
+  `tests/cxxbind/skia_window_test.oskl` cover the path on the VM and the hosted
+  AOT binary.
+
+- **Class modules: a PascalCase module binds its class.** A module whose last
+  path segment starts with an uppercase letter is a class module: it must
+  export exactly one public name, the file name, and every other top-level
+  name starts with `_`. `import std.io.StringReader;` now binds the class
+  itself (the full path and the short name), `as` binds it under the alias, and
+  `.*`/selective already bind the one export. Lowercase modules keep the
+  namespace semantics, so `ns.deep.leaf.leaf()` and
+  `std.io.text.splitLines(...)` are unchanged. `std.io` is split into
+  `std/io/StringReader.oskl` and `std/io/StringWriter.oskl` (class modules),
+  `std/io/reader.oskl`, `std/io/writer.oskl` and `std/io/text.oskl` (namespace
+  modules) and the `std/io.oskl` facade; `import std.io.*` and the existing
+  four import forms keep working. A parent module imported after one of its
+  children now merges its public names into the namespace table instead of
+  replacing it, so the facade and its submodules can be imported in either
+  order. See `docs/language.md` §18.6 and `tests/module_test.cpp`.
+
 - **The WebAssembly backend binds the string methods.** `upper`, `lower`,
   `trim`, `trimStart`, `trimEnd`, `split`, `lines`, `replace`, `replaceFirst`,
   `startsWith`, `endsWith`, `contains`, `indexOf`, `substr`, `chars`,
@@ -77,9 +116,10 @@ may change between minor versions.
   `hitTest` returns the deepest button. The module is pure Oskel over the
   portable primitive surface, so `tests/native_build_ui.oskl` and
   `oskel.build_binary_ui` keep the VM and AOT outputs identical.
-  `bindings/skia/skia_ui.oskl` is the Skia renderer for the display list.
-  `docs/ui.md` documents the widget set, layout rules, display list and limits
-  (no event loop, input widgets, font metrics or SDL presentation yet).
+  `std/internal/skia_ui.oskl` is the Skia renderer for the display list, and
+  `std.ui.window` presents it in an SDL3 window. `docs/ui.md` documents the
+  widget set, layout rules, display list and the remaining limits (no input
+  widgets, real font metrics or text wrapping yet).
 
 - **`std.strings`, a text-helper module.** `import std.strings;` adds the
   free-function helpers the string methods do not express: `words`, `isBlank`,
@@ -248,6 +288,16 @@ may change between minor versions.
   `tests/native_build_extern_ptr_return.oskl` compares the binary's output with
   the VM's, and `memset` through the rebuilt handle proves the payload is the
   real address rather than a synthetic token.
+
+### Changed
+
+- **SDL3 and Skia are internal implementation details.** `std/sdl.oskl` moved
+  to `std/internal/sdl.oskl`; the generated Skia bridge moved to
+  `std/internal/skia.oskl`, and the display-list/window backends live at
+  `std/internal/skia_ui.oskl` and `std/internal/skia_window.oskl`. Public code
+  imports `std.ui` for widgets and `std.ui.window` for the event loop; the
+  widget module stays pure and portable, so a headless `import std.ui` does not
+  pull in SDL3 or Skia.
 
 ### Fixed
 

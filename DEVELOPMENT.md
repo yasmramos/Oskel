@@ -422,11 +422,15 @@ previous one.
   compile error rather than a stack overflow. A module's own imports are
   private to it: a namespace, alias or wildcard name it creates never reaches
   the importing program's globals, and never collides with the importer's own
-  wildcard bindings. Resolution tries the project directory first, then the
-  packages root (`$OSKEL_PACKAGES`, else `~/.oskel/packages`), so a project module
-  shadows an installed package of the same path. `require` (Lua-style) is
-  **dropped**: `import` is the only module form. See `docs/language.md` §18,
-  `tests/13_modules.oskl` and `tests/module_test.cpp`.
+  wildcard bindings. A module whose last path segment is PascalCase is a
+  **class module**: it exports exactly one public name (the file name), and a
+  qualified import binds that class instead of the module table, so
+  `import std.io.StringReader;` makes `StringReader(...)` callable. Lowercase
+  modules keep the namespace semantics. Resolution tries the project directory
+  first, then the packages root (`$OSKEL_PACKAGES`, else `~/.oskel/packages`), so
+  a project module shadows an installed package of the same path. `require`
+  (Lua-style) is **dropped**: `import` is the only module form. See
+  `docs/language.md` §18, `tests/13_modules.oskl` and `tests/module_test.cpp`.
 - **`struct`** (data only, no methods) — **done**: a named, module-level map
   shape with optional field types. The declaration emits no bytecode and adds
   no opcode; a `Point { x: 1, y: 2 }` literal is checked against the
@@ -544,13 +548,18 @@ previous one.
   classes. `StringReader` walks a string by code point (`readLine`, `read`,
   `readChar`, `readToken`, `readWhile`, `lines`, ...); `StringWriter`
   accumulates chunks (`write`, `writeln`, `writeAll`, `writeLines`, `toString`).
-  `splitLines`/`joinLines` are the free-function line helpers. File access
-  deliberately stays with the `readFile`/`writeFile`/`fileExists` builtins: the
-  freestanding AOT backend does not seed them, so a module that mentions one
-  fails `oskel build` even when the function is unused. No new runtime type,
-  opcode or builtin; classes are maps with closures, so the VM, the AOT backend
-  and WebAssembly agree. See `docs/language.md` §12.14/§18,
-  `tests/62_std_io.oskl` and the AOT/WASM fixture `tests/native_build_io.oskl`.
+  `splitLines`/`joinLines` are the free-function line helpers. The module is
+  split into class modules (`std/io/StringReader.oskl`,
+  `std/io/StringWriter.oskl`), namespace modules (`std/io/reader.oskl`,
+  `std/io/writer.oskl`, `std/io/text.oskl`) and the `std/io.oskl` facade, so
+  `import std.io.StringReader;` binds the class and `import std.io.*` keeps the
+  grouped surface. File access deliberately stays with the
+  `readFile`/`writeFile`/`fileExists` builtins: the freestanding AOT backend
+  does not seed them, so a module that mentions one fails `oskel build` even
+  when the function is unused. No new runtime type, opcode or builtin; classes
+  are maps with closures, so the VM, the AOT backend and WebAssembly agree. See
+  `docs/language.md` §12.14/§18, `tests/62_std_io.oskl` and the AOT/WASM
+  fixture `tests/native_build_io.oskl`.
 
 ### PHASE 6.6 — FFI with C (1.0)
 
@@ -2231,7 +2240,7 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
 ### Post-1.0 — UI library
 
 - **SDL3** for windows, renderer and events: the low-level bindings landed as
-  `std/sdl.oskl` (slice 1, `docs/sdl.md`), and a native binary links them with
+  `std/internal/sdl.oskl` (slice 1, `docs/sdl.md`), and a native binary links them with
   `oskel build --mode hosted --link-lib SDL3`.
 - **C++ bridge** (`bindgen --cxx`, `docs/cxxbind.md`): a descriptor plus a
   generated C++ shim turns a C++ class into an Oskel class with an opaque
@@ -2245,15 +2254,18 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
   compiles against a real Skia build; `tests/cxxbind/skia_test.oskl` checks
   drawing and pixel readback on the VM and the hosted AOT binary.
 - **Skia** as the rendering backend for the widgets, on top of SDL3's window.
-  `bindings/skia/skia_ui.oskl` renders the `std/ui` display list; the first
-  slice targets a raster surface, and presenting that surface into an SDL3
-  window is the next slice.
+  `std/internal/skia_ui.oskl` renders the `std/ui` display list, and
+  `std/internal/skia_window.oskl` bulk-reads the raster surface, uploads it to
+  a streaming `SDL_Texture` and presents it. Both SDL3 and Skia stay internal.
 - **Declarative UI** (SwiftUI/Flutter style), first slice: `std/ui.oskl` has
   `window`, `column`, `row`, `padding`, `spacer`, `text` and `button`, a
   deterministic layout, a `rect`/`text` display list and button hit testing.
-  `tests/native_build_ui.oskl` proves it on the VM and under `oskel build`.
-  Input widgets (`Input`, `Checkbox`, `Slider`), an event loop and real font
-  metrics are still pending.
+  `std/ui/window.oskl` is the public event loop: it presents the frame, polls
+  SDL3 events and dispatches a left click through `hitTest`.
+  `tests/native_build_ui.oskl` proves the tree on the VM and under `oskel build`;
+  `tests/cxxbind/skia_window_test.oskl` proves the window path on both engines.
+  Input widgets (`Input`, `Checkbox`, `Slider`), real font metrics and text
+  wrapping are still pending.
 
 ### Post-1.0 — Other features
 

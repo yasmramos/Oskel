@@ -12,6 +12,7 @@ void bytecodeInit(Bytecode& bc) {
   bc.externs.clear();
   bc.nativeFns.clear();
   bc.nativeUses.clear();
+  bc.usedMethods.clear();
   bc.numRegisters = 0;
   bc.numLocals = 0;
 }

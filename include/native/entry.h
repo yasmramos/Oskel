@@ -49,26 +49,34 @@ struct RuntimeHandles {
   // `clock_gettime`, `GetTickCount64`, the PIT tick counter). Unlike `now` it is
   // never a date, and unlike the hosted `clock()` it does not depend on libm.
   CodeGen::Label monotonic;
-  // The file system, in four operations: `long oskel_open(const char* path,
-  // long mode)` (mode 0 reads, 1 writes; -1 on failure), `long oskel_read_fd
-  // (long fd, char* buf, long len)`, `long oskel_write_fd(long fd, const char*
-  // buf, long len)` (both return the bytes transferred, or a negative value) and
-  // `void oskel_close(long fd)`. The runtime's `readFile`/`writeFile`/
-  // `fileExists` are written against these, so the file builtins carry no
-  // syscall of their own and the Windows prelude keeps the Microsoft ABI in one
-  // place. A bare-metal image has no file system, so it binds none of them and
-  // the lowerer rejects those builtins by name.
+  // The file system: `long oskel_open(const char* path, long mode)` (mode 0
+  // reads, 1 truncates and creates, 2 creates if needed and appends; -1 on
+  // failure), `long oskel_read_fd(long fd, char* buf, long len)`, `long
+  // oskel_write_fd(long fd, const char* buf, long len)` (both return the bytes
+  // transferred, or a negative value) and `void oskel_close(long fd)`. The
+  // runtime's `readFile`/`writeFile`/`fileExists` and the `std.fs.File`
+  // primitives are written against these, so the builtins carry no syscall of
+  // their own and the Windows prelude keeps the Microsoft ABI in one place. A
+  // bare-metal image has no file system, so it binds none of them and the
+  // lowerer rejects those builtins by name.
   CodeGen::Label open;
   CodeGen::Label readFd;
   CodeGen::Label writeFd;
   CodeGen::Label close;
+  // `long oskel_seek(long fd, long offset, long origin)` and `long
+  // oskel_tell(long fd)`: the streaming position of a file handle. `origin` is
+  // 0 (start), 1 (current) or 2 (end), the same values `SeekOrigin` maps to.
+  // Both return the resulting byte offset, or -1 on failure.
+  CodeGen::Label seek;
+  CodeGen::Label tell;
 };
 
 inline RuntimeHandles newRuntimeHandles(CodeGen& code) {
   return RuntimeHandles{code.newLabel(), code.newLabel(), code.newLabel(),
                         code.newLabel(), code.newLabel(), code.newLabel(),
                         code.newLabel(), code.newLabel(), code.newLabel(),
-                        code.newLabel(), code.newLabel()};
+                        code.newLabel(), code.newLabel(), code.newLabel(),
+                        code.newLabel()};
 }
 
 // The generated binary's bump arena (PHASE 7c.1c). `_start` maps a region and
@@ -134,7 +142,7 @@ std::uint64_t emitWindowsRuntime(CodeGen& code, const RuntimeHandles& handles,
 // Returns the offset of the exported `main`, which the caller may record as the
 // program entry; the object's real entry point is the linker's `_start`.
 std::uint64_t emitHostedRuntime(CodeGen& code, const RuntimeHandles& handles,
-                                CodeGen::Label programEntry);
+                                CodeGen::Label programEntry, bool macos);
 
 // Windows hosted entry prelude. Same contract as `emitHostedRuntime` -- it
 // exports the program entry as the C `main` and returns its offset -- but the

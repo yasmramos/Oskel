@@ -229,6 +229,11 @@ struct Bytecode {
   // that calls nil. A declaration that is never used is absent here and stays
   // harmless.
   std::vector<std::string> nativeUses;
+  // Static member names this proto reads (`a.b`, `a?.b`). Indexing (`a[k]`)
+  // is not a member read: it never yields a bound method.
+  // The WebAssembly backend uses them to emit only the bound methods the
+  // program can reach (PHASE 9.4); the VM and the x86-64 backend ignore them.
+  std::vector<std::string> usedMethods;
   // No per-proto capture storage: upvalue cells live in the `Function` value
   // produced by `CLOSURE` (`Function::upvalues`), so closures created from the
   // same proto in different frames never overwrite each other's captures.
