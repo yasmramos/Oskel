@@ -2090,9 +2090,14 @@ skipped where it is absent.
   `oskel build --mode hosted --link-lib SDL3`.
 - **C++ bridge** (`bindgen --cxx`, `docs/cxxbind.md`): a descriptor plus a
   generated C++ shim turns a C++ class into an Oskel class with an opaque
-  `handle`, and a free function into a wrapper. The C++ ABI stays in the shim;
-  the engine still speaks C. The first slice is `Counter`; the next one is the
-  Skia descriptor.
+  `handle`, and a free function into a wrapper. A class with a C++ ctor is
+  constructed with `Class(...)`; an adopt-only class takes
+  `Class(handle, owned)`. Factory objects (`object Surfaces { ... }`) generate a
+  map of functions, class returns carry `owned`/`borrow`/`sp`/`value`, and a
+  class chooses `release "delete"`, `"unref"` or `"none"`. `Class&` parameters
+  are dereferenced by the shim. The C++ ABI stays in the shim; the engine still
+  speaks C. `bindings/skia/skia.oskelbind` is the first real descriptor; the
+  declarative widget layer is the next slice.
 - **Skia** as the rendering backend for the widgets, on top of SDL3's window.
 - **Declarative UI** (SwiftUI/Flutter style): `Window`, `Column`, `Row`,
   `Text`, `Button`, `Input`, `Checkbox`, `Slider`, etc.

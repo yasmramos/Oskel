@@ -890,8 +890,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    the window, renderer and event surface, `docs/sdl.md` documents it, and
    `oskel build --mode hosted --link-lib SDL3` compiles it. The C++ bridge
    (`bindgen --cxx`, `docs/cxxbind.md`) now generates Oskel classes plus a C++
-   shim from a descriptor; the Skia descriptor and the declarative UI layer
-   (`Window`, `Column`, `Text`, `Button`, ...) are the next slices.
+   shim from a descriptor. Factory objects, `sk_sp`/`unique_ptr` and value
+   returns, borrowed handles and `Class&` parameters landed, and
+   `bindings/skia/skia.oskelbind` is the Skia descriptor; compiling its shim
+   needs a Skia checkout. The declarative UI layer (`Window`, `Column`, `Text`,
+   `Button`, ...) is the next slice.
 10. **[P3]** Add `dlopen`/`dlsym` as a builtin for dynamic FFI.
 11. **[P1] [done]** `oskelp`: the local registry (`$OSKEL_REGISTRY`) landed
     with semver requirements (exact, `^`, `~`, comparators, wildcards and a

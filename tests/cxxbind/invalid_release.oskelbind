@@ -1,0 +1,9 @@
+# A ctor allocates, so it must have a release policy; `none` would leak.
+header "factory.h"
+prefix "oskel_"
+
+class Bad {
+  cpp "Bad"
+  release "none"
+  ctor()
+}

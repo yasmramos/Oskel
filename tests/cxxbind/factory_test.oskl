@@ -1,0 +1,43 @@
+import factory;
+
+let s = factory.Surfaces.make(10, 20);
+assert(s.valid());
+let c = s.canvas();
+assert(c.valid());
+c.clear(0x11223344);
+
+let r = factory.Rects.make(1.0, 2.0, 3.0, 4.0);
+assertEq(r.left(), 1.0);
+assertEq(r.top(), 2.0);
+assertEq(r.right(), 3.0);
+assertEq(r.bottom(), 4.0);
+c.drawRect(r, 0x55667788);
+
+let b = factory.Shapes.make(5, 6);
+assertEq(b.width(), 5);
+assertEq(b.height(), 6);
+c.drawBox(b);
+assertEq(c.count(), 2);
+
+let b2 = b.clone();
+assertEq(b2.width(), 5);
+b2.close();
+let b3 = factory.make_box(7, 8);
+assertEq(b3.width(), 7);
+b3.close();
+
+let img = s.snapshot();
+assert(img.valid());
+img.close();
+
+let rf = factory.Refs.make(9);
+assertEq(rf.value(), 9);
+rf.close();
+assert(!rf.valid());
+b.close();
+r.close();
+c.close();
+s.close();
+assert(!c.valid());
+assert(!s.valid());
+print("cxx factory ok");

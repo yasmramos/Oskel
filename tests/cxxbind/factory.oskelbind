@@ -1,0 +1,67 @@
+# C++ bridge descriptor for tests/cxxbind/factory.h. It exercises factory
+# objects, smart-pointer and value returns, borrowed handles, release policies
+# and class-reference parameters.
+header "factory.h"
+prefix "oskel_"
+
+object Surfaces {
+  function make(w: int, h: int): Surface sp cpp "Surface::make"
+}
+
+object Shapes {
+  function make(w: int, h: int): Box sp cpp "Box::make"
+}
+
+function make_box(w: int, h: int): Box sp cpp "Box::make"
+
+object Rects {
+  function make(l: float, t: float, r: float, b: float): Rect value cpp "Rect::make"
+}
+
+object Refs {
+  function make(value: int): Ref sp cpp "Ref::make"
+}
+
+class Surface {
+  cpp "Surface"
+  release "delete"
+  method canvas(): Canvas borrow
+  method snapshot(): Image sp
+}
+
+class Canvas {
+  cpp "Canvas"
+  release "none"
+  method clear(color: uint32): void
+  method drawRect(rect: const Rect&, color: uint32): void
+  method drawBox(box: const Box&): void
+  method count(): int const
+}
+
+class Box {
+  cpp "Box"
+  release "delete"
+  method width(): int const
+  method height(): int const
+  method clone(): Box owned
+}
+
+class Rect {
+  cpp "Rect"
+  release "delete"
+  method left(): float const
+  method top(): float const
+  method right(): float const
+  method bottom(): float const
+}
+
+class Image {
+  cpp "Image"
+  release "delete"
+}
+
+class Ref {
+  cpp "Ref"
+  release "unref"
+  method value(): int const
+}
