@@ -307,6 +307,19 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(elf_test)
   oskel_add_cpp_test(object_test)
   oskel_add_cpp_test(link_test)
+  oskel_add_cpp_test(link_pe_test)
+
+  # PHASE 10.3a: the own linker emits a PE32+ image on Windows. The fixture is
+  # a plain `print`, so the test exercises the UCRT imports and the generated
+  # `_start` end to end.
+  if(WIN32)
+    add_test(NAME oskel.build_hosted_own_windows
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_link_windows.oskl"
+        "-DOSKEL_EXPECTED_OUTPUT=windows own linker"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_windows.cmake")
+  endif()
   oskel_add_cpp_test(pe_test)
   oskel_add_cpp_test(lower_test)
   oskel_add_cpp_test(freestanding_test)

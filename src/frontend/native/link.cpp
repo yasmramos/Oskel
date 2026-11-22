@@ -1,4 +1,5 @@
 #include "native/link.h"
+#include "native/pe_link.h"
 
 #include <algorithm>
 #include <cctype>
@@ -860,14 +861,20 @@ bool isSafeLibraryName(const std::string& name) {
 }  // namespace
 
 bool isOwnLinkerTarget(const Target& target) {
-  return target.arch == Arch::X86_64 && target.os == Os::Linux &&
-         target.abi == Abi::SysV;
+  if (target.arch != Arch::X86_64) return false;
+  if (target.os == Os::Linux && target.abi == Abi::SysV) return true;
+  if (target.os == Os::Windows && target.abi == Abi::Win64) return true;
+  return false;
 }
 
 std::vector<std::uint8_t> linkHostedExecutable(
     const std::vector<LinkInput>& inputs, const LinkOptions& options) {
+  if (options.target.os == Os::Windows) {
+    return linkWindowsExecutable(inputs, options);
+  }
   if (!isOwnLinkerTarget(options.target)) {
-    throw LinkError("the own linker supports x86_64-linux-sysv only");
+    throw LinkError(
+        "the own linker supports x86_64-linux-sysv and x86_64-windows-win64 only");
   }
   std::vector<ObjectFile> objects = resolveInputs(inputs);
   if (objects.empty()) throw LinkError("no input objects");
@@ -1579,8 +1586,12 @@ std::vector<std::uint8_t> linkHostedExecutable(
 
 std::vector<std::uint8_t> linkRelocatable(
     const std::vector<LinkInput>& inputs, const LinkOptions& options) {
+  if (options.target.os == Os::Windows) {
+    throw LinkError("relocatable COFF links are PHASE 10.3b");
+  }
   if (!isOwnLinkerTarget(options.target)) {
-    throw LinkError("the own linker supports x86_64-linux-sysv only");
+    throw LinkError(
+        "the own linker supports x86_64-linux-sysv and x86_64-windows-win64 only");
   }
   std::vector<ObjectFile> objects = resolveInputs(inputs);
   if (objects.empty()) throw LinkError("no input objects");

@@ -526,6 +526,48 @@ it as a caveat:
 - The data helper is built twice, `-fno-pie` and `-fPIC`, to exercise direct
   `PC32`/`R_X86_64_64` and `GOTPCREL`; both are `-fno-sanitize=all` under ASan
   because they are linked into a plain emitted binary.
+
+## The own Windows PE linker (PHASE 10.3a)
+
+- `linkWindowsExecutable` (`include/native/pe_link.h`,
+  `src/frontend/native/pe_link.cpp`) parses COFF `IMAGE_FILE_MACHINE_AMD64`
+  objects. It classifies `.text*`/`.rdata*`/`.data*`/`.bss*`;
+  `.pdata`/`.xdata`/`.drectve`/`.debug$*` are ignored. A COFF section symbol
+  (`STATIC`, value 0, name equal to the section) is resolved from the section
+  base; the field value is the addend. Aux symbol records are skipped, but
+  their raw indices stay in `symbolByRawIndex` so a relocation can never name
+  an aux record.
+- Supported COFF relocations: `REL32` (and `REL32_1..5`), `ADDR64`, `ADDR32`,
+  `ADDR32NB`. `REL32` is `S + A - (P + 4 + n)`; the absolute forms are `S + A`;
+  `ADDR32NB` is the RVA. A defined symbol resolves through the object's local
+  map or the cross-object global map; an undefined `REL32` becomes an import
+  thunk (`jmp [rip + IAT]`); an undefined data relocation is an error.
+- The `.idata` layout stores **RVAs** (0x1000-based) because the import
+  descriptors and thunks use them, while the section bytes are indexed from
+  zero. Writing at the RVA directly threw "internal: PE write out of range";
+  `buildIdata` subtracts `kIdataRva` for every write. Keep the two coordinate
+  systems separate.
+- Imports are grouped by DLL: `kernel32.dll` for the Windows API and
+  `ucrtbase.dll` for `_write`/`_read`/`_open`/`_close`/`_setmode`/`malloc`/
+  `exit`/`time` and the other `_`-prefixed UCRT entry points (the fallback is
+  what picks up `_lseeki64`). The import table has one descriptor per DLL,
+  ILT/IAT per DLL, hint/name entries and DLL names. The runtime's UCRT calls
+  are reached through `jmp [rip + IAT]` thunks; the `_start` calls
+  `ExitProcess` through its IAT slot directly.
+- The generated `_start` is `sub rsp, 8`; `xor ecx, ecx`; `xor edx, edx`;
+  `call main`; `mov ecx, eax`; `call [rip + ExitProcess IAT]`; `hlt`. The
+  `sub rsp, 8` is required: the entry point arrives at 8 mod 16 and `main`
+  must see the Microsoft x64 alignment. `argc=0, argv=NULL`; `args()` is empty
+  until 10.3b adds `GetCommandLineA`. The image is non-PIE
+  (`IMAGE_FILE_RELOCS_STRIPPED`, fixed `0x140000000`), so the loader needs no
+  base relocations.
+- `tests/link_pe_test.cpp` (all platforms) builds a COFF object with
+  `buildRelocatableObject(Target::winX64(), ...)` and checks the PE headers,
+  sections, imports, thunks and `_start`. `oskel.build_hosted_own_windows`
+  (Windows only) runs a real `print` binary end to end; the `windows-latest`
+  runner is the execution gate, since the Linux development host has no Wine.
+- `-r` COFF, MSVC `.lib` archives, `.pdata`/`.xdata` and TLS are 10.3b; the
+  macOS Mach-O container is 10.3d.
 - The multi-object e2e helper is an `OBJECT` library compiled with
   `-fno-sanitize=all` when the build is sanitized: the object is linked into a
   plain emitted binary that does not carry the ASan runtime. The archive test

@@ -161,7 +161,10 @@ The image is a dynamically linked x86-64 Linux ELF (`libc.so.6`, plus
 and ignores `.eh_frame`, TLS and the C++ runtime sections. An archive member is
 pulled in only when it defines a still-undefined symbol. `-L` and `--link-lib`
 select a third-party library (`--link-lib SDL3`); the binary records the
-library's SONAME.
+library's SONAME. On Windows the same `--linker own` path parses COFF objects
+and emits a non-PIE PE32+ image, with the runtime's UCRT calls imported from
+`ucrtbase.dll` and the Windows API from `kernel32.dll`; a generated `_start`
+calls `main` and `ExitProcess`.
 `oskel build --linker own --link-object helper.o` is the same capability
 through the build command. The linker is opt-in (PHASE 10.1/10.2) and only
 targets `x86_64-linux-sysv`; `--linker host` keeps the `$CC` path. See
