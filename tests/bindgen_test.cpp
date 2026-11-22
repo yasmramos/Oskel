@@ -347,7 +347,12 @@ int main() {
         "typedef int (*cb_t)(int);\nint register_cb(cb_t cb);\n", "t.h");
     check(contains(result.text, "fn register_cb(cb: fn(int32): int32): int32;"),
           "a function-pointer typedef type is generated as a callback");
-    check(result.emitted == 1, "the typedef-typed declaration is emitted");
+    if (ffi::kCallbacksSupported) {
+      check(result.emitted == 1, "the typedef-typed declaration is emitted");
+    } else {
+      check(result.emitted == 0,
+            "the typedef-typed declaration is commented out where the ABI cannot carry it");
+    }
   }
 
   // The callback shapes the engine's vocabulary accepts: a `void` return, a
