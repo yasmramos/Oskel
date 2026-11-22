@@ -1815,8 +1815,8 @@ class Bindgen {
     text += "extern \"C\" {\n";
     for (const Function& fn : functions_) {
       // A declaration this build cannot marshal is written commented out: the
-      // compiler rejects it at compile time (a variadic needs libffi and the
-      // System V AMD64 ABI; a struct by value needs that ABI too), so
+      // compiler rejects it at compile time (a variadic needs the x86-64
+      // descriptor stub; a struct by value needs the System V AMD64 ABI), so
       // commenting it keeps the module compiling here while the real signature
       // stays there to uncomment on a build that supports it. The note is the
       // compiler's own reason, not a second guess.

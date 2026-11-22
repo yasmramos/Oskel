@@ -13,13 +13,16 @@
 // declaration as `Bytecode::externs`, and the engine resolves the symbol
 // through `Platform::lookupSymbol` before the proto runs. This module turns the
 // resolved address plus the declared signature into a Oskel native, marshalling
-// the arguments and the result across the System V AMD64 ABI.
+// the arguments and the result across the host C ABI (System V AMD64 on Linux
+// and macOS, Microsoft x64 on Windows).
 //
-// No `libffi`: the call goes through a compile-time thunk selected by the
-// signature's ABI shape. Arguments are passed in the register class the ABI
-// assigns them (general-purpose or SSE), and the result is read back with the
-// exact C type the declaration named, so a narrow `int` return is not read as a
-// 64-bit value.
+// No host FFI library: a fixed signature goes through a compile-time thunk
+// selected by its ABI shape, while a variadic, a class-MEMORY struct or a
+// callback goes through a small x86-64 descriptor/closure stub emitted at run
+// time. Arguments are passed in the register class the ABI assigns them
+// (general-purpose or SSE), and the result is read back with the exact C type
+// the declaration named, so a narrow `int` return is not read as a 64-bit
+// value.
 namespace ffi {
 
 // Builds the native function that stands in for a resolved `extern "C"` symbol.

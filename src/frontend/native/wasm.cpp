@@ -15,6 +15,7 @@
 #include "core/value.h"
 #include "native/lower.h"
 #include "native/value.h"
+#include "unicode_case.h"
 
 namespace {
 
@@ -122,6 +123,25 @@ constexpr std::uint64_t kMethodMapDelete = 30;
 constexpr std::uint64_t kMethodMapMerge = 31;
 constexpr std::uint64_t kMethodMapClone = 32;
 constexpr std::uint64_t kMethodMapClear = 33;
+constexpr std::uint64_t kMethodStrUpper = 34;
+constexpr std::uint64_t kMethodStrLower = 35;
+constexpr std::uint64_t kMethodStrTrim = 36;
+constexpr std::uint64_t kMethodStrTrimStart = 37;
+constexpr std::uint64_t kMethodStrTrimEnd = 38;
+constexpr std::uint64_t kMethodStrSplit = 39;
+constexpr std::uint64_t kMethodStrLines = 40;
+constexpr std::uint64_t kMethodStrReplace = 41;
+constexpr std::uint64_t kMethodStrReplaceFirst = 42;
+constexpr std::uint64_t kMethodStrStartsWith = 43;
+constexpr std::uint64_t kMethodStrEndsWith = 44;
+constexpr std::uint64_t kMethodStrContains = 45;
+constexpr std::uint64_t kMethodStrIndexOf = 46;
+constexpr std::uint64_t kMethodStrSubstr = 47;
+constexpr std::uint64_t kMethodStrChars = 48;
+constexpr std::uint64_t kMethodStrRepeat = 49;
+constexpr std::uint64_t kMethodStrReversed = 50;
+constexpr std::uint64_t kMethodStrPadStart = 51;
+constexpr std::uint64_t kMethodStrPadEnd = 52;
 
 // mt19937_64 state (PHASE 9.3): 312 words followed by the cursor, the same
 // layout the x86-64 runtime uses, so a seeded stream is identical on both
@@ -625,6 +645,22 @@ struct StaticPool {
     return address;
   }
 
+  // One `{first, last, delta}` run is 12 bytes, little-endian, matching the
+  // layout `caseLookup` reads.
+  std::uint32_t addCaseRuns(const UnicodeCaseRun* runs, std::size_t count) {
+    alignTo(4);
+    std::uint32_t address = base + static_cast<std::uint32_t>(bytes.size());
+    for (std::size_t i = 0; i < count; ++i) {
+      const std::uint32_t first = runs[i].first;
+      const std::uint32_t last = runs[i].last;
+      const std::uint32_t delta = static_cast<std::uint32_t>(runs[i].delta);
+      for (int b = 0; b < 4; ++b) bytes.push_back(static_cast<std::uint8_t>(first >> (8 * b)));
+      for (int b = 0; b < 4; ++b) bytes.push_back(static_cast<std::uint8_t>(last >> (8 * b)));
+      for (int b = 0; b < 4; ++b) bytes.push_back(static_cast<std::uint8_t>(delta >> (8 * b)));
+    }
+    return address;
+  }
+
   // A closure header: code slot, arity, captured-cell count, name, flags.
   std::uint32_t addClosure(std::uint64_t tableIndex, std::uint64_t arity,
                            std::uint64_t upvalueCount, std::uint64_t name,
@@ -710,6 +746,16 @@ struct Runtime {
   std::uint32_t sArrayIndexInt = 0, sMapKeyString = 0, sStringIndexInt = 0,
                 sArrayRange = 0, sMapMembership = 0, sStringMembership = 0,
                 sCannotAssignIndex = 0;
+  std::uint32_t sUpper = 0, sLower = 0, sTrim = 0, sTrimStart = 0,
+                sTrimEnd = 0, sSplit = 0, sLines = 0, sReplace = 0,
+                sReplaceFirst = 0, sStartsWith = 0, sEndsWith = 0,
+                sSubstr = 0, sChars = 0, sRepeat = 0, sPadStart = 0,
+                sPadEnd = 0, sStrArg = 0, sIntArg = 0, sRepeatNegative = 0,
+                sRepeatLarge = 0, sReplaceEmpty = 0, sReplaceFirstEmpty = 0,
+                sPadStartFill = 0, sPadEndFill = 0, sPadStartLarge = 0,
+                sPadEndLarge = 0;
+  std::uint32_t upperTable = 0, lowerTable = 0;
+  std::uint32_t upperCount = 0, lowerCount = 0;
 
   std::uint32_t randomState = 0, randomSeedFn = 0, randomTwistFn = 0,
                 randomNextFn = 0;
@@ -725,6 +771,9 @@ struct Runtime {
                 toStr = 0, quote = 0, reprStr = 0, truthy = 0, iterStep = 0,
                 typeName = 0, fmtFunc = 0, memberGet = 0, memberSet = 0,
                 utf8ByteOffset = 0, indexGet = 0, indexSet = 0;
+  std::uint32_t utf8SeqLen = 0, decodeCodePoint = 0, encodeUtf8 = 0,
+                caseLookup = 0, caseMap = 0, strFind = 0, strSliceBytes = 0,
+                strReverse = 0;
   std::uint32_t newArray = 0, newMap = 0, arrayPush = 0, arrayGet = 0,
                 arraySet = 0, mapFind = 0, mapSet = 0, mapGet = 0,
                 mapDelete = 0, mapClear = 0, equals = 0, toStrDepth = 0,
@@ -910,6 +959,36 @@ struct Runtime {
     sMapMembership = pool.addString("map membership requires a string key");
     sStringMembership = pool.addString("string membership requires a string operand");
     sCannotAssignIndex = pool.addString("cannot assign to an index of this value");
+    sUpper = pool.addString("upper");
+    sLower = pool.addString("lower");
+    sTrim = pool.addString("trim");
+    sTrimStart = pool.addString("trimStart");
+    sTrimEnd = pool.addString("trimEnd");
+    sSplit = pool.addString("split");
+    sLines = pool.addString("lines");
+    sReplace = pool.addString("replace");
+    sReplaceFirst = pool.addString("replaceFirst");
+    sStartsWith = pool.addString("startsWith");
+    sEndsWith = pool.addString("endsWith");
+    sSubstr = pool.addString("substr");
+    sChars = pool.addString("chars");
+    sRepeat = pool.addString("repeat");
+    sPadStart = pool.addString("padStart");
+    sPadEnd = pool.addString("padEnd");
+    sStrArg = pool.addString("expects a string argument");
+    sIntArg = pool.addString("expects an integer argument");
+    sRepeatNegative = pool.addString("repeat() count cannot be negative");
+    sRepeatLarge = pool.addString("repeat() result is too large");
+    sReplaceEmpty = pool.addString("replace() search text cannot be empty");
+    sReplaceFirstEmpty = pool.addString("replaceFirst() search text cannot be empty");
+    sPadStartFill = pool.addString("padStart() fill cannot be empty");
+    sPadEndFill = pool.addString("padEnd() fill cannot be empty");
+    sPadStartLarge = pool.addString("padStart() result is too large");
+    sPadEndLarge = pool.addString("padEnd() result is too large");
+    upperTable = pool.addCaseRuns(kUnicodeUpperRuns, kUnicodeUpperRunCount);
+    upperCount = static_cast<std::uint32_t>(kUnicodeUpperRunCount);
+    lowerTable = pool.addCaseRuns(kUnicodeLowerRuns, kUnicodeLowerRunCount);
+    lowerCount = static_cast<std::uint32_t>(kUnicodeLowerRunCount);
     if (randomStateSlot >= 0) {
       sRandomHigh = pool.addString("random() bound must be positive");
       sRandomBounds = pool.addString(
@@ -956,6 +1035,14 @@ struct Runtime {
   std::uint32_t emitFail();
   std::uint32_t emitWriteStr();
   std::uint32_t emitUtf8Len();
+  std::uint32_t emitUtf8SeqLen();
+  std::uint32_t emitDecodeCodePoint();
+  std::uint32_t emitEncodeUtf8();
+  std::uint32_t emitCaseLookup();
+  std::uint32_t emitCaseMap();
+  std::uint32_t emitStrFind();
+  std::uint32_t emitStrSliceBytes();
+  std::uint32_t emitStrReverse();
   std::uint32_t emitNewStr();
   std::uint32_t emitConcat();
   std::uint32_t emitStrCmp();
@@ -996,6 +1083,7 @@ struct Runtime {
   std::uint32_t emitMemberSet();
   void reserveArrayMethods();
   void emitArrayMethods();
+  void emitStringMethods();
   void emitMethodDispatch();
   void emitMethodValue(Func& f, const char* owner, const char* method,
                        std::uint64_t selector);
@@ -4168,6 +4256,687 @@ std::uint32_t Runtime::emitUtf8ByteOffset() {
   return index;
 }
 
+std::uint32_t Runtime::emitUtf8SeqLen() {
+  std::uint32_t type = m.typeFor({kI32}, {kI32});
+  std::uint32_t index = m.reserveFunction(type);
+  Func f(m, index, {kI32});
+  f.lget(0);
+  f.i32c(0x80);
+  f.i32LtU();
+  f.ifResult(kI32);
+  f.i32c(1);
+  f.else_();
+  f.lget(0);
+  f.i32c(0xE0);
+  f.i32And();
+  f.i32c(0xC0);
+  f.i32Eq();
+  f.ifResult(kI32);
+  f.i32c(2);
+  f.else_();
+  f.lget(0);
+  f.i32c(0xF0);
+  f.i32And();
+  f.i32c(0xE0);
+  f.i32Eq();
+  f.ifResult(kI32);
+  f.i32c(3);
+  f.else_();
+  f.i32c(4);
+  f.end();
+  f.end();
+  f.end();
+  return index;
+}
+
+std::uint32_t Runtime::emitDecodeCodePoint() {
+  std::uint32_t type = m.typeFor({kI32, kI32}, {kI32});
+  std::uint32_t index = m.reserveFunction(type);
+  Func f(m, index, {kI32, kI32});
+  std::uint32_t b0 = f.addLocal(kI32), len = f.addLocal(kI32);
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.i32Load8u(0);
+  f.lset(b0);
+  f.lget(b0);
+  f.call(utf8SeqLen);
+  f.lset(len);
+  f.lget(len);
+  f.i32c(1);
+  f.i32Eq();
+  f.ifResult(kI32);
+  f.lget(b0);
+  f.else_();
+  f.lget(len);
+  f.i32c(2);
+  f.i32Eq();
+  f.ifResult(kI32);
+  f.lget(b0);
+  f.i32c(0x1F);
+  f.i32And();
+  f.i32c(6);
+  f.i32Shl();
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.i32Load8u(1);
+  f.i32c(0x3F);
+  f.i32And();
+  f.i32Or();
+  f.else_();
+  f.lget(len);
+  f.i32c(3);
+  f.i32Eq();
+  f.ifResult(kI32);
+  f.lget(b0);
+  f.i32c(0x0F);
+  f.i32And();
+  f.i32c(12);
+  f.i32Shl();
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.i32Load8u(1);
+  f.i32c(0x3F);
+  f.i32And();
+  f.i32c(6);
+  f.i32Shl();
+  f.i32Or();
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.i32Load8u(2);
+  f.i32c(0x3F);
+  f.i32And();
+  f.i32Or();
+  f.else_();
+  f.lget(b0);
+  f.i32c(0x07);
+  f.i32And();
+  f.i32c(18);
+  f.i32Shl();
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.i32Load8u(1);
+  f.i32c(0x3F);
+  f.i32And();
+  f.i32c(12);
+  f.i32Shl();
+  f.i32Or();
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.i32Load8u(2);
+  f.i32c(0x3F);
+  f.i32And();
+  f.i32c(6);
+  f.i32Shl();
+  f.i32Or();
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.i32Load8u(3);
+  f.i32c(0x3F);
+  f.i32And();
+  f.i32Or();
+  f.end();
+  f.end();
+  f.end();
+  return index;
+}
+
+std::uint32_t Runtime::emitEncodeUtf8() {
+  std::uint32_t type = m.typeFor({kI32, kI32, kI32}, {kI32});
+  std::uint32_t index = m.reserveFunction(type);
+  Func f(m, index, {kI32, kI32, kI32});
+  f.lget(2);
+  f.i32c(0x80);
+  f.i32LtU();
+  f.if_();
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.lget(2);
+  f.i32Store8(0);
+  f.lget(1);
+  f.i32c(1);
+  f.i32Add();
+  f.ret();
+  f.end();
+  f.lget(2);
+  f.i32c(0x800);
+  f.i32LtU();
+  f.if_();
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.i32c(0xC0);
+  f.lget(2);
+  f.i32c(6);
+  f.i32ShrU();
+  f.i32Or();
+  f.i32Store8(0);
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.i32c(0x80);
+  f.lget(2);
+  f.i32c(0x3F);
+  f.i32And();
+  f.i32Or();
+  f.i32Store8(1);
+  f.lget(1);
+  f.i32c(2);
+  f.i32Add();
+  f.ret();
+  f.end();
+  f.lget(2);
+  f.i32c(0x10000);
+  f.i32LtU();
+  f.if_();
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.i32c(0xE0);
+  f.lget(2);
+  f.i32c(12);
+  f.i32ShrU();
+  f.i32Or();
+  f.i32Store8(0);
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.i32c(0x80);
+  f.lget(2);
+  f.i32c(6);
+  f.i32ShrU();
+  f.i32c(0x3F);
+  f.i32And();
+  f.i32Or();
+  f.i32Store8(1);
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.i32c(0x80);
+  f.lget(2);
+  f.i32c(0x3F);
+  f.i32And();
+  f.i32Or();
+  f.i32Store8(2);
+  f.lget(1);
+  f.i32c(3);
+  f.i32Add();
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.i32c(0xF0);
+  f.lget(2);
+  f.i32c(18);
+  f.i32ShrU();
+  f.i32Or();
+  f.i32Store8(0);
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.i32c(0x80);
+  f.lget(2);
+  f.i32c(12);
+  f.i32ShrU();
+  f.i32c(0x3F);
+  f.i32And();
+  f.i32Or();
+  f.i32Store8(1);
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.i32c(0x80);
+  f.lget(2);
+  f.i32c(6);
+  f.i32ShrU();
+  f.i32c(0x3F);
+  f.i32And();
+  f.i32Or();
+  f.i32Store8(2);
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.i32c(0x80);
+  f.lget(2);
+  f.i32c(0x3F);
+  f.i32And();
+  f.i32Or();
+  f.i32Store8(3);
+  f.lget(1);
+  f.i32c(4);
+  f.i32Add();
+  f.ret();
+  return index;
+}
+
+std::uint32_t Runtime::emitCaseLookup() {
+  std::uint32_t type = m.typeFor({kI32, kI32, kI32}, {kI32});
+  std::uint32_t index = m.reserveFunction(type);
+  Func f(m, index, {kI32, kI32, kI32});
+  std::uint32_t low = f.addLocal(kI32), high = f.addLocal(kI32),
+                mid = f.addLocal(kI32), base = f.addLocal(kI32);
+  f.i32c(0);
+  f.lset(low);
+  f.lget(2);
+  f.lset(high);
+  f.block();
+  f.loop();
+  f.lget(low);
+  f.lget(high);
+  f.i32GeU();
+  f.brIf(1);
+  f.lget(low);
+  f.lget(high);
+  f.lget(low);
+  f.i32Sub();
+  f.i32c(1);
+  f.i32ShrU();
+  f.i32Add();
+  f.lset(mid);
+  f.lget(1);
+  f.lget(mid);
+  f.i32c(12);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(base);
+  f.lget(0);
+  f.lget(base);
+  f.i32Load(0);
+  f.i32LtU();
+  f.if_();
+  f.lget(mid);
+  f.lset(high);
+  f.br(1);
+  f.end();
+  f.lget(0);
+  f.lget(base);
+  f.i32Load(4);
+  f.i32GtU();
+  f.if_();
+  f.lget(mid);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(low);
+  f.br(1);
+  f.end();
+  f.lget(0);
+  f.lget(base);
+  f.i32Load(8);
+  f.i32Add();
+  f.ret();
+  f.end();
+  f.end();
+  f.lget(0);
+  return index;
+}
+
+std::uint32_t Runtime::emitCaseMap() {
+  std::uint32_t type = m.typeFor({kI32, kI32}, {kI32});
+  std::uint32_t index = m.reserveFunction(type);
+  Func f(m, index, {kI32, kI32});
+  std::uint32_t out = f.addLocal(kI32), src = f.addLocal(kI32),
+                dst = f.addLocal(kI32), cp = f.addLocal(kI32),
+                len = f.addLocal(kI32), mapped = f.addLocal(kI32);
+  f.lget(0);
+  f.call(utf8Len);
+  f.i64c(4);
+  f.i64Mul();
+  f.i32WrapI64();
+  f.call(newStr);
+  f.lset(out);
+  f.i32c(0);
+  f.lset(src);
+  f.i32c(0);
+  f.lset(dst);
+  f.block();
+  f.loop();
+  f.lget(src);
+  f.lget(0);
+  f.i32Load(0);
+  f.i32GeU();
+  f.brIf(1);
+  f.lget(0);
+  f.lget(src);
+  f.call(decodeCodePoint);
+  f.lset(cp);
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(src);
+  f.i32Add();
+  f.i32Load8u(0);
+  f.call(utf8SeqLen);
+  f.lset(len);
+  f.lget(cp);
+  f.i32c(0x80);
+  f.i32LtU();
+  f.if_();
+  f.lget(1);
+  f.if_();
+  f.lget(cp);
+  f.i32c('a');
+  f.i32GeS();
+  f.lget(cp);
+  f.i32c('z');
+  f.i32LeS();
+  f.i32And();
+  f.if_();
+  f.lget(cp);
+  f.i32c(0x20);
+  f.i32Sub();
+  f.lset(cp);
+  f.end();
+  f.else_();
+  f.lget(cp);
+  f.i32c('A');
+  f.i32GeS();
+  f.lget(cp);
+  f.i32c('Z');
+  f.i32LeS();
+  f.i32And();
+  f.if_();
+  f.lget(cp);
+  f.i32c(0x20);
+  f.i32Add();
+  f.lset(cp);
+  f.end();
+  f.end();
+  f.lget(cp);
+  f.lset(mapped);
+  f.else_();
+  f.lget(cp);
+  f.lget(1);
+  f.ifResult(kI32);
+  f.i32c(static_cast<std::int32_t>(upperTable));
+  f.else_();
+  f.i32c(static_cast<std::int32_t>(lowerTable));
+  f.end();
+  f.lget(1);
+  f.ifResult(kI32);
+  f.i32c(static_cast<std::int32_t>(upperCount));
+  f.else_();
+  f.i32c(static_cast<std::int32_t>(lowerCount));
+  f.end();
+  f.call(caseLookup);
+  f.lset(mapped);
+  f.end();
+  f.lget(out);
+  f.lget(dst);
+  f.lget(mapped);
+  f.call(encodeUtf8);
+  f.lset(dst);
+  f.lget(src);
+  f.lget(len);
+  f.i32Add();
+  f.lset(src);
+  f.br(0);
+  f.end();
+  f.end();
+  f.lget(out);
+  f.lget(dst);
+  f.i64ExtendI32U();
+  f.i64Store(0);
+  f.lget(out);
+  return index;
+}
+
+std::uint32_t Runtime::emitStrFind() {
+  std::uint32_t type = m.typeFor({kI32, kI32, kI32}, {kI32});
+  std::uint32_t index = m.reserveFunction(type);
+  Func f(m, index, {kI32, kI32, kI32});
+  std::uint32_t hl = f.addLocal(kI32), nl = f.addLocal(kI32),
+                i = f.addLocal(kI32), j = f.addLocal(kI32);
+  f.lget(0);
+  f.i32Load(0);
+  f.lset(hl);
+  f.lget(1);
+  f.i32Load(0);
+  f.lset(nl);
+  f.lget(nl);
+  f.i32Eqz();
+  f.if_();
+  f.lget(2);
+  f.lget(hl);
+  f.i32LeU();
+  f.if_();
+  f.lget(2);
+  f.ret();
+  f.end();
+  f.i32c(-1);
+  f.ret();
+  f.end();
+  f.lget(2);
+  f.i32c(0);
+  f.i32LtS();
+  f.if_();
+  f.i32c(0);
+  f.lset(2);
+  f.end();
+  f.lget(2);
+  f.lget(nl);
+  f.i32Add();
+  f.lget(hl);
+  f.i32GtU();
+  f.if_();
+  f.i32c(-1);
+  f.ret();
+  f.end();
+  f.lget(2);
+  f.lset(i);
+  f.block();
+  f.loop();
+  f.lget(i);
+  f.lget(nl);
+  f.i32Add();
+  f.lget(hl);
+  f.i32GtU();
+  f.brIf(1);
+  f.i32c(0);
+  f.lset(j);
+  f.block();
+  f.loop();
+  f.lget(j);
+  f.lget(nl);
+  f.i32GeU();
+  f.brIf(1);
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(i);
+  f.i32Add();
+  f.lget(j);
+  f.i32Add();
+  f.i32Load8u(0);
+  f.lget(1);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(j);
+  f.i32Add();
+  f.i32Load8u(0);
+  f.i32Ne();
+  f.brIf(1);
+  f.lget(j);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(j);
+  f.br(0);
+  f.end();
+  f.end();
+  f.lget(j);
+  f.lget(nl);
+  f.i32Eq();
+  f.if_();
+  f.lget(i);
+  f.ret();
+  f.end();
+  f.lget(i);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(i);
+  f.br(0);
+  f.end();
+  f.end();
+  f.i32c(-1);
+  return index;
+}
+
+std::uint32_t Runtime::emitStrSliceBytes() {
+  std::uint32_t type = m.typeFor({kI32, kI32, kI32}, {kI32});
+  std::uint32_t index = m.reserveFunction(type);
+  Func f(m, index, {kI32, kI32, kI32});
+  std::uint32_t slen = f.addLocal(kI32), out = f.addLocal(kI32);
+  f.lget(0);
+  f.i32Load(0);
+  f.lset(slen);
+  f.lget(1);
+  f.i32c(0);
+  f.i32LtS();
+  f.if_();
+  f.i32c(0);
+  f.lset(1);
+  f.end();
+  f.lget(1);
+  f.lget(slen);
+  f.i32GtU();
+  f.if_();
+  f.lget(slen);
+  f.lset(1);
+  f.end();
+  f.lget(2);
+  f.i32c(0);
+  f.i32LtS();
+  f.if_();
+  f.i32c(0);
+  f.lset(2);
+  f.end();
+  f.lget(1);
+  f.lget(2);
+  f.i32Add();
+  f.lget(slen);
+  f.i32GtU();
+  f.if_();
+  f.lget(slen);
+  f.lget(1);
+  f.i32Sub();
+  f.lset(2);
+  f.end();
+  f.lget(2);
+  f.call(newStr);
+  f.lset(out);
+  f.lget(out);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(1);
+  f.i32Add();
+  f.lget(2);
+  f.memoryCopy();
+  f.lget(out);
+  return index;
+}
+
+std::uint32_t Runtime::emitStrReverse() {
+  std::uint32_t type = m.typeFor({kI32}, {kI32});
+  std::uint32_t index = m.reserveFunction(type);
+  Func f(m, index, {kI32});
+  std::uint32_t len = f.addLocal(kI32), out = f.addLocal(kI32),
+                src = f.addLocal(kI32), dst = f.addLocal(kI32),
+                clen = f.addLocal(kI32);
+  f.lget(0);
+  f.i32Load(0);
+  f.lset(len);
+  f.lget(len);
+  f.call(newStr);
+  f.lset(out);
+  f.i32c(0);
+  f.lset(src);
+  f.lget(len);
+  f.lset(dst);
+  f.block();
+  f.loop();
+  f.lget(src);
+  f.lget(len);
+  f.i32GeU();
+  f.brIf(1);
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(src);
+  f.i32Add();
+  f.i32Load8u(0);
+  f.call(utf8SeqLen);
+  f.lset(clen);
+  f.lget(dst);
+  f.lget(clen);
+  f.i32Sub();
+  f.lset(dst);
+  f.lget(out);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(dst);
+  f.i32Add();
+  f.lget(0);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(src);
+  f.i32Add();
+  f.lget(clen);
+  f.memoryCopy();
+  f.lget(src);
+  f.lget(clen);
+  f.i32Add();
+  f.lset(src);
+  f.br(0);
+  f.end();
+  f.end();
+  f.lget(out);
+  return index;
+}
+
 // Builds a bound-method closure. The receiver is boxed in a cell so the
 // closure keeps it alive when the method is detached, and the selector in
 // `flags` tells the dispatcher which helper to run.
@@ -4628,6 +5397,158 @@ std::uint32_t Runtime::emitMemberGet() {
   f.call(utf8Len);
   f.ret();
   f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sUpper));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "upper", kMethodStrUpper);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sLower));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "lower", kMethodStrLower);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sTrim));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "trim", kMethodStrTrim);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sTrimStart));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "trimStart", kMethodStrTrimStart);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sTrimEnd));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "trimEnd", kMethodStrTrimEnd);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sSplit));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "split", kMethodStrSplit);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sLines));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "lines", kMethodStrLines);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sReplace));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "replace", kMethodStrReplace);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sReplaceFirst));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "replaceFirst", kMethodStrReplaceFirst);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sStartsWith));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "startsWith", kMethodStrStartsWith);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sEndsWith));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "endsWith", kMethodStrEndsWith);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sContains));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "contains", kMethodStrContains);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sIndexOf));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "indexOf", kMethodStrIndexOf);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sSubstr));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "substr", kMethodStrSubstr);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sChars));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "chars", kMethodStrChars);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sRepeat));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "repeat", kMethodStrRepeat);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sReversed));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "reversed", kMethodStrReversed);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sPadStart));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "padStart", kMethodStrPadStart);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sPadEnd));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "string", "padEnd", kMethodStrPadEnd);
+  f.ret();
+  f.end();
   emitFailStatic(f, sNoMember);
   f.end();
 
@@ -4977,6 +5898,25 @@ void Runtime::reserveArrayMethods() {
   methodHelpers.push_back(m.reserveFunction(tValue));  // merge
   methodHelpers.push_back(m.reserveFunction(tValue));  // clone
   methodHelpers.push_back(m.reserveFunction(tValue));  // clear
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.upper
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.lower
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.trim
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.trimStart
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.trimEnd
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.split
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.lines
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.replace
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.replaceFirst
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.startsWith
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.endsWith
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.contains
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.indexOf
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.substr
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.chars
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.repeat
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.reversed
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.padStart
+  methodHelpers.push_back(m.reserveFunction(tValue));  // string.padEnd
 }
 
 void Runtime::emitArrayMethods() {
@@ -7405,6 +8345,1260 @@ void Runtime::emitArrayMethods() {
   }
 }
 
+void Runtime::emitStringMethods() {
+  auto argAt = [](Func& f, int index) {
+    f.lget(0);
+    if (index != 0) {
+      f.i32c(16 * index);
+      f.i32Add();
+    }
+  };
+  auto needStr = [&](Func& f, int index, std::uint32_t local) {
+    argAt(f, index);
+    f.i64Load(0);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sStrArg);
+    f.end();
+    argAt(f, index);
+    f.i64Load(8);
+    f.i32WrapI64();
+    f.lset(local);
+  };
+  auto needInt = [&](Func& f, int index, std::uint32_t local) {
+    argAt(f, index);
+    f.i64Load(0);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sIntArg);
+    f.end();
+    argAt(f, index);
+    f.i64Load(8);
+    f.i32WrapI64();
+    f.lset(local);
+  };
+  auto retStr = [](Func& f, std::uint32_t value) {
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.lget(value);
+    f.i64ExtendI32U();
+    f.ret();
+  };
+  auto retArray = [](Func& f, std::uint32_t value) {
+    f.i64c(static_cast<std::int64_t>(kArray));
+    f.lget(value);
+    f.i64ExtendI32U();
+    f.ret();
+  };
+  auto retInt = [](Func& f, std::uint32_t value) {
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.lget(value);
+    f.i64ExtendI32U();
+    f.ret();
+  };
+  auto retBool = [](Func& f, std::uint32_t value) {
+    f.i64c(static_cast<std::int64_t>(kBool));
+    f.lget(value);
+    f.i64ExtendI32U();
+    f.ret();
+  };
+  auto isSpace = [](Func& f, std::uint32_t b) {
+    f.lget(b);
+    f.i32c(0x20);
+    f.i32Eq();
+    f.lget(b);
+    f.i32c(0x09);
+    f.i32GeU();
+    f.lget(b);
+    f.i32c(0x0D);
+    f.i32LeU();
+    f.i32And();
+    f.i32Or();
+  };
+  auto arity0 = [&](Func& f) {
+    f.lget(1);
+    f.i32c(0);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+  };
+  auto arity1 = [&](Func& f) {
+    f.lget(1);
+    f.i32c(1);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+  };
+  auto arity2 = [&](Func& f) {
+    f.lget(1);
+    f.i32c(2);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+  };
+  auto arity1to2 = [&](Func& f) {
+    f.lget(1);
+    f.i32c(1);
+    f.i32LtS();
+    f.lget(1);
+    f.i32c(2);
+    f.i32GtS();
+    f.i32Or();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+  };
+  auto arity0to1 = [&](Func& f) {
+    f.lget(1);
+    f.i32c(0);
+    f.i32LtS();
+    f.lget(1);
+    f.i32c(1);
+    f.i32GtS();
+    f.i32Or();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+  };
+
+  {
+    Func f(m, methodHelpers[kMethodStrUpper], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  result = f.addLocal(kI32);
+    arity0(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i32c(1);
+    f.call(caseMap);
+    f.lset(result);
+    retStr(f, result);
+  }
+  {
+    Func f(m, methodHelpers[kMethodStrLower], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  result = f.addLocal(kI32);
+    arity0(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i32c(0);
+    f.call(caseMap);
+    f.lset(result);
+    retStr(f, result);
+  }
+  {
+    Func f(m, methodHelpers[kMethodStrTrimStart], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  start = f.addLocal(kI32), len = f.addLocal(kI32),
+                  b = f.addLocal(kI32), result = f.addLocal(kI32);
+    arity0(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i32Load(0);
+    f.lset(len);
+    f.i32c(0);
+    f.lset(start);
+    f.block();
+    f.loop();
+    f.lget(start);
+    f.lget(len);
+    f.i32GeU();
+    f.brIf(1);
+    f.lget(header);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(start);
+    f.i32Add();
+    f.i32Load8u(0);
+    f.lset(b);
+    isSpace(f, b);
+    f.i32Eqz();
+    f.brIf(1);
+    f.lget(start);
+    f.i32c(1);
+    f.i32Add();
+    f.lset(start);
+    f.br(0);
+    f.end();
+    f.end();
+    f.lget(header);
+    f.lget(start);
+    f.lget(len);
+    f.lget(start);
+    f.i32Sub();
+    f.call(strSliceBytes);
+    f.lset(result);
+    retStr(f, result);
+  }
+  {
+    Func f(m, methodHelpers[kMethodStrTrimEnd], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  end = f.addLocal(kI32), b = f.addLocal(kI32),
+                  result = f.addLocal(kI32);
+    arity0(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i32Load(0);
+    f.lset(end);
+    f.block();
+    f.loop();
+    f.lget(end);
+    f.i32c(0);
+    f.i32LeS();
+    f.brIf(1);
+    f.lget(header);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(end);
+    f.i32Add();
+    f.i32c(1);
+    f.i32Sub();
+    f.i32Load8u(0);
+    f.lset(b);
+    isSpace(f, b);
+    f.i32Eqz();
+    f.brIf(1);
+    f.lget(end);
+    f.i32c(1);
+    f.i32Sub();
+    f.lset(end);
+    f.br(0);
+    f.end();
+    f.end();
+    f.lget(header);
+    f.i32c(0);
+    f.lget(end);
+    f.call(strSliceBytes);
+    f.lset(result);
+    retStr(f, result);
+  }
+  {
+    Func f(m, methodHelpers[kMethodStrTrim], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  start = f.addLocal(kI32), end = f.addLocal(kI32),
+                  b = f.addLocal(kI32), result = f.addLocal(kI32);
+    arity0(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i32Load(0);
+    f.lset(end);
+    f.i32c(0);
+    f.lset(start);
+    f.block();
+    f.loop();
+    f.lget(start);
+    f.lget(end);
+    f.i32GeU();
+    f.brIf(1);
+    f.lget(header);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(start);
+    f.i32Add();
+    f.i32Load8u(0);
+    f.lset(b);
+    isSpace(f, b);
+    f.i32Eqz();
+    f.brIf(1);
+    f.lget(start);
+    f.i32c(1);
+    f.i32Add();
+    f.lset(start);
+    f.br(0);
+    f.end();
+    f.end();
+    f.block();
+    f.loop();
+    f.lget(end);
+    f.lget(start);
+    f.i32LeS();
+    f.brIf(1);
+    f.lget(header);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(end);
+    f.i32Add();
+    f.i32c(1);
+    f.i32Sub();
+    f.i32Load8u(0);
+    f.lset(b);
+    isSpace(f, b);
+    f.i32Eqz();
+    f.brIf(1);
+    f.lget(end);
+    f.i32c(1);
+    f.i32Sub();
+    f.lset(end);
+    f.br(0);
+    f.end();
+    f.end();
+    f.lget(header);
+    f.lget(start);
+    f.lget(end);
+    f.lget(start);
+    f.i32Sub();
+    f.call(strSliceBytes);
+    f.lset(result);
+    retStr(f, result);
+  }
+  {
+    Func f(m, methodHelpers[kMethodStrContains], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  needle = f.addLocal(kI32), cond = f.addLocal(kI32);
+    arity1(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    needStr(f, 0, needle);
+    f.lget(header);
+    f.lget(needle);
+    f.i32c(0);
+    f.call(strFind);
+    f.i32c(0);
+    f.i32GeS();
+    f.lset(cond);
+    retBool(f, cond);
+  }
+  {
+    Func f(m, methodHelpers[kMethodStrStartsWith], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  needle = f.addLocal(kI32), cond = f.addLocal(kI32);
+    arity1(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    needStr(f, 0, needle);
+    f.lget(header);
+    f.lget(needle);
+    f.i32c(0);
+    f.call(strFind);
+    f.i32c(0);
+    f.i32Eq();
+    f.lset(cond);
+    retBool(f, cond);
+  }
+  {
+    Func f(m, methodHelpers[kMethodStrEndsWith], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  needle = f.addLocal(kI32), start = f.addLocal(kI32),
+                  cond = f.addLocal(kI32);
+    arity1(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    needStr(f, 0, needle);
+    f.lget(needle);
+    f.i32Load(0);
+    f.lget(header);
+    f.i32Load(0);
+    f.i32GtU();
+    f.if_();
+    f.i64c(static_cast<std::int64_t>(kBool));
+    f.i64c(0);
+    f.ret();
+    f.end();
+    f.lget(header);
+    f.i32Load(0);
+    f.lget(needle);
+    f.i32Load(0);
+    f.i32Sub();
+    f.lset(start);
+    f.lget(header);
+    f.lget(needle);
+    f.lget(start);
+    f.call(strFind);
+    f.lget(start);
+    f.i32Eq();
+    f.lset(cond);
+    retBool(f, cond);
+  }
+  {
+    Func f(m, methodHelpers[kMethodStrIndexOf], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  needle = f.addLocal(kI32), found = f.addLocal(kI32),
+                  i = f.addLocal(kI32), count = f.addLocal(kI32),
+                  b = f.addLocal(kI32);
+    arity1(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    needStr(f, 0, needle);
+    f.lget(header);
+    f.lget(needle);
+    f.i32c(0);
+    f.call(strFind);
+    f.lset(found);
+    f.lget(found);
+    f.i32c(0);
+    f.i32LtS();
+    f.if_();
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64c(-1);
+    f.ret();
+    f.end();
+    f.i32c(0);
+    f.lset(i);
+    f.i32c(0);
+    f.lset(count);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(found);
+    f.i32GeS();
+    f.brIf(1);
+    f.lget(header);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(i);
+    f.i32Add();
+    f.i32Load8u(0);
+    f.lset(b);
+    f.lget(b);
+    f.i32c(0xC0);
+    f.i32And();
+    f.i32c(0x80);
+    f.i32Ne();
+    f.if_();
+    f.lget(count);
+    f.i32c(1);
+    f.i32Add();
+    f.lset(count);
+    f.end();
+    f.lget(i);
+    f.i32c(1);
+    f.i32Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
+    f.end();
+    retInt(f, count);
+  }
+  {
+    Func f(m, methodHelpers[kMethodStrSubstr], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  start = f.addLocal(kI32), count = f.addLocal(kI32),
+                  len = f.addLocal(kI32), byteStart = f.addLocal(kI32),
+                  byteEnd = f.addLocal(kI32), result = f.addLocal(kI32);
+    arity1to2(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    needInt(f, 0, start);
+    f.lget(header);
+    f.call(utf8Len);
+    f.i32WrapI64();
+    f.lset(len);
+    f.lget(start);
+    f.i32c(0);
+    f.i32LtS();
+    f.if_();
+    f.lget(start);
+    f.lget(len);
+    f.i32Add();
+    f.lset(start);
+    f.end();
+    f.lget(start);
+    f.i32c(0);
+    f.i32LtS();
+    f.if_();
+    f.i32c(0);
+    f.lset(start);
+    f.end();
+    f.lget(start);
+    f.lget(len);
+    f.i32GtU();
+    f.if_();
+    f.lget(len);
+    f.lset(start);
+    f.end();
+    f.lget(len);
+    f.lget(start);
+    f.i32Sub();
+    f.lset(count);
+    f.lget(1);
+    f.i32c(2);
+    f.i32Eq();
+    f.if_();
+    needInt(f, 1, count);
+    f.lget(count);
+    f.i32c(0);
+    f.i32LtS();
+    f.if_();
+    f.i32c(0);
+    f.lset(count);
+    f.end();
+    f.end();
+    f.lget(start);
+    f.lget(count);
+    f.i32Add();
+    f.lget(len);
+    f.i32GtU();
+    f.if_();
+    f.lget(len);
+    f.lget(start);
+    f.i32Sub();
+    f.lset(count);
+    f.end();
+    f.lget(header);
+    f.lget(start);
+    f.i64ExtendI32S();
+    f.call(utf8ByteOffset);
+    f.lset(byteStart);
+    f.lget(header);
+    f.lget(start);
+    f.lget(count);
+    f.i32Add();
+    f.i64ExtendI32S();
+    f.call(utf8ByteOffset);
+    f.lset(byteEnd);
+    f.lget(header);
+    f.lget(byteStart);
+    f.lget(byteEnd);
+    f.lget(byteStart);
+    f.i32Sub();
+    f.call(strSliceBytes);
+    f.lset(result);
+    retStr(f, result);
+  }
+  {
+    Func f(m, methodHelpers[kMethodStrChars], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  result = f.addLocal(kI32), off = f.addLocal(kI32),
+                  len = f.addLocal(kI32), clen = f.addLocal(kI32);
+    arity0(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.i64c(0);
+    f.call(newArray);
+    f.i32WrapI64();
+    f.lset(result);
+    f.drop();
+    f.lget(header);
+    f.i32Load(0);
+    f.lset(len);
+    f.i32c(0);
+    f.lset(off);
+    f.block();
+    f.loop();
+    f.lget(off);
+    f.lget(len);
+    f.i32GeU();
+    f.brIf(1);
+    f.lget(header);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(off);
+    f.i32Add();
+    f.i32Load8u(0);
+    f.call(utf8SeqLen);
+    f.lset(clen);
+    f.lget(result);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.lget(header);
+    f.lget(off);
+    f.lget(clen);
+    f.call(strSliceBytes);
+    f.i64ExtendI32U();
+    f.call(arrayPush);
+    f.lget(off);
+    f.lget(clen);
+    f.i32Add();
+    f.lset(off);
+    f.br(0);
+    f.end();
+    f.end();
+    retArray(f, result);
+  }
+  {
+    Func f(m, methodHelpers[kMethodStrReversed], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  result = f.addLocal(kI32);
+    arity0(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.call(strReverse);
+    f.lset(result);
+    retStr(f, result);
+  }
+  {
+    Func f(m, methodHelpers[kMethodStrRepeat], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  n = f.addLocal(kI32), slen = f.addLocal(kI32),
+                  out = f.addLocal(kI32), i = f.addLocal(kI32);
+    arity1(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    needInt(f, 0, n);
+    f.lget(n);
+    f.i32c(0);
+    f.i32LtS();
+    f.if_();
+    emitFailStatic(f, sRepeatNegative);
+    f.end();
+    f.lget(header);
+    f.i32Load(0);
+    f.lset(slen);
+    f.lget(slen);
+    f.i32Eqz();
+    f.lget(n);
+    f.i32Eqz();
+    f.i32Or();
+    f.if_();
+    f.i32c(0);
+    f.call(newStr);
+    f.lset(out);
+    retStr(f, out);
+    f.end();
+    f.i32c(67108864);
+    f.lget(slen);
+    f.i32DivU();
+    f.lget(n);
+    f.i32LtU();
+    f.if_();
+    emitFailStatic(f, sRepeatLarge);
+    f.end();
+    f.lget(slen);
+    f.lget(n);
+    f.i32Mul();
+    f.call(newStr);
+    f.lset(out);
+    f.i32c(0);
+    f.lset(i);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(n);
+    f.i32GeS();
+    f.brIf(1);
+    f.lget(out);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(i);
+    f.lget(slen);
+    f.i32Mul();
+    f.i32Add();
+    f.lget(header);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(slen);
+    f.memoryCopy();
+    f.lget(i);
+    f.i32c(1);
+    f.i32Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
+    f.end();
+    retStr(f, out);
+  }
+  {
+    Func f(m, methodHelpers[kMethodStrSplit], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  result = f.addLocal(kI32), sep = f.addLocal(kI32),
+                  i = f.addLocal(kI32), start = f.addLocal(kI32),
+                  b = f.addLocal(kI32), found = f.addLocal(kI32),
+                  off = f.addLocal(kI32), clen = f.addLocal(kI32),
+                  len = f.addLocal(kI32);
+    arity0to1(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.i64c(0);
+    f.call(newArray);
+    f.i32WrapI64();
+    f.lset(result);
+    f.drop();
+    f.lget(header);
+    f.i32Load(0);
+    f.lset(len);
+    f.lget(1);
+    f.i32c(0);
+    f.i32Eq();
+    f.if_();
+    f.i32c(0);
+    f.lset(i);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(len);
+    f.i32GeU();
+    f.brIf(1);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(len);
+    f.i32GeU();
+    f.brIf(1);
+    f.lget(header);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(i);
+    f.i32Add();
+    f.i32Load8u(0);
+    f.lset(b);
+    isSpace(f, b);
+    f.i32Eqz();
+    f.brIf(1);
+    f.lget(i);
+    f.i32c(1);
+    f.i32Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
+    f.end();
+    f.lget(i);
+    f.lget(len);
+    f.i32GeU();
+    f.brIf(1);
+    f.lget(i);
+    f.lset(start);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(len);
+    f.i32GeU();
+    f.brIf(1);
+    f.lget(header);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(i);
+    f.i32Add();
+    f.i32Load8u(0);
+    f.lset(b);
+    isSpace(f, b);
+    f.brIf(1);
+    f.lget(i);
+    f.i32c(1);
+    f.i32Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
+    f.end();
+    f.lget(result);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.lget(header);
+    f.lget(start);
+    f.lget(i);
+    f.lget(start);
+    f.i32Sub();
+    f.call(strSliceBytes);
+    f.i64ExtendI32U();
+    f.call(arrayPush);
+    f.br(0);
+    f.end();
+    f.end();
+    f.else_();
+    needStr(f, 0, sep);
+    f.lget(sep);
+    f.i32Load(0);
+    f.i32Eqz();
+    f.if_();
+    f.i32c(0);
+    f.lset(off);
+    f.block();
+    f.loop();
+    f.lget(off);
+    f.lget(len);
+    f.i32GeU();
+    f.brIf(1);
+    f.lget(header);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(off);
+    f.i32Add();
+    f.i32Load8u(0);
+    f.call(utf8SeqLen);
+    f.lset(clen);
+    f.lget(result);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.lget(header);
+    f.lget(off);
+    f.lget(clen);
+    f.call(strSliceBytes);
+    f.i64ExtendI32U();
+    f.call(arrayPush);
+    f.lget(off);
+    f.lget(clen);
+    f.i32Add();
+    f.lset(off);
+    f.br(0);
+    f.end();
+    f.end();
+    f.else_();
+    f.i32c(0);
+    f.lset(start);
+    f.block();
+    f.loop();
+    f.lget(header);
+    f.lget(sep);
+    f.lget(start);
+    f.call(strFind);
+    f.lset(found);
+    f.lget(found);
+    f.i32c(0);
+    f.i32LtS();
+    f.if_();
+    f.lget(result);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.lget(header);
+    f.lget(start);
+    f.lget(len);
+    f.lget(start);
+    f.i32Sub();
+    f.call(strSliceBytes);
+    f.i64ExtendI32U();
+    f.call(arrayPush);
+    f.br(2);
+    f.end();
+    f.lget(result);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.lget(header);
+    f.lget(start);
+    f.lget(found);
+    f.lget(start);
+    f.i32Sub();
+    f.call(strSliceBytes);
+    f.i64ExtendI32U();
+    f.call(arrayPush);
+    f.lget(found);
+    f.lget(sep);
+    f.i32Load(0);
+    f.i32Add();
+    f.lset(start);
+    f.br(0);
+    f.end();
+    f.end();
+    f.end();
+    f.end();
+    retArray(f, result);
+  }
+  {
+    Func f(m, methodHelpers[kMethodStrLines], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  result = f.addLocal(kI32), len = f.addLocal(kI32),
+                  start = f.addLocal(kI32), i = f.addLocal(kI32),
+                  end = f.addLocal(kI32), b = f.addLocal(kI32);
+    arity0(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.i64c(0);
+    f.call(newArray);
+    f.i32WrapI64();
+    f.lset(result);
+    f.drop();
+    f.lget(header);
+    f.i32Load(0);
+    f.lset(len);
+    f.i32c(0);
+    f.lset(start);
+    f.i32c(0);
+    f.lset(i);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(len);
+    f.i32GeU();
+    f.brIf(1);
+    f.lget(header);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(i);
+    f.i32Add();
+    f.i32Load8u(0);
+    f.lset(b);
+    f.lget(b);
+    f.i32c(10);
+    f.i32Eq();
+    f.if_();
+    f.lget(i);
+    f.lset(end);
+    f.lget(end);
+    f.lget(start);
+    f.i32GtS();
+    f.lget(header);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(end);
+    f.i32Add();
+    f.i32c(1);
+    f.i32Sub();
+    f.i32Load8u(0);
+    f.i32c(13);
+    f.i32Eq();
+    f.i32And();
+    f.if_();
+    f.lget(end);
+    f.i32c(1);
+    f.i32Sub();
+    f.lset(end);
+    f.end();
+    f.lget(result);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.lget(header);
+    f.lget(start);
+    f.lget(end);
+    f.lget(start);
+    f.i32Sub();
+    f.call(strSliceBytes);
+    f.i64ExtendI32U();
+    f.call(arrayPush);
+    f.lget(i);
+    f.i32c(1);
+    f.i32Add();
+    f.lset(start);
+    f.end();
+    f.lget(i);
+    f.i32c(1);
+    f.i32Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
+    f.end();
+    f.lget(start);
+    f.lget(len);
+    f.i32LtS();
+    f.if_();
+    f.lget(len);
+    f.lset(end);
+    f.lget(end);
+    f.lget(start);
+    f.i32GtS();
+    f.lget(header);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(end);
+    f.i32Add();
+    f.i32c(1);
+    f.i32Sub();
+    f.i32Load8u(0);
+    f.i32c(13);
+    f.i32Eq();
+    f.i32And();
+    f.if_();
+    f.lget(end);
+    f.i32c(1);
+    f.i32Sub();
+    f.lset(end);
+    f.end();
+    f.lget(result);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.lget(header);
+    f.lget(start);
+    f.lget(end);
+    f.lget(start);
+    f.i32Sub();
+    f.call(strSliceBytes);
+    f.i64ExtendI32U();
+    f.call(arrayPush);
+    f.end();
+    retArray(f, result);
+  }
+  {
+    Func f(m, methodHelpers[kMethodStrReplaceFirst], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  from = f.addLocal(kI32), to = f.addLocal(kI32),
+                  found = f.addLocal(kI32), len = f.addLocal(kI32),
+                  prefix = f.addLocal(kI32), suffix = f.addLocal(kI32),
+                  tmp = f.addLocal(kI32), result = f.addLocal(kI32);
+    arity2(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    needStr(f, 0, from);
+    needStr(f, 1, to);
+    f.lget(from);
+    f.i32Load(0);
+    f.i32Eqz();
+    f.if_();
+    emitFailStatic(f, sReplaceFirstEmpty);
+    f.end();
+    f.lget(header);
+    f.i32Load(0);
+    f.lset(len);
+    f.lget(header);
+    f.lget(from);
+    f.i32c(0);
+    f.call(strFind);
+    f.lset(found);
+    f.lget(found);
+    f.i32c(0);
+    f.i32LtS();
+    f.if_();
+    f.lget(header);
+    f.i32c(0);
+    f.lget(len);
+    f.call(strSliceBytes);
+    f.lset(result);
+    retStr(f, result);
+    f.end();
+    f.lget(header);
+    f.i32c(0);
+    f.lget(found);
+    f.call(strSliceBytes);
+    f.lset(prefix);
+    f.lget(header);
+    f.lget(found);
+    f.lget(from);
+    f.i32Load(0);
+    f.i32Add();
+    f.lget(len);
+    f.lget(found);
+    f.i32Sub();
+    f.lget(from);
+    f.i32Load(0);
+    f.i32Sub();
+    f.call(strSliceBytes);
+    f.lset(suffix);
+    f.lget(prefix);
+    f.lget(to);
+    f.call(concat);
+    f.lset(tmp);
+    f.lget(tmp);
+    f.lget(suffix);
+    f.call(concat);
+    f.lset(result);
+    retStr(f, result);
+  }
+  {
+    Func f(m, methodHelpers[kMethodStrReplace], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  from = f.addLocal(kI32), to = f.addLocal(kI32),
+                  found = f.addLocal(kI32), len = f.addLocal(kI32),
+                  pos = f.addLocal(kI32), result = f.addLocal(kI32);
+    arity2(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    needStr(f, 0, from);
+    needStr(f, 1, to);
+    f.lget(from);
+    f.i32Load(0);
+    f.i32Eqz();
+    f.if_();
+    emitFailStatic(f, sReplaceEmpty);
+    f.end();
+    f.lget(header);
+    f.i32Load(0);
+    f.lset(len);
+    f.i32c(0);
+    f.call(newStr);
+    f.lset(result);
+    f.i32c(0);
+    f.lset(pos);
+    f.block();
+    f.loop();
+    f.lget(header);
+    f.lget(from);
+    f.lget(pos);
+    f.call(strFind);
+    f.lset(found);
+    f.lget(found);
+    f.i32c(0);
+    f.i32LtS();
+    f.if_();
+    f.lget(result);
+    f.lget(header);
+    f.lget(pos);
+    f.lget(len);
+    f.lget(pos);
+    f.i32Sub();
+    f.call(strSliceBytes);
+    f.call(concat);
+    f.lset(result);
+    f.br(2);
+    f.end();
+    f.lget(result);
+    f.lget(header);
+    f.lget(pos);
+    f.lget(found);
+    f.lget(pos);
+    f.i32Sub();
+    f.call(strSliceBytes);
+    f.call(concat);
+    f.lset(result);
+    f.lget(result);
+    f.lget(to);
+    f.call(concat);
+    f.lset(result);
+    f.lget(found);
+    f.lget(from);
+    f.i32Load(0);
+    f.i32Add();
+    f.lset(pos);
+    f.br(0);
+    f.end();
+    f.end();
+    retStr(f, result);
+  }
+
+  auto emitPad = [&](std::uint32_t helper, bool atStart, std::uint32_t fillMsg,
+                     std::uint32_t largeMsg) {
+    Func f(m, methodHelpers[helper], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  width = f.addLocal(kI32), fill = f.addLocal(kI32),
+                  current = f.addLocal(kI32), keep = f.addLocal(kI32),
+                  fillChars = f.addLocal(kI32), padding = f.addLocal(kI32),
+                  dst = f.addLocal(kI32), remaining = f.addLocal(kI32),
+                  off = f.addLocal(kI32), copied = f.addLocal(kI32),
+                  clen = f.addLocal(kI32), result = f.addLocal(kI32);
+    arity1to2(f);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    needInt(f, 0, width);
+    f.lget(1);
+    f.i32c(2);
+    f.i32Eq();
+    f.if_();
+    needStr(f, 1, fill);
+    f.else_();
+    f.i32c(static_cast<std::int32_t>(sSpace));
+    f.lset(fill);
+    f.end();
+    f.lget(fill);
+    f.i32Load(0);
+    f.i32Eqz();
+    f.if_();
+    emitFailStatic(f, fillMsg);
+    f.end();
+    f.lget(header);
+    f.call(utf8Len);
+    f.i32WrapI64();
+    f.lset(current);
+    f.lget(current);
+    f.lget(width);
+    f.i32GeS();
+    f.if_();
+    f.lget(header);
+    f.i32c(0);
+    f.lget(header);
+    f.i32Load(0);
+    f.call(strSliceBytes);
+    f.lset(result);
+    retStr(f, result);
+    f.end();
+    f.lget(width);
+    f.lget(current);
+    f.i32Sub();
+    f.lset(keep);
+    f.lget(keep);
+    f.i32c(67108864);
+    f.i32GtU();
+    f.if_();
+    emitFailStatic(f, largeMsg);
+    f.end();
+    f.lget(fill);
+    f.call(utf8Len);
+    f.i32WrapI64();
+    f.lset(fillChars);
+    f.lget(keep);
+    f.i32c(4);
+    f.i32Mul();
+    f.call(newStr);
+    f.lset(padding);
+    f.i32c(0);
+    f.lset(dst);
+    f.lget(keep);
+    f.lset(remaining);
+    f.block();
+    f.loop();
+    f.lget(remaining);
+    f.lget(fillChars);
+    f.i32LtS();
+    f.brIf(1);
+    f.lget(padding);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(dst);
+    f.i32Add();
+    f.lget(fill);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(fill);
+    f.i32Load(0);
+    f.memoryCopy();
+    f.lget(dst);
+    f.lget(fill);
+    f.i32Load(0);
+    f.i32Add();
+    f.lset(dst);
+    f.lget(remaining);
+    f.lget(fillChars);
+    f.i32Sub();
+    f.lset(remaining);
+    f.br(0);
+    f.end();
+    f.end();
+    f.lget(remaining);
+    f.i32c(0);
+    f.i32GtS();
+    f.if_();
+    f.i32c(0);
+    f.lset(off);
+    f.i32c(0);
+    f.lset(copied);
+    f.block();
+    f.loop();
+    f.lget(copied);
+    f.lget(remaining);
+    f.i32GeS();
+    f.brIf(1);
+    f.lget(fill);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(off);
+    f.i32Add();
+    f.i32Load8u(0);
+    f.call(utf8SeqLen);
+    f.lset(clen);
+    f.lget(padding);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(dst);
+    f.i32Add();
+    f.lget(fill);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(off);
+    f.i32Add();
+    f.lget(clen);
+    f.memoryCopy();
+    f.lget(off);
+    f.lget(clen);
+    f.i32Add();
+    f.lset(off);
+    f.lget(dst);
+    f.lget(clen);
+    f.i32Add();
+    f.lset(dst);
+    f.lget(copied);
+    f.i32c(1);
+    f.i32Add();
+    f.lset(copied);
+    f.br(0);
+    f.end();
+    f.end();
+    f.end();
+    f.lget(padding);
+    f.lget(dst);
+    f.i64ExtendI32U();
+    f.i64Store(0);
+    if (atStart) {
+      f.lget(padding);
+      f.lget(header);
+      f.call(concat);
+    } else {
+      f.lget(header);
+      f.lget(padding);
+      f.call(concat);
+    }
+    f.lset(result);
+    retStr(f, result);
+  };
+  emitPad(kMethodStrPadStart, true, sPadStartFill, sPadStartLarge);
+  emitPad(kMethodStrPadEnd, false, sPadEndFill, sPadEndLarge);
+}
+
 void Runtime::emitMethodDispatch() {
   Func f(m, methodDispatch, {kI32, kI32, kI32});
   std::uint32_t selector = f.addLocal(kI32);
@@ -9807,6 +12001,14 @@ void Runtime::emitCore() {
   opLt = emitCompare(1);
   opIn = emitIn();
   utf8ByteOffset = emitUtf8ByteOffset();
+  utf8SeqLen = emitUtf8SeqLen();
+  decodeCodePoint = emitDecodeCodePoint();
+  encodeUtf8 = emitEncodeUtf8();
+  caseLookup = emitCaseLookup();
+  caseMap = emitCaseMap();
+  strFind = emitStrFind();
+  strSliceBytes = emitStrSliceBytes();
+  strReverse = emitStrReverse();
   indexGet = emitIndexGet();
   indexSet = emitIndexSet();
   slice = emitSlice();
@@ -12030,6 +14232,7 @@ std::vector<std::uint8_t> Lowering::run() {
   rt.reserveArrayMethods();
   rt.emitCore();
   rt.emitArrayMethods();
+  rt.emitStringMethods();
   rt.emitMethodDispatch();
 
   // One static string per string constant and per proto name, created before

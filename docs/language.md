@@ -469,8 +469,8 @@ thing that breaks that property. So the rule is simple — **if a program uses
 FFI, build it hosted.** The development engine (`oskel`) is unaffected: it
 resolves the symbol through `Platform::lookupSymbol` and runs the same program
 either way. When the symbol lives in a third-party library, name it with
-`--link-lib` (`--link-lib SDL3` becomes `-lSDL3`); libc and libm are already
-linked.
+`--link-lib` (`--link-lib SDL3` becomes `-lSDL3` for the host linker and a
+`DT_NEEDED libSDL3.so.0` for the own one); libc and libm are already linked.
 
 **`extern "C"` blocks.** A C function is declared with `extern` (PHASE 6.6).
 Three spellings are accepted and compile to the same thing:
@@ -495,11 +495,14 @@ search is `dlsym(RTLD_DEFAULT)`, which reaches libc, libm and the host program;
 on Windows it walks the process image, `kernel32.dll` (the Win32 base API:
 `GetTickCount`, `Sleep`, ...) and the C runtime, so a declaration can name a CRT
 function or a Win32 one. The call passes its arguments and reads its result
-across the System V AMD64 ABI without
-`libffi`: integers, bools and pointers travel in general-purpose registers and
-`float`/`double` in SSE registers, and the result is read back at the exact
-width the declaration named (so a C `int` is not read as a 64-bit value). A
-symbol the host cannot resolve is a clear runtime error, never a wild call.
+across the host C ABI (System V AMD64 on Linux and x86-64 macOS, Microsoft x64
+on Windows) without a host FFI library: integers, bools and pointers travel in
+general-purpose registers and `float`/`double` in SSE registers, and the result
+is read back at the exact width the declaration named (so a C `int` is not read
+as a 64-bit value). A fixed scalar signature is a compile-time thunk; the three
+shapes that cannot be one (a C variadic, a class-MEMORY struct and a callback)
+use a small x86-64 stub emitted by the engine. A symbol the host cannot resolve
+is a clear runtime error, never a wild call.
 
 A C symbol is bound to a single marshalling thunk, so two declarations of the
 same name must agree on their signature. A second declaration with a different
@@ -558,11 +561,11 @@ back the exact bytes of the struct.
 A struct of **more than 16 bytes** is class MEMORY: it is passed in the outgoing
 stack-argument area and returned through a hidden `sret` buffer the caller
 supplies in `rdi` (which shifts every integer argument one register along). The
-development engine expresses both directions through `libffi`, so a class-MEMORY
-struct needs libffi and the System V AMD64 ABI; elsewhere the declaration is
-rejected at compile time with a clear message instead of a wrong call. A struct
-field must be an FFI scalar type (an integer, `float`/`double`, `ptr`/`cstring`
-or `bool`); a nested struct field is rejected.
+development engine expresses both directions through its x86-64 descriptor stub,
+so a class-MEMORY struct needs the System V AMD64 ABI; elsewhere (Windows, arm64)
+the declaration is rejected at compile time with a clear message instead of a
+wrong call. A struct field must be an FFI scalar type (an integer, `float`/
+`double`, `ptr`/`cstring` or `bool`); a nested struct field is rejected.
 
 Structs by value are **System V AMD64 only**. The register classification above
 is the System V ABI's; the Microsoft x64 ABI (Windows) passes a struct larger
@@ -594,11 +597,13 @@ storeByte(data, 3, 30);
 qsort(data, 4, 1, ascending);
 ```
 
-In the development engine the callback is a `libffi` closure: the trampoline
-re-enters the VM with the C arguments boxed as Oskel values and writes the Oskel
-result back in the declared C type. The callback runs while the C function is on
-the stack, so the trampoline is alive for the whole call; storing the function
-pointer for a later call is out of scope in the development engine. The AOT
+In the development engine the callback is an x86-64 closure stub (System V
+AMD64, so Linux and x86-64 macOS; Windows and arm64 reject a callback
+declaration): the stub re-enters the VM with the C arguments boxed as Oskel
+values and writes the Oskel result back in the declared C type. The callback
+runs while the C function is on the stack, so the stub is alive for the whole
+call; storing the function pointer for a later call is out of scope in the
+development engine. The AOT
 backend's stub and context live in the arena, so a callback C stores for a later
 call -- including one invoked from an `atexit` handler after the chunk returns
 -- works there (BACKLOG §6). The executable stub page is W^X (read+execute,
@@ -611,15 +616,16 @@ fields are scalars, like a struct parameter): the trampoline serialises the map
 the Oskel function returns into the C return storage using the struct's layout,
 so C reads the fields back through the registers the ABI assigns. A struct
 larger than 16 bytes (class MEMORY) is returned through the hidden `sret`
-pointer, which needs the same `libffi`-backed path as a large struct argument.
-An error raised inside a callback cannot unwind
+pointer, which needs the same System V descriptor-stub path as a large struct
+argument. An error raised inside a callback cannot unwind
 through the C frame, so the extern call captures it and re-raises it once C
 returns: `pcall` catches it like any other runtime error. A struct the callback
 returns that does not match the declared shape (not a map, a missing field, a
 field of the wrong type) fails the same way. The AOT backend (PHASE 7f.8)
-lowers callbacks to generated stubs and never links `libffi`; it supports every
-scalar parameter and return class, but rejects a callback that returns a struct
-by value and a callback with a struct parameter with a dedicated build error.
+lowers callbacks to generated stubs and never links a host FFI library; it
+supports every scalar parameter and return class, but rejects a callback that
+returns a struct by value and a callback with a struct parameter with a dedicated
+build error.
 
 **C variadics.** A trailing bare `...` declares a C variadic function: the named
 parameters are the fixed prefix and every extra argument is passed through the
@@ -644,15 +650,17 @@ only that the fixed prefix is present and that the earlier arguments match; the
 trailing arguments are **not** type-checked, because C promotes and consumes
 them at run time, so a wrong format is the program's responsibility.
 
-In the development engine a variadic call goes through `libffi` (the argument
-count changes per call, so the call interface is prepared each time with
-`ffi_prep_cif_var`). Like a class-MEMORY struct, a variadic declaration
-therefore needs `libffi` and the System V AMD64 ABI there; on any other build it
-is rejected at compile time with a clear message. The hosted AOT backend does
-not use `libffi`: it lowers the tail itself on System V (Linux and macOS) and on
-Win64 (Windows), where the argument position selects the register and a floating
-value is duplicated in the integer register of the same position. The return
-type must be a scalar. A declaration that is variadic and one that is not are
+A variadic call always goes through the engine's x86-64 descriptor stub (the
+argument count changes per call, so the outgoing register/stack layout is built
+each time). The stub follows the host ABI: System V AMD64 on Linux and x86-64
+macOS, Microsoft x64 on Windows, where the shadow space, the four-register limit
+and the stack-argument slots are laid out accordingly. On a non-x86-64 host the
+declaration is rejected at compile time with a clear message. The hosted AOT
+backend does not use the engine's stub: it lowers the tail itself on System V
+(Linux and macOS) and on Win64 (Windows), where the argument position selects
+the register and a floating value is duplicated in the integer register of the
+same position. The return type must be a scalar. A declaration that is variadic
+and one that is not are
 different C types, so declaring one symbol both ways is a compile error (see
 above).
 
@@ -2990,9 +2998,21 @@ oskelc <file.oskl>         the same compiler without the interpreter
 | `-o`, `--output <file>` | Output path for `build`/`oskelc` (default: the script's base name). |
 | `--target <name>` | Build target for `build`/`oskelc` (default: the host). |
 | `--mode <name>` | Link mode for `build`/`oskelc` (default: `freestanding`). |
-| `--link-lib <name>` | Library for the hosted link, passed as `-l<name>` (repeatable). |
+| `--link-lib <name>` | Library for the hosted link (repeatable), e.g. `SDL3`. |
+| `-L`, `--library-path <dir>` | Where the hosted link finds `lib<name>.so` (repeatable). |
+| `--link-object <file>` | Extra object or `ar` archive for the hosted link (repeatable). Requires `--mode hosted`; not with `--emit-object`. |
+| `--linker <name>` | How a hosted build is closed: `host` (default, `$CC`) or `own` (the project's linker, x86-64 Linux). |
+| `--emit-object` | Writes the hosted relocatable object instead of an executable (the input of `oskelld`). |
 | `--no-jit` | Disables the JIT (development engine only). |
 | `--` | End of options; the next argument is the file. |
+
+`oskelld <object.o>... [-o <out>]` is the standalone linker: it consumes the
+objects `--emit-object` writes (and System V/GNU `ar` archives) and closes them
+into a dynamically linked x86-64 Linux executable. An archive member is pulled
+in only when it defines a still-undefined symbol. `oskelld -r <object.o>...`
+combines the inputs into a new relocatable object instead, which can be linked
+again. `--linker own` is opt-in and supports `x86_64-linux-sysv` only;
+`--linker host` keeps the `$CC` path.
 
 Options must come before the file. Everything after the file is considered an argument of the script and is obtained with `args()`.
 
@@ -3140,7 +3160,7 @@ features of this release.
 - Modules use Java-style `import` (see §18). `import` is only allowed at the top level of a module: nesting an import inside a function or block is a compile error. `require` (Lua-style) is dropped — `import` is the only module form. A module is loaded once, eagerly, when the program is compiled, and a cyclic import is a compile error rather than a crash.
 - No `++`, `--` or default parameters. A trailing `rest...` parameter makes a function variadic (see §7.1). `switch` on literals and ranges is supported (see §6.10), and so is the post-test loop `do { ... } while (cond);` (see §6.4).
 - Optional types and nullability are implemented for declarations and expressions (PHASE 6.5). Type annotations (`let x: int = 5`), local inference, the nullable `T?` annotation, and the null-safe expressions `?.`, `??` and `!!` are checked at compile time. `struct` is implemented (see §4.7) and so is `native fn` (see §7.6), the typed declaration of a host-provided function.
-- FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the System V AMD64 ABI without `libffi` for scalars and structs by value. A `fn(P...): R` parameter is a callback: the development engine builds a `libffi` closure that re-enters the VM (its `R` may be a scalar or a struct by value). A trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...): int`), which applies the C default argument promotions; the development engine marshals it through `libffi`, so like a class-MEMORY struct it needs the System V AMD64 ABI plus `libffi` there. The hosted AOT backend lowers the tail itself on System V and on Win64 (see the next bullet).
+- FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the host C ABI without a host FFI library for scalars and register structs; a class-MEMORY struct, a C variadic and a callback go through a small x86-64 descriptor/closure stub emitted by the engine. A `fn(P...): R` parameter is a callback: the development engine builds a closure stub that re-enters the VM (its `R` may be a scalar or a struct by value); it is available on x86-64 System V (Linux, x86-64 macOS), not on Windows or arm64. A trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...): int`), which applies the C default argument promotions and goes through the descriptor stub on either x86-64 ABI (System V AMD64 or Microsoft x64); it is rejected at compile time on a non-x86-64 host.
 - FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.10 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux, Windows and macOS x86-64), where the program is linked against the host C library; the freestanding mode, which is the default on Linux and Windows, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — both register-class and class-MEMORY — are lowered on the System V targets (Linux and macOS, 7f.6, 7f.7); the Windows x86-64 backend supports the scalar, `cstring` and `ptr` classes and rejects a struct or a callback with a dedicated message. A C variadic is lowered on all three hosted targets: System V continues the independent GPR/SSE counters, Win64 continues the argument positions (a floating value in a register position goes in both its SSE and integer register, and position four onward spills to the outgoing stack area past the shadow space). `native fn` declarations the backend has no stub for fail the build with a dedicated message. Callbacks are lowered on System V (7f.8): a scalar parameter or return crosses through a generated stub; a struct return or a struct parameter is rejected with a dedicated message.
 - A function's text representation is the same on both engines: `<fn name>` for a named function, `<native fn name>` for a host binding (a builtin, a `native fn`, an `extern "C"` symbol or a bound collection method such as `<native fn array.map>`), and `<fn <anonymous>>` for a lambda. The AOT closure carries a `display` pointer to a static `AotString` with that exact text, so `print`, `repr`, `str` and string interpolation all agree byte for byte (BACKLOG §6.22, `tests/native_build_function_repr.oskl`).
 - The first UI layer is `std/ui.oskl` (`docs/ui.md`): a declarative widget

@@ -89,9 +89,10 @@ file(GLOB_RECURSE OSKEL_FRONTEND_SOURCES CONFIGURE_DEPENDS
 file(GLOB_RECURSE OSKEL_RUNTIME_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/*.cpp")
 
-# The two entry points are not part of either library.
+# The entry points are not part of any library.
 set(OSKEL_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 set(OSKEL_COMPILER_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/src/oskelc.cpp")
+set(OSKEL_LINKER_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/src/oskelld.cpp")
 
 # Configure-time guard, the inverse of the old one: a `.cpp` dropped straight
 # into `src/` belongs to no library and would be compiled by nothing, or — worse
@@ -99,7 +100,8 @@ set(OSKEL_COMPILER_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/src/oskelc.cpp")
 # the three directories, so the classification cannot be skipped.
 file(GLOB OSKEL_STRAY_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
-list(REMOVE_ITEM OSKEL_STRAY_SOURCES "${OSKEL_MAIN}" "${OSKEL_COMPILER_MAIN}")
+list(REMOVE_ITEM OSKEL_STRAY_SOURCES "${OSKEL_MAIN}" "${OSKEL_COMPILER_MAIN}"
+  "${OSKEL_LINKER_MAIN}")
 if(OSKEL_STRAY_SOURCES)
   foreach(stray IN LISTS OSKEL_STRAY_SOURCES)
     file(RELATIVE_PATH shown "${CMAKE_CURRENT_SOURCE_DIR}" "${stray}")
@@ -127,66 +129,34 @@ add_library(oskel_lib STATIC ${OSKEL_RUNTIME_SOURCES})
 target_link_libraries(oskel_lib PUBLIC oskel_frontend)
 target_compile_options(oskel_lib PRIVATE ${OSKEL_WARNINGS})
 
-# --------------------------------------------------------------------------- libffi (optional)
-# FFI callbacks (PHASE 6.6) need a trampoline that C can call back into the VM.
-# The development engine uses libffi for that; the AOT backend lowers callbacks
-# to compile-time stubs and never links libffi (DEVELOPMENT.md §5.1/§6.6). The build
-# stays green without libffi: `OSKEL_HAVE_LIBFFI` is only defined when found, and
-# the callback path is compiled out otherwise (a clear runtime error instead).
-#
-# There is no FindLibFFI module and pkg-config may be absent, so probe the
-# library and the header directly. The header lives under the multiarch dir on
-# Debian/Ubuntu (/usr/include/<triplet>/ffi.h), so that path is hinted too.
-option(OSKEL_ENABLE_LIBFFI "Use libffi for FFI callbacks in the dev engine" ON)
-if(OSKEL_ENABLE_LIBFFI)
-  find_library(FFI_LIBRARY NAMES ffi libffi)
-  find_path(FFI_INCLUDE_DIR NAMES ffi.h
-    PATH_SUFFIXES ${CMAKE_LIBRARY_ARCHITECTURE}
-    PATHS /usr/include /usr/local/include)
-  if(FFI_LIBRARY AND FFI_INCLUDE_DIR)
-    set(OSKEL_LIBFFI_FOUND TRUE)
-    # The compiler reads `OSKEL_HAVE_LIBFFI` through `include/ffi_types.h` to
-    # decide which `extern "C"` shapes it may accept (a variadic, a MEMORY
-    # struct), so the definition belongs to the front end and must reach both
-    # binaries: `oskelc` has to reject exactly what `oskel` rejects.
-    target_compile_definitions(oskel_frontend PUBLIC OSKEL_HAVE_LIBFFI)
-    # Only the runtime's marshalling includes `<ffi.h>` and links the library.
-    target_include_directories(oskel_lib PRIVATE ${FFI_INCLUDE_DIR})
-    target_link_libraries(oskel_lib PUBLIC ${FFI_LIBRARY})
-    message(STATUS "libffi found: FFI callbacks enabled in the dev engine")
-  else()
-    set(OSKEL_LIBFFI_FOUND FALSE)
-    message(STATUS "libffi not found: FFI callbacks disabled (set OSKEL_ENABLE_LIBFFI=OFF to silence)")
-  endif()
-endif()
-
 # Struct-by-value FFI is written for the System V AMD64 ABI only; the Microsoft
 # x64 ABI passes a struct larger than 8 bytes through a hidden pointer, a shape
 # the register thunks cannot express. The compiler rejects such a declaration
 # with a clear error on other targets, and the test that exercises it is skipped.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
   set(OSKEL_FFI_STRUCT_BY_VALUE TRUE)
+  set(OSKEL_FFI_CALLBACKS TRUE)
 else()
   set(OSKEL_FFI_STRUCT_BY_VALUE FALSE)
+  set(OSKEL_FFI_CALLBACKS FALSE)
 endif()
 
 # A struct larger than 16 bytes is class MEMORY (passed on the stack, returned
-# through a hidden pointer). Only the libffi-backed call path expresses that, so
-# it needs the System V AMD64 ABI *and* libffi in the dev engine; elsewhere the
-# declaration is rejected at compile time and the test that exercises the
-# rejection stays. This must mirror `OSKEL_FFI_MEMORY_STRUCTS` in
-# `include/ffi_types.h`, which derives from `OSKEL_HAVE_LIBFFI`.
-if(OSKEL_LIBFFI_FOUND AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
+# through a hidden pointer). The development engine's descriptor stub expresses
+# that on the System V AMD64 ABI; elsewhere the declaration is rejected at
+# compile time and the test that exercises the rejection stays. This must mirror
+# `OSKEL_FFI_MEMORY_STRUCTS` in `include/ffi_types.h`.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
   set(OSKEL_FFI_MEMORY_STRUCTS TRUE)
 else()
   set(OSKEL_FFI_MEMORY_STRUCTS FALSE)
 endif()
 
-# A C variadic call needs `ffi_prep_cif_var` and the System V AMD64 default
-# argument promotions, so it needs libffi *and* that ABI; elsewhere the
-# declaration is rejected at compile time and the test that exercises it is
-# skipped. This mirrors `OSKEL_FFI_VARIADIC` in `include/ffi_types.h`.
-if(OSKEL_LIBFFI_FOUND AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
+# A C variadic call goes through the development engine's descriptor stub, which
+# is emitted for both x86-64 ABIs; elsewhere the declaration is rejected at
+# compile time and the test that exercises it is skipped. This mirrors
+# `OSKEL_FFI_VARIADIC` in `include/ffi_types.h`.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
   set(OSKEL_FFI_VARIADIC TRUE)
 else()
   set(OSKEL_FFI_VARIADIC FALSE)
@@ -235,7 +205,15 @@ add_executable(oskelc "${OSKEL_COMPILER_MAIN}")
 target_link_libraries(oskelc PRIVATE oskel_frontend)
 target_compile_options(oskelc PRIVATE ${OSKEL_WARNINGS})
 
-install(TARGETS oskel oskelc RUNTIME DESTINATION bin)
+# `oskelld`: the project's own linker (PHASE 10.1). The linker core lives in
+# `src/frontend/native/link.cpp`, so this is a thin third entry point over the
+# front end: it carries no interpreter, and `oskel build --linker own` calls the
+# same code in process.
+add_executable(oskelld "${OSKEL_LINKER_MAIN}")
+target_link_libraries(oskelld PRIVATE oskel_frontend)
+target_compile_options(oskelld PRIVATE ${OSKEL_WARNINGS})
+
+install(TARGETS oskel oskelc oskelld RUNTIME DESTINATION bin)
 
 # --------------------------------------------------------------------------- bindgen
 # The binding generator: a C header in, an Oskel `extern "C"` module out. It is
@@ -328,6 +306,7 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(mathlib_test)
   oskel_add_cpp_test(elf_test)
   oskel_add_cpp_test(object_test)
+  oskel_add_cpp_test(link_test)
   oskel_add_cpp_test(pe_test)
   oskel_add_cpp_test(lower_test)
   oskel_add_cpp_test(freestanding_test)
@@ -523,6 +502,7 @@ if(BUILD_TESTING)
   add_test(NAME oskelc_has_no_vm
     COMMAND ${CMAKE_COMMAND}
       "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+      "-DOSKELD_EXE=$<TARGET_FILE:oskelld>"
       "-DFRONTEND_ARCHIVE=$<TARGET_FILE:oskel_frontend>"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_oskelc_no_vm.cmake")
 
@@ -549,6 +529,12 @@ if(BUILD_TESTING)
   add_test(NAME version_consistency_oskelc
     COMMAND ${CMAKE_COMMAND}
       "-DOSKEL_EXE=$<TARGET_FILE:oskelc>"
+      "-DOSKEL_EXPECTED_VERSION=${PROJECT_VERSION}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_version.cmake")
+
+  add_test(NAME version_consistency_oskelld
+    COMMAND ${CMAKE_COMMAND}
+      "-DOSKEL_EXE=$<TARGET_FILE:oskelld>"
       "-DOSKEL_EXPECTED_VERSION=${PROJECT_VERSION}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_version.cmake")
 
@@ -913,16 +899,87 @@ if(BUILD_TESTING)
           "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_struct.oskl"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+      # The project's own linker (PHASE 10.1) closes the hosted object without a
+      # C toolchain. Each fixture is linked three ways -- in process, through
+      # `--emit-object` + `oskelld`, and through `oskelc` -- and every output
+      # must match the VM byte for byte.
+      foreach(own_fixture
+          native_build_hello
+          native_build_extern_hosted
+          native_build_extern_ptr_return
+          native_build_extern_struct)
+        add_test(NAME oskel.build_hosted_own_${own_fixture}
+          COMMAND ${CMAKE_COMMAND}
+            "-DOSKEL_TEST_NAME=oskel.build_hosted_own_${own_fixture}"
+            "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+            "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+            "-DOSKELD_EXE=$<TARGET_FILE:oskelld>"
+            "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/${own_fixture}.oskl"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own.cmake")
+      endforeach()
+      # A shared library no system library provides: `--link-lib` is what makes
+      # the symbol resolve, so this exercises the SONAME lookup and the
+      # `.dynsym` check instead of libm (which the linker detects on its own).
+      add_library(oskel_link_lib_helper SHARED
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/link_lib_helper.cpp")
+      set_target_properties(oskel_link_lib_helper PROPERTIES
+        OUTPUT_NAME oskel_link_lib_helper
+        SOVERSION 1)
+      # The fixture is loaded into a plain emitted binary (`LD_LIBRARY_PATH`)
+      # and preloaded into the VM (`LD_PRELOAD`). An instrumented copy would
+      # drag the sanitizer runtime into a process that did not start with it,
+      # which ASan rejects ("runtime does not come first in initial library
+      # list"). Keep the C ABI fixture uninstrumented; the linker and the VM
+      # are what the sanitizer job is testing.
+      if(CMAKE_CXX_FLAGS MATCHES "-fsanitize")
+        target_compile_options(oskel_link_lib_helper PRIVATE -fno-sanitize=all)
+        target_link_options(oskel_link_lib_helper PRIVATE -fno-sanitize=all)
+      endif()
+      add_test(NAME oskel.build_hosted_own_link_lib
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_own_link_lib"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+          "-DOSKELD_EXE=$<TARGET_FILE:oskelld>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_link_lib.oskl"
+          "-DOSKEL_LINK_LIB=oskel_link_lib_helper"
+          "-DOSKEL_LIBRARY_PATH=$<TARGET_FILE_DIR:oskel_link_lib_helper>"
+          "-DOSKEL_EXPECTED_OUTPUT=link-lib ok"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own.cmake")
+      # PHASE 10.2: a second object (`--link-object`, `oskelld` with several
+      # inputs, `-r` and an `ar` archive). The helper is a plain C-ABI object;
+      # its long member name in the archive exercises the `//` table.
+      add_library(oskel_link_obj_helper OBJECT
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/link_obj_helper.cpp")
+      if(CMAKE_CXX_FLAGS MATCHES "-fsanitize")
+        # The object is linked into a plain emitted binary, which does not
+        # carry the sanitizer runtime.
+        target_compile_options(oskel_link_obj_helper PRIVATE -fno-sanitize=all)
+      endif()
+      find_program(OSKEL_AR NAMES ar llvm-ar)
+      if(NOT OSKEL_AR)
+        set(OSKEL_AR "")
+      endif()
+      add_test(NAME oskel.build_hosted_own_link_obj
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_own_link_obj"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+          "-DOSKELD_EXE=$<TARGET_FILE:oskelld>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_link_obj.oskl"
+          "-DOSKEL_HELPER_OBJECT=$<TARGET_OBJECTS:oskel_link_obj_helper>"
+          "-DOSKEL_EXPECTED_OUTPUT=42"
+          "-DOSKEL_AR=${OSKEL_AR}"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_multi.cmake")
       # A class-MEMORY struct (larger than two eightbytes) is stack-passed and
       # `sret`-returned, a shape no libc symbol exercises: the fixture links a
       # small C helper of its own.
       #
       # The compiler only *accepts* such a declaration when the development
-      # engine has libffi (`OSKEL_FFI_MEMORY_STRUCTS`, mirroring
+      # engine has the descriptor stub (`OSKEL_FFI_MEMORY_STRUCTS`, mirroring
       # `OSKEL_FFI_MEMORY_STRUCTS` in `include/ffi_types.h`); without it the
-      # build fails by design with the "needs libffi" message, so the test has
-      # to be gated on the same flag or it fails on every machine without
-      # libffi-dev.
+      # build fails by design with the "needs the x86-64 FFI trampoline"
+      # message, so the test has to be gated on the same flag.
       if(OSKEL_FFI_MEMORY_STRUCTS)
         add_test(NAME oskel.build_hosted_extern_memory_struct
           COMMAND ${CMAKE_COMMAND}
@@ -936,8 +993,7 @@ if(BUILD_TESTING)
       # GPRs, so the thunk spills them to the outgoing stack area; a
       # register-class struct that no longer fits is passed wholly on the stack.
       # No libc symbol exercises those shapes, so the fixture links its own C
-      # helper. It needs no libffi (there is no struct-by-value *return*), just
-      # the hosted link mode.
+      # helper. It needs only the hosted link mode.
       add_test(NAME oskel.build_hosted_extern_many_args
         COMMAND ${CMAKE_COMMAND}
           "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_many_args"
@@ -946,11 +1002,11 @@ if(BUILD_TESTING)
           "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/many_args_helper.c"
           "-DOSKEL_EXPECTED_OUTPUT=ffi many args ok"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
-      # A callback is a C function pointer. The VM marshals it through libffi;
-      # the AOT backend emits a runtime stub per registration whose body boxes
-      # the C arguments and calls the Oskel closure. `qsort` invokes the
-      # comparator from libc, so the reference is the VM.
-      if(OSKEL_LIBFFI_FOUND)
+      # A callback is a C function pointer. The VM emits a closure stub per
+      # registration whose body boxes the C arguments and calls the Oskel
+      # closure; the AOT backend does the same. `qsort` invokes the comparator
+      # from libc, so the reference is the VM.
+      if(OSKEL_FFI_CALLBACKS)
         add_test(NAME oskel.build_hosted_extern_callback
           COMMAND ${CMAKE_COMMAND}
             "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_callback"
@@ -1029,9 +1085,8 @@ if(BUILD_TESTING)
       # A C variadic is walked at run time by the thunk (PHASE 7f.5): the tail
       # continues the GPR/SSE allocation after the fixed prefix, spills to the
       # outgoing stack area and sets `%al` to the vector-register count. The
-      # reference is the VM, whose `ffi_prep_cif_var` path needs libffi in the
-      # development engine, so the test is gated on the same flag as the VM
-      # variadic fixture rather than on the AOT capability alone.
+      # reference is the VM, whose descriptor stub lowers the same tail, so the
+      # test is gated on the VM capability.
       if(OSKEL_FFI_VARIADIC)
         add_test(NAME oskel.build_hosted_extern_variadic
           COMMAND ${CMAKE_COMMAND}
@@ -1103,9 +1158,9 @@ if(BUILD_TESTING)
       # Win64 the tail continues the argument-position allocation, so a float
       # in a register position goes in both the SSE and the integer register,
       # and position four onward spills to the outgoing stack area after the
-      # shadow space. The development VM has no libffi variadic path on
-      # Windows, so the fixture asserts its own expectations and the binary's
-      # final line is the contract.
+      # shadow space. The Windows VM's symbol lookup does not resolve the
+      # fixture's `snprintf`, so the fixture asserts its own expectations and
+      # the binary's final line is the contract.
       add_test(NAME oskel.build_hosted_extern_variadic_windows
         COMMAND ${CMAKE_COMMAND}
           "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_variadic_windows"
@@ -1612,6 +1667,20 @@ if(BUILD_TESTING)
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
 
+    # The bound string methods (`upper`, `trim`, `split`, `replace`,
+    # `padStart`, ...) over ASCII and multibyte UTF-8. The fixture is the same
+    # one the AOT backend compares with the VM, so both backends share the
+    # expectations.
+    add_test(NAME oskel.build_wasm_string_methods
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_string_methods"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_string_methods.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
     # `std.io` is pure Oskel over strings and classes (maps with closures), so
     # the WASM backend must reproduce it without a special case.
     add_test(NAME oskel.build_wasm_io
@@ -1655,7 +1724,7 @@ if(BUILD_TESTING)
       oskel.build_wasm_array_folds oskel.build_wasm_sort_methods
       oskel.build_wasm_map_methods oskel.build_wasm_datetime
       oskel.build_wasm_collections oskel.build_wasm_strings
-      oskel.build_wasm_io oskel.build_wasm_math
+      oskel.build_wasm_string_methods oskel.build_wasm_io oskel.build_wasm_math
       oskel.build_wasm_double_format PROPERTIES TIMEOUT 120)
   endif()
 
@@ -1676,9 +1745,9 @@ if(BUILD_TESTING)
     if(name STREQUAL "native_build_sdl_freestanding")
       continue()
     endif()
-    # FFI callbacks need libffi in the dev engine; skip the callback test when
-    # the build has no libffi (the feature reports a clear runtime error then).
-    if(name STREQUAL "32_ffi_callback" AND NOT OSKEL_LIBFFI_FOUND)
+    # FFI callbacks need the x86-64 closure stub; skip the callback test when
+    # this build does not emit one (the feature reports a clear error then).
+    if(name STREQUAL "32_ffi_callback" AND NOT OSKEL_FFI_CALLBACKS)
       continue()
     endif()
     # Struct-by-value FFI needs the System V AMD64 ABI; see the capability above.
@@ -1702,6 +1771,18 @@ if(BUILD_TESTING)
     if(name STREQUAL "native_build_extern_variadic_mixed")
       continue()
     endif()
+    # `native_build_link_lib` binds a symbol only the helper shared library
+    # provides, so the VM would need it preloaded. The own-linker test is the
+    # coverage: it preloads the library into the VM and sets `LD_LIBRARY_PATH`
+    # for the linked binary.
+    if(name STREQUAL "native_build_link_lib")
+      continue()
+    endif()
+    # `native_build_link_obj` binds a helper object the VM cannot resolve;
+    # `oskel.build_hosted_own_link_obj` is the coverage.
+    if(name STREQUAL "native_build_link_obj")
+      continue()
+    endif()
     # The stored/many-args/returns callback fixtures bind helpers the VM cannot
     # resolve; their hosted tests are the coverage.
     if(name STREQUAL "native_build_extern_callback_stored" OR
@@ -1711,9 +1792,9 @@ if(BUILD_TESTING)
        name STREQUAL "native_build_extern_callback_returns")
       continue()
     endif()
-    # The qsort callback fixture needs libffi in the development engine; the
-    # hosted test (which also runs the VM) is gated on the same flag.
-    if(name STREQUAL "native_build_extern_callback" AND NOT OSKEL_LIBFFI_FOUND)
+    # The qsort callback fixture needs the x86-64 closure stub in the
+    # development engine; the hosted test is gated on the same flag.
+    if(name STREQUAL "native_build_extern_callback" AND NOT OSKEL_FFI_CALLBACKS)
       continue()
     endif()
     # The two `native fn` rejection fixtures are inputs for
@@ -1737,8 +1818,13 @@ if(BUILD_TESTING)
         name STREQUAL "native_build_extern_ptr_return") AND WIN32)
       continue()
     endif()
-    # C variadics need libffi plus the System V AMD64 ABI; the declaration is
-    # rejected at compile time elsewhere, so the test is skipped.
+    # The variadic fixture uses `snprintf`, which the VM's Windows symbol lookup
+    # does not resolve; its Windows hosted twin covers the native shape.
+    if(name STREQUAL "native_build_extern_variadic" AND WIN32)
+      continue()
+    endif()
+    # C variadics need the x86-64 descriptor stub; the declaration is rejected
+    # at compile time elsewhere, so the test is skipped.
     if((name STREQUAL "53_ffi_variadic" OR name STREQUAL "native_build_extern_variadic") AND
        NOT OSKEL_FFI_VARIADIC)
       continue()
@@ -1793,8 +1879,8 @@ if(BUILD_TESTING)
   foreach(script IN LISTS oskel_error_tests)
     get_filename_component(name "${script}" NAME_WE)
     # `extern_struct_too_large` asserts the *rejection* of a class-MEMORY struct,
-    # which only holds where the libffi-backed marshalling is unavailable; where
-    # it is available the declaration compiles and the rejection case is gone.
+    # which only holds where the descriptor stub is unavailable; where it is
+    # available the declaration compiles and the rejection case is gone.
     if(name STREQUAL "extern_struct_too_large" AND OSKEL_FFI_MEMORY_STRUCTS)
       continue()
     endif()
@@ -1816,13 +1902,13 @@ if(BUILD_TESTING)
   )
   foreach(script IN LISTS oskel_check_tests)
     get_filename_component(name "${script}" NAME_WE)
-    # A class-MEMORY struct only compiles where the libffi-backed marshalling is
+    # A class-MEMORY struct only compiles where the descriptor stub is
     # available; elsewhere the same declaration is a compile error.
     if(name STREQUAL "ffi_memory_struct" AND NOT OSKEL_FFI_MEMORY_STRUCTS)
       continue()
     endif()
     # A callback that returns a struct needs the by-value struct marshalling
-    # (and, for a struct over 16 bytes, the libffi path); elsewhere the same
+    # (and, for a struct over 16 bytes, the descriptor stub); elsewhere the same
     # declaration is a compile error.
     if(name STREQUAL "ffi_callback_struct_return" AND NOT OSKEL_FFI_STRUCT_BY_VALUE)
       continue()

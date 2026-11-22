@@ -147,7 +147,7 @@ class Compiler {
   // path sets `ffi::kAotAbiCapabilities` because the backend emits its own
   // thunks and does not depend on how the engine was built. Without this, a
   // shape the backend can emit (a class-MEMORY struct) would be rejected by
-  // `oskel build` on an engine built without libffi.
+  // `oskel build` on an engine without a host FFI library.
   void setAbiCapabilities(ffi::AbiCapabilities caps) { abiCapabilities_ = caps; }
 
   // Compiles a program that runs *in the current session* instead of starting

@@ -11,6 +11,31 @@ may change between minor versions.
 
 ### Added
 
+- **The WebAssembly backend binds the string methods.** `upper`, `lower`,
+  `trim`, `trimStart`, `trimEnd`, `split`, `lines`, `replace`, `replaceFirst`,
+  `startsWith`, `endsWith`, `contains`, `indexOf`, `substr`, `chars`,
+  `repeat`, `reversed`, `padStart` and `padEnd` now compile to `.wasm` and
+  match the VM byte for byte, including the Unicode simple-case tables and
+  multibyte UTF-8. `tests/native_build_string_methods.oskl` is the shared AOT
+  fixture and `oskel.build_wasm_string_methods` adds the WASM run.
+
+- **The project's own linker (`oskelld`).** `oskel build --mode hosted
+  --linker own` and the standalone `oskelld <object.o> -o <out>` close the
+  object `--emit-object` writes into a dynamically linked x86-64 Linux ELF
+  without a C toolchain: PLT/GOT, `DT_NEEDED` libc/libm, a link-time `.dynsym`
+  check and the canonical `_start` that calls `__libc_start_main`. `-L` and
+  `--link-lib` select the libraries, and the SONAME is what the binary records.
+  `oskelc` shares the same core, and the three paths produce byte-identical
+  images. The macOS/Windows containers are PHASE 10.3.
+
+- **The own linker links several objects and `ar` archives (PHASE 10.2).**
+  `oskelld a.o b.o libfoo.a -o out` and `oskel build --linker own
+  --link-object <file>` merge objects, resolve a relocation against a
+  definition in any input, and pull an `ar` member in only when it defines a
+  still-undefined symbol. `oskelld -r` combines the inputs into a new
+  relocatable object that can be linked again. `.data`/`.bss` and the remaining
+  relocation shapes are PHASE 10.2b; the macOS/Windows containers are 10.3.
+
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,
   `readWhile`, `skip`, `lines`, ...); `StringWriter` accumulates chunks
@@ -34,7 +59,7 @@ may change between minor versions.
   VM, `oskel build` and the WebAssembly backend produce the same output;
   `tests/58_std_collections.oskl` and `tests/native_build_collections.oskl`
   cover the VM and the AOT/WASM parity. `scan` is documented as returning
-  `len(xs) + 1` elements and `sliding` rejects a size below 1.
+  `len(xs) + 1` elements and `sliding` rejects a size below 1. (feat(native): add oskelld, the project's own linker)
 
 - **The Skia bridge compiles and runs against a real Skia build.** The
   generated shim now covers text (`SkFont` + `drawString`) and one-pixel

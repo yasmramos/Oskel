@@ -93,12 +93,12 @@ it as a caveat:
   through `Compiler::setAbiCapabilities`, while the interpreter keeps
   `AbiCapabilities{}`, this build's. The backend emits its own thunks, so a
   class-MEMORY struct must not be rejected for `oskel build` just because the
-  engine lacks libffi — that conflation made
-  `oskel.build_hosted_extern_memory_struct` fail without `libffi-dev` even
+  engine lacks the x86-64 FFI trampoline — that conflation made
+  `oskel.build_hosted_extern_memory_struct` fail without an FFI backend even
   though the emitted code was right. A C variadic is accepted for the AOT
   destination whatever the build has, because the backend lowers the variable
-  argument list itself (PHASE 7f.5, 7f.10); only the development engine's
-  `libffi` path still needs System V.
+  argument list itself (PHASE 7f.5, 7f.10); the development engine's descriptor
+  stub covers System V and Microsoft x64.
 - A qualified access to a module's native export (`std.math.pow`) is a use too,
   but it reads the module table with `GETTABLE`, not with `GETGLOBAL`, so the
   lowerer cannot see it by counting reads. The compiler records such a use on
@@ -295,8 +295,25 @@ it as a caveat:
   matched to the VM's but cannot go in that fixture: a raised runtime error is
   not a value, so `try`/`catch` does not capture it and `build_binary.cmake`
   requires exit 0 from both engines.
+- The development engine's FFI no longer links a host FFI library. A fixed
+  scalar signature (and a register struct on System V) is a compile-time thunk;
+  a C variadic, a class-MEMORY struct and a callback use an x86-64 descriptor or
+  closure stub emitted with the AOT `CodeGen` (`src/runtime/ffi_trampoline.*`).
+  The stubs are available on x86-64 only: System V (Linux, x86-64 macOS) for all
+  three, Microsoft x64 (Windows) for a C variadic; class MEMORY and callbacks
+  are rejected there. arm64 keeps the fixed-scalar typed thunk but rejects a
+  struct by value, a variadic, a class-MEMORY struct and a callback. Three bugs
+  were first: the
+  `CodeGen` SSE emitters take a synthetic register number (`kXmmBase + N`), so
+  passing `0..7` encoded xmm8..15 and the first double variadic crashed; the
+  descriptor's 32-bit fields (`stackBytes`, `vectorCount`) must be loaded with
+  `movFromMem32`, because an 8-byte load picked up the adjacent field and
+  subtracted 4 GiB from `rsp`; and on Microsoft x64 the outgoing stack arguments
+  start at `[rsp+32]`, after the 32-byte shadow space, not at `[rsp]`. The VM
+  variadic fixture uses `printf` rather than `sprintf`, because Wine's
+  `sprintf` mis-handles `%.1f` even though `printf` is correct.
 - A C callback (`fn(...): R` parameter) is a generated stub in the hosted
-  backend (PHASE 7f.8), not a libffi closure. `oskel_callback_create` allocates
+  backend (PHASE 7f.8), not a host FFI closure. `oskel_callback_create` allocates
   a 32-byte context (closure tag/payload, the Oskel global base, a pointer to a
   16-byte shared arena-state block) and a private `mmap` page holding
   `movabs r10, context; movabs r11, body; jmp r11`. The page is mapped
@@ -317,7 +334,7 @@ it as a caveat:
   `8 * slot` read the wrong slot and crashed. A callback returning a struct by
   value and a callback with a struct parameter are rejected with dedicated
   messages; a stored callback works in AOT but not in the VM (the VM frees the
-  libffi closure when the extern call returns), and both are BACKLOG §6 items
+  closure stub when the extern call returns), and both are BACKLOG §6 items
   26/27. The stub page is process-lifetime: C may store the pointer (a stored
   callback, including an `atexit` handler), so freeing it when the extern call
   returns would break that contract; BACKLOG §6 item 28 tracks a pool or an
@@ -349,6 +366,64 @@ it as a caveat:
   the PE image were checked before CI. CI still gates the merge, since Wine is
   not Windows: a green Wine run is a signal, not a substitute for the
   `windows-latest` job.
+
+## The own linker (PHASE 10)
+
+- The core is `include/native/link.h` + `src/frontend/native/link.cpp`, inside
+  `oskel_frontend`; `src/oskelld.cpp` is a thin third entry point and is
+  excluded from the stray guard like `src/main.cpp` and `src/oskelc.cpp`.
+  `oskel build --mode hosted --linker own`, `oskelc --linker own` and `oskelld`
+  all call `linkHostedExecutable` (and `linkRelocatable` for `-r`). Never let
+  one of them grow its own ELF writer: `tests/build_hosted_own.cmake` and
+  `tests/build_hosted_own_multi.cmake` compare all three images byte for byte
+  against the VM.
+- `--emit-object` writes the ET_REL `oskelld` consumes and requires
+  `--mode hosted`. `--linker own` is opt-in and `x86_64-linux-sysv` only;
+  `host` stays the default. `-L`/`--link-lib` are hosted concepts too.
+- The output is a non-PIE `ET_EXEC` at `0x400000`: four `PT_LOAD` segments,
+  `PT_INTERP` `/lib64/ld-linux-x86-64.so.2`, SysV `.hash`, `.dynsym`/`.dynstr`,
+  a standard PLT, `.got.plt`, `.dynamic`, and a linker-provided 34-byte
+  `_start` that calls `__libc_start_main`. The `_start` is what makes the
+  program's `malloc` legal: do not replace it with a direct `call main`.
+- Binding is eager (`DT_BIND_NOW` + `DT_FLAGS=DF_BIND_NOW`), so the GOT slots
+  start at zero and the loader fills every `R_X86_64_JUMP_SLOT` before the entry
+  point. `R_X86_64_PLT32` targets a PLT entry; `R_X86_64_PC32` targets a
+  `R_X86_64_GLOB_DAT` slot.
+- The symbol check is at link time. The linker reads the `.dynsym` of
+  `libc.so.6`, `libm.so.6` and every `--link-lib` library (`-L`,
+  `LIBRARY_PATH`, `LD_LIBRARY_PATH`, system defaults). `libm` is added only
+  when a symbol needs it. A library's `DT_SONAME` becomes its `DT_NEEDED`, so
+  `--link-lib SDL3` records `libSDL3.so.0`; the dev symlink is only the
+  link-time input.
+- PHASE 10.2 makes the input plural. `linkHostedExecutable` takes a
+  `std::vector<LinkInput>`: it concatenates each object's `.text`/`.rodata`
+  (16-byte aligned), builds one global symbol table and resolves a relocation
+  against a definition in any input. `linkRelocatable` emits a new `ET_REL`
+  (`-r`), preserving `.rela.text` and leaving undefined symbols undefined; the
+  output is a valid input for either function. `oskelld` accepts several
+  objects and System V/GNU `ar` archives; a member is pulled in only when it
+  defines a still-undefined symbol (thin archives are rejected). `--link-object
+  <file>` is the same through `oskel build`/`oskelc` (repeatable, requires
+  `--mode hosted`, mutually exclusive with `--emit-object`).
+- The parser loads `.text` and `.rodata` only. A symbol defined in `.data`/
+  `.bss` is a named error, and `.rela.data`/`.rela.rodata` is rejected; a GCC
+  object with a string literal references a `.rodata` section symbol, which is
+  PHASE 10.2b. `.eh_frame`/`.note.*`/`.comment` are ignored. `STT_SECTION` and
+  `STT_FILE` symbols are skipped: a C object's `STT_FILE` has `SHN_ABS` and
+  would otherwise look like a defined symbol in an unsupported section.
+- The multi-object e2e helper is an `OBJECT` library compiled with
+  `-fno-sanitize=all` when the build is sanitized: the object is linked into a
+  plain emitted binary that does not carry the ASan runtime. The archive test
+  uses the real `ar`, whose long member name goes through the `//` table.
+- The macOS Mach-O and Windows PE containers are PHASE 10.3 and are separate
+  linkers, not a generic abstraction.
+- Determinism is a test: no timestamp, no build id, stable symbol order. Two
+  builds must be byte-identical. The freestanding path must stay byte-identical;
+  `oskel.build_binary` still asserts `ldd` says "not a dynamic executable" for a
+  freestanding image.
+- Every packaging format ships `oskelld` (`/usr/bin/oskelld`,
+  `/usr/local/bin/oskelld`, `{app}\bin\oskelld.exe`) beside `oskelc`, `oskelp`
+  and `bindgen`, and `oskelc_has_no_vm` scans it for VM/JIT symbols too.
 
 ## The WebAssembly backend (PHASE 9)
 
@@ -390,8 +465,23 @@ it as a caveat:
   the entries first (so a stored `length` wins), then falls back to `length` and
   nil. New map methods go **inside that branch**; a second `kMap` branch after
   the range branch is unreachable, and a method added there silently returns
-  nil. The string branch is separate and still fails with "no such member" for
-  an unknown name.
+  nil. The string branch is separate and fails with "no such member" only for a
+  name that is not one of its nineteen bound methods.
+- The string methods (`upper`, `lower`, `trim`, `trimStart`, `trimEnd`,
+  `split`, `lines`, `replace`, `replaceFirst`, `startsWith`, `endsWith`,
+  `contains`, `indexOf`, `substr`, `chars`, `repeat`, `reversed`, `padStart`,
+  `padEnd`) live in the string branch of `emitMemberGet` and are emitted by
+  `emitStringMethods`, which reserves nineteen selectors after the map methods.
+  They share `utf8SeqLen`, `decodeCodePoint`, `encodeUtf8`, `strFind`,
+  `strSliceBytes` and `strReverse`. `caseMap` reads the Unicode simple-case
+  runs (`kUnicodeUpperRuns`/`kUnicodeLowerRuns` from
+  `src/core/unicode_case.cpp`) from a 12-byte `{first, last, delta}` table in
+  the static pool, binary-searched by `caseLookup`. A string's `len` in the
+  helpers is the **byte** length; the code-point count is `utf8Len`. `substr`
+  is the one that must start from `utf8Len`: using the byte length made
+  `"αβγδε".substr(-2)` empty because the negative start was offset by the byte
+  count. `tests/native_build_string_methods.oskl` is the shared AOT/WASM
+  fixture and `oskel.build_wasm_string_methods` is its WASM run.
 - A construct the backend cannot lower yet must fail cleanly, never emit a
   mis-compiled module: an unbound builtin is seeded as a trapping closure, and
   a used `extern "C"`/`native fn` symbol with no stub is a build error (exit

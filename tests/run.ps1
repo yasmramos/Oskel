@@ -6,7 +6,7 @@
 # declared exit code must match and nothing may reach stdout.
 #
 # A test may declare a capability it needs on its first line, such as:
-#   // requires: libffi
+#   // requires: x86-64
 # The runner skips the test (instead of failing it) when the built engine does
 # not have that capability, mirroring the CMake gating in CMakeLists.txt so a
 # tree that is green under CTest is also green here.
@@ -24,21 +24,17 @@ if (-not (Test-Path $exe)) {
     exit 1
 }
 
-# Whether the built engine has a capability, probed from the binary itself.
-# `libffi` is linked only when the build found it (CMake); an unknown capability
-# reports "present", so a real failure is never hidden behind a skip.
+# Whether the built engine has a capability, probed from the host.
+# The FFI trampoline is x86-64 only; callbacks and class-MEMORY structs are
+# further limited to the System V ABI, which Windows does not use. An unknown
+# capability reports "present", so a real failure is never hidden behind a skip.
 function Test-Capability([string]$capability) {
-    if ($capability -ne "libffi") {
-        return $true
+    switch ($capability) {
+        "x86-64" { return $env:PROCESSOR_ARCHITECTURE -match "^(AMD64|X86)$" }
+        "x86-64-system-v" { return $false }
+        "win32" { return $true }
+        default { return $true }
     }
-    # Dumpbin is not guaranteed to be on PATH; when the probe is unavailable the
-    # capability reports "present" rather than skipping a real test.
-    $dumpbin = Get-Command dumpbin -ErrorAction SilentlyContinue
-    if ($null -eq $dumpbin) {
-        return $true
-    }
-    $imports = & $dumpbin /imports $exe 2>$null | Out-String
-    return $imports -match "(?i)libffi"
 }
 
 # Prints the capability a test needs (from the leading comment block), or
@@ -138,6 +134,11 @@ $errorDir = Join-Path $testDir "errors"
 if (Test-Path $errorDir) {
     $errorTests = @(Get-ChildItem -Path $errorDir -Filter "*.oskl" | Sort-Object Name)
     foreach ($test in $errorTests) {
+        $name = $test.BaseName
+        # AOT-only rejection inputs: the VM accepts these shapes.
+        if ($name -eq "callback_struct_param" -or $name -eq "callback_struct_return") { continue }
+        # A class-MEMORY struct is rejected only where the descriptor stub is absent.
+        if ($name -eq "extern_struct_too_large" -and (Test-Capability "x86-64-system-v")) { continue }
         $expected = Get-DeclaredExit $test.FullName
         if ($null -eq $expected) { $expected = 70 }
         Invoke-One ("errors/" + $test.Name) $test.FullName "run" $expected

@@ -181,7 +181,7 @@ struct ExternSymbol {
   ffi::TypeSpec returnType;
   // True for a C variadic (`fn printf(fmt: cstring, ...): int`). The fixed
   // `paramTypes` are the named parameters; the trailing arguments of a call are
-  // marshalled at run time with the default promotions and `ffi_prep_cif_var`.
+  // marshalled at run time with the default promotions through the descriptor stub.
   bool variadic = false;
 };
 
