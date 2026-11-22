@@ -17,6 +17,12 @@ let nums = [5, 3, 8, 1, 9, 2, 8, 1];
 assertEq(map(nums, x => x * 2), [10, 6, 16, 2, 18, 4, 16, 2]);
 assertEq(map([], x => x), []);
 assertEq(map(["a", "b"], s => s + "!"), ["a!", "b!"]);
+// `flatMap` maps to an array and flattens one level.
+assertEq(flatMap([1, 2, 3], x => [x, x * 10]), [1, 10, 2, 20, 3, 30]);
+assertEq(flatMap([1, 2, 3], x => [x]), [1, 2, 3]);
+assertEq(flatMap([1, 2, 3], x => []), []);
+assertEq(flatMap([], x => [x]), []);
+assertEq(flatMap(["a", "bb"], s => [s, len(s)]), ["a", 1, "bb", 2]);
 assertEq(filter(nums, x => x > 4), [5, 8, 9, 8]);
 assertEq(filter(nums, x => x > 100), []);
 assertEq(reject(nums, x => x > 4), [3, 1, 2, 1]);
@@ -37,6 +43,11 @@ assertEq(fold([1, 2, 3, 4], (acc, x) => acc + x, 0), 10);
 assertEq(fold([1, 2, 3], (acc, x) => acc * x, 1), 6);
 assertEq(fold([], (acc, x) => acc + x, 42), 42);
 assertEq(fold(["a", "b", "c"], (acc, s) => acc + s, ""), "abc");
+// `scan` includes the initial value, so it has one more element than the input.
+assertEq(scan([1, 2, 3], (acc, x) => acc + x, 0), [0, 1, 3, 6]);
+assertEq(scan([], (acc, x) => acc + x, 42), [42]);
+assertEq(scan([1, 2], (acc, x) => acc * x, 1), [1, 1, 2]);
+assertEq(scan(["a", "b"], (acc, s) => acc + s, ""), ["", "a", "ab"]);
 assertEq(sum([1, 2, 3, 4]), 10);
 assertEq(sum([]), 0);
 assertEq(sumBy(nums, x => x * 10), 370);
@@ -66,6 +77,17 @@ assertEq(find(["a", "bb", "c"], s => len(s) == 2), "bb");
 assertEq(findIndex(nums, x => x == 8), 2);
 assertEq(findIndex(nums, x => x == 100), -1);
 assertEq(findIndex(nums, x => x == 5), 0);
+// `findLast` / `findLastIndex` search from the end.
+assertEq(findLast(nums, x => x == 8), 8);
+assertEq(findLastIndex(nums, x => x == 8), 6);
+assertEq(findLast(nums, x => x > 4), 8);
+assertEq(findLastIndex(nums, x => x > 4), 6);
+assertEq(findLast(nums, x => x > 100), nil);
+assertEq(findLastIndex(nums, x => x > 100), -1);
+assertEq(findLast(["a", "bb", "c", "dd"], s => len(s) == 2), "dd");
+assertEq(findLastIndex(["a", "bb", "c", "dd"], s => len(s) == 2), 3);
+assertEq(findLast([], x => true), nil);
+assertEq(findLastIndex([], x => true), -1);
 
 // --- any / all / none -------------------------------------------------------
 
@@ -92,6 +114,15 @@ assertEq(take(nums, -5), []);
 assertEq(drop(nums, -5), nums);
 // `take` + `drop` reconstruct the array.
 assertEq(take(nums, 3) + drop(nums, 3), nums);
+// `takeWhile` / `dropWhile` stop at the first failure.
+assertEq(takeWhile([1, 2, 3, 1], x => x < 3), [1, 2]);
+assertEq(dropWhile([1, 2, 3, 1], x => x < 3), [3, 1]);
+assertEq(takeWhile([1, 2, 3], x => true), [1, 2, 3]);
+assertEq(dropWhile([1, 2, 3], x => true), []);
+assertEq(takeWhile([1, 2, 3], x => false), []);
+assertEq(dropWhile([1, 2, 3], x => false), [1, 2, 3]);
+assertEq(takeWhile([], x => true), []);
+assertEq(dropWhile([], x => true), []);
 
 // --- partition --------------------------------------------------------------
 
@@ -112,6 +143,15 @@ assertEq(chunk([], 3), []);
 // A size below 1 is a runtime error, so a valid call never reaches it.
 assertEq(chunk([1], 100), [[1]]);
 
+// --- sliding -----------------------------------------------------------------
+
+assertEq(sliding([1, 2, 3, 4], 2), [[1, 2], [2, 3], [3, 4]]);
+assertEq(sliding([1, 2, 3], 3), [[1, 2, 3]]);
+assertEq(sliding([1, 2, 3], 1), [[1], [2], [3]]);
+assertEq(sliding([1, 2], 3), []);
+assertEq(sliding([], 1), []);
+assertEq(sliding([1, 2, 3, 4, 5], 3), [[1, 2, 3], [2, 3, 4], [3, 4, 5]]);
+
 // --- zip / flatten / reverse ------------------------------------------------
 
 assertEq(zip([1, 2, 3], ["a", "b", "c"]), [[1, "a"], [2, "b"], [3, "c"]]);
@@ -119,9 +159,17 @@ assertEq(zip([1, 2, 3], ["a", "b", "c"]), [[1, "a"], [2, "b"], [3, "c"]]);
 assertEq(zip([1, 2, 3], ["a", "b"]), [[1, "a"], [2, "b"]]);
 assertEq(zip([1], ["a", "b", "c"]), [[1, "a"]]);
 assertEq(zip([], ["a"]), []);
+assertEq(zipWith([1, 2, 3], [10, 20, 30], (a, b) => a + b), [11, 22, 33]);
+assertEq(zipWith([1, 2, 3], [10, 20], (a, b) => a + b), [11, 22]);
+assertEq(zipWith([1], ["a", "b"], (a, b) => str(a) + b), ["1a"]);
+assertEq(zipWith([], [1], (a, b) => a + b), []);
 assertEq(flatten([[1, 2], [3], [4, 5]]), [1, 2, 3, 4, 5]);
 assertEq(flatten([[1, 2], [], [3]]), [1, 2, 3]);
 assertEq(flatten([]), []);
+assertEq(intersperse([1, 2, 3], 0), [1, 0, 2, 0, 3]);
+assertEq(intersperse([1], 0), [1]);
+assertEq(intersperse([], 0), []);
+assertEq(intersperse(["a", "b"], "-"), ["a", "-", "b"]);
 assertEq(reverse([1, 2, 3]), [3, 2, 1]);
 assertEq(reverse([]), []);
 assertEq(reverse([1]), [1]);
@@ -197,6 +245,10 @@ assertEq(ascending, true);
 // The helpers chain: the top three distinct values, descending.
 let top3 = take(sortBy(unique(nums), (a, b) => a > b), 3);
 assertEq(top3, [9, 8, 5]);
+// Sliding windows feed a fold without an intermediate array.
+assertEq(map(sliding([1, 2, 3, 4], 2), w => fold(w, (a, x) => a + x, 0)), [3, 5, 7]);
+assertEq(zipWith(scan([1, 2, 3], (a, x) => a + x, 0), [0, 1, 2, 3], (a, b) => a + b),
+  [0, 2, 5, 9]);
 // Group, then measure each group by walking the map (no map methods, which this
 // module deliberately avoids so it stays on the portable primitive surface).
 let byParity = groupBy(nums, x => x % 2 == 0 ? "even" : "odd");

@@ -517,15 +517,17 @@ previous one.
   See `docs/language.md` §12.11/§18, `tests/57_std_path.oskl` and the AOT
   fixture `tests/native_build_path.oskl`.
 - **Standard library: `std.collections`** — **done**: a pure-Oskel module of
-  functional helpers over arrays. It offers `map`, `filter`, `reject`, `each`,
-  `fold`, `sum`, `sumBy`, `minimum`/`maximum`, `minBy`/`maxBy`, `count`,
-  `find`/`findIndex`, `any`/`all`/`none`, `take`/`drop`, `partition`, `chunk`,
-  `zip`, `flatten`, `reverse`, `unique`/`uniqueBy`, `groupBy`, `countBy` and
-  `sort`/`sortBy`/`sortByKey`. Every function returns a new array or map and
-  never mutates its input; `sort` is a stable merge sort. No new runtime type,
-  opcode or builtin. The module stays on the portable primitive surface so it
-  also runs on WebAssembly, where the array methods are not bound; the VM and
-  the AOT backend bind them, so either form works there.
+  functional helpers over arrays. It offers `map`, `flatMap`, `filter`,
+  `reject`, `each`, `fold`, `scan`, `sum`, `sumBy`, `minimum`/`maximum`,
+  `minBy`/`maxBy`, `count`, `find`/`findIndex`, `findLast`/`findLastIndex`,
+  `any`/`all`/`none`, `take`/`drop`, `takeWhile`/`dropWhile`, `partition`,
+  `chunk`, `sliding`, `zip`, `zipWith`, `flatten`, `intersperse`, `reverse`,
+  `unique`/`uniqueBy`, `groupBy`, `countBy` and `sort`/`sortBy`/`sortByKey`.
+  Every function returns a new array or map and never mutates its input; `sort`
+  is a stable merge sort. No new runtime type, opcode or builtin. The module
+  stays on the portable primitive surface so it also runs on WebAssembly, where
+  the array methods are not bound; the VM and the AOT backend bind them, so
+  either form works there.
   See `docs/language.md` §12.12/§18, `tests/58_std_collections.oskl`
   and the AOT fixture `tests/native_build_collections.oskl`.
 - **Standard library: `std.strings`** — **done**: a pure-Oskel module of text
