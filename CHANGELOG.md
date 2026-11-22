@@ -80,8 +80,16 @@ may change between minor versions.
   --link-object <file>` merge objects, resolve a relocation against a
   definition in any input, and pull an `ar` member in only when it defines a
   still-undefined symbol. `oskelld -r` combines the inputs into a new
-  relocatable object that can be linked again. `.data`/`.bss` and the remaining
-  relocation shapes are PHASE 10.2b; the macOS/Windows containers are 10.3.
+  relocatable object that can be linked again. The macOS/Windows containers are
+  PHASE 10.3.
+
+- **The own linker loads `.data` and `.bss` (PHASE 10.2b).** A real GCC/Clang
+  object with a string literal, an initialised global, a zero-initialised
+  `.bss` global and a `.data` pointer table now links: the linker merges the
+  `.text*`/`.rodata*`/`.data*`/`.bss*` sections, resolves `STT_SECTION` symbols
+  and `R_X86_64_64/32/32S/PLT32/PC32/GOTPCREL*`, and puts `.data`/`.bss` in the
+  RW segment. `-r` preserves `.data`/`.bss` and their relocations. TLS and the
+  C++ runtime sections remain out of scope.
 
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,
