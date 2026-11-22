@@ -5,16 +5,15 @@
 // or `import { map, filter } from std.collections;`.
 //
 // Why a module and not methods: the array methods (`map`, `filter`, `sort`, ...)
-// exist, but `sort`/`sorted` are not bound by the AOT backend yet (a miss is
-// "value has no such member"; `docs/BACKLOG.md` §6 item 1). These are the same
+// exist and both the VM and the AOT backend bind them. These are the same
 // operations as ordinary functions over the portable primitive surface, so they
-// work identically on the development VM and under `oskel build` on every
-// target. Prefer them over the methods when a program must compile natively.
+// also work on a backend that does not bind a method (WebAssembly today), and
+// they compose with the other free functions.
 //
 // The module is pure Oskel over the portable primitive surface (indexing,
 // slicing, `len`, `str`, `panic`, `for ... in`, closures, `@MustUse`). It
-// deliberately avoids the methods the AOT backend does not implement yet, plus
-// `pcall`/`error` (DEVELOPMENT.md PHASE 7f).
+// deliberately avoids the methods and `pcall`/`error`, so it stays portable to
+// every backend.
 //
 // Every function returns a **new** array or map and never mutates its input,
 // so a caller can keep the original and chain freely.
@@ -34,6 +33,21 @@ fn map(xs, f) {
   var out = [];
   for x in xs {
     out[len(out)] = f(x);
+  }
+  return out;
+}
+
+// Maps each element to an array and flattens the result one level. `f` must
+// return an array.
+//
+//   flatMap([1, 2, 3], x => [x, x * 10]) -> [1, 10, 2, 20, 3, 30]
+@MustUse
+fn flatMap(xs, f) {
+  var out = [];
+  for x in xs {
+    for y in f(x) {
+      out[len(out)] = y;
+    }
   }
   return out;
 }
@@ -80,6 +94,21 @@ fn fold(xs, f, init) {
     acc = f(acc, x);
   }
   return acc;
+}
+
+// The running fold: the initial value followed by the accumulator after each
+// element, so the result has one more element than the input.
+//
+//   scan([1, 2, 3], (acc, x) => acc + x, 0) -> [0, 1, 3, 6]
+@MustUse
+fn scan(xs, f, init) {
+  var out = [init];
+  var acc = init;
+  for x in xs {
+    acc = f(acc, x);
+    out[len(out)] = acc;
+  }
+  return out;
 }
 
 // The sum of the elements (numbers). Zero for an empty array.
@@ -206,6 +235,32 @@ fn findIndex(xs, f) {
   return -1;
 }
 
+// The last element that satisfies `f`, or `nil`.
+@MustUse
+fn findLast(xs, f) {
+  var i = len(xs) - 1;
+  while (i >= 0) {
+    if (f(xs[i])) {
+      return xs[i];
+    }
+    i = i - 1;
+  }
+  return nil;
+}
+
+// The index of the last element that satisfies `f`, or `-1`.
+@MustUse
+fn findLastIndex(xs, f) {
+  var i = len(xs) - 1;
+  while (i >= 0) {
+    if (f(xs[i])) {
+      return i;
+    }
+    i = i - 1;
+  }
+  return -1;
+}
+
 // True when at least one element satisfies `f`. False for an empty array.
 @MustUse
 fn any(xs, f) {
@@ -260,6 +315,33 @@ fn drop(xs, n) {
   return xs[n:len(xs)];
 }
 
+// The leading elements that satisfy `f`, stopping at the first failure.
+//
+//   takeWhile([1, 2, 3, 1], x => x < 3) -> [1, 2]
+@MustUse
+fn takeWhile(xs, f) {
+  var out = [];
+  for x in xs {
+    if (!f(x)) {
+      break;
+    }
+    out[len(out)] = x;
+  }
+  return out;
+}
+
+// The elements after the leading run that satisfies `f`.
+//
+//   dropWhile([1, 2, 3, 1], x => x < 3) -> [3, 1]
+@MustUse
+fn dropWhile(xs, f) {
+  var i = 0;
+  while (i < len(xs) && f(xs[i])) {
+    i = i + 1;
+  }
+  return xs[i:len(xs)];
+}
+
 // Splits the array in two: the elements that satisfy `f` and those that do not.
 // The result is `[yes, no]`.
 //
@@ -297,6 +379,28 @@ fn chunk(xs, size) {
   return out;
 }
 
+// Overlapping windows of exactly `size` elements, advancing one element at a
+// time. The result is empty when `size` exceeds the array. A `size` below 1 is
+// a runtime error.
+//
+//   sliding([1, 2, 3, 4], 2) -> [[1, 2], [2, 3], [3, 4]]
+@MustUse
+fn sliding(xs, size) {
+  if (size < 1) {
+    panic("sliding size must be at least 1");
+  }
+  var out = [];
+  if (size > len(xs)) {
+    return out;
+  }
+  var i = 0;
+  while (i + size <= len(xs)) {
+    out[len(out)] = xs[i:i + size];
+    i = i + 1;
+  }
+  return out;
+}
+
 // Pairs the elements of two arrays, stopping at the shorter one.
 //
 //   zip([1, 2, 3], ["a", "b"]) -> [[1, "a"], [2, "b"]]
@@ -312,6 +416,21 @@ fn zip(a, b) {
   return out;
 }
 
+// Combines two arrays with `f(a[i], b[i])`, stopping at the shorter one.
+//
+//   zipWith([1, 2, 3], [10, 20], (a, b) => a + b) -> [11, 22]
+@MustUse
+fn zipWith(a, b, f) {
+  var out = [];
+  let n = len(a) < len(b) ? len(a) : len(b);
+  var i = 0;
+  while (i < n) {
+    out[len(out)] = f(a[i], b[i]);
+    i = i + 1;
+  }
+  return out;
+}
+
 // Flattens one level of nesting.
 //
 //   flatten([[1, 2], [3], []]) -> [1, 2, 3]
@@ -322,6 +441,23 @@ fn flatten(xs) {
     for x in group {
       out[len(out)] = x;
     }
+  }
+  return out;
+}
+
+// A new array with `separator` between consecutive elements.
+//
+//   intersperse([1, 2, 3], 0) -> [1, 0, 2, 0, 3]
+@MustUse
+fn intersperse(xs, separator) {
+  var out = [];
+  var i = 0;
+  while (i < len(xs)) {
+    if (i > 0) {
+      out[len(out)] = separator;
+    }
+    out[len(out)] = xs[i];
+    i = i + 1;
   }
   return out;
 }

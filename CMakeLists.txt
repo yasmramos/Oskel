@@ -671,6 +671,20 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods_inplace.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # The exact wording of the guards that assemble their message at run time
+    # (`array index 9 out of range (length 3)`, `loadByte() index 9 is out of
+    # range`, `insert() index out of range (length 3)`, ...). Each one used to
+    # trap with a bare "index out of range", so a program that printed the
+    # caught message differed between the engines; the fixture catches every
+    # error with `pcall` and prints its text, so a word, a space or a number
+    # that drifts fails the comparison against the VM.
+    add_test(NAME oskel.build_binary_error_messages
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_error_messages"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_error_messages.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # The allocating array methods (PHASE 7c.3f): `slice`, `concat`, `reversed`
     # and `clone`. Each returns a new array and leaves the receiver untouched,
     # so the backend must allocate a fresh header plus items block. Checked
@@ -837,9 +851,9 @@ if(BUILD_TESTING)
     # the hosted mode (PHASE 7f.5): the backend emits a marshalling thunk per
     # symbol, seeds it as a function and lets the host C compiler resolve the
     # name. These fixtures cover the full System V AMD64 surface (structs,
-    # callbacks and a C variadic), so they stay Linux x86-64 only; Windows gets
-    # the scalar/pointer fixture below. The same fixture must still fail the
-    # freestanding build (that backend has no host), which
+    # callbacks and a C variadic), so they stay Linux x86-64 only; Windows has
+    # its own positional-ABI fixtures below. The same fixture must still fail
+    # the freestanding build (that backend has no host), which
     # `oskel.build_extern_error` checks.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       add_test(NAME oskel.build_hosted_extern
@@ -991,6 +1005,18 @@ if(BUILD_TESTING)
             "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_variadic.oskl"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
       endif()
+      # A variadic with a mixed fixed prefix. System V assigns the integer and
+      # SSE classes independently, so this is the reference the Win64
+      # positional path must match; the helper returns a sum, so a wrong
+      # register is a wrong number. The helper harness does not run the VM.
+      add_test(NAME oskel.build_hosted_extern_variadic_mixed
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_variadic_mixed"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_variadic_mixed.oskl"
+          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/variadic_mixed_helper.c"
+          "-DOSKEL_EXPECTED_OUTPUT=ffi variadic mixed ok"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
     endif()
 
     # macOS uses the same System V thunks as Linux but a Mach-O object and
@@ -1010,12 +1036,26 @@ if(BUILD_TESTING)
           "-DOSKEL_SKIP_RUN=${OSKEL_MACOS_SKIP_RUN}"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted.oskl"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+      # The System V variadic walk is shared with Linux; this fixture proves the
+      # Mach-O object and the libSystem link carry it too. On an arm64 host the
+      # x86-64 image is built and linked but not run, so the expected output is
+      # used instead of the VM (the Linux fixture already pins VM parity).
+      add_test(NAME oskel.build_hosted_extern_variadic_macos
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_variadic_macos"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
+          "-DOSKEL_SKIP_RUN=${OSKEL_MACOS_SKIP_RUN}"
+          "-DOSKEL_EXPECTED_OUTPUT=ffi variadic aot ok"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_variadic.oskl"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
     endif()
 
     # Windows x86-64 has the same hosted link, but the Microsoft x64 ABI: the
-    # scalar/cstring/pointer surface is supported and the fixture stays inside
-    # it. Structs, callbacks and C variadics are rejected there with a dedicated
-    # message (PHASE 7f.5), so the Linux fixtures keep covering those shapes.
+    # scalar/cstring/pointer surface and a C variadic are supported there, with
+    # argument positions selecting the registers. Structs and callbacks are
+    # still rejected with a dedicated message (PHASE 7f.5), so the Linux
+    # fixtures keep covering those aggregate shapes.
     if(WIN32)
       add_test(NAME oskel.build_hosted_extern_windows
         COMMAND ${CMAKE_COMMAND}
@@ -1024,6 +1064,34 @@ if(BUILD_TESTING)
           "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted_windows.oskl"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+      # A C variadic is walked at run time by the thunk (PHASE 7f.10): on
+      # Win64 the tail continues the argument-position allocation, so a float
+      # in a register position goes in both the SSE and the integer register,
+      # and position four onward spills to the outgoing stack area after the
+      # shadow space. The development VM has no libffi variadic path on
+      # Windows, so the fixture asserts its own expectations and the binary's
+      # final line is the contract.
+      add_test(NAME oskel.build_hosted_extern_variadic_windows
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_variadic_windows"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_variadic.oskl"
+          "-DOSKEL_EXPECTED_OUTPUT=ffi variadic aot ok"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+      # A variadic with a mixed fixed prefix is the shape that pins the
+      # positional Win64 assignment: the fixed double must be in xmm1 (and
+      # rdx) and the tail double in xmm3 (and r9), not in xmm0/xmm1. The
+      # helper is compiled by the same `cl` the hosted link drives.
+      add_test(NAME oskel.build_hosted_extern_variadic_mixed_windows
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_variadic_mixed_windows"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_variadic_mixed.oskl"
+          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/variadic_mixed_helper.c"
+          "-DOSKEL_EXPECTED_OUTPUT=ffi variadic mixed ok"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
     endif()
 
     # `std.json` is plain Oskel over the portable primitive surface, so it must
@@ -1130,17 +1198,36 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_folds.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
-    # `std.collections` exists because the AOT backend does not bind every array
-    # method yet -- `sort`/`sorted` are open (docs/BACKLOG.md §6 item 1); it is
-    # plain Oskel over the
-    # portable primitive surface, so it must build to a native binary and agree
-    # with the VM. The fixture is the guard that keeps the module off the
-    # methods, `pcall`/`error` and the rest of the AOT gaps.
+    # `std.collections` is plain Oskel over the portable primitive surface, so
+    # it must build to a native binary and agree with the VM. The fixture is the
+    # guard that keeps the module off `pcall`/`error` and the rest of the AOT
+    # gaps.
     add_test(NAME oskel.build_binary_collections
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_TEST_NAME=oskel.build_binary_collections"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_collections.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `std.strings` is plain Oskel over the portable primitive surface, so it
+    # must build to a native binary and agree with the VM. The fixture pins
+    # slicing, code-point indices and the padding/shortening arithmetic.
+    add_test(NAME oskel.build_binary_strings
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_strings"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_strings.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `std.io` is plain Oskel over strings, and its readers and writers are
+    # ordinary classes (maps with closures), so it must build to a native binary
+    # and agree with the VM. The fixture also pins that an instance travels
+    # through a function.
+    add_test(NAME oskel.build_binary_io
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_io"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_io.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
     # Regression for the string-builder corruption: `oskel_sb_append_escaped`
@@ -1356,6 +1443,103 @@ if(BUILD_TESTING)
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
 
+    # `range` takes one or two bounds: `range(5)` starts at 0. The fixture also
+    # pins `assertEq` and `exit`, so a wrong arity check in the WASM builtin
+    # cannot pass unnoticed.
+    add_test(NAME oskel.build_wasm_builtins
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_builtins"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_builtins.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `push` and `pop` are bound method closures that capture their receiver,
+    # so a detached method still mutates the same array.
+    add_test(NAME oskel.build_wasm_array_methods
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_array_methods"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `shift`, `unshift`, `insert`, `removeAt`, `contains`, `indexOf` and
+    # `clear` mutate or scan the captured receiver in place.
+    add_test(NAME oskel.build_wasm_array_methods_inplace
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_array_methods_inplace"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods_inplace.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `slice`, `concat`, `reversed` and `clone` allocate a fresh array and
+    # leave the receiver untouched.
+    add_test(NAME oskel.build_wasm_array_methods_alloc
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_array_methods_alloc"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods_alloc.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `map`, `filter`, `each`, `find`, `any`, `all` and `reduce` call back into
+    # the program through the dispatcher.
+    add_test(NAME oskel.build_wasm_array_callbacks
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_array_callbacks"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_callbacks.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `reduce`, `sum` and `join`, the folds over the captured receiver.
+    add_test(NAME oskel.build_wasm_array_folds
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_array_folds"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_folds.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `sort`/`sorted`, including stability and a comparator that returns a
+    # non-bool. `pcall` is still VM-only, so the strong-guarantee case lives in
+    # the AOT fixture only.
+    add_test(NAME oskel.build_wasm_sort_methods
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_sort_methods"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_wasm_sort_methods.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # The map twin of the array methods: `keys`, `values`, `entries`, `has`,
+    # `get`, `set`, `delete`, `merge`, `clone` and `clear`, all receiver-bound.
+    add_test(NAME oskel.build_wasm_map_methods
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_map_methods"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_map_methods.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
     # `std.datetime` is deterministic apart from `time()`/`clock()`, which the
     # fixture only observes through stable predicates, so the module must agree
     # with the VM byte for byte too.
@@ -1376,6 +1560,30 @@ if(BUILD_TESTING)
         "-DOSKEL_TEST_NAME=oskel.build_wasm_collections"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_collections.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `std.strings` is pure Oskel over indexing, slicing, `len` and closures, so
+    # the WASM backend must reproduce it without a special case.
+    add_test(NAME oskel.build_wasm_strings
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_strings"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_strings.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `std.io` is pure Oskel over strings and classes (maps with closures), so
+    # the WASM backend must reproduce it without a special case.
+    add_test(NAME oskel.build_wasm_io
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_io"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_io.oskl"
         "-DNODE_EXE=${OSKEL_NODE_EXE}"
         "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
@@ -1406,8 +1614,13 @@ if(BUILD_TESTING)
 
     # A mis-lowered loop must fail the test, not hang the suite: the Node run
     # gets a hard timeout in `wasm_case.cmake`, and CTest bounds the driver.
-    set_tests_properties(oskel.build_wasm oskel.build_wasm_datetime
-      oskel.build_wasm_collections oskel.build_wasm_math
+    set_tests_properties(oskel.build_wasm oskel.build_wasm_builtins
+      oskel.build_wasm_array_methods oskel.build_wasm_array_methods_inplace
+      oskel.build_wasm_array_methods_alloc oskel.build_wasm_array_callbacks
+      oskel.build_wasm_array_folds oskel.build_wasm_sort_methods
+      oskel.build_wasm_map_methods oskel.build_wasm_datetime
+      oskel.build_wasm_collections oskel.build_wasm_strings
+      oskel.build_wasm_io oskel.build_wasm_math
       oskel.build_wasm_double_format PROPERTIES TIMEOUT 120)
   endif()
 
@@ -1447,6 +1660,11 @@ if(BUILD_TESTING)
     # The many-args fixture binds a helper too; the VM has no registry entry for
     # those symbols, so it is covered by `oskel.build_hosted_extern_many_args`.
     if(name STREQUAL "native_build_extern_many_args")
+      continue()
+    endif()
+    # The mixed variadic fixture binds a helper the VM cannot resolve; its
+    # hosted tests (`..._variadic_mixed` and the Windows twin) are the coverage.
+    if(name STREQUAL "native_build_extern_variadic_mixed")
       continue()
     endif()
     # The stored/many-args/returns callback fixtures bind helpers the VM cannot

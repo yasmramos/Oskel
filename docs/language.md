@@ -655,8 +655,12 @@ argument count changes per call, so the outgoing register/stack layout is built
 each time). The stub follows the host ABI: System V AMD64 on Linux and x86-64
 macOS, Microsoft x64 on Windows, where the shadow space, the four-register limit
 and the stack-argument slots are laid out accordingly. On a non-x86-64 host the
-declaration is rejected at compile time with a clear message. The return type
-must be a scalar. A declaration that is variadic and one that is not are
+declaration is rejected at compile time with a clear message. The hosted AOT
+backend does not use the engine's stub: it lowers the tail itself on System V
+(Linux and macOS) and on Win64 (Windows), where the argument position selects
+the register and a floating value is duplicated in the integer register of the
+same position. The return type must be a scalar. A declaration that is variadic
+and one that is not are
 different C types, so declaring one symbol both ways is a compile error (see
 above).
 
@@ -2542,30 +2546,35 @@ the original and chain freely.
 
 The array methods (`xs.map(f)`, `xs.filter(f)`, `xs.reduce(f, init)`,
 `xs.sum()`, `xs.join(sep)`, `xs.push(x)`, ...) exist too and are the shorter
-form; both engines bind them. The exceptions are `xs.sort()`/`xs.sorted()` and
-the string methods (`str.upper`, `str.split`, ...), which `oskel build` compiles
-and the binary then fails at run time with `value has no such member` (BACKLOG
-§6 item 1). These functions are the same operations over the portable primitive
-surface, so they work identically on the VM and in a native binary. **Prefer
-them when a program must compile with `oskel build`.**
+form; the VM and the AOT backend bind all of them. These functions are the same
+operations over the portable primitive surface, so they also work on a backend
+that does not bind a method (WebAssembly today) and they compose with the other
+free functions.
 
 | Function | Description |
 | --- | --- |
 | `map(xs, f)` | A new array with `f(element)`. |
+| `flatMap(xs, f)` | `f(element)` (an array) flattened one level. |
 | `filter(xs, f)` / `reject(xs, f)` | The elements for which `f` is truthy / falsy. |
 | `each(xs, f)` | Calls `f(element)` for side effects; returns `xs`. |
 | `fold(xs, f, init)` | Left fold with `f(accumulator, element)`. |
+| `scan(xs, f, init)` | The running fold: `init` followed by each accumulator. |
 | `sum(xs)` / `sumBy(xs, f)` | The sum of the elements / of `f(element)`. |
 | `minimum(xs)` / `maximum(xs)` | The smallest / largest element, or `nil` when empty. |
 | `minBy(xs, key)` / `maxBy(xs, key)` | The element whose key is smallest / largest, or `nil`. |
 | `count(xs, f)` | How many elements satisfy `f`. |
 | `find(xs, f)` / `findIndex(xs, f)` | The first element / index satisfying `f`, else `nil` / `-1`. |
+| `findLast(xs, f)` / `findLastIndex(xs, f)` | The last element / index satisfying `f`, else `nil` / `-1`. |
 | `any(xs, f)` / `all(xs, f)` / `none(xs, f)` | Whether some / every / no element satisfies `f`. |
 | `take(xs, n)` / `drop(xs, n)` | The first `n` / the elements after the first `n` (clamped). |
+| `takeWhile(xs, f)` / `dropWhile(xs, f)` | The leading run satisfying `f` / the elements after it. |
 | `partition(xs, f)` | `[yes, no]`: the elements that satisfy `f` and those that do not. |
 | `chunk(xs, size)` | Consecutive groups of at most `size` elements. |
+| `sliding(xs, size)` | Overlapping windows of exactly `size` elements, advancing one at a time. |
 | `zip(a, b)` | Pairs of elements, stopping at the shorter array. |
+| `zipWith(a, b, f)` | `f(a[i], b[i])`, stopping at the shorter array. |
 | `flatten(xs)` | One level of nesting removed. |
+| `intersperse(xs, separator)` | `separator` between consecutive elements. |
 | `reverse(xs)` | The elements in reverse order. |
 | `unique(xs)` / `uniqueBy(xs, key)` | The elements with duplicates removed, keeping the first. |
 | `groupBy(xs, key)` | A map from `str(key(element))` to the elements that produced it. |
@@ -2591,6 +2600,137 @@ which is the useful default for a grouping key. `sort` is a stable merge sort, s
 two elements the comparator considers equal keep their input order. `sort`,
 `minimum`/`maximum` and the `By` variants need the elements (or their keys) to be
 mutually comparable: numbers with numbers, strings with strings.
+
+`scan` returns `len(xs) + 1` elements (the initial value plus one accumulator
+per element). `sliding` rejects a `size` below 1 and returns `[]` when `size`
+exceeds the array. `flatMap` expects `f` to return an array; `zipWith` stops at
+the shorter input like `zip`. `intersperse` returns a copy unchanged for an
+empty or single-element array.
+
+### 12.13 Text
+
+`import std.strings;` adds text helpers that the string methods (§9.1) do not
+express, so they compose with the collection helpers:
+
+```oskl
+import std.collections.*;
+import std.strings.*;
+
+let lines = ["  a long line that needs shortening  ", "  short  "];
+print(map(lines, l => truncate(l.trim(), 12, "...")));  // ["a long li...", "short"]
+```
+
+| Function | Description |
+| --- | --- |
+| `words(s)` | The non-empty runs of non-whitespace characters. |
+| `isBlank(s)` | `true` when the string is empty or only ASCII whitespace. |
+| `countOf(s, needle)` | How many non-overlapping occurrences `s` contains (`0` for an empty needle). |
+| `indexOfAll(s, needle)` | The code-point index of every non-overlapping occurrence (`[]` for an empty needle). |
+| `containsAll(s, needles)` | `true` when every needle occurs (`true` for an empty array). |
+| `containsAny(s, needles)` | `true` when at least one needle occurs (`false` for an empty array). |
+| `padBoth(s, width, fill)` | Centers `s` in `width` code points, repeating `fill` and clipping it. |
+| `truncate(s, width, ellipsis)` | Shortens `s` to at most `width` code points, ending with `ellipsis`. |
+
+Every length and index is a **code-point** count, so a multi-byte character
+counts as one. `words` and `isBlank` use the ASCII whitespace family `trim()`
+uses (space, tab, newline, carriage return, vertical tab, form feed); a Unicode
+space is an ordinary character, as it is for `trim()`. Case mapping stays with
+the `upper`/`lower` methods, which apply the Unicode simple mapping.
+
+`countOf` and `indexOfAll` do not overlap: `countOf("aaaa", "aa")` is `2`, not
+`3`. An empty needle has no occurrences, so both return `0`/`[]` rather than
+treating every position as a match. `containsAll`/`containsAny` do treat the
+empty needle as present everywhere, which is the identity of "contains".
+
+`padBoth` gives an odd remainder to the right (`padBoth("ab", 5, " ")` is
+`" ab  "`), repeats the fill whole and then clips it, and returns a string that
+is already wide enough unchanged. `truncate` returns a string that fits
+unchanged; when the ellipsis itself does not fit it is clipped to `width`
+(`truncate("abcdef", 2, "...")` is `".."`), and an empty ellipsis yields the
+first `width` characters. A negative width and an empty `padBoth` fill are
+runtime errors.
+
+The module is pure Oskel over the portable primitive surface (indexing,
+slicing, `len`, `for ... in`, closures, `panic`), so it behaves identically on
+the development VM, under `oskel build` and on WebAssembly.
+
+### 12.14 I/O
+
+`import std.io;` adds **in-memory text streams**: a `StringReader` that walks a
+string by code point and a `StringWriter` that accumulates text. They are
+ordinary classes (§4.8), so an instance is a map with methods and can be passed
+to a function like any other value.
+
+File access stays with the `readFile`/`writeFile`/`fileExists` builtins rather
+than this module. Those builtins need a file system: the AOT freestanding
+backend does not seed them, and a module that mentions one fails `oskel build`
+even when the function is never called. Keeping `std.io` over strings is what
+makes it run on the VM, in a native binary and on WebAssembly alike.
+
+| Function | Description |
+| --- | --- |
+| `splitLines(text)` | Splits on `\n`, dropping one trailing `\r` per line. A trailing newline adds no empty line. |
+| `joinLines(lines)` | Joins with `\n` between the lines, without a trailing newline. |
+
+```oskl
+import std.io.*;
+
+let text = "alpha\r\nbeta\ngamma\n";
+print(splitLines(text));       // ["alpha", "beta", "gamma"]
+print(joinLines(["a", "b"]));  // "a\nb"
+
+let r = StringReader(text);
+print(r.readLine());           // "alpha"
+print(r.readLine());           // "beta"
+print(r.eof());                // false
+print(r.readAll());            // "gamma"
+```
+
+`StringReader` methods:
+
+| Method | Description |
+| --- | --- |
+| `eof()` | `true` when every code point has been consumed. |
+| `position()` / `remaining()` | The next index / how many code points are left, both in code points. |
+| `rest()` | The unconsumed text, without advancing. |
+| `peek()` / `readChar()` | The next code point with / without advancing; `""` at the end. |
+| `read(count)` | Up to `count` code points; a non-positive count returns `""`. |
+| `readLine()` | The next line, consuming its `\n` and dropping one trailing `\r`; `""` at the end. |
+| `readAll()` | The rest of the text and advance to the end. |
+| `skip(count)` | Advances up to `count` code points; returns how many it skipped. |
+| `readWhile(pred)` / `skipWhile(pred)` | The run / the length of the run for which `pred` is truthy. |
+| `readToken()` | Skips ASCII whitespace, then reads to the next whitespace; `""` at the end. |
+| `lines()` | The remaining lines (see `splitLines`), consuming all of them. |
+
+`StringWriter` methods:
+
+| Method | Description |
+| --- | --- |
+| `write(s)` / `writeln(s)` | Appends `s` / `s` and a newline. Both return `self`. |
+| `writeAll(xs)` / `writeLines(xs)` | Appends every element, with / without a newline after each. Both return `self`. |
+| `size()` / `isEmpty()` | The number of code points written / whether nothing was written. |
+| `toString()` | The accumulated text, concatenating the chunks with a balanced tree. |
+| `clear()` | Discards everything; returns `self`. |
+
+```oskl
+let w = StringWriter();
+w.write("a").write("b").writeln("c");
+print(w.toString());  // "abc\n"
+print(w.size());      // 4
+```
+
+Every index, length and size is a **code-point** count, like `len` on a string,
+so `StringReader("héllo").read(2)` is `"hé"`. `readLine` returns `""` both for
+an empty line and at the end; call `eof()` first to tell them apart. A token is
+a run of non-whitespace, so `int(r.readToken())` parses a number without a
+second scanner. `StringWriter` stores chunks and concatenates them with a
+balanced tree in `toString`, so a long sequence of small writes does not copy
+the prefix once per write; still call it once when the text is complete.
+Because an instance is a map, `len(writer)` is the number of chunks, not the
+text length; use `size()`.
+
+The module is pure Oskel over strings and classes, so it behaves identically on
+the development VM, under `oskel build` and on WebAssembly.
 
 ---
 
@@ -3009,7 +3149,7 @@ features of this release.
 - No `++`, `--` or default parameters. A trailing `rest...` parameter makes a function variadic (see §7.1). `switch` on literals and ranges is supported (see §6.10), and so is the post-test loop `do { ... } while (cond);` (see §6.4).
 - Optional types and nullability are implemented for declarations and expressions (PHASE 6.5). Type annotations (`let x: int = 5`), local inference, the nullable `T?` annotation, and the null-safe expressions `?.`, `??` and `!!` are checked at compile time. `struct` is implemented (see §4.7) and so is `native fn` (see §7.6), the typed declaration of a host-provided function.
 - FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the host C ABI without a host FFI library for scalars and register structs; a class-MEMORY struct, a C variadic and a callback go through a small x86-64 descriptor/closure stub emitted by the engine. A `fn(P...): R` parameter is a callback: the development engine builds a closure stub that re-enters the VM (its `R` may be a scalar or a struct by value); it is available on x86-64 System V (Linux, x86-64 macOS), not on Windows or arm64. A trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...): int`), which applies the C default argument promotions and goes through the descriptor stub on either x86-64 ABI (System V AMD64 or Microsoft x64); it is rejected at compile time on a non-x86-64 host.
-- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.9 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux, Windows and macOS x86-64), where the program is linked against the host C library; the freestanding mode, which is the default on Linux and Windows, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — both register-class and class-MEMORY — are lowered on the System V targets (Linux and macOS, 7f.6, 7f.7); the Windows x86-64 backend supports the scalar, `cstring` and `ptr` classes and rejects a struct, a callback or a C variadic with a dedicated message. A C variadic is lowered on the System V targets (Linux and macOS), and `native fn` declarations the backend has no stub for fail the build with a dedicated message. Callbacks are lowered on System V (7f.8): a scalar parameter or return crosses through a generated stub; a struct return or a struct parameter is rejected with a dedicated message.
+- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.10 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux, Windows and macOS x86-64), where the program is linked against the host C library; the freestanding mode, which is the default on Linux and Windows, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — both register-class and class-MEMORY — are lowered on the System V targets (Linux and macOS, 7f.6, 7f.7); the Windows x86-64 backend supports the scalar, `cstring` and `ptr` classes and rejects a struct or a callback with a dedicated message. A C variadic is lowered on all three hosted targets: System V continues the independent GPR/SSE counters, Win64 continues the argument positions (a floating value in a register position goes in both its SSE and integer register, and position four onward spills to the outgoing stack area past the shadow space). `native fn` declarations the backend has no stub for fail the build with a dedicated message. Callbacks are lowered on System V (7f.8): a scalar parameter or return crosses through a generated stub; a struct return or a struct parameter is rejected with a dedicated message.
 - A function's text representation is the same on both engines: `<fn name>` for a named function, `<native fn name>` for a host binding (a builtin, a `native fn`, an `extern "C"` symbol or a bound collection method such as `<native fn array.map>`), and `<fn <anonymous>>` for a lambda. The AOT closure carries a `display` pointer to a static `AotString` with that exact text, so `print`, `repr`, `str` and string interpolation all agree byte for byte (BACKLOG §6.22, `tests/native_build_function_repr.oskl`).
 - The first UI layer is `std/ui.oskl` (`docs/ui.md`): a declarative widget
   tree, deterministic layout, a `rect`/`text` display list and button hit
@@ -3164,8 +3304,9 @@ print(sqrt(25));            // 5
 ```
 
 The standard library ships `std.math` (§12.3), `std.json` (§12.9),
-`std.datetime` (§12.10), `std.path` (§12.11) and `std.collections` (§12.12). All
-are ordinary modules, so the same four import forms apply:
+`std.datetime` (§12.10), `std.path` (§12.11), `std.collections` (§12.12),
+`std.strings` (§12.13) and `std.io` (§12.14). All are ordinary modules, so the
+same four import forms apply:
 
 ```oskel
 import std.json;             // std.json.parse and json.parse, ...

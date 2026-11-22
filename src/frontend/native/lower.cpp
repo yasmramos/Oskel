@@ -406,11 +406,6 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
       thunk.symbol = symbol.name;
       thunk.arity = symbol.paramTypes.size();
       thunk.variadic = symbol.variadic;
-      if (win64 && symbol.variadic) {
-        throw LoweringError(
-            "lowering: C variadic '" + symbol.name +
-            "' is not supported on the Windows x86-64 hosted backend yet");
-      }
       if (win64 && symbol.returnType.isStruct) {
         throw LoweringError(
             "lowering: a struct return from '" + symbol.name +
@@ -431,8 +426,11 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
       int sse = 0;                     // the SSE argument registers
       int nextBufSlot = 0;             // register-class struct staging buffers
       // The Microsoft ABI reserves 32 bytes of shadow space below the outgoing
-      // stack arguments, so a Win64 stack argument starts at offset 32.
-      thunk.stackArgBytes = win64 ? 32 : 0;
+      // stack arguments, so a Win64 stack argument starts at offset 32. A
+      // variadic Win64 thunk reserves the whole outgoing area at run time
+      // (shadow space plus the fixed and variable stack arguments), so its
+      // fixed frame carries none of it.
+      thunk.stackArgBytes = win64 && !symbol.variadic ? 32 : 0;
       auto addStackStruct = [&](int index, int arg, int size) {
         thunk.stackArgBytes = (thunk.stackArgBytes + 7) / 8 * 8;
         AotStackArg stacked;
@@ -528,14 +526,17 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
         AotThunkParam flat;
         flat.cls = cls;
         flat.argIndex = arg;
-        if (cls == ffi::ParamClass::Float || cls == ffi::ParamClass::Double) {
+        if (win64) {
+          // The Microsoft x64 ABI assigns the register by argument position,
+          // not by class: argument i uses the i-th integer or SSE register,
+          // and every argument from the fifth onward travels on the stack.
+          if (arg >= 4) {
+            flat.stackOffset = 32 + 8LL * (arg - 4);
+            if (!symbol.variadic) thunk.stackArgBytes = flat.stackOffset + 8;
+          }
+        } else if (cls == ffi::ParamClass::Float || cls == ffi::ParamClass::Double) {
           if (sse < sseLimit) {
             ++sse;
-          } else if (win64) {
-            // The Microsoft ABI spills a fifth or later SSE argument to the
-            // outgoing stack area; the thunk stores the narrowed value there.
-            flat.stackOffset = (thunk.stackArgBytes + 7) / 8 * 8;
-            thunk.stackArgBytes = flat.stackOffset + 8;
           } else {
             // The eightbyte bound keeps every System V SSE value in xmm0-xmm7,
             // so an SSE spill is unreachable; reject rather than emit an
@@ -552,8 +553,7 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
           break;
         } else {
           // A later GPR eightbyte travels in the outgoing stack argument area,
-          // at `[rsp + stackOffset]` before the call (past the shadow space on
-          // Win64).
+          // at `[rsp + stackOffset]` before the call.
           flat.stackOffset = (thunk.stackArgBytes + 7) / 8 * 8;
           thunk.stackArgBytes = flat.stackOffset + 8;
         }

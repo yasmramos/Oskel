@@ -1,0 +1,29 @@
+// Fixture for `oskel build` (tests/build_binary.cmake) and WebAssembly
+// (tests/wasm_case.cmake): `std.strings` on a compiled target.
+//
+// The module is pure Oskel over the portable primitive surface (indexing,
+// slicing, `len`, `for ... in`, closures, `panic`), so it must build to a
+// native binary and agree with the development VM byte for byte. The occurrence
+// helpers pin slicing and code-point indices, and `padBoth`/`truncate` pin the
+// integer arithmetic and the code-point widths.
+//
+// Every line is deterministic and prints a value (the harness compares stdout),
+// so the fixture never relies on an assertion alone.
+
+import std.strings;
+import std.strings.*;
+import std.strings as t;
+import { truncate, words } from std.strings;
+
+print("words =", words("  a  bb\tccc "));
+print("wordsEmpty =", words("   "));
+print("isBlank =", isBlank(" \t\n"), isBlank(" a "));
+print("countOf =", countOf("banana", "an"), countOf("aaaa", "aa"), countOf("abc", ""));
+print("indexOfAll =", indexOfAll("banana", "an"), indexOfAll("aaaa", "aa"));
+print("containsAll =", containsAll("abc", ["a", "c"]), containsAll("abc", ["a", "z"]));
+print("containsAny =", containsAny("abc", ["z", "b"]), containsAny("abc", []));
+print("padBoth =", "[" + padBoth("ab", 5, " ") + "]", "[" + padBoth("ab", 6, "-=") + "]");
+print("truncate =", truncate("abcdef", 4, "..."), truncate("abcdef", 2, "..."));
+print("truncateUnicode =", truncate("héllo", 4, "…"));
+print("qualified =", std.strings.words("ok"), t.words("ok"));
+print("selective =", truncate("abcdef", 4, "..."));

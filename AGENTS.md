@@ -95,9 +95,10 @@ it as a caveat:
   class-MEMORY struct must not be rejected for `oskel build` just because the
   engine lacks the x86-64 FFI trampoline — that conflation made
   `oskel.build_hosted_extern_memory_struct` fail without an FFI backend even
-  though the emitted code was right. A C variadic stays rejected for the AOT
-  destination whatever the build has, because the backend does not lower a
-  variable argument list (PHASE 7f.5).
+  though the emitted code was right. A C variadic is accepted for the AOT
+  destination whatever the build has, because the backend lowers the variable
+  argument list itself (PHASE 7f.5, 7f.10); the development engine's descriptor
+  stub covers System V and Microsoft x64.
 - A qualified access to a module's native export (`std.math.pow`) is a use too,
   but it reads the module table with `GETTABLE`, not with `GETGLOBAL`, so the
   lowerer cannot see it by counting reads. The compiler records such a use on
@@ -158,6 +159,14 @@ it as a caveat:
   the `time()` wall clock, the one builtin whose AOT binding differs per
   target). `std/ui.oskl` is the declarative widget/layout layer over the same
   surface; `tests/native_build_ui.oskl` is its VM/AOT fixture.
+- `std.io` is **in-memory text streams, not file I/O**. `StringReader` and
+  `StringWriter` are classes (maps with closures), and `splitLines`/`joinLines`
+  are free functions. File access stays with
+  `readFile`/`writeFile`/`fileExists`: the freestanding AOT backend does not
+  seed them, and the lowerer scans every function body, so a module that merely
+  mentions one fails `oskel build` even when the function is unused.
+  `tests/62_std_io.oskl` is the VM test and `tests/native_build_io.oskl` the
+  VM/AOT/WASM parity fixture.
 - `sort`/`sorted` are the only collection methods whose comparator is arbitrary
   program code, so their AOT body calls back through `oskel_call` from inside a
   bottom-up stable merge sort (a recursive one would deepen the program's stack
@@ -210,16 +219,24 @@ it as a caveat:
   extern thunk takes the ABI as a parameter: System V (Linux, macOS) keeps the
   six GPRs/eight SSE registers and the struct/callback/variadic surface;
   Win64 uses four of each, 32 bytes of shadow space and stack arguments from
-  offset 32, supports the scalar/`cstring`/`ptr` classes and rejects a struct,
-  a callback or a C variadic with a dedicated message. `main` on Windows moves
-  the CRT's `(argc, argv)` from rcx/rdx to rdi/rsi before the chunk so `args()`
-  works there too. The UCRT opens stdout/stderr in text mode, so
-  `oskel_init_arena` calls `_setmode(1/2, _O_BINARY)` before the first write;
-  without it every `\n` becomes `\r\n` and the hosted binary diverges from the
-  VM. `tests/hosted_cc.cmake` wraps `cl` in a batch file that calls
+  offset 32, supports the scalar/`cstring`/`ptr` classes and a C variadic, and
+  rejects a struct or a callback with a dedicated message. Win64 selects the
+  register by **argument position**, not by class: argument i uses the i-th
+  integer or SSE register, a floating value in a register position is
+  duplicated in the integer register of the same position on a variadic call,
+  and position four onward travels on the stack. The variadic thunk reserves
+  the whole outgoing area at run time (shadow space plus fixed and variable
+  stack arguments); a non-variadic one keeps it in the frame. `main` on
+  Windows moves the CRT's `(argc, argv)` from rcx/rdx to rdi/rsi before the
+  chunk so `args()` works there too. The UCRT opens stdout/stderr in text
+  mode, so `oskel_init_arena` calls `_setmode(1/2, _O_BINARY)` before the
+  first write; without it every `\n` becomes `\r\n` and the binary diverges
+  from the VM. `tests/hosted_cc.cmake` wraps `cl` in a batch file that calls
   `vcvarsall.bat` first, because CTest does not inherit the `PATH`/`INCLUDE`/
   `LIB` the build step had -- a bare `cl` link fails with "cannot open
-  libcmt.lib" even when `cl.exe` is found.
+  libcmt.lib" even when `cl.exe` is found. `tests/build_hosted_helper.cmake`
+  compiles a C helper with the same compiler and appends its object to the
+  link; on Windows it reaches `cl` through that same wrapper.
 - A `struct` crossing `extern "C"` by value is supported in the hosted backend
   in both ABI classes (PHASE 7f.7). A struct of 16 bytes or fewer is flattened
   to its System V eightbytes and travels in registers; a larger one is class
@@ -233,8 +250,9 @@ it as a caveat:
   the integer staging slots disjoint. `tests/native_build_extern_struct.oskl`
   covers the register class and `tests/native_build_extern_memory_struct.oskl`
   the MEMORY class (the latter links `tests/hosted/memory_struct_helper.c`,
-  because no libc symbol exercises that shape). A callback or C variadic
-  parameter is still PHASE 7f work.
+  because no libc symbol exercises that shape). A struct passed to a callback
+  or through a C variadic is still PHASE 7f work (BACKLOG §6 items 26/27); the
+  callback and variadic surfaces themselves are done.
 - A builtin whose argument window the AOT backend walks by hand has to read
   `args[i]` **downward**: `slotOffset` is `-16 * (index + 1)`, so `args[1]` sits
   16 bytes *below* `args[0]` (`-16` tag, `-8` payload), not at `+16`/`+24`. A
@@ -250,12 +268,17 @@ it as a caveat:
   name built from whatever happened to sit there (`int` after a four-`int` call)
   and `chr(65, 1)` returned `"A"` while the VM raised "expects 1 argument".
   The VM's `need(in, name, args, 1)` is the counterpart; a new builtin gets the
-  guard in the same commit. The message keeps only its fixed prefix in AOT
-  (`type() expects 1 argument`), which is the documented convention for a tail
-  that would need a per-message builder (BACKLOG §6 item 25);
-  `tests/native_build_builtin_arity.oskl` drives every wrong-count call through
-  `pcall`, because a raised runtime error is not a value and `try`/`catch` never
-  sees it.
+  guard in the same commit. A guard fails through `emitArityFailCall`, which
+  calls the one `oskel_arity_fail(msg, len, argc)` body: the prefix is constant
+  and the helper appends `, got N`, so both engines word the count identically
+  (`len() expects 1 argument, got 0`). A guard whose count is not in `rsi` passes
+  the register it is in — `error()` keeps its count in `r12`. A user function's
+  prologue uses the same body with `name() expects N argument(s)` (` or more`
+  when variadic), and `tests/native_build_builtin_arity.oskl` drives every
+  wrong-count call through `pcall`, because a raised runtime error is not a value
+  and `try`/`catch` never sees it. The fixture prints the message text, not just
+  the fact of failing (PHASE 7c.5b.6). Other dynamic tails — a type name or an
+  index — still keep only their fixed prefix (BACKLOG §6 item 25).
 - `random`/`seed` are AOT-backed (PHASE 7g): `mt19937_64` is emitted as machine
   code, so a native binary reproduces the VM's stream after the same `seed(n)`.
   Three rules keep it correct, and each was a real bug first: only `rbx` and
@@ -370,6 +393,22 @@ it as a caveat:
   `$slice` and the string-to-number forms of `int`/`float`/`double` are bound,
   so `std/json`, `std/datetime` and `std/collections` build and match the VM
   byte for byte; `time()`/`clock()` read the host imports.
+- The bound collection methods are receiver-capturing closures. The helpers are
+  reserved before `emitCore` in `reserveArrayMethods` (the `methodHelpers`
+  vector) and emitted after it, because a body calls the runtime helpers.
+  `emitMethodValue` builds a closure whose first upvalue is a cell holding the
+  receiver and whose `flags` word is the selector; the dispatcher indexes
+  `methodHelpers[selector]`. The callback methods build the argument window
+  **upward** (`window + 16*j`) and `emitCallbackCall` stores the tag/payload at
+  `+0`/`+8`. A `block` + `loop` pair needs **two** `end`s: the insertion sort
+  shipped with one and the validator rejected the module as an unterminated
+  control structure.
+- A map already has a member branch in `emitMemberGet`: it looks the name up in
+  the entries first (so a stored `length` wins), then falls back to `length` and
+  nil. New map methods go **inside that branch**; a second `kMap` branch after
+  the range branch is unreachable, and a method added there silently returns
+  nil. The string branch is separate and still fails with "no such member" for
+  an unknown name.
 - A construct the backend cannot lower yet must fail cleanly, never emit a
   mis-compiled module: an unbound builtin is seeded as a trapping closure, and
   a used `extern "C"`/`native fn` symbol with no stub is a build error (exit

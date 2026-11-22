@@ -2,13 +2,11 @@
 // the AOT backend.
 //
 // `std.collections` is written in plain Oskel over the portable primitive
-// surface (indexing, slicing, `len`, `str`, `panic`, `for ... in`, closures),
-// and it exists precisely because the AOT backend does not bind the array
-// methods yet (`docs/BACKLOG.md` §6 item 1). This fixture is the guard that
-// keeps it that way: it must build to a native binary and agree with the
-// development VM byte for byte, so a future edit that reaches for `xs.map(...)`,
-// a string method or `pcall`/`error` breaks the build here rather than shipping
-// a binary that dies with "value has no such member".
+// surface (indexing, slicing, `len`, `str`, `panic`, `for ... in`, closures), so
+// it must build to a native binary and agree with the development VM byte for
+// byte. The module stays on that surface so it also works on WebAssembly, where
+// the array/string methods are not bound; `oskel.build_wasm_collections` is the
+// guard for that side.
 //
 // Every line is deterministic and prints a value (the harness compares stdout),
 // so the fixture never relies on an assertion alone.
@@ -23,6 +21,7 @@ let nums = [5, 3, 8, 1, 9, 2, 8, 1];
 // --- mapping and filtering --------------------------------------------------
 
 print("map =", map(nums, x => x * 2));
+print("flatMap =", flatMap([1, 2, 3], x => [x, x * 10]));
 print("filter =", filter(nums, x => x > 4));
 print("reject =", reject(nums, x => x > 4));
 print("each =", each([1, 2, 3], x => x));
@@ -30,6 +29,7 @@ print("each =", each([1, 2, 3], x => x));
 // --- folding and aggregation ------------------------------------------------
 
 print("fold =", fold([1, 2, 3, 4], (acc, x) => acc + x, 0));
+print("scan =", scan([1, 2, 3], (acc, x) => acc + x, 0));
 print("sum =", sum(nums), sumBy(nums, x => x * 10));
 print("minimum =", minimum(nums), minimum([]));
 print("maximum =", maximum(nums), maximum([]));
@@ -41,6 +41,8 @@ print("count =", count(nums, x => x > 4));
 
 print("find =", find(nums, x => x > 6), find(nums, x => x > 100));
 print("findIndex =", findIndex(nums, x => x == 8), findIndex(nums, x => x == 100));
+print("findLast =", findLast(nums, x => x == 8), findLast(nums, x => x > 100));
+print("findLastIndex =", findLastIndex(nums, x => x == 8), findLastIndex(nums, x => x > 100));
 print("any =", any(nums, x => x > 8), any(nums, x => x > 100));
 print("all =", all(nums, x => x > 0), all(nums, x => x > 1));
 print("none =", none(nums, x => x > 100), none(nums, x => x > 8));
@@ -49,10 +51,15 @@ print("none =", none(nums, x => x > 100), none(nums, x => x > 8));
 
 print("take =", take(nums, 3), take(nums, 100), take(nums, -1));
 print("drop =", drop(nums, 3), drop(nums, 100), drop(nums, -1));
+print("takeWhile =", takeWhile([1, 2, 3, 1], x => x < 3));
+print("dropWhile =", dropWhile([1, 2, 3, 1], x => x < 3));
 print("partition =", partition(nums, x => x % 2 == 0));
 print("chunk =", chunk(nums, 3));
+print("sliding =", sliding([1, 2, 3, 4], 2), sliding([1, 2], 3));
 print("zip =", zip([1, 2, 3], ["a", "b"]));
+print("zipWith =", zipWith([1, 2, 3], [10, 20], (a, b) => a + b));
 print("flatten =", flatten([[1, 2], [3], [], [4, 5]]));
+print("intersperse =", intersperse([1, 2, 3], 0), intersperse([], 0));
 print("reverse =", reverse(nums));
 print("unique =", unique(nums));
 print("uniqueBy =", uniqueBy(nums, x => x % 3));
@@ -86,5 +93,6 @@ print("qualified =", c.sum([1, 2, 3]), c.reverse([1, 2]));
 print("selective =", sort([2, 1]), groupBy([1, 2, 3, 4], x => x % 2));
 // The helpers chain without an intermediate variable.
 print("chain =", take(sortBy(unique(nums), (a, b) => a > b), 3));
+print("windows =", map(sliding([1, 2, 3, 4], 2), w => fold(w, (a, x) => a + x, 0)));
 // The input is never mutated.
 print("input =", nums);

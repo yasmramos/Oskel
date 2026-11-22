@@ -1,11 +1,15 @@
 // Fixture for the Windows x86-64 hosted `extern "C"` surface.
 //
-// The Microsoft x64 ABI has four integer and four SSE argument registers, so
-// this fixture deliberately stays inside that window: `abs` (int), `fabs` and
-// `fmod` (double) and `strlen`/`strcmp` (cstring) exercise the three scalar
-// classes the thunk marshals on Windows. A struct, a callback or a C variadic
-// is rejected with a dedicated message there; the Linux fixture covers those
-// System V shapes.
+// The Microsoft x64 ABI has four integer and four SSE argument registers, and
+// it assigns them by argument position: argument i uses the i-th integer or SSE
+// register, whatever its class. `ldexp` (double, int), `modf` (double, ptr) and
+// `remquo` (double, double, ptr) are the mixed shapes that would fail if the
+// integer and SSE counters were independent, so they pin the positional rule.
+// `abs` (int), `fabs`/`fmod` (double) and `strlen`/`strcmp` (cstring) cover the
+// scalar classes themselves.
+//
+// A struct and a callback are still rejected with a dedicated message on
+// Windows; the Linux fixtures cover those System V shapes.
 //
 // The names are the UCRT's, which the development VM resolves through its own
 // host registry and the hosted binary resolves through the linker, so both
@@ -16,6 +20,11 @@ extern "C" {
   fn fmod(a: double, b: double): double;
   fn strlen(s: cstring): size_t;
   fn strcmp(a: cstring, b: cstring): int;
+  fn ldexp(x: double, e: int): double;
+  fn modf(x: double, p: ptr): double;
+  fn remquo(x: double, y: double, q: ptr): double;
+  fn malloc(n: size_t): ptr;
+  fn free(p: ptr): void;
 }
 
 assertEq(abs(-7), 7);
@@ -25,5 +34,20 @@ assertEq(strlen("hello"), 5);
 assertEq(strlen(""), 0);
 assertEq(strcmp("abc", "abc"), 0);
 assertEq(strcmp("abc", "abd") < 0, true);
+
+// A double in the first register and an int in the second: the int belongs in
+// rdx, not rcx.
+assertEq(ldexp(3.0, 4), 48.0);
+
+// A double then a pointer: the pointer belongs in rdx. `modf` writes the
+// integral part through it, so a wrong register would corrupt memory.
+let p = malloc(8);
+assertEq(modf(3.5, p), 0.5);
+
+// Two doubles then a pointer: the pointer belongs in r8. `remquo` returns
+// 7 - 4*2 = -1 (the quotient is rounded to nearest even) and writes the
+// quotient through the pointer.
+assertEq(remquo(7.0, 2.0, p), -1.0);
+free(p);
 
 print("extern hosted windows ok");
