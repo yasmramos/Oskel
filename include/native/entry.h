@@ -69,6 +69,21 @@ struct RuntimeHandles {
   // Both return the resulting byte offset, or -1 on failure.
   CodeGen::Label seek;
   CodeGen::Label tell;
+  // The directory and metadata half of `std.fs.dir`. `remove`, `rename`,
+  // `mkdir`, `rmdir` and `chdir` return 1 on success and 0 on failure.
+  // `entry` walks one directory entry by index and returns its basename length,
+  // 0 at end of directory and -1 on failure; `std.fs.dir` sorts the names, so
+  // the host order does not leak into the program. `stat` fills four 64-bit
+  // words at `out` (size, epoch-seconds mtime, isFile, isDir) and returns 1/0.
+  // `cwd` writes a NUL-terminated path and returns its length, or -1.
+  CodeGen::Label removePath;
+  CodeGen::Label renamePath;
+  CodeGen::Label mkdirPath;
+  CodeGen::Label rmdirPath;
+  CodeGen::Label chdirPath;
+  CodeGen::Label listEntry;
+  CodeGen::Label statPath;
+  CodeGen::Label cwd;
 };
 
 inline RuntimeHandles newRuntimeHandles(CodeGen& code) {
@@ -76,7 +91,9 @@ inline RuntimeHandles newRuntimeHandles(CodeGen& code) {
                         code.newLabel(), code.newLabel(), code.newLabel(),
                         code.newLabel(), code.newLabel(), code.newLabel(),
                         code.newLabel(), code.newLabel(), code.newLabel(),
-                        code.newLabel()};
+                        code.newLabel(), code.newLabel(), code.newLabel(),
+                        code.newLabel(), code.newLabel(), code.newLabel(),
+                        code.newLabel(), code.newLabel(), code.newLabel()};
 }
 
 // The generated binary's bump arena (PHASE 7c.1c). `_start` maps a region and

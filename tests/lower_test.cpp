@@ -151,15 +151,16 @@ static void testBackingTargetGates() {
           "a file builtin on bare metal names the missing file system");
   }
 
-  // The directory half is VM-only for now: the lowerer names the module rather
-  // than a particular helper, because every function in `std.fs.dir` reads one
-  // of these globals.
+  // The directory half rides the same prelude handles, so it lowers wherever
+  // the file system exists and names the missing file system on bare metal.
   for (const char* name : {"fsRemove", "fsRename", "fsMkdir", "fsRmdir",
                            "fsList", "fsStat", "fsCwd", "fsChdir"}) {
     auto proto = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::HALT)},
                            {Value(std::string(name))}, 1);
-    check(loweringThrowsOn(Target::linuxX64(), proto, "std.fs.dir is VM-only"),
-          "a directory builtin names the VM-only module");
+    check(!lower(proto).code.empty(), "a directory builtin lowers on the Linux target");
+    const std::string expected = std::string(name) + "() needs a file system";
+    check(loweringThrowsOn(Target::bareMetalX64(), proto, expected.c_str()),
+          "a directory builtin on bare metal names the missing file system");
   }
 
   // `input()` reads the keyboard through `entry.read`, which only the bare-metal

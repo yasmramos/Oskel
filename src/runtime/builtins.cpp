@@ -1616,7 +1616,6 @@ void registerBuiltins(Runtime& in) {
     if (!in.platform().listDirectory(path.c_str(), collectDirectoryName, &names)) {
       in.fail("cannot list directory '" + path + "'");
     }
-    std::sort(names.names.begin(), names.names.end());
     std::vector<Value> items;
     items.reserve(names.names.size());
     for (std::string& name : names.names) items.emplace_back(std::move(name));

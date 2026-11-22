@@ -172,6 +172,17 @@ struct CollectionEnv {
   CodeGen::Label printRepr;    // void oskel_print_repr(AotValue, long depth)
   CodeGen::Label printStrEsc;  // void oskel_print_str_escaped(AotString*)
   CodeGen::Label lengthConst;  // data: the string "length"
+  // The table helpers the file/directory builtins use to build an array or a
+  // map (`tableNew` returns an `AotValue`, `tableSet` writes one entry). They
+  // are the same helpers `NEWTABLE`/`SETTABLE` reach, so a builtin-built map is
+  // an ordinary map.
+  CodeGen::Label tableNew;
+  CodeGen::Label tableSet;
+  // The `std.fs.stat` field names, raw `AotString`s.
+  CodeGen::Label sizeConst;
+  CodeGen::Label modifiedConst;
+  CodeGen::Label isFileConst;
+  CodeGen::Label isDirConst;
   // Bound array methods (PHASE 7c.3c/7c.3e): `oskel_member_get` returns a
   // closure for `arr.push`/`arr.pop`/`arr.shift`/`arr.unshift`/`arr.insert`/
   // `arr.removeAt`/`arr.contains`/`arr.indexOf`/`arr.clear`, built by
@@ -16370,6 +16381,287 @@ void emitFsCloseBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& 
   epilogue(cg);
 }
 
+// `fsRemove(path)`, `fsMkdir(path)`, `fsRmdir(path)` and `fsChdir(path)`: one
+// string argument, one prelude handle, nil on success. The failure message is a
+// fixed prefix, the AOT convention for a tail that would need a per-message
+// builder.
+void emitFsPathOpBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                         CodeGen::Label handle, const DataBlob& msgArgc,
+                         const DataBlob& msgPathType, const DataBlob& msgNul,
+                         const DataBlob& msgFail) {
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label isPath = cg.newLabel();
+  CodeGen::Label ok = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 16);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitArityFailCall(cg, msgArgc);
+
+  cg.bind(argcOk);
+  cg.movFromMem(Rax, Rdi, 0);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, isPath);
+  emitFailCall(cg, env.fail, msgPathType);
+
+  cg.bind(isPath);
+  cg.movFromMem(R12, Rdi, 8);
+  emitPathCopy(cg, R12, env.alloc, env.fail, *env.msgOom, msgNul);
+  cg.movReg(Rdi, Rax);
+  cg.callLabel(handle);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, ok);
+  emitFailCall(cg, env.fail, msgFail);
+
+  cg.bind(ok);
+  cg.xorReg(Rax, Rax);
+  cg.xorReg(Rdx, Rdx);
+  cg.addImm32(Rsp, 16);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `fsRename(from, to)`: two string paths, copied into NUL-terminated buffers
+// before the prelude call. The failure text stays a fixed prefix.
+void emitFsRenameBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                         CodeGen::Label handle, const DataBlob& msgArgc,
+                         const DataBlob& msgPathType, const DataBlob& msgNul,
+                         const DataBlob& msgFail) {
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label firstOk = cg.newLabel();
+  CodeGen::Label secondOk = cg.newLabel();
+  CodeGen::Label ok = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 16);
+  cg.cmpImm32(Rsi, 2);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitArityFailCall(cg, msgArgc);
+
+  cg.bind(argcOk);
+  cg.movFromMem(Rax, Rdi, 0);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, firstOk);
+  emitFailCall(cg, env.fail, msgPathType);
+
+  cg.bind(firstOk);
+  cg.movFromMem(R12, Rdi, 8);
+  cg.movFromMem(Rax, Rdi, -16);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, secondOk);
+  emitFailCall(cg, env.fail, msgPathType);
+
+  cg.bind(secondOk);
+  cg.movFromMem(Rbx, Rdi, -8);
+  emitPathCopy(cg, R12, env.alloc, env.fail, *env.msgOom, msgNul);
+  cg.movToMem(Rbp, -24, Rax);
+  emitPathCopy(cg, Rbx, env.alloc, env.fail, *env.msgOom, msgNul);
+  cg.movReg(Rsi, Rax);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.callLabel(handle);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, ok);
+  emitFailCall(cg, env.fail, msgFail);
+
+  cg.bind(ok);
+  cg.xorReg(Rax, Rax);
+  cg.xorReg(Rdx, Rdx);
+  cg.addImm32(Rsp, 16);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `fsList(path)`: an array of the basenames. The prelude returns one name per
+// index (`listEntry`), so the runtime owns no directory handle and the order
+// is the host's; `std.fs.dir.listDir` sorts the result.
+void emitFsListBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                       const RuntimeHandles& entry, const DataBlob& msgArgc,
+                       const DataBlob& msgPathType, const DataBlob& msgNul,
+                       const DataBlob& msgFail) {
+  constexpr std::int32_t kPath = -24;
+  constexpr std::int32_t kArray = -32;
+  constexpr std::int32_t kIndex = -40;
+  constexpr std::int32_t kString = -56;
+  constexpr std::int32_t kBuffer = -4208;
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label isPath = cg.newLabel();
+  CodeGen::Label loop = cg.newLabel();
+  CodeGen::Label end = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+  CodeGen::Label listDone = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 4208);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitArityFailCall(cg, msgArgc);
+
+  cg.bind(argcOk);
+  cg.movFromMem(Rax, Rdi, 0);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, isPath);
+  emitFailCall(cg, env.fail, msgPathType);
+
+  cg.bind(isPath);
+  cg.movFromMem(R12, Rdi, 8);
+  emitPathCopy(cg, R12, env.alloc, env.fail, *env.msgOom, msgNul);
+  cg.movToMem(Rbp, kPath, Rax);
+  cg.xorReg(Rdi, Rdi);  // kind 0: array
+  cg.callLabel(env.tableNew);
+  cg.movToMem(Rbp, kArray, Rdx);
+  cg.movImmToMem(Rbp, kIndex, 0);
+
+  cg.bind(loop);
+  cg.movFromMem(Rdi, Rbp, kPath);
+  cg.movFromMem(Rsi, Rbp, kIndex);
+  cg.leaMem(Rdx, Rbp, kBuffer);
+  cg.movImm(Rcx, 4096);
+  cg.callLabel(entry.listEntry);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Lt, end);   // -1: failure
+  cg.jcc(Jcc::Eq, done);  // 0: end of directory
+  cg.leaMem(Rdi, Rbp, kBuffer);
+  cg.movReg(Rsi, Rax);
+  cg.callLabel(env.strNew);
+  cg.movToMem(Rbp, kString, Rdx);
+  cg.movImm(Rdi, kTagArray);
+  cg.movFromMem(Rsi, Rbp, kArray);
+  cg.movImm(Rdx, kTagInt);
+  cg.movFromMem(Rcx, Rbp, kIndex);
+  cg.movImm(R8, kTagStr);
+  cg.movFromMem(R9, Rbp, kString);
+  cg.callLabel(env.tableSet);
+  cg.movFromMem(Rax, Rbp, kIndex);
+  cg.addImm32(Rax, 1);
+  cg.movToMem(Rbp, kIndex, Rax);
+  cg.jmp(loop);
+
+  cg.bind(done);
+  cg.movImm(Rax, kTagArray);
+  cg.movFromMem(Rdx, Rbp, kArray);
+  cg.jmp(listDone);
+  cg.bind(end);
+  emitFailCall(cg, env.fail, msgFail);
+  cg.bind(listDone);
+  cg.addImm32(Rsp, 4208);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `fsStat(path)`: a map with `size`, `modified`, `isFile` and `isDir`. The
+// prelude fills four 64-bit words; the runtime builds an ordinary map with the
+// shared table helpers.
+void emitFsStatBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                       const RuntimeHandles& entry, const DataBlob& msgArgc,
+                       const DataBlob& msgPathType, const DataBlob& msgNul,
+                       const DataBlob& msgFail) {
+  constexpr std::int32_t kPath = -24;
+  constexpr std::int32_t kOut = -64;   // 32 bytes, -64..-33
+  constexpr std::int32_t kMap = -72;
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label isPath = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 96);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitArityFailCall(cg, msgArgc);
+
+  cg.bind(argcOk);
+  cg.movFromMem(Rax, Rdi, 0);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, isPath);
+  emitFailCall(cg, env.fail, msgPathType);
+
+  cg.bind(isPath);
+  cg.movFromMem(R12, Rdi, 8);
+  emitPathCopy(cg, R12, env.alloc, env.fail, *env.msgOom, msgNul);
+  cg.movToMem(Rbp, kPath, Rax);
+  cg.movReg(Rdi, Rax);
+  cg.leaMem(Rsi, Rbp, kOut);
+  cg.callLabel(entry.statPath);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, done);
+  emitFailCall(cg, env.fail, msgFail);
+
+  cg.bind(done);
+  cg.movImm(Rdi, 1);  // kind 1: map
+  cg.callLabel(env.tableNew);
+  cg.movToMem(Rbp, kMap, Rdx);
+  const auto setField = [&](CodeGen::Label key, std::int64_t tag, std::int32_t value) {
+    cg.movImm(Rdi, kTagMap);
+    cg.movFromMem(Rsi, Rbp, kMap);
+    cg.movImm(Rdx, kTagStr);
+    cg.leaRipLabel(Rcx, key);
+    cg.movImm(R8, tag);
+    cg.movFromMem(R9, Rbp, value);
+    cg.callLabel(env.tableSet);
+  };
+  setField(env.sizeConst, kTagInt, kOut);
+  setField(env.modifiedConst, kTagInt, kOut + 8);
+  setField(env.isFileConst, kTagBool, kOut + 16);
+  setField(env.isDirConst, kTagBool, kOut + 24);
+  cg.movImm(Rax, kTagMap);
+  cg.movFromMem(Rdx, Rbp, kMap);
+  cg.addImm32(Rsp, 96);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `fsCwd()`: the current working directory as a string. A 4 KiB buffer matches
+// the platform contract's maximum path.
+void emitFsCwdBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                      const RuntimeHandles& entry, const DataBlob& msgArgc,
+                      const DataBlob& msgFail) {
+  constexpr std::int32_t kBuffer = -4160;
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 4160);
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitArityFailCall(cg, msgArgc);
+
+  cg.bind(argcOk);
+  cg.leaMem(Rdi, Rbp, kBuffer);
+  cg.movImm(Rsi, 4096);
+  cg.callLabel(entry.cwd);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ge, done);
+  emitFailCall(cg, env.fail, msgFail);
+
+  cg.bind(done);
+  cg.movReg(Rsi, Rax);
+  cg.leaMem(Rdi, Rbp, kBuffer);
+  cg.callLabel(env.strNew);
+  cg.addImm32(Rsp, 4160);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
 // `clock()`: the seconds since the process started, as a `double`. The origin is
 // the value the chunk captured from `entry.monotonic` at entry, so the first
 // call is not the reference; the difference is scaled from nanoseconds to
@@ -16900,6 +17192,23 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
       addText("fsSeek() origin must be 's', 'c' or 'e'");
   DataBlob msgFsSeekFailed = addText("cannot seek in file");
   DataBlob msgFsCloseArgc = addText("fsClose() expects 1 argument");
+  DataBlob msgFsRemoveArgc = addText("fsRemove() expects 1 argument");
+  DataBlob msgFsRenameArgc = addText("fsRename() expects 2 arguments");
+  DataBlob msgFsMkdirArgc = addText("fsMkdir() expects 1 argument");
+  DataBlob msgFsRmdirArgc = addText("fsRmdir() expects 1 argument");
+  DataBlob msgFsListArgc = addText("fsList() expects 1 argument");
+  DataBlob msgFsStatArgc = addText("fsStat() expects 1 argument");
+  DataBlob msgFsCwdArgc = addText("fsCwd() expects 0 arguments");
+  DataBlob msgFsChdirArgc = addText("fsChdir() expects 1 argument");
+  DataBlob msgFsDirPathType = addText("fs directory function expects a string path");
+  DataBlob msgFsRemoveFailed = addText("cannot remove path");
+  DataBlob msgFsRenameFailed = addText("cannot rename path");
+  DataBlob msgFsMkdirFailed = addText("cannot create directory");
+  DataBlob msgFsRmdirFailed = addText("cannot remove directory");
+  DataBlob msgFsListFailed = addText("cannot list directory");
+  DataBlob msgFsStatFailed = addText("cannot stat path");
+  DataBlob msgFsCwdFailed = addText("cannot read the current directory");
+  DataBlob msgFsChdirFailed = addText("cannot change directory");
   DataBlob msgFsNul = addText("path must not contain a NUL byte");
   DataBlob msgClockArgc = addText("clock() expects 0 arguments");
   DataBlob msgArgsArgc = addText("args() expects 0 arguments");
@@ -17024,6 +17333,12 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   env.printRepr = printRepr;
   env.printStrEsc = printStrEsc;
   env.lengthConst = cg.newLabel();
+  env.tableNew = handles.tableNew;
+  env.tableSet = handles.tableSet;
+  env.sizeConst = cg.newLabel();
+  env.modifiedConst = cg.newLabel();
+  env.isFileConst = cg.newLabel();
+  env.isDirConst = cg.newLabel();
   env.bindArrayMethod = handles.bindArrayMethod;
   // One display island per bound method, in the same order `member_get`
   // assigns selectors, so `repr(a.push)` reads `"<native fn array.push>"`.
@@ -17603,6 +17918,27 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                       msgFsSeekOriginType, msgFsSeekOriginBad, msgFsSeekFailed);
     emitFsCloseBuiltin(cg, handles.fsCloseBuiltin, env, entry, msgFsCloseArgc,
                        msgFsHandleType, msgFsHandleFreed);
+    emitFsPathOpBuiltin(cg, handles.fsRemoveBuiltin, env, entry.removePath,
+                        msgFsRemoveArgc, msgFsDirPathType, msgFsNul,
+                        msgFsRemoveFailed);
+    emitFsRenameBuiltin(cg, handles.fsRenameBuiltin, env, entry.renamePath,
+                        msgFsRenameArgc, msgFsDirPathType, msgFsNul,
+                        msgFsRenameFailed);
+    emitFsPathOpBuiltin(cg, handles.fsMkdirBuiltin, env, entry.mkdirPath,
+                        msgFsMkdirArgc, msgFsDirPathType, msgFsNul,
+                        msgFsMkdirFailed);
+    emitFsPathOpBuiltin(cg, handles.fsRmdirBuiltin, env, entry.rmdirPath,
+                        msgFsRmdirArgc, msgFsDirPathType, msgFsNul,
+                        msgFsRmdirFailed);
+    emitFsListBuiltin(cg, handles.fsListBuiltin, env, entry, msgFsListArgc,
+                      msgFsDirPathType, msgFsNul, msgFsListFailed);
+    emitFsStatBuiltin(cg, handles.fsStatBuiltin, env, entry, msgFsStatArgc,
+                      msgFsDirPathType, msgFsNul, msgFsStatFailed);
+    emitFsCwdBuiltin(cg, handles.fsCwdBuiltin, env, entry, msgFsCwdArgc,
+                     msgFsCwdFailed);
+    emitFsPathOpBuiltin(cg, handles.fsChdirBuiltin, env, entry.chdirPath,
+                        msgFsChdirArgc, msgFsDirPathType, msgFsNul,
+                        msgFsChdirFailed);
   }
 
   // The public builtins (PHASE 7c.5a). `str` and `isError` reuse the `$str` and
@@ -17770,6 +18106,14 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x04\x00\x00\x00\x00\x00\x00\x00" "sort"), 12);
   cg.bind(env.sortedConst);
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x06\x00\x00\x00\x00\x00\x00\x00" "sorted"), 14);
+  cg.bind(env.sizeConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x04\x00\x00\x00\x00\x00\x00\x00" "size"), 12);
+  cg.bind(env.modifiedConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x08\x00\x00\x00\x00\x00\x00\x00" "modified"), 16);
+  cg.bind(env.isFileConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x06\x00\x00\x00\x00\x00\x00\x00" "isFile"), 14);
+  cg.bind(env.isDirConst);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x05\x00\x00\x00\x00\x00\x00\x00" "isDir"), 13);
   cg.bind(env.emptyString);
   cg.emitBytes(reinterpret_cast<const std::uint8_t*>("\x00\x00\x00\x00\x00\x00\x00\x00"), 8);
   // The string method names (PHASE 7c.3i), compared by `member_get`.

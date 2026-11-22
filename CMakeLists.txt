@@ -1422,18 +1422,6 @@ if(BUILD_TESTING)
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
     endif()
 
-    # The directory half of `std.fs` is VM-only for now. The AOT backend has no
-    # prelude handles for it, so a used name must fail the build with a message
-    # that names the module, not the generic unassigned-global error a typo
-    # produces.
-    add_test(NAME oskel.build_fs_dir_error
-      COMMAND ${CMAKE_COMMAND}
-        "-DOSKEL_TEST_NAME=oskel.build_fs_dir_error"
-        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/errors/fs_dir_vm_only.oskl"
-        "-DEXPECTED_MESSAGE=std.fs.dir is VM-only for now"
-        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
-
     # The field-type check runs in the compiler, so `oskel build` rejects a
     # mistyped field assignment exactly as the VM does, with the same message
     # and exit 65, and writes no binary (PHASE 6.8).

@@ -9,9 +9,8 @@
 // `std.io` is the in-memory stream module; this module is the disk one. File
 // access is built on the `fs*` primitives, which the VM implements on every
 // platform and the AOT backend implements for every target with a file system.
-// Directory and metadata operations live in `std.fs.dir`; they are VM-only for
-// now, so importing that module into an AOT build fails with a named error
-// (BACKLOG §6).
+// Directory and metadata operations live in `std.fs.dir`, which the AOT
+// backend implements on every target with a file system.
 //
 // A path is an ordinary string, so `std.path.join` composes with every
 // function here. Paths are UTF-8 and a NUL byte is rejected at the primitive.

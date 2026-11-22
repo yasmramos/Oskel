@@ -388,7 +388,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     `oskel build` with "global 'X' is read but never assigned" (exit 65) while
     the VM ran it. `tests/check_builtin_parity.cmake` enumerates the set from
     both sides, so a new builtin cannot be added to one engine alone. Its
-    exception list now holds only the `std.fs.dir` directory builtins below.
+    exception list is empty.
     Every original one is implemented, each with the parity fixture that pins
     it:
     - **Pointers** (`cstring`, `cstr`, `buffer`, `byteLen`, `loadByte`,
@@ -415,13 +415,19 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
       `tests/native_build_fs.oskl` (freestanding, VM parity) and
       `oskel.build_fs_hosted` (the same fixture through libc/`_lseeki64`).
       The directory half (`fsRemove`, `fsRename`, `fsMkdir`, `fsRmdir`,
-      `fsList`, `fsStat`, `fsCwd`, `fsChdir`) is **VM-only for now**; it is the
-      documented `vm_only` list in `tests/check_builtin_parity.cmake`, and a
-      used name makes `oskel build` fail with "std.fs.dir is VM-only for now"
-      instead of the generic unassigned-global error. `PlatformFreestanding`
-      already implements the Linux syscalls, but the AOT prelude does not emit
-      those handles and no builtin is seeded; wiring that side is the next
-      step.
+      `fsList`, `fsStat`, `fsCwd`, `fsChdir`) rides the same prelude handles:
+      Linux uses `unlink`/`rename`/`mkdir`/`rmdir`/`chdir`/`getcwd` plus
+      `getdents64` and `newfstatat`, Windows uses
+      `DeleteFileA`/`MoveFileA`/`CreateDirectoryA`/`RemoveDirectoryA`/
+      `SetCurrentDirectoryA`/`GetCurrentDirectoryA` plus
+      `FindFirstFileA`/`FindNextFileA` and `GetFileAttributesExA`, and the
+      hosted modes use `remove`/`rename`/`mkdir`/`rmdir`/`chdir`/`getcwd`/
+      `opendir`/`readdir`/`closedir`/`stat`. A bare-metal image has no file
+      system, so the lowerer rejects a used name by name. `listDir` sorts in
+      `std.fs.dir`, so the host's directory order never reaches the program.
+      Fixtures: `tests/native_build_fs.oskl` (both halves, VM parity),
+      `oskel.build_fs_hosted` (the same fixture through libc) and
+      `tests/64_std_fs.oskl` (VM directory/error paths).
     - **`clock`**. Reads the `entry.monotonic` handle, which every prelude
       binds (Linux `clock_gettime(CLOCK_MONOTONIC)`, hosted the same through
       libc, Windows `GetTickCount64`, bare metal the PIT tick counter), and

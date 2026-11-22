@@ -57,6 +57,26 @@ const char* importName(PeImport import) {
       return "CloseHandle";
     case PeImport::SetFilePointerEx:
       return "SetFilePointerEx";
+    case PeImport::DeleteFileA:
+      return "DeleteFileA";
+    case PeImport::MoveFileA:
+      return "MoveFileA";
+    case PeImport::CreateDirectoryA:
+      return "CreateDirectoryA";
+    case PeImport::RemoveDirectoryA:
+      return "RemoveDirectoryA";
+    case PeImport::SetCurrentDirectoryA:
+      return "SetCurrentDirectoryA";
+    case PeImport::GetCurrentDirectoryA:
+      return "GetCurrentDirectoryA";
+    case PeImport::FindFirstFileA:
+      return "FindFirstFileA";
+    case PeImport::FindNextFileA:
+      return "FindNextFileA";
+    case PeImport::FindClose:
+      return "FindClose";
+    case PeImport::GetFileAttributesExA:
+      return "GetFileAttributesExA";
     case PeImport::Count:
       break;
   }

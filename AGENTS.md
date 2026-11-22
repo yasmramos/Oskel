@@ -150,8 +150,8 @@ it as a caveat:
   `endsWith`, `indexOf`, `substr`, `reversed`, `repeat`, `split`, `lines`,
   `chars`, `replace`, `replaceFirst`, `padStart`, `padEnd`), so no string
   member builds and then faults at run time. It also seeds `pcall`, `error` and
-  the streaming file builtins, so a module may use them; the one remaining
-  standard-library gap is `std.fs.dir`, which is VM-only (see below). A module
+  the file builtins, including the directory half of `std.fs.dir`, so a module
+  may use them. A module
   written over the portable surface behaves identically on the VM and under
   `oskel build`; `std/json.oskl` and
   `tests/native_build_json.oskl` are the reference, and `std/datetime.oskl`
@@ -174,12 +174,19 @@ it as a caveat:
   target-independent. Append is mode `2` at the prelude boundary
   (`O_APPEND`/`_O_APPEND`/`FILE_APPEND_DATA`). The directory half
   (`fsRemove`, `fsRename`, `fsMkdir`, `fsRmdir`, `fsList`, `fsStat`, `fsCwd`,
-  `fsChdir`) is **VM-only for now**: `std.fs.dir` is listed in the parity
-  script's `vm_only` set and the lowerer rejects a used name with a dedicated
-  message (exit 65), never a mis-compiled image. Fixtures:
-  `tests/native_build_fs.oskl` (freestanding parity), `oskel.build_fs_hosted`
-  (hosted parity) and `tests/64_std_fs.oskl` (VM directory/error paths). The
-  `fsClose` emitter saves only `rbx`, so it reserves 8 extra bytes before
+  `fsChdir`) is seeded on the same targets and rides the prelude too: Linux
+  `unlink`/`rename`/`mkdir`/`rmdir`/`chdir`/`getcwd` plus `getdents64` and
+  `newfstatat`, Windows `DeleteFileA`/`MoveFileA`/`CreateDirectoryA`/
+  `RemoveDirectoryA`/`SetCurrentDirectoryA`/`GetCurrentDirectoryA` plus
+  `FindFirstFileA`/`FindNextFileA` and `GetFileAttributesExA`, and hosted
+  `remove`/`rename`/`mkdir`/`rmdir`/`chdir`/`getcwd`/`opendir`/`readdir`/
+  `closedir`/`stat`. A bare-metal image rejects a used name with the same
+  "needs a file system" message, never a mis-compiled image. `listDir` sorts
+  in `std.fs.dir`, so the host order does not reach the program. Fixtures:
+  `tests/native_build_fs.oskl` (both halves, freestanding parity),
+  `oskel.build_fs_hosted` (hosted parity) and `tests/64_std_fs.oskl` (VM
+  directory/error paths). The `fsClose` emitter saves only `rbx`, so it
+  reserves 8 extra bytes before
   calling the close thunk: Windows C APIs require `rsp` 16-byte aligned at the
   call, and an odd number of saved registers otherwise crashes under `cl` and
   kernel32.
@@ -723,13 +730,11 @@ it as a caveat:
   read but never assigned". The names that are VM-only on purpose live in a list
   in that script and in BACKLOG §6 item 25; the check also fails when a listed
   exception stops being one, because a stale exception hides the next real gap.
-  The list now holds only the eight `std.fs.dir` directory builtins
-  (`fsRemove`, `fsRename`, `fsMkdir`, `fsRmdir`, `fsList`, `fsStat`, `fsCwd`,
-  `fsChdir`), which are VM-only until their prelude handles land; BACKLOG §6
-  item 25 records the reason. Everything else `addNative` registers is seeded
-  by the AOT backend on at least one target. Several names are seeded per
-  target rather than everywhere, and each has a lowerer gate with its own
-  message: the streaming file builtins and `input` on anything but bare metal,
+  The list is **empty** today: BACKLOG §6 item 25 landed the pointer, file,
+  `clock`, `args` and `std.fs.dir` builtins, so every name `addNative`
+  registers is seeded by the AOT backend on at least one target. Several names
+  are seeded per target rather than everywhere, and each has a lowerer gate with
+  its own message: the streaming file builtins and `input` on anything but bare metal,
   `args` where the entry receives an argument vector (Linux freestanding and
   hosted), and `memSize` which only bare metal backs. The gate matters because
   the fallback message --
