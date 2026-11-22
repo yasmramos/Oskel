@@ -2433,8 +2433,10 @@ void testExternVariadicRejectsStructPrefix() {
   TEST_SCOPE();
   // A variadic's fixed prefix is limited to scalars: the per-call `cif` builds
   // the prefix types with the descriptor stub, which cannot express a struct, so the
-  // declaration must be rejected up front.
-#if OSKEL_FFI_VARIADIC
+  // declaration must be rejected up front. Where a struct cannot cross by value
+  // at all, the compiler rejects it earlier with the struct message, so the
+  // prefix rule is only observable where a struct is otherwise expressible.
+#if OSKEL_FFI_VARIADIC && OSKEL_FFI_STRUCT_BY_VALUE
   bool threw = false;
   try {
     auto tokens = lex("struct P { x: int; y: int; }\n"

@@ -18,17 +18,6 @@
 namespace ffi {
 namespace {
 
-#if OSKEL_FFI_TRAMPOLINE
-constexpr X64Reg kGprArg[6] = {X64Reg::Rdi, X64Reg::Rsi, X64Reg::Rdx,
-                               X64Reg::Rcx, X64Reg::R8,  X64Reg::R9};
-constexpr X64Reg kWin64GprArg[4] = {X64Reg::Rcx, X64Reg::Rdx, X64Reg::R8, X64Reg::R9};
-
-// The args buffer the callback stub hands the C++ body: six GPR slots followed
-// by eight SSE slots, each eight bytes wide. The stack arguments follow.
-constexpr std::int64_t kCallbackGprBytes = 6 * 8;
-constexpr std::int64_t kCallbackSseBytes = 8 * 8;
-constexpr std::int64_t kCallbackArgsBytes = kCallbackGprBytes + kCallbackSseBytes;
-
 std::size_t pageSize() {
 #if defined(_WIN32)
   SYSTEM_INFO info{};
@@ -46,6 +35,17 @@ std::size_t roundToPage(std::size_t bytes) {
   while (span < bytes) span += page;
   return span;
 }
+
+#if OSKEL_FFI_TRAMPOLINE
+constexpr X64Reg kGprArg[6] = {X64Reg::Rdi, X64Reg::Rsi, X64Reg::Rdx,
+                               X64Reg::Rcx, X64Reg::R8,  X64Reg::R9};
+constexpr X64Reg kWin64GprArg[4] = {X64Reg::Rcx, X64Reg::Rdx, X64Reg::R8, X64Reg::R9};
+
+// The args buffer the callback stub hands the C++ body: six GPR slots followed
+// by eight SSE slots, each eight bytes wide. The stack arguments follow.
+constexpr std::int64_t kCallbackGprBytes = 6 * 8;
+constexpr std::int64_t kCallbackSseBytes = 8 * 8;
+constexpr std::int64_t kCallbackArgsBytes = kCallbackGprBytes + kCallbackSseBytes;
 
 std::vector<std::uint8_t> emitCallStub(bool win64) {
   CodeGen cg(win64 ? Target::winX64() : Target::linuxX64());

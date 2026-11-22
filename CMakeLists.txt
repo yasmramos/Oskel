@@ -1702,6 +1702,11 @@ if(BUILD_TESTING)
         name STREQUAL "native_build_extern_ptr_return") AND WIN32)
       continue()
     endif()
+    # The variadic fixture uses `snprintf`, which the VM's Windows symbol lookup
+    # does not resolve; its Windows hosted twin covers the native shape.
+    if(name STREQUAL "native_build_extern_variadic" AND WIN32)
+      continue()
+    endif()
     # C variadics need the x86-64 descriptor stub; the declaration is rejected
     # at compile time elsewhere, so the test is skipped.
     if((name STREQUAL "53_ffi_variadic" OR name STREQUAL "native_build_extern_variadic") AND

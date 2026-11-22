@@ -159,12 +159,24 @@ int main() {
             "a struct-by-value return is commented out where the ABI cannot carry it");
       check(contains(result.text, "cannot cross the C boundary by value"),
             "the reason is the compiler's own, not a second guess");
-      check(result.emitted == 1, "only the callback declaration is emitted");
-      check(result.commented == 1, "the struct-by-value declaration is counted as commented");
+      if (ffi::kCallbacksSupported) {
+        check(result.emitted == 1, "only the callback declaration is emitted");
+        check(result.commented == 1,
+              "the struct-by-value declaration is counted as commented");
+      } else {
+        check(result.emitted == 0, "neither declaration is emitted");
+        check(result.commented == 2,
+              "the struct-by-value and callback declarations are counted as commented");
+      }
     }
     check(contains(result.text, "// skipped: weird:"), "a long double is skipped");
-    check(contains(result.text, "fn takes_cb(cb: fn(int32): int32, n: int32): void;"),
-          "a callback parameter is generated as `fn(P...): R`");
+    if (ffi::kCallbacksSupported) {
+      check(contains(result.text, "fn takes_cb(cb: fn(int32): int32, n: int32): void;"),
+            "a callback parameter is generated as `fn(P...): R`");
+    } else {
+      check(contains(result.text, "// fn takes_cb(cb: fn(int32): int32, n: int32): void;"),
+            "a callback parameter is commented out where the ABI cannot carry it");
+    }
     check(result.structs == 1, "the declared struct is counted");
     check(result.skipped == 1, "only the long double is skipped");
   }
