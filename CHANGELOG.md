@@ -18,8 +18,15 @@ may change between minor versions.
   check and the canonical `_start` that calls `__libc_start_main`. `-L` and
   `--link-lib` select the libraries, and the SONAME is what the binary records.
   `oskelc` shares the same core, and the three paths produce byte-identical
-  images. Multiple objects/`ar` archives and the macOS/Windows containers are
-  PHASE 10.2/10.3.
+  images. The macOS/Windows containers are PHASE 10.3.
+
+- **The own linker links several objects and `ar` archives (PHASE 10.2).**
+  `oskelld a.o b.o libfoo.a -o out` and `oskel build --linker own
+  --link-object <file>` merge objects, resolve a relocation against a
+  definition in any input, and pull an `ar` member in only when it defines a
+  still-undefined symbol. `oskelld -r` combines the inputs into a new
+  relocatable object that can be linked again. `.data`/`.bss` and the remaining
+  relocation shapes are PHASE 10.2b; the macOS/Windows containers are 10.3.
 
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,

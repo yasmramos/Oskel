@@ -32,6 +32,7 @@ const char *kUsage =
     "                            freestanding (self-contained) or hosted (links libc)\n"
     "  --link-lib <name>         library for the hosted link (repeatable), e.g. SDL3\n"
     "  -L, --library-path <dir>  where the hosted link finds lib<name>.so (repeatable)\n"
+    "  --link-object <file>      extra object or ar archive for the hosted link (repeatable)\n"
     "  --linker <name>           how a hosted build is closed: host (default, $CC)\n"
     "                            or own (the project's linker, x86_64-linux-sysv)\n"
     "  --emit-object             write the hosted relocatable object (input of oskelld)\n"

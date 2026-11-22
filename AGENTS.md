@@ -373,8 +373,9 @@ it as a caveat:
   `oskel_frontend`; `src/oskelld.cpp` is a thin third entry point and is
   excluded from the stray guard like `src/main.cpp` and `src/oskelc.cpp`.
   `oskel build --mode hosted --linker own`, `oskelc --linker own` and `oskelld`
-  all call `linkHostedExecutable`. Never let one of them grow its own ELF
-  writer: `tests/build_hosted_own.cmake` compares all three images byte for byte
+  all call `linkHostedExecutable` (and `linkRelocatable` for `-r`). Never let
+  one of them grow its own ELF writer: `tests/build_hosted_own.cmake` and
+  `tests/build_hosted_own_multi.cmake` compare all three images byte for byte
   against the VM.
 - `--emit-object` writes the ET_REL `oskelld` consumes and requires
   `--mode hosted`. `--linker own` is opt-in and `x86_64-linux-sysv` only;
@@ -394,11 +395,28 @@ it as a caveat:
   when a symbol needs it. A library's `DT_SONAME` becomes its `DT_NEEDED`, so
   `--link-lib SDL3` records `libSDL3.so.0`; the dev symlink is only the
   link-time input.
-- The input is our object (`oskel build --emit-object`). A GCC object has
-  `.data`, `.bss`, `.eh_frame` and `.note.GNU-stack` and is rejected by name.
-  Multiple objects and `ar` archives are PHASE 10.2; the macOS Mach-O and
-  Windows PE containers are PHASE 10.3 and are separate linkers, not a generic
-  abstraction.
+- PHASE 10.2 makes the input plural. `linkHostedExecutable` takes a
+  `std::vector<LinkInput>`: it concatenates each object's `.text`/`.rodata`
+  (16-byte aligned), builds one global symbol table and resolves a relocation
+  against a definition in any input. `linkRelocatable` emits a new `ET_REL`
+  (`-r`), preserving `.rela.text` and leaving undefined symbols undefined; the
+  output is a valid input for either function. `oskelld` accepts several
+  objects and System V/GNU `ar` archives; a member is pulled in only when it
+  defines a still-undefined symbol (thin archives are rejected). `--link-object
+  <file>` is the same through `oskel build`/`oskelc` (repeatable, requires
+  `--mode hosted`, mutually exclusive with `--emit-object`).
+- The parser loads `.text` and `.rodata` only. A symbol defined in `.data`/
+  `.bss` is a named error, and `.rela.data`/`.rela.rodata` is rejected; a GCC
+  object with a string literal references a `.rodata` section symbol, which is
+  PHASE 10.2b. `.eh_frame`/`.note.*`/`.comment` are ignored. `STT_SECTION` and
+  `STT_FILE` symbols are skipped: a C object's `STT_FILE` has `SHN_ABS` and
+  would otherwise look like a defined symbol in an unsupported section.
+- The multi-object e2e helper is an `OBJECT` library compiled with
+  `-fno-sanitize=all` when the build is sanitized: the object is linked into a
+  plain emitted binary that does not carry the ASan runtime. The archive test
+  uses the real `ar`, whose long member name goes through the `//` table.
+- The macOS Mach-O and Windows PE containers are PHASE 10.3 and are separate
+  linkers, not a generic abstraction.
 - Determinism is a test: no timestamp, no build id, stable symbol order. Two
   builds must be byte-identical. The freestanding path must stay byte-identical;
   `oskel.build_binary` still asserts `ldd` says "not a dynamic executable" for a

@@ -58,24 +58,27 @@ std::string shellQuote(const std::string& path);
 // Links a relocatable object into a hosted executable with the host C
 // compiler. `linkLibs` are library names (`SDL3`) passed as `-l<name>`, which
 // is how a program's `extern "C"` symbols in a third-party library resolve.
-// Returns 0 on success, 65 when the toolchain is missing or the link fails --
-// never a half-linked image.
+// `linkObjects` are extra object files or `ar` archives passed to the compiler
+// driver as additional inputs (PHASE 10.2). Returns 0 on success, 65 when the
+// toolchain is missing or the link fails -- never a half-linked image.
 int linkHostedObject(const std::string& objectPath, const std::string& output,
                      const Target& target, const std::string& tool,
                      const std::vector<std::string>& linkLibs,
-                     const std::vector<std::string>& libraryPaths);
+                     const std::vector<std::string>& libraryPaths,
+                     const std::vector<std::string>& linkObjects);
 
 // Compiles `source` (resolving imports) and writes a native binary to
 // `output`. Returns 0 on success, 65 for compile errors and 74 for a write
 // failure. `tool` names the binary in diagnostics (`oskel build` or `oskelc`).
 // `linker` selects how a hosted object is closed and `emitObject` stops after
-// writing that object (the input of `oskelld`). `linkLibs` reaches the hosted
-// linker; it is empty in freestanding mode.
+// writing that object (the input of `oskelld`). `linkLibs` and `linkObjects`
+// reach the hosted linker; both are empty in freestanding mode.
 int buildBinary(const std::string& source, const std::string& name,
                 const std::string& output, const std::string& argv0,
                 const Target& target, LinkMode mode, Linker linker,
                 bool emitObject, const std::vector<std::string>& linkLibs,
                 const std::vector<std::string>& libraryPaths,
+                const std::vector<std::string>& linkObjects,
                 const std::string& tool);
 
 // Parses the AOT command line

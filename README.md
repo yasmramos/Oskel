@@ -138,22 +138,31 @@ is byte for byte the same. `-c` (a `.oskc` bytecode image) and `-pkg` (a
 
 ### oskelld (the project's own linker)
 
-`oskelld` closes the hosted relocatable object without a C toolchain. It is the
-standalone entry point over the same core `oskel build --linker own` and
+`oskelld` closes the hosted relocatable object(s) without a C toolchain. It is
+the standalone entry point over the same core `oskel build --linker own` and
 `oskelc --linker own` call:
 
 ```sh
 ./build/oskel build examples/hello.oskl --mode hosted --emit-object -o hello.o
 ./build/oskelld hello.o -o hello
 ./hello
+
+# several objects and a System V/GNU ar archive
+./build/oskelld hello.o libhelpers.a -o hello
+
+# combine objects into a new relocatable object
+./build/oskelld -r hello.o other.o -o combined.o
 ```
 
 The image is a dynamically linked x86-64 Linux ELF (`libc.so.6`, plus
-`libm.so.6` when a symbol needs it). `-L` and `--link-lib` select a third-party
-library (`--link-lib SDL3`); the binary records the library's SONAME. The
-linker is opt-in in PHASE 10.1 and only targets `x86_64-linux-sysv`;
-`--linker host` keeps the `$CC` path. See [docs/language.md](docs/language.md)
-for the flags and `DEVELOPMENT.md` PHASE 10 for the design.
+`libm.so.6` when a symbol needs it). An archive member is pulled in only when
+it defines a still-undefined symbol. `-L` and `--link-lib` select a third-party
+library (`--link-lib SDL3`); the binary records the library's SONAME.
+`oskel build --linker own --link-object helper.o` is the same capability
+through the build command. The linker is opt-in (PHASE 10.1/10.2) and only
+targets `x86_64-linux-sysv`; `--linker host` keeps the `$CC` path. See
+[docs/language.md](docs/language.md) for the flags and `DEVELOPMENT.md`
+PHASE 10 for the design.
 
 ### bindgen (the C binding generator)
 

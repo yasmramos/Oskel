@@ -946,6 +946,31 @@ if(BUILD_TESTING)
           "-DOSKEL_LIBRARY_PATH=$<TARGET_FILE_DIR:oskel_link_lib_helper>"
           "-DOSKEL_EXPECTED_OUTPUT=link-lib ok"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own.cmake")
+      # PHASE 10.2: a second object (`--link-object`, `oskelld` with several
+      # inputs, `-r` and an `ar` archive). The helper is a plain C-ABI object;
+      # its long member name in the archive exercises the `//` table.
+      add_library(oskel_link_obj_helper OBJECT
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/link_obj_helper.cpp")
+      if(CMAKE_CXX_FLAGS MATCHES "-fsanitize")
+        # The object is linked into a plain emitted binary, which does not
+        # carry the sanitizer runtime.
+        target_compile_options(oskel_link_obj_helper PRIVATE -fno-sanitize=all)
+      endif()
+      find_program(OSKEL_AR NAMES ar llvm-ar)
+      if(NOT OSKEL_AR)
+        set(OSKEL_AR "")
+      endif()
+      add_test(NAME oskel.build_hosted_own_link_obj
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_own_link_obj"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+          "-DOSKELD_EXE=$<TARGET_FILE:oskelld>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_link_obj.oskl"
+          "-DOSKEL_HELPER_OBJECT=$<TARGET_OBJECTS:oskel_link_obj_helper>"
+          "-DOSKEL_EXPECTED_OUTPUT=42"
+          "-DOSKEL_AR=${OSKEL_AR}"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_multi.cmake")
       # A class-MEMORY struct (larger than two eightbytes) is stack-passed and
       # `sret`-returned, a shape no libc symbol exercises: the fixture links a
       # small C helper of its own.
@@ -1737,6 +1762,11 @@ if(BUILD_TESTING)
     # coverage: it preloads the library into the VM and sets `LD_LIBRARY_PATH`
     # for the linked binary.
     if(name STREQUAL "native_build_link_lib")
+      continue()
+    endif()
+    # `native_build_link_obj` binds a helper object the VM cannot resolve;
+    # `oskel.build_hosted_own_link_obj` is the coverage.
+    if(name STREQUAL "native_build_link_obj")
       continue()
     endif()
     # The stored/many-args/returns callback fixtures bind helpers the VM cannot
