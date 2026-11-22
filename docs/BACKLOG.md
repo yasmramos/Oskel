@@ -508,22 +508,24 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 26. **[P1]** WebAssembly backend gaps (PHASE 9). The backend behind
     `Target::wasm32()` (`src/frontend/native/wasm.cpp`) covers the scalar core,
-    arrays, maps, slicing, variadic functions, the array/map/string methods,
-    `std/json`, `std/datetime`, `std/collections`, `std/path` and the bound half
-    of `std.math`, and its `double` printing is the same shortest round-trip
-    form as `std::to_chars`. What is still open:
+    arrays, maps, slicing, variadic functions, the array/map/string/range
+    methods, `random`/`seed`, `std/json`, `std/datetime`, `std/collections`,
+    `std/path` and the bound half of `std.math`, and its `double` printing is
+    the same shortest round-trip form as `std::to_chars`. What is still open:
     - A builtin with no WASM body is seeded as a trapping closure: declaring it
       is harmless, calling it reports the gap. The unbound names are the
       complement of `supportedBuiltins()`; the transcendental `pow`, `sin`,
-      `cos`, `tan`, `log` and `exp`, plus `random`, `seed`, `input`, `pcall`,
-      `args`, the file builtins and the pointer builtins are in that set today.
+      `cos`, `tan`, `log` and `exp`, plus `input`, `pcall`, `args`, `memSize`,
+      the file builtins and the pointer builtins are in that set today.
     - A used `extern "C"` or `native fn` symbol with no builtin stub is a build
       error, mirroring the AOT backend's message.
     Each gap fails cleanly (build error 65 or a runtime error), never a
     mis-compiled module. `tests/native_build_wasm.oskl`,
     `tests/native_build_datetime.oskl`, `tests/native_build_collections.oskl`,
-    `tests/native_build_math.oskl` and `tests/native_build_double_format.oskl`
-    pin the supported surface against the VM byte for byte.
+    `tests/native_build_math.oskl`,
+    `tests/native_build_wasm_range_methods.oskl` and
+    `tests/native_build_double_format.oskl` pin the supported surface against
+    the VM byte for byte.
 27. **[P1]** A callback that C stores for a later call works in AOT but not in
     the VM: the development engine's `CallbackObj` is released when the
     `extern "C"` call returns, while the AOT stub and its context live in the

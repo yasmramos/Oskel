@@ -1716,6 +1716,19 @@ if(BUILD_TESTING)
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
 
+    # The bound range methods (`toArray`, `contains`) and the saturated
+    # `.length` of a span wider than INT64_MAX. The error cases stay in the
+    # AOT fixture because `pcall` is VM-only.
+    add_test(NAME oskel.build_wasm_range_methods
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_range_methods"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_wasm_range_methods.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
     # Runtime tree-shaking (PHASE 9.4): a program that never reads a bound
     # method must not carry the method helpers or the Unicode case tables, and
     # a static member read must keep the helper it needs. The fixture is
@@ -1771,7 +1784,8 @@ if(BUILD_TESTING)
       oskel.build_wasm_array_folds oskel.build_wasm_sort_methods
       oskel.build_wasm_map_methods oskel.build_wasm_datetime
       oskel.build_wasm_collections oskel.build_wasm_strings
-      oskel.build_wasm_string_methods oskel.build_wasm_io oskel.build_wasm_math
+      oskel.build_wasm_string_methods oskel.build_wasm_range_methods
+      oskel.build_wasm_io oskel.build_wasm_math
       oskel.build_wasm_double_format oskel.build_wasm_tree_shake PROPERTIES TIMEOUT 120)
   endif()
 

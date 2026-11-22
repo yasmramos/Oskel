@@ -11,6 +11,17 @@ may change between minor versions.
 
 ### Added
 
+- **The WebAssembly backend binds the range methods (PHASE 9.5).**
+  `r.toArray()` materialises a range into an array (exclusive or inclusive,
+  ascending or descending), `r.contains(x)` is the method form of `x in r`, and
+  a range's `.length` saturates at INT64_MAX instead of wrapping negative on a
+  span wider than the signed range. `contains` reuses the `in` helper, so a
+  non-integer operand reports the VM's "range membership requires an integer";
+  `toArray` keeps the VM's "range is too large to convert to an array" cap.
+  The bound methods are receiver-capturing closures like the array, map and
+  string ones. `tests/native_build_wasm_range_methods.oskl` is the WASM parity
+  fixture and `oskel.build_wasm_range_methods` runs it.
+
 - **The WebAssembly backend tree-shakes the runtime (PHASE 9.4).** A bound
   method is only reachable through a static member read (`a.push`, `a?.push`);
   indexing (`a[k]`) is an index, never a method. The compiler records those
