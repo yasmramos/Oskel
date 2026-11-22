@@ -641,6 +641,20 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods_alloc.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # The bound range methods (PHASE 7c.3l): `r.toArray()` and `r.contains(x)`.
+    # `emitMemberGet` only knew a range's `.length`, so the backend answered
+    # both with "value has no such member". `toArray` materialises the range
+    # (half-open or closed, either direction) and refuses a span over ten
+    # million items with the hosted message; `contains` is the method form of
+    # `x in r`. The `.length` saturation is pinned here too: a span wider than
+    # INT64_MAX reports INT64_MAX on both engines instead of overflowing.
+    add_test(NAME oskel.build_binary_range_methods
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_range_methods"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_range_methods.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # The bound string methods: `upper`, `lower`, `trim`/`trimStart`/`trimEnd`,
     # `contains`, `startsWith`, `endsWith`, `indexOf`, `substr`, `reversed` and
     # `repeat`. Same binding mechanism as `arr.push`, so the receiver is
