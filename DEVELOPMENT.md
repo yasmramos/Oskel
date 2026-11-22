@@ -529,9 +529,9 @@ previous one.
   `unique`/`uniqueBy`, `groupBy`, `countBy` and `sort`/`sortBy`/`sortByKey`.
   Every function returns a new array or map and never mutates its input; `sort`
   is a stable merge sort. No new runtime type, opcode or builtin. The module
-  stays on the portable primitive surface so it also runs on WebAssembly, where
-  the array methods are not bound; the VM and the AOT backend bind them, so
-  either form works there.
+  stays on the portable primitive surface, so it also runs on WebAssembly; the
+  VM, the AOT backend and the WASM backend bind the array methods, so either
+  form works there.
   See `docs/language.md` §12.12/§18, `tests/58_std_collections.oskl`
   and the AOT fixture `tests/native_build_collections.oskl`.
 - **Standard library: `std.strings`** — **done**: a pure-Oskel module of text
@@ -2133,7 +2133,11 @@ dispatcher; `sort`/`sorted` use a stable insertion sort over a copy and commit
 only on success. The map methods (`keys`, `values`, `entries`, `has`, `get`,
 `set`, `delete`, `merge`, `clone`, `clear`) are bound the same way, over the
 same `mapFind`/`mapSet`/`mapDelete`/`mapClear` runtime helpers as the index
-operators. The string and range methods are still open, so the
+operators. The string methods (`upper`, `lower`, `trim`, `trimStart`,
+`trimEnd`, `split`, `lines`, `replace`, `replaceFirst`, `startsWith`,
+`endsWith`, `contains`, `indexOf`, `substr`, `chars`, `repeat`, `reversed`,
+`padStart`, `padEnd`) and the range methods (`toArray`, `contains`) are bound
+the same way; a range's `.length` saturates at INT64_MAX. The
 standard-library modules stay on the portable primitive surface: `std/json`,
 `std/datetime`, `std/collections`, `std/path` and the bound half of `std.math`
 build and agree with the VM byte for byte; the host clock is what lets
@@ -2144,13 +2148,13 @@ Still open, and each reported rather than mis-compiled:
 - **Transcendental builtins** (`sin`, `cos`, `tan`, `log`, `exp`, ...) are not
   bound yet; `std.math` builds and its `abs`/`min`/`max`/`clamp`/`sqrt`/`PI`/`E`
   subset agrees with the VM, but a call to an unbound name reports the gap.
-- **String and range methods** are not bound yet: `text.upper()` and
-  `range.toArray()` report "no such member on this value". The fixtures
-  `native_build_string_methods.oskl`, `native_build_range_methods.oskl` and
-  `native_build_function_repr.oskl` are the targets. `pcall` is also still
-  VM-only, which is why `native_build_sort_methods.oskl` keeps its
-  strong-guarantee case in the AOT suite and
-  `native_build_wasm_sort_methods.oskl` covers the rest.
+- **`pcall`** is still VM-only, which is why `native_build_sort_methods.oskl`
+  keeps its strong-guarantee case in the AOT suite and
+  `native_build_wasm_sort_methods.oskl` covers the rest. The range method
+  error cases (`toArray(1)`, `contains()`, a non-integer `contains` operand and
+  a range too large to materialise) stay in `native_build_range_methods.oskl`
+  for the same reason; `native_build_wasm_range_methods.oskl` covers the
+  successful paths and `oskel.build_wasm_range_methods` runs it.
 - A builtin the backend does not bind is **seeded as a closure that raises a
   clear runtime error when called**, not left unseeded: a module that merely
   *declares* `native fn sin` (through `import std.math`) still builds, while a

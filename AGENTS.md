@@ -597,6 +597,18 @@ it as a caveat:
   `"αβγδε".substr(-2)` empty because the negative start was offset by the byte
   count. `tests/native_build_string_methods.oskl` is the shared AOT/WASM
   fixture and `oskel.build_wasm_string_methods` is its WASM run.
+- The range methods (`toArray`, `contains`) live in the range branch of
+  `emitMemberGet` and are emitted by `emitRangeMethods`, which reserves two
+  selectors after the string methods. `toArray` computes the count with the
+  same unsigned magnitude as `.length`, saturates at INT64_MAX and rejects a
+  count above 10,000,000 with the VM's message; it allocates
+  `newArray(count)` and pushes each value, so a descending range needs the
+  `-1` step. `contains` calls `opIn` with the argument and the receiver, which
+  is why the range branch of `emitIn` must report "range membership requires
+  an integer", not the generic comparison message. `.length` itself saturates:
+  the old signed `select` wrapped a span wider than INT64_MAX to a negative
+  length. `tests/native_build_wasm_range_methods.oskl` is the WASM fixture;
+  the error cases stay in the AOT fixture because `pcall` is VM-only.
 - A construct the backend cannot lower yet must fail cleanly, never emit a
   mis-compiled module: an unbound builtin is seeded as a trapping closure, and
   a used `extern "C"`/`native fn` symbol with no stub is a build error (exit
