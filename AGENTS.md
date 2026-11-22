@@ -376,6 +376,22 @@ it as a caveat:
   `$slice` and the string-to-number forms of `int`/`float`/`double` are bound,
   so `std/json`, `std/datetime` and `std/collections` build and match the VM
   byte for byte; `time()`/`clock()` read the host imports.
+- The bound collection methods are receiver-capturing closures. The helpers are
+  reserved before `emitCore` in `reserveArrayMethods` (the `methodHelpers`
+  vector) and emitted after it, because a body calls the runtime helpers.
+  `emitMethodValue` builds a closure whose first upvalue is a cell holding the
+  receiver and whose `flags` word is the selector; the dispatcher indexes
+  `methodHelpers[selector]`. The callback methods build the argument window
+  **upward** (`window + 16*j`) and `emitCallbackCall` stores the tag/payload at
+  `+0`/`+8`. A `block` + `loop` pair needs **two** `end`s: the insertion sort
+  shipped with one and the validator rejected the module as an unterminated
+  control structure.
+- A map already has a member branch in `emitMemberGet`: it looks the name up in
+  the entries first (so a stored `length` wins), then falls back to `length` and
+  nil. New map methods go **inside that branch**; a second `kMap` branch after
+  the range branch is unreachable, and a method added there silently returns
+  nil. The string branch is separate and still fails with "no such member" for
+  an unknown name.
 - A construct the backend cannot lower yet must fail cleanly, never emit a
   mis-compiled module: an unbound builtin is seeded as a trapping closure, and
   a used `extern "C"`/`native fn` symbol with no stub is a build error (exit
