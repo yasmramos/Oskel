@@ -33,15 +33,18 @@ generated thunks use the same C++ ABI as that library.
 
 The subset covers `SkSurface`, `SkCanvas`, `SkPaint`, `SkFont`, `SkRect` and
 `SkImage`: raster surface creation, clearing, drawing a rectangle/circle,
-drawing text, and an image snapshot with pixel readback. `SkCanvas` is borrowed
+drawing text, measuring a text advance, and an image snapshot with pixel
+readback. `SkCanvas` is borrowed
 from its `SkSurface`; `SkSurface` and `SkImage` are refcounted (`unref`).
 `SkRect` is a value type allocated once by the bridge so it can cross as an
 opaque handle; `SkPaint` and `SkFont` have public constructors.
 
-`std/internal/skia_ui.oskl` renders the `std.ui` commands (`rect`, `text`). It
+`std/internal/skia_ui.oskl` renders the `std.ui` commands (`rect`, `text`) and
+exposes `measure`, the same `SkFont::measureText` advance the renderer uses. It
 creates a `Paint` per command and a `Font` per text command, and closes both.
 `std/internal/skia_window.oskl` owns the SDL window, the streaming texture and
-the raster surface; `std.ui.window` is its public wrapper.
+the raster surface, and passes `skia_ui.measure` to `ui.layoutWith` so layout
+and drawing share one font metric; `std.ui.window` is its public wrapper.
 
 ## Tests
 

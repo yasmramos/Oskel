@@ -933,7 +933,8 @@ int runBuildCommand(const std::vector<std::string> &arguments,
     }
     if (!isOwnLinkerTarget(buildTarget)) {
       std::cerr << tool << ": '--linker own' supports "
-                << targetName(Target::linuxX64()) << " only (PHASE 10.1)\n";
+                << targetName(Target::linuxX64()) << " and "
+                << targetName(Target::winX64()) << " (PHASE 10.1/10.3)\n";
       return 64;
     }
   }

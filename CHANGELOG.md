@@ -11,6 +11,25 @@ may change between minor versions.
 
 ### Added
 
+- **The WebAssembly backend binds the range methods (PHASE 9.5).**
+  `r.toArray()` materialises a range into an array (exclusive or inclusive,
+  ascending or descending), `r.contains(x)` is the method form of `x in r`, and
+  a range's `.length` saturates at INT64_MAX instead of wrapping negative on a
+  span wider than the signed range. `contains` reuses the `in` helper, so a
+  non-integer operand reports the VM's "range membership requires an integer";
+  `toArray` keeps the VM's "range is too large to convert to an array" cap.
+  The bound methods are receiver-capturing closures like the array, map and
+  string ones. `tests/native_build_wasm_range_methods.oskl` is the WASM parity
+  fixture and `oskel.build_wasm_range_methods` runs it.
+
+- **`std.ui` accepts a renderer font metric.** `layoutWith(root, width, height,
+  measure)` takes a `measure(text, size)` callback, so a backend can drive
+  layout with the same advance it draws with. `layout` keeps the deterministic
+  fixed `0.6 * size` advance for headless tests. `std.internal.skia_ui` exposes
+  `measure`, and `std.ui.window` passes it to `layoutWith`, so widget positions
+  follow Skia's real font instead of the approximation. `native_build_ui.oskl`
+  pins a custom measurer on the VM and under `oskel build`.
+
 - **The WebAssembly backend tree-shakes the runtime (PHASE 9.4).** A bound
   method is only reachable through a static member read (`a.push`, `a?.push`);
   indexing (`a[k]`) is an index, never a method. The compiler records those
@@ -72,8 +91,23 @@ may change between minor versions.
   --link-object <file>` merge objects, resolve a relocation against a
   definition in any input, and pull an `ar` member in only when it defines a
   still-undefined symbol. `oskelld -r` combines the inputs into a new
-  relocatable object that can be linked again. `.data`/`.bss` and the remaining
-  relocation shapes are PHASE 10.2b; the macOS/Windows containers are 10.3.
+  relocatable object that can be linked again. The macOS/Windows containers are
+  PHASE 10.3.
+
+- **The own linker loads `.data` and `.bss` (PHASE 10.2b).** A real GCC/Clang
+  object with a string literal, an initialised global, a zero-initialised
+  `.bss` global and a `.data` pointer table now links: the linker merges the
+  `.text*`/`.rodata*`/`.data*`/`.bss*` sections, resolves `STT_SECTION` symbols
+  and `R_X86_64_64/32/32S/PLT32/PC32/GOTPCREL*`, and puts `.data`/`.bss` in the
+  RW segment. `-r` preserves `.data`/`.bss` and their relocations. TLS and the
+  C++ runtime sections remain out of scope.
+- **The own linker emits Windows PE32+ images (PHASE 10.3a).** `--linker own`
+  on Windows parses COFF objects, merges `.text`/`.rdata`/`.data`/`.bss`,
+  resolves the common x86-64 COFF relocations and builds the import table for
+  the runtime's UCRT (`ucrtbase.dll`) and Windows API (`kernel32.dll`) calls.
+  A generated `_start` calls `main` and `ExitProcess`; `oskelld --target
+  x86_64-windows-win64` shares the path. Windows `-r`, MSVC `.lib` archives and
+  `args()` are 10.3b; macOS Mach-O is 10.3d.
 
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,

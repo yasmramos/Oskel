@@ -508,22 +508,24 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 26. **[P1]** WebAssembly backend gaps (PHASE 9). The backend behind
     `Target::wasm32()` (`src/frontend/native/wasm.cpp`) covers the scalar core,
-    arrays, maps, slicing, variadic functions, the array/map/string methods,
-    `std/json`, `std/datetime`, `std/collections`, `std/path` and the bound half
-    of `std.math`, and its `double` printing is the same shortest round-trip
-    form as `std::to_chars`. What is still open:
+    arrays, maps, slicing, variadic functions, the array/map/string/range
+    methods, `random`/`seed`, `std/json`, `std/datetime`, `std/collections`,
+    `std/path` and the bound half of `std.math`, and its `double` printing is
+    the same shortest round-trip form as `std::to_chars`. What is still open:
     - A builtin with no WASM body is seeded as a trapping closure: declaring it
       is harmless, calling it reports the gap. The unbound names are the
       complement of `supportedBuiltins()`; the transcendental `pow`, `sin`,
-      `cos`, `tan`, `log` and `exp`, plus `random`, `seed`, `input`, `pcall`,
-      `args`, the file builtins and the pointer builtins are in that set today.
+      `cos`, `tan`, `log` and `exp`, plus `input`, `pcall`, `args`, `memSize`,
+      the file builtins and the pointer builtins are in that set today.
     - A used `extern "C"` or `native fn` symbol with no builtin stub is a build
       error, mirroring the AOT backend's message.
     Each gap fails cleanly (build error 65 or a runtime error), never a
     mis-compiled module. `tests/native_build_wasm.oskl`,
     `tests/native_build_datetime.oskl`, `tests/native_build_collections.oskl`,
-    `tests/native_build_math.oskl` and `tests/native_build_double_format.oskl`
-    pin the supported surface against the VM byte for byte.
+    `tests/native_build_math.oskl`,
+    `tests/native_build_wasm_range_methods.oskl` and
+    `tests/native_build_double_format.oskl` pin the supported surface against
+    the VM byte for byte.
 27. **[P1]** A callback that C stores for a later call works in AOT but not in
     the VM: the development engine's `CallbackObj` is released when the
     `extern "C"` call returns, while the AOT stub and its context live in the
@@ -545,19 +547,26 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     `tests/native_build_extern_callback_wx.oskl` asserts the final mapping is
     not writable.
 
-29. **[P1]** The own linker (PHASE 10.1/10.2) closes one or more x86-64 Linux
-    objects (and System V/GNU `ar` archives) into a dynamic ELF, and `-r`
-    combines them into a new `ET_REL`. It loads `.text` and `.rodata` only: a
-    symbol in `.data`/`.bss`, a `.rela.data`/`.rela.rodata`, or a relocation
-    other than `R_X86_64_PLT32`/`R_X86_64_PC32` is reported by name (PHASE
-    10.2b), as is a GCC object that references a section symbol for a string
-    literal. `.eh_frame`/`.note.*`/`.comment` are ignored (not loaded). Thin
+29. **[P1]** The own linker (PHASE 10.1/10.2/10.2b) closes one or more x86-64
+    Linux objects (and System V/GNU `ar` archives) into a dynamic ELF, and `-r`
+    combines them into a new `ET_REL`. It loads `.text*`, `.rodata*`, `.data*`
+    and `.bss*` and supports `R_X86_64_64/32/32S/PLT32/PC32/GOTPCREL*`.
+    Remaining gaps: TLS (`.tdata`/`.tbss`), C++ runtime sections
+    (`.init_array`/`.fini_array`/`.gcc_except_table`) and a copy relocation for
+    an undefined data symbol referenced with `PC32` (a C object normally
+    resolves that to its own definition; `stdout`-style libc data would need
+    it). `.eh_frame`/`.note.*`/`.comment` are ignored (not loaded). Thin
     archives are rejected; only regular System V/GNU `ar` archives are read.
     The macOS Mach-O / Windows PE containers are PHASE 10.3. The image is
     non-PIE (fixed `0x400000`), so PIE/ASLR is later work. The hash is SysV
     `.hash`, not `.gnu.hash` (glibc accepts both). `--link-lib` needs the dev
     symlink (`libSDL3.so`) at link time to read the SONAME, while the binary
     records the SONAME (`libSDL3.so.0`).
+    The Windows own linker (PHASE 10.3a) closes COFF objects into a PE32+
+    image with a dynamic import table (`kernel32.dll`/`ucrtbase.dll`) and a
+    generated `_start`. Remaining Windows work: `-r` COFF, MSVC `.lib`
+    archives, `args()` (`GetCommandLineA`), `.pdata`/`.xdata` exception data
+    and TLS. The macOS Mach-O container is PHASE 10.3d.
 
 ---
 

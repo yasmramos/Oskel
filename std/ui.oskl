@@ -26,10 +26,10 @@
 // reads the frames and returns new maps, so drawing never mutates the tree.
 //
 // Layout is deliberately small: a column stacks its children, a row places
-// them side by side, and padding insets one child. Text is measured with a
-// fixed 0.6 advance per character and a 1.4 line height; that is enough for a
-// deterministic layout test and for the first Skia slice. A real font metric
-// belongs to the renderer, not to the tree.
+// them side by side, and padding insets one child. `layout` measures text with
+// a fixed 0.6 advance per character and a 1.4 line height, which keeps a
+// headless layout deterministic. A renderer that owns a real font passes its
+// own measurer to `layoutWith`; the tree itself never calls a graphics API.
 
 // --- constructors -----------------------------------------------------------
 
@@ -127,22 +127,27 @@ fn _max(a, b) {
   return b;
 }
 
+// The default advance used when no renderer supplies a font metric.
+fn _fixedAdvance(text, size): int {
+  return int(len(text) * size * 0.6);
+}
+
 // The intrinsic size of `node` as `[width, height]`.
-fn _measure(node, maxWidth) {
+fn _measure(node, maxWidth, measure) {
   if (node.kind == "window") {
     return [node.width, node.height];
   }
   if (node.kind == "text") {
-    return [int(len(node.content) * node.size * 0.6), int(node.size * 1.4)];
+    return [measure(node.content, node.size), int(node.size * 1.4)];
   }
   if (node.kind == "button") {
-    return [int(len(node.label) * node.size * 0.6) + 24, int(node.size * 1.4) + 16];
+    return [measure(node.label, node.size) + 24, int(node.size * 1.4) + 16];
   }
   if (node.kind == "spacer") {
     return [0, node.height];
   }
   if (node.kind == "padding") {
-    let inner = _measure(node.child, maxWidth);
+    let inner = _measure(node.child, maxWidth, measure);
     return [inner[0] + node.all * 2, inner[1] + node.all * 2];
   }
   if (node.kind == "column") {
@@ -150,7 +155,7 @@ fn _measure(node, maxWidth) {
     var height = 0;
     var first = true;
     for child in node.children {
-      let size = _measure(child, maxWidth);
+      let size = _measure(child, maxWidth, measure);
       width = _max(width, size[0]);
       if (first) {
         height = size[1];
@@ -166,7 +171,7 @@ fn _measure(node, maxWidth) {
     var height = 0;
     var first = true;
     for child in node.children {
-      let size = _measure(child, maxWidth);
+      let size = _measure(child, maxWidth, measure);
       if (first) {
         width = size[0];
         first = false;
@@ -182,42 +187,48 @@ fn _measure(node, maxWidth) {
 
 // --- placement --------------------------------------------------------------
 
-fn _place(node, x, y, width, height) {
+fn _place(node, x, y, width, height, measure) {
   node.x = x;
   node.y = y;
   node.w = width;
   node.h = height;
 
   if (node.kind == "window") {
-    _place(node.child, x, y, width, height);
+    _place(node.child, x, y, width, height, measure);
   } else if (node.kind == "padding") {
     _place(node.child, x + node.all, y + node.all, width - node.all * 2,
-           height - node.all * 2);
+           height - node.all * 2, measure);
   } else if (node.kind == "column") {
     var cursor = y;
     for child in node.children {
-      let size = _measure(child, width);
-      _place(child, x, cursor, width, size[1]);
+      let size = _measure(child, width, measure);
+      _place(child, x, cursor, width, size[1], measure);
       cursor = cursor + size[1] + node.gap;
     }
   } else if (node.kind == "row") {
     var cursor = x;
     for child in node.children {
-      let size = _measure(child, width);
-      _place(child, cursor, y, size[0], height);
+      let size = _measure(child, width, measure);
+      _place(child, cursor, y, size[0], height, measure);
       cursor = cursor + size[0] + node.gap;
     }
   }
   return node;
 }
 
-// Measures and places the tree. A window uses its own size; any other root
-// uses the viewport passed here.
+// Measures and places the tree with the default fixed advance.
 fn layout(root, width, height) {
+  return layoutWith(root, width, height, _fixedAdvance);
+}
+
+// Measures and places the tree with a renderer-supplied `measure(text, size)`
+// that returns the advance width in pixels. A window uses its own size; any
+// other root uses the viewport passed here.
+fn layoutWith(root, width, height, measure) {
   if (root.kind == "window") {
-    return _place(root, 0, 0, root.width, root.height);
+    return _place(root, 0, 0, root.width, root.height, measure);
   }
-  return _place(root, 0, 0, width, height);
+  return _place(root, 0, 0, width, height, measure);
 }
 
 // --- display list -----------------------------------------------------------
