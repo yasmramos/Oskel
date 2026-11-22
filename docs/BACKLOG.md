@@ -846,7 +846,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 6. **[P3]** `rawSyscall` uses inline asm with a `"memory"` clobber and is not
    MSVC-portable; note the constraint where it is used.
 7. ~~**[P2]** `PlatformPosix::lookupSymbol` on Windows does not search the other
-   DLLs the process has loaded, so a `std.sdl` program linked against
+   DLLs the process has loaded, so a `std.internal.sdl` program linked against
    `SDL3.dll` still fails to resolve `SDL_*` at run time.~~ **Done**: after the
    process image, `kernel32.dll` and the CRT, the Windows path walks every
    loaded module with `CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, ...)` and
@@ -936,10 +936,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    disagrees with its manifest, and resolves a local-registry dependency from
    `$OSKEL_REGISTRY`. The tool is standalone and drives `oskel`/`oskelc` as
    child processes; `OSKEL_MODULE_ROOT` is the only compiler-side hook.
-8. **[P3]** Add a "hello world with UI" tutorial. The first headless widget
-   layer exists (`std/ui.oskl`, `docs/ui.md`); the tutorial should wait for
-   presenting a Skia surface into an SDL3 window.
-9. **[P2] [partial]** SDL3 bindings landed (post-1.0 UI): `std/sdl.oskl` binds
+8. **[P3]** Add a "hello world with UI" tutorial. The widget layer
+   (`std/ui.oskl`) and the public window loop (`std.ui.window`) exist now, so
+   the tutorial can use `examples/ui/window.oskl` as its starting point.
+9. **[P2] [partial]** SDL3 bindings landed (post-1.0 UI): `std/internal/sdl.oskl` binds
    the window, renderer and event surface, `docs/sdl.md` documents it, and
    `oskel build --mode hosted --link-lib SDL3` compiles it. The C++ bridge
    (`bindgen --cxx`, `docs/cxxbind.md`) now generates Oskel classes plus a C++
@@ -950,9 +950,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    the VM and the hosted AOT binary. `std/ui.oskl` is the first declarative
    layer (`window`, `column`, `row`, `padding`, `spacer`, `text`, `button`;
    layout, `rect`/`text` display list and hit testing), and
-   `bindings/skia/skia_ui.oskl` renders it. Still pending: presenting that
-   raster surface into an SDL3 window, an event loop, input widgets, real font
-   metrics and text wrapping.
+   `std/internal/skia_ui.oskl` renders it. `std.ui.window` now presents the
+   raster surface through a streaming `SDL_Texture`, runs the event loop and
+   dispatches left clicks through `hitTest`; `std.internal.sdl` and the Skia
+   modules stay internal. Still pending: input widgets beyond a button, real
+   font metrics, text wrapping and a dirty-region redraw.
 10. **[P3]** Add `dlopen`/`dlsym` as a builtin for dynamic FFI.
 11. **[P1] [done]** `oskelp`: the local registry (`$OSKEL_REGISTRY`) landed
     with semver requirements (exact, `^`, `~`, comparators, wildcards and a

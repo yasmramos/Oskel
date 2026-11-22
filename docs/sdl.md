@@ -1,34 +1,34 @@
-# SDL3 bindings (`std/sdl.oskl`)
+# SDL3 backend (`std/internal/sdl.oskl`)
 
-`std/sdl.oskl` binds [SDL3](https://wiki.libsdl.org/SDL3/)'s window, renderer and
-event surface, so an Oskel program can open a window and draw into it. It is a
-low-level module: it exposes the `SDL_*` functions and a few helpers. The
-widget layer is `std/ui.oskl` (`docs/ui.md`); it emits a display list that Skia
-renders through the C++ bridge (`bindings/skia/skia_ui.oskl`,
-`docs/cxxbind.md`). SDL3 owns the window and the events.
+`std/internal/sdl.oskl` binds [SDL3](https://wiki.libsdl.org/SDL3/)'s window,
+renderer, texture and event surface, so an Oskel program can open a window and
+draw into it. It is an **internal** module: user code imports `std.ui` for the
+widgets and `std.ui.window` for the event loop. The widget layer emits a display
+list that Skia renders through the C++ bridge (`std/internal/skia_ui.oskl`,
+`docs/cxxbind.md`); SDL3 owns the window and the events.
 
 ```oskel
-import std.sdl;
+import std.internal.sdl;
 
 fn main() {
-  if (!std.sdl.initVideo()) {
-    panic("SDL_Init: " + std.sdl.lastError());
+  if (!std.internal.sdl.initVideo()) {
+    panic("SDL_Init: " + std.internal.sdl.lastError());
   }
-  defer { std.sdl.quit(); }
+  defer { std.internal.sdl.quit(); }
 
-  let window = std.sdl.SDL_CreateWindow("Hello", 640, 480, 0);
-  let renderer = std.sdl.SDL_CreateRenderer(window, nil);
-  let rect = std.sdl.fRectBuffer();
-  std.sdl.setFRect(rect, 40, 80, 120, 90);
+  let window = std.internal.sdl.SDL_CreateWindow("Hello", 640, 480, 0);
+  let renderer = std.internal.sdl.SDL_CreateRenderer(window, nil);
+  let rect = std.internal.sdl.fRectBuffer();
+  std.internal.sdl.setFRect(rect, 40, 80, 120, 90);
 
-  std.sdl.setColor(renderer, 220, 80, 60, 255);
-  std.sdl.clear(renderer);
-  std.sdl.fillRect(renderer, rect);
-  std.sdl.present(renderer);
+  std.internal.sdl.setColor(renderer, 220, 80, 60, 255);
+  std.internal.sdl.clear(renderer);
+  std.internal.sdl.fillRect(renderer, rect);
+  std.internal.sdl.present(renderer);
 
-  std.sdl.delayMs(1000);
-  std.sdl.SDL_DestroyRenderer(renderer);
-  std.sdl.SDL_DestroyWindow(window);
+  std.internal.sdl.delayMs(1000);
+  std.internal.sdl.SDL_DestroyRenderer(renderer);
+  std.internal.sdl.SDL_DestroyWindow(window);
 }
 
 main();
@@ -43,10 +43,10 @@ The complete example, with an event loop and an animation, is
   `brew install sdl3` on macOS).
 - CMake finds SDL3 (`find_package(SDL3)`) and links the development engine
   against `SDL3::SDL3`. `build.sh` probes `pkg-config --exists sdl3`. If the
-  library is absent, the engine still builds; only the `std.sdl` runtime tests
+  library is absent, the engine still builds; only the `std.internal.sdl` runtime tests
   are skipped (`OSKEL_ENABLE_SDL3=OFF` silences the status line).
-- The module itself is always installed; `import std.sdl` type-checks on every
-  platform, with or without SDL3.
+- The module itself is always installed; `import std.internal.sdl` type-checks
+  on every platform, with or without SDL3.
 
 The development engine resolves `SDL_*` through `Platform::lookupSymbol`, which
 on Linux is `dlsym(RTLD_DEFAULT)`. That only sees a shared object the process
@@ -97,7 +97,7 @@ lowering: extern "C" symbol 'SDL_Init' cannot be resolved by the AOT backend (PH
 ## What is bound
 
 `bindings/sdl/sdl3_subset.h` is the curated C surface; `bindgen` translates it
-into the `extern "C"` block at the top of `std/sdl.oskl`. The functions are
+into the `extern "C"` block at the top of `std/internal/sdl.oskl`. The functions are
 SDL3's exact spellings, so a reader of the SDL3 documentation can call them
 directly:
 
@@ -183,7 +183,7 @@ explicitly, so a malformed coordinate cannot spin the normalization loop.
   it. A ninth value would need a wider `kMaxExternArgs` (`docs/BACKLOG.md` §7
   item 17).
 - **Windows execution searches loaded DLLs.** The development engine's
-  `lookupSymbol` walks every module the process has loaded, so a `std.sdl`
+  `lookupSymbol` walks every module the process has loaded, so a `std.internal.sdl`
   program linked against `SDL3.dll` resolves `SDL_*` there too; the
   Windows-only `platform_lookup_test` covers the walk. The module compiles
   everywhere.
@@ -207,7 +207,7 @@ explicitly, so a malformed coordinate cannot spin the normalization loop.
 ./build/bindgen bindings/sdl/sdl3_subset.h
 ```
 
-Replace the `extern "C" { ... }` block in `std/sdl.oskl` with the output. The
+Replace the `extern "C" { ... }` block in `std/internal/sdl.oskl` with the output. The
 helpers below the `// --- Hand-written helpers` marker are not generated and are
 not touched. When a new function is needed, add its C prototype to
 `bindings/sdl/sdl3_subset.h` first, then regenerate; that keeps the module's

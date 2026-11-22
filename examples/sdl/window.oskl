@@ -1,4 +1,4 @@
-// A window, a renderer and a short animation with SDL3 (`std/sdl.oskl`).
+// A window, a renderer and a short animation with SDL3 (`std/internal/sdl.oskl`).
 //
 // Run it on the development engine:
 //
@@ -13,70 +13,70 @@
 // headless run (`SDL_VIDEODRIVER=dummy oskel examples/sdl/window.oskl`) always
 // terminates.
 
-import std.sdl;
+import std.internal.sdl;
 
 fn main() {
-  if (!std.sdl.initVideo()) {
-    panic("SDL_Init: " + std.sdl.lastError());
+  if (!std.internal.sdl.initVideo()) {
+    panic("SDL_Init: " + std.internal.sdl.lastError());
   }
   defer {
-    std.sdl.quit();
+    std.internal.sdl.quit();
   }
 
-  let window = std.sdl.SDL_CreateWindow(
-    "Oskel + SDL3", 640, 480, std.sdl.SDL_WINDOW_RESIZABLE);
+  let window = std.internal.sdl.SDL_CreateWindow(
+    "Oskel + SDL3", 640, 480, std.internal.sdl.SDL_WINDOW_RESIZABLE);
   if (window == nil) {
-    panic("SDL_CreateWindow: " + std.sdl.lastError());
+    panic("SDL_CreateWindow: " + std.internal.sdl.lastError());
   }
   defer {
-    std.sdl.SDL_DestroyWindow(window);
+    std.internal.sdl.SDL_DestroyWindow(window);
   }
 
-  let renderer = std.sdl.SDL_CreateRenderer(window, nil);
+  let renderer = std.internal.sdl.SDL_CreateRenderer(window, nil);
   if (renderer == nil) {
-    panic("SDL_CreateRenderer: " + std.sdl.lastError());
+    panic("SDL_CreateRenderer: " + std.internal.sdl.lastError());
   }
   defer {
-    std.sdl.SDL_DestroyRenderer(renderer);
+    std.internal.sdl.SDL_DestroyRenderer(renderer);
   }
 
-  let event = std.sdl.eventBuffer();
-  let rect = std.sdl.fRectBuffer();
+  let event = std.internal.sdl.eventBuffer();
+  let rect = std.internal.sdl.fRectBuffer();
   var frame = 0;
   var running = true;
 
   while (running && frame < 180) {
-    while (std.sdl.SDL_PollEvent(event)) {
-      let kind = std.sdl.eventType(event);
-      if (kind == std.sdl.SDL_EVENT_QUIT) {
+    while (std.internal.sdl.SDL_PollEvent(event)) {
+      let kind = std.internal.sdl.eventType(event);
+      if (kind == std.internal.sdl.SDL_EVENT_QUIT) {
         running = false;
       }
-      if (kind == std.sdl.SDL_EVENT_KEY_DOWN &&
-          std.sdl.keyCode(event) == std.sdl.SDLK_ESCAPE) {
+      if (kind == std.internal.sdl.SDL_EVENT_KEY_DOWN &&
+          std.internal.sdl.keyCode(event) == std.internal.sdl.SDLK_ESCAPE) {
         running = false;
       }
     }
 
-    std.sdl.setColor(renderer, 18, 18, 24, 255);
-    std.sdl.clear(renderer);
+    std.internal.sdl.setColor(renderer, 18, 18, 24, 255);
+    std.internal.sdl.clear(renderer);
 
     // A filled panel that slides across the window.
     let x = 40 + (frame * 3) % 480;
-    std.sdl.setFRect(rect, x, 80, 120, 90);
-    std.sdl.setColor(renderer, 220, 80, 60, 255);
-    std.sdl.fillRect(renderer, rect);
+    std.internal.sdl.setFRect(rect, x, 80, 120, 90);
+    std.internal.sdl.setColor(renderer, 220, 80, 60, 255);
+    std.internal.sdl.fillRect(renderer, rect);
 
     // Its outline.
-    std.sdl.setFRect(rect, x - 4, 76, 128, 98);
-    std.sdl.setColor(renderer, 250, 210, 120, 255);
-    std.sdl.drawRect(renderer, rect);
+    std.internal.sdl.setFRect(rect, x - 4, 76, 128, 98);
+    std.internal.sdl.setColor(renderer, 250, 210, 120, 255);
+    std.internal.sdl.drawRect(renderer, rect);
 
     // A diagonal, to show the scalar-float call.
-    std.sdl.setColor(renderer, 80, 160, 220, 255);
-    std.sdl.drawLine(renderer, 0, 0, 640, 480);
+    std.internal.sdl.setColor(renderer, 80, 160, 220, 255);
+    std.internal.sdl.drawLine(renderer, 0, 0, 640, 480);
 
-    std.sdl.present(renderer);
-    std.sdl.delayMs(16);
+    std.internal.sdl.present(renderer);
+    std.internal.sdl.delayMs(16);
     frame = frame + 1;
   }
 

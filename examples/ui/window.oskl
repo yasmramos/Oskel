@@ -1,0 +1,31 @@
+// A public UI window: widgets from `std.ui`, presentation from
+// `std.ui.window`. Neither SDL3 nor Skia is named here.
+//
+// On the development engine (SDL3 loaded, Skia shim built):
+//
+//   LD_PRELOAD=bindings/skia/build/libskia_shim.so \
+//     oskel examples/ui/window.oskl
+//
+// or as a native binary (Linux x86-64, hosted link mode):
+//
+//   LIBRARY_PATH=bindings/skia/build oskel build examples/ui/window.oskl \
+//     --mode hosted --link-lib SDL3 --link-lib skia_shim -o ui-window
+//   LD_LIBRARY_PATH=bindings/skia/build ./ui-window
+
+import std.ui as ui;
+import std.ui.window as ui_window;
+
+var clicks = 0;
+
+let root = ui.window("Oskel UI", 420, 240,
+  ui.column(12, [
+    ui.text("Hello from Oskel", 32),
+    ui.textColor("Skia inside an SDL3 window", 18, 0xFF444444),
+    ui.button("Click me", () => {
+      clicks = clicks + 1;
+      print("clicked " + str(clicks));
+    }),
+  ]));
+
+// maxFrames <= 0 runs until the window closes or Escape is pressed.
+ui_window.run("Oskel UI", root, 420, 240, 0);

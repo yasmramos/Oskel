@@ -10,6 +10,7 @@
 #   SKIA_DIR    Skia root (contains include/core/SkSurface.h)
 #   SKIA_LIB    path to libskia.a or libskia.so
 #   SKIA_LIBS   extra link arguments (default: -lpthread -ldl -lm)
+#   SDL3_FOUND  whether the build found SDL3 (enables the window half)
 
 if(NOT EXISTS "${SKIA_DIR}/include/core/SkSurface.h")
   message(FATAL_ERROR "SKIA_DIR does not contain include/core/SkSurface.h: ${SKIA_DIR}")
@@ -43,6 +44,19 @@ if(NOT check_exit EQUAL 0)
   message(FATAL_ERROR
     "oskel -c rejected the generated Skia module (exit ${check_exit})\n"
     "--- stderr ---\n${check_stderr}")
+endif()
+
+# The bridge module is checked in under std/internal, so the descriptor and
+# the committed module cannot drift. Only the generated header line differs
+# (it names the descriptor path).
+file(READ "${SOURCE_DIR}/std/internal/skia.oskl" committed_module)
+file(READ "${BUILD_DIR}/skia.oskl" generated_module)
+string(REGEX REPLACE "^// Generated[^\n]*\n" "" committed_body "${committed_module}")
+string(REGEX REPLACE "^// Generated[^\n]*\n" "" generated_body "${generated_module}")
+if(NOT committed_body STREQUAL generated_body)
+  message(FATAL_ERROR
+    "std/internal/skia.oskl is out of date with bindings/skia/skia.oskelbind.\n"
+    "Run bindgen --cxx bindings/skia/skia.oskelbind -o std/internal/skia.oskl.")
 endif()
 
 separate_arguments(skia_libs UNIX_COMMAND "${SKIA_LIBS}")
@@ -131,13 +145,9 @@ if(NOT native_stdout STREQUAL vm_stdout)
 endif()
 
 # --- 2. The widget layer: std.ui -> display list -> Skia. ---
-file(COPY "${SOURCE_DIR}/bindings/skia/skia_ui.oskl"
-          "${SOURCE_DIR}/tests/cxxbind/skia_ui_test.oskl"
-     DESTINATION "${BUILD_DIR}")
-
 execute_process(
   COMMAND "${CMAKE_COMMAND}" -E env ${skia_env}
-          "${OSKEL_EXE}" "${BUILD_DIR}/skia_ui_test.oskl"
+          "${OSKEL_EXE}" "${SOURCE_DIR}/tests/cxxbind/skia_ui_test.oskl"
   WORKING_DIRECTORY "${BUILD_DIR}"
   RESULT_VARIABLE ui_vm_exit
   OUTPUT_VARIABLE ui_vm_stdout
@@ -154,7 +164,7 @@ endif()
 
 execute_process(
   COMMAND "${CMAKE_COMMAND}" -E env "LIBRARY_PATH=${BUILD_DIR}"
-          "${OSKEL_EXE}" build "${BUILD_DIR}/skia_ui_test.oskl" --mode hosted
+          "${OSKEL_EXE}" build "${SOURCE_DIR}/tests/cxxbind/skia_ui_test.oskl" --mode hosted
           --link-lib skia_shim -o "${BUILD_DIR}/skia_ui_test"
   WORKING_DIRECTORY "${BUILD_DIR}"
   RESULT_VARIABLE ui_build_exit
@@ -183,4 +193,64 @@ if(NOT ui_native_stdout STREQUAL ui_vm_stdout)
   message(FATAL_ERROR
     "the hosted Skia UI binary disagrees with the VM\n--- vm ---\n${ui_vm_stdout}\n"
     "--- binary ---\n${ui_native_stdout}")
+endif()
+
+# --- 3. The window loop: std.ui.window -> Skia -> SDL3 texture. ---
+# The dummy video driver creates an off-screen window and a software renderer;
+# `maxFrames` bounds the loop, so this half never waits for a display or input.
+if(SDL3_FOUND)
+  set(window_env ${skia_env} "SDL_VIDEODRIVER=dummy" "SDL_AUDIODRIVER=dummy")
+
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env ${window_env}
+            "${OSKEL_EXE}" "${SOURCE_DIR}/tests/cxxbind/skia_window_test.oskl"
+    WORKING_DIRECTORY "${BUILD_DIR}"
+    RESULT_VARIABLE window_vm_exit
+    OUTPUT_VARIABLE window_vm_stdout
+    ERROR_VARIABLE window_vm_stderr
+  )
+  if(NOT window_vm_exit EQUAL 0)
+    message(FATAL_ERROR
+      "the Skia window VM test exited ${window_vm_exit}\n--- stdout ---\n${window_vm_stdout}\n"
+      "--- stderr ---\n${window_vm_stderr}")
+  endif()
+  if(NOT window_vm_stdout MATCHES "skia window ok")
+    message(FATAL_ERROR
+      "the Skia window VM test printed '${window_vm_stdout}', expected 'skia window ok'")
+  endif()
+
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env "LIBRARY_PATH=${BUILD_DIR}"
+            "${OSKEL_EXE}" build "${SOURCE_DIR}/tests/cxxbind/skia_window_test.oskl"
+            --mode hosted --link-lib skia_shim --link-lib SDL3
+            -o "${BUILD_DIR}/skia_window_test"
+    WORKING_DIRECTORY "${BUILD_DIR}"
+    RESULT_VARIABLE window_build_exit
+    OUTPUT_VARIABLE window_build_stdout
+    ERROR_VARIABLE window_build_stderr
+  )
+  if(NOT window_build_exit EQUAL 0)
+    message(FATAL_ERROR
+      "oskel build --mode hosted (Skia window) exited ${window_build_exit}\n"
+      "--- stdout ---\n${window_build_stdout}\n--- stderr ---\n${window_build_stderr}")
+  endif()
+
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env "LD_LIBRARY_PATH=${BUILD_DIR}"
+            "SDL_VIDEODRIVER=dummy" "SDL_AUDIODRIVER=dummy"
+            "${BUILD_DIR}/skia_window_test"
+    RESULT_VARIABLE window_native_exit
+    OUTPUT_VARIABLE window_native_stdout
+    ERROR_VARIABLE window_native_stderr
+  )
+  if(NOT window_native_exit EQUAL 0)
+    message(FATAL_ERROR
+      "the hosted Skia window binary exited ${window_native_exit}\n"
+      "--- stdout ---\n${window_native_stdout}\n--- stderr ---\n${window_native_stderr}")
+  endif()
+  if(NOT window_native_stdout STREQUAL window_vm_stdout)
+    message(FATAL_ERROR
+      "the hosted Skia window binary disagrees with the VM\n--- vm ---\n${window_vm_stdout}\n"
+      "--- binary ---\n${window_native_stdout}")
+  endif()
 endif()
