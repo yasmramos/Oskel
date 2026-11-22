@@ -1,0 +1,32 @@
+// Headless end-to-end test for the public window backend: std.ui -> Skia ->
+// SDL3 streaming texture. `run_skia_case.cmake` sets SDL_VIDEODRIVER=dummy, so
+// no display is needed, and runs the same file on the VM and the hosted AOT
+// binary.
+
+import std.ui as ui;
+import std.ui.window as ui_window;
+
+fn assertEq(actual: int, expected: int) {
+  if (actual != expected) {
+    panic("expected " + str(expected) + ", got " + str(actual));
+  }
+}
+
+var clicks = 0;
+let root = ui.window("Skia window", 160, 100,
+  ui.column(8, [
+    ui.text("Hello", 16),
+    ui.button("OK", () => clicks = clicks + 1),
+  ]));
+ui.layout(root, 160, 100);
+
+// The event loop dispatches through the same helper, so the hit test and the
+// handler are exercised without a real pointer device.
+assertEq(ui_window.click(root, 10, 40), true);
+assertEq(clicks, 1);
+assertEq(ui_window.click(root, 150, 90), false);
+
+// Two frames prove the full path: draw, snapshot, bulk read, texture upload,
+// renderer present.
+assertEq(ui_window.run("Skia window", root, 160, 100, 2), 2);
+print("skia window ok");
