@@ -16351,6 +16351,9 @@ void emitFsCloseBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& 
   cg.bind(label);
   prologue(cg);
   cg.push(Rbx);
+  // One saved register leaves rsp 8 mod 16; the close thunk calls a C API on
+  // Windows, which requires a 16-byte aligned stack at the call.
+  cg.subRegImm32(Rsp, 8);
   cg.cmpImm32(Rsi, 1);
   cg.jcc(Jcc::Eq, argcOk);
   emitArityFailCall(cg, msgArgc);
@@ -16362,6 +16365,7 @@ void emitFsCloseBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& 
   cg.movImmToMem(Rbx, kPtrReleasedOffset, 1);
   cg.xorReg(Rax, Rax);
   cg.xorReg(Rdx, Rdx);
+  cg.addImm32(Rsp, 8);
   cg.pop(Rbx);
   epilogue(cg);
 }

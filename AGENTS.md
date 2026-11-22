@@ -178,7 +178,11 @@ it as a caveat:
   script's `vm_only` set and the lowerer rejects a used name with a dedicated
   message (exit 65), never a mis-compiled image. Fixtures:
   `tests/native_build_fs.oskl` (freestanding parity), `oskel.build_fs_hosted`
-  (hosted parity) and `tests/64_std_fs.oskl` (VM directory/error paths).
+  (hosted parity) and `tests/64_std_fs.oskl` (VM directory/error paths). The
+  `fsClose` emitter saves only `rbx`, so it reserves 8 extra bytes before
+  calling the close thunk: Windows C APIs require `rsp` 16-byte aligned at the
+  call, and an odd number of saved registers otherwise crashes under `cl` and
+  kernel32.
 - A module whose last path segment is **PascalCase** is a **class module**
   (`docs/language.md` §18.6). It exports exactly one public name, the file name,
   and every other top-level name starts with `_`. `import std.io.StringReader;`
