@@ -1,0 +1,76 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): `sort`/`sorted` under
+// the AOT backend (PHASE 7c.3j).
+//
+// The two are the only collection methods whose comparator is arbitrary program
+// code, so the AOT body calls back through `oskel_call` from inside its own
+// merge pass. The hosted engine sorts with `std::stable_sort` over a copy, and
+// `build_binary.cmake` compares the compiled binary's output with the VM's byte
+// for byte, so the cases below pin the three properties that could diverge:
+//
+//   * the default order (`lessThan`: int, mixed numeric, string, bool),
+//   * stability -- equal keys keep their input order, which an unstable sort
+//     would scramble, and
+//   * the strong guarantee -- a comparator that raises leaves the receiver
+//     untouched, so `sort` must not permute the receiver in place.
+
+print("--- default order ---");
+print("ints      =", [3, 1, 2].sorted());
+print("negative  =", [0, -5, 5, -1].sorted());
+print("doubles   =", [2.5, 1.5, 3.5].sorted());
+print("mixed num =", [2, 1.5, 0, 3.25].sorted());
+print("strings   =", ["banana", "apple", "cherry"].sorted());
+print("bools     =", [true, false, true].sorted());
+
+print("--- edges ---");
+print("empty     =", [].sorted());
+print("single    =", [7].sorted());
+print("two       =", [2, 1].sorted());
+print("all equal =", [4, 4, 4, 4].sorted());
+print("sorted    =", [1, 2, 3, 4].sorted());
+print("reversed  =", [4, 3, 2, 1].sorted());
+
+print("--- stability ---");
+var pairs = [[1, "a"], [2, "b"], [1, "c"], [2, "d"], [1, "e"]];
+print("by first  =", pairs.sorted((x, y) => x[0] < y[0]));
+var triple = [[2, "x"], [1, "y"], [2, "z"], [1, "w"], [2, "v"]];
+print("by first2 =", triple.sorted((x, y) => x[0] < y[0]));
+
+print("--- comparators ---");
+print("desc      =", [3, 1, 2].sorted((a, b) => a > b));
+print("by length =", ["bb", "a", "ccc"].sorted((a, b) => len(a) < len(b)));
+print("evens     =", [1, 2, 3, 4, 5, 6].sorted((a, b) => a % 2 == 0 && b % 2 != 0));
+print("never     =", [1, 2, 3, 4, 5].sorted((a, b) => false));
+print("always    =", [1, 2, 3, 4, 5].sorted((a, b) => true));
+print("nested    =", [[3, 1], [1, 2], [2, 3]].sorted((x, y) => x.sorted()[0] < y.sorted()[0]));
+
+print("--- sort mutates, sorted does not ---");
+var a = [5, 2, 9, 1];
+print("sort ret  =", a.sort());
+print("receiver  =", a);
+var b = [5, 2, 9, 1];
+var c = b.sorted();
+print("orig kept =", b);
+print("new array =", c);
+var d = [3, 1, 2];
+print("sort cmp  =", d.sort((x, y) => x > y));
+print("receiver2 =", d);
+
+print("--- larger arrays ---");
+var big = [];
+var i = 0;
+while (i < 40) {
+  big.push((i * 7) % 40);
+  i = i + 1;
+}
+print("mod 40    =", big.sorted());
+var down = [];
+var j = 39;
+while (j >= 0) {
+  down.push(j);
+  j = j - 1;
+}
+print("countdown =", down.sorted());
+
+// `pcall` is not bound by the WebAssembly backend yet (PHASE 9), so the
+// strong-guarantee case stays in the AOT fixture; `sort` still sorts a copy and
+// commits only on success, which the comparator cases above exercise.

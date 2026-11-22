@@ -316,8 +316,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     exactly what `intToPtr` builds, so `ptrToInt` reads it back and a later call
     passes the real address. A NULL address becomes `nil`, the hosted engine's
     own rule (`wrapPointerValue` returns an empty `Value` before it looks at the
-    type name), so `type()` reports `"nil"` and not `"ptr"`. A struct, a
-    callback and a C variadic still reject the build.
+    type name), so `type()` reports `"nil"` and not `"ptr"`. A struct and a
+    callback still reject the Windows build; a C variadic is lowered on all
+    hosted targets (7f.10).
 20. **[P0] [done]** VM/AOT divergence in string iteration: `emitIterNext`'s
     `str` branch built the character but fell through into the `range` block,
     which overwrote `rax:rdx` with the cursor index, so `for c in "abc"`
@@ -536,10 +537,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    a trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...):
    int`). The compiler records the flag on the `ExternSymbol` and checks only the
    fixed prefix; the runtime prepares an `ffi_prep_cif_var` call per call and
-   applies the default argument promotions. Needs `libffi` plus the System V
-   AMD64 ABI (`kCVariadicSupported`), so off that the declaration is rejected at
-   compile time. See `tests/53_ffi_variadic.oskl`,
-   `vm_test.cpp::testExternVariadic*` and `docs/language.md` §4.6.
+   applies the default argument promotions. The development engine needs
+   `libffi` plus the System V AMD64 ABI (`kCVariadicSupported`), so off that the
+   declaration is rejected at compile time there; the hosted AOT backend lowers
+   the tail itself on System V and Win64 (PHASE 7f.10), independent of libffi.
+   See `tests/53_ffi_variadic.oskl`, `vm_test.cpp::testExternVariadic*`,
+   `tests/native_build_extern_variadic.oskl` and `docs/language.md` §4.6.
 2. ~~**[P1]** `extern "C"` does not support structs larger than 16 bytes by value
    (System V passes them via a hidden pointer / `sret`).~~ **Done**: a struct
    larger than 16 bytes (class MEMORY) is passed on the stack and returned through
@@ -630,10 +633,13 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     has no freestanding image at all. This is the design, not a temporary gap:
     the freestanding image is self-contained by construction and a general
     `extern "C"` call is what breaks that. The full 7f surface (structs by
-    value, callbacks and C variadics) is implemented on the System V targets
-    (Linux and macOS); Windows supports the scalar, `cstring` and `ptr` classes
-    and rejects the aggregate, callback and variadic shapes with a dedicated
-    message. Documented in `docs/language.md` §4.5 and §16.
+    value and callbacks) is implemented on the System V targets (Linux and
+    macOS); Windows supports the scalar, `cstring` and `ptr` classes and a C
+    variadic, and rejects the aggregate and callback shapes with a dedicated
+    message. A C variadic follows the target's allocation rule: independent
+    GPR/SSE counters on System V, argument positions on Win64 (including the
+    integer duplicate of a floating value). Documented in `docs/language.md`
+    §4.5 and §16.
 
 ---
 

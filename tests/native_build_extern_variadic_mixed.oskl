@@ -1,0 +1,16 @@
+// Fixture for a C variadic with a mixed fixed prefix
+// (tests/build_hosted_helper.cmake, PHASE 7f.10).
+//
+// `mixed_var_sum(int, double, int, ...)` puts a floating value at argument
+// position one and a floating tail at position three. On Win64 that is xmm1
+// and xmm3 (plus the integer duplicate in rdx and r9); a class counter that
+// starts at xmm0 would hand the callee the wrong registers. System V keeps
+// separate class counters, so the same declaration must return the same sum
+// there. The helper asserts the sum, so a wrong register is a wrong number.
+extern "C" {
+  fn mixed_var_sum(a: int, b: double, c: int, ...): double;
+}
+
+assertEq(mixed_var_sum(1, 2.5, 3, 4.5, 5), 16.0);
+
+print("ffi variadic mixed ok");

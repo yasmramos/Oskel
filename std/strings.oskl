@@ -1,0 +1,223 @@
+// Standard library: text helpers.
+//
+// Imported as `import std.strings;` (qualified: `std.strings.truncate`),
+// `import std.strings.*;` (unqualified: `truncate`), `import std.strings as t;`
+// or `import { truncate, words } from std.strings;`.
+//
+// The string methods (`s.upper()`, `s.split()`, `s.padStart()`, ...) cover the
+// common per-string operations; this module adds the free-function helpers they
+// do not express, so the operations compose with the collection helpers:
+//
+//   map(lines, l => truncate(l, 40, "..."))
+//
+// Case mapping stays with the `upper`/`lower` methods, which apply the Unicode
+// simple mapping; a free function that folded case over `ord`/`chr` would be
+// ASCII-only and would disagree with them.
+//
+// A string is indexed by code point (`s[i]` is one character, `s[a:b]` is a
+// slice), and every length here is a code-point count, so a multi-byte
+// character counts as one. The module is written over the portable primitive
+// surface (indexing, slicing, `len`, `for ... in`, closures, `panic`), so it
+// behaves identically on the development VM, under `oskel build` and on
+// WebAssembly.
+//
+// The whitespace family is the ASCII one `trim()` uses: space, tab, newline,
+// carriage return, vertical tab and form feed. Unicode spaces (a non-breaking
+// space, for example) are ordinary characters, as they are for `trim()`.
+
+// True when `c` is one of the ASCII whitespace characters.
+fn _isSpace(c) {
+  return c == " " || c == "\t" || c == "\n" || c == "\r"
+    || c == "\u000B" || c == "\u000C";
+}
+
+// True when `needle` occurs in `haystack`. The empty needle occurs everywhere.
+fn _contains(haystack, needle) {
+  let n = len(needle);
+  if (n == 0) {
+    return true;
+  }
+  var i = 0;
+  while (i + n <= len(haystack)) {
+    if (haystack[i:i + n] == needle) {
+      return true;
+    }
+    i = i + 1;
+  }
+  return false;
+}
+
+// --- words ------------------------------------------------------------------
+
+// The non-empty runs of non-whitespace characters.
+//
+//   words("  a  bb\tccc ") -> ["a", "bb", "ccc"]
+//   words("   ")           -> []
+@MustUse
+fn words(s) {
+  var out = [];
+  var i = 0;
+  let n = len(s);
+  while (i < n) {
+    while (i < n && _isSpace(s[i])) {
+      i = i + 1;
+    }
+    let start = i;
+    while (i < n && !_isSpace(s[i])) {
+      i = i + 1;
+    }
+    if (i > start) {
+      out[len(out)] = s[start:i];
+    }
+  }
+  return out;
+}
+
+// True when the string is empty or contains only ASCII whitespace.
+//
+//   isBlank("")      -> true
+//   isBlank(" \t\n") -> true
+//   isBlank(" a ")   -> false
+@MustUse
+fn isBlank(s) {
+  for c in s {
+    if (!_isSpace(c)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// --- occurrences ------------------------------------------------------------
+
+// How many non-overlapping occurrences of `needle` the string contains. An
+// empty needle occurs zero times, so `countOf` and `indexOfAll` agree.
+//
+//   countOf("banana", "an") -> 2
+//   countOf("aaaa", "aa")   -> 2
+@MustUse
+fn countOf(s, needle) {
+  let n = len(needle);
+  if (n == 0) {
+    return 0;
+  }
+  var count = 0;
+  var i = 0;
+  while (i + n <= len(s)) {
+    if (s[i:i + n] == needle) {
+      count = count + 1;
+      i = i + n;
+    } else {
+      i = i + 1;
+    }
+  }
+  return count;
+}
+
+// The code-point index of every non-overlapping occurrence of `needle`. An
+// empty needle has no occurrences, so the result is empty.
+//
+//   indexOfAll("banana", "an") -> [1, 3]
+//   indexOfAll("aaaa", "aa")   -> [0, 2]
+@MustUse
+fn indexOfAll(s, needle) {
+  var out = [];
+  let n = len(needle);
+  if (n == 0) {
+    return out;
+  }
+  var i = 0;
+  while (i + n <= len(s)) {
+    if (s[i:i + n] == needle) {
+      out[len(out)] = i;
+      i = i + n;
+    } else {
+      i = i + 1;
+    }
+  }
+  return out;
+}
+
+// True when the string contains every needle. True for an empty array (there
+// is nothing missing).
+//
+//   containsAll("abc", ["a", "c"]) -> true
+//   containsAll("abc", ["a", "z"]) -> false
+@MustUse
+fn containsAll(s, needles) {
+  for needle in needles {
+    if (!_contains(s, needle)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// True when the string contains at least one needle. False for an empty array.
+@MustUse
+fn containsAny(s, needles) {
+  for needle in needles {
+    if (_contains(s, needle)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// --- padding and shortening -------------------------------------------------
+
+// Pads both sides up to `width` code points. The fill is repeated whole and
+// then clipped, like `padStart`/`padEnd`; an odd remainder gives the extra
+// character to the right. A string already at least `width` long is returned
+// unchanged. An empty fill is a runtime error.
+//
+//   padBoth("ab", 5, " ") -> " ab  "
+//   padBoth("ab", 6, "-=") -> "-=ab-="
+@MustUse
+fn padBoth(s, width, fill) {
+  if (fill == "") {
+    panic("padBoth fill must not be empty");
+  }
+  let n = len(s);
+  if (n >= width) {
+    return s;
+  }
+  let total = width - n;
+  let left = total / 2;
+  let right = total - left;
+  var out = "";
+  var i = 0;
+  while (i < left) {
+    out = out + fill[i % len(fill)];
+    i = i + 1;
+  }
+  out = out + s;
+  i = 0;
+  while (i < right) {
+    out = out + fill[i % len(fill)];
+    i = i + 1;
+  }
+  return out;
+}
+
+// Shortens the string to at most `width` code points, ending with `ellipsis`.
+// A string that already fits is returned unchanged. When the ellipsis itself
+// does not fit, it is clipped to `width`; an empty ellipsis therefore yields
+// the first `width` characters. A negative width is a runtime error.
+//
+//   truncate("abcdef", 4, "...") -> "a..."
+//   truncate("abcdef", 2, "...") -> ".."
+//   truncate("abcdef", 6, "...") -> "abcdef"
+@MustUse
+fn truncate(s, width, ellipsis) {
+  if (width < 0) {
+    panic("truncate width must not be negative");
+  }
+  if (len(s) <= width) {
+    return s;
+  }
+  if (len(ellipsis) >= width) {
+    return ellipsis[0:width];
+  }
+  return s[0:width - len(ellipsis)] + ellipsis;
+}

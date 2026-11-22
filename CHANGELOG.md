@@ -11,6 +11,31 @@ may change between minor versions.
 
 ### Added
 
+- **`std.io` adds in-memory text streams built on classes.** `StringReader`
+  walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,
+  `readWhile`, `skip`, `lines`, ...); `StringWriter` accumulates chunks
+  (`write`, `writeln`, `writeAll`, `writeLines`, `toString`, `clear`); and
+  `splitLines`/`joinLines` are the free-function line helpers. A `StringReader`
+  normalises CRLF and counts code points, so it composes with `std.strings` and
+  `std.collections`. File access stays with the `readFile`/`writeFile`/
+  `fileExists` builtins: the freestanding AOT backend does not seed them, so a
+  module that mentions one fails `oskel build` even when the function is never
+  called. Classes are maps with closures, so the VM, the AOT backend and
+  WebAssembly agree; `tests/62_std_io.oskl` and `tests/native_build_io.oskl`
+  prove it.
+
+- **`std.collections` gains the missing sequence helpers.** `flatMap` maps to
+  an array and flattens one level; `scan` returns the running fold, with the
+  initial value as its first element; `findLast`/`findLastIndex` search from
+  the end; `takeWhile`/`dropWhile` split the leading run that satisfies a
+  predicate; `sliding` yields overlapping windows of a fixed size; `zipWith`
+  combines two arrays element by element; and `intersperse` inserts a separator
+  between elements. All of them stay on the portable primitive surface, so the
+  VM, `oskel build` and the WebAssembly backend produce the same output;
+  `tests/58_std_collections.oskl` and `tests/native_build_collections.oskl`
+  cover the VM and the AOT/WASM parity. `scan` is documented as returning
+  `len(xs) + 1` elements and `sliding` rejects a size below 1.
+
 - **The Skia bridge compiles and runs against a real Skia build.** The
   generated shim now covers text (`SkFont` + `drawString`) and one-pixel
   readback (`SkImage::readPixels`), and `skia_facade.h` selects
@@ -30,6 +55,18 @@ may change between minor versions.
   `bindings/skia/skia_ui.oskl` is the Skia renderer for the display list.
   `docs/ui.md` documents the widget set, layout rules, display list and limits
   (no event loop, input widgets, font metrics or SDL presentation yet).
+
+- **`std.strings`, a text-helper module.** `import std.strings;` adds the
+  free-function helpers the string methods do not express: `words`, `isBlank`,
+  `countOf`, `indexOfAll`, `containsAll`, `containsAny`, `padBoth` and
+  `truncate`. Every length and index is a code-point count, occurrences are
+  non-overlapping, and `padBoth`/`truncate` repeat and clip their fill/ellipsis
+  the way `padStart`/`padEnd` do. The module stays on the portable primitive
+  surface (indexing, slicing, `len`, `for ... in`, closures, `panic`), so the VM,
+  `oskel build` and the WebAssembly backend produce the same output;
+  `tests/59_std_strings.oskl` covers the module on the VM and
+  `tests/native_build_strings.oskl` pins the AOT and WASM parity. Case mapping
+  stays with the Unicode `upper`/`lower` methods.
 
 - **The C++ bridge now generates factories and owned class returns.**
   `bindgen --cxx` accepts an `object` of functions (emitted as a map, so
@@ -188,6 +225,15 @@ may change between minor versions.
   real address rather than a synthetic token.
 
 ### Fixed
+
+- **The standard-library docs no longer claim an AOT gap that does not exist.**
+  `std/collections.oskl`, its two fixtures, `docs/language.md` §12.12 and
+  `DEVELOPMENT.md` said `sort`/`sorted` and the string methods were not bound
+  by the AOT backend, so `oskel build` supposedly compiled them and the binary
+  then failed with `value has no such member`. Both engines bind them now
+  (PHASE 7c.3i/7c.3j), and the modules stay on the portable primitive surface
+  so they also run on WebAssembly, where the methods are still absent. The
+  comments now say that instead of describing a retired limitation.
 
 - **A wrong argument count now reports the same text under `oskel build` as
   in the VM.** Every guard stopped at the constant prefix, so the VM said

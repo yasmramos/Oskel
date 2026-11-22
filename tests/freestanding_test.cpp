@@ -426,7 +426,7 @@ static void test_negative_string_index() {
   Bytecode tooLow = compileSource("print(\"abc\"[-5]);\n");
   RunResult low = buildAndRun("/tmp/oskel_negative_string_index_low", tooLow);
   check(low.exitCode == 70, "a too-negative string index exits 70");
-  check(low.output.find("index out of range") != std::string::npos,
+  check(low.output.find("string index -5 out of range (length 3)") != std::string::npos,
         "a too-negative string index reports the range error");
 }
 
