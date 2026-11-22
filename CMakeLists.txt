@@ -1453,6 +1453,19 @@ if(BUILD_TESTING)
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
 
+    # `range` takes one or two bounds: `range(5)` starts at 0. The fixture also
+    # pins `assertEq` and `exit`, so a wrong arity check in the WASM builtin
+    # cannot pass unnoticed.
+    add_test(NAME oskel.build_wasm_builtins
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_builtins"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_builtins.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
     # `std.datetime` is deterministic apart from `time()`/`clock()`, which the
     # fixture only observes through stable predicates, so the module must agree
     # with the VM byte for byte too.
@@ -1515,8 +1528,9 @@ if(BUILD_TESTING)
 
     # A mis-lowered loop must fail the test, not hang the suite: the Node run
     # gets a hard timeout in `wasm_case.cmake`, and CTest bounds the driver.
-    set_tests_properties(oskel.build_wasm oskel.build_wasm_datetime
-      oskel.build_wasm_collections oskel.build_wasm_strings oskel.build_wasm_math
+    set_tests_properties(oskel.build_wasm oskel.build_wasm_builtins
+      oskel.build_wasm_datetime oskel.build_wasm_collections
+      oskel.build_wasm_strings oskel.build_wasm_math
       oskel.build_wasm_double_format PROPERTIES TIMEOUT 120)
   endif()
 

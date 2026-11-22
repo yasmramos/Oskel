@@ -7865,29 +7865,76 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
   }
 
   if (name == "$range" || name == "range") {
-    const int count = name == "$range" ? 3 : 2;
-    arity(count);
+    const bool inclusive = name == "$range";
+    if (inclusive) {
+      arity(3);
+    } else {
+      // The public form takes 1 or 2 bounds: `range(5)` starts at 0.
+      arityBetween(1, 2);
+    }
     std::uint32_t addr = f.addLocal(kI32);
-    for (int i = 0; i < 2; ++i) {
-      argTag(i);
+    argTag(0);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64Eq();
+    f.i32Eqz();
+    f.if_();
+    emitFailStatic(f, sRangeBounds);
+    f.end();
+    if (inclusive) {
+      argTag(1);
       f.i64c(static_cast<std::int64_t>(kInt));
       f.i64Eq();
       f.i32Eqz();
       f.if_();
       emitFailStatic(f, sRangeBounds);
       f.end();
+    } else {
+      f.lget(1);
+      f.i32c(2);
+      f.i32Eq();
+      f.if_();
+      argTag(1);
+      f.i64c(static_cast<std::int64_t>(kInt));
+      f.i64Eq();
+      f.i32Eqz();
+      f.if_();
+      emitFailStatic(f, sRangeBounds);
+      f.end();
+      f.end();
     }
     f.i32c(24);
     f.call(alloc);
     f.lset(addr);
     f.lget(addr);
-    argPayload(0);
+    if (inclusive) {
+      argPayload(0);
+    } else {
+      f.lget(1);
+      f.i32c(1);
+      f.i32Eq();
+      f.ifResult(kI64);
+      f.i64c(0);
+      f.else_();
+      argPayload(0);
+      f.end();
+    }
     f.i64Store(0);
     f.lget(addr);
-    argPayload(1);
+    if (inclusive) {
+      argPayload(1);
+    } else {
+      f.lget(1);
+      f.i32c(1);
+      f.i32Eq();
+      f.ifResult(kI64);
+      argPayload(0);
+      f.else_();
+      argPayload(1);
+      f.end();
+    }
     f.i64Store(8);
     f.lget(addr);
-    if (count == 3) {
+    if (inclusive) {
       argTag(2);
       argPayload(2);
       f.call(truthy);
