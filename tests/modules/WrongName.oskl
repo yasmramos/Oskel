@@ -1,0 +1,6 @@
+// Fixture for the class-module error: the single public name must match the
+// PascalCase file name.
+
+fn Other(): int {
+  return 1;
+}

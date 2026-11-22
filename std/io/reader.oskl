@@ -1,0 +1,8 @@
+// Namespace module for the reader half of `std.io`.
+//
+// The class lives in its own PascalCase module so `import std.io.StringReader;`
+// can bind it directly; this module keeps the grouped
+// `std.io.reader.StringReader` spelling for callers that import a namespace.
+import std.io.StringReader as SR;
+
+let StringReader = SR;

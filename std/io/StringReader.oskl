@@ -1,0 +1,134 @@
+// `std.io.StringReader` is a class module: one file, one public class. The
+// PascalCase file name is what makes `import std.io.StringReader;` bind the
+// class itself instead of the module table (docs/language.md §18.6).
+//
+// A forward-only cursor over a string.
+//
+//   let r = StringReader("hello\nworld");
+//   r.readLine()   // "hello"
+//   r.readLine()   // "world"
+//   r.eof()        // true
+import std.io.text as textlib;
+
+class StringReader {
+  text: string;
+  pos: int;
+
+  fn init(text: string) {
+    self.text = text;
+    self.pos = 0;
+  }
+
+  // True when every code point has been consumed.
+  fn eof(): bool {
+    return self.pos >= len(self.text);
+  }
+
+  // The index of the next code point, in code points from the start.
+  fn position(): int {
+    return self.pos;
+  }
+
+  // How many code points are left.
+  fn remaining(): int {
+    return len(self.text) - self.pos;
+  }
+
+  // The unconsumed text, without advancing.
+  fn rest(): string {
+    return self.text[self.pos:len(self.text)];
+  }
+
+  // The next code point, or `""` at the end. Does not advance.
+  fn peek(): string {
+    if (self.eof()) {
+      return "";
+    }
+    return self.text[self.pos];
+  }
+
+  // The next code point and advance, or `""` at the end.
+  fn readChar(): string {
+    let c = self.peek();
+    if (c != "") {
+      self.pos = self.pos + 1;
+    }
+    return c;
+  }
+
+  // Up to `count` code points. A non-positive count returns `""`.
+  fn read(count: int): string {
+    if (count <= 0) {
+      return "";
+    }
+    let end = self.pos + count < len(self.text) ? self.pos + count : len(self.text);
+    let out = self.text[self.pos:end];
+    self.pos = end;
+    return out;
+  }
+
+  // The next line, consuming its `\n` and dropping one trailing `\r`. Returns
+  // `""` at the end; check `eof()` first to tell the two apart.
+  fn readLine(): string {
+    if (self.eof()) {
+      return "";
+    }
+    let start = self.pos;
+    while (self.pos < len(self.text) && self.text[self.pos] != "\n") {
+      self.pos = self.pos + 1;
+    }
+    let line = self.text[start:self.pos];
+    if (self.pos < len(self.text)) {
+      self.pos = self.pos + 1;
+    }
+    return textlib.stripCR(line);
+  }
+
+  // The rest of the text and advance to the end.
+  fn readAll(): string {
+    let out = self.rest();
+    self.pos = len(self.text);
+    return out;
+  }
+
+  // Advances up to `count` code points; returns how many it actually skipped.
+  fn skip(count: int): int {
+    if (count <= 0) {
+      return 0;
+    }
+    let end = self.pos + count < len(self.text) ? self.pos + count : len(self.text);
+    let skipped = end - self.pos;
+    self.pos = end;
+    return skipped;
+  }
+
+  // The run of code points for which `pred` is truthy, and advance past it.
+  fn readWhile(pred): string {
+    let start = self.pos;
+    while (self.pos < len(self.text) && pred(self.text[self.pos])) {
+      self.pos = self.pos + 1;
+    }
+    return self.text[start:self.pos];
+  }
+
+  // Skips the run of code points for which `pred` is truthy; returns its length.
+  fn skipWhile(pred): int {
+    let start = self.pos;
+    while (self.pos < len(self.text) && pred(self.text[self.pos])) {
+      self.pos = self.pos + 1;
+    }
+    return self.pos - start;
+  }
+
+  // Skips ASCII whitespace, then reads up to the next whitespace. `""` at the
+  // end. `int(r.readToken())` parses a number.
+  fn readToken(): string {
+    self.skipWhile(c => textlib.isSpace(c));
+    return self.readWhile(c => !textlib.isSpace(c));
+  }
+
+  // The remaining lines (see `splitLines`), consuming all of them.
+  fn lines(): array {
+    return textlib.splitLines(self.readAll());
+  }
+}
