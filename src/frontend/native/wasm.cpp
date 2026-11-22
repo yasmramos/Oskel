@@ -86,6 +86,11 @@ constexpr std::uint32_t kMapEntryTagOffset = 8;
 constexpr std::uint32_t kMapEntryPayloadOffset = 16;
 constexpr std::uint32_t kMapEntrySize = 24;
 
+// A bound method is a closure whose `flags` word holds one of these selectors;
+// the shared dispatcher reads it and calls the matching helper.
+constexpr std::uint64_t kMethodArrayPush = 0;
+constexpr std::uint64_t kMethodArrayPop = 1;
+
 // mt19937_64 state (PHASE 9.3): 312 words followed by the cursor, the same
 // layout the x86-64 runtime uses, so a seeded stream is identical on both
 // backends and in the VM.
@@ -625,6 +630,11 @@ struct Runtime {
                 tMapDelete = 0, tEquals = 0, tToStrDepth = 0, tInvoke = 0,
                 tBindMethod = 0;
 
+  // Table slot 0 is the shared method dispatcher. A method closure stores that
+  // slot and its selector in `flags`; the dispatcher calls the helper.
+  std::uint32_t methodDispatch = 0;
+  std::vector<std::uint32_t> methodHelpers;
+
   std::uint32_t writeImport = 0, exitImport = 0, timeImport = 0,
                 clockImport = 0;
 
@@ -652,6 +662,7 @@ struct Runtime {
                 sStringImmutable = 0, sIndexRange = 0, sKeyValue = 0;
   std::uint32_t sOpenBracket = 0, sCloseBracket = 0, sOpenBrace = 0,
                 sCloseBrace = 0, sColonSpace = 0, sEllipsis = 0, sLength = 0,
+                sPush = 0, sPop = 0,
                 sCannotSetField = 0, sCannotSlice = 0, sSliceStartInt = 0,
                 sSliceEndInt = 0, sSliceStepInt = 0, sSliceStepZero = 0;
   std::uint32_t sArrayIndexInt = 0, sMapKeyString = 0, sStringIndexInt = 0,
@@ -802,6 +813,8 @@ struct Runtime {
     sColonSpace = pool.addString(": ");
     sEllipsis = pool.addString("...");
     sLength = pool.addString("length");
+    sPush = pool.addString("push");
+    sPop = pool.addString("pop");
     sCannotSetField = pool.addString("cannot set a field on this value");
     sCannotSlice = pool.addString("cannot slice a value of this type");
     sSliceStartInt = pool.addString("slice start must be an integer");
@@ -899,6 +912,11 @@ struct Runtime {
   std::uint32_t emitBuiltin(const std::string& name);
   std::uint32_t emitMemberGet();
   std::uint32_t emitMemberSet();
+  void reserveArrayMethods();
+  void emitArrayMethods();
+  void emitMethodDispatch();
+  void emitMethodValue(Func& f, const char* owner, const char* method,
+                       std::uint64_t selector);
   std::uint32_t emitUtf8ByteOffset();
   std::uint32_t emitTrapBuiltin(const std::string& name);
   // Stack helpers shared by the operator emitters.
@@ -4068,6 +4086,54 @@ std::uint32_t Runtime::emitUtf8ByteOffset() {
   return index;
 }
 
+// Builds a bound-method closure. The receiver is boxed in a cell so the
+// closure keeps it alive when the method is detached, and the selector in
+// `flags` tells the dispatcher which helper to run.
+void Runtime::emitMethodValue(Func& f, const char* owner, const char* method,
+                              std::uint64_t selector) {
+  // `fmtFunc` adds the `<native fn ...>` wrapper itself, so the header keeps
+  // the bare `owner.method` name and marks the closure native in `flags`.
+  const std::uint32_t nameAddress =
+      pool.addString(std::string(owner) + "." + method);
+  const std::uint32_t cell = f.addLocal(kI32), closure = f.addLocal(kI32);
+  f.i32c(16);
+  f.call(alloc);
+  f.lset(cell);
+  f.lget(cell);
+  f.lget(0);
+  f.i64Store(0);
+  f.lget(cell);
+  f.lget(1);
+  f.i64Store(8);
+  f.i32c(48);
+  f.call(alloc);
+  f.lset(closure);
+  f.lget(closure);
+  f.i64c(0);
+  f.i64Store(0);
+  f.lget(closure);
+  f.i64c(static_cast<std::int64_t>(selector));
+  f.i64Store(8);
+  f.lget(closure);
+  f.i64c(1);
+  f.i64Store(16);
+  f.lget(closure);
+  f.i64c(static_cast<std::int64_t>(nameAddress));
+  f.i64Store(24);
+  f.lget(closure);
+  f.i64c(1);
+  f.i64Store(32);
+  f.lget(closure);
+  f.i32c(40);
+  f.i32Add();
+  f.lget(cell);
+  f.i64ExtendI32U();
+  f.i64Store(0);
+  f.i64c(static_cast<std::int64_t>(kFunc));
+  f.lget(closure);
+  f.i64ExtendI32U();
+}
+
 std::uint32_t Runtime::emitMemberGet() {
   std::uint32_t index = m.reserveFunction(tBin);
   Func f(m, index, {kI64, kI64, kI64, kI64});
@@ -4189,6 +4255,22 @@ std::uint32_t Runtime::emitMemberGet() {
   f.i64Load(kArrayLengthOffset);
   f.ret();
   f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sPush));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "array", "push", kMethodArrayPush);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sPop));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "array", "pop", kMethodArrayPop);
+  f.ret();
+  f.end();
   emitFailStatic(f, sNoMember);
   f.end();
 
@@ -4285,6 +4367,143 @@ std::uint32_t Runtime::emitMemberSet() {
   f.end();
   emitFailStatic(f, sCannotSetField);
   return index;
+}
+
+// The method helpers are reserved before `emitCore` so the dispatcher and the
+// method closures can refer to them, and their bodies are emitted after it so
+// they can call the runtime helpers (`arrayPush`, `alloc`, ...).
+void Runtime::reserveArrayMethods() {
+  methodHelpers.clear();
+  methodHelpers.push_back(m.reserveFunction(tValue));  // push
+  methodHelpers.push_back(m.reserveFunction(tValue));  // pop
+}
+
+void Runtime::emitArrayMethods() {
+  {
+    Func f(m, methodHelpers[0], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recv = f.addLocal(kI64), i = f.addLocal(kI32);
+    f.lget(2);
+    f.i32c(40);
+    f.i32Add();
+    f.i64Load(0);
+    f.i32WrapI64();
+    f.lset(cell);
+    f.lget(cell);
+    f.i64Load(8);
+    f.lset(recv);
+    f.lget(recv);
+    f.i32WrapI64();
+    f.lset(header);
+    f.i32c(0);
+    f.lset(i);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(1);
+    f.i32GeS();
+    f.brIf(1);
+    f.lget(header);
+    f.lget(0);
+    f.lget(i);
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i64Load(0);
+    f.lget(0);
+    f.lget(i);
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i64Load(8);
+    f.call(arrayPush);
+    f.lget(i);
+    f.i32c(1);
+    f.i32Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kArray));
+    f.lget(recv);
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[1], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  addr = f.addLocal(kI32);
+    std::uint32_t len = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(0);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    f.lget(2);
+    f.i32c(40);
+    f.i32Add();
+    f.i64Load(0);
+    f.i32WrapI64();
+    f.lset(cell);
+    f.lget(cell);
+    f.i64Load(8);
+    f.i32WrapI64();
+    f.lset(header);
+    f.lget(header);
+    f.i64Load(kArrayLengthOffset);
+    f.lset(len);
+    f.lget(len);
+    f.i64c(0);
+    f.i64Eq();
+    f.if_();
+    f.i64c(static_cast<std::int64_t>(kNil));
+    f.i64c(0);
+    f.ret();
+    f.end();
+    f.lget(len);
+    f.i64c(1);
+    f.i64Sub();
+    f.lset(len);
+    f.lget(header);
+    f.lget(len);
+    f.i64Store(kArrayLengthOffset);
+    f.lget(header);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lget(len);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.lset(addr);
+    f.lget(addr);
+    f.i64Load(0);
+    f.lget(addr);
+    f.i64Load(8);
+    f.ret();
+  }
+}
+
+void Runtime::emitMethodDispatch() {
+  Func f(m, methodDispatch, {kI32, kI32, kI32});
+  std::uint32_t selector = f.addLocal(kI32);
+  f.lget(2);
+  f.i64Load(8);
+  f.i32WrapI64();
+  f.lset(selector);
+  for (std::size_t i = 0; i < methodHelpers.size(); ++i) {
+    f.lget(selector);
+    f.i32c(static_cast<std::int32_t>(i));
+    f.i32Eq();
+    f.if_();
+    f.lget(0);
+    f.lget(1);
+    f.lget(2);
+    f.call(methodHelpers[i]);
+    f.ret();
+    f.end();
+  }
+  emitFailStatic(f, sNoMember);
 }
 
 // -------------------------------------------------------------- collections
@@ -8884,7 +9103,13 @@ std::vector<std::uint8_t> Lowering::run() {
   rt.addImports();
   rt.addStaticStrings();
   rt.dtoaScratch = pool.addZeros(kDtoaScratchBytes);
+  // Table slot 0 is the dispatcher; the method helpers are ordinary functions
+  // called by it, so only the dispatcher needs a table entry.
+  rt.methodDispatch = m.reserveFunction(rt.tValue);
+  rt.reserveArrayMethods();
   rt.emitCore();
+  rt.emitArrayMethods();
+  rt.emitMethodDispatch();
 
   // One static string per string constant and per proto name, created before
   // any proto body is emitted so a LOADK/CLOSURE can name its address.
@@ -8917,7 +9142,7 @@ std::vector<std::uint8_t> Lowering::run() {
       index = rt.emitTrapBuiltin(name);
     }
     builtinFunc[name] = index;
-    builtinTable[name] = static_cast<std::uint32_t>(builtinOrder.size());
+    builtinTable[name] = 1 + static_cast<std::uint32_t>(builtinOrder.size());
     builtinOrder.push_back(name);
   }
 
@@ -8926,7 +9151,7 @@ std::vector<std::uint8_t> Lowering::run() {
   }
   for (std::size_t i = 0; i < protos.size(); ++i) {
     protoTable[protos[i]] =
-        static_cast<std::uint32_t>(builtinOrder.size() + i);
+        1 + static_cast<std::uint32_t>(builtinOrder.size() + i);
   }
 
   for (std::size_t i = 0; i < protos.size(); ++i) emitProto(*protos[i], i);
@@ -8953,6 +9178,7 @@ std::vector<std::uint8_t> Lowering::run() {
   m.data.emplace_back(pool.base, pool.bytes);
 
   m.tableFuncs.clear();
+  m.tableFuncs.push_back(rt.methodDispatch);
   for (const std::string& name : builtinOrder) m.tableFuncs.push_back(builtinFunc[name]);
   for (const Bytecode* proto : protos) m.tableFuncs.push_back(protoFunc[proto]);
 
