@@ -9609,8 +9609,7 @@ void emitTypeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
 // reproduced here so the two engines agree byte for byte. `data` is in rdi and
 // `length` in rsi on entry, the result is in rax. Pure integer code -- no libm,
 // no libc -- so it links into the freestanding binary.
-void emitIntTextParser(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
-                       const DataBlob& message) {
+void emitIntTextParser(CodeGen& cg, CodeGen::Label label) {
   CodeGen::Label trimLeft = cg.newLabel();
   CodeGen::Label trimLeftSkip = cg.newLabel();
   CodeGen::Label trimRight = cg.newLabel();
@@ -9637,6 +9636,8 @@ void emitIntTextParser(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   CodeGen::Label bytesDone = cg.newLabel();
   CodeGen::Label finish = cg.newLabel();
   CodeGen::Label bad = cg.newLabel();
+  CodeGen::Label badOverflow = cg.newLabel();
+  CodeGen::Label badEmpty = cg.newLabel();
 
   constexpr std::int64_t kInt64Max = 0x7FFFFFFFFFFFFFFFLL;
   constexpr std::int64_t kInt64Min = static_cast<std::int64_t>(0x8000000000000000ULL);
@@ -9679,7 +9680,7 @@ void emitIntTextParser(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
 
   cg.bind(trimRightDone);
   cg.cmpReg(Rdi, Rsi);
-  cg.jcc(Jcc::Ae, bad);                   // empty text
+  cg.jcc(Jcc::Ae, badEmpty);              // empty text
 
   // Optional sign. r10 holds the negative flag.
   cg.xorReg(R10, R10);
@@ -9801,10 +9802,10 @@ void emitIntTextParser(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   cg.cmpReg(Rdx, R8);
   cg.jcc(Jcc::Ae, digitsDone);            // digit out of the base's range
   cg.cmpReg(R9, R11);
-  cg.jcc(Jcc::A, bad);                    // acc > cutoff: overflow
+  cg.jcc(Jcc::A, badOverflow);            // acc > cutoff: overflow
   cg.jcc(Jcc::B, accumulate);
   cg.cmpReg(Rdx, Rax);
-  cg.jcc(Jcc::A, bad);                    // acc == cutoff and digit > rem
+  cg.jcc(Jcc::A, badOverflow);            // acc == cutoff and digit > rem
   cg.bind(accumulate);
   cg.imulReg(R9, R8);
   cg.addReg(R9, Rdx);
@@ -9826,28 +9827,210 @@ void emitIntTextParser(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   cg.jcc(Jcc::Eq, finish);
   cg.negReg(R9);
   cg.bind(finish);
-  cg.movReg(Rax, R9);
+  cg.movReg(Rdx, R9);                     // rdx = the value
+  cg.xorReg(Rax, Rax);                    // rax = 0, success
   cg.pop(Rbx);
   cg.retInsn();
 
   cg.bind(bad);
-  emitFailCall(cg, fail, message);
+  cg.movImm(Rax, 1);                      // 1 = malformed text
+  cg.pop(Rbx);
+  cg.retInsn();
+
+  cg.bind(badOverflow);
+  cg.movImm(Rax, 2);                      // 2 = out of the int64 range
+  cg.pop(Rbx);
+  cg.retInsn();
+
+  cg.bind(badEmpty);
+  cg.movImm(Rax, 3);                      // 3 = empty after trimming
+  cg.pop(Rbx);
+  cg.retInsn();
+}
+
+// The constant type names a conversion quotes in its message, in the order
+// `Value::typeName` reports them (PHASE 7c.5b.2c). Built at the call site from
+// the same blobs `type` uses, so the vocabulary cannot drift.
+struct TypeNameBlobs {
+  const DataBlob* nil;
+  const DataBlob* boolValue;
+  const DataBlob* intValue;
+  const DataBlob* floatValue;
+  const DataBlob* doubleValue;
+  const DataBlob* str;
+  const DataBlob* array;
+  const DataBlob* map;
+  const DataBlob* func;
+  const DataBlob* range;
+  const DataBlob* error;
+  const DataBlob* ptr;
+  const DataBlob* cstring;
+};
+
+// The fragments and fixed messages the numeric conversions need to reproduce
+// the hosted engine's error strings exactly (PHASE 7c.5b.2c). A message that
+// quotes the operand is `prefix + <operand> + midQuote + <target>` plus an
+// optional suffix; the rest are whole strings the hosted side also emits.
+struct ConvertMessages {
+  DataBlob prefix;        // "cannot convert '"
+  DataBlob midQuote;      // "' to "
+  DataBlob targetInt;     // "int"
+  DataBlob targetFloat;   // "float"
+  DataBlob targetDouble;  // "double"
+  DataBlob outOfRange;    // " (out of range)"
+  DataBlob useInf;        // " (use inf, -inf or nan)"
+  DataBlob emptyInt;      // "cannot convert an empty string to int"
+  DataBlob emptyFloat;    // "cannot convert an empty string to float"
+  DataBlob emptyDouble;   // "cannot convert an empty string to double"
+  DataBlob nonFiniteInt;  // "cannot convert a non-finite float to int"
+  DataBlob rangeInt;      // "float is out of the integer range"
+  DataBlob argcInt;       // "int() expects 1 argument"
+  DataBlob argcFloat;     // "float() expects 1 argument"
+  DataBlob argcDouble;    // "double() expects 1 argument"
+};
+
+// Frame slots the conversion bodies share. r13-r15 belong to the arena and the
+// global table (`kAotArenaCursor`/`kAotArenaEnd`/`kAotGlobalBase`), so the
+// builder and the operand bytes live on the stack instead.
+constexpr std::int32_t kConvOperandPtr = -24;
+constexpr std::int32_t kConvOperandLen = -32;
+constexpr std::int32_t kConvBuilder = -40;
+constexpr std::int32_t kConvParseCode = -48;
+// The slots above span rbp-24..rbp-56 after the two saved registers at
+// rbp-8/rbp-16; 48 bytes keeps rsp 16-byte aligned at every `call`.
+constexpr std::int32_t kConvFrameBytes = 48;
+
+void saveConvertFrame(CodeGen& cg) {
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, kConvFrameBytes);
+}
+
+void restoreConvertFrame(CodeGen& cg) {
+  cg.addImm32(Rsp, kConvFrameBytes);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// Appends a constant blob to the builder whose address is in `[rbp + slot]`.
+// An empty blob appends nothing, which is how an optional suffix is spelled.
+void emitAppendBlob(CodeGen& cg, CodeGen::Label sbAppend, std::int32_t builderSlot,
+                    const DataBlob& blob) {
+  if (blob.text.empty()) return;
+  cg.movFromMem(Rdi, Rbp, builderSlot);
+  cg.leaRipLabel(Rsi, blob.label);
+  cg.movImm(Rdx, static_cast<std::int64_t>(blob.text.size()));
+  cg.callLabel(sbAppend);
+}
+
+// Stores the constant type-name bytes for the tag in `rax` into the two shared
+// slots -- the same names `Value::typeName` returns. A pointer handle reports
+// `cstring` or `ptr` by its kind; an unknown tag falls back to `nil`. It reads
+// the argument window from rbx.
+void emitTypeNameOfTag(CodeGen& cg, const TypeNameBlobs& names) {
+  struct Case {
+    std::int64_t tag;
+    const DataBlob* blob;
+  };
+  const Case cases[] = {
+      {kTagNil, names.nil},
+      {kTagBool, names.boolValue},
+      {kTagInt, names.intValue},
+      {kTagFloat, names.floatValue},
+      {kTagDouble, names.doubleValue},
+      {kTagStr, names.str},
+      {kTagArray, names.array},
+      {kTagMap, names.map},
+      {kTagFunc, names.func},
+      {kTagRange, names.range},
+      {kTagError, names.error},
+  };
+  CodeGen::Label asPtr = cg.newLabel();
+  CodeGen::Label asCString = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+#define OSKEL_CONV_NAME(blob)                                        \
+  cg.leaRipLabel(Rax, (blob)->label);                                \
+  cg.movToMem(Rbp, kConvOperandPtr, Rax);                            \
+  cg.movImm(Rax, static_cast<std::int64_t>((blob)->text.size()));    \
+  cg.movToMem(Rbp, kConvOperandLen, Rax);                            \
+  cg.jmp(done)
+
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagPtr));
+  cg.jcc(Jcc::Eq, asPtr);
+  for (const Case& c : cases) {
+    CodeGen::Label next = cg.newLabel();
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(c.tag));
+    cg.jcc(Jcc::Ne, next);
+    OSKEL_CONV_NAME(c.blob);
+    cg.bind(next);
+  }
+  OSKEL_CONV_NAME(names.nil);
+
+  cg.bind(asPtr);
+  cg.movFromMem(Rax, Rbx, 8);   // the handle
+  cg.movFromMem(Rax, Rax, kPtrKindOffset);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kPtrKindCString));
+  cg.jcc(Jcc::Eq, asCString);
+  OSKEL_CONV_NAME(names.ptr);
+
+  cg.bind(asCString);
+  OSKEL_CONV_NAME(names.cstring);
+
+#undef OSKEL_CONV_NAME
+
+  cg.bind(done);
+}
+
+// Emits the failure path bound to `label`: it builds
+// `prefix + <operand> + midQuote + target + suffix` in the arena and hands it to
+// `failDynamic`, which is how the hosted engine reports these. It never returns,
+// so the caller jumps here instead of falling through. It runs in the caller's
+// frame, so the operand bytes must already sit in the shared slots.
+void emitQuotedConvertFail(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+                           CodeGen::Label failDynamic, CodeGen::Label sbNew,
+                           CodeGen::Label sbAppend, const DataBlob& msgOom,
+                           const ConvertMessages& msg, const DataBlob& target,
+                           const DataBlob* suffix) {
+  CodeGen::Label oom = cg.newLabel();
+
+  cg.bind(label);
+  cg.callLabel(sbNew);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rbp, kConvBuilder, Rax);
+  emitAppendBlob(cg, sbAppend, kConvBuilder, msg.prefix);
+  cg.movFromMem(Rdi, Rbp, kConvBuilder);
+  cg.movFromMem(Rsi, Rbp, kConvOperandPtr);
+  cg.movFromMem(Rdx, Rbp, kConvOperandLen);
+  cg.callLabel(sbAppend);
+  emitAppendBlob(cg, sbAppend, kConvBuilder, msg.midQuote);
+  emitAppendBlob(cg, sbAppend, kConvBuilder, target);
+  if (suffix != nullptr) emitAppendBlob(cg, sbAppend, kConvBuilder, *suffix);
+  cg.movFromMem(Rax, Rbp, kConvBuilder);
+  cg.movFromMem(Rdi, Rax, kSbDataOffset);
+  cg.movFromMem(Rsi, Rax, kSbLengthOffset);
+  cg.callLabel(failDynamic);
+  cg.ud2();
+
+  cg.bind(oom);
+  emitFailCall(cg, fail, msgOom);
 }
 
 // The three numeric conversions (PHASE 7c.5b.1): the public `int`, `float` and
-// `double` for a numeric or boolean operand. They match the hosted conversions
-// and are pure SSE -- no libm, no libc -- so they link into the freestanding
-// binary. `int` also accepts a string and calls `intTextParser` (7c.5b.2a);
-// `float`/`double` reject a string until 7c.5b.2b, with a clear message. `args`
-// is in rdi, `argc` in rsi on entry; the helpers make no call before they are
-// done with their inputs, so `rsp` stays 16-byte aligned at the `fail` call and
-// they save nothing.
+// `double`. A numeric or boolean operand converts with pure SSE -- no libm, no
+// libc -- so it links into the freestanding binary. A string operand goes
+// through the text parsers, which report *why* they failed so the error can
+// name the operand, the target and the cause exactly as the hosted engine does
+// (PHASE 7c.5b.2c). `args` is in rdi, `argc` in rsi on entry.
 void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
                                    CodeGen::Label floatLabel, CodeGen::Label doubleLabel,
-                                   CodeGen::Label fail, CodeGen::Label intTextParser,
-                                   CodeGen::Label floatTextParser,
-                                   const DataBlob& msgInt,
-                                   const DataBlob& msgFloat, const DataBlob& msgDouble) {
+                                   CodeGen::Label fail, CodeGen::Label failDynamic,
+                                   CodeGen::Label intTextParser,
+                                   CodeGen::Label floatTextParser, CodeGen::Label sbNew,
+                                   CodeGen::Label sbAppend, const DataBlob& msgOom,
+                                   const ConvertMessages& msg, const TypeNameBlobs& names) {
   constexpr int Xmm3 = kXmmBase + 3;
   constexpr int Xmm4 = kXmmBase + 4;
   // 2^63 and -2^63 as binary64 bit patterns: the exclusive/inclusive bounds the
@@ -9867,17 +10050,24 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     CodeGen::Label asBool = cg.newLabel();
     CodeGen::Label asNum = cg.newLabel();
     CodeGen::Label asStr = cg.newLabel();
+    CodeGen::Label strOk = cg.newLabel();
     CodeGen::Label badArgc = cg.newLabel();
+    CodeGen::Label badType = cg.newLabel();
+    CodeGen::Label badEmpty = cg.newLabel();
     CodeGen::Label failFinite = cg.newLabel();
     CodeGen::Label failRange = cg.newLabel();
+    CodeGen::Label quoted = cg.newLabel();
     CodeGen::Label done = cg.newLabel();
 
     cg.bind(intLabel);
     prologue(cg);
-    cg.cmpImm32(Rsi, 1);
+    saveConvertFrame(cg);
+    cg.movReg(Rbx, Rdi);
+    cg.movReg(R12, Rsi);
+    cg.cmpImm32(R12, 1);
     cg.jcc(Jcc::Ne, badArgc);
-    cg.movFromMem(Rax, Rdi, 0);   // tag
-    cg.movFromMem(Rcx, Rdi, 8);   // payload
+    cg.movFromMem(Rax, Rbx, 0);   // tag
+    cg.movFromMem(Rcx, Rbx, 8);   // payload
     cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
     cg.jcc(Jcc::Eq, asInt);
     cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagBool));
@@ -9888,14 +10078,28 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     cg.jcc(Jcc::Eq, asNum);
     cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
     cg.jcc(Jcc::Eq, asStr);
-    emitFailCall(cg, fail, msgInt);
+    cg.jmp(badType);
 
     cg.bind(asStr);
-    cg.movReg(Rdi, Rcx);                          // AotString*
-    cg.movFromMem(Rsi, Rcx, 0);                   // length
-    cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+    // The operand's bytes go into the shared slots for the message; the parser
+    // takes them in rdi/rsi and returns the status in rax, the value in rdx.
+    cg.movReg(Rax, Rcx);
+    cg.addImm32(Rax, static_cast<std::int32_t>(kStringDataOffset));
+    cg.movToMem(Rbp, kConvOperandPtr, Rax);
+    cg.movFromMem(Rax, Rcx, 0);
+    cg.movToMem(Rbp, kConvOperandLen, Rax);
+    cg.movFromMem(Rdi, Rbp, kConvOperandPtr);
+    cg.movFromMem(Rsi, Rbp, kConvOperandLen);
     cg.callLabel(intTextParser);
-    cg.movReg(Rdx, Rax);
+    cg.testReg(Rax);
+    cg.jcc(Jcc::Eq, strOk);
+    // 3 is "empty after trimming"; 1 and 2 (malformed, out of range) both quote
+    // the operand, exactly as `parseIntText` does.
+    cg.cmpImm32(Rax, 3);
+    cg.jcc(Jcc::Eq, badEmpty);
+    cg.jmp(quoted);
+
+    cg.bind(strOk);
     cg.movImm(Rax, kTagInt);
     cg.jmp(done);
 
@@ -9933,15 +10137,22 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     cg.movImm(Rax, kTagInt);
     cg.jmp(done);
 
-    cg.bind(badArgc);
-    emitFailCall(cg, fail, msgInt);
-    cg.bind(failFinite);
-    emitFailCall(cg, fail, msgInt);
-    cg.bind(failRange);
-    emitFailCall(cg, fail, msgInt);
-
     cg.bind(done);
-    epilogue(cg);
+    restoreConvertFrame(cg);
+
+    cg.bind(badArgc);
+    emitFailCall(cg, fail, msg.argcInt);
+    cg.bind(badEmpty);
+    emitFailCall(cg, fail, msg.emptyInt);
+    cg.bind(failFinite);
+    emitFailCall(cg, fail, msg.nonFiniteInt);
+    cg.bind(failRange);
+    emitFailCall(cg, fail, msg.rangeInt);
+    cg.bind(badType);
+    emitTypeNameOfTag(cg, names);
+    cg.jmp(quoted);
+    emitQuotedConvertFail(cg, quoted, fail, failDynamic, sbNew, sbAppend, msgOom, msg,
+                          msg.targetInt, nullptr);
   }
 
   // --- double ---
@@ -9951,17 +10162,24 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     CodeGen::Label asFloat = cg.newLabel();
     CodeGen::Label asDouble = cg.newLabel();
     CodeGen::Label asStr = cg.newLabel();
-    CodeGen::Label failStr = cg.newLabel();
+    CodeGen::Label strOk = cg.newLabel();
     CodeGen::Label badArgc = cg.newLabel();
+    CodeGen::Label badType = cg.newLabel();
+    CodeGen::Label badEmpty = cg.newLabel();
+    CodeGen::Label quoted = cg.newLabel();
+    CodeGen::Label useInf = cg.newLabel();
     CodeGen::Label finish = cg.newLabel();
     CodeGen::Label done = cg.newLabel();
 
     cg.bind(doubleLabel);
     prologue(cg);
-    cg.cmpImm32(Rsi, 1);
+    saveConvertFrame(cg);
+    cg.movReg(Rbx, Rdi);
+    cg.movReg(R12, Rsi);
+    cg.cmpImm32(R12, 1);
     cg.jcc(Jcc::Ne, badArgc);
-    cg.movFromMem(Rax, Rdi, 0);   // tag
-    cg.movFromMem(Rcx, Rdi, 8);   // payload
+    cg.movFromMem(Rax, Rbx, 0);   // tag
+    cg.movFromMem(Rcx, Rbx, 8);   // payload
     cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
     cg.jcc(Jcc::Eq, asInt);
     cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagBool));
@@ -9972,25 +10190,36 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     cg.jcc(Jcc::Eq, asDouble);
     cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
     cg.jcc(Jcc::Eq, asStr);
-    emitFailCall(cg, fail, msgDouble);
+    cg.jmp(badType);
 
-    // A string: parse the text with the freestanding parser, which yields the
-    // binary64 pattern or a failure the hosted engine reports as an error.
     cg.bind(asStr);
-    cg.movReg(Rdi, Rcx);                          // AotString*
-    cg.movFromMem(Rsi, Rcx, 0);                   // length
-    cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+    cg.movReg(Rax, Rcx);
+    cg.addImm32(Rax, static_cast<std::int32_t>(kStringDataOffset));
+    cg.movToMem(Rbp, kConvOperandPtr, Rax);
+    cg.movFromMem(Rax, Rcx, 0);
+    cg.movToMem(Rbp, kConvOperandLen, Rax);
     cg.subRegImm32(Rsp, static_cast<std::int32_t>(kParseFrame));
-    cg.movReg(Rcx, Rsp);                          // scratch
+    cg.movFromMem(Rdi, Rbp, kConvOperandPtr);
+    cg.movFromMem(Rsi, Rbp, kConvOperandLen);
+    cg.movReg(Rcx, Rsp);                                              // scratch
     cg.movReg(Rdx, Rsp);
     cg.addImm32(Rdx, static_cast<std::int32_t>(kParseScratchBytes));  // outBits
     cg.callLabel(floatTextParser);
-    cg.testReg(Rax);
-    cg.jcc(Jcc::Ne, failStr);
+    cg.movToMem(Rbp, kConvParseCode, Rax);
     cg.movFromMem(Rdx, Rsp, static_cast<std::int32_t>(kParseScratchBytes));
-    cg.movReg(R11, Rsp);
-    cg.addImm32(R11, static_cast<std::int32_t>(kParseFrame));
-    cg.movReg(Rsp, R11);
+    cg.movReg(Rcx, Rsp);
+    cg.addImm32(Rcx, static_cast<std::int32_t>(kParseFrame));
+    cg.movReg(Rsp, Rcx);
+    cg.movFromMem(Rax, Rbp, kConvParseCode);
+    cg.testReg(Rax);
+    cg.jcc(Jcc::Eq, strOk);
+    cg.cmpImm32(Rax, 3);
+    cg.jcc(Jcc::Eq, badEmpty);
+    cg.cmpImm32(Rax, 2);
+    cg.jcc(Jcc::Eq, useInf);
+    cg.jmp(quoted);
+
+    cg.bind(strOk);
     cg.movImm(Rax, kTagDouble);
     cg.jmp(done);
 
@@ -10018,13 +10247,20 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     cg.movImm(Rax, kTagDouble);
     cg.jmp(done);
 
-    cg.bind(badArgc);
-    emitFailCall(cg, fail, msgDouble);
-    cg.bind(failStr);
-    emitFailCall(cg, fail, msgDouble);
-
     cg.bind(done);
-    epilogue(cg);
+    restoreConvertFrame(cg);
+
+    cg.bind(badArgc);
+    emitFailCall(cg, fail, msg.argcDouble);
+    cg.bind(badEmpty);
+    emitFailCall(cg, fail, msg.emptyDouble);
+    cg.bind(badType);
+    emitTypeNameOfTag(cg, names);
+    cg.jmp(quoted);
+    emitQuotedConvertFail(cg, quoted, fail, failDynamic, sbNew, sbAppend, msgOom, msg,
+                          msg.targetDouble, nullptr);
+    emitQuotedConvertFail(cg, useInf, fail, failDynamic, sbNew, sbAppend, msgOom, msg,
+                          msg.targetDouble, &msg.useInf);
   }
 
   // --- float ---
@@ -10034,17 +10270,28 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     CodeGen::Label asFloat = cg.newLabel();
     CodeGen::Label asDouble = cg.newLabel();
     CodeGen::Label asStr = cg.newLabel();
-    CodeGen::Label failStr = cg.newLabel();
+    CodeGen::Label strOk = cg.newLabel();
+    CodeGen::Label strFailed = cg.newLabel();
     CodeGen::Label badArgc = cg.newLabel();
+    CodeGen::Label badType = cg.newLabel();
+    CodeGen::Label badEmpty = cg.newLabel();
+    CodeGen::Label quoted = cg.newLabel();
+    CodeGen::Label useInf = cg.newLabel();
+    CodeGen::Label outOfRange = cg.newLabel();
+    CodeGen::Label checkOriginal = cg.newLabel();
     CodeGen::Label roundToFloat = cg.newLabel();
+    CodeGen::Label storeFloat = cg.newLabel();
     CodeGen::Label done = cg.newLabel();
 
     cg.bind(floatLabel);
     prologue(cg);
-    cg.cmpImm32(Rsi, 1);
+    saveConvertFrame(cg);
+    cg.movReg(Rbx, Rdi);
+    cg.movReg(R12, Rsi);
+    cg.cmpImm32(R12, 1);
     cg.jcc(Jcc::Ne, badArgc);
-    cg.movFromMem(Rax, Rdi, 0);   // tag
-    cg.movFromMem(Rcx, Rdi, 8);   // payload
+    cg.movFromMem(Rax, Rbx, 0);   // tag
+    cg.movFromMem(Rcx, Rbx, 8);   // payload
     cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
     cg.jcc(Jcc::Eq, asInt);
     cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagBool));
@@ -10055,26 +10302,32 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     cg.jcc(Jcc::Eq, asDouble);
     cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
     cg.jcc(Jcc::Eq, asStr);
-    emitFailCall(cg, fail, msgFloat);
+    cg.jmp(badType);
 
-    // A string: parse to binary64, then narrow, matching the hosted `float`
+    // A string parses to binary64 and then narrows, matching the hosted `float`
     // (which parses with `strtod` and casts the result to `float`).
     cg.bind(asStr);
-    cg.movReg(Rdi, Rcx);                          // AotString*
-    cg.movFromMem(Rsi, Rcx, 0);                   // length
-    cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+    cg.movReg(Rax, Rcx);
+    cg.addImm32(Rax, static_cast<std::int32_t>(kStringDataOffset));
+    cg.movToMem(Rbp, kConvOperandPtr, Rax);
+    cg.movFromMem(Rax, Rcx, 0);
+    cg.movToMem(Rbp, kConvOperandLen, Rax);
     cg.subRegImm32(Rsp, static_cast<std::int32_t>(kParseFrame));
+    cg.movFromMem(Rdi, Rbp, kConvOperandPtr);
+    cg.movFromMem(Rsi, Rbp, kConvOperandLen);
     cg.movReg(Rcx, Rsp);
     cg.movReg(Rdx, Rsp);
     cg.addImm32(Rdx, static_cast<std::int32_t>(kParseScratchBytes));
     cg.callLabel(floatTextParser);
-    cg.testReg(Rax);
-    cg.jcc(Jcc::Ne, failStr);
+    cg.movToMem(Rbp, kConvParseCode, Rax);
     cg.movFromMem(Rax, Rsp, static_cast<std::int32_t>(kParseScratchBytes));
+    cg.movReg(Rcx, Rsp);
+    cg.addImm32(Rcx, static_cast<std::int32_t>(kParseFrame));
+    cg.movReg(Rsp, Rcx);
+    cg.movFromMem(R11, Rbp, kConvParseCode);
+    cg.testReg(R11);
+    cg.jcc(Jcc::Ne, strFailed);
     cg.movqToXmm(Xmm0, Rax);
-    cg.movReg(R11, Rsp);
-    cg.addImm32(R11, static_cast<std::int32_t>(kParseFrame));
-    cg.movReg(Rsp, R11);
     cg.jmp(roundToFloat);
 
     cg.bind(asInt);
@@ -10097,19 +10350,52 @@ void emitNumericConversionBuiltins(CodeGen& cg, CodeGen::Label intLabel,
     cg.movqToXmm(Xmm0, Rcx);
 
     cg.bind(roundToFloat);
-    cg.cvtsd2ss(Xmm0, Xmm0);      // round to binary32 ...
-    cg.cvtss2sd(Xmm0, Xmm0);      // ... and widen back, as the hosted `Float` holds
-    cg.movqFromXmm(Rdx, Xmm0);
+    cg.cvtsd2ss(Xmm3, Xmm0);      // round to binary32 ...
+    cg.cvtss2sd(Xmm4, Xmm3);      // ... and widen back, as the hosted `Float` holds
+    // A finite binary64 that narrows to an infinity is a range error the hosted
+    // `float` reports separately; a value that was already infinite or NaN is
+    // passed through, because the hosted side only checks the narrowed result.
+    cg.movsdReg(Xmm1, Xmm4);
+    cg.subsd(Xmm1, Xmm4);
+    cg.xorps(Xmm2, Xmm2);
+    cg.ucomisd(Xmm1, Xmm2);       // PF=1 when the narrowed value is inf or NaN
+    cg.jcc(Jcc::P, checkOriginal);
+    cg.jmp(storeFloat);
+    cg.bind(checkOriginal);
+    cg.movsdReg(Xmm1, Xmm0);
+    cg.subsd(Xmm1, Xmm0);
+    cg.ucomisd(Xmm1, Xmm2);       // PF=1 when the original was inf or NaN
+    cg.jcc(Jcc::P, storeFloat);
+    cg.jmp(outOfRange);
+
+    cg.bind(storeFloat);
+    cg.movqFromXmm(Rdx, Xmm4);
     cg.movImm(Rax, kTagFloat);
     cg.jmp(done);
 
-    cg.bind(badArgc);
-    emitFailCall(cg, fail, msgFloat);
-    cg.bind(failStr);
-    emitFailCall(cg, fail, msgFloat);
+    cg.bind(strFailed);
+    cg.cmpImm32(R11, 3);
+    cg.jcc(Jcc::Eq, badEmpty);
+    cg.cmpImm32(R11, 2);
+    cg.jcc(Jcc::Eq, useInf);
+    cg.jmp(quoted);
 
     cg.bind(done);
-    epilogue(cg);
+    restoreConvertFrame(cg);
+
+    cg.bind(badArgc);
+    emitFailCall(cg, fail, msg.argcFloat);
+    cg.bind(badEmpty);
+    emitFailCall(cg, fail, msg.emptyFloat);
+    cg.bind(badType);
+    emitTypeNameOfTag(cg, names);
+    cg.jmp(quoted);
+    emitQuotedConvertFail(cg, quoted, fail, failDynamic, sbNew, sbAppend, msgOom, msg,
+                          msg.targetFloat, nullptr);
+    emitQuotedConvertFail(cg, useInf, fail, failDynamic, sbNew, sbAppend, msgOom, msg,
+                          msg.targetFloat, &msg.useInf);
+    emitQuotedConvertFail(cg, outOfRange, fail, failDynamic, sbNew, sbAppend, msgOom, msg,
+                          msg.targetFloat, &msg.outOfRange);
   }
 }
 
@@ -15584,9 +15870,38 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgChrSurrogate = addText("chr() code point is a surrogate");
   DataBlob msgAssert = addText("assertion failed");
   DataBlob msgPanic = addText("panic");
-  DataBlob msgConvertInt = addText("cannot convert this value to int");
-  DataBlob msgConvertFloat = addText("cannot convert this value to float");
-  DataBlob msgConvertDouble = addText("cannot convert this value to double");
+  // The numeric conversions quote the operand, its type and the cause, so their
+  // messages are assembled at run time from these fragments (PHASE 7c.5b.2c).
+  ConvertMessages convMsg;
+  convMsg.prefix = addText("cannot convert '");
+  convMsg.midQuote = addText("' to ");
+  convMsg.targetInt = addText("int");
+  convMsg.targetFloat = addText("float");
+  convMsg.targetDouble = addText("double");
+  convMsg.outOfRange = addText(" (out of range)");
+  convMsg.useInf = addText(" (use inf, -inf or nan)");
+  convMsg.emptyInt = addText("cannot convert an empty string to int");
+  convMsg.emptyFloat = addText("cannot convert an empty string to float");
+  convMsg.emptyDouble = addText("cannot convert an empty string to double");
+  convMsg.nonFiniteInt = addText("cannot convert a non-finite float to int");
+  convMsg.rangeInt = addText("float is out of the integer range");
+  convMsg.argcInt = addText("int() expects 1 argument");
+  convMsg.argcFloat = addText("float() expects 1 argument");
+  convMsg.argcDouble = addText("double() expects 1 argument");
+  TypeNameBlobs convNames;
+  convNames.nil = &typeNameNil;
+  convNames.boolValue = &typeNameBool;
+  convNames.intValue = &typeNameInt;
+  convNames.floatValue = &typeNameFloat;
+  convNames.doubleValue = &typeNameDouble;
+  convNames.str = &typeNameStr;
+  convNames.array = &typeNameArray;
+  convNames.map = &typeNameMap;
+  convNames.func = &typeNameFunc;
+  convNames.range = &typeNameRange;
+  convNames.error = &typeNameError;
+  convNames.ptr = &typeNamePtr;
+  convNames.cstring = &typeNameCString;
   DataBlob msgFloorType = addText("floor() expects a number argument");
   DataBlob msgCeilType = addText("ceil() expects a number argument");
   DataBlob msgRoundType = addText("round() expects a number argument");
@@ -16214,6 +16529,12 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitSbAppend(cg, sbAppend, handles.alloc, fail, msgOom);
   emitSbAppendByte(cg, sbAppendByte, sbAppend);
   emitSbNew(cg, sbNew, handles.alloc, fail, msgOom);
+  // The conversions assemble their messages with the builder, so their bodies
+  // must follow the helpers they call.
+  emitNumericConversionBuiltins(cg, handles.intBuiltin, handles.floatBuiltin,
+                                handles.doubleBuiltin, fail, failDynamic,
+                                handles.intTextParser, parseFloatHandles.parseDouble,
+                                sbNew, sbAppend, msgOom, convMsg, convNames);
   emitSbAppendEscaped(cg, sbAppendEscapedBytes, sbAppend, sbAppendByte, textQuote,
                       textEscQuote, textEscBackslash, textEscNL, textEscTab, textEscCR,
                       /*fromString=*/false);
@@ -16346,10 +16667,6 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitAssertBuiltin(cg, handles.assertBuiltin, handles.truthy, fail, failDynamic,
                     msgAssert);
   emitPanicBuiltin(cg, handles.panicBuiltin, fail, failDynamic, msgPanic);
-  emitNumericConversionBuiltins(cg, handles.intBuiltin, handles.floatBuiltin,
-                                handles.doubleBuiltin, fail, handles.intTextParser,
-                                parseFloatHandles.parseDouble, msgConvertInt,
-                                msgConvertFloat, msgConvertDouble);
   emitRoundingBuiltin(cg, handles.floorBuiltin, fail, msgFloorType, AotRoundMode::Floor);
   emitRoundingBuiltin(cg, handles.ceilBuiltin, fail, msgCeilType, AotRoundMode::Ceil);
   emitRoundingBuiltin(cg, handles.roundBuiltin, fail, msgRoundType, AotRoundMode::Round);
@@ -16436,7 +16753,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                      handles.memberSet, handles.alloc, fail, failDynamic, msgPcallNotFunc,
                      msgOom, okConst, valueConst, errorConst, pcallHandlerSlot);
   }
-  emitIntTextParser(cg, handles.intTextParser, fail, msgConvertInt);
+  emitIntTextParser(cg, handles.intTextParser);
   dtoa::emitDtoa(cg, dtoaHandles);
   parse_float::emitParseFloat(cg, parseFloatHandles, dtoaHandles);
 

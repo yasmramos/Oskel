@@ -14,3 +14,43 @@ print("float of float =", float(1.5f), float(4.0f));
 print("int of float =", int(1.5f), int(4.9f), int(-1.5f));
 print("int of double =", int(1.5), int(4.9), int(-1.5));
 print("type =", type(double(1.5f)), type(float(1)), type(int(1.5f)));
+
+// A failed conversion reports the operand, the target and the cause, exactly as
+// the hosted engine does (PHASE 7c.5b.2c). The AOT sink used to write one fixed
+// "cannot convert this value to X" blob, so the text diverged on every case
+// below even though both engines failed. `pcall` is the only way to observe it:
+// a raised runtime error is not a value.
+fn msgOf(f: any): string {
+  let r = pcall(f);
+  if (r.ok) { return "ok"; }
+  return r.error.message;
+}
+
+print(msgOf(() => int("abc")));
+print(msgOf(() => int("")));
+print(msgOf(() => int(nil)));
+print(msgOf(() => int([1])));
+print(msgOf(() => int(error("boom"))));
+print(msgOf(() => int("99999999999999999999")));
+print(msgOf(() => int(1e300)));
+print(msgOf(() => int(double("nan"))));
+print(msgOf(() => int(double("inf"))));
+print(msgOf(() => float("abc")));
+print(msgOf(() => float("")));
+print(msgOf(() => float(nil)));
+print(msgOf(() => float("1e40")));
+print(msgOf(() => float("1e400")));
+print(msgOf(() => double("abc")));
+print(msgOf(() => double("")));
+print(msgOf(() => double(nil)));
+print(msgOf(() => double("1e400")));
+
+// The quoted operand is the string's own bytes, and a NUL ends the text the
+// way it ends a C string for the hosted `strtod`/`strtoll`.
+print(msgOf(() => int("\u0000abc")));
+print(msgOf(() => float("1\u0000abc")));
+print("nul tail =", int("4\u00002"), double("1\u0000abc"));
+print("spaces =", int("  42  "), double(" 2.5 "));
+print("signed =", int("-42"), int("+7"));
+print("inf ok =", float("inf"), double("inf"));
+print("nan ok =", float("nan"), double("nan"));

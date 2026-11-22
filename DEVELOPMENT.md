@@ -1375,7 +1375,21 @@ binary prints byte for byte what the VM prints).
       Covered by `tests/parse_float_test.cpp` (the emitted code called through
       a function pointer against `strtod`, 500k random cases plus the edges)
       and `tests/freestanding_test.cpp` (the builtin paths under the real
-      `_start`) and the `oskel build` fixture. **7c.5b.3** (done) adds the exact
+      `_start`) and the `oskel build` fixture. **7c.5b.2c** (done) makes the
+      three conversions report a failed conversion with the hosted engine's
+      exact text. The parsers now return *why* they failed -- 1 malformed, 2
+      out of range, 3 empty after trimming -- and the builtin assembles
+      `cannot convert '<operand>' to <target>` plus an optional cause
+      (` (out of range)`, ` (use inf, -inf or nan)`) in the arena, so a string
+      operand quotes its own bytes and a non-string one quotes its type name.
+      The whole-string cases keep their own text (`cannot convert an empty
+      string to int`, `cannot convert a non-finite float to int`, `float is out
+      of the integer range`). The builder and the operand live in stack slots,
+      never in r13-r15: those three registers are the arena cursor, the arena
+      end and the global table, and clobbering them silently breaks every later
+      allocation. The parser checks "empty" on the trimmed text *before* it cuts
+      at the first NUL, so `float("\u0000abc")` is malformed rather than empty,
+      matching the hosted `strtod` path. **7c.5b.3** (done) adds the exact
       math builtins `floor`, `ceil`, `round` and `sqrt`. They need no libm:
       `floor`/`ceil`/`round` are `cvttsd2si` (truncate) plus a correction
       (`floor` subtracts one when `trunc(x) > x`, `ceil` adds one when
