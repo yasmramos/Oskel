@@ -82,9 +82,11 @@ constexpr std::size_t kParseScratchBytes = sizeof(ParseScratch);
 struct ParseFloatHandles {
   // long oskel_parse_double(const char* data, long length, long* outBits,
   //                         ParseScratch* scratch)
-  // Returns 0 on success (the bit pattern is written to `*outBits`) and 1 on
-  // failure (malformed text, or a silent overflow that the hosted engine
-  // reports as an error rather than an infinity).
+  // Returns 0 on success (the bit pattern is written to `*outBits`). On failure
+  // the code names the cause, because the hosted engine reports a different
+  // message for each: 1 is malformed text, 2 is a magnitude outside the
+  // binary64 range (the hosted `(use inf, -inf or nan)` case) and 3 is text
+  // that is empty after trimming.
   CodeGen::Label parseDouble;
 };
 
