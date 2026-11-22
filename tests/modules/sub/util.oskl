@@ -1,0 +1,3 @@
+// Test fixture: same last segment as tests/modules/util.oskl. Importing both
+// qualified must not let the second one silently steal the short name `util`.
+let answer = 7;

@@ -2607,15 +2607,15 @@ call chain (for example an accidental infinite recursion) builds thousands of
 frames, so the trace prints the outermost ten and the innermost ten and elides
 the middle with a `... N more ...` line; a short trace is printed in full.
 
-A read of an undefined name suggests the full path when the name exists as a
-member of a visible global table. `import std.math;` binds the namespace
-`std.math`, not a bare `math` (see §18), so the common mistake of dropping the
-root is caught with the fix spelled out:
+A read of an undefined name suggests the path when the name exists as a member
+of a visible global table. `import std.math;` binds the module as `std.math`
+and, when free, as `math` (see §18), so a member read that drops both names is
+caught with the fix spelled out:
 
 ```text
-script.oskl:2:7: runtime error: undefined variable 'math' (did you mean 'std.math'?)
+script.oskl:2:7: runtime error: undefined variable 'PI' (did you mean 'math.PI'?)
   |
-2 | print(math.sqrt(4));
+2 | print(PI);
   |       ^
 ```
 
@@ -3068,10 +3068,16 @@ import { sqrt, pow } from std.math; // selective: access is sqrt and pow
 
 | Form | Meaning |
 | --- | --- |
-| `import a.b;` | Load `a/b.oskl` and bind it to the namespace `a.b`. Access is `a.b.name`. |
+| `import a.b;` | Load `a/b.oskl`, bind it to the namespace `a.b`, and also bind the last segment `b` when that name is free. Access is `a.b.name` or `b.name`. |
 | `import a.b.*;` | Load `a/b.oskl` and add all its public names to the current scope. Access is `name`. |
-| `import a.b as c;` | Load `a/b.oskl` and bind it to `c`. Access is `c.name`. |
+| `import a.b as c;` | Load `a/b.oskl` and bind it to `c`. Access is `c.name`. An explicit alias suppresses the short name. |
 | `import { x, y } from a.b;` | Load `a/b.oskl` and bind only `x` and `y`. Access is `x` and `y`. |
+
+The short name is the module's last path segment: `import std.sdl;` makes both
+`std.sdl.delayMs(...)` and `sdl.delayMs(...)` valid. It is skipped when a
+top-level declaration of the importing file owns the name, and a second import
+that would bind the same short name to a different module is a compile error
+(§18.3); use `as` to choose the name in that case.
 
 ### 18.2 What a module exports
 
@@ -3106,12 +3112,16 @@ Wildcard imports are safe because conflicts are caught at compile time. If two i
 
 Conflict detection covers every pair of forms, not only two `.*` imports: a wildcard name that collides with an alias or with a namespace root is reported too, and so is an alias that collides with a namespace root. When both sides are unqualified names the error suggests the qualified form; otherwise it asks you to rename one of the imports.
 
-A `struct` name is compile-time metadata, not a value binding, so it is not covered by the "a local binding wins" rule below: an import that binds the same name is a conflict and is reported. Otherwise `Name { ... }` would stay a struct literal (that form always wins) and hide the import, so `Name.member` would fail only at run time.
+The implicit short name takes part too: `import a.util;` and `import b.util;` both want `util`, so the second one is a compile error. Add `as` to one of the imports to choose a different short name; both full paths stay available.
+
+An explicit binding of the same name wins over the convenience short name: a declaration, a struct, an alias, a wildcard name or a selective name suppresses it without an error, and the full path stays available. Only two implicit short names for different modules collide. This is what keeps `import std.datetime;` and `import std.datetime.*;` working when the module exports a member also called `datetime`.
+
+A `struct` name is compile-time metadata, not a value binding, so it is not covered by the "a local binding wins" rule below: an explicit import that binds the same name is a conflict and is reported. Otherwise `Name { ... }` would stay a struct literal (that form always wins) and hide the import, so `Name.member` would fail only at run time. The implicit short name is the exception: a struct that owns it only suppresses the short binding, while the full path (`a.b.Name`) keeps working.
 
 Two cases are *not* conflicts:
 
 - Importing the same module twice (the same binding, whatever the form).
-- Two dotted imports with the same root (`import a.b;` then `import a.c;`): they are sibling modules of one package and share the namespace table.
+- Two dotted imports with the same root (`import a.b;` then `import a.c;`): they are sibling modules of one package and share the namespace table. Their short names are `b` and `c`, so they do not collide either.
 
 A name the importing module declares itself (`let`, `var` or `fn`) wins over an imported one, whatever the order of the declarations: an import never silently shadows a local binding. The two cases are distinct — a local binding is deliberate and wins; two imports colliding is a mistake and is reported.
 
@@ -3133,10 +3143,11 @@ Nested imports (a module that imports another module) resolve from the same proj
 ### 18.5 Example
 
 ```oskel
-import std.math;            // std.math.sqrt, std.math.pow, ...
+import std.math;            // std.math.sqrt and math.sqrt
 import { sqrt } from std.math;
 
 print(std.math.sqrt(16));   // 4
+print(math.sqrt(36));       // 6
 print(sqrt(25));            // 5
 ```
 
@@ -3145,7 +3156,7 @@ The standard library ships `std.math` (§12.3), `std.json` (§12.9),
 are ordinary modules, so the same four import forms apply:
 
 ```oskel
-import std.json;             // std.json.parse, std.json.stringify, ...
+import std.json;             // std.json.parse and json.parse, ...
 import std.json.*;           // parse, stringify, ...
 import std.json as json;     // json.parse, json.stringify, ...
 import { parse, stringify } from std.json;

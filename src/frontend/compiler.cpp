@@ -56,6 +56,22 @@ std::vector<std::string> splitDotted(const std::string& path) {
   return segments;
 }
 
+// The names a block declares at its own top level (`let`/`var`/`fn`). Such a
+// declaration wins over an import binding, so the import pre-scans must not
+// claim it as a module-local global.
+std::unordered_set<std::string> topLevelDeclaredNames(const BlockStmt& block) {
+  std::unordered_set<std::string> names;
+  for (const auto& child : block.stmts) {
+    if (!child) continue;
+    if (const auto* let = std::get_if<LetStmt>(&child->node)) {
+      names.insert(let->name);
+    } else if (const auto* fn = std::get_if<FnDeclStmt>(&child->node)) {
+      names.insert(fn->name);
+    }
+  }
+  return names;
+}
+
 // Flattens a member chain `a.b.c` into its root name (`a`) and the member names
 // that follow it ({"b","c"}). Returns false when the base of the chain is not a
 // plain variable — `f().x` or `a[0].x` cannot name an imported module, so the
@@ -1787,6 +1803,18 @@ void Compiler::compileImport(const ImportStmt& import, int line, int col) {
   if (import.mode == ImportStmt::Mode::Qualified) {
     std::string boundName = import.alias.empty() ? import.module : import.alias;
     compileQualifiedImport(module, boundName, line, col);
+    // `import a.b;` also binds `b` when that name is free, so the module is
+    // reachable without repeating the whole path. An explicit alias already
+    // chose the short name, and a single-segment path is its own short name.
+    if (import.alias.empty()) {
+      const std::size_t dot = import.module.rfind('.');
+      if (dot != std::string::npos) {
+        std::string shortName = import.module.substr(dot + 1);
+        if (shortName != import.module.substr(0, import.module.find('.'))) {
+          compileQualifiedImport(module, shortName, line, col, true);
+        }
+      }
+    }
     return;
   }
 
@@ -1844,15 +1872,29 @@ void Compiler::predeclareModuleImports(const BlockStmt& block) {
   // the module-local global instead of the program global. Loading a wildcard
   // module here is what lets its exported names be known up front; the load is
   // cached, so `compileImport` reuses it.
+  const std::unordered_set<std::string> declaredHere = topLevelDeclaredNames(block);
   for (const auto& child : block.stmts) {
     if (!child) continue;
     const auto* import = std::get_if<ImportStmt>(&child->node);
     if (!import) continue;
     if (import->mode == ImportStmt::Mode::Qualified) {
       const std::string& bound = import->alias.empty() ? import->module : import->alias;
+      const std::string root = bound.substr(0, bound.find('.'));
       // Only the root of the namespace is a global; deeper segments are members
       // of it, so a read of `a.b.c` starts by reading the module-local `a`.
-      moduleImportNames_.insert(bound.substr(0, bound.find('.')));
+      if (declaredHere.find(root) == declaredHere.end()) moduleImportNames_.insert(root);
+      // The implicit short name (`math` in `import std.math;`) is a second
+      // global the qualified import creates, so a hoisted function may read it
+      // before the import statement is compiled.
+      if (import->alias.empty()) {
+        const std::size_t dot = import->module.rfind('.');
+        if (dot != std::string::npos) {
+          std::string shortName = import->module.substr(dot + 1);
+          if (shortName != root && declaredHere.find(shortName) == declaredHere.end()) {
+            moduleImportNames_.insert(shortName);
+          }
+        }
+      }
     } else if (import->mode == ImportStmt::Mode::Wildcard) {
       const ImportedModule& module = loadModule(import->module, child->line, child->col);
       for (const std::string& name : module.symbols) moduleImportNames_.insert(name);
@@ -1880,23 +1922,34 @@ void Compiler::registerImportBindings(const BlockStmt& block) {
   // are materialized (a module must run when its `import` statement is reached).
   // `flushModuleNativeUses` resolves the recorded accesses after the whole chunk
   // is compiled, when every import has been loaded.
-  std::unordered_set<std::string> declaredHere;
-  for (const auto& child : block.stmts) {
-    if (!child) continue;
-    if (const auto* let = std::get_if<LetStmt>(&child->node)) {
-      declaredHere.insert(let->name);
-    } else if (const auto* fn = std::get_if<FnDeclStmt>(&child->node)) {
-      declaredHere.insert(fn->name);
-    }
-  }
+  const std::unordered_set<std::string> declaredHere = topLevelDeclaredNames(block);
+  std::vector<std::pair<std::string, std::string>> shortNames;
   for (const auto& child : block.stmts) {
     if (!child) continue;
     const auto* import = std::get_if<ImportStmt>(&child->node);
     if (!import || import->mode != ImportStmt::Mode::Qualified) continue;
     const std::string& bindingPath = import->alias.empty() ? import->module : import->alias;
     const std::string shadowRoot = bindingPath.substr(0, bindingPath.find('.'));
-    if (declaredHere.find(shadowRoot) != declaredHere.end()) continue;
-    moduleByBindingPath_[bindingPath] = import->module;
+    if (declaredHere.find(shadowRoot) == declaredHere.end()) {
+      moduleByBindingPath_[bindingPath] = import->module;
+    }
+    // The short name is a separate binding path (`math` in `import std.math;`),
+    // so a declared root does not suppress it.
+    if (import->alias.empty()) {
+      const std::size_t dot = import->module.rfind('.');
+      if (dot != std::string::npos) {
+        std::string shortName = import->module.substr(dot + 1);
+        if (shortName != shadowRoot && declaredHere.find(shortName) == declaredHere.end()) {
+          shortNames.emplace_back(std::move(shortName), import->module);
+        }
+      }
+    }
+  }
+  // Add the convenience names only after every explicit binding path is in the
+  // map, so a short name can never overwrite an alias (`import a.util;` after
+  // `import b.util as util;` must keep `util` on `b.util`).
+  for (const auto& [shortName, module] : shortNames) {
+    moduleByBindingPath_.emplace(shortName, module);
   }
 }
 
@@ -1942,7 +1995,7 @@ int Compiler::ensureNamespace(const std::string& prefix, int line, int col) {
 }
 
 void Compiler::compileQualifiedImport(const ImportedModule& module, const std::string& boundName,
-                                      int line, int col) {
+                                      int line, int col, bool implicitShortAlias) {
   std::vector<std::string> segments = splitDotted(boundName);
   // The module body runs on import even when the binding below is skipped, so
   // its side effects match the wildcard form.
@@ -1957,7 +2010,8 @@ void Compiler::compileQualifiedImport(const ImportedModule& module, const std::s
       isAlias ? ImportBinding::Kind::Module : ImportBinding::Kind::Namespace;
   // A local binding wins, a repeated import is a no-op, and a genuine
   // collision with another import form is a compile error (docs/language.md §18.3).
-  if (!recordImportBinding(visible, kind, module.path, line, col)) return;
+  if (!recordImportBinding(visible, kind, module.path, line, col, implicitShortAlias))
+    return;
 
   int table = allocReg();
   emit(OpCode::GETGLOBAL, table, addString("$module$" + module.path));
@@ -1977,12 +2031,23 @@ void Compiler::compileQualifiedImport(const ImportedModule& module, const std::s
 }
 
 bool Compiler::recordImportBinding(const std::string& visible, ImportBinding::Kind kind,
-                                   const std::string& module, int line, int col) {
+                                   const std::string& module, int line, int col,
+                                   bool implicitShortAlias) {
   // A name the importing module declares itself (`let`/`var`/`fn`) always wins
   // over an import, whatever the order of the declarations. Such a name is not
   // an import binding, so it never triggers an ambiguity either (DEVELOPMENT.md
   // §18.3).
-  if (userGlobals_.find(visible) != userGlobals_.end()) return false;
+  if (userGlobals_.find(visible) != userGlobals_.end()) {
+    // The declaration owns the name; the convenience short binding is gone, so
+    // a member chain rooted at it must not be resolved as a module export.
+    if (implicitShortAlias) {
+      auto it = moduleByBindingPath_.find(visible);
+      if (it != moduleByBindingPath_.end() && it->second == module) {
+        moduleByBindingPath_.erase(it);
+      }
+    }
+    return false;
+  }
 
   // A declared `struct` is compile-time metadata, not a value binding, so
   // `userGlobals_` does not track it. An import must not silently take the name
@@ -1992,6 +2057,15 @@ bool Compiler::recordImportBinding(const std::string& visible, ImportBinding::Ki
   // records every struct of the block before any statement compiles, so this
   // catches both source orders (docs/language.md §18.3).
   if (structDefs_.find(visible) != structDefs_.end()) {
+    // The short name is a convenience, not the import itself: a struct that
+    // owns the name only suppresses it, while `std.sdl` keeps working.
+    if (implicitShortAlias) {
+      auto it = moduleByBindingPath_.find(visible);
+      if (it != moduleByBindingPath_.end() && it->second == module) {
+        moduleByBindingPath_.erase(it);
+      }
+      return false;
+    }
     fail("'" + visible + "' is ambiguous between struct '" + visible + "' and module '" +
              module + "'; rename one of them to disambiguate",
          line, col);
@@ -1999,12 +2073,44 @@ bool Compiler::recordImportBinding(const std::string& visible, ImportBinding::Ki
 
   auto existing = importedNames_.find(visible);
   if (existing == importedNames_.end()) {
-    importedNames_[visible] = ImportBinding{kind, module};
+    importedNames_[visible] = ImportBinding{kind, module, implicitShortAlias};
     return true;
   }
-  const ImportBinding& previous = existing->second;
-  // Importing the very same binding again is not a conflict.
-  if (previous.kind == kind && previous.module == module) return false;
+  ImportBinding& previous = existing->second;
+  // Importing the very same binding again is not a conflict. An explicit use
+  // upgrades an earlier convenience binding.
+  if (previous.kind == kind && previous.module == module) {
+    if (!implicitShortAlias) previous.implicit = false;
+    return false;
+  }
+  // The convenience short name is weaker than an explicit import: an explicit
+  // binding of the same name replaces it, and an explicit binding already owns
+  // the name. This is what lets `import std.datetime;` coexist with a wildcard
+  // that exports a member also called `datetime`.
+  if (previous.implicit && !implicitShortAlias) {
+    // A non-module binding is not a table, so the short name must stop
+    // resolving as a module export. An explicit alias is a table and already
+    // owns the mapping.
+    if (kind != ImportBinding::Kind::Module) {
+      auto it = moduleByBindingPath_.find(visible);
+      if (it != moduleByBindingPath_.end() && it->second == previous.module) {
+        moduleByBindingPath_.erase(it);
+      }
+    }
+    previous = ImportBinding{kind, module, false};
+    return true;
+  }
+  if (implicitShortAlias && !previous.implicit) {
+    // The explicit binding owns the name. A module alias keeps its own mapping;
+    // a plain name or a namespace root does not name a table.
+    if (previous.kind != ImportBinding::Kind::Module) {
+      auto it = moduleByBindingPath_.find(visible);
+      if (it != moduleByBindingPath_.end() && it->second == module) {
+        moduleByBindingPath_.erase(it);
+      }
+    }
+    return false;
+  }
   // Two dotted imports with the same root are sibling modules of one package:
   // they share the namespace table, so the bindings merge instead of colliding.
   if (previous.kind == ImportBinding::Kind::Namespace &&
@@ -2017,6 +2123,8 @@ bool Compiler::recordImportBinding(const std::string& visible, ImportBinding::Ki
   if (previous.kind == ImportBinding::Kind::Name && kind == ImportBinding::Kind::Name) {
     message += "; use '" + previous.module + "." + visible + "' or '" + module + "." +
                visible + "' to disambiguate";
+  } else if (implicitShortAlias) {
+    message += "; add 'as' to one of the imports to choose the short name";
   } else {
     message += "; rename one of the imports to disambiguate";
   }

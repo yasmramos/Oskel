@@ -9,6 +9,12 @@ print(modules.util.answer);
 print(modules.util.square(5));
 print(modules.util.cube(3));
 
+// --- the qualified import also binds the last segment ----------------------
+// `import modules.util;` binds `util` when that name is free, so the module is
+// reachable without repeating the whole path.
+print(util.answer);
+print(util.square(5));
+
 // --- alias: `import path as name;` -----------------------------------------
 import modules.util as u;
 print(u.square(6));
@@ -30,3 +36,10 @@ print(answer);
 // --- nested: a module that imports another module --------------------------
 import modules.nested;
 print(modules.nested.sumOfSquares(3, 4));
+
+// --- an explicit alias wins over an earlier short name ---------------------
+// `util` was the short name of modules.util; the alias below takes it over,
+// while the full path stays available.
+import modules.sub.util as util;
+print(util.answer);              // 7: the explicit alias
+print(modules.util.answer);      // 42: the full path still works

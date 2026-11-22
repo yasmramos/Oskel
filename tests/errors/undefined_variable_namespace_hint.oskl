@@ -1,6 +1,7 @@
 // expect-exit: 70
-// `import std.math;` binds the namespace `std.math`, not a bare `math`, so the
-// read below fails and the runtime error suggests the full path:
-// "undefined variable 'math' (did you mean 'std.math'?)".
+// `import std.math;` binds the module as `std.math` and, when free, as `math`.
+// A member read that drops both still fails, and the runtime error suggests the
+// path the module is reachable through: "undefined variable 'PI' (did you mean
+// 'math.PI'?)".
 import std.math;
-print(math.sqrt(4));
+print(PI);
