@@ -155,9 +155,13 @@ the standalone entry point over the same core `oskel build --linker own` and
 ```
 
 The image is a dynamically linked x86-64 Linux ELF (`libc.so.6`, plus
-`libm.so.6` when a symbol needs it). An archive member is pulled in only when
-it defines a still-undefined symbol. `-L` and `--link-lib` select a third-party
-library (`--link-lib SDL3`); the binary records the library's SONAME.
+`libm.so.6` when a symbol needs it). It loads `.text`, `.rodata`, `.data` and
+`.bss` from GCC/Clang objects (including the `.text.*`/`.rodata.*`/`.data.*`/
+`.bss.*` variants), resolves section symbols and the common x86-64 relocations,
+and ignores `.eh_frame`, TLS and the C++ runtime sections. An archive member is
+pulled in only when it defines a still-undefined symbol. `-L` and `--link-lib`
+select a third-party library (`--link-lib SDL3`); the binary records the
+library's SONAME.
 `oskel build --linker own --link-object helper.o` is the same capability
 through the build command. The linker is opt-in (PHASE 10.1/10.2) and only
 targets `x86_64-linux-sysv`; `--linker host` keeps the `$CC` path. See

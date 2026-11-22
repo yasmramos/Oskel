@@ -984,6 +984,45 @@ if(BUILD_TESTING)
           "-DOSKEL_EXPECTED_OUTPUT=42"
           "-DOSKEL_AR=${OSKEL_AR}"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_multi.cmake")
+      # PHASE 10.2b: .rodata, .data and .bss, including a pointer table whose
+      # entries are R_X86_64_64 relocations against .rodata section symbols.
+      # The second helper is -fPIC, so its globals travel through the GOT.
+      add_library(oskel_link_data_helper OBJECT
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/link_data_helper.cpp")
+      set_target_properties(oskel_link_data_helper PROPERTIES
+        POSITION_INDEPENDENT_CODE OFF)
+      target_compile_options(oskel_link_data_helper PRIVATE -fno-pie)
+      add_library(oskel_link_data_pic_helper OBJECT
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/link_data_helper.cpp")
+      set_target_properties(oskel_link_data_pic_helper PROPERTIES
+        POSITION_INDEPENDENT_CODE ON)
+      target_compile_options(oskel_link_data_pic_helper PRIVATE -fPIC)
+      if(CMAKE_CXX_FLAGS MATCHES "-fsanitize")
+        target_compile_options(oskel_link_data_helper PRIVATE -fno-sanitize=all)
+        target_compile_options(oskel_link_data_pic_helper PRIVATE -fno-sanitize=all)
+      endif()
+      add_test(NAME oskel.build_hosted_own_link_data
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_own_link_data"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+          "-DOSKELD_EXE=$<TARGET_FILE:oskelld>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_link_data.oskl"
+          "-DOSKEL_HELPER_OBJECT=$<TARGET_OBJECTS:oskel_link_data_helper>"
+          "-DOSKEL_EXPECTED_OUTPUT=data ok 8 9 0 alpha beta"
+          "-DOSKEL_AR=${OSKEL_AR}"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_multi.cmake")
+      add_test(NAME oskel.build_hosted_own_link_data_pic
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_own_link_data_pic"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+          "-DOSKELD_EXE=$<TARGET_FILE:oskelld>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_link_data.oskl"
+          "-DOSKEL_HELPER_OBJECT=$<TARGET_OBJECTS:oskel_link_data_pic_helper>"
+          "-DOSKEL_EXPECTED_OUTPUT=data ok 8 9 0 alpha beta"
+          "-DOSKEL_AR=${OSKEL_AR}"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_multi.cmake")
       # A class-MEMORY struct (larger than two eightbytes) is stack-passed and
       # `sret`-returned, a shape no libc symbol exercises: the fixture links a
       # small C helper of its own.
@@ -1828,6 +1867,11 @@ if(BUILD_TESTING)
     # `native_build_link_obj` binds a helper object the VM cannot resolve;
     # `oskel.build_hosted_own_link_obj` is the coverage.
     if(name STREQUAL "native_build_link_obj")
+      continue()
+    endif()
+    # `native_build_link_data` binds a helper object with .data/.bss the VM
+    # cannot resolve; `oskel.build_hosted_own_link_data` is the coverage.
+    if(name STREQUAL "native_build_link_data")
       continue()
     endif()
     # The stored/many-args/returns callback fixtures bind helpers the VM cannot

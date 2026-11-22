@@ -3101,8 +3101,11 @@ objects `--emit-object` writes (and System V/GNU `ar` archives) and closes them
 into a dynamically linked x86-64 Linux executable. An archive member is pulled
 in only when it defines a still-undefined symbol. `oskelld -r <object.o>...`
 combines the inputs into a new relocatable object instead, which can be linked
-again. `--linker own` is opt-in and supports `x86_64-linux-sysv` only;
-`--linker host` keeps the `$CC` path.
+again. The linker loads `.text`, `.rodata`, `.data` and `.bss` (including the
+`.text.*`/`.rodata.*`/`.data.*`/`.bss.*` variants a C compiler emits), resolves
+section symbols and the common x86-64 relocations, and ignores `.eh_frame`,
+TLS and the C++ runtime sections. `--linker own` is opt-in and supports
+`x86_64-linux-sysv` only; `--linker host` keeps the `$CC` path.
 
 Options must come before the file. Everything after the file is considered an argument of the script and is obtained with `args()`.
 
