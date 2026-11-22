@@ -4,6 +4,6 @@
 // the build must fail with the dedicated extern message and exit 65, never emit
 // a binary. The import is the module's own, so this also covers the rule that
 // an *unused* `extern "C"` is harmless while a used one fails cleanly.
-import std.sdl;
+import std.internal.sdl;
 
-print(std.sdl.initVideo());
+print(std.internal.sdl.initVideo());

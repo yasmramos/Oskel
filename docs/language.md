@@ -3256,9 +3256,9 @@ features of this release.
 - The first UI layer is `std/ui.oskl` (`docs/ui.md`): a declarative widget
   tree, deterministic layout, a `rect`/`text` display list and button hit
   testing, all plain Oskel over the portable primitive surface. Skia renders it
-  through `bindings/skia/skia_ui.oskl` (`docs/cxxbind.md`); SDL3 still owns the
-  OS window and events. Input widgets, a real event loop, font metrics and
-  presenting Skia into an SDL3 window are post-1.0 work.
+  through `std/internal/skia_ui.oskl` (`docs/cxxbind.md`); `std.ui.window`
+  presents it in an SDL3 window and runs the event loop. Input widgets, real
+  font metrics, text wrapping and dirty-region redraw are post-1.0 work.
 - No async/await, generics, full pattern matching, generators, or transactions. These are out of scope (see `DEVELOPMENT.md`).
 - Map keys are always strings. Literals accept identifier, string, scalar (`int`, `float`, `double`, `true`, `false`, `nil`) and computed `[expr]` keys; non-string keys are canonicalized to their string form.
 - A body of `if`, `while`, `for` or `for-in` may be a block or a single statement without braces; a brace-less body is wrapped in a block, so its bytecode and scoping match the brace form. `switch` arms always require braces.
@@ -3327,8 +3327,8 @@ import { sqrt, pow } from std.math; // selective: access is sqrt and pow
 | `import a.b as c;` | Load `a/b.oskl` and bind it to `c`. Access is `c.name`. An explicit alias suppresses the short name. A class module binds its class under `c`. |
 | `import { x, y } from a.b;` | Load `a/b.oskl` and bind only `x` and `y`. Access is `x` and `y`. |
 
-The short name is the module's last path segment: `import std.sdl;` makes both
-`std.sdl.delayMs(...)` and `sdl.delayMs(...)` valid. It is skipped when a
+The short name is the module's last path segment: `import std.math;` makes both
+`std.math.sqrt(...)` and `math.sqrt(...)` valid. It is skipped when a
 top-level declaration of the importing file owns the name, and a second import
 that would bind the same short name to a different module is a compile error
 (§18.3); use `as` to choose the name in that case.
@@ -3418,8 +3418,19 @@ split into class modules (`std.io.StringReader`, `std.io.StringWriter`) and
 namespace modules (`std.io.reader`, `std.io.writer`, `std.io.text`) behind the
 `std.io` facade; `std.fs` is split the same way, with `std.fs.File` as its class
 module and `std.fs.dir` as its directory namespace. The four import forms above
-apply to the facades, and the class modules add the direct form of §18.6. All of
-them are modules:
+apply to the facades, and the class modules add the direct form of §18.6.
+`std.ui` (widgets) and `std.ui.window` (SDL3 window and event loop) are the UI
+layer (`docs/ui.md`).
+
+Modules under `std.internal/` are implementation details of a public module
+(SDL3 and Skia, for example); import the public module instead:
+
+```oskel
+import std.ui as ui;                 // widgets
+import std.ui.window as ui_window;   // SDL3 window and event loop
+```
+
+All of them are modules:
 
 ```oskel
 import std.json;             // std.json.parse and json.parse, ...
