@@ -89,4 +89,4 @@ print("fill =", fill(StringWriter()).toString());
 
 print("qualified =", io.joinLines(["x", "y"]), io.splitLines("x\ny"));
 print("selective =", joinLines(["p", "q"]));
-print("input =", text);
+print("input =", splitLines(text));
