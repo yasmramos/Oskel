@@ -56,27 +56,34 @@ std::string hostedLinkerCommand();
 std::string shellQuote(const std::string& path);
 
 // Links a relocatable object into a hosted executable with the host C
-// compiler. `linkLibs` are library names (`SDL3`) passed as `-l<name>`, which
-// is how a program's `extern "C"` symbols in a third-party library resolve.
-// `linkObjects` are extra object files or `ar` archives passed to the compiler
-// driver as additional inputs (PHASE 10.2). Returns 0 on success, 65 when the
-// toolchain is missing or the link fails -- never a half-linked image.
+// compiler. `linkLibs` are library names (`SDL3`, passed as `-l<name>`) or
+// paths (the bundled `libSDL3.so`/`SDL3.lib`), which is how a program's
+// `extern "C"` symbols in a third-party library resolve. `linkObjects` are
+// extra object files or `ar` archives passed to the compiler driver as
+// additional inputs (PHASE 10.2); `runPaths` become rpath entries on POSIX.
+// Returns 0 on success, 65 when the toolchain is missing or the link fails --
+// never a half-linked image.
 int linkHostedObject(const std::string& objectPath, const std::string& output,
                      const Target& target, const std::string& tool,
                      const std::vector<std::string>& linkLibs,
                      const std::vector<std::string>& libraryPaths,
-                     const std::vector<std::string>& linkObjects);
+                     const std::vector<std::string>& linkObjects,
+                     const std::vector<std::string>& runPaths);
 
 // Compiles `source` (resolving imports) and writes a native binary to
 // `output`. Returns 0 on success, 65 for compile errors and 74 for a write
 // failure. `tool` names the binary in diagnostics (`oskel build` or `oskelc`).
 // `linker` selects how a hosted object is closed and `emitObject` stops after
 // writing that object (the input of `oskelld`). `linkLibs` and `linkObjects`
-// reach the hosted linker; both are empty in freestanding mode.
+// reach the hosted linker; both are empty in freestanding mode. When
+// `autoHostedForUi` is set, a program that imports a native UI backend selects
+// the hosted mode and the bundled libraries itself; an explicit mode still
+// wins.
 int buildBinary(const std::string& source, const std::string& name,
                 const std::string& output, const std::string& argv0,
                 const Target& target, LinkMode mode, Linker linker,
-                bool emitObject, const std::vector<std::string>& linkLibs,
+                bool emitObject, bool autoHostedForUi,
+                const std::vector<std::string>& linkLibs,
                 const std::vector<std::string>& libraryPaths,
                 const std::vector<std::string>& linkObjects,
                 const std::string& tool);

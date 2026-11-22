@@ -100,6 +100,13 @@ class Compiler {
   // Compiles a whole program. The resulting bytecode ends with HALT.
   Bytecode compile(const StmtPtr& program);
 
+  // Identifiers of every module the last `compile` loaded: a dotted name
+  // (`std.ui`) or a resolved path for a file import. A build uses this to see
+  // whether the program reaches the native UI backend, which the bytecode
+  // alone cannot tell: those modules export ordinary `oskel_*` functions, a
+  // shape user bindings also use.
+  std::vector<std::string> loadedModulePaths() const;
+
   // Compiles a single expression into a chunk that ends with RETURN, so the
   // VM can hand the value back to the REPL. Globals persist across chunks.
   Bytecode compileExpression(const ExprPtr& expr);

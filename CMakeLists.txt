@@ -120,6 +120,12 @@ endif()
 add_library(oskel_frontend STATIC ${OSKEL_CORE_SOURCES} ${OSKEL_FRONTEND_SOURCES})
 target_include_directories(oskel_frontend PUBLIC src include)
 target_compile_options(oskel_frontend PRIVATE ${OSKEL_WARNINGS})
+
+# `ui_runtime.cpp` looks for the bundled UI libraries in the build tree while
+# running from a checkout, and beside the executable after `cmake --install`.
+set(OSKEL_UI_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/ui")
+target_compile_definitions(oskel_frontend PRIVATE
+  OSKEL_UI_LIBDIR_BUILD="${OSKEL_UI_BUILD_DIR}")
 # `Platform::lookupSymbol` resolves `extern "C"` declarations with `dlsym`
 # (PHASE 6.6). Empty on platforms that fold libdl into libc (glibc 2.34+,
 # Windows), so linking it unconditionally is safe and portable.
@@ -170,31 +176,116 @@ target_link_libraries(oskel PRIVATE oskel_lib)
 target_compile_options(oskel PRIVATE ${OSKEL_WARNINGS})
 
 # --------------------------------------------------------------------------- SDL3 (optional)
-# `std/internal/sdl.oskl` binds SDL3's window, renderer and event surface. The module is
-# always installed; the development engine links SDL3 when CMake finds it, so
-# `import std.internal.sdl` resolves the `SDL_*` symbols through `dlsym(RTLD_DEFAULT)`.
-# `oskelc` does not link it: it only compiles the module, and a native binary
-# gets the symbols from the hosted link (`--link-lib SDL3`).
+# `std/internal/sdl.oskl` binds SDL3's window, renderer and event surface. The
+# module is always installed; the engine loads the bundled library lazily when
+# the program asks for an `SDL_*` symbol, so a program that does not import
+# `std.ui` never pays for SDL3.
 #
-# `--as-needed` drops a shared library nothing references at link time, and the
-# engine only names SDL3 through `dlsym`, so the library must be forced in.
-# `ENABLE_EXPORTS` adds the `-rdynamic`/`-export_dynamic` flag a static SDL3
-# build would need for the same lookup to find the symbols in the executable.
-option(OSKEL_ENABLE_SDL3 "Link the development engine against SDL3" ON)
+# A static SDL3 is linked into the engine (it cannot be `dlopen`ed); a shared
+# one is copied beside the build so `ui_runtime.cpp` finds it in a checkout, and
+# installed under `lib/oskel/ui` for the released engine.
+option(OSKEL_ENABLE_SDL3 "Enable SDL3 for the standard UI backend" ON)
 set(OSKEL_SDL3_FOUND FALSE)
 if(OSKEL_ENABLE_SDL3)
   find_package(SDL3 QUIET)
   if(SDL3_FOUND)
     set(OSKEL_SDL3_FOUND TRUE)
-    target_link_libraries(oskel PRIVATE SDL3::SDL3)
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-      target_link_options(oskel PRIVATE "-Wl,--no-as-needed")
+    get_target_property(_sdl3_type SDL3::SDL3 TYPE)
+    if(_sdl3_type STREQUAL "STATIC_LIBRARY")
+      target_link_libraries(oskel PRIVATE SDL3::SDL3)
+      set_target_properties(oskel PROPERTIES ENABLE_EXPORTS ON)
+      if(WIN32)
+        set(_sdl3_bundle_name "SDL3.lib")
+      else()
+        set(_sdl3_bundle_name "libSDL3.a")
+      endif()
+      add_custom_command(TARGET oskel POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${OSKEL_UI_BUILD_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:SDL3::SDL3>"
+                "${OSKEL_UI_BUILD_DIR}/${_sdl3_bundle_name}"
+        VERBATIM)
+      install(FILES "$<TARGET_FILE:SDL3::SDL3>" DESTINATION lib/oskel/ui
+              RENAME "${_sdl3_bundle_name}")
+    else()
+      add_custom_command(TARGET oskel POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${OSKEL_UI_BUILD_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:SDL3::SDL3>"
+                "${OSKEL_UI_BUILD_DIR}/$<TARGET_FILE_NAME:SDL3::SDL3>"
+        VERBATIM)
+      if(UNIX AND NOT APPLE)
+        # The linked image records SDL's SONAME (`libSDL3.so.0`), not the
+        # versioned file the target names. Give the bundle the names both the
+        # loader and `-lSDL3` look for.
+        add_custom_command(TARGET oskel POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E rm -f
+                  "${OSKEL_UI_BUILD_DIR}/libSDL3.so.0"
+                  "${OSKEL_UI_BUILD_DIR}/libSDL3.so"
+          COMMAND ${CMAKE_COMMAND} -E create_symlink
+                  "$<TARGET_FILE_NAME:SDL3::SDL3>"
+                  "${OSKEL_UI_BUILD_DIR}/libSDL3.so.0"
+          COMMAND ${CMAKE_COMMAND} -E create_symlink
+                  "libSDL3.so.0" "${OSKEL_UI_BUILD_DIR}/libSDL3.so"
+          VERBATIM)
+      endif()
+      if(WIN32)
+        add_custom_command(TARGET oskel POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                  "$<TARGET_LINKER_FILE:SDL3::SDL3>"
+                  "${OSKEL_UI_BUILD_DIR}/$<TARGET_LINKER_FILE_NAME:SDL3::SDL3>"
+          VERBATIM)
+        install(FILES "$<TARGET_FILE:SDL3::SDL3>" DESTINATION lib/oskel/ui)
+        install(FILES "$<TARGET_LINKER_FILE:SDL3::SDL3>" DESTINATION lib/oskel/ui)
+      elseif(UNIX AND NOT APPLE)
+        install(FILES "$<TARGET_FILE:SDL3::SDL3>" DESTINATION lib/oskel/ui
+                RENAME "libSDL3.so.0")
+        install(FILES "$<TARGET_FILE:SDL3::SDL3>" DESTINATION lib/oskel/ui
+                RENAME "libSDL3.so")
+      else()
+        install(FILES "$<TARGET_FILE:SDL3::SDL3>" DESTINATION lib/oskel/ui)
+      endif()
     endif()
-    set_target_properties(oskel PROPERTIES ENABLE_EXPORTS ON)
     message(STATUS "SDL3 found: std.internal.sdl enabled in the development engine")
   else()
     message(STATUS "SDL3 not found: std.internal.sdl tests skipped (set OSKEL_ENABLE_SDL3=OFF to silence)")
   endif()
+endif()
+
+# --------------------------------------------------------------------------- Skia (optional)
+# `std/internal/skia.oskl` is the raster backend for `std.ui`. The checked-in
+# module needs no Skia to compile; building the C++ shim needs a Skia root with
+# headers and a built `libskia.a`/`libskia.so`.
+#
+# When both are present CMake builds `skia_shim` into `build/ui`, which is the
+# directory `ui_runtime.cpp` searches while running from a checkout. The
+# installed engine finds the same file under `lib/oskel/ui`.
+set(OSKEL_SKIA_DIR "" CACHE PATH
+    "Skia root with include/core/SkSurface.h (enables the UI backend)")
+set(OSKEL_SKIA_LIB "" CACHE FILEPATH
+    "Path to libskia.a or libskia.so (enables the UI backend)")
+if(WIN32)
+  # MSVC links system libraries by name; the POSIX `-l` spellings are invalid.
+  set(OSKEL_SKIA_LIBS "" CACHE STRING
+      "Extra link arguments for the Skia shim")
+else()
+  set(OSKEL_SKIA_LIBS "-lpthread -ldl -lm" CACHE STRING
+      "Extra link arguments for the Skia shim")
+endif()
+if(OSKEL_SKIA_DIR AND NOT OSKEL_SKIA_LIB)
+  foreach(_skia_candidate
+      "${OSKEL_SKIA_DIR}/out/Release/libskia.a"
+      "${OSKEL_SKIA_DIR}/out/Release-x64/libskia.a"
+      "${OSKEL_SKIA_DIR}/out/Release/libskia.so"
+      "${OSKEL_SKIA_DIR}/out/Release-x64/libskia.so"
+      "${OSKEL_SKIA_DIR}/out/Release/skia.lib"
+      "${OSKEL_SKIA_DIR}/out/Release-x64/skia.lib")
+    if(EXISTS "${_skia_candidate}")
+      set(OSKEL_SKIA_LIB "${_skia_candidate}" CACHE FILEPATH
+          "Path to libskia.a or libskia.so (enables the UI backend)" FORCE)
+      break()
+    endif()
+  endforeach()
 endif()
 
 # `oskelc`: the host compiler. Sources in, a native image out; it links the front
@@ -230,6 +321,81 @@ target_link_libraries(bindgen PRIVATE bindgen_lib)
 target_compile_options(bindgen PRIVATE ${OSKEL_WARNINGS})
 
 install(TARGETS bindgen RUNTIME DESTINATION bin)
+
+# --------------------------------------------------------------------------- UI runtime
+# Build the Skia bridge when a Skia root is available. The generated module
+# stays in the build tree; the checked-in `std/internal/skia.oskl` is the
+# module the compiler installs, and `cxxbind.generate` keeps the two identical.
+if(OSKEL_SKIA_DIR AND OSKEL_SKIA_LIB)
+  if(NOT EXISTS "${OSKEL_SKIA_DIR}/include/core/SkSurface.h")
+    message(FATAL_ERROR
+      "OSKEL_SKIA_DIR does not contain include/core/SkSurface.h: ${OSKEL_SKIA_DIR}")
+  endif()
+  if(NOT EXISTS "${OSKEL_SKIA_LIB}")
+    message(FATAL_ERROR "OSKEL_SKIA_LIB does not exist: ${OSKEL_SKIA_LIB}")
+  endif()
+
+  set(OSKEL_SKIA_GENERATED_DIR "${OSKEL_UI_BUILD_DIR}/generated")
+  set(OSKEL_SKIA_SHIM_CPP "${OSKEL_SKIA_GENERATED_DIR}/skia_shim.cpp")
+  add_custom_command(
+    OUTPUT "${OSKEL_SKIA_SHIM_CPP}" "${OSKEL_SKIA_GENERATED_DIR}/skia_shim.h"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${OSKEL_SKIA_GENERATED_DIR}"
+    COMMAND $<TARGET_FILE:bindgen>
+            --cxx "${CMAKE_CURRENT_SOURCE_DIR}/bindings/skia/skia.oskelbind"
+            --shim "${OSKEL_SKIA_GENERATED_DIR}"
+            -o "${OSKEL_SKIA_GENERATED_DIR}/skia.oskl"
+    DEPENDS bindgen
+            "${CMAKE_CURRENT_SOURCE_DIR}/bindings/skia/skia.oskelbind"
+    VERBATIM)
+
+  add_library(skia_shim SHARED "${OSKEL_SKIA_SHIM_CPP}")
+  # `extern "C"` alone does not export a symbol from a Windows DLL. The shim
+  # has no macro in the generated source, so let CMake write the `.def`.
+  set_target_properties(skia_shim PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+  target_include_directories(skia_shim PRIVATE
+    "${OSKEL_SKIA_GENERATED_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/bindings/skia"
+    "${OSKEL_SKIA_DIR}")
+  if(WIN32)
+    separate_arguments(OSKEL_SKIA_LINK_ARGS NATIVE_COMMAND "${OSKEL_SKIA_LIBS}")
+  else()
+    separate_arguments(OSKEL_SKIA_LINK_ARGS UNIX_COMMAND "${OSKEL_SKIA_LIBS}")
+  endif()
+  target_link_libraries(skia_shim PRIVATE "${OSKEL_SKIA_LIB}" ${OSKEL_SKIA_LINK_ARGS})
+  if(APPLE)
+    target_link_options(skia_shim PRIVATE "-Wl,-rpath,@loader_path")
+  elseif(UNIX)
+    target_link_options(skia_shim PRIVATE "-Wl,-rpath,$ORIGIN")
+  endif()
+  if(UNIX AND CMAKE_BUILD_TYPE MATCHES "^(Release|MinSizeRel|RelWithDebInfo)$")
+    # Static Skia carries its object debug information into the shared bridge;
+    # the shipped file is the machine code only.
+    add_custom_command(TARGET skia_shim POST_BUILD
+      COMMAND "${CMAKE_STRIP}" "$<TARGET_FILE:skia_shim>"
+      VERBATIM)
+  endif()
+  set_target_properties(skia_shim PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY "${OSKEL_UI_BUILD_DIR}"
+    RUNTIME_OUTPUT_DIRECTORY "${OSKEL_UI_BUILD_DIR}"
+    ARCHIVE_OUTPUT_DIRECTORY "${OSKEL_UI_BUILD_DIR}")
+  foreach(_config Debug Release RelWithDebInfo MinSizeRel)
+    set_target_properties(skia_shim PROPERTIES
+      LIBRARY_OUTPUT_DIRECTORY_${_config} "${OSKEL_UI_BUILD_DIR}"
+      RUNTIME_OUTPUT_DIRECTORY_${_config} "${OSKEL_UI_BUILD_DIR}"
+      ARCHIVE_OUTPUT_DIRECTORY_${_config} "${OSKEL_UI_BUILD_DIR}")
+  endforeach()
+
+  install(TARGETS skia_shim
+    LIBRARY DESTINATION lib/oskel/ui
+    RUNTIME DESTINATION lib/oskel/ui
+    ARCHIVE DESTINATION lib/oskel/ui)
+  if(OSKEL_SKIA_LIB MATCHES "\\.(so|dylib|dll)$")
+    install(FILES "${OSKEL_SKIA_LIB}" DESTINATION lib/oskel/ui)
+  endif()
+  message(STATUS "Skia found: std.ui native backend enabled")
+else()
+  message(STATUS "Skia not found: std.ui native backend not built")
+endif()
 
 # --------------------------------------------------------------------------- oskelp
 # The project and package manager. Like `bindgen`, it is a standalone
@@ -355,25 +521,8 @@ if(BUILD_TESTING)
 
   # The Skia bridge needs a real Skia root for the shim and the pixel test.
   # Both are opt-in: a checkout without Skia still runs the generator half.
-  set(OSKEL_SKIA_DIR "" CACHE PATH
-      "Skia root with include/core/SkSurface.h (enables cxxbind.skia)")
-  set(OSKEL_SKIA_LIB "" CACHE FILEPATH
-      "Path to libskia.a or libskia.so (enables cxxbind.skia)")
-  set(OSKEL_SKIA_LIBS "-lpthread -ldl -lm" CACHE STRING
-      "Extra link arguments for the Skia shim")
-  if(OSKEL_SKIA_DIR AND NOT OSKEL_SKIA_LIB)
-    foreach(_skia_candidate
-        "${OSKEL_SKIA_DIR}/out/Release/libskia.a"
-        "${OSKEL_SKIA_DIR}/out/Release-x64/libskia.a"
-        "${OSKEL_SKIA_DIR}/out/Release/libskia.so"
-        "${OSKEL_SKIA_DIR}/out/Release-x64/libskia.so")
-      if(EXISTS "${_skia_candidate}")
-        set(OSKEL_SKIA_LIB "${_skia_candidate}" CACHE FILEPATH
-            "Path to libskia.a or libskia.so (enables cxxbind.skia)" FORCE)
-        break()
-      endif()
-    endforeach()
-  endif()
+  # The cache variables are declared above, outside `BUILD_TESTING`, because
+  # they also build the UI runtime that a release ships.
 
   # `--cxx` generates the module, the C header and the C++ shim. The generation
   # and `oskel -c` half runs everywhere; the shim compile plus VM/AOT execution
@@ -403,6 +552,10 @@ if(BUILD_TESTING)
   if(OSKEL_SKIA_DIR AND OSKEL_SKIA_LIB AND
      CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
      CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    set(OSKEL_TEST_SDL3_LIBRARY "")
+    if(TARGET SDL3::SDL3)
+      set(OSKEL_TEST_SDL3_LIBRARY "$<TARGET_FILE:SDL3::SDL3>")
+    endif()
     add_test(NAME cxxbind.skia
       COMMAND ${CMAKE_COMMAND}
         "-DBINDGEN_EXE=$<TARGET_FILE:bindgen>"
@@ -414,6 +567,7 @@ if(BUILD_TESTING)
         "-DSKIA_LIB=${OSKEL_SKIA_LIB}"
         "-DSKIA_LIBS=${OSKEL_SKIA_LIBS}"
         "-DSDL3_FOUND=${OSKEL_SDL3_FOUND}"
+        "-DSDL3_LIBRARY=${OSKEL_TEST_SDL3_LIBRARY}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_skia_case.cmake")
   endif()
 
@@ -1497,16 +1651,17 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern.oskl"
         "-DEXPECTED_MESSAGE=extern \"C\" symbol 'getpid' cannot be resolved by the AOT backend"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
-    # SDL3 is a host binding too: the freestanding backend must reject a used
-    # `SDL_*` symbol with the dedicated message and write no binary. The
-    # fixture imports the module, so it also pins the module's own rejection
-    # (the lowerer names one of its externs, whichever comes first).
+    # A UI program selects the hosted link mode automatically, so an explicit
+    # `--mode freestanding` is the remaining rejection: it must fail with the
+    # dedicated message and write no binary. The fixture imports the module, so
+    # it also pins that the mode is chosen from the program, not from a flag.
     add_test(NAME oskel.build_sdl_freestanding_error
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_TEST_NAME=oskel.build_sdl_freestanding_error"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_sdl_freestanding.oskl"
-        "-DEXPECTED_MESSAGE=extern \"C\" symbol 'SDL_[A-Za-z]+' cannot be resolved by the AOT backend"
+        "-DOSKEL_BUILD_MODE=freestanding"
+        "-DEXPECTED_MESSAGE=std\\.ui requires a hosted binary"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
     # `--link-lib` without `--mode hosted`, and a name that is not a library
     # name, are usage errors (exit 64), not silently accepted flags.
