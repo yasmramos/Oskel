@@ -722,12 +722,18 @@ std::vector<std::string> resolvePatches(
           if (rel.type != kCoffRelAmd64Rel32) {
             throw LinkError("undefined data symbol '" + symbol.name + "'");
           }
-          if (importIndex.count(symbol.name) == 0) {
-            importIndex.emplace(symbol.name,
+          // MSVC's UCRT header maps `time` to `_time64`; `ucrtbase.dll` exports
+          // `_time64`, not `time`. The AOT runtime spells the call `time`, so
+          // rename it at the import boundary or the Windows loader fails with
+          // STATUS_ENTRYPOINT_NOT_FOUND.
+          const std::string importName =
+              symbol.name == "time" ? "_time64" : symbol.name;
+          if (importIndex.count(importName) == 0) {
+            importIndex.emplace(importName,
                                static_cast<std::uint32_t>(imports.size()));
-            imports.push_back(symbol.name);
+            imports.push_back(importName);
           }
-          patch.import = symbol.name;
+          patch.import = importName;
         }
       } else {
         throw LinkError("relocation names an absolute or debug symbol");

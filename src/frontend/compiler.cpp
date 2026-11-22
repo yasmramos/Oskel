@@ -1088,6 +1088,13 @@ Bytecode Compiler::compile(const StmtPtr& program) {
   return compileTopLevelBody(program);
 }
 
+std::vector<std::string> Compiler::loadedModulePaths() const {
+  std::vector<std::string> paths;
+  paths.reserve(loadedModules_.size());
+  for (const auto& entry : loadedModules_) paths.push_back(entry.first);
+  return paths;
+}
+
 // The shared body of `compile` and `compileLoaded`: compiles a program in the
 // global scope (its `let`s are globals) with the session state the caller has
 // already set up. The caller owns `resetChunk`/`clearSession` and the import

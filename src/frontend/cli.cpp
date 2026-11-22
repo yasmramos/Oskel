@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -34,6 +35,7 @@
 #include "native/target.h"
 #include "native/wasm.h"
 #include "platform.h"
+#include "ui_runtime.h"
 #include "version.h"
 
 const char *kVersion = OSKEL_VERSION;
@@ -375,6 +377,95 @@ int runHostedLinkCommand(const std::string &command) {
 #endif
 }
 
+struct UiRequirements {
+  bool sdl = false;
+  bool skia = false;
+
+  bool any() const { return sdl || skia; }
+};
+
+// The UI backend is reached through a module import, not through a symbol
+// name: `std.ui` and its Skia/SDL modules export ordinary `oskel_*` functions,
+// which a user binding may also spell (`oskel_Rect_new`). The compiler records
+// every module it loaded, including the nested ones, so that is the signal.
+// `std.internal.sdl` needs only SDL3; the Skia modules need the shim, and the
+// window one needs both.
+UiRequirements uiRequirements(const std::vector<std::string> &modulePaths,
+                             const Bytecode &root) {
+  UiRequirements needs;
+  for (const std::string &path : modulePaths) {
+    const std::string generic = std::filesystem::path(path).generic_string();
+    auto isModule = [&generic](const char *name) {
+      const std::string dotted = name;
+      if (generic == dotted) return true;
+      const std::string suffix = "/" + dotted + ".oskl";
+      return generic.size() >= suffix.size() &&
+             generic.compare(generic.size() - suffix.size(), suffix.size(),
+                             suffix) == 0;
+    };
+    if (isModule("std.internal.sdl")) needs.sdl = true;
+    if (isModule("std.internal.skia") || isModule("std.internal.skia_ui")) {
+      needs.skia = true;
+    }
+    if (isModule("std.internal.skia_window")) {
+      needs.skia = true;
+      needs.sdl = true;
+    }
+  }
+
+  // A program may also declare an `SDL_*`/`skia_*` symbol directly, without
+  // the standard modules. Those prefixes are unambiguous; `oskel_*` is not.
+  std::vector<const Bytecode *> pending{&root};
+  while (!pending.empty()) {
+    const Bytecode *current = pending.back();
+    pending.pop_back();
+    for (const ExternSymbol &symbol : current->externs) {
+      if (symbol.name.rfind("SDL_", 0) == 0) needs.sdl = true;
+      if (symbol.name.rfind("skia_", 0) == 0) needs.skia = true;
+    }
+    for (const std::shared_ptr<Bytecode> &child : current->children) {
+      if (child) pending.push_back(child.get());
+    }
+  }
+  return needs;
+}
+
+void appendUnique(std::vector<std::string> &values, const std::string &value) {
+  for (const std::string &existing : values) {
+    if (existing == value) return;
+  }
+  values.push_back(value);
+}
+
+std::string directoryOfPath(const std::string &path) {
+  const std::size_t separator = path.find_last_of("/\\");
+  return separator == std::string::npos ? std::string()
+                                        : path.substr(0, separator);
+}
+
+std::string fileNameOfPath(const std::string &path) {
+  const std::size_t separator = path.find_last_of("/\\");
+  return separator == std::string::npos ? path : path.substr(separator + 1);
+}
+
+// Windows resolves a DLL through the executable's directory, so a hosted image
+// gets the bundled runtime copied beside it. POSIX images record an rpath
+// instead and keep the installation as the single copy.
+void copyUiRuntimeBeside(const std::string &output) {
+  const std::string directory = directoryOfPath(output);
+  for (const char *name : {"SDL3", "skia", "skia_shim"}) {
+    const std::string source = oskel::ui::runtimeLibraryPath(name);
+    if (source.empty()) continue;
+    std::string bytes;
+    if (!readSourceFile(source, bytes)) continue;
+    const std::string destination =
+        (directory.empty() ? std::string() : directory + "/") +
+        fileNameOfPath(source);
+    std::vector<std::uint8_t> data(bytes.begin(), bytes.end());
+    writeBinaryFile(destination, data);
+  }
+}
+
 // Links a relocatable object into a hosted executable by invoking the host C
 // compiler (PHASE 7f.4). `objectPath` is the object just written and `output`
 // the requested executable. On Linux `-no-pie` keeps the fixed-address
@@ -391,8 +482,13 @@ int linkHostedObject(const std::string &objectPath, const std::string &output,
                      const Target &target, const std::string &tool,
                      const std::vector<std::string> &linkLibs,
                      const std::vector<std::string> &libraryPaths,
-                     const std::vector<std::string> &linkObjects) {
+                     const std::vector<std::string> &linkObjects,
+                     const std::vector<std::string> &runPaths) {
   const std::string compiler = hostedLinkerCommand();
+  auto isPath = [](const std::string &lib) {
+    return lib.find('/') != std::string::npos ||
+           lib.find('\\') != std::string::npos;
+  };
   std::string command;
   if (target.os == Os::Windows && isMicrosoftCompiler(compiler)) {
     // The object was not produced by `cl`, so it carries no `.drectve` section
@@ -410,7 +506,11 @@ int linkHostedObject(const std::string &objectPath, const std::string &output,
       command += " /LIBPATH:" + shellQuote(dir);
     }
     for (const std::string &lib : linkLibs) {
-      command += " " + shellQuote(lib + ".lib");
+      const std::string name =
+          isPath(lib) || (lib.size() > 4 && lib.substr(lib.size() - 4) == ".lib")
+              ? lib
+              : lib + ".lib";
+      command += " " + shellQuote(name);
     }
   } else {
     command = shellQuote(compiler) + " " + shellQuote(objectPath);
@@ -422,7 +522,12 @@ int linkHostedObject(const std::string &objectPath, const std::string &output,
     if (target.os == Os::MacOs) command += " -arch x86_64";
     command += " -lm";
     for (const std::string &dir : libraryPaths) command += " -L" + shellQuote(dir);
-    for (const std::string &lib : linkLibs) command += " -l" + lib;
+    for (const std::string &dir : runPaths) {
+      command += " -Wl,-rpath," + shellQuote(dir);
+    }
+    for (const std::string &lib : linkLibs) {
+      command += " " + (isPath(lib) ? shellQuote(lib) : "-l" + lib);
+    }
   }
   const int status = runHostedLinkCommand(command);
   if (status != 0) {
@@ -454,11 +559,17 @@ int linkHostedObject(const std::string &objectPath, const std::string &output,
 // `linkLibs` names the libraries the hosted link resolves `extern "C"` symbols
 // from (`SDL3` becomes `-lSDL3`); it is empty in freestanding mode.
 //
+// `autoHostedForUi` lets a program that imports `std.ui` build with no flags:
+// the UI backend needs a host, so an unspecified mode becomes `hosted` and the
+// bundled libraries are added to the link. An explicit `--mode freestanding`
+// still wins, with a diagnostic that names the requirement.
+//
 // Returns 0 on success, 65 for compile errors and 74 for a write failure.
 int buildBinary(const std::string &source, const std::string &name,
                 const std::string &output, const std::string &argv0,
                 const Target &target, LinkMode mode, Linker linker,
-                bool emitObject, const std::vector<std::string> &linkLibs,
+                bool emitObject, bool autoHostedForUi,
+                const std::vector<std::string> &linkLibs,
                 const std::vector<std::string> &libraryPaths,
                 const std::vector<std::string> &linkObjects,
                 const std::string &tool) {
@@ -502,8 +613,47 @@ int buildBinary(const std::string &source, const std::string &name,
     printCompileWarning(name, source, warning, platformPosix());
   }
 
+  const UiRequirements ui =
+      uiRequirements(compiler.loadedModulePaths(), bytecode);
+  const bool usesUi = ui.any() && !isWasmTarget(target);
+  std::vector<std::string> effectiveLinkLibs = linkLibs;
+  std::vector<std::string> effectiveLibraryPaths = libraryPaths;
+  std::vector<std::string> runPaths;
   std::vector<std::uint8_t> image;
   try {
+    if (usesUi) {
+      if (autoHostedForUi && mode == LinkMode::Freestanding) mode = LinkMode::Hosted;
+      if (mode != LinkMode::Hosted) {
+        throw LoweringError(
+            "std.ui requires a hosted binary; remove '--mode freestanding' "
+            "(the default is chosen automatically)");
+      }
+      if (linker == Linker::Own) {
+        throw LoweringError(
+            "std.ui requires the host C linker; remove '--linker own'");
+      }
+      const std::string sdl =
+          ui.sdl ? oskel::ui::linkLibraryPath("SDL3") : std::string();
+      const std::string shim =
+          ui.skia ? oskel::ui::linkLibraryPath("skia_shim") : std::string();
+      if ((ui.sdl && sdl.empty()) || (ui.skia && shim.empty())) {
+        const std::string required =
+            ui.sdl && ui.skia ? "SDL3 and skia_shim"
+                              : (ui.sdl ? "SDL3" : "skia_shim");
+        throw LoweringError(
+            "std.ui is installed without its native runtime; reinstall Oskel "
+            "with UI support or set OSKEL_UI_LIBDIR to the directory that "
+            "contains " +
+            required);
+      }
+      if (!sdl.empty()) appendUnique(effectiveLinkLibs, sdl);
+      if (!shim.empty()) appendUnique(effectiveLinkLibs, shim);
+      const std::string directory = oskel::ui::libraryDirectory();
+      if (!directory.empty()) {
+        appendUnique(effectiveLibraryPaths, directory);
+        appendUnique(runPaths, directory);
+      }
+    }
     requireSupportedLinkMode(target, mode);
     if (isWasmTarget(target)) {
       image = lowerToWasm(target, bytecode);
@@ -552,8 +702,8 @@ int buildBinary(const std::string &source, const std::string &name,
         }
         LinkOptions options;
         options.target = target;
-        options.libraries = linkLibs;
-        options.libraryPaths = libraryPaths;
+        options.libraries = effectiveLinkLibs;
+        options.libraryPaths = effectiveLibraryPaths;
         image = linkHostedExecutable(inputs, options);
       } else {
         // The historical path: the host C compiler resolves libc and writes the
@@ -568,9 +718,12 @@ int buildBinary(const std::string &source, const std::string &name,
           return 74;
         }
         const int linkStatus = linkHostedObject(
-            objectPath, output, target, tool, linkLibs, libraryPaths,
-            linkObjects);
+            objectPath, output, target, tool, effectiveLinkLibs,
+            effectiveLibraryPaths, linkObjects, runPaths);
         std::remove(objectPath.c_str());
+        if (linkStatus == 0 && usesUi && target.os == Os::Windows) {
+          copyUiRuntimeBeside(output);
+        }
         return linkStatus;
       }
     } else if (target.os == Os::Windows) {
@@ -802,6 +955,7 @@ int runBuildCommand(const std::vector<std::string> &arguments,
     return 66;
   }
   return buildBinary(buildSource, buildFile, buildOutput, argv0, buildTarget,
-                     buildMode, buildLinker, buildEmitObject, buildLinkLibs,
-                     buildLibraryPaths, buildLinkObjects, tool);
+                     buildMode, buildLinker, buildEmitObject,
+                     !buildModeExplicit, buildLinkLibs, buildLibraryPaths,
+                     buildLinkObjects, tool);
 }

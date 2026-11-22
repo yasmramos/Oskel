@@ -743,6 +743,41 @@ it as a caveat:
   VM's `3^N` template budget; MSVC also needs `/bigobj` (already in
   `OSKEL_WARNINGS`) at the eight-eightbyte bound.
 
+
+## The UI backend bundle
+
+- `std/ui.oskl` is pure Oskel (widget tree, layout, display list, hit testing)
+  and builds freestanding. Only its native backends need a host:
+  `std/internal/skia.oskl` (raster), `std/internal/skia_ui.oskl`,
+  `std/internal/skia_window.oskl` and `std/internal/sdl.oskl`.
+- `oskel build` chooses the mode from the **modules the compiler loaded**, not
+  from symbol names. A user binding may spell `oskel_Rect_new` exactly like
+  the Skia shim (`tests/cxxbind` does), so `oskel_*` cannot be the signal. A
+  direct `extern "C"` declaration of an `SDL_*`/`skia_*` symbol is also enough.
+  An explicit `--mode freestanding` still wins and fails with "std.ui requires
+  a hosted binary"; `--linker own` is rejected the same way.
+- `ui_runtime.cpp` is the single place that finds the bundle: `$OSKEL_UI_LIBDIR`
+  first, then `<exe>/../lib/oskel/ui`, then `<exe>/lib/oskel/ui`, and finally
+  the build directory CMake baked in. The installed prefix wins over the build
+  path, so a packaged engine does not keep using its build tree.
+- The build links the libraries the program needs by absolute path and adds
+  their directory as an rpath; a user does not pass `--link-lib` or
+  `LD_LIBRARY_PATH`. `std.internal.sdl` needs only SDL3, the Skia modules need
+  only `skia_shim`, and the window module needs both. Windows has no rpath, so
+  a hosted UI image gets the DLLs copied beside it. The bundle installs under
+  `lib/oskel/ui` on all three platforms; the engine loads SDL3 lazily, only
+  when a program asks for one of its symbols, so a non-UI program never opens
+  the UI libraries.
+- `skia_shim` is built only when `OSKEL_SKIA_DIR` and `OSKEL_SKIA_LIB` are
+  supplied. A static Skia is linked into the shim; the shim is stripped in
+  Release because the archive otherwise carries its debug information. A
+  Windows DLL needs `WINDOWS_EXPORT_ALL_SYMBOLS`, because the generated shim
+  has no `__declspec(dllexport)`.
+- `tests/run_skia_case.cmake` is the end-to-end guard: VM, hosted AOT, UI and
+  SDL window, with no `LD_PRELOAD`, `LD_LIBRARY_PATH` or `--link-lib`. The
+  `cxxbind.end_to_end` fixture is the other guard: a non-UI binding whose
+  symbols share the Skia names must stay a freestanding build.
+
 ## The VS Code extension
 
 - `editors/vscode` holds a dependency-free extension (language id, TextMate

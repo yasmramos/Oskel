@@ -11,6 +11,8 @@
 #   SKIA_LIB    path to libskia.a or libskia.so
 #   SKIA_LIBS   extra link arguments (default: -lpthread -ldl -lm)
 #   SDL3_FOUND  whether the build found SDL3 (enables the window half)
+#   SDL3_LIBRARY path to the SDL3 shared library, copied into BUILD_DIR so the
+#               engine's lazy UI loader finds it
 
 if(NOT EXISTS "${SKIA_DIR}/include/core/SkSurface.h")
   message(FATAL_ERROR "SKIA_DIR does not contain include/core/SkSurface.h: ${SKIA_DIR}")
@@ -77,21 +79,28 @@ endif()
 
 file(COPY "${SOURCE_DIR}/tests/cxxbind/skia_test.oskl" DESTINATION "${BUILD_DIR}")
 
-# Keep the ASan runtime first when the engine is instrumented: the Skia shim is
-# not, but the process still needs libasan to satisfy the engine.
-set(skia_preload "${BUILD_DIR}/libskia_shim.so")
+# The engine loads the UI bundle by directory, so the test's directory must
+# contain both libraries. SDL3 keeps its SONAME (`libSDL3.so.0`), which the
+# loader asks for; create the two names a normal installation has.
+if(SDL3_FOUND AND SDL3_LIBRARY AND EXISTS "${SDL3_LIBRARY}")
+  file(COPY "${SDL3_LIBRARY}" DESTINATION "${BUILD_DIR}")
+  get_filename_component(sdl3_name "${SDL3_LIBRARY}" NAME)
+  file(REMOVE "${BUILD_DIR}/libSDL3.so.0" "${BUILD_DIR}/libSDL3.so")
+  file(CREATE_LINK "${sdl3_name}" "${BUILD_DIR}/libSDL3.so.0" SYMBOLIC)
+  file(CREATE_LINK "libSDL3.so.0" "${BUILD_DIR}/libSDL3.so" SYMBOLIC)
+endif()
+
+# The test must prove the zero-configuration path: `OSKEL_UI_LIBDIR` points at
+# this directory, but no `LD_PRELOAD`, `LD_LIBRARY_PATH` or `--link-lib` is set.
+set(skia_env "OSKEL_UI_LIBDIR=${BUILD_DIR}")
 execute_process(
   COMMAND ldd "${OSKEL_EXE}"
   OUTPUT_VARIABLE oskel_ldd
   ERROR_QUIET
 )
-set(skia_env "LD_PRELOAD=${skia_preload}")
-if(oskel_ldd MATCHES "libasan\\.so[^ ]* => ([^ ]+)")
-  set(skia_preload "${CMAKE_MATCH_1}:${skia_preload}")
-  set(skia_env "LD_PRELOAD=${skia_preload}" "ASAN_OPTIONS=detect_leaks=0")
-elseif(oskel_ldd MATCHES "libclang_rt\\.asan[^ ]* => ([^ ]+)")
-  set(skia_preload "${CMAKE_MATCH_1}:${skia_preload}")
-  set(skia_env "LD_PRELOAD=${skia_preload}" "ASAN_OPTIONS=detect_leaks=0")
+if(oskel_ldd MATCHES "libasan\\.so[^ ]* => " OR
+   oskel_ldd MATCHES "libclang_rt\\.asan[^ ]* => ")
+  list(APPEND skia_env "ASAN_OPTIONS=detect_leaks=0")
 endif()
 
 execute_process(
@@ -112,9 +121,9 @@ if(NOT vm_stdout MATCHES "skia ok")
 endif()
 
 execute_process(
-  COMMAND "${CMAKE_COMMAND}" -E env "LIBRARY_PATH=${BUILD_DIR}"
-          "${OSKEL_EXE}" build "${BUILD_DIR}/skia_test.oskl" --mode hosted
-          --link-lib skia_shim -o "${BUILD_DIR}/skia_test"
+  COMMAND "${CMAKE_COMMAND}" -E env ${skia_env}
+          "${OSKEL_EXE}" build "${BUILD_DIR}/skia_test.oskl"
+          -o "${BUILD_DIR}/skia_test"
   WORKING_DIRECTORY "${BUILD_DIR}"
   RESULT_VARIABLE build_exit
   OUTPUT_VARIABLE build_stdout
@@ -122,13 +131,12 @@ execute_process(
 )
 if(NOT build_exit EQUAL 0)
   message(FATAL_ERROR
-    "oskel build --mode hosted (Skia) exited ${build_exit}\n"
+    "oskel build (Skia) exited ${build_exit}\n"
     "--- stdout ---\n${build_stdout}\n--- stderr ---\n${build_stderr}")
 endif()
 
 execute_process(
-  COMMAND "${CMAKE_COMMAND}" -E env "LD_LIBRARY_PATH=${BUILD_DIR}"
-          "${BUILD_DIR}/skia_test"
+  COMMAND "${BUILD_DIR}/skia_test"
   RESULT_VARIABLE native_exit
   OUTPUT_VARIABLE native_stdout
   ERROR_VARIABLE native_stderr
@@ -163,9 +171,9 @@ if(NOT ui_vm_stdout MATCHES "skia ui ok")
 endif()
 
 execute_process(
-  COMMAND "${CMAKE_COMMAND}" -E env "LIBRARY_PATH=${BUILD_DIR}"
-          "${OSKEL_EXE}" build "${SOURCE_DIR}/tests/cxxbind/skia_ui_test.oskl" --mode hosted
-          --link-lib skia_shim -o "${BUILD_DIR}/skia_ui_test"
+  COMMAND "${CMAKE_COMMAND}" -E env ${skia_env}
+          "${OSKEL_EXE}" build "${SOURCE_DIR}/tests/cxxbind/skia_ui_test.oskl"
+          -o "${BUILD_DIR}/skia_ui_test"
   WORKING_DIRECTORY "${BUILD_DIR}"
   RESULT_VARIABLE ui_build_exit
   OUTPUT_VARIABLE ui_build_stdout
@@ -173,13 +181,12 @@ execute_process(
 )
 if(NOT ui_build_exit EQUAL 0)
   message(FATAL_ERROR
-    "oskel build --mode hosted (Skia UI) exited ${ui_build_exit}\n"
+    "oskel build (Skia UI) exited ${ui_build_exit}\n"
     "--- stdout ---\n${ui_build_stdout}\n--- stderr ---\n${ui_build_stderr}")
 endif()
 
 execute_process(
-  COMMAND "${CMAKE_COMMAND}" -E env "LD_LIBRARY_PATH=${BUILD_DIR}"
-          "${BUILD_DIR}/skia_ui_test"
+  COMMAND "${BUILD_DIR}/skia_ui_test"
   RESULT_VARIABLE ui_native_exit
   OUTPUT_VARIABLE ui_native_stdout
   ERROR_VARIABLE ui_native_stderr
@@ -220,9 +227,8 @@ if(SDL3_FOUND)
   endif()
 
   execute_process(
-    COMMAND "${CMAKE_COMMAND}" -E env "LIBRARY_PATH=${BUILD_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E env ${skia_env}
             "${OSKEL_EXE}" build "${SOURCE_DIR}/tests/cxxbind/skia_window_test.oskl"
-            --mode hosted --link-lib skia_shim --link-lib SDL3
             -o "${BUILD_DIR}/skia_window_test"
     WORKING_DIRECTORY "${BUILD_DIR}"
     RESULT_VARIABLE window_build_exit
@@ -231,12 +237,12 @@ if(SDL3_FOUND)
   )
   if(NOT window_build_exit EQUAL 0)
     message(FATAL_ERROR
-      "oskel build --mode hosted (Skia window) exited ${window_build_exit}\n"
+      "oskel build (Skia window) exited ${window_build_exit}\n"
       "--- stdout ---\n${window_build_stdout}\n--- stderr ---\n${window_build_stderr}")
   endif()
 
   execute_process(
-    COMMAND "${CMAKE_COMMAND}" -E env "LD_LIBRARY_PATH=${BUILD_DIR}"
+    COMMAND "${CMAKE_COMMAND}" -E env
             "SDL_VIDEODRIVER=dummy" "SDL_AUDIODRIVER=dummy"
             "${BUILD_DIR}/skia_window_test"
     RESULT_VARIABLE window_native_exit

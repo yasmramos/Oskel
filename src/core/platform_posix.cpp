@@ -1,5 +1,7 @@
 #include "platform_posix.h"
 
+#include "ui_runtime.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -252,58 +254,68 @@ void* PlatformPosix::lookupSymbol(const char* name) {
   // shared object already loaded, which is where libc, libm and the host
   // program's own C symbols live. That is exactly the set an `extern "C"`
   // declaration can name, and it needs no `-rdynamic` on the host.
+  auto lookupLoaded = [](const char* symbol) -> void* {
 #ifdef _WIN32
-  // Windows resolves through a module handle; `GetProcAddress` needs one, so
-  // the search walks the modules a declared symbol can plausibly live in:
-  //   - the process image (`GetModuleHandleA(nullptr)`), for a symbol the host
-  //     itself exports,
-  //   - kernel32.dll, the Win32 base API (`GetTickCount`, `Sleep`,
-  //     `GetCurrentProcessId`, ...), which has no CRT equivalent,
-  //   - the C runtime, which carries the libc-style names (`strlen`, `abs`,
-  //     `sqrt`, ...) the POSIX path finds through `dlsym(RTLD_DEFAULT)`.
-  // Each module is tried in turn; the first hit wins. A symbol in none of them
-  // returns nullptr, which the caller turns into a clear "not found" error.
-  HMODULE module = GetModuleHandleA(nullptr);
-  if (module != nullptr) {
-    if (FARPROC symbol = GetProcAddress(module, name)) {
-      return reinterpret_cast<void*>(symbol);
+    // Windows resolves through a module handle; `GetProcAddress` needs one, so
+    // the search walks the modules a declared symbol can plausibly live in:
+    //   - the process image (`GetModuleHandleA(nullptr)`), for a symbol the host
+    //     itself exports,
+    //   - kernel32.dll, the Win32 base API (`GetTickCount`, `Sleep`,
+    //     `GetCurrentProcessId`, ...), which has no CRT equivalent,
+    //   - the C runtime, which carries the libc-style names (`strlen`, `abs`,
+    //     `sqrt`, ...) the POSIX path finds through `dlsym(RTLD_DEFAULT)`.
+    // Each module is tried in turn; the first hit wins. A symbol in none of them
+    // returns nullptr, which the caller turns into a clear "not found" error.
+    HMODULE module = GetModuleHandleA(nullptr);
+    if (module != nullptr) {
+      if (FARPROC found = GetProcAddress(module, symbol)) {
+        return reinterpret_cast<void*>(found);
+      }
     }
-  }
-  HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
-  if (kernel32 != nullptr) {
-    if (FARPROC symbol = GetProcAddress(kernel32, name)) {
-      return reinterpret_cast<void*>(symbol);
+    HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
+    if (kernel32 != nullptr) {
+      if (FARPROC found = GetProcAddress(kernel32, symbol)) {
+        return reinterpret_cast<void*>(found);
+      }
     }
-  }
-  HMODULE runtime = GetModuleHandleA("ucrtbase.dll");
-  if (runtime == nullptr) runtime = GetModuleHandleA("msvcrt.dll");
-  if (runtime != nullptr) {
-    if (FARPROC symbol = GetProcAddress(runtime, name)) {
-      return reinterpret_cast<void*>(symbol);
+    HMODULE runtime = GetModuleHandleA("ucrtbase.dll");
+    if (runtime == nullptr) runtime = GetModuleHandleA("msvcrt.dll");
+    if (runtime != nullptr) {
+      if (FARPROC found = GetProcAddress(runtime, symbol)) {
+        return reinterpret_cast<void*>(found);
+      }
     }
-  }
-  // A third-party library the host loaded (`SDL3.dll`, a plugin, ...) is not
-  // one of the modules above. Walk every module the process has loaded; the
-  // snapshot is kernel32's own, so no extra library is needed. The fast paths
-  // above stay first because they cover the common case without the walk.
-  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
-  if (snapshot != INVALID_HANDLE_VALUE) {
-    MODULEENTRY32 entry;
-    entry.dwSize = sizeof(entry);
-    if (Module32First(snapshot, &entry)) {
-      do {
-        if (FARPROC symbol = GetProcAddress(entry.hModule, name)) {
-          CloseHandle(snapshot);
-          return reinterpret_cast<void*>(symbol);
-        }
-      } while (Module32Next(snapshot, &entry));
+    // A third-party library the host loaded (`SDL3.dll`, a plugin, ...) is not
+    // one of the modules above. Walk every module the process has loaded; the
+    // snapshot is kernel32's own, so no extra library is needed. The fast paths
+    // above stay first because they cover the common case without the walk.
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    if (snapshot != INVALID_HANDLE_VALUE) {
+      MODULEENTRY32 entry;
+      entry.dwSize = sizeof(entry);
+      if (Module32First(snapshot, &entry)) {
+        do {
+          if (FARPROC found = GetProcAddress(entry.hModule, symbol)) {
+            CloseHandle(snapshot);
+            return reinterpret_cast<void*>(found);
+          }
+        } while (Module32Next(snapshot, &entry));
+      }
+      CloseHandle(snapshot);
     }
-    CloseHandle(snapshot);
-  }
-  return nullptr;
+    return nullptr;
 #else
-  return dlsym(RTLD_DEFAULT, name);
+    return dlsym(RTLD_DEFAULT, symbol);
 #endif
+  };
+
+  if (void* address = lookupLoaded(name)) return address;
+
+  // The standard UI backend is an optional bundle, not a startup dependency:
+  // load it only when the program actually asks for one of its symbols.
+  if (!oskel::ui::isUiSymbol(name)) return nullptr;
+  if (!oskel::ui::preloadLibraries()) return nullptr;
+  return lookupLoaded(name);
 }
 
 Platform& platformPosix() {
