@@ -1,0 +1,11 @@
+# A `value` return allocates with `new T`, so the target must release with
+# `delete`, not `unref`.
+header "factory.h"
+prefix "oskel_"
+
+class Ref {
+  cpp "Ref"
+  release "unref"
+}
+
+function make(): Ref value cpp "Ref::make"

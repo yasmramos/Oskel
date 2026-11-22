@@ -1379,7 +1379,21 @@ binary prints byte for byte what the VM prints).
       Covered by `tests/parse_float_test.cpp` (the emitted code called through
       a function pointer against `strtod`, 500k random cases plus the edges)
       and `tests/freestanding_test.cpp` (the builtin paths under the real
-      `_start`) and the `oskel build` fixture. **7c.5b.3** (done) adds the exact
+      `_start`) and the `oskel build` fixture. **7c.5b.2c** (done) makes the
+      three conversions report a failed conversion with the hosted engine's
+      exact text. The parsers now return *why* they failed -- 1 malformed, 2
+      out of range, 3 empty after trimming -- and the builtin assembles
+      `cannot convert '<operand>' to <target>` plus an optional cause
+      (` (out of range)`, ` (use inf, -inf or nan)`) in the arena, so a string
+      operand quotes its own bytes and a non-string one quotes its type name.
+      The whole-string cases keep their own text (`cannot convert an empty
+      string to int`, `cannot convert a non-finite float to int`, `float is out
+      of the integer range`). The builder and the operand live in stack slots,
+      never in r13-r15: those three registers are the arena cursor, the arena
+      end and the global table, and clobbering them silently breaks every later
+      allocation. The parser checks "empty" on the trimmed text *before* it cuts
+      at the first NUL, so `float("\u0000abc")` is malformed rather than empty,
+      matching the hosted `strtod` path. **7c.5b.3** (done) adds the exact
       math builtins `floor`, `ceil`, `round` and `sqrt`. They need no libm:
       `floor`/`ceil`/`round` are `cvttsd2si` (truncate) plus a correction
       (`floor` subtracts one when `trunc(x) > x`, `ceil` adds one when
@@ -1764,7 +1778,10 @@ binary prints byte for byte what the VM prints).
       with the VM -- and CTest does not inherit the environment `vcvarsall.bat`
       sets, so the test runner reaches `cl` through a generated batch wrapper
       that calls it first (without `LIB`, the link cannot find `libcmt.lib`
-      even when `cl` is on `PATH`).
+      even when `cl` is on `PATH`). The wrapper is derived from
+      `CMAKE_C_COMPILER`, falling back to `CMAKE_CXX_COMPILER` when C is not
+      enabled; the Visual Studio generator in the artifacts workflow leaves
+      the former empty.
       Covered by `tests/object_test.cpp` (all three containers),
       `tests/build_mode.cmake` on Linux, Windows and macOS (the macOS arm64
       runner builds the x86-64 image but skips running it, and checks
@@ -2089,7 +2106,17 @@ skipped where it is absent.
 - **SDL3** for windows, renderer and events: the low-level bindings landed as
   `std/sdl.oskl` (slice 1, `docs/sdl.md`), and a native binary links them with
   `oskel build --mode hosted --link-lib SDL3`.
-- **Skia** as an optional rendering backend on top of SDL3's window.
+- **C++ bridge** (`bindgen --cxx`, `docs/cxxbind.md`): a descriptor plus a
+  generated C++ shim turns a C++ class into an Oskel class with an opaque
+  `handle`, and a free function into a wrapper. A class with a C++ ctor is
+  constructed with `Class(...)`; an adopt-only class takes
+  `Class(handle, owned)`. Factory objects (`object Surfaces { ... }`) generate a
+  map of functions, class returns carry `owned`/`borrow`/`sp`/`value`, and a
+  class chooses `release "delete"`, `"unref"` or `"none"`. `Class&` parameters
+  are dereferenced by the shim. The C++ ABI stays in the shim; the engine still
+  speaks C. `bindings/skia/skia.oskelbind` is the first real descriptor; the
+  declarative widget layer is the next slice.
+- **Skia** as the rendering backend for the widgets, on top of SDL3's window.
 - **Declarative UI** (SwiftUI/Flutter style): `Window`, `Column`, `Row`,
   `Text`, `Button`, `Input`, `Checkbox`, `Slider`, etc.
 
@@ -2125,7 +2152,7 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.9 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY) and callbacks resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface on Windows; a C variadic is still open. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.9 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY) and callbacks resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface on Windows; a C variadic is still open. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending
 2.0: ⬜ future (static with `@Dynamic`)

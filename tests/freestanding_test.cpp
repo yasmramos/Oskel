@@ -1017,19 +1017,19 @@ static void test_numeric_conversion_errors() {
   Bytecode fromNil = compileSource("print(int(nil));\n");
   RunResult nilInt = buildAndRun("/tmp/oskel_convert_int_nil", fromNil);
   check(nilInt.exitCode == 70, "int of nil exits 70");
-  check(nilInt.output.find("cannot convert this value to int") != std::string::npos,
+  check(nilInt.output.find("cannot convert 'nil' to int") != std::string::npos,
         "the failed int reports the conversion message");
 
   Bytecode fromFloatNil = compileSource("print(float(nil));\n");
   RunResult nil = buildAndRun("/tmp/oskel_convert_nil", fromFloatNil);
   check(nil.exitCode == 70, "float of nil exits 70");
-  check(nil.output.find("cannot convert this value to float") != std::string::npos,
+  check(nil.output.find("cannot convert 'nil' to float") != std::string::npos,
         "the failed float reports the conversion message");
 
   Bytecode fromArray = compileSource("print(double([1]));\n");
   RunResult array = buildAndRun("/tmp/oskel_convert_array", fromArray);
   check(array.exitCode == 70, "double of an array exits 70");
-  check(array.output.find("cannot convert this value to double") != std::string::npos,
+  check(array.output.find("cannot convert 'array' to double") != std::string::npos,
         "the failed double reports the conversion message");
 
   Bytecode noArgs = compileSource("print(int());\n");
@@ -1089,7 +1089,7 @@ static void test_int_string_conversion_errors() {
   Bytecode fromFloatString = compileSource("print(float(\"abc\"));\n");
   RunResult bad = buildAndRun("/tmp/oskel_float_string", fromFloatString);
   check(bad.exitCode == 70, "float of a malformed string exits 70");
-  check(bad.output.find("cannot convert this value to float") != std::string::npos,
+  check(bad.output.find("cannot convert 'abc' to float") != std::string::npos,
         "the failed float(string) reports the conversion message");
 }
 
@@ -1125,7 +1125,8 @@ static void test_float_string_conversion() {
   Bytecode overflow = compileSource("print(double(\"1e400\"));\n");
   RunResult big = buildAndRun("/tmp/oskel_float_string_overflow", overflow);
   check(big.exitCode == 70, "double of an overflowing string exits 70");
-  check(big.output.find("cannot convert this value to double") != std::string::npos,
+  check(big.output.find("cannot convert '1e400' to double (use inf, -inf or nan)") !=
+            std::string::npos,
         "the overflow reports the conversion message");
 }
 

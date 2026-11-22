@@ -322,6 +322,13 @@ struct AotRuntimeHandles {
   CodeGen::Label stringReplaceFirstMethod; // AotValue oskel_builtin_string_replace_first(...)
   CodeGen::Label stringPadStartMethod; // AotValue oskel_builtin_string_pad_start(...)
   CodeGen::Label stringPadEndMethod;   // AotValue oskel_builtin_string_pad_end(...)
+  // Bound range methods (PHASE 7c.3l). `r.toArray()` and `r.contains(x)` are the
+  // two members the hosted `bindRange` exposes beyond `.length`. `bindRangeMethod`
+  // builds the closure from the receiver (rdi:rsi) and a selector (rdx), the
+  // same binder the array and string methods use.
+  CodeGen::Label bindRangeMethod;      // AotValue oskel_bind_range_method(AotValue recv, long which)
+  CodeGen::Label rangeToArrayMethod;   // AotValue oskel_builtin_range_to_array(...)
+  CodeGen::Label rangeContainsMethod;  // AotValue oskel_builtin_range_contains(...)
   // The Unicode simple case-mapping tables (PHASE 7c.3i), the same generated
   // runs `src/core/unicode_case.cpp` holds: `upperTable`/`lowerTable` point at
   // `{first, last, delta}` int32 triples. A code point in `[first, last]` maps to

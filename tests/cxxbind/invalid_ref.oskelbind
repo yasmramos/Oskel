@@ -1,0 +1,5 @@
+# A reference is only meaningful for a class handle.
+header "factory.h"
+prefix "oskel_"
+
+function f(x: int&): void
