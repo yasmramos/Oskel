@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkFont.h"
@@ -35,6 +36,15 @@ inline void drawText(SkCanvas* canvas, const char* text, float x, float y,
     return;
   }
   canvas->drawString(text, x, y, font, paint);
+}
+
+inline float measureText(const char* text, float size) {
+  if (text == nullptr) {
+    return 0.0f;
+  }
+  SkFont font;
+  font.setSize(size);
+  return font.measureText(text, std::strlen(text), SkTextEncoding::kUTF8);
 }
 
 inline uint32_t readPixel(SkImage* image, int x, int y) {

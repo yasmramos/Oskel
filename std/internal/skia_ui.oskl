@@ -7,6 +7,12 @@
 
 import std.internal.skia as skia;
 
+// The advance width Skia uses for `text` at `size`. `std.ui.layoutWith` takes
+// this as its measurer, so layout and drawing share one font metric.
+fn measure(text, size): int {
+  return int(skia.measureText(text, size) + 0.5);
+}
+
 fn render(commands, canvas) {
   for cmd in commands {
     if (cmd.kind == "rect") {

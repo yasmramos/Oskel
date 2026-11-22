@@ -547,13 +547,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     `tests/native_build_extern_callback_wx.oskl` asserts the final mapping is
     not writable.
 
-29. **[P1]** The own linker (PHASE 10.1/10.2) closes one or more x86-64 Linux
-    objects (and System V/GNU `ar` archives) into a dynamic ELF, and `-r`
-    combines them into a new `ET_REL`. It loads `.text` and `.rodata` only: a
-    symbol in `.data`/`.bss`, a `.rela.data`/`.rela.rodata`, or a relocation
-    other than `R_X86_64_PLT32`/`R_X86_64_PC32` is reported by name (PHASE
-    10.2b), as is a GCC object that references a section symbol for a string
-    literal. `.eh_frame`/`.note.*`/`.comment` are ignored (not loaded). Thin
+29. **[P1]** The own linker (PHASE 10.1/10.2/10.2b) closes one or more x86-64
+    Linux objects (and System V/GNU `ar` archives) into a dynamic ELF, and `-r`
+    combines them into a new `ET_REL`. It loads `.text*`, `.rodata*`, `.data*`
+    and `.bss*` and supports `R_X86_64_64/32/32S/PLT32/PC32/GOTPCREL*`.
+    Remaining gaps: TLS (`.tdata`/`.tbss`), C++ runtime sections
+    (`.init_array`/`.fini_array`/`.gcc_except_table`) and a copy relocation for
+    an undefined data symbol referenced with `PC32` (a C object normally
+    resolves that to its own definition; `stdout`-style libc data would need
+    it). `.eh_frame`/`.note.*`/`.comment` are ignored (not loaded). Thin
     archives are rejected; only regular System V/GNU `ar` archives are read.
     The macOS Mach-O / Windows PE containers are PHASE 10.3. The image is
     non-PIE (fixed `0x400000`), so PIE/ASLR is later work. The hash is SysV

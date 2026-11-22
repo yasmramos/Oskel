@@ -36,6 +36,7 @@ constexpr std::uint32_t kShtStrtab = 3;
 constexpr std::uint32_t kShtRela = 4;
 constexpr std::uint32_t kShtHash = 5;
 constexpr std::uint32_t kShtDynamic = 6;
+constexpr std::uint32_t kShtNobits = 8;
 constexpr std::uint32_t kShtDynsym = 11;
 
 constexpr std::uint64_t kShfWrite = 0x1;
@@ -52,10 +53,16 @@ constexpr std::uint16_t kShnUndef = 0;
 constexpr std::uint16_t kShnAbs = 0xfff1;
 constexpr std::uint16_t kShnCommon = 0xfff2;
 
+constexpr std::uint32_t kR_x86_64_64 = 1;
 constexpr std::uint32_t kR_x86_64Pc32 = 2;
 constexpr std::uint32_t kR_x86_64Plt32 = 4;
 constexpr std::uint32_t kR_x86_64GlobDat = 6;
 constexpr std::uint32_t kR_x86_64JumpSlot = 7;
+constexpr std::uint32_t kR_x86_64GotPcRel = 9;
+constexpr std::uint32_t kR_x86_64_32 = 10;
+constexpr std::uint32_t kR_x86_64_32S = 11;
+constexpr std::uint32_t kR_x86_64GotPcRelX = 41;
+constexpr std::uint32_t kR_x86_64RexGotPcRelX = 42;
 
 constexpr std::uint32_t kPtLoad = 1;
 constexpr std::uint32_t kPtDynamic = 2;
@@ -96,6 +103,11 @@ constexpr std::uint64_t kDynSize = 16;
 constexpr std::uint64_t kStartSize = 34;
 
 constexpr const char* kInterpreter = "/lib64/ld-linux-x86-64.so.2";
+
+// The loaded part of an object. Every `.text*` section becomes Text, every
+// `.rodata*` Rodata, `.data*` Data and `.bss*` Bss; anything else is ignored
+// (`.eh_frame`, `.note.*`, `.debug_*`, TLS and the C++ runtime sections).
+enum class SectionKind { Ignored, Text, Rodata, Data, Bss };
 
 // A bounds-checked little-endian reader. Every offset the linker trusts comes
 // from a file it did not write, so a short or lying header is a diagnostic, not
@@ -280,6 +292,9 @@ struct Rela {
   std::uint32_t symbol = 0;
   std::uint32_t type = 0;
   std::int64_t addend = 0;
+  SectionKind section = SectionKind::Text;
+  std::uint64_t sectionOffset = 0;  // within the object's section-kind block
+  std::uint64_t sectionSize = 0;
 };
 
 // Where a defined symbol lives in the output image. `offset` is relative to
@@ -287,7 +302,7 @@ struct Rela {
 // the base address, and a relocatable link keeps the offset as-is.
 struct Definition {
   std::uint64_t offset = 0;
-  bool rodata = false;
+  SectionKind section = SectionKind::Text;
   std::uint8_t binding = kStbGlobal;
 };
 
@@ -295,15 +310,33 @@ struct ObjectFile {
   std::string name;
   std::vector<std::uint8_t> text;
   std::vector<std::uint8_t> rodata;
+  std::vector<std::uint8_t> data;
+  std::uint64_t bssSize = 0;
   std::vector<ObjectSymbol> symbols;
   std::vector<Rela> relas;
   std::vector<std::string> sectionNames;
-  std::uint16_t textIndex = 0;
-  std::uint16_t rodataIndex = 0;
+  std::vector<SectionKind> sectionKinds;   // indexed by section index
+  std::vector<std::uint64_t> sectionOffsets;  // within the kind block
   std::uint64_t textOffset = 0;
   std::uint64_t rodataOffset = 0;
+  std::uint64_t dataOffset = 0;
+  std::uint64_t bssOffset = 0;
   std::unordered_map<std::string, Definition> definitions;
 };
+
+bool sectionNameHasPrefix(const std::string& name, const char* prefix) {
+  const std::size_t length = std::strlen(prefix);
+  if (name.size() < length || name.compare(0, length, prefix) != 0) return false;
+  return name.size() == length || name[length] == '.';
+}
+
+SectionKind sectionKindForName(const std::string& name) {
+  if (sectionNameHasPrefix(name, ".text")) return SectionKind::Text;
+  if (sectionNameHasPrefix(name, ".rodata")) return SectionKind::Rodata;
+  if (sectionNameHasPrefix(name, ".data")) return SectionKind::Data;
+  if (sectionNameHasPrefix(name, ".bss")) return SectionKind::Bss;
+  return SectionKind::Ignored;
+}
 
 ObjectFile parseObject(const std::vector<std::uint8_t>& bytes,
                        const std::string& name) {
@@ -334,45 +367,51 @@ ObjectFile parseObject(const std::vector<std::uint8_t>& bytes,
   const std::vector<Section> sections =
       readSections(reader, shoff, shentsize, shnum, shstrndx);
 
-  const Section* text = findSection(sections, ".text");
   const Section* symtab = findSection(sections, ".symtab");
   const Section* strtab = findSection(sections, ".strtab");
-  const Section* rela = findSection(sections, ".rela.text");
-  const Section* rodata = findSection(sections, ".rodata");
-  if (text == nullptr) throw LinkError("object has no .text section");
   if (symtab == nullptr || strtab == nullptr) {
     throw LinkError("object has no symbol table");
   }
   if (symtab->size % kSymSize != 0) {
     throw LinkError("object has a malformed symbol table");
   }
-  if (rela != nullptr && rela->size % kRelaSize != 0) {
-    throw LinkError("object has a malformed relocation table");
-  }
-
-  requireSectionInFile(*text, bytes.size(), ".text");
   requireSectionInFile(*symtab, bytes.size(), ".symtab");
   requireSectionInFile(*strtab, bytes.size(), ".strtab");
-  if (rela != nullptr) requireSectionInFile(*rela, bytes.size(), ".rela.text");
+
   ObjectFile object;
   object.name = name;
-  object.textIndex = text->index;
-  object.rodataIndex = rodata != nullptr ? rodata->index : 0;
+  object.sectionKinds.assign(sections.size(), SectionKind::Ignored);
+  object.sectionOffsets.assign(sections.size(), 0);
   for (const Section& section : sections) object.sectionNames.push_back(section.name);
-  // `.text` is the only section this phase loads relocations from. A `.data`
-  // or `.rodata` relocation would silently mis-place a pointer, so it is a
-  // named error until PHASE 10.2b loads those sections.
-  if (findSection(sections, ".rela.data") != nullptr ||
-      findSection(sections, ".rela.rodata") != nullptr) {
-    throw LinkError("object '" + name + "' has relocations outside .text (PHASE 10.2b)");
-  }
-  object.text.assign(bytes.begin() + static_cast<std::ptrdiff_t>(text->offset),
-                     bytes.begin() + static_cast<std::ptrdiff_t>(text->offset + text->size));
-  if (rodata != nullptr) {
-    requireSectionInFile(*rodata, bytes.size(), ".rodata");
-    object.rodata.assign(
-        bytes.begin() + static_cast<std::ptrdiff_t>(rodata->offset),
-        bytes.begin() + static_cast<std::ptrdiff_t>(rodata->offset + rodata->size));
+
+  std::uint64_t textSize = 0;
+  std::uint64_t rodataSize = 0;
+  std::uint64_t dataSize = 0;
+  for (const Section& section : sections) {
+    const SectionKind kind = sectionKindForName(section.name);
+    if (kind == SectionKind::Ignored) continue;
+    object.sectionKinds[section.index] = kind;
+    if (kind == SectionKind::Bss) {
+      object.sectionOffsets[section.index] = alignUp(object.bssSize, 8);
+      object.bssSize = object.sectionOffsets[section.index] + section.size;
+      continue;
+    }
+    requireSectionInFile(section, bytes.size(), section.name);
+    std::uint64_t& size =
+        kind == SectionKind::Text ? textSize
+        : kind == SectionKind::Rodata ? rodataSize
+                                      : dataSize;
+    std::vector<std::uint8_t>& target =
+        kind == SectionKind::Text ? object.text
+        : kind == SectionKind::Rodata ? object.rodata
+                                      : object.data;
+    object.sectionOffsets[section.index] = alignUp(size, 16);
+    target.resize(object.sectionOffsets[section.index], 0);
+    target.insert(target.end(),
+                  bytes.begin() + static_cast<std::ptrdiff_t>(section.offset),
+                  bytes.begin() + static_cast<std::ptrdiff_t>(section.offset +
+                                                              section.size));
+    size = object.sectionOffsets[section.index] + section.size;
   }
 
   const std::uint64_t symbolCount = symtab->size / kSymSize;
@@ -392,17 +431,35 @@ ObjectFile parseObject(const std::vector<std::uint8_t>& bytes,
     }
   }
 
-  if (rela != nullptr) {
-    const std::uint64_t relaCount = rela->size / kRelaSize;
-    object.relas.resize(relaCount);
+  for (const Section& section : sections) {
+    if (section.name.compare(0, 6, ".rela.") != 0) continue;
+    if (section.size % kRelaSize != 0) {
+      throw LinkError("object has a malformed relocation table");
+    }
+    if (section.info >= sections.size()) {
+      throw LinkError("relocation table '" + section.name +
+                      "' names an invalid target section");
+    }
+    const Section& targetSection = sections[section.info];
+    const SectionKind kind = object.sectionKinds[targetSection.index];
+    if (kind == SectionKind::Ignored) continue;
+    if (kind == SectionKind::Bss) {
+      throw LinkError("object '" + name + "' has a relocation in a NOBITS section");
+    }
+    requireSectionInFile(section, bytes.size(), section.name);
+    const std::uint64_t relaCount = section.size / kRelaSize;
     for (std::uint64_t i = 0; i < relaCount; ++i) {
-      const std::uint64_t base = rela->offset + i * kRelaSize;
+      const std::uint64_t base = section.offset + i * kRelaSize;
       const std::uint64_t info = reader.u64(base + 8);
-      Rela& entry = object.relas[i];
+      Rela entry;
       entry.offset = reader.u64(base);
       entry.symbol = static_cast<std::uint32_t>(info >> 32);
       entry.type = static_cast<std::uint32_t>(info & 0xFFFFFFFFu);
       entry.addend = static_cast<std::int64_t>(reader.u64(base + 16));
+      entry.section = kind;
+      entry.sectionOffset = object.sectionOffsets[targetSection.index];
+      entry.sectionSize = targetSection.size;
+      object.relas.push_back(entry);
     }
   }
   return object;
@@ -618,20 +675,30 @@ std::unordered_map<std::string, Definition> buildDefinitions(
         throw LinkError("symbol '" + symbol.name +
                         "' has an unsupported section index");
       }
-      Definition definition;
-      if (symbol.shndx == object.textIndex) {
-        definition.offset = object.textOffset + symbol.value;
-      } else if (object.rodataIndex != 0 && symbol.shndx == object.rodataIndex) {
-        definition.offset = object.rodataOffset + symbol.value;
-        definition.rodata = true;
-      } else {
+      if (symbol.shndx >= object.sectionKinds.size()) {
+        throw LinkError("symbol '" + symbol.name +
+                        "' has an out-of-range section index");
+      }
+      const SectionKind kind = object.sectionKinds[symbol.shndx];
+      if (kind == SectionKind::Ignored) {
         std::string section = "an unknown section";
         if (symbol.shndx < object.sectionNames.size()) {
           section = "'" + object.sectionNames[symbol.shndx] + "'";
         }
         throw LinkError("object '" + object.name + "' defines '" + symbol.name +
-                        "' in " + section +
-                        ", which the linker does not load (PHASE 10.2b)");
+                        "' in " + section + ", which the linker does not load");
+      }
+      Definition definition;
+      definition.section = kind;
+      definition.offset = object.sectionOffsets[symbol.shndx] + symbol.value;
+      if (kind == SectionKind::Text) {
+        definition.offset += object.textOffset;
+      } else if (kind == SectionKind::Rodata) {
+        definition.offset += object.rodataOffset;
+      } else if (kind == SectionKind::Data) {
+        definition.offset += object.dataOffset;
+      } else {
+        definition.offset += object.bssOffset;
       }
       definition.binding = static_cast<std::uint8_t>(symbol.info >> 4);
       object.definitions.emplace(symbol.name, definition);
@@ -807,11 +874,17 @@ std::vector<std::uint8_t> linkHostedExecutable(
 
   std::uint64_t textSize = 0;
   std::uint64_t rodataSize = 0;
+  std::uint64_t dataSize = 0;
+  std::uint64_t bssSize = 0;
   for (ObjectFile& object : objects) {
     object.textOffset = alignUp(textSize, 16);
     textSize = object.textOffset + object.text.size();
     object.rodataOffset = alignUp(rodataSize, 16);
     rodataSize = object.rodataOffset + object.rodata.size();
+    object.dataOffset = alignUp(dataSize, 16);
+    dataSize = object.dataOffset + object.data.size();
+    object.bssOffset = alignUp(bssSize, 8);
+    bssSize = object.bssOffset + object.bssSize;
   }
 
   const std::unordered_map<std::string, Definition> definitions =
@@ -820,16 +893,19 @@ std::vector<std::uint8_t> linkHostedExecutable(
   if (mainDefinition == definitions.end()) {
     throw LinkError("the inputs do not export 'main'");
   }
-  if (mainDefinition->second.rodata) {
+  if (mainDefinition->second.section != SectionKind::Text) {
     throw LinkError("'main' is not in .text");
   }
 
   // --- Relocations, and the PLT/GOT slots they need ---
   struct Patch {
     std::uint64_t writeOffset = 0;
+    SectionKind writeSection = SectionKind::Text;
     std::uint32_t type = 0;
     std::string symbol;
     bool defined = false;
+    bool localGot = false;
+    std::uint32_t localGotIndex = 0;
     Definition definition;
     std::int64_t addend = 0;
   };
@@ -849,6 +925,20 @@ std::vector<std::uint8_t> linkHostedExecutable(
     gotIndex.emplace(name, static_cast<int>(gotSymbols.size()));
     gotSymbols.push_back(name);
   };
+  std::vector<Definition> localGotSymbols;
+  const auto addLocalGot = [&](const Definition& definition) {
+    localGotSymbols.push_back(definition);
+    return static_cast<std::uint32_t>(localGotSymbols.size() - 1);
+  };
+  const auto isGotPcRel = [](std::uint32_t type) {
+    return type == kR_x86_64GotPcRel || type == kR_x86_64GotPcRelX ||
+           type == kR_x86_64RexGotPcRelX;
+  };
+  const auto isPcRelative = [](std::uint32_t type) {
+    return type == kR_x86_64Pc32 || type == kR_x86_64Plt32 ||
+           type == kR_x86_64GotPcRel || type == kR_x86_64GotPcRelX ||
+           type == kR_x86_64RexGotPcRelX;
+  };
 
   for (const ObjectFile& object : objects) {
     for (const Rela& rela : object.relas) {
@@ -857,44 +947,82 @@ std::vector<std::uint8_t> linkHostedExecutable(
                         object.name + "'");
       }
       const ObjectSymbol& symbol = object.symbols[rela.symbol];
-      if (symbol.name.empty()) {
-        throw LinkError("relocation names an unnamed symbol in '" + object.name +
-                        "'");
-      }
-      if (rela.type != kR_x86_64Plt32 && rela.type != kR_x86_64Pc32) {
+      const std::string label =
+          symbol.name.empty() ? "<section>" : symbol.name;
+      const bool absolute64 = rela.type == kR_x86_64_64;
+      const bool absolute32 =
+          rela.type == kR_x86_64_32 || rela.type == kR_x86_64_32S;
+      if (!isPcRelative(rela.type) && !absolute64 && !absolute32) {
         throw LinkError("unsupported relocation type " +
-                        std::to_string(rela.type) + " for '" + symbol.name + "'");
+                        std::to_string(rela.type) + " for '" + label + "'");
       }
-      if (rela.offset + 4 > object.text.size()) {
-        throw LinkError("relocation for '" + symbol.name + "' lies outside .text");
+      const std::uint64_t width = absolute64 ? 8 : 4;
+      if (rela.offset > rela.sectionSize ||
+          width > rela.sectionSize - rela.offset) {
+        throw LinkError("relocation for '" + label +
+                        "' lies outside its section");
       }
       Definition definition;
       bool isDefined = false;
-      const auto local = object.definitions.find(symbol.name);
-      if (local != object.definitions.end()) {
-        definition = local->second;
+      if (symbol.name.empty()) {
+        if ((symbol.info & 0x0F) != kSttSection) {
+          throw LinkError("relocation names an unnamed symbol in '" +
+                          object.name + "'");
+        }
+        if (symbol.shndx >= object.sectionKinds.size()) {
+          throw LinkError("relocation names an out-of-range section in '" +
+                          object.name + "'");
+        }
+        const SectionKind kind = object.sectionKinds[symbol.shndx];
+        if (kind == SectionKind::Ignored || kind == SectionKind::Bss) {
+          throw LinkError("relocation names an unsupported section in '" +
+                          object.name + "'");
+        }
+        definition.section = kind;
+        definition.offset = object.sectionOffsets[symbol.shndx];
+        definition.binding = kStbLocal;
         isDefined = true;
       } else {
-        const auto global = definitions.find(symbol.name);
-        if (global != definitions.end()) {
-          definition = global->second;
+        const auto local = object.definitions.find(symbol.name);
+        if (local != object.definitions.end()) {
+          definition = local->second;
           isDefined = true;
-        }
-      }
-      if (!isDefined) {
-        if (rela.type == kR_x86_64Plt32) {
-          addPlt(symbol.name);
         } else {
-          addGot(symbol.name);
+          const auto global = definitions.find(symbol.name);
+          if (global != definitions.end()) {
+            definition = global->second;
+            isDefined = true;
+          }
         }
       }
       Patch patch;
-      patch.writeOffset = object.textOffset + rela.offset;
+      patch.writeOffset = rela.offset;
+      patch.writeSection = rela.section;
+      if (rela.section == SectionKind::Text) {
+        patch.writeOffset += object.textOffset + rela.sectionOffset;
+      } else if (rela.section == SectionKind::Rodata) {
+        patch.writeOffset += object.rodataOffset + rela.sectionOffset;
+      } else {
+        patch.writeOffset += object.dataOffset + rela.sectionOffset;
+      }
       patch.type = rela.type;
-      patch.symbol = symbol.name;
-      patch.defined = isDefined;
-      patch.definition = definition;
+      patch.symbol = label;
       patch.addend = rela.addend;
+      if (isDefined) {
+        if (isGotPcRel(rela.type)) {
+          patch.localGot = true;
+          patch.localGotIndex = addLocalGot(definition);
+        } else {
+          patch.defined = true;
+          patch.definition = definition;
+        }
+      } else if (rela.type == kR_x86_64Plt32) {
+        addPlt(symbol.name);
+      } else if (isGotPcRel(rela.type) || rela.type == kR_x86_64Pc32) {
+        addGot(symbol.name);
+      } else {
+        throw LinkError("undefined symbol '" + symbol.name + "'");
+      }
       patches.push_back(std::move(patch));
     }
   }
@@ -997,11 +1125,14 @@ std::vector<std::uint8_t> linkHostedExecutable(
   const std::uint64_t relaPltSize = pltSymbols.size() * kRelaSize;
   const std::uint64_t relaDynSize = gotSymbols.size() * kRelaSize;
   const std::uint64_t pltSize = 16 * (1 + pltSymbols.size());
-  const std::uint64_t gotSize = 8 * (3 + pltSymbols.size() + gotSymbols.size());
+  const std::uint64_t gotSize =
+      8 * (3 + pltSymbols.size() + gotSymbols.size() + localGotSymbols.size());
   const std::uint64_t dynamicEntries =
       needed.size() + 12 + (gotSymbols.empty() ? 0 : 3);
   const std::uint64_t dynamicSize = (dynamicEntries + 1) * kDynSize;
   const bool hasRodata = rodataSize != 0;
+  const bool hasData = dataSize != 0;
+  const bool hasBss = bssSize != 0;
   const std::uint64_t phnum = hasRodata ? 8 : 7;
 
   // --- Layout. `vaddr(offset) == kBaseAddress + offset` for every allocated
@@ -1046,7 +1177,19 @@ std::vector<std::uint8_t> linkHostedExecutable(
   offset = alignUp(offset, 8);
   const std::uint64_t dynamicOff = offset;
   offset += dynamicSize;
-  const std::uint64_t rwEnd = offset;
+  std::uint64_t dataOff = offset;
+  if (hasData) {
+    offset = alignUp(offset, 16);
+    dataOff = offset;
+    offset += dataSize;
+  }
+  std::uint64_t bssOff = offset;
+  if (hasBss) {
+    offset = alignUp(offset, 8);
+    bssOff = offset;
+  }
+  const std::uint64_t rwEnd = offset;  // `.bss` occupies no file bytes
+  const std::uint64_t rwMemSize = (rwEnd - rwStart) + bssSize;
 
   // --- Section table ---
   struct SectionSpec {
@@ -1098,6 +1241,13 @@ std::vector<std::uint8_t> linkHostedExecutable(
              kStartSize, 16, 0);
   if (hasRodata) {
     addSection(".rodata", kShtProgbits, kShfAlloc, rodataOff, rodataSize, 8, 0);
+  }
+  if (hasData) {
+    addSection(".data", kShtProgbits, kShfAlloc | kShfWrite, dataOff, dataSize, 16,
+               0);
+  }
+  if (hasBss) {
+    addSection(".bss", kShtNobits, kShfAlloc | kShfWrite, bssOff, bssSize, 8, 0);
   }
   const std::uint32_t gotSection =
       addSection(".got.plt", kShtProgbits, kShfAlloc | kShfWrite, gotOff, gotSize, 8, 8);
@@ -1177,7 +1327,7 @@ std::vector<std::uint8_t> linkHostedExecutable(
          kPageSize);
   }
   phdr(kPtLoad, kPfR | kPfW, rwStart, kBaseAddress + rwStart, rwEnd - rwStart,
-       rwEnd - rwStart, kPageSize);
+       rwMemSize, kPageSize);
   phdr(kPtDynamic, kPfR | kPfW, dynamicOff, kBaseAddress + dynamicOff, dynamicSize,
        dynamicSize, 8);
   phdr(kPtGnuStack, kPfR | kPfW, 0, 0, 0, 0, 0x10);
@@ -1240,33 +1390,75 @@ std::vector<std::uint8_t> linkHostedExecutable(
     relaOff += kRelaSize;
   }
 
-  // .text and its patches.
+  // .text, .rodata and .data must be copied before the patches are applied:
+  // a relocation in .data (a pointer table) would otherwise be overwritten by
+  // the copy that follows.
   for (const ObjectFile& object : objects) {
     if (!object.text.empty()) {
       std::memcpy(out.data() + textOff + object.textOffset, object.text.data(),
                   object.text.size());
     }
+    if (hasRodata && !object.rodata.empty()) {
+      std::memcpy(out.data() + rodataOff + object.rodataOffset,
+                  object.rodata.data(), object.rodata.size());
+    }
+    if (hasData && !object.data.empty()) {
+      std::memcpy(out.data() + dataOff + object.dataOffset, object.data.data(),
+                  object.data.size());
+    }
   }
+  const auto sectionBase = [&](SectionKind kind) -> std::uint64_t {
+    switch (kind) {
+      case SectionKind::Text: return textOff;
+      case SectionKind::Rodata: return rodataOff;
+      case SectionKind::Data: return dataOff;
+      case SectionKind::Bss: return bssOff;
+      default: return 0;
+    }
+  };
   for (const Patch& patch : patches) {
-    const std::uint64_t place = kBaseAddress + textOff + patch.writeOffset;
+    const std::uint64_t base = sectionBase(patch.writeSection);
+    const std::uint64_t place = kBaseAddress + base + patch.writeOffset;
     std::uint64_t target = 0;
     if (patch.defined) {
-      target = kBaseAddress +
-               (patch.definition.rodata ? rodataOff : textOff) +
+      target = kBaseAddress + sectionBase(patch.definition.section) +
                patch.definition.offset;
+    } else if (patch.localGot) {
+      target = kBaseAddress + gotOff +
+               8 * (3 + pltSymbols.size() + gotSymbols.size() +
+                    patch.localGotIndex);
     } else if (patch.type == kR_x86_64Plt32) {
       target = kBaseAddress + pltOff + 16 * (1 + pltIndex.at(patch.symbol));
     } else {
       target = kBaseAddress + gotOff +
                8 * (3 + pltSymbols.size() + gotIndex.at(patch.symbol));
     }
-    const std::int64_t value = static_cast<std::int64_t>(target) + patch.addend -
-                               static_cast<std::int64_t>(place);
-    if (value < std::numeric_limits<std::int32_t>::min() ||
-        value > std::numeric_limits<std::int32_t>::max()) {
-      throw LinkError("relocation for '" + patch.symbol + "' does not fit in 32 bits");
+    if (patch.type == kR_x86_64_64) {
+      put64(out, base + patch.writeOffset,
+            static_cast<std::uint64_t>(static_cast<std::int64_t>(target) +
+                                       patch.addend));
+      continue;
     }
-    put32(out, textOff + patch.writeOffset, static_cast<std::uint32_t>(value));
+    const bool pcRelative =
+        patch.type == kR_x86_64Pc32 || patch.type == kR_x86_64Plt32 ||
+        patch.type == kR_x86_64GotPcRel || patch.type == kR_x86_64GotPcRelX ||
+        patch.type == kR_x86_64RexGotPcRelX;
+    const std::int64_t value =
+        static_cast<std::int64_t>(target) + patch.addend -
+        (pcRelative ? static_cast<std::int64_t>(place) : 0);
+    if (patch.type == kR_x86_64_32) {
+      if (value < 0 ||
+          value > static_cast<std::int64_t>(
+                      std::numeric_limits<std::uint32_t>::max())) {
+        throw LinkError("relocation for '" + patch.symbol +
+                        "' does not fit in 32 bits");
+      }
+    } else if (value < std::numeric_limits<std::int32_t>::min() ||
+               value > std::numeric_limits<std::int32_t>::max()) {
+      throw LinkError("relocation for '" + patch.symbol +
+                      "' does not fit in 32 bits");
+    }
+    put32(out, base + patch.writeOffset, static_cast<std::uint32_t>(value));
   }
 
   // .plt
@@ -1323,20 +1515,16 @@ std::vector<std::uint8_t> linkHostedExecutable(
   put32(out, startOff + 29,
         static_cast<std::uint32_t>(startGot - (startVaddr + 33)));
 
-  // .rodata
-  if (hasRodata) {
-    for (const ObjectFile& object : objects) {
-      if (!object.rodata.empty()) {
-        std::memcpy(out.data() + rodataOff + object.rodataOffset,
-                    object.rodata.data(), object.rodata.size());
-      }
-    }
-  }
 
   // .got.plt. Slot 0 is the address of `_DYNAMIC`; slots 1 and 2 are the
   // resolver's, filled by the loader. Binding is eager (`DT_BIND_NOW`), so the
   // PLT slots can start at zero.
   put64(out, gotOff, kBaseAddress + dynamicOff);
+  for (std::size_t i = 0; i < localGotSymbols.size(); ++i) {
+    put64(out, gotOff + 8 * (3 + pltSymbols.size() + gotSymbols.size() + i),
+          kBaseAddress + sectionBase(localGotSymbols[i].section) +
+              localGotSymbols[i].offset);
+  }
 
   // .dynamic
   std::uint64_t dynamic = dynamicOff;
@@ -1399,17 +1587,42 @@ std::vector<std::uint8_t> linkRelocatable(
 
   std::uint64_t textSize = 0;
   std::uint64_t rodataSize = 0;
+  std::uint64_t dataSize = 0;
+  std::uint64_t bssSize = 0;
   for (ObjectFile& object : objects) {
     object.textOffset = alignUp(textSize, 16);
     textSize = object.textOffset + object.text.size();
     object.rodataOffset = alignUp(rodataSize, 16);
     rodataSize = object.rodataOffset + object.rodata.size();
+    object.dataOffset = alignUp(dataSize, 16);
+    dataSize = object.dataOffset + object.data.size();
+    object.bssOffset = alignUp(bssSize, 8);
+    bssSize = object.bssOffset + object.bssSize;
   }
   buildDefinitions(objects);  // fills definitions, rejects duplicate globals
 
   const bool hasRodata = rodataSize != 0;
-  const std::uint16_t textShndx = 1;
-  const std::uint16_t rodataShndx = hasRodata ? 2 : 0;
+  const bool hasData = dataSize != 0;
+  const bool hasBss = bssSize != 0;
+
+  std::uint32_t sectionIndex = 1;
+  const std::uint32_t textSection = sectionIndex++;
+  std::uint32_t rodataSection = 0;
+  if (hasRodata) rodataSection = sectionIndex++;
+  std::uint32_t dataSection = 0;
+  if (hasData) dataSection = sectionIndex++;
+  std::uint32_t bssSection = 0;
+  if (hasBss) bssSection = sectionIndex++;
+
+  const auto sectionIndexFor = [&](SectionKind kind) -> std::uint32_t {
+    switch (kind) {
+      case SectionKind::Text: return textSection;
+      case SectionKind::Rodata: return rodataSection;
+      case SectionKind::Data: return dataSection;
+      case SectionKind::Bss: return bssSection;
+      default: return 0;
+    }
+  };
 
   struct OutSymbol {
     std::string name;
@@ -1426,7 +1639,22 @@ std::vector<std::uint8_t> linkRelocatable(
     symbolMap[i].assign(objects[i].symbols.size(), 0);
   }
 
-  const std::uint32_t firstLocal = 1 + (hasRodata ? 2u : 1u);
+  const std::uint32_t firstLocal =
+      1 + 1 + (hasRodata ? 1u : 0u) + (hasData ? 1u : 0u) +
+      (hasBss ? 1u : 0u);
+
+  // Section symbols point at the output section with the same kind.
+  for (std::size_t o = 0; o < objects.size(); ++o) {
+    const ObjectFile& object = objects[o];
+    for (std::size_t i = 1; i < object.symbols.size(); ++i) {
+      const ObjectSymbol& symbol = object.symbols[i];
+      if ((symbol.info & 0x0F) != kSttSection) continue;
+      if (symbol.shndx >= object.sectionKinds.size()) continue;
+      const SectionKind kind = object.sectionKinds[symbol.shndx];
+      if (kind == SectionKind::Ignored) continue;
+      symbolMap[o][i] = sectionIndexFor(kind);
+    }
+  }
 
   // Local definitions keep their own symbol-table entries.
   for (std::size_t o = 0; o < objects.size(); ++o) {
@@ -1442,7 +1670,7 @@ std::vector<std::uint8_t> linkRelocatable(
       OutSymbol out;
       out.name = symbol.name;
       out.info = symbol.info;
-      out.shndx = definition->second.rodata ? rodataShndx : textShndx;
+      out.shndx = static_cast<std::uint16_t>(sectionIndexFor(definition->second.section));
       out.value = definition->second.offset;
       symbolMap[o][i] = firstLocal + static_cast<std::uint32_t>(locals.size());
       locals.push_back(std::move(out));
@@ -1471,7 +1699,7 @@ std::vector<std::uint8_t> linkRelocatable(
         OutSymbol out;
         out.name = symbol.name;
         out.info = symbol.info;
-        out.shndx = definition->second.rodata ? rodataShndx : textShndx;
+        out.shndx = static_cast<std::uint16_t>(sectionIndexFor(definition->second.section));
         out.value = definition->second.offset;
         globalIndex.emplace(symbol.name,
                             static_cast<std::uint32_t>(globals.size()));
@@ -1516,11 +1744,22 @@ std::vector<std::uint8_t> linkRelocatable(
   std::vector<OutSymbol> symbols;
   symbols.push_back(OutSymbol{});
   symbols.push_back(OutSymbol{
-      "", static_cast<std::uint8_t>((kStbLocal << 4) | kSttSection), textShndx, 0});
+      "", static_cast<std::uint8_t>((kStbLocal << 4) | kSttSection),
+      static_cast<std::uint16_t>(textSection), 0});
   if (hasRodata) {
     symbols.push_back(OutSymbol{
         "", static_cast<std::uint8_t>((kStbLocal << 4) | kSttSection),
-        rodataShndx, 0});
+        static_cast<std::uint16_t>(rodataSection), 0});
+  }
+  if (hasData) {
+    symbols.push_back(OutSymbol{
+        "", static_cast<std::uint8_t>((kStbLocal << 4) | kSttSection),
+        static_cast<std::uint16_t>(dataSection), 0});
+  }
+  if (hasBss) {
+    symbols.push_back(OutSymbol{
+        "", static_cast<std::uint8_t>((kStbLocal << 4) | kSttSection),
+        static_cast<std::uint16_t>(bssSection), 0});
   }
   symbols.insert(symbols.end(), locals.begin(), locals.end());
   symbols.insert(symbols.end(), globals.begin(), globals.end());
@@ -1531,7 +1770,9 @@ std::vector<std::uint8_t> linkRelocatable(
     std::uint32_t type = 0;
     std::int64_t addend = 0;
   };
-  std::vector<OutRela> relas;
+  std::vector<OutRela> textRelas;
+  std::vector<OutRela> dataRelas;
+  std::vector<OutRela> rodataRelas;
   for (std::size_t o = 0; o < objects.size(); ++o) {
     const ObjectFile& object = objects[o];
     for (const Rela& rela : object.relas) {
@@ -1544,12 +1785,29 @@ std::vector<std::uint8_t> linkRelocatable(
         throw LinkError("relocation names an unnamed symbol in '" + object.name +
                         "'");
       }
+      const ObjectSymbol& symbol = object.symbols[rela.symbol];
       OutRela out;
-      out.offset = object.textOffset + rela.offset;
       out.symbol = outIndex;
       out.type = rela.type;
       out.addend = rela.addend;
-      relas.push_back(out);
+      if (rela.section == SectionKind::Text) {
+        out.offset = object.textOffset + rela.sectionOffset + rela.offset;
+      } else if (rela.section == SectionKind::Rodata) {
+        out.offset = object.rodataOffset + rela.sectionOffset + rela.offset;
+      } else {
+        out.offset = object.dataOffset + rela.sectionOffset + rela.offset;
+      }
+      if (symbol.name.empty()) {
+        out.addend +=
+            static_cast<std::int64_t>(object.sectionOffsets[symbol.shndx]);
+      }
+      if (rela.section == SectionKind::Text) {
+        textRelas.push_back(out);
+      } else if (rela.section == SectionKind::Rodata) {
+        rodataRelas.push_back(out);
+      } else {
+        dataRelas.push_back(out);
+      }
     }
   }
 
@@ -1561,7 +1819,11 @@ std::vector<std::uint8_t> linkRelocatable(
   std::vector<std::string> sectionNames;
   sectionNames.push_back(".text");
   if (hasRodata) sectionNames.push_back(".rodata");
-  if (!relas.empty()) sectionNames.push_back(".rela.text");
+  if (hasData) sectionNames.push_back(".data");
+  if (hasBss) sectionNames.push_back(".bss");
+  if (!textRelas.empty()) sectionNames.push_back(".rela.text");
+  if (!dataRelas.empty()) sectionNames.push_back(".rela.data");
+  if (!rodataRelas.empty()) sectionNames.push_back(".rela.rodata");
   sectionNames.push_back(".symtab");
   sectionNames.push_back(".strtab");
   sectionNames.push_back(".shstrtab");
@@ -1576,12 +1838,35 @@ std::vector<std::uint8_t> linkRelocatable(
   if (hasRodata) {
     rodataOff = offset;
     offset += rodataSize;
+    offset = alignUp(offset, 16);
+  }
+  std::uint64_t dataOff = 0;
+  if (hasData) {
+    dataOff = offset;
+    offset += dataSize;
+    offset = alignUp(offset, 16);
+  }
+  std::uint64_t bssOff = 0;
+  if (hasBss) {
+    bssOff = offset;
     offset = alignUp(offset, 8);
   }
-  std::uint64_t relaOff = 0;
-  if (!relas.empty()) {
-    relaOff = offset;
-    offset += relas.size() * kRelaSize;
+  std::uint64_t relaTextOff = 0;
+  if (!textRelas.empty()) {
+    relaTextOff = offset;
+    offset += textRelas.size() * kRelaSize;
+    offset = alignUp(offset, 8);
+  }
+  std::uint64_t relaDataOff = 0;
+  if (!dataRelas.empty()) {
+    relaDataOff = offset;
+    offset += dataRelas.size() * kRelaSize;
+    offset = alignUp(offset, 8);
+  }
+  std::uint64_t relaRodataOff = 0;
+  if (!rodataRelas.empty()) {
+    relaRodataOff = offset;
+    offset += rodataRelas.size() * kRelaSize;
     offset = alignUp(offset, 8);
   }
   const std::uint64_t symtabOff = offset;
@@ -1595,17 +1880,18 @@ std::vector<std::uint8_t> linkRelocatable(
   const std::uint64_t fileSize =
       shoff + (sectionNames.size() + 1) * kShdrSize;
 
-  std::uint32_t sectionIndex = 1;
-  const std::uint32_t textSection = sectionIndex++;
-  std::uint32_t rodataSection = 0;
-  if (hasRodata) rodataSection = sectionIndex++;
-  std::uint32_t relaSection = 0;
-  if (!relas.empty()) relaSection = sectionIndex++;
+  std::uint32_t relaTextSection = 0;
+  if (!textRelas.empty()) relaTextSection = sectionIndex++;
+  std::uint32_t relaDataSection = 0;
+  if (!dataRelas.empty()) relaDataSection = sectionIndex++;
+  std::uint32_t relaRodataSection = 0;
+  if (!rodataRelas.empty()) relaRodataSection = sectionIndex++;
   const std::uint32_t symtabSection = sectionIndex++;
   const std::uint32_t strtabSection = sectionIndex++;
   const std::uint32_t shstrSection = sectionIndex++;
-  (void)rodataSection;
-  (void)relaSection;
+  (void)relaTextSection;
+  (void)relaDataSection;
+  (void)relaRodataSection;
 
   std::vector<std::uint8_t> out(fileSize, 0);
   put8(out, 0, 0x7F);
@@ -1639,14 +1925,24 @@ std::vector<std::uint8_t> linkRelocatable(
       std::memcpy(out.data() + rodataOff + object.rodataOffset,
                   object.rodata.data(), object.rodata.size());
     }
+    if (hasData && !object.data.empty()) {
+      std::memcpy(out.data() + dataOff + object.dataOffset, object.data.data(),
+                  object.data.size());
+    }
   }
-  for (std::size_t i = 0; i < relas.size(); ++i) {
-    const std::uint64_t base = relaOff + i * kRelaSize;
-    put64(out, base, relas[i].offset);
-    put64(out, base + 8,
-          (static_cast<std::uint64_t>(relas[i].symbol) << 32) | relas[i].type);
-    put64(out, base + 16, static_cast<std::uint64_t>(relas[i].addend));
-  }
+  const auto writeRelas = [&](const std::vector<OutRela>& list,
+                              std::uint64_t sectionOffset) {
+    for (std::size_t i = 0; i < list.size(); ++i) {
+      const std::uint64_t base = sectionOffset + i * kRelaSize;
+      put64(out, base, list[i].offset);
+      put64(out, base + 8,
+            (static_cast<std::uint64_t>(list[i].symbol) << 32) | list[i].type);
+      put64(out, base + 16, static_cast<std::uint64_t>(list[i].addend));
+    }
+  };
+  writeRelas(textRelas, relaTextOff);
+  writeRelas(dataRelas, relaDataOff);
+  writeRelas(rodataRelas, relaRodataOff);
   for (std::size_t i = 0; i < symbols.size(); ++i) {
     const std::uint64_t base = symtabOff + i * kSymSize;
     const std::uint32_t nameOffset =
@@ -1680,10 +1976,28 @@ std::vector<std::uint8_t> linkRelocatable(
     headers.push_back({".rodata", kShtProgbits, kShfAlloc, rodataOff, rodataSize,
                        0, 0, 16, 0});
   }
-  if (!relas.empty()) {
-    headers.push_back({".rela.text", kShtRela, 0, relaOff,
-                       relas.size() * kRelaSize, symtabSection, textSection, 8,
-                       kRelaSize});
+  if (hasData) {
+    headers.push_back({".data", kShtProgbits, kShfAlloc | kShfWrite, dataOff,
+                       dataSize, 0, 0, 16, 0});
+  }
+  if (hasBss) {
+    headers.push_back({".bss", kShtNobits, kShfAlloc | kShfWrite, bssOff, bssSize,
+                       0, 0, 8, 0});
+  }
+  if (!textRelas.empty()) {
+    headers.push_back({".rela.text", kShtRela, 0, relaTextOff,
+                       textRelas.size() * kRelaSize, symtabSection, textSection,
+                       8, kRelaSize});
+  }
+  if (!dataRelas.empty()) {
+    headers.push_back({".rela.data", kShtRela, 0, relaDataOff,
+                       dataRelas.size() * kRelaSize, symtabSection, dataSection,
+                       8, kRelaSize});
+  }
+  if (!rodataRelas.empty()) {
+    headers.push_back({".rela.rodata", kShtRela, 0, relaRodataOff,
+                       rodataRelas.size() * kRelaSize, symtabSection,
+                       rodataSection, 8, kRelaSize});
   }
   headers.push_back({".symtab", kShtSymtab, 0, symtabOff,
                      symbols.size() * kSymSize, strtabSection,
