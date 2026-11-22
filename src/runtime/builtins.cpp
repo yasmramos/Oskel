@@ -134,7 +134,7 @@ double parseFloatText(Runtime& in, const std::string& original, const std::strin
     if (!lower.empty() && (lower[0] == '+' || lower[0] == '-')) lower.erase(0, 1);
     if (lower != "inf" && lower != "infinity" && lower != "nan") {
       in.fail("cannot convert '" + original + "' to " + target +
-              "' (use inf, -inf or nan)");
+              " (use inf, -inf or nan)");
     }
   }
   return result;

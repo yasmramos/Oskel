@@ -38,5 +38,10 @@ print("sqrt float =", sqrt(2.0f));
 // the module body filled from the same stub.
 print("sqrt qualified =", std.math.sqrt(144.0));
 
+// The qualified import also binds the last segment, and the short name is the
+// same module table: both the native export and a plain constant resolve.
+print("sqrt short =", math.sqrt(169.0));
+print("PI short =", math.PI);
+
 // The bare builtin (no declaration) is seeded the same way, like `len`/`type`.
 print("sqrt bare =", sqrt(16.0));

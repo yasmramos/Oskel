@@ -600,10 +600,22 @@ it as a caveat:
   `nullptr`, scalar -> 0, void -> nothing). `cxxbind.generate` runs everywhere;
   `cxxbind.end_to_end` is Linux-only (compiles the shim with the host `c++`,
   runs the VM with `LD_PRELOAD`, then the hosted AOT binary with
-  `LIBRARY_PATH`/`LD_LIBRARY_PATH`) and compares both outputs. The first slice
-  supports one ctor/dtor, scalar/`string`/`ptr`/class parameters, scalar
-  returns and `const` methods; it rejects class/string returns, overload sets,
-  templates, callbacks and `std::` containers.
+  `LIBRARY_PATH`/`LD_LIBRARY_PATH`) and compares both outputs. A class with a
+  `ctor` is constructed with `Class(...)`; a class without one is adopt-only and
+  takes `Class(handle, owned)`, which is how a factory, a method or a borrowed
+  handle creates it. A factory is an `object` of functions emitted as a map
+  (`let Surfaces = { raster: ... };`), and a class return carries `owned`
+  (default, raw pointer), `borrow`, `sp` (`sk_sp`/`unique_ptr`, `.release()`) or
+  `value` (allocates `new T(result)`). `release "delete"` (the default),
+  `"unref"` and `"none"` choose the generated thunk; `close` only releases when
+  `owned` is true. A class return needs an adopt-only target, `value` needs
+  `release "delete"`, and a ctor with `release "none"` is rejected (exit 65).
+  `Class&`/`const Class&` parameters cross as handles and the shim dereferences
+  them. `bindings/skia/skia.oskelbind` is the first real descriptor; its shim
+  needs a Skia checkout, while `cxxbind.generate` checks generation and
+  `oskel -c` on every platform. The bridge still rejects string returns,
+  overload sets, templates, callbacks, default arguments, C++ enums and `std::`
+  containers.
 - `oskelp` (the project and package manager, `docs/oskelp.md`) is a third
   standalone executable under `tools/`. It links no engine code and drives
   `oskel`/`oskelc` as child processes; `nm build/oskel | grep oskelp` must stay

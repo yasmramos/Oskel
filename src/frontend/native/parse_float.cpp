@@ -260,6 +260,8 @@ void emitParse(CodeGen& cg, CodeGen::Label label, CodeGen::Label addSmall,
   CodeGen::Label emitSign = cg.newLabel();
   CodeGen::Label emitDone = cg.newLabel();
   CodeGen::Label bad = cg.newLabel();
+  CodeGen::Label badOverflow = cg.newLabel();
+  CodeGen::Label badEmpty = cg.newLabel();
   CodeGen::Label epilogue = cg.newLabel();
 
   constexpr std::int64_t kTwoPow52 = 0x10000000000000LL;
@@ -310,9 +312,15 @@ void emitParse(CodeGen& cg, CodeGen::Label label, CodeGen::Label addSmall,
   cg.addImm32(R13, -1);
   cg.jmp(trimR);
 
+  // The hosted engine tests for an empty string on the trimmed text, *before*
+  // it hands the bytes to `strtod`, so `float("\u0000abc")` is malformed text
+  // rather than an empty string.
+  cg.bind(trimRDone);
+  cg.cmpReg(R12, R13);
+  cg.jcc(Jcc::Ae, badEmpty);
+
   // Cut at the first embedded NUL: `strtod` stops there and the hosted engine
   // ignores the trailing bytes (`double("1\u0000abc")` is 1).
-  cg.bind(trimRDone);
   cg.movReg(Rcx, R12);
   cg.bind(nulLoop);
   cg.cmpReg(Rcx, R13);
@@ -324,8 +332,10 @@ void emitParse(CodeGen& cg, CodeGen::Label label, CodeGen::Label addSmall,
   cg.jmp(nulLoop);
   cg.bind(nulDone);
   cg.movReg(R13, Rcx);
+  // A leading NUL leaves nothing to parse, and `strtod` finds no conversion in
+  // that text: malformed, not empty.
   cg.cmpReg(R12, R13);
-  cg.jcc(Jcc::Ae, bad);  // empty text
+  cg.jcc(Jcc::Ae, bad);
 
   // Optional sign.
   cg.movImmToMem(Rbx, offNeg, 0);
@@ -814,7 +824,7 @@ void emitParse(CodeGen& cg, CodeGen::Label label, CodeGen::Label addSmall,
   cg.addReg(R11, Rax);
   cg.movImm(R8, 1080);
   cg.cmpReg(R11, R8);
-  cg.jcc(Jcc::Gt, bad);
+  cg.jcc(Jcc::Gt, badOverflow);
   cg.movToMem(Rbx, offSExp, R10);
   cg.movToMem(Rbx, offCnt, R10);
   cg.bind(decMul5Loop);
@@ -847,7 +857,7 @@ void emitParse(CodeGen& cg, CodeGen::Label label, CodeGen::Label addSmall,
   cg.jcc(Jcc::Lt, roundZero);
   cg.movImm(R9, 1200);
   cg.cmpReg(R8, R9);
-  cg.jcc(Jcc::Gt, bad);
+  cg.jcc(Jcc::Gt, badOverflow);
   // K = 64 - Eest, clamped to >= 0.
   cg.movImm(R9, 64);
   cg.subReg(R9, R8);
@@ -1042,7 +1052,7 @@ void emitParse(CodeGen& cg, CodeGen::Label label, CodeGen::Label addSmall,
   cg.movToMem(Rbx, offE, R10);
   cg.movImm(R8, 1023);
   cg.cmpReg(R10, R8);
-  cg.jcc(Jcc::Gt, bad);  // overflow
+  cg.jcc(Jcc::Gt, badOverflow);  // overflow
   cg.movImm(R8, -1022);
   cg.cmpReg(R10, R8);
   cg.jcc(Jcc::Ge, packNormal);
@@ -1084,7 +1094,20 @@ void emitParse(CodeGen& cg, CodeGen::Label label, CodeGen::Label addSmall,
   cg.jmp(epilogue);
 
   cg.bind(bad);
-  cg.movImm(Rax, 1);  // 1 = failure
+  cg.movImm(Rax, 1);  // 1 = malformed text
+  cg.jmp(epilogue);
+
+  // A magnitude the binary64 range cannot hold. The hosted engine reports it
+  // separately from malformed text (`... (use inf, -inf or nan)`), so the
+  // caller needs the distinction to pick the message.
+  cg.bind(badOverflow);
+  cg.movImm(Rax, 2);  // 2 = out of range
+  cg.jmp(epilogue);
+
+  // Nothing but whitespace (and possibly an embedded NUL): the hosted engine
+  // says "cannot convert an empty string", not "cannot convert '...'".
+  cg.bind(badEmpty);
+  cg.movImm(Rax, 3);  // 3 = empty
 
   cg.bind(epilogue);
   cg.pop(R14);

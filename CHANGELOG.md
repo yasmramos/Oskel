@@ -11,6 +11,22 @@ may change between minor versions.
 
 ### Added
 
+- **The C++ bridge now generates factories and owned class returns.**
+  `bindgen --cxx` accepts an `object` of functions (emitted as a map, so
+  `Surfaces.raster(...)` reads like a namespace), `sp` returns for
+  `sk_sp`/`std::unique_ptr` (`.release()`), `value` returns for a C++ value
+  type (`new T(result)`), `borrow` returns for a handle owned by someone else,
+  and `Class&`/`const Class&` parameters that the shim dereferences. A class
+  chooses `release "delete"`, `"unref"` or `"none"`, and an adopt-only class
+  takes `Class(handle, owned)` so `close` releases only an owned handle. A
+  class return needs an adopt-only target and `value` needs `release "delete"`;
+  a ctor with `release "none"` is rejected before any file is written.
+  `bindings/skia/skia.oskelbind` is the first real descriptor (surface, canvas,
+  paint, rect, image); its shim needs a Skia checkout, while generation and
+  `oskel -c` run on every platform. `tests/cxxbind/factory.*` exercises the VM
+  and the hosted AOT binary; `tests/cxxbind/invalid_*.oskelbind` pin the
+  rejection messages.
+
 - **The bound range methods now work under `oskel build`.** `r.toArray()` and
   `r.contains(x)` used to answer "value has no such member" in a compiled
   binary, because `emitMemberGet` only knew a range's `.length`. Both are bound

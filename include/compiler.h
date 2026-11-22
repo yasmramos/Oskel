@@ -666,6 +666,10 @@ class Compiler {
     enum class Kind { Namespace, Module, Name };
     Kind kind;
     std::string module;
+    // The convenience binding of a qualified import's last segment. It is
+    // weaker than an explicit import: an explicit binding of the same name
+    // replaces it, and a declaration already owns the name.
+    bool implicit = false;
   };
 
   // Everything that outlives one chunk: the definitions a REPL session
@@ -737,8 +741,11 @@ class Compiler {
   // Compiles `import <path>;` / `import <path> as <alias>;`. The module table
   // becomes a real runtime value reachable through the dotted path (`std.math`
   // or the alias `m`), so qualified access uses the ordinary member chain.
+  // `implicitShortAlias` marks the extra binding of the last segment
+  // (`math` in `import std.math;`): it is skipped when a declaration owns the
+  // name, instead of reporting the collision an explicit binding would.
   void compileQualifiedImport(const ImportedModule& module, const std::string& boundName,
-                              int line, int col);
+                              int line, int col, bool implicitShortAlias = false);
 
   // Compiles a wildcard or selective import, binding each imported name to a
   // global. Reports an ambiguity when two `.*` imports export the same name.
@@ -750,10 +757,13 @@ class Compiler {
   // detection lives, so every pair of forms is checked, not only two
   // wildcards. Returns false when the binding must be skipped: a name the
   // importing module declares itself always wins, and re-importing the very
-  // same binding is a no-op. Reports a compile error on a genuine collision
-  // (docs/language.md §18.3).
+  // same binding is a no-op. An `implicitShortAlias` (the last segment of a
+  // qualified import) is also skipped when a struct owns the name; an explicit
+  // binding reports that collision instead. Reports a compile error on a
+  // genuine collision (docs/language.md §18.3).
   bool recordImportBinding(const std::string& visible, ImportBinding::Kind kind,
-                           const std::string& module, int line, int col);
+                           const std::string& module, int line, int col,
+                           bool implicitShortAlias = false);
 
   // Creates the namespace prefix `prefix` (e.g. "std" or "std.math") as a
   // global map if it was not created by an earlier import, and returns the

@@ -458,6 +458,20 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     convention before the pointer builtins did, and the new arity guards follow
     it (the VM appends `, got N`).
 
+    The numeric conversions are the exception that proves the rule
+    (PHASE 7c.5b.2c): `int`, `float` and `double` now assemble their message in
+    the arena from a prefix, the operand's own bytes, the target and an
+    optional cause, so the AOT text matches the VM character for character
+    (`cannot convert 'abc' to int`, `cannot convert an empty string to float`,
+    `cannot convert '1e40' to float (out of range)`,
+    `cannot convert '1e400' to double (use inf, -inf or nan)`,
+    `cannot convert a non-finite float to int`,
+    `float is out of the integer range`). The parsers report *why* they failed
+    (malformed, overflow, empty) so the cause can be named, and a non-string
+    operand quotes its type name. The builder is worth it here because a
+    conversion failure is the error a program is most likely to print and
+    branch on. The arity prefix still follows the convention above.
+
 26. **[P1]** WebAssembly backend gaps (PHASE 9). The backend behind
     `Target::wasm32()` (`src/frontend/native/wasm.cpp`) covers the scalar core,
     arrays, maps, slicing, variadic functions, the array/map/string methods,
@@ -890,8 +904,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    the window, renderer and event surface, `docs/sdl.md` documents it, and
    `oskel build --mode hosted --link-lib SDL3` compiles it. The C++ bridge
    (`bindgen --cxx`, `docs/cxxbind.md`) now generates Oskel classes plus a C++
-   shim from a descriptor; the Skia descriptor and the declarative UI layer
-   (`Window`, `Column`, `Text`, `Button`, ...) are the next slices.
+   shim from a descriptor. Factory objects, `sk_sp`/`unique_ptr` and value
+   returns, borrowed handles and `Class&` parameters landed, and
+   `bindings/skia/skia.oskelbind` is the Skia descriptor; compiling its shim
+   needs a Skia checkout. The declarative UI layer (`Window`, `Column`, `Text`,
+   `Button`, ...) is the next slice.
 10. **[P3]** Add `dlopen`/`dlsym` as a builtin for dynamic FFI.
 11. **[P1] [done]** `oskelp`: the local registry (`$OSKEL_REGISTRY`) landed
     with semver requirements (exact, `^`, `~`, comparators, wildcards and a

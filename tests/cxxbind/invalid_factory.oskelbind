@@ -1,0 +1,12 @@
+# A class return needs an adopt-only class: `Box` has a ctor, so the wrapper
+# cannot call `Box(handle, owned)`.
+header "factory.h"
+prefix "oskel_"
+
+class Box {
+  cpp "Box"
+  ctor()
+  dtor
+}
+
+function make(): Box sp cpp "Box::make"

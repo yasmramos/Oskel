@@ -413,7 +413,11 @@ previous one.
   `import { sqrt } from std.math;`) with compile-time
   conflict detection across every import form (not only two `.*` imports: an
   alias or a namespace root that collides with another import is reported too)
-  and a reserved `std.` prefix. A module is loaded
+  and a reserved `std.` prefix. A qualified import also binds the last segment
+  (`math` in `import std.math;`) when that name is free, so the module is
+  reachable without repeating the path; an explicit alias suppresses it, a
+  top-level declaration wins over it, and two imports that would claim the same
+  short name are a compile error. A module is loaded
   once, eagerly; a cyclic import (`a -> b -> a`, including a self-import) is a
   compile error rather than a stack overflow. A module's own imports are
   private to it: a namespace, alias or wildcard name it creates never reaches
@@ -1375,7 +1379,21 @@ binary prints byte for byte what the VM prints).
       Covered by `tests/parse_float_test.cpp` (the emitted code called through
       a function pointer against `strtod`, 500k random cases plus the edges)
       and `tests/freestanding_test.cpp` (the builtin paths under the real
-      `_start`) and the `oskel build` fixture. **7c.5b.3** (done) adds the exact
+      `_start`) and the `oskel build` fixture. **7c.5b.2c** (done) makes the
+      three conversions report a failed conversion with the hosted engine's
+      exact text. The parsers now return *why* they failed -- 1 malformed, 2
+      out of range, 3 empty after trimming -- and the builtin assembles
+      `cannot convert '<operand>' to <target>` plus an optional cause
+      (` (out of range)`, ` (use inf, -inf or nan)`) in the arena, so a string
+      operand quotes its own bytes and a non-string one quotes its type name.
+      The whole-string cases keep their own text (`cannot convert an empty
+      string to int`, `cannot convert a non-finite float to int`, `float is out
+      of the integer range`). The builder and the operand live in stack slots,
+      never in r13-r15: those three registers are the arena cursor, the arena
+      end and the global table, and clobbering them silently breaks every later
+      allocation. The parser checks "empty" on the trimmed text *before* it cuts
+      at the first NUL, so `float("\u0000abc")` is malformed rather than empty,
+      matching the hosted `strtod` path. **7c.5b.3** (done) adds the exact
       math builtins `floor`, `ceil`, `round` and `sqrt`. They need no libm:
       `floor`/`ceil`/`round` are `cvttsd2si` (truncate) plus a correction
       (`floor` subtracts one when `trunc(x) > x`, `ceil` adds one when
@@ -2090,9 +2108,14 @@ skipped where it is absent.
   `oskel build --mode hosted --link-lib SDL3`.
 - **C++ bridge** (`bindgen --cxx`, `docs/cxxbind.md`): a descriptor plus a
   generated C++ shim turns a C++ class into an Oskel class with an opaque
-  `handle`, and a free function into a wrapper. The C++ ABI stays in the shim;
-  the engine still speaks C. The first slice is `Counter`; the next one is the
-  Skia descriptor.
+  `handle`, and a free function into a wrapper. A class with a C++ ctor is
+  constructed with `Class(...)`; an adopt-only class takes
+  `Class(handle, owned)`. Factory objects (`object Surfaces { ... }`) generate a
+  map of functions, class returns carry `owned`/`borrow`/`sp`/`value`, and a
+  class chooses `release "delete"`, `"unref"` or `"none"`. `Class&` parameters
+  are dereferenced by the shim. The C++ ABI stays in the shim; the engine still
+  speaks C. `bindings/skia/skia.oskelbind` is the first real descriptor; the
+  declarative widget layer is the next slice.
 - **Skia** as the rendering backend for the widgets, on top of SDL3's window.
 - **Declarative UI** (SwiftUI/Flutter style): `Window`, `Column`, `Row`,
   `Text`, `Button`, `Input`, `Checkbox`, `Slider`, etc.
