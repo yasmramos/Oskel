@@ -11,6 +11,14 @@ may change between minor versions.
 
 ### Added
 
+- **The WebAssembly backend binds the string methods.** `upper`, `lower`,
+  `trim`, `trimStart`, `trimEnd`, `split`, `lines`, `replace`, `replaceFirst`,
+  `startsWith`, `endsWith`, `contains`, `indexOf`, `substr`, `chars`,
+  `repeat`, `reversed`, `padStart` and `padEnd` now compile to `.wasm` and
+  match the VM byte for byte, including the Unicode simple-case tables and
+  multibyte UTF-8. `tests/native_build_string_methods.oskl` is the shared AOT
+  fixture and `oskel.build_wasm_string_methods` adds the WASM run.
+
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,
   `readWhile`, `skip`, `lines`, ...); `StringWriter` accumulates chunks
