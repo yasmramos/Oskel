@@ -25,6 +25,7 @@ extern "C" {
   fn oskel_imagePixel(img: ptr, x: int32, y: int32): uint32;
   fn oskel_readPixels(img: ptr, dst: ptr, rowBytes: int32): bool;
   fn oskel_drawText(canvas: ptr, text: cstring, x: float, y: float, font: ptr, paint: ptr): void;
+  fn oskel_measureText(text: cstring, size: float): float;
   fn oskel_Rects_make(l: float, t: float, r: float, b: float): ptr;
   fn oskel_Surfaces_raster(w: int32, h: int32): ptr;
 }
@@ -234,5 +235,9 @@ fn readPixels(img: Image, dst: ptr, rowBytes: int): bool {
 
 fn drawText(canvas: Canvas, text: string, x: float, y: float, font: Font, paint: Paint) {
   oskel_drawText(canvas.handle, text, x, y, font.handle, paint.handle);
+}
+
+fn measureText(text: string, size: float): float {
+  return oskel_measureText(text, size);
 }
 

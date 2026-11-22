@@ -15,6 +15,11 @@ import std.internal.skia as skia;
 import std.internal.skia_ui as skia_ui;
 import std.ui as ui;
 
+// Skia's real font metric, shared by layout and drawing.
+fn measure(text, size): int {
+  return skia_ui.measure(text, size);
+}
+
 fn frame(root, width, height, surface, canvas, pixels, texture, renderer): bool {
   canvas.clear(0xFFFFFFFF);
   skia_ui.render(ui.commands(root), canvas);
@@ -97,7 +102,7 @@ fn run(title, root, width, height, maxFrames): int {
   let canvas = surface.getCanvas();
   let pixels = buffer(width * height * 4);
   let event = sdl.eventBuffer();
-  ui.layout(root, width, height);
+  ui.layoutWith(root, width, height, measure);
 
   var running = true;
   var frames = 0;
@@ -115,7 +120,7 @@ fn run(title, root, width, height, maxFrames): int {
           sdl.mouseButton(event) == sdl.SDL_BUTTON_LEFT &&
           sdl.mouseButtonDown(event)) {
         if (click(root, int(sdl.mouseX(event)), int(sdl.mouseY(event)))) {
-          ui.layout(root, width, height);
+          ui.layoutWith(root, width, height, measure);
         }
       }
     }

@@ -11,6 +11,14 @@ may change between minor versions.
 
 ### Added
 
+- **`std.ui` accepts a renderer font metric.** `layoutWith(root, width, height,
+  measure)` takes a `measure(text, size)` callback, so a backend can drive
+  layout with the same advance it draws with. `layout` keeps the deterministic
+  fixed `0.6 * size` advance for headless tests. `std.internal.skia_ui` exposes
+  `measure`, and `std.ui.window` passes it to `layoutWith`, so widget positions
+  follow Skia's real font instead of the approximation. `native_build_ui.oskl`
+  pins a custom measurer on the VM and under `oskel build`.
+
 - **The WebAssembly backend tree-shakes the runtime (PHASE 9.4).** A bound
   method is only reachable through a static member read (`a.push`, `a?.push`);
   indexing (`a[k]`) is an index, never a method. The compiler records those

@@ -829,8 +829,10 @@ it as a caveat:
   bulk-reads, uploads to a streaming `SDL_Texture`, presents, polls events and
   dispatches a left click through `hitTest`; a `maxFrames` bound keeps the
   headless test finite. `docs/ui.md` describes the
-  public scope. Text measurement is a fixed `0.6 * size` advance, not a font
-  engine.
+  public scope. `layout` keeps a deterministic `0.6 * size` advance for
+  headless tests; `layoutWith` takes a renderer measurer and
+  `std.internal.skia_window` passes Skia's real font advance, so layout and
+  drawing share one metric.
 - `oskelp` (the project and package manager, `docs/oskelp.md`) is a third
   standalone executable under `tools/`. It links no engine code and drives
   `oskel`/`oskelc` as child processes; `nm build/oskel | grep oskelp` must stay

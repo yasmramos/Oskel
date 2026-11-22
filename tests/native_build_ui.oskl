@@ -47,6 +47,22 @@ let barHit = ui.hitTest(bar, 20, 20);
 assert(barHit != nil);
 assertEq(barHit.label, "B");
 
+// A renderer-supplied measurer drives the row: the button starts after the
+// text's real advance, not after the fixed headless advance.
+fn wide(text, size): int {
+  return len(text) * size * 2;
+}
+let measured = ui.window("Measured", 200, 60,
+  ui.row(0, [
+    ui.text("A", 10),
+    ui.button("B", () => nil),
+  ]));
+ui.layoutWith(measured, 200, 60, wide);
+let measuredCommands = ui.commands(measured);
+assertEq(measuredCommands[2].x, 20);
+assertEq(measuredCommands[2].w, 52);
+assertEq(measuredCommands[3].x, 32);
+
 // Explicit colours: text and button styles.
 let styled = ui.window("Styled", 60, 30,
   ui.buttonStyle("S", () => nil, 0xFF000000, 0xFFFFFFFF));
