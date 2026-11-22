@@ -67,6 +67,17 @@ fn main() {
   print(std.fs.dir.exists("a.txt"));
   print(std.fs.dir.isDir("sub"));
 
+  std.fs.copyFile("a.txt", "copy.txt");
+  print(std.fs.readText("copy.txt"));
+  let large = "0123456789abcdef".repeat(5000);
+  std.fs.writeText("large.txt", large);
+  std.fs.copyFile("large.txt", "large-copy.txt");
+  print(len(std.fs.readText("large-copy.txt")));
+  std.fs.dir.remove("large.txt");
+  std.fs.dir.remove("large-copy.txt");
+  print(std.fs.dir.walk("."));
+  std.fs.dir.remove("copy.txt");
+
   std.fs.dir.rename("a.txt", "c.txt");
   print(std.fs.dir.listDir("."));
   std.fs.dir.remove("c.txt");
