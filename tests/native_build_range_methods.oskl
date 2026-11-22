@@ -1,0 +1,60 @@
+// Fixture for `oskel build` (tests/build_binary.cmake).
+//
+// The bound range methods (PHASE 7f.7): `r.toArray()` and `r.contains(x)`. The
+// hosted `bindRange` exposes both; the AOT backend used to answer each with
+// "value has no such member", because `member_get` only knew a range's
+// `.length`. The fixture is checked against the VM here because the script
+// test that covers them (`tests/05_collections.oskl`) only runs on the hosted
+// engine.
+
+// `toArray` materialises the range: exclusive of the end bound, or inclusive
+// with `..=`, and it counts down for a descending range.
+print("ascending exclusive =", (1..5).toArray());
+print("ascending inclusive =", (1..=5).toArray());
+print("descending exclusive =", (5..1).toArray());
+print("descending inclusive =", (5..=1).toArray());
+print("single element =", (3..=3).toArray());
+print("empty =", (0..0).toArray());
+print("negative =", (-2..=2).toArray());
+print("length =", (1..5).toArray().length);
+
+// `range(n)` and `range(from, to)` are the constructors the standard library
+// builds on; both must agree with the literals.
+print("range(3) =", range(3).toArray());
+print("range(2, 5) =", range(2, 5).toArray());
+print("range(4, 1) =", range(4, 1).toArray());
+
+// `contains` is the method form of `x in r`: half-open for `..`, closed for
+// `..=`, and it works in both directions.
+print("in half-open, inside =", (1..5).contains(1), (1..5).contains(4));
+print("in half-open, end =", (1..5).contains(5));
+print("in closed, end =", (1..=5).contains(5));
+print("in descending =", (5..1).contains(3), (5..1).contains(1));
+
+// The receiver is captured, so a method value can be called on its own and
+// still sees the range it came from.
+var toArray = (1..=3).toArray;
+var has = (1..=3).contains;
+print("detached toArray =", toArray());
+print("detached contains =", has(2), has(9));
+
+// A range's `.length` saturates rather than overflowing: a span wider than
+// INT64_MAX reports INT64_MAX, which is what trips the toArray guard. This is
+// the same arithmetic the hosted `Range::length` does in uint64.
+print("length of wide span =", ((-9223372036854775807 - 1)..9223372036854775807).length > 0);
+
+// `toArray` refuses a span over ten million items, exactly like the hosted
+// engine, and it reports the error instead of allocating.
+print("too large =", pcall(() => (0..100000000).toArray()).ok);
+print("too large message =", pcall(() => (0..100000000).toArray()).error.message);
+
+// The argument rules match the hosted bindings. The AOT sink writes one fixed
+// message blob, so a runtime message keeps its fixed prefix and drops the
+// dynamic tail the VM appends (BACKLOG §6 item 25, a documented convention);
+// the fixture therefore compares the prefix, which is identical in both
+// engines, and the type guard's whole text, which has no tail.
+print("toArray argc =", pcall(() => (1..5).toArray(1)).error.message.startsWith("toArray() expects 0 arguments"));
+print("contains argc =", pcall(() => (1..5).contains()).error.message.startsWith("contains() expects 1 argument"));
+print("contains type =", pcall(() => (1..5).contains("a")).error.message);
+
+print("range methods ok");

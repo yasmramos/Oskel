@@ -203,7 +203,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    code points, the fill repeated whole and then clipped, both ordering
    branches). There is no callback form on a string: `"abc".map`/`.each`/
    `.filter` are rejected by the VM too (`type 'string' has no member 'map'`),
-   so the string method surface has no AOT gap left.
+   so the string method surface has no AOT gap left. The range methods bind in
+   PHASE 7c.3l: `toArray` (half-open or closed, either direction, and a span
+   over ten million items refused with the hosted message) and `contains` (the
+   method form of `x in r`, integer-only like the operator). `emitMemberGet`
+   only knew a range's `.length` before, so both answered "value has no such
+   member". The same change closes the `.length` saturation: a span wider than
+   INT64_MAX reports INT64_MAX, which the AOT arithmetic now computes in
+   unsigned magnitude exactly like the hosted `Range::length`.
 2. **[P0] [done]** VM/AOT divergence in structural equality: `[1,2] == [1,2]`
    is true in the VM (content) and false in AOT (identity). The equality helper
    in `oskel_compare` now descends into arrays and maps (equal length, equal

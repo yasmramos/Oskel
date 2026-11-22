@@ -11,6 +11,19 @@ may change between minor versions.
 
 ### Added
 
+- **The bound range methods now work under `oskel build`.** `r.toArray()` and
+  `r.contains(x)` used to answer "value has no such member" in a compiled
+  binary, because `emitMemberGet` only knew a range's `.length`. Both are bound
+  now, over the same closure-with-one-upvalue mechanism the array, map and
+  string methods use: `toArray` materialises the range (half-open or closed,
+  either direction) and refuses a span over ten million items with the hosted
+  message, while `contains` is the method form of `x in r` and rejects a
+  non-integer operand like the operator. The same change closes a `.length`
+  divergence: a span wider than INT64_MAX used to wrap to `-1` in AOT, and now
+  saturates at INT64_MAX in unsigned magnitude, exactly like the hosted
+  `Range::length`. `tests/native_build_range_methods.oskl` compares the
+  compiled binary with the VM byte for byte, the saturation and the error
+  paths included (PHASE 7c.3l, BACKLOG §6 item 1).
 - **A function value now renders its name under `oskel build`.** `print`,
   `repr`, `str` and string interpolation used to render every function as the
   literal `<fn>` in a compiled binary, where the VM renders `<fn add>` for a
