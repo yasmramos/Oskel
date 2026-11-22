@@ -350,6 +350,46 @@ it as a caveat:
   not Windows: a green Wine run is a signal, not a substitute for the
   `windows-latest` job.
 
+## The own linker (PHASE 10)
+
+- The core is `include/native/link.h` + `src/frontend/native/link.cpp`, inside
+  `oskel_frontend`; `src/oskelld.cpp` is a thin third entry point and is
+  excluded from the stray guard like `src/main.cpp` and `src/oskelc.cpp`.
+  `oskel build --mode hosted --linker own`, `oskelc --linker own` and `oskelld`
+  all call `linkHostedExecutable`. Never let one of them grow its own ELF
+  writer: `tests/build_hosted_own.cmake` compares all three images byte for byte
+  against the VM.
+- `--emit-object` writes the ET_REL `oskelld` consumes and requires
+  `--mode hosted`. `--linker own` is opt-in and `x86_64-linux-sysv` only;
+  `host` stays the default. `-L`/`--link-lib` are hosted concepts too.
+- The output is a non-PIE `ET_EXEC` at `0x400000`: four `PT_LOAD` segments,
+  `PT_INTERP` `/lib64/ld-linux-x86-64.so.2`, SysV `.hash`, `.dynsym`/`.dynstr`,
+  a standard PLT, `.got.plt`, `.dynamic`, and a linker-provided 34-byte
+  `_start` that calls `__libc_start_main`. The `_start` is what makes the
+  program's `malloc` legal: do not replace it with a direct `call main`.
+- Binding is eager (`DT_BIND_NOW` + `DT_FLAGS=DF_BIND_NOW`), so the GOT slots
+  start at zero and the loader fills every `R_X86_64_JUMP_SLOT` before the entry
+  point. `R_X86_64_PLT32` targets a PLT entry; `R_X86_64_PC32` targets a
+  `R_X86_64_GLOB_DAT` slot.
+- The symbol check is at link time. The linker reads the `.dynsym` of
+  `libc.so.6`, `libm.so.6` and every `--link-lib` library (`-L`,
+  `LIBRARY_PATH`, `LD_LIBRARY_PATH`, system defaults). `libm` is added only
+  when a symbol needs it. A library's `DT_SONAME` becomes its `DT_NEEDED`, so
+  `--link-lib SDL3` records `libSDL3.so.0`; the dev symlink is only the
+  link-time input.
+- The input is our object (`oskel build --emit-object`). A GCC object has
+  `.data`, `.bss`, `.eh_frame` and `.note.GNU-stack` and is rejected by name.
+  Multiple objects and `ar` archives are PHASE 10.2; the macOS Mach-O and
+  Windows PE containers are PHASE 10.3 and are separate linkers, not a generic
+  abstraction.
+- Determinism is a test: no timestamp, no build id, stable symbol order. Two
+  builds must be byte-identical. The freestanding path must stay byte-identical;
+  `oskel.build_binary` still asserts `ldd` says "not a dynamic executable" for a
+  freestanding image.
+- Every packaging format ships `oskelld` (`/usr/bin/oskelld`,
+  `/usr/local/bin/oskelld`, `{app}\bin\oskelld.exe`) beside `oskelc`, `oskelp`
+  and `bindgen`, and `oskelc_has_no_vm` scans it for VM/JIT symbols too.
+
 ## The WebAssembly backend (PHASE 9)
 
 - `oskel build --target wasm32-freestanding-wasm` emits a `.wasm` module. The

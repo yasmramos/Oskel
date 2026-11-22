@@ -11,6 +11,16 @@ may change between minor versions.
 
 ### Added
 
+- **The project's own linker (`oskelld`).** `oskel build --mode hosted
+  --linker own` and the standalone `oskelld <object.o> -o <out>` close the
+  object `--emit-object` writes into a dynamically linked x86-64 Linux ELF
+  without a C toolchain: PLT/GOT, `DT_NEEDED` libc/libm, a link-time `.dynsym`
+  check and the canonical `_start` that calls `__libc_start_main`. `-L` and
+  `--link-lib` select the libraries, and the SONAME is what the binary records.
+  `oskelc` shares the same core, and the three paths produce byte-identical
+  images. Multiple objects/`ar` archives and the macOS/Windows containers are
+  PHASE 10.2/10.3.
+
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,
   `readWhile`, `skip`, `lines`, ...); `StringWriter` accumulates chunks
@@ -34,7 +44,7 @@ may change between minor versions.
   VM, `oskel build` and the WebAssembly backend produce the same output;
   `tests/58_std_collections.oskl` and `tests/native_build_collections.oskl`
   cover the VM and the AOT/WASM parity. `scan` is documented as returning
-  `len(xs) + 1` elements and `sliding` rejects a size below 1.
+  `len(xs) + 1` elements and `sliding` rejects a size below 1. (feat(native): add oskelld, the project's own linker)
 
 - **The Skia bridge compiles and runs against a real Skia build.** The
   generated shim now covers text (`SkFont` + `drawString`) and one-pixel

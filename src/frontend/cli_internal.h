@@ -42,6 +42,13 @@ Target hostTarget();
 // The link mode `--mode` names.
 bool parseLinkModeName(const std::string& name, LinkMode& out);
 
+// How a hosted object is closed (PHASE 10.1): `Host` drives the host C
+// compiler, `Own` uses the project's own linker (`native/link.*`). The choice
+// is a command-line flag, never language syntax.
+enum class Linker { Host, Own };
+bool parseLinkerName(const std::string& name, Linker& out);
+const char* linkerName(Linker linker);
+
 // The C compiler the hosted link drives (PHASE 7f.4), from `$CC` or `cc`.
 std::string hostedLinkerCommand();
 
@@ -54,17 +61,21 @@ std::string shellQuote(const std::string& path);
 // Returns 0 on success, 65 when the toolchain is missing or the link fails --
 // never a half-linked image.
 int linkHostedObject(const std::string& objectPath, const std::string& output,
-                     const std::string& tool,
-                     const std::vector<std::string>& linkLibs);
+                     const Target& target, const std::string& tool,
+                     const std::vector<std::string>& linkLibs,
+                     const std::vector<std::string>& libraryPaths);
 
 // Compiles `source` (resolving imports) and writes a native binary to
 // `output`. Returns 0 on success, 65 for compile errors and 74 for a write
 // failure. `tool` names the binary in diagnostics (`oskel build` or `oskelc`).
-// `linkLibs` reaches the hosted linker; it is empty in freestanding mode.
+// `linker` selects how a hosted object is closed and `emitObject` stops after
+// writing that object (the input of `oskelld`). `linkLibs` reaches the hosted
+// linker; it is empty in freestanding mode.
 int buildBinary(const std::string& source, const std::string& name,
                 const std::string& output, const std::string& argv0,
-                const Target& target, LinkMode mode,
-                const std::vector<std::string>& linkLibs,
+                const Target& target, LinkMode mode, Linker linker,
+                bool emitObject, const std::vector<std::string>& linkLibs,
+                const std::vector<std::string>& libraryPaths,
                 const std::string& tool);
 
 // Parses the AOT command line
