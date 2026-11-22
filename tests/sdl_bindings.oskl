@@ -1,4 +1,4 @@
-// SDL3 bindings (`std/sdl.oskl`) headless test.
+// SDL3 bindings (`std/internal/sdl.oskl`) headless test.
 //
 // The runner sets `SDL_VIDEODRIVER=dummy`, so it opens a window and a software
 // renderer without a display. The same file is the reference output of the
@@ -6,82 +6,82 @@
 // prints must be deterministic: it prints one line at the end and asserts the
 // rest.
 //
-// The synthetic events are the guard for the offsets in `std/sdl.oskl`: a
+// The synthetic events are the guard for the offsets in `std/internal/sdl.oskl`: a
 // `SDL_Event` is a union, so the module reads its fixed offsets out of a
 // 128-byte buffer instead of modelling it as a Oskel `struct`.
 
-import std.sdl;
+import std.internal.sdl;
 
 // The layout constants the accessors depend on.
-assertEq(std.sdl.SDL_EVENT_BYTES, 128);
-assertEq(std.sdl.SDL_EVENT_TYPE_OFFSET, 0);
-assertEq(std.sdl.SDL_EVENT_SCANCODE_OFFSET, 24);
-assertEq(std.sdl.SDL_EVENT_KEY_OFFSET, 28);
-assertEq(std.sdl.SDL_EVENT_MOTION_X_OFFSET, 28);
-assertEq(std.sdl.SDL_EVENT_MOTION_Y_OFFSET, 32);
+assertEq(std.internal.sdl.SDL_EVENT_BYTES, 128);
+assertEq(std.internal.sdl.SDL_EVENT_TYPE_OFFSET, 0);
+assertEq(std.internal.sdl.SDL_EVENT_SCANCODE_OFFSET, 24);
+assertEq(std.internal.sdl.SDL_EVENT_KEY_OFFSET, 28);
+assertEq(std.internal.sdl.SDL_EVENT_MOTION_X_OFFSET, 28);
+assertEq(std.internal.sdl.SDL_EVENT_MOTION_Y_OFFSET, 32);
 
-assertEq(std.sdl.initVideo(), true);
+assertEq(std.internal.sdl.initVideo(), true);
 
-let window = std.sdl.SDL_CreateWindow("oskel sdl test", 320, 240, 0);
+let window = std.internal.sdl.SDL_CreateWindow("oskel sdl test", 320, 240, 0);
 assert(window != nil);
-assertEq(std.sdl.SDL_SetWindowTitle(window, "oskel sdl test (renamed)"), true);
+assertEq(std.internal.sdl.SDL_SetWindowTitle(window, "oskel sdl test (renamed)"), true);
 
 let width = buffer(4);
 let height = buffer(4);
-assertEq(std.sdl.SDL_GetWindowSize(window, width, height), true);
-assertEq(std.sdl.loadU32(width, 0), 320);
-assertEq(std.sdl.loadU32(height, 0), 240);
+assertEq(std.internal.sdl.SDL_GetWindowSize(window, width, height), true);
+assertEq(std.internal.sdl.loadU32(width, 0), 320);
+assertEq(std.internal.sdl.loadU32(height, 0), 240);
 
-let renderer = std.sdl.SDL_CreateRenderer(window, nil);
+let renderer = std.internal.sdl.SDL_CreateRenderer(window, nil);
 assert(renderer != nil);
 
 // `SDL_FRect` is four binary32 values. These are the exact bit patterns, so
 // the test pins the pure-Oskel IEEE 754 encoder rather than only the
 // round-trip.
-let rect = std.sdl.fRectBuffer();
-std.sdl.setFRect(rect, 10, 20, 30, 40);
-assertEq(std.sdl.loadU32(rect, 0), 0x41200000);   // 10.0f
-assertEq(std.sdl.loadU32(rect, 4), 0x41A00000);   // 20.0f
-assertEq(std.sdl.loadU32(rect, 8), 0x41F00000);   // 30.0f
-assertEq(std.sdl.loadU32(rect, 12), 0x42200000);  // 40.0f
-assertEq(std.sdl.loadF32(rect, 0), 10.0f);
-assertEq(std.sdl.loadF32(rect, 12), 40.0f);
+let rect = std.internal.sdl.fRectBuffer();
+std.internal.sdl.setFRect(rect, 10, 20, 30, 40);
+assertEq(std.internal.sdl.loadU32(rect, 0), 0x41200000);   // 10.0f
+assertEq(std.internal.sdl.loadU32(rect, 4), 0x41A00000);   // 20.0f
+assertEq(std.internal.sdl.loadU32(rect, 8), 0x41F00000);   // 30.0f
+assertEq(std.internal.sdl.loadU32(rect, 12), 0x42200000);  // 40.0f
+assertEq(std.internal.sdl.loadF32(rect, 0), 10.0f);
+assertEq(std.internal.sdl.loadF32(rect, 12), 40.0f);
 
-std.sdl.setFRect(rect, -1, 0.5, 0, 100);
-assertEq(std.sdl.loadU32(rect, 0), 0xBF800000);   // -1.0f
-assertEq(std.sdl.loadU32(rect, 4), 0x3F000000);   // 0.5f
-assertEq(std.sdl.loadU32(rect, 8), 0x00000000);   // 0.0f
-assertEq(std.sdl.loadU32(rect, 12), 0x42C80000);  // 100.0f
-assertEq(std.sdl.loadF32(rect, 0), -1.0f);
-assertEq(std.sdl.loadF32(rect, 4), 0.5f);
+std.internal.sdl.setFRect(rect, -1, 0.5, 0, 100);
+assertEq(std.internal.sdl.loadU32(rect, 0), 0xBF800000);   // -1.0f
+assertEq(std.internal.sdl.loadU32(rect, 4), 0x3F000000);   // 0.5f
+assertEq(std.internal.sdl.loadU32(rect, 8), 0x00000000);   // 0.0f
+assertEq(std.internal.sdl.loadU32(rect, 12), 0x42C80000);  // 100.0f
+assertEq(std.internal.sdl.loadF32(rect, 0), -1.0f);
+assertEq(std.internal.sdl.loadF32(rect, 4), 0.5f);
 
 // Inf and NaN have explicit encodings; the normalization loop must not spin.
-std.sdl.setFRect(rect, float("inf"), float("-inf"), float("nan"), 0);
-assertEq(std.sdl.loadU32(rect, 0), 0x7F800000);   // +inf
-assertEq(std.sdl.loadU32(rect, 4), 0xFF800000);   // -inf
-assertEq(std.sdl.loadU32(rect, 8), 0x7FC00000);   // canonical NaN
-assertEq(std.sdl.loadU32(rect, 12), 0x00000000);  // 0.0f
+std.internal.sdl.setFRect(rect, float("inf"), float("-inf"), float("nan"), 0);
+assertEq(std.internal.sdl.loadU32(rect, 0), 0x7F800000);   // +inf
+assertEq(std.internal.sdl.loadU32(rect, 4), 0xFF800000);   // -inf
+assertEq(std.internal.sdl.loadU32(rect, 8), 0x7FC00000);   // canonical NaN
+assertEq(std.internal.sdl.loadU32(rect, 12), 0x00000000);  // 0.0f
 
-std.sdl.setFRect(rect, 10, 20, 30, 40);
-assertEq(std.sdl.setColor(renderer, 220, 80, 60, 255), true);
-assertEq(std.sdl.clear(renderer), true);
-assertEq(std.sdl.fillRect(renderer, rect), true);
-assertEq(std.sdl.drawRect(renderer, rect), true);
-assertEq(std.sdl.drawLine(renderer, 0, 0, 100, 100), true);
-assertEq(std.sdl.drawPoint(renderer, 5, 5), true);
-assertEq(std.sdl.present(renderer), true);
-assert(std.sdl.ticks() >= 0);
-std.sdl.delayMs(1);
+std.internal.sdl.setFRect(rect, 10, 20, 30, 40);
+assertEq(std.internal.sdl.setColor(renderer, 220, 80, 60, 255), true);
+assertEq(std.internal.sdl.clear(renderer), true);
+assertEq(std.internal.sdl.fillRect(renderer, rect), true);
+assertEq(std.internal.sdl.drawRect(renderer, rect), true);
+assertEq(std.internal.sdl.drawLine(renderer, 0, 0, 100, 100), true);
+assertEq(std.internal.sdl.drawPoint(renderer, 5, 5), true);
+assertEq(std.internal.sdl.present(renderer), true);
+assert(std.internal.sdl.ticks() >= 0);
+std.internal.sdl.delayMs(1);
 
 // Poll until the wanted event arrives, so a driver-injected window event does
 // not make the test order-dependent.
 fn pollType(event: ptr, wanted: int): bool {
   var attempts = 0;
   while (attempts < 64) {
-    if (!std.sdl.SDL_PollEvent(event)) {
+    if (!std.internal.sdl.SDL_PollEvent(event)) {
       return false;
     }
-    if (std.sdl.eventType(event) == wanted) {
+    if (std.internal.sdl.eventType(event) == wanted) {
       return true;
     }
     attempts = attempts + 1;
@@ -90,60 +90,72 @@ fn pollType(event: ptr, wanted: int): bool {
 }
 
 fn drain(event: ptr): void {
-  while (std.sdl.SDL_PollEvent(event)) {
+  while (std.internal.sdl.SDL_PollEvent(event)) {
   }
 }
 
-let event = std.sdl.eventBuffer();
-let received = std.sdl.eventBuffer();
+let event = std.internal.sdl.eventBuffer();
+let received = std.internal.sdl.eventBuffer();
 
 // Quit.
 drain(event);
-std.sdl.storeU32(event, std.sdl.SDL_EVENT_TYPE_OFFSET, std.sdl.SDL_EVENT_QUIT);
-assertEq(std.sdl.SDL_PushEvent(event), true);
-assertEq(pollType(received, std.sdl.SDL_EVENT_QUIT), true);
+std.internal.sdl.storeU32(event, std.internal.sdl.SDL_EVENT_TYPE_OFFSET, std.internal.sdl.SDL_EVENT_QUIT);
+assertEq(std.internal.sdl.SDL_PushEvent(event), true);
+assertEq(pollType(received, std.internal.sdl.SDL_EVENT_QUIT), true);
 
 // Key down: the keycode and the scancode sit at different offsets.
 drain(event);
-std.sdl.storeU32(event, std.sdl.SDL_EVENT_TYPE_OFFSET, std.sdl.SDL_EVENT_KEY_DOWN);
-std.sdl.storeU32(event, std.sdl.SDL_EVENT_SCANCODE_OFFSET, 41);
-std.sdl.storeU32(event, std.sdl.SDL_EVENT_KEY_OFFSET, std.sdl.SDLK_ESCAPE);
-assertEq(std.sdl.SDL_PushEvent(event), true);
-assertEq(pollType(received, std.sdl.SDL_EVENT_KEY_DOWN), true);
-assertEq(std.sdl.keyCode(received), std.sdl.SDLK_ESCAPE);
-assertEq(std.sdl.keyScancode(received), 41);
+std.internal.sdl.storeU32(event, std.internal.sdl.SDL_EVENT_TYPE_OFFSET, std.internal.sdl.SDL_EVENT_KEY_DOWN);
+std.internal.sdl.storeU32(event, std.internal.sdl.SDL_EVENT_SCANCODE_OFFSET, 41);
+std.internal.sdl.storeU32(event, std.internal.sdl.SDL_EVENT_KEY_OFFSET, std.internal.sdl.SDLK_ESCAPE);
+assertEq(std.internal.sdl.SDL_PushEvent(event), true);
+assertEq(pollType(received, std.internal.sdl.SDL_EVENT_KEY_DOWN), true);
+assertEq(std.internal.sdl.keyCode(received), std.internal.sdl.SDLK_ESCAPE);
+assertEq(std.internal.sdl.keyScancode(received), 41);
 
 // Mouse motion: the coordinates are floats, and a negative one exercises the
 // sign bit.
 drain(event);
-std.sdl.storeU32(event, std.sdl.SDL_EVENT_TYPE_OFFSET, std.sdl.SDL_EVENT_MOUSE_MOTION);
-std.sdl.storeF32(event, std.sdl.SDL_EVENT_MOTION_X_OFFSET, 12.5f);
-std.sdl.storeF32(event, std.sdl.SDL_EVENT_MOTION_Y_OFFSET, -7.25f);
-assertEq(std.sdl.SDL_PushEvent(event), true);
-assertEq(pollType(received, std.sdl.SDL_EVENT_MOUSE_MOTION), true);
-assertEq(std.sdl.mouseX(received), 12.5f);
-assertEq(std.sdl.mouseY(received), -7.25f);
+std.internal.sdl.storeU32(event, std.internal.sdl.SDL_EVENT_TYPE_OFFSET, std.internal.sdl.SDL_EVENT_MOUSE_MOTION);
+std.internal.sdl.storeF32(event, std.internal.sdl.SDL_EVENT_MOTION_X_OFFSET, 12.5f);
+std.internal.sdl.storeF32(event, std.internal.sdl.SDL_EVENT_MOTION_Y_OFFSET, -7.25f);
+assertEq(std.internal.sdl.SDL_PushEvent(event), true);
+assertEq(pollType(received, std.internal.sdl.SDL_EVENT_MOUSE_MOTION), true);
+assertEq(std.internal.sdl.mouseX(received), 12.5f);
+assertEq(std.internal.sdl.mouseY(received), -7.25f);
 
 // Seven-argument surface functions: the seventh integer argument spills to the
 // outgoing stack area in the AOT thunk, and the VM's typed call lets the C++
 // compiler place it there too. The surface is software, so no display is
 // needed.
-let surface = std.sdl.SDL_CreateSurface(2, 2, std.sdl.SDL_PIXELFORMAT_ABGR8888);
+let surface = std.internal.sdl.SDL_CreateSurface(2, 2, std.internal.sdl.SDL_PIXELFORMAT_ABGR8888);
 assert(surface != nil);
-assertEq(std.sdl.SDL_WriteSurfacePixel(surface, 0, 0, 10, 20, 30, 255), true);
+assertEq(std.internal.sdl.SDL_WriteSurfacePixel(surface, 0, 0, 10, 20, 30, 255), true);
 let red = buffer(1);
 let green = buffer(1);
 let blue = buffer(1);
 let alpha = buffer(1);
-assertEq(std.sdl.SDL_ReadSurfacePixel(surface, 0, 0, red, green, blue, alpha), true);
+assertEq(std.internal.sdl.SDL_ReadSurfacePixel(surface, 0, 0, red, green, blue, alpha), true);
 assertEq(loadByte(red, 0), 10);
 assertEq(loadByte(green, 0), 20);
 assertEq(loadByte(blue, 0), 30);
 assertEq(loadByte(alpha, 0), 255);
-std.sdl.SDL_DestroySurface(surface);
+std.internal.sdl.SDL_DestroySurface(surface);
 
-std.sdl.SDL_DestroyRenderer(renderer);
-std.sdl.SDL_DestroyWindow(window);
-std.sdl.quit();
+// A streaming texture is the presentation path: update it from a tightly
+// packed pixel buffer and draw it over the renderer.
+let texture = std.internal.sdl.SDL_CreateTexture(
+  renderer, std.internal.sdl.SDL_PIXELFORMAT_ARGB8888,
+  std.internal.sdl.SDL_TEXTUREACCESS_STREAMING, 2, 2);
+assert(texture != nil);
+let pixels = buffer(16);
+std.internal.sdl.storeU32(pixels, 0, 0xFFFF0000);  // opaque red, ARGB
+assertEq(std.internal.sdl.updateTexture(texture, pixels, 8), true);
+assertEq(std.internal.sdl.renderTexture(renderer, texture), true);
+std.internal.sdl.destroyTexture(texture);
+
+std.internal.sdl.SDL_DestroyRenderer(renderer);
+std.internal.sdl.SDL_DestroyWindow(window);
+std.internal.sdl.quit();
 
 print("sdl bindings ok");

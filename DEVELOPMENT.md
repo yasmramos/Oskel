@@ -2140,7 +2140,7 @@ skipped where it is absent.
 ### Post-1.0 — UI library
 
 - **SDL3** for windows, renderer and events: the low-level bindings landed as
-  `std/sdl.oskl` (slice 1, `docs/sdl.md`), and a native binary links them with
+  `std/internal/sdl.oskl` (slice 1, `docs/sdl.md`), and a native binary links them with
   `oskel build --mode hosted --link-lib SDL3`.
 - **C++ bridge** (`bindgen --cxx`, `docs/cxxbind.md`): a descriptor plus a
   generated C++ shim turns a C++ class into an Oskel class with an opaque
@@ -2154,15 +2154,18 @@ skipped where it is absent.
   compiles against a real Skia build; `tests/cxxbind/skia_test.oskl` checks
   drawing and pixel readback on the VM and the hosted AOT binary.
 - **Skia** as the rendering backend for the widgets, on top of SDL3's window.
-  `bindings/skia/skia_ui.oskl` renders the `std/ui` display list; the first
-  slice targets a raster surface, and presenting that surface into an SDL3
-  window is the next slice.
+  `std/internal/skia_ui.oskl` renders the `std/ui` display list, and
+  `std/internal/skia_window.oskl` bulk-reads the raster surface, uploads it to
+  a streaming `SDL_Texture` and presents it. Both SDL3 and Skia stay internal.
 - **Declarative UI** (SwiftUI/Flutter style), first slice: `std/ui.oskl` has
   `window`, `column`, `row`, `padding`, `spacer`, `text` and `button`, a
   deterministic layout, a `rect`/`text` display list and button hit testing.
-  `tests/native_build_ui.oskl` proves it on the VM and under `oskel build`.
-  Input widgets (`Input`, `Checkbox`, `Slider`), an event loop and real font
-  metrics are still pending.
+  `std/ui/window.oskl` is the public event loop: it presents the frame, polls
+  SDL3 events and dispatches a left click through `hitTest`.
+  `tests/native_build_ui.oskl` proves the tree on the VM and under `oskel build`;
+  `tests/cxxbind/skia_window_test.oskl` proves the window path on both engines.
+  Input widgets (`Input`, `Checkbox`, `Slider`), real font metrics and text
+  wrapping are still pending.
 
 ### Post-1.0 — Other features
 

@@ -5,6 +5,7 @@
 // from skia.oskelbind. Keep this header free of state: the generator owns the
 // thunks and the Oskel classes.
 
+#include <cstddef>
 #include <cstdint>
 
 #include "include/core/SkCanvas.h"
@@ -47,6 +48,16 @@ inline uint32_t readPixel(SkImage* image, int x, int y) {
     return 0;
   }
   return pixel;
+}
+
+inline bool readPixels(SkImage* image, void* dst, int rowBytes) {
+  if (image == nullptr || dst == nullptr || rowBytes <= 0) {
+    return false;
+  }
+  const SkImageInfo info = SkImageInfo::Make(
+      image->width(), image->height(), kBGRA_8888_SkColorType,
+      kUnpremul_SkAlphaType);
+  return image->readPixels(info, dst, static_cast<size_t>(rowBytes), 0, 0);
 }
 
 }  // namespace skia_bridge

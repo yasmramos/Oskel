@@ -3,11 +3,11 @@
 `std/ui.oskl` is the first declarative widget layer. It builds a tree of
 widgets, measures and places it, and emits a **display list** of rectangles and
 text. It does not open a window and does not call a graphics API: SDL3 owns the
-window and the events, and a backend such as Skia consumes the display list.
+window and the events, and Skia consumes the display list.
 
-The module is plain Oskel over the portable primitive surface, so the tree,
-layout, display list and hit testing behave identically on the development VM
-and under `oskel build` (`tests/native_build_ui.oskl`).
+The widget module is plain Oskel over the portable primitive surface, so the
+tree, layout, display list and hit testing behave identically on the development
+VM and under `oskel build` (`tests/native_build_ui.oskl`).
 
 ```oskel
 import std.ui as ui;
@@ -30,6 +30,52 @@ if (button != nil) {
   onClick();
 }
 ```
+
+## Window and event loop
+
+`std/ui/window.oskl` is the public presentation entry point. It imports the
+internal SDL3 and Skia modules, so user code never names them:
+
+```oskel
+import std.ui as ui;
+import std.ui.window as ui_window;
+
+let root = ui.window("Demo", 320, 200,
+  ui.column(8, [ui.text("Hello", 24), ui.button("OK", () => print("clicked"))]));
+
+// maxFrames <= 0 runs until the window closes or Escape is pressed.
+ui_window.run("Demo", root, 320, 200, 0);
+```
+
+`run` returns the number of frames it presented. It lays the tree out, draws
+the display list into a raster Skia surface, copies the whole surface into one
+tightly packed BGRA buffer, uploads it to a streaming `SDL_Texture`, draws that
+texture and presents the renderer. A left click is dispatched through
+`ui.hitTest`, so a button's `onClick` runs and the tree is laid out again.
+
+On the development engine, load the Skia shim and let SDL3 resolve from the
+linked library:
+
+```sh
+LD_PRELOAD=bindings/skia/build/libskia_shim.so oskel examples/ui/window.oskl
+```
+
+A native binary needs the hosted link mode and both libraries:
+
+```sh
+LIBRARY_PATH=bindings/skia/build oskel build examples/ui/window.oskl \
+  --mode hosted --link-lib SDL3 --link-lib skia_shim -o ui-window
+LD_LIBRARY_PATH=bindings/skia/build ./ui-window
+```
+
+| Function | Meaning |
+| --- | --- |
+| `run(title, root, width, height, maxFrames)` | open a window and run the event loop |
+| `click(root, x, y)` | dispatch a click through `hitTest`; returns whether a handler ran |
+
+`std.internal.sdl`, `std.internal.skia`, `std.internal.skia_ui` and
+`std.internal.skia_window` are implementation details. They are importable, but
+they are not part of the public API and are not documented for users.
 
 ## Widgets
 
@@ -77,34 +123,36 @@ children.
 
 ## Skia backend
 
-`bindings/skia/skia_ui.oskl` consumes the display list:
+`std/internal/skia_ui.oskl` consumes the display list, and `std.ui.window`
+drives the surface, the SDL3 texture and the event loop. Public code only names
+the widgets and the window entry point:
 
 ```oskel
-import skia;
-import skia_ui;
 import std.ui as ui;
+import std.ui.window as ui_window;
 
-let root = ui.window("Demo", 320, 200, ui.column(8, [ui.text("Hello", 24)]));
-ui.layout(root, 320, 200);
-
-let surface = skia.Surfaces.raster(320, 200);
-let canvas = surface.getCanvas();
-skia_ui.render(ui.commands(root), canvas);
+let root = ui.window("Demo", 320, 200,
+  ui.column(8, [ui.text("Hello", 24)]));
+ui_window.run("Demo", root, 320, 200, 0);
 ```
 
-Build the Skia bridge first (`bindings/skia/README.md`). The backend creates and
-closes the `Paint`/`Font` objects it needs; the `Canvas` remains borrowed from
-the `Surface`.
+Build the Skia bridge first (`bindings/skia/README.md`). The internal backend
+creates and closes the `Paint`/`Font` objects it needs; the `Canvas` remains
+borrowed from the `Surface`. The bridge module is checked in at
+`std/internal/skia.oskl`, so `std.ui.window` type-checks in a clean checkout;
+only the C++ shim needs a Skia build.
 
 ## Limits
 
 - One font metric, no wrapping, alignment, borders, scrolling, input widgets or
   animation yet.
-- A button stores `onClick`; the application dispatches it after `hitTest`.
-  There is no event loop in `std/ui` yet.
-- SDL3 creates the OS window; a Skia surface that presents into that window is
-  the next slice. Today the Skia backend renders to a raster surface, which is
-  what the pixel test uses.
+- `std.ui` itself has no event loop; `std.ui.window` owns it. A button stores
+  `onClick` and the window loop dispatches it after `hitTest`.
+- The window loop redraws on every frame and sleeps 16 ms; it has no dirty-region
+  optimisation, resize handling or keyboard focus yet.
+- `std.ui.window` is Linux x86-64 hosted AOT for now, because the native backend
+  is hosted-only on that target; the VM path works wherever SDL3 and the Skia
+  shim are available.
 
 ## Tests
 
@@ -112,4 +160,4 @@ the `Surface`.
 | --- | --- |
 | `oskel.native_build_ui` | The widget tree, layout, display list and hit test run on the VM. |
 | `oskel.build_binary_ui` | The same fixture builds with `oskel build` and prints exactly the VM's output. |
-| `cxxbind.skia` | Optional real-Skia test: the generated bridge renders the display list to a raster surface, checks pixels in the VM and the hosted AOT binary, and also runs `skia_ui_test.oskl`. Registered only when `OSKEL_SKIA_DIR`/`OSKEL_SKIA_LIB` point at a Skia build. |
+| `cxxbind.skia` | Optional real-Skia test: the generated bridge renders the display list to a raster surface, checks pixels in the VM and the hosted AOT binary, runs `skia_ui_test.oskl`, and drives `skia_window_test.oskl` through the SDL dummy driver. Registered only when `OSKEL_SKIA_DIR`/`OSKEL_SKIA_LIB` point at a Skia build; the window half also needs SDL3. |

@@ -2058,7 +2058,7 @@ bool Compiler::recordImportBinding(const std::string& visible, ImportBinding::Ki
   // catches both source orders (docs/language.md §18.3).
   if (structDefs_.find(visible) != structDefs_.end()) {
     // The short name is a convenience, not the import itself: a struct that
-    // owns the name only suppresses it, while `std.sdl` keeps working.
+    // owns the name only suppresses it, while `std.internal.sdl` keeps working.
     if (implicitShortAlias) {
       auto it = moduleByBindingPath_.find(visible);
       if (it != moduleByBindingPath_.end() && it->second == module) {

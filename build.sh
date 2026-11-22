@@ -24,7 +24,7 @@ CXXFLAGS=${CXXFLAGS:--O2}
 
 mkdir -p build
 
-# SDL3 is optional: `std/sdl.oskl` binds it, and the development engine must
+# SDL3 is optional: `std/internal/sdl.oskl` binds it, and the development engine must
 # have the library loaded for `dlsym(RTLD_DEFAULT)` to resolve its symbols.
 # `--as-needed` would drop a shared library nothing references at link time, so
 # Linux forces it in; on macOS a linked dylib stays loaded.

@@ -3,7 +3,7 @@
 # Build it where a Skia checkout is available:
 #   SKIA_DIR=/path/to/skia ./build.sh
 #
-# The generated module is `build/skia.oskl`; the shim is `build/skia_shim.cpp`.
+# The generated module is `std/internal/skia.oskl`; the shim is `build/skia_shim.cpp`.
 header "skia_facade.h"
 prefix "oskel_"
 
@@ -17,6 +17,10 @@ object Surfaces {
 
 # Read one pixel back from a snapshot (BGRA little-endian, i.e. 0xAARRGGBB).
 function imagePixel(img: Image, x: int, y: int): uint32 cpp "skia_bridge::readPixel"
+
+# Copy the whole snapshot into a tightly packed BGRA buffer. This is the
+# presentation path: one FFI call per frame, not one per pixel.
+function readPixels(img: Image, dst: ptr, rowBytes: int): bool cpp "skia_bridge::readPixels"
 
 # `SkCanvas::drawString` takes an explicit `SkFont`; the facade keeps the
 # paint/font split out of the descriptor.

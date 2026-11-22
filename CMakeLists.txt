@@ -200,9 +200,9 @@ target_link_libraries(oskel PRIVATE oskel_lib)
 target_compile_options(oskel PRIVATE ${OSKEL_WARNINGS})
 
 # --------------------------------------------------------------------------- SDL3 (optional)
-# `std/sdl.oskl` binds SDL3's window, renderer and event surface. The module is
+# `std/internal/sdl.oskl` binds SDL3's window, renderer and event surface. The module is
 # always installed; the development engine links SDL3 when CMake finds it, so
-# `import std.sdl` resolves the `SDL_*` symbols through `dlsym(RTLD_DEFAULT)`.
+# `import std.internal.sdl` resolves the `SDL_*` symbols through `dlsym(RTLD_DEFAULT)`.
 # `oskelc` does not link it: it only compiles the module, and a native binary
 # gets the symbols from the hosted link (`--link-lib SDL3`).
 #
@@ -221,9 +221,9 @@ if(OSKEL_ENABLE_SDL3)
       target_link_options(oskel PRIVATE "-Wl,--no-as-needed")
     endif()
     set_target_properties(oskel PROPERTIES ENABLE_EXPORTS ON)
-    message(STATUS "SDL3 found: std.sdl enabled in the development engine")
+    message(STATUS "SDL3 found: std.internal.sdl enabled in the development engine")
   else()
-    message(STATUS "SDL3 not found: std.sdl tests skipped (set OSKEL_ENABLE_SDL3=OFF to silence)")
+    message(STATUS "SDL3 not found: std.internal.sdl tests skipped (set OSKEL_ENABLE_SDL3=OFF to silence)")
   endif()
 endif()
 
@@ -434,6 +434,7 @@ if(BUILD_TESTING)
         "-DSKIA_DIR=${OSKEL_SKIA_DIR}"
         "-DSKIA_LIB=${OSKEL_SKIA_LIB}"
         "-DSKIA_LIBS=${OSKEL_SKIA_LIBS}"
+        "-DSDL3_FOUND=${OSKEL_SDL3_FOUND}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_skia_case.cmake")
   endif()
 
@@ -561,7 +562,7 @@ if(BUILD_TESTING)
       "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/21_std_math.oskl"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_stdlib.cmake")
 
-  # --- SDL3 bindings (`std/sdl.oskl`) ---
+  # --- SDL3 bindings (`std/internal/sdl.oskl`) ---
   # The module is always installed; these tests need the development engine to
   # have SDL3 loaded, which CMake arranges above when it finds the library.
   # `run_sdl_case.cmake` sets SDL_VIDEODRIVER=dummy, so no display is needed.
@@ -570,7 +571,7 @@ if(BUILD_TESTING)
     COMMAND ${CMAKE_COMMAND}
       "-DBINDGEN=$<TARGET_FILE:bindgen>"
       "-DHEADER=${CMAKE_CURRENT_SOURCE_DIR}/bindings/sdl/sdl3_subset.h"
-      "-DMODULE=${CMAKE_CURRENT_SOURCE_DIR}/std/sdl.oskl"
+      "-DMODULE=${CMAKE_CURRENT_SOURCE_DIR}/std/internal/sdl.oskl"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_sdl_bindings.cmake")
   if(OSKEL_SDL3_FOUND)
     add_test(NAME sdl.bindings
