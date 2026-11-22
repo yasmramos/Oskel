@@ -1,0 +1,92 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): `std.io` under the AOT
+// backend.
+//
+// `std.io` is written in plain Oskel over the portable primitive surface, and
+// its readers and writers are ordinary classes (maps with closures), so it must
+// build to a native binary and agree with the development VM byte for byte.
+// The module deliberately avoids `readFile`/`writeFile`, which the freestanding
+// backend does not seed; `oskel.build_wasm_io` is the WebAssembly guard.
+//
+// Every line is deterministic and prints a value (the harness compares stdout),
+// so the fixture never relies on an assertion alone.
+
+import std.io;
+import std.io.*;
+import std.io as io;
+import { splitLines, joinLines } from std.io;
+
+let text = "alpha\r\nbeta\ngamma\n";
+
+// --- line splitting and joining ---------------------------------------------
+
+print("splitLines =", splitLines(text));
+print("joinLines =", joinLines(splitLines(text)));
+print("splitEmpty =", splitLines(""));
+print("splitBlank =", splitLines("\n"));
+print("splitGap =", splitLines("a\n\nb"));
+print("joinEmpty =", joinLines([]));
+print("joinGap =", joinLines(["a", "", "b"]));
+
+// --- reader: cursor, chars and lines ----------------------------------------
+
+let r = StringReader(text);
+print("reader =", r.eof(), r.position(), r.remaining(), r.peek());
+print("readChar =", r.readChar());
+print("readLine =", r.readLine());
+print("readLine2 =", r.readLine());
+print("readLine3 =", r.readLine());
+print("readerEnd =", r.eof(), r.readAll());
+
+// --- reader: read, skip, predicates and tokens ------------------------------
+
+let r2 = StringReader("abcdef");
+print("read =", r2.read(2), r2.read(100), r2.read(0), r2.read(-1));
+let r3 = StringReader("abcdef");
+print("skip =", r3.skip(2), r3.skip(100), r3.skip(-1), r3.rest());
+let r4 = StringReader("aaabbbccc");
+print("while =", r4.readWhile(c => c == "a"), r4.skipWhile(c => c == "b"), r4.rest());
+let r5 = StringReader("  foo\tbar\nbaz ");
+print("tokens =", r5.readToken(), r5.readToken(), r5.readToken(), r5.readToken());
+let r6 = StringReader("12 34");
+print("numbers =", int(r6.readToken()) + int(r6.readToken()));
+
+// --- reader: lines and code points ------------------------------------------
+
+print("lines =", StringReader("a\r\nb\nc").lines());
+print("unicode =", StringReader("héllo").read(2), StringReader("héllo").remaining());
+
+// --- writer -----------------------------------------------------------------
+
+let w = StringWriter();
+print("writer0 =", w.size(), w.isEmpty(), w.toString());
+w.write("a").write("b").writeln("c");
+print("writer1 =", w.size(), w.toString());
+w.writeAll(["d", "e"]);
+w.writeLines(["f", "g"]);
+print("writer2 =", w.size(), w.toString());
+w.clear();
+print("writer3 =", w.size(), w.isEmpty(), w.toString());
+
+let w2 = StringWriter();
+w2.write("hé");
+print("unicodeWriter =", w2.size(), w2.toString());
+
+// --- classes travel through functions ---------------------------------------
+
+fn drain(reader) {
+  return reader.readAll();
+}
+
+fn fill(writer) {
+  writer.write("x").writeln("y");
+  return writer;
+}
+
+print("drain =", drain(StringReader("passed")));
+print("fill =", fill(StringWriter()).toString());
+
+// --- import forms -----------------------------------------------------------
+
+print("qualified =", io.joinLines(["x", "y"]), io.splitLines("x\ny"));
+print("selective =", joinLines(["p", "q"]));
+print("input =", splitLines(text));
