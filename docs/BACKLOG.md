@@ -560,6 +560,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     `.hash`, not `.gnu.hash` (glibc accepts both). `--link-lib` needs the dev
     symlink (`libSDL3.so`) at link time to read the SONAME, while the binary
     records the SONAME (`libSDL3.so.0`).
+    The Windows own linker (PHASE 10.3a) closes COFF objects into a PE32+
+    image with a dynamic import table (`kernel32.dll`/`ucrtbase.dll`) and a
+    generated `_start`. Remaining Windows work: `-r` COFF, MSVC `.lib`
+    archives, `args()` (`GetCommandLineA`), `.pdata`/`.xdata` exception data
+    and TLS. The macOS Mach-O container is PHASE 10.3d.
 
 ---
 

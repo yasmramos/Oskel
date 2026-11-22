@@ -82,6 +82,13 @@ may change between minor versions.
   and `R_X86_64_64/32/32S/PLT32/PC32/GOTPCREL*`, and puts `.data`/`.bss` in the
   RW segment. `-r` preserves `.data`/`.bss` and their relocations. TLS and the
   C++ runtime sections remain out of scope.
+- **The own linker emits Windows PE32+ images (PHASE 10.3a).** `--linker own`
+  on Windows parses COFF objects, merges `.text`/`.rdata`/`.data`/`.bss`,
+  resolves the common x86-64 COFF relocations and builds the import table for
+  the runtime's UCRT (`ucrtbase.dll`) and Windows API (`kernel32.dll`) calls.
+  A generated `_start` calls `main` and `ExitProcess`; `oskelld --target
+  x86_64-windows-win64` shares the path. Windows `-r`, MSVC `.lib` archives and
+  `args()` are 10.3b; macOS Mach-O is 10.3d.
 
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,
