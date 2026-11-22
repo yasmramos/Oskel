@@ -43,13 +43,6 @@ if(NOT run_result EQUAL 0)
   message(FATAL_ERROR
     "the own-linker image failed (${run_result})\n${run_output}${run_error}")
 endif()
-  execute_process(COMMAND powershell -NoProfile -Command
-    "Get-WinEvent -LogName Application -MaxEvents 3 | Format-List TimeCreated,ProviderName,Message"
-    OUTPUT_VARIABLE events_output ERROR_QUIET)
-  message(STATUS "application events:\n${events_output}")
-  message(FATAL_ERROR
-    "the own-linker image failed (${run_result})\n${run_output}${run_error}")
-endif()
 
 string(STRIP "${run_output}" actual)
 if(NOT actual STREQUAL "${OSKEL_EXPECTED_OUTPUT}")
