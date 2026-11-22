@@ -1584,9 +1584,9 @@ class Bindgen {
     // rules (the register budget counts eightbytes, not parameters, and a
     // struct's availability depends on the target ABI). Asking twice is what
     // separates the two outcomes: a shape the *vocabulary* cannot express is
-    // skipped with its reason, while one this *build* cannot marshal is written
-    // commented out, so the module compiles here and the real signature stays
-    // there to uncomment on a build that supports it.
+    // skipped with its reason, while one the *destination* cannot marshal is
+    // written commented out, so the module compiles everywhere and the real
+    // signature stays there to uncomment on a target that supports it.
     std::vector<ffi::TypeSpec> paramSpecs;
     paramSpecs.reserve(params.size());
     for (const Param& param : params) paramSpecs.push_back(param.spec);
@@ -1630,10 +1630,11 @@ class Bindgen {
     bool variadic = false;
     std::string returnType;
     int line = 0;
-    // Empty for a declaration this build can marshal. Otherwise the reason it
-    // is written commented out: the vocabulary can express it, this build
-    // cannot (a variadic, a MEMORY struct, a struct by value on a non-System V
-    // ABI), so the real signature is there to uncomment on a build that can.
+    // Empty for a declaration the destination can marshal. Otherwise the reason
+    // it is written commented out: the vocabulary can express it, the
+    // destination cannot (a variadic, a MEMORY struct, a struct by value on a
+    // non-System V ABI), so the real signature is there to uncomment on a
+    // target that can.
     std::string commentedNote;
   };
 
@@ -1815,11 +1816,11 @@ class Bindgen {
 
     text += "extern \"C\" {\n";
     for (const Function& fn : functions_) {
-      // A declaration this build cannot marshal is written commented out: the
-      // compiler rejects it at compile time (a variadic needs the x86-64
-      // descriptor stub; a struct by value needs the System V AMD64 ABI), so
-      // commenting it keeps the module compiling here while the real signature
-      // stays there to uncomment on a build that supports it. The note is the
+      // A declaration the destination cannot marshal is written commented out:
+      // the compiler rejects it at compile time (a variadic needs a variadic
+      // FFI path; a struct by value needs the System V AMD64 ABI), so commenting
+      // it keeps the module compiling everywhere while the real signature stays
+      // there to uncomment on a target that supports it. The note is the
       // compiler's own reason, not a second guess.
       const bool isCommented = !fn.commentedNote.empty();
       text += isCommented ? "  // " : "  ";
@@ -1882,7 +1883,8 @@ class Bindgen {
   std::vector<Function> functions_;
   std::vector<std::string> skipped_;
   std::unordered_set<std::string> emittedNames_;
-  // Declarations written commented out because this build cannot marshal them.
+  // Declarations written commented out because the destination cannot marshal
+  // them.
   int commentedDeclarations_ = 0;
   // The structs the header defined, keyed by tag, plus the order they were
   // defined in (so the emitted module reads like the header). Only a struct

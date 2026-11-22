@@ -290,11 +290,11 @@ extern "C" {
 }
 ```
 
-The same rule covers **a struct by value** on a build whose marshalling is not
-the System V AMD64 ABI (the Microsoft x64 ABI passes a struct through a hidden
-pointer, which the register thunks cannot express). The declaration is written
-commented out rather than skipped, because the shape *is* in the vocabulary —
-only this build cannot carry it:
+The same rule covers **a struct by value** on a destination whose marshalling is
+not the System V AMD64 ABI (the Microsoft x64 ABI passes a struct through a
+hidden pointer, which the register thunks cannot express). The declaration is
+written commented out rather than skipped, because the shape *is* in the
+vocabulary — only this destination cannot carry it:
 
 ```oskel
 extern "C" {
@@ -304,9 +304,9 @@ extern "C" {
 
 The reason after `//` is the compiler's own message, not a second guess: the
 tool asks `ffi::validateSignature` twice, once with every ABI capability on
-(is the shape in the vocabulary at all?) and once with this build's (can this
-build marshal it?). The first answer decides skipped versus commented out, so
-the tool cannot drift from the compiler it targets.
+(is the shape in the vocabulary at all?) and once with the destination's (can
+the destination marshal it?). The first answer decides skipped versus commented
+out, so the tool cannot drift from the compiler it targets.
 
 ## The preprocessor is not run
 
