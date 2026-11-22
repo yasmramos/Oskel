@@ -1,4 +1,4 @@
-# bindgen — the C binding generator
+# bindgen — the C and C++ binding generator
 
 `bindgen` reads a C header and writes an Oskel module of `extern "C"`
 declarations, so a C library can be called from Oskel without spelling every
@@ -7,11 +7,16 @@ does not link the engine's runtime, and it does not touch the bytecode, the AST
 or the VM. The output is an ordinary Oskel module that `oskel` and `oskelc`
 already accept.
 
+`bindgen --cxx` extends the same idea to C++ libraries through a small
+descriptor and a generated C++ shim; see [cxxbind.md](cxxbind.md).
+
 ```sh
 bindgen <header.h>                 # write the module to stdout
 bindgen <header.h> -o <out.oskl>   # write it to a file
 bindgen -                          # read the header from stdin
 bindgen --target llp64 <header.h>  # Windows data model (default: lp64)
+bindgen --cxx <bridge.oskelbind> --shim <dir> -o <out.oskl>
+                                   # C++ bridge: module + C++ shim
 ```
 
 `-h`/`--help` and `-v`/`--version` are also available. Exit codes follow the

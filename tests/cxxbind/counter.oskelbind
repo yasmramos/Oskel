@@ -1,0 +1,12 @@
+# C++ bridge descriptor for tests/cxxbind/counter.h.
+header "counter.h"
+prefix "oskel_"
+
+class Counter {
+  ctor(start: int)
+  method value(): int const
+  method add(n: int): void
+  dtor
+}
+
+function add(a: int, b: int): int

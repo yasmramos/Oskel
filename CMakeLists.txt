@@ -221,7 +221,7 @@ install(TARGETS oskel oskelc RUNTIME DESTINATION bin)
 # writes text), so it can be built and shipped on its own. Its sources live
 # under `tools/`, outside the three `src/` globs, so the generator never ends up
 # inside `oskel`.
-add_library(bindgen_lib STATIC "${CMAKE_CURRENT_SOURCE_DIR}/tools/bindgen.cpp")
+add_library(bindgen_lib STATIC "${CMAKE_CURRENT_SOURCE_DIR}/tools/bindgen.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/tools/cxxbind.cpp")
 target_include_directories(bindgen_lib PUBLIC include src)
 target_compile_options(bindgen_lib PRIVATE ${OSKEL_WARNINGS})
 
@@ -351,6 +351,31 @@ if(BUILD_TESTING)
       "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
       "-DBINDGEN_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/tests/bindgen/target.h"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_bindgen_target.cmake")
+
+  # `--cxx` generates the module, the C header and the C++ shim. The generation
+  # and `oskel -c` half runs everywhere; the shim compile plus VM/AOT execution
+  # is Linux-only (LD_PRELOAD, hosted AOT).
+  add_test(NAME cxxbind.generate
+    COMMAND ${CMAKE_COMMAND}
+      "-DBINDGEN_EXE=$<TARGET_FILE:bindgen>"
+      "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+      "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+      "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+      "-DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/cxxbind-generate"
+      "-DRUN_RUNTIME=OFF"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_cxxbind_case.cmake")
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+     CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    add_test(NAME cxxbind.end_to_end
+      COMMAND ${CMAKE_COMMAND}
+        "-DBINDGEN_EXE=$<TARGET_FILE:bindgen>"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/cxxbind-end-to-end"
+        "-DRUN_RUNTIME=ON"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_cxxbind_case.cmake")
+  endif()
 
   # `oskelp` is standalone too, so its unit test links `oskelp_lib` directly.
   add_executable(oskelp_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/oskelp_test.cpp")

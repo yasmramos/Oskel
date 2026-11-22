@@ -22,6 +22,7 @@
 
 #include "bindgen.h"
 #include "core/util.h"
+#include "cxxbind.h"
 #include "version.h"
 
 namespace {
@@ -30,13 +31,33 @@ const char* kUsage =
     "usage:\n"
     "  bindgen <header.h>                 write the Oskel bindings to stdout\n"
     "  bindgen <header.h> -o <out.oskl>   write them to a file\n"
+    "  bindgen --cxx <bridge.oskelbind> --shim <dir> -o <out.oskl>\n"
+    "                                     generate a C++ bridge (module + shim)\n"
     "\n"
     "options:\n"
     "  -h, --help      show this help\n"
     "  -v, --version   show the version\n"
     "  -o, --output    output path (default: stdout)\n"
     "  --target <model>  C data model for long/wchar_t:\n"
-    "                    lp64 (default) or llp64 (Windows)\n";
+    "                    lp64 (default) or llp64 (Windows)\n"
+    "  --cxx           read a C++ bridge descriptor instead of a C header\n"
+    "  --shim <dir>    directory for <stem>_shim.h and <stem>_shim.cpp\n";
+
+std::string stemOf(const std::string& path) {
+  std::string s = path;
+  const std::size_t slash = s.find_last_of("/\\");
+  if (slash != std::string::npos) s = s.substr(slash + 1);
+  const std::size_t dot = s.find_last_of('.');
+  if (dot != std::string::npos) s = s.substr(0, dot);
+  return s.empty() ? "bridge" : s;
+}
+
+bool writeText(const std::string& path, const std::string& text) {
+  std::ofstream file(path, std::ios::binary | std::ios::trunc);
+  if (!file) return false;
+  file << text;
+  return static_cast<bool>(file);
+}
 
 }  // namespace
 
@@ -52,6 +73,9 @@ int main(int argc, char** argv) {
 
   std::string input;
   std::string output;
+  std::string shimDir;
+  bool cxx = false;
+  bool targetSet = false;
   bindgen::Options options;
   for (std::size_t i = 0; i < arguments.size(); ++i) {
     const std::string& arg = arguments[i];
@@ -71,11 +95,24 @@ int main(int argc, char** argv) {
       output = arguments[++i];
       continue;
     }
+    if (arg == "--cxx") {
+      cxx = true;
+      continue;
+    }
+    if (arg == "--shim") {
+      if (i + 1 >= arguments.size()) {
+        std::cerr << "bindgen: option '" << arg << "' needs an argument\n";
+        return 64;
+      }
+      shimDir = arguments[++i];
+      continue;
+    }
     if (arg == "--target") {
       if (i + 1 >= arguments.size()) {
         std::cerr << "bindgen: option '" << arg << "' needs an argument\n";
         return 64;
       }
+      targetSet = true;
       const std::string target = arguments[++i];
       if (target == "lp64") {
         options.target = bindgen::Target::Lp64;
@@ -100,7 +137,19 @@ int main(int argc, char** argv) {
   }
 
   if (input.empty()) {
-    std::cerr << "bindgen: no header given\n\n" << kUsage;
+    std::cerr << "bindgen: no input given\n\n" << kUsage;
+    return 64;
+  }
+  if (cxx && shimDir.empty()) {
+    std::cerr << "bindgen: --cxx needs --shim <dir>\n";
+    return 64;
+  }
+  if (!cxx && !shimDir.empty()) {
+    std::cerr << "bindgen: --shim is only valid with --cxx\n";
+    return 64;
+  }
+  if (cxx && targetSet) {
+    std::cerr << "bindgen: --target is only valid for C headers\n";
     return 64;
   }
 
@@ -112,6 +161,39 @@ int main(int argc, char** argv) {
   } else if (!readSourceFile(input, source)) {
     std::cerr << "bindgen: cannot read file '" << input << "'\n";
     return 66;
+  }
+
+  if (cxx) {
+    const cxxbind::Result result = cxxbind::generate(source, input);
+    if (!result.error.empty()) {
+      std::cerr << "bindgen: " << result.error << "\n";
+      return 65;
+    }
+    if (output.empty()) {
+      std::cout << result.text;
+      if (!std::cout) {
+        std::cerr << "bindgen: cannot write to stdout\n";
+        return 66;
+      }
+    } else if (!writeText(output, result.text)) {
+      std::cerr << "bindgen: cannot write file '" << output << "'\n";
+      return 66;
+    }
+    const std::string stem = stemOf(input);
+    const std::string headerPath = shimDir + "/" + stem + "_shim.h";
+    const std::string sourcePath = shimDir + "/" + stem + "_shim.cpp";
+    if (!writeText(headerPath, result.shimHeader)) {
+      std::cerr << "bindgen: cannot write file '" << headerPath << "'\n";
+      return 66;
+    }
+    if (!writeText(sourcePath, result.shimSource)) {
+      std::cerr << "bindgen: cannot write file '" << sourcePath << "'\n";
+      return 66;
+    }
+    std::cerr << "bindgen: generated " << result.classes << " class(es), "
+              << result.methods << " method(s) and " << result.functions
+              << " function(s); shim " << sourcePath << "\n";
+    return 0;
   }
 
   const bindgen::Result result = bindgen::generate(source, input, options);

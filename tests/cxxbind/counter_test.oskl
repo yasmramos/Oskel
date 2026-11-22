@@ -1,0 +1,10 @@
+import counter;
+
+let c = counter.Counter(40);
+assert(c.valid());
+c.add(2);
+assertEq(c.value(), 42);
+c.close();
+assert(!c.valid());
+assertEq(counter.add(2, 3), 5);
+print("cxx bridge ok");

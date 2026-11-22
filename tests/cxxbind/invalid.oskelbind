@@ -1,0 +1,7 @@
+# An unknown type must be rejected by the generator, not emitted as a guess.
+header "counter.h"
+class Broken {
+  ctor()
+  dtor
+  method value(): Nope
+}

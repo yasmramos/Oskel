@@ -1941,7 +1941,12 @@ moment a design needs inline caching or specialization, it is out of scope
 - **SDL3** for windows, renderer and events: the low-level bindings landed as
   `std/sdl.oskl` (slice 1, `docs/sdl.md`), and a native binary links them with
   `oskel build --mode hosted --link-lib SDL3`.
-- **Skia** as an optional rendering backend on top of SDL3's window.
+- **C++ bridge** (`bindgen --cxx`, `docs/cxxbind.md`): a descriptor plus a
+  generated C++ shim turns a C++ class into an Oskel class with an opaque
+  `handle`, and a free function into a wrapper. The C++ ABI stays in the shim;
+  the engine still speaks C. The first slice is `Counter`; the next one is the
+  Skia descriptor.
+- **Skia** as the rendering backend for the widgets, on top of SDL3's window.
 - **Declarative UI** (SwiftUI/Flutter style): `Window`, `Column`, `Row`,
   `Text`, `Button`, `Input`, `Checkbox`, `Slider`, etc.
 
