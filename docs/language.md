@@ -2633,6 +2633,84 @@ The module is pure Oskel over the portable primitive surface (indexing,
 slicing, `len`, `for ... in`, closures, `panic`), so it behaves identically on
 the development VM, under `oskel build` and on WebAssembly.
 
+### 12.14 I/O
+
+`import std.io;` adds **in-memory text streams**: a `StringReader` that walks a
+string by code point and a `StringWriter` that accumulates text. They are
+ordinary classes (§4.8), so an instance is a map with methods and can be passed
+to a function like any other value.
+
+File access stays with the `readFile`/`writeFile`/`fileExists` builtins rather
+than this module. Those builtins need a file system: the AOT freestanding
+backend does not seed them, and a module that mentions one fails `oskel build`
+even when the function is never called. Keeping `std.io` over strings is what
+makes it run on the VM, in a native binary and on WebAssembly alike.
+
+| Function | Description |
+| --- | --- |
+| `splitLines(text)` | Splits on `\n`, dropping one trailing `\r` per line. A trailing newline adds no empty line. |
+| `joinLines(lines)` | Joins with `\n` between the lines, without a trailing newline. |
+
+```oskl
+import std.io.*;
+
+let text = "alpha\r\nbeta\ngamma\n";
+print(splitLines(text));       // ["alpha", "beta", "gamma"]
+print(joinLines(["a", "b"]));  // "a\nb"
+
+let r = StringReader(text);
+print(r.readLine());           // "alpha"
+print(r.readLine());           // "beta"
+print(r.eof());                // false
+print(r.readAll());            // "gamma"
+```
+
+`StringReader` methods:
+
+| Method | Description |
+| --- | --- |
+| `eof()` | `true` when every code point has been consumed. |
+| `position()` / `remaining()` | The next index / how many code points are left, both in code points. |
+| `rest()` | The unconsumed text, without advancing. |
+| `peek()` / `readChar()` | The next code point with / without advancing; `""` at the end. |
+| `read(count)` | Up to `count` code points; a non-positive count returns `""`. |
+| `readLine()` | The next line, consuming its `\n` and dropping one trailing `\r`; `""` at the end. |
+| `readAll()` | The rest of the text and advance to the end. |
+| `skip(count)` | Advances up to `count` code points; returns how many it skipped. |
+| `readWhile(pred)` / `skipWhile(pred)` | The run / the length of the run for which `pred` is truthy. |
+| `readToken()` | Skips ASCII whitespace, then reads to the next whitespace; `""` at the end. |
+| `lines()` | The remaining lines (see `splitLines`), consuming all of them. |
+
+`StringWriter` methods:
+
+| Method | Description |
+| --- | --- |
+| `write(s)` / `writeln(s)` | Appends `s` / `s` and a newline. Both return `self`. |
+| `writeAll(xs)` / `writeLines(xs)` | Appends every element, with / without a newline after each. Both return `self`. |
+| `size()` / `isEmpty()` | The number of code points written / whether nothing was written. |
+| `toString()` | The accumulated text, concatenating the chunks with a balanced tree. |
+| `clear()` | Discards everything; returns `self`. |
+
+```oskl
+let w = StringWriter();
+w.write("a").write("b").writeln("c");
+print(w.toString());  // "abc\n"
+print(w.size());      // 4
+```
+
+Every index, length and size is a **code-point** count, like `len` on a string,
+so `StringReader("héllo").read(2)` is `"hé"`. `readLine` returns `""` both for
+an empty line and at the end; call `eof()` first to tell them apart. A token is
+a run of non-whitespace, so `int(r.readToken())` parses a number without a
+second scanner. `StringWriter` stores chunks and concatenates them with a
+balanced tree in `toString`, so a long sequence of small writes does not copy
+the prefix once per write; still call it once when the text is complete.
+Because an instance is a map, `len(writer)` is the number of chunks, not the
+text length; use `size()`.
+
+The module is pure Oskel over strings and classes, so it behaves identically on
+the development VM, under `oskel build` and on WebAssembly.
+
 ---
 
 ## 13. Errors and diagnostics
@@ -3205,9 +3283,9 @@ print(sqrt(25));            // 5
 ```
 
 The standard library ships `std.math` (§12.3), `std.json` (§12.9),
-`std.datetime` (§12.10), `std.path` (§12.11), `std.collections` (§12.12) and
-`std.strings` (§12.13). All are ordinary modules, so the same four import forms
-apply:
+`std.datetime` (§12.10), `std.path` (§12.11), `std.collections` (§12.12),
+`std.strings` (§12.13) and `std.io` (§12.14). All are ordinary modules, so the
+same four import forms apply:
 
 ```oskel
 import std.json;             // std.json.parse and json.parse, ...

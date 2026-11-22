@@ -11,6 +11,19 @@ may change between minor versions.
 
 ### Added
 
+- **`std.io` adds in-memory text streams built on classes.** `StringReader`
+  walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,
+  `readWhile`, `skip`, `lines`, ...); `StringWriter` accumulates chunks
+  (`write`, `writeln`, `writeAll`, `writeLines`, `toString`, `clear`); and
+  `splitLines`/`joinLines` are the free-function line helpers. A `StringReader`
+  normalises CRLF and counts code points, so it composes with `std.strings` and
+  `std.collections`. File access stays with the `readFile`/`writeFile`/
+  `fileExists` builtins: the freestanding AOT backend does not seed them, so a
+  module that mentions one fails `oskel build` even when the function is never
+  called. Classes are maps with closures, so the VM, the AOT backend and
+  WebAssembly agree; `tests/62_std_io.oskl` and `tests/native_build_io.oskl`
+  prove it.
+
 - **The Skia bridge compiles and runs against a real Skia build.** The
   generated shim now covers text (`SkFont` + `drawString`) and one-pixel
   readback (`SkImage::readPixels`), and `skia_facade.h` selects

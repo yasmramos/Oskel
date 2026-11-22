@@ -1240,6 +1240,17 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_strings.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `std.io` is plain Oskel over strings, and its readers and writers are
+    # ordinary classes (maps with closures), so it must build to a native binary
+    # and agree with the VM. The fixture also pins that an instance travels
+    # through a function.
+    add_test(NAME oskel.build_binary_io
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_io"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_io.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # Regression for the string-builder corruption: `oskel_sb_append_escaped`
     # kept its loop index in r13, the arena cursor (`kAotArenaCursor`, entry.h),
     # and pushed/popped it around the allocating `oskel_sb_append`, so a
@@ -1503,6 +1514,18 @@ if(BUILD_TESTING)
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
 
+    # `std.io` is pure Oskel over strings and classes (maps with closures), so
+    # the WASM backend must reproduce it without a special case.
+    add_test(NAME oskel.build_wasm_io
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_io"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_io.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
     # `std.math` exercises the shared shortest round-trip formatter through
     # `PI`, `E` and `sqrt`, including the scientific and subnormal forms.
     add_test(NAME oskel.build_wasm_math
@@ -1530,7 +1553,7 @@ if(BUILD_TESTING)
     # gets a hard timeout in `wasm_case.cmake`, and CTest bounds the driver.
     set_tests_properties(oskel.build_wasm oskel.build_wasm_builtins
       oskel.build_wasm_datetime oskel.build_wasm_collections
-      oskel.build_wasm_strings oskel.build_wasm_math
+      oskel.build_wasm_strings oskel.build_wasm_io oskel.build_wasm_math
       oskel.build_wasm_double_format PROPERTIES TIMEOUT 120)
   endif()
 

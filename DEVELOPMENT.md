@@ -538,6 +538,17 @@ previous one.
   Unicode `upper`/`lower` methods. No new runtime type, opcode or builtin. See
   `docs/language.md` §12.13/§18, `tests/59_std_strings.oskl` and the AOT/WASM
   fixture `tests/native_build_strings.oskl`.
+- **Standard library: `std.io`** — **done**: in-memory text streams built on
+  classes. `StringReader` walks a string by code point (`readLine`, `read`,
+  `readChar`, `readToken`, `readWhile`, `lines`, ...); `StringWriter`
+  accumulates chunks (`write`, `writeln`, `writeAll`, `writeLines`, `toString`).
+  `splitLines`/`joinLines` are the free-function line helpers. File access
+  deliberately stays with the `readFile`/`writeFile`/`fileExists` builtins: the
+  freestanding AOT backend does not seed them, so a module that mentions one
+  fails `oskel build` even when the function is unused. No new runtime type,
+  opcode or builtin; classes are maps with closures, so the VM, the AOT backend
+  and WebAssembly agree. See `docs/language.md` §12.14/§18,
+  `tests/62_std_io.oskl` and the AOT/WASM fixture `tests/native_build_io.oskl`.
 
 ### PHASE 6.6 — FFI with C (1.0)
 
