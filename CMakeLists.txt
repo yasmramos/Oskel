@@ -1502,6 +1502,42 @@ if(BUILD_TESTING)
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
 
+    # `map`, `filter`, `each`, `find`, `any`, `all` and `reduce` call back into
+    # the program through the dispatcher.
+    add_test(NAME oskel.build_wasm_array_callbacks
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_array_callbacks"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_callbacks.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `reduce`, `sum` and `join`, the folds over the captured receiver.
+    add_test(NAME oskel.build_wasm_array_folds
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_array_folds"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_folds.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `sort`/`sorted`, including stability and a comparator that returns a
+    # non-bool. `pcall` is still VM-only, so the strong-guarantee case lives in
+    # the AOT fixture only.
+    add_test(NAME oskel.build_wasm_sort_methods
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_sort_methods"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_wasm_sort_methods.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
     # `std.datetime` is deterministic apart from `time()`/`clock()`, which the
     # fixture only observes through stable predicates, so the module must agree
     # with the VM byte for byte too.
@@ -1566,8 +1602,10 @@ if(BUILD_TESTING)
     # gets a hard timeout in `wasm_case.cmake`, and CTest bounds the driver.
     set_tests_properties(oskel.build_wasm oskel.build_wasm_builtins
       oskel.build_wasm_array_methods oskel.build_wasm_array_methods_inplace
-      oskel.build_wasm_array_methods_alloc oskel.build_wasm_datetime
-      oskel.build_wasm_collections oskel.build_wasm_strings
+      oskel.build_wasm_array_methods_alloc oskel.build_wasm_array_callbacks
+      oskel.build_wasm_array_folds oskel.build_wasm_sort_methods
+      oskel.build_wasm_datetime oskel.build_wasm_collections
+      oskel.build_wasm_strings
       oskel.build_wasm_math oskel.build_wasm_double_format PROPERTIES TIMEOUT 120)
   endif()
 
