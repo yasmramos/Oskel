@@ -72,6 +72,12 @@ struct AotRuntimeHandles {
   CodeGen::Label initGlobals;    // void oskel_init_globals(long count)
   CodeGen::Label globalSet;      // void oskel_global_set(long slot, AotValue v)
   CodeGen::Label globalGet;      // AotValue oskel_global_get(long slot)
+  // `AotValue oskel_global_get_checked(long slot, const AotString* msg)`:
+  // `globalGet` plus the hosted engine's "undefined variable" check, for a read
+  // that can reach a slot nothing has assigned. Emitted only when some read
+  // needs it, so a program that assigns before it reads keeps its image byte
+  // for byte.
+  CodeGen::Label globalGetChecked;
   // Closures and calls (PHASE 7c.2c.1). `closure` allocates an `AotClosure` in
   // the arena for a proto's code address (rdi), arity (rsi) and captured-cell
   // count (rdx), and returns it as a `Func` value in rax:rdx. The lowering
@@ -643,6 +649,10 @@ struct AotRuntimeExtras {
   // Windows hosted image gets the Microsoft x64 register file and 32 bytes of
   // shadow space. The default keeps every existing caller on System V.
   Abi abi = Abi::SysV;
+  // Emit `oskel_global_get_checked` (the "undefined variable" guard). Set only
+  // when some `GETGLOBAL` can reach a slot nothing has assigned, so a program
+  // that assigns before it reads keeps its image byte for byte.
+  bool needsGlobalGetChecked = false;
 };
 
 void emitAotRuntime(CodeGen& code, const AotRuntimeHandles& handles,

@@ -49,6 +49,7 @@ constexpr std::int64_t kTagMap = static_cast<std::int64_t>(AotTag::Map);
 constexpr std::int64_t kTagRange = static_cast<std::int64_t>(AotTag::Range);
 constexpr std::int64_t kTagError = static_cast<std::int64_t>(AotTag::Error);
 constexpr std::int64_t kTagPtr = static_cast<std::int64_t>(AotTag::Ptr);
+constexpr std::int64_t kTagUnset = static_cast<std::int64_t>(AotTag::Unset);
 
 // Field offsets of a pointer handle (see `native/value.h`).
 constexpr std::int64_t kPtrKindOffset = 0;
@@ -6214,11 +6215,18 @@ void emitArraySliceMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv
 }
 
 // `void oskel_init_globals(long count)`: allocate `count` `AotValue` slots
-// (16 bytes each) from the arena, clear them to nil, and keep the base in r15
-// (`kAotGlobalBase`). Called once by the chunk entry, before the program runs,
-// so every global reads as nil until it is assigned -- the same "unset" state
-// the hosted engine's `GETGLOBAL` checks. Reports "out of memory" on a null
-// allocation.
+// (16 bytes each) from the arena, seed them with the `Unset` tag, and keep the
+// base in r15 (`kAotGlobalBase`). Called once by the chunk entry, before the
+// program runs, so every global reads as unset until it is assigned -- the same
+// "unset" state the hosted engine's `GETGLOBAL` checks.
+//
+// The tag is `Unset` and not `Nil` because `nil` is a value the program can
+// assign (`var g = nil`), so a slot cleared to `Nil` could not tell "never
+// assigned" from "assigned nil". `oskel_global_get` still returns the slot
+// as-is; the check lives in the caller (`emitGlobalGetChecked`), which only
+// emits it where a read can actually observe an unset slot.
+//
+// Reports "out of memory" on a null allocation.
 void emitInitGlobals(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
                      CodeGen::Label fail, const DataBlob& msgOom) {
   CodeGen::Label clear = cg.newLabel();
@@ -6237,16 +6245,16 @@ void emitInitGlobals(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
   cg.jcc(Jcc::Eq, oom);
   cg.movReg(kAotGlobalBase, Rax);
 
-  // Zero every slot: tag = Nil (0), payload = 0. `rep stosq` would need rdi
-  // and rcx; a short explicit loop keeps the register use obvious and the
-  // count is small (one slot per distinct global in the program).
+  // Seed every slot with the `Unset` tag and a zero payload. `rep stosq` would
+  // need rdi and rcx; a short explicit loop keeps the register use obvious and
+  // the count is small (one slot per distinct global in the program).
   cg.movReg(R10, Rax);
   cg.movReg(R11, Rbx);
   cg.shlImm8(R11, 4);                  // byte count again
   cg.testReg(R11);
   cg.jcc(Jcc::Eq, clearDone);
   cg.bind(clear);
-  cg.movImmToMem(R10, 0, 0);
+  cg.movImmToMem(R10, 0, kTagUnset);
   cg.movImmToMem(R10, 8, 0);
   cg.addImm32(R10, 16);
   cg.subRegImm32(R11, 16);
@@ -6275,9 +6283,8 @@ void emitGlobalSet(CodeGen& cg, CodeGen::Label label) {
 }
 
 // `AotValue oskel_global_get(long slot)`: load slot `rdi` of the global table
-// into rax:rdx. The slot is nil until assigned, matching the hosted engine's
-// "unset" state; the lowerer rejects a read of a global that is never assigned
-// in the chunk, so a program never observes that nil by accident.
+// into rax:rdx. The slot carries the `Unset` tag until assigned; the caller
+// checks it with `oskel_global_get_checked` when a read can observe that state.
 void emitGlobalGet(CodeGen& cg, CodeGen::Label label) {
   cg.bind(label);
   cg.shlImm8(Rdi, 4);                  // slot * 16
@@ -6285,6 +6292,32 @@ void emitGlobalGet(CodeGen& cg, CodeGen::Label label) {
   cg.movFromMem(Rax, Rdi, 0);          // tag
   cg.movFromMem(Rdx, Rdi, 8);          // payload
   cg.retInsn();
+}
+
+// `AotValue oskel_global_get_checked(long slot, const AotString* msg)`:
+// `oskel_global_get` plus the hosted engine's "undefined variable" check. A slot
+// that `oskel_init_globals` seeded and nothing has assigned still carries the
+// `Unset` tag, so reading it fails with `msg` -- the wording is built at
+// lowering time, where the name is known -- and exits 70 like the hosted
+// `GETGLOBAL`. The message is a plain `AotString` (an 8-byte length then the
+// bytes); the failure sink takes the text and its length separately.
+void emitGlobalGetChecked(CodeGen& cg, CodeGen::Label label, CodeGen::Label failDynamic) {
+  CodeGen::Label unset = cg.newLabel();
+  cg.bind(label);
+  cg.movReg(R10, Rsi);                 // r10 = msg (survives the slot math)
+  cg.shlImm8(Rdi, 4);                  // slot * 16
+  cg.addReg(Rdi, kAotGlobalBase);
+  cg.movFromMem(Rax, Rdi, 0);          // tag
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagUnset));
+  cg.jcc(Jcc::Eq, unset);
+  cg.movFromMem(Rdx, Rdi, 8);          // payload
+  cg.retInsn();
+
+  cg.bind(unset);
+  cg.movFromMem(Rsi, R10, 0);          // length
+  cg.movReg(Rdi, R10);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));  // data
+  cg.jmp(failDynamic);
 }
 
 // `AotValue oskel_closure(void* code, long arity, long upvalueCount,
@@ -17412,6 +17445,9 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitInitGlobals(cg, handles.initGlobals, handles.alloc, fail, msgOom);
   emitGlobalSet(cg, handles.globalSet);
   emitGlobalGet(cg, handles.globalGet);
+  if (extras.needsGlobalGetChecked) {
+    emitGlobalGetChecked(cg, handles.globalGetChecked, failDynamic);
+  }
   emitClosure(cg, handles.closure, handles.alloc, fail, msgOom);
   emitCellNew(cg, handles.cellNew, handles.alloc, fail, msgOom);
   emitCall(cg, handles.call, fail, msgCallNonFunc);

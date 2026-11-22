@@ -1,0 +1,12 @@
+// The other side of the unset check: a global assigned `nil` must read as `nil`,
+// and a global read after its assignment must read its value. Both go through
+// the *unchecked* `globalGet`, because the analysis proves the read cannot
+// observe the seeded `Unset` tag -- a regression that checked every read would
+// turn the first case into a spurious runtime error.
+var g = nil;
+print(g);
+var h = 1;
+print(h);
+fn setLater() { late = 7; }
+setLater();
+print(late);
