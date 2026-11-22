@@ -18,6 +18,17 @@ if(NOT OSKEL_HEADER_VERSION STREQUAL PROJECT_VERSION)
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
+
+# The hosted link is a C link, but this project enables only CXX. The Visual
+# Studio generator used by the artifacts workflow does not populate
+# CMAKE_C_COMPILER, so the C++ driver is the fallback; it links the C runtime
+# just the same. The Windows test helper needs a real path to derive
+# `vcvarsall.bat`, which is why an empty value is not good enough there.
+if(CMAKE_C_COMPILER)
+  set(OSKEL_HOSTED_CC "${CMAKE_C_COMPILER}")
+else()
+  set(OSKEL_HOSTED_CC "${CMAKE_CXX_COMPILER}")
+endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -762,7 +773,7 @@ if(BUILD_TESTING)
     add_test(NAME oskel.build_mode
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-        "-DOSKEL_CC=${CMAKE_C_COMPILER}"
+        "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_mode.cmake")
 
@@ -942,7 +953,7 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_COMMAND}
           "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_macos"
           "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-          "-DOSKEL_CC=${CMAKE_C_COMPILER}"
+          "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
           "-DOSKEL_SKIP_RUN=${OSKEL_MACOS_SKIP_RUN}"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted.oskl"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
@@ -957,7 +968,7 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_COMMAND}
           "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_windows"
           "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-          "-DOSKEL_CC=${CMAKE_C_COMPILER}"
+          "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted_windows.oskl"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
     endif()
