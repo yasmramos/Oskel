@@ -89,20 +89,23 @@ function(oskel_expect_vm_output binary)
   endif()
 endfunction()
 
-# The VM is the reference.
-if(DEFINED OSKEL_VM_LD_PRELOAD AND NOT OSKEL_VM_LD_PRELOAD STREQUAL "")
-  set(ENV{LD_PRELOAD} "${OSKEL_VM_LD_PRELOAD}")
+# The reference output. A fixture whose symbol only a test shared library
+# provides cannot run in the VM without preloading that library, and an ASan
+# build rejects a preload placed before its runtime; such a fixture passes its
+# literal expected output instead.
+if(DEFINED OSKEL_EXPECTED_OUTPUT AND NOT OSKEL_EXPECTED_OUTPUT STREQUAL "")
+  set(vm_stdout "${OSKEL_EXPECTED_OUTPUT}\n")
+else()
+  execute_process(
+    COMMAND "${OSKEL_EXE}" "${OSKEL_SCRIPT}" ${OSKEL_ARGS}
+    RESULT_VARIABLE vm_exit
+    OUTPUT_VARIABLE vm_stdout
+    ERROR_VARIABLE vm_stderr
+  )
+  if(NOT vm_exit EQUAL 0)
+    message(FATAL_ERROR "the VM failed to run the fixture (exit ${vm_exit}):\n${vm_stderr}")
+  endif()
 endif()
-execute_process(
-  COMMAND "${OSKEL_EXE}" "${OSKEL_SCRIPT}" ${OSKEL_ARGS}
-  RESULT_VARIABLE vm_exit
-  OUTPUT_VARIABLE vm_stdout
-  ERROR_VARIABLE vm_stderr
-)
-if(NOT vm_exit EQUAL 0)
-  message(FATAL_ERROR "the VM failed to run the fixture (exit ${vm_exit}):\n${vm_stderr}")
-endif()
-unset(ENV{LD_PRELOAD})
 
 # 1. The in-process link.
 oskel_own_build("${out}")

@@ -957,6 +957,16 @@ if(BUILD_TESTING)
       set_target_properties(oskel_link_lib_helper PROPERTIES
         OUTPUT_NAME oskel_link_lib_helper
         SOVERSION 1)
+      # The fixture is loaded into a plain emitted binary (`LD_LIBRARY_PATH`)
+      # and preloaded into the VM (`LD_PRELOAD`). An instrumented copy would
+      # drag the sanitizer runtime into a process that did not start with it,
+      # which ASan rejects ("runtime does not come first in initial library
+      # list"). Keep the C ABI fixture uninstrumented; the linker and the VM
+      # are what the sanitizer job is testing.
+      if(CMAKE_CXX_FLAGS MATCHES "-fsanitize")
+        target_compile_options(oskel_link_lib_helper PRIVATE -fno-sanitize=all)
+        target_link_options(oskel_link_lib_helper PRIVATE -fno-sanitize=all)
+      endif()
       add_test(NAME oskel.build_hosted_own_link_lib
         COMMAND ${CMAKE_COMMAND}
           "-DOSKEL_TEST_NAME=oskel.build_hosted_own_link_lib"
@@ -966,7 +976,7 @@ if(BUILD_TESTING)
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_link_lib.oskl"
           "-DOSKEL_LINK_LIB=oskel_link_lib_helper"
           "-DOSKEL_LIBRARY_PATH=$<TARGET_FILE_DIR:oskel_link_lib_helper>"
-          "-DOSKEL_VM_LD_PRELOAD=$<TARGET_FILE:oskel_link_lib_helper>"
+          "-DOSKEL_EXPECTED_OUTPUT=link-lib ok"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own.cmake")
       # A class-MEMORY struct (larger than two eightbytes) is stack-passed and
       # `sret`-returned, a shape no libc symbol exercises: the fixture links a
