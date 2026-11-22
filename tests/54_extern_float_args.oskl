@@ -1,0 +1,36 @@
+// `float` scalars crossing the C boundary (PHASE 6.6 / 7f.5).
+//
+// A `float` argument travels in the low 32 bits of an xmm register, the same
+// register a `double` fills. The dispatch walk therefore carries one branch for
+// the whole SSE class and hands the callee the float's bit pattern, which is
+// what a callee expecting `float` reads. These calls prove that against real
+// libm symbols: a `float`-typed parameter in first, middle and last position,
+// and mixed with `double` in one signature.
+
+extern "C" {
+  fn powf(base: float, exponent: float): float;
+  fn fmodf(x: float, y: float): float;
+  fn ldexpf(x: float, exp: int): float;
+  fn hypotf(x: float, y: float): float;
+  fn sqrt(x: double): double;
+}
+
+// Both arguments are `float`, so both take the SSE path.
+assertEq(powf(2.0f, 10.0f), 1024.0f);
+assertEq(fmodf(7.5f, 2.0f), 1.5f);
+
+// A `float` and an `int` in the same signature: the float must still reach
+// xmm0 intact while the int goes in a GPR.
+assertEq(ldexpf(1.5f, 4), 24.0f);
+
+// Three-four-five right triangle, the classic hypot.
+assertEq(hypotf(3.0f, 4.0f), 5.0f);
+
+// A `double` declaration next to the `float` ones must keep reading a full
+// double, not a zero-extended float pattern.
+assertEq(sqrt(16.0), 4.0);
+
+// A negative float keeps its sign bit through the bit-pattern hand-off.
+assertEq(fmodf(-7.5f, 2.0f), -1.5f);
+
+print("extern float args ok");
