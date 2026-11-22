@@ -1,8 +1,8 @@
-// requires: libffi
+// requires: x86-64-system-v
 // expect-exit: 0
 // A struct larger than 16 bytes is class MEMORY: passed on the stack and
-// returned through a hidden `sret` pointer. Where the dev engine links libffi
-// on the System V AMD64 ABI the declaration compiles; elsewhere the compiler
+// returned through a hidden `sret` pointer. Where the dev engine implements
+// the System V AMD64 ABI the declaration compiles; elsewhere the compiler
 // rejects it (see tests/errors/extern_struct_too_large.oskl). `-c` runs the
 // whole compiler and never the VM, so this proves the declaration is accepted
 // without a host function to call — no libc function crosses a struct this

@@ -108,13 +108,17 @@ g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskel \
 g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskelc \
     src/oskelc.cpp src/core/*.cpp src/frontend/*.cpp src/frontend/native/*.cpp
 
+# the project's own linker (front end only, no interpreter)
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskelld \
+    src/oskelld.cpp src/core/*.cpp src/frontend/*.cpp src/frontend/native/*.cpp
+
 # the project and package manager (standalone)
 g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskelp \
     tools/oskelp.cpp tools/oskelp_main.cpp
 ```
 
 `./build.sh` and `build.bat` run these commands for you, and `CMakeLists.txt`
-builds the same four targets (`oskel`, `oskelc`, `bindgen`, `oskelp`).
+builds the same five targets (`oskel`, `oskelc`, `oskelld`, `bindgen`, `oskelp`).
 
 ### oskelc (the host compiler)
 
@@ -132,6 +136,34 @@ defaults, the diagnostics and the exit codes are identical and the emitted image
 is byte for byte the same. `-c` (a `.oskc` bytecode image) and `-pkg` (a
 `.oskpkg`) are not implemented yet and are refused by name with exit 64.
 
+### oskelld (the project's own linker)
+
+`oskelld` closes the hosted relocatable object(s) without a C toolchain. It is
+the standalone entry point over the same core `oskel build --linker own` and
+`oskelc --linker own` call:
+
+```sh
+./build/oskel build examples/hello.oskl --mode hosted --emit-object -o hello.o
+./build/oskelld hello.o -o hello
+./hello
+
+# several objects and a System V/GNU ar archive
+./build/oskelld hello.o libhelpers.a -o hello
+
+# combine objects into a new relocatable object
+./build/oskelld -r hello.o other.o -o combined.o
+```
+
+The image is a dynamically linked x86-64 Linux ELF (`libc.so.6`, plus
+`libm.so.6` when a symbol needs it). An archive member is pulled in only when
+it defines a still-undefined symbol. `-L` and `--link-lib` select a third-party
+library (`--link-lib SDL3`); the binary records the library's SONAME.
+`oskel build --linker own --link-object helper.o` is the same capability
+through the build command. The linker is opt-in (PHASE 10.1/10.2) and only
+targets `x86_64-linux-sysv`; `--linker host` keeps the `$CC` path. See
+[docs/language.md](docs/language.md) for the flags and `DEVELOPMENT.md`
+PHASE 10 for the design.
+
 ### bindgen (the C binding generator)
 
 Every build above also produces `bindgen` (`bindgen.exe` on Windows) next to the
@@ -146,7 +178,8 @@ With CMake it is built as `build-cmake/bindgen`, and with the manual build it is
 a second command:
 
 ```sh
-g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/bindgen tools/bindgen.cpp tools/bindgen_main.cpp
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/bindgen \
+    tools/bindgen.cpp tools/cxxbind.cpp tools/bindgen_main.cpp
 ```
 
 See [docs/bindgen.md](docs/bindgen.md) for the C → Oskel type mapping and what is
@@ -502,7 +535,7 @@ Current limitations:
 - There is no `++`/`--` or default parameters. `switch` on literals and integer ranges is supported, with no fallthrough, and so is the post-test loop `do { ... } while (cond);`.
 - `defer { ... }` runs a block when its scope exits, in LIFO order, on fall-through, `return` and `break`/`continue` alike; it compiles to no new opcode.
 - Optional types and nullability are compile-time only and are erased before the bytecode; a union (`T | E`) has no C representation, so it is rejected in `extern "C"`/`native fn` signatures and struct fields.
-- FFI **callbacks** need `libffi`, which is an optional dependency of the development engine only. When it is absent the build stays green and a callback reports a clear runtime error; the AOT backend never links `libffi` (it lowers callbacks to compile-time stubs).
+- FFI **callbacks** use a small x86-64 closure stub in the development engine, available on the System V ABI (Linux and x86-64 macOS). On Windows and arm64 a callback declaration is rejected with a clear compile-time message; the AOT backend emits its own callback stub on System V.
 - Map keys are always strings. Map literals accept identifier, string, scalar (`int`, `true`, `false`, `nil`) and computed `[expr]` keys; non-string keys are canonicalized to their string form.
 - The body of `if`, `while`, `for` and `for-in` may be a block or a single statement without braces; a brace-less body is wrapped in a block, so its bytecode and scoping match the brace form. `switch` arms always require braces.
 - Slicing syntax works for strings and arrays (`s[1:3]`, `a[2:]`, `a[:-1]`), with negative bounds counted from the end and an optional step (`a[::2]`, `a[::-1]` reverses); `substr`/`slice` remain available.

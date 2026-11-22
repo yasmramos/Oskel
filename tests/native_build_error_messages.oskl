@@ -1,0 +1,43 @@
+// The exact wording of the guards that build their message at run time, checked
+// against the VM by `tests/build_binary.cmake`. `print` writes the text and the
+// harness compares the whole output, so a divergence in a word, a space or a
+// number fails the test.
+//
+// `pcall` turns each runtime error into a value, so every guard runs to
+// completion and the program exits 0. A guard that traps without a message (or
+// with a differently worded one) changes the output and fails the build.
+
+fn show(label, body) {
+  let r = pcall(body);
+  print(label + ": " + r.error.message);
+}
+
+// --- loadByte / storeByte: the index type is checked before the handle kind ---
+show("load type", () => loadByte("x", "y"));
+let buf = cstring("abcdefgh");
+show("load range", () => loadByte(buf, 9));
+show("load negative", () => loadByte(buf, -1));
+show("store type", () => storeByte("x", "y", 0));
+let mem = buffer(4);
+show("store range", () => storeByte(mem, 9, 0));
+show("store negative", () => storeByte(mem, -1, 0));
+
+// --- array and string index: the original index, then the real length -------
+let arr = [1, 2, 3];
+show("array read", () => arr[9]);
+show("array read negative", () => arr[-9]);
+show("array write", () => { arr[9] = 0; });
+show("array write negative", () => { arr[-9] = 0; });
+show("string read", () => "abc"[9]);
+show("string read negative", () => "abc"[-9]);
+show("string read unicode", () => "héllo"[9]);
+
+// --- insert / removeAt: the method names no index, only the length ----------
+show("insert", () => arr.insert(9, 0));
+show("insert negative", () => arr.insert(-9, 0));
+show("removeAt", () => arr.removeAt(9));
+show("removeAt negative", () => arr.removeAt(-9));
+
+// The receiver is intact after every failed guard.
+print("length: " + str(arr.length));
+print("done");

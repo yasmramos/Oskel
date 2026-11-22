@@ -1,0 +1,203 @@
+// std.io: in-memory text streams.
+//
+// The module is pure Oskel over the portable primitive surface, so every
+// expected value here must hold on the development VM, under `oskel build` and
+// on WebAssembly (see `tests/native_build_io.oskl`). File access stays with the
+// `readFile`/`writeFile`/`fileExists` builtins, which the AOT freestanding
+// backend does not seed.
+
+import std.io;
+import std.io.*;
+import std.io as io;
+import { splitLines, joinLines, StringReader, StringWriter } from std.io;
+import std.io.StringReader;
+import std.io.StringWriter;
+import std.io.reader as reader;
+import std.io.writer as writer;
+import std.io.text;
+
+// --- splitLines / joinLines -------------------------------------------------
+
+assertEq(splitLines(""), []);
+assertEq(splitLines("a"), ["a"]);
+assertEq(splitLines("a\n"), ["a"]);
+assertEq(splitLines("a\nb"), ["a", "b"]);
+assertEq(splitLines("a\r\nb\r\n"), ["a", "b"]);
+assertEq(splitLines("\n"), [""]);
+assertEq(splitLines("\n\n"), ["", ""]);
+assertEq(splitLines("a\n\nb"), ["a", "", "b"]);
+// One trailing CR is dropped even without a following LF.
+assertEq(splitLines("a\r"), ["a"]);
+assertEq(splitLines("hé\nñ"), ["hé", "ñ"]);
+
+assertEq(joinLines([]), "");
+assertEq(joinLines(["a"]), "a");
+assertEq(joinLines(["a", "b"]), "a\nb");
+assertEq(joinLines([""]), "");
+assertEq(joinLines(["", ""]), "\n");
+assertEq(joinLines(["a", "", "b"]), "a\n\nb");
+assertEq(joinLines(splitLines("a\nb")), "a\nb");
+// A trailing newline is not part of the round trip: `splitLines` drops it.
+assertEq(joinLines(splitLines("a\n")), "a");
+
+// --- StringReader: cursor and line reading ----------------------------------
+
+let r = StringReader("hello\nworld");
+assertEq(r.eof(), false);
+assertEq(r.position(), 0);
+assertEq(r.remaining(), 11);
+assertEq(r.peek(), "h");
+assertEq(r.rest(), "hello\nworld");
+assertEq(r.readChar(), "h");
+assertEq(r.position(), 1);
+assertEq(r.peek(), "e");
+assertEq(r.readLine(), "ello");
+assertEq(r.position(), 6);
+assertEq(r.readLine(), "world");
+assertEq(r.eof(), true);
+assertEq(r.readChar(), "");
+assertEq(r.peek(), "");
+assertEq(r.readLine(), "");
+assertEq(r.readAll(), "");
+
+// CRLF is normalised by `readLine`.
+let crlf = StringReader("a\r\nb");
+assertEq(crlf.readLine(), "a");
+assertEq(crlf.readLine(), "b");
+assertEq(crlf.eof(), true);
+
+// --- StringReader: read / skip ----------------------------------------------
+
+let r2 = StringReader("abcdef");
+assertEq(r2.read(0), "");
+assertEq(r2.read(-3), "");
+assertEq(r2.read(2), "ab");
+assertEq(r2.read(100), "cdef");
+assertEq(r2.read(1), "");
+assertEq(r2.eof(), true);
+
+let r3 = StringReader("abcdef");
+assertEq(r3.skip(-1), 0);
+assertEq(r3.skip(2), 2);
+assertEq(r3.position(), 2);
+assertEq(r3.skip(100), 4);
+assertEq(r3.skip(1), 0);
+assertEq(r3.rest(), "");
+
+// --- StringReader: predicates and tokens ------------------------------------
+
+let r4 = StringReader("aaabbbccc");
+assertEq(r4.readWhile(c => c == "a"), "aaa");
+assertEq(r4.skipWhile(c => c == "b"), 3);
+assertEq(r4.rest(), "ccc");
+assertEq(r4.readWhile(c => true), "ccc");
+assertEq(r4.readWhile(c => true), "");
+
+let r5 = StringReader("  foo\tbar\nbaz ");
+assertEq(r5.readToken(), "foo");
+assertEq(r5.readToken(), "bar");
+assertEq(r5.readToken(), "baz");
+assertEq(r5.readToken(), "");
+assertEq(r5.eof(), true);
+
+// The token idiom parses numbers without a second scanner.
+let r6 = StringReader("12 34");
+assertEq(int(r6.readToken()), 12);
+assertEq(int(r6.readToken()), 34);
+
+// --- StringReader: lines and code points ------------------------------------
+
+let r7 = StringReader("a\r\nb\nc");
+assertEq(r7.lines(), ["a", "b", "c"]);
+assertEq(r7.eof(), true);
+assertEq(StringReader("").lines(), []);
+assertEq(StringReader("\n").lines(), [""]);
+
+let r8 = StringReader("héllo");
+assertEq(r8.remaining(), 5);
+assertEq(r8.read(2), "hé");
+assertEq(r8.position(), 2);
+assertEq(r8.readChar(), "l");
+assertEq(r8.rest(), "lo");
+
+// --- StringWriter -----------------------------------------------------------
+
+let w = StringWriter();
+assertEq(w.size(), 0);
+assertEq(w.isEmpty(), true);
+assertEq(w.toString(), "");
+w.write("a");
+assertEq(w.size(), 1);
+assertEq(w.isEmpty(), false);
+assertEq(w.toString(), "a");
+w.write("b");
+assertEq(w.toString(), "ab");
+assertEq(w.size(), 2);
+w.writeln("c");
+assertEq(w.toString(), "abc\n");
+assertEq(w.size(), 4);
+w.writeAll(["d", "e"]);
+assertEq(w.toString(), "abc\nde");
+w.writeLines(["f", "g"]);
+assertEq(w.toString(), "abc\ndef\ng\n");
+assertEq(w.size(), 10);
+w.clear();
+assertEq(w.size(), 0);
+assertEq(w.isEmpty(), true);
+assertEq(w.toString(), "");
+
+// Every writer method returns `self`, so calls chain.
+let w2 = StringWriter();
+w2.write("a").write("b").writeln("c").writeAll(["d"]).writeLines(["e"]);
+assertEq(w2.toString(), "abc\nde\n");
+assertEq(w2.size(), 7);
+
+// Sizes are code-point counts, like `len`.
+let w3 = StringWriter();
+w3.write("hé");
+assertEq(w3.size(), 2);
+assertEq(w3.toString(), "hé");
+
+// Empty writes are harmless.
+let w4 = StringWriter();
+w4.write("");
+w4.writeAll([]);
+w4.writeLines([]);
+assertEq(w4.size(), 0);
+assertEq(w4.toString(), "");
+
+// Many small writes still concatenate in order (the tree is balanced).
+let w5 = StringWriter();
+var wi = 0;
+while (wi < 20) {
+  w5.write("x");
+  wi = wi + 1;
+}
+assertEq(w5.size(), 20);
+assertEq(w5.toString(), "xxxxxxxxxxxxxxxxxxxx");
+
+// --- import forms and private helpers ---------------------------------------
+
+assertEq(std.io.splitLines("a\nb"), ["a", "b"]);
+assertEq(io.joinLines(["a", "b"]), "a\nb");
+assertEq(io.StringReader("x").readAll(), "x");
+assertEq(io.StringWriter().toString(), "");
+assertEq(StringReader("ok").readAll(), "ok");
+let selective = StringWriter();
+selective.write("ok");
+assertEq(selective.toString(), "ok");
+
+// Class modules, namespace modules and the facade expose the same classes.
+assertEq(std.io.StringReader("class").readAll(), "class");
+assertEq(std.io.StringWriter().write("w").toString(), "w");
+assertEq(reader.StringReader("namespace").readAll(), "namespace");
+assertEq(writer.StringWriter().write("n").toString(), "n");
+assertEq(std.io.text.splitLines("x\ny"), ["x", "y"]);
+assertEq(std.io.text.joinLines(["x", "y"]), "x\ny");
+
+// `_isSpace`, `_stripCR` and `_concatRange` are private and are not exported.
+assertEq(std.io._isSpace, nil);
+assertEq(std.io._stripCR, nil);
+assertEq(std.io._concatRange, nil);
+
+print("std.io ok");

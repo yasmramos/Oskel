@@ -1,0 +1,10 @@
+// Fixture for the own linker's `--link-lib` path (PHASE 10.1). The symbol lives
+// only in `tests/hosted/link_lib_helper.cpp`, which CMake builds as a shared
+// library beside the test: libm would be auto-detected, so this proves the
+// library search, the SONAME read and the `.dynsym` check.
+extern "C" {
+  fn oskel_link_lib_answer(): int;
+}
+
+assertEq(oskel_link_lib_answer(), 41);
+print("link-lib ok");

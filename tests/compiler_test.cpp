@@ -1744,6 +1744,11 @@ void testExternCallbackSignatureIsRecordedOnTheProto() {
   // parameter and return names, so the runtime can build the trampoline and the
   // AOT backend (PHASE 7) can read the same shape off the proto to emit a
   // compile-time stub. `void` is the default return when none is written.
+#if !OSKEL_FFI_CALLBACKS
+  expectCompileError("extern \"C\" { fn apply(f: fn(int): int): int; }\n",
+                     "callback");
+  return;
+#endif
   Bytecode bc = compileSource(
       "extern \"C\" {\n"
       "  fn apply(f: fn(int, double): int, x: int): int;\n"

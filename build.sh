@@ -68,10 +68,17 @@ echo "Built build/oskel"
     src/oskelc.cpp $FRONTEND_SOURCES
 echo "Built build/oskelc"
 
+# The project's own linker: the same front end, no interpreter. It closes the
+# object `oskel build --emit-object` writes (PHASE 10.1).
+# shellcheck disable=SC2086
+"$CXX" -std=c++17 $CXXFLAGS -Wall -Wextra -Iinclude -Isrc -o build/oskelld \
+    src/oskelld.cpp $FRONTEND_SOURCES
+echo "Built build/oskelld"
+
 # The binding generator is a standalone executable (it does not link the
 # engine): `tools/bindgen.cpp` plus its CLI in `tools/bindgen_main.cpp`.
 # shellcheck disable=SC2086
-"$CXX" -std=c++17 $CXXFLAGS -Wall -Wextra -Iinclude -Isrc -o build/bindgen tools/bindgen.cpp tools/bindgen_main.cpp
+"$CXX" -std=c++17 $CXXFLAGS -Wall -Wextra -Iinclude -Isrc -o build/bindgen tools/bindgen.cpp tools/cxxbind.cpp tools/bindgen_main.cpp
 echo "Built build/bindgen"
 
 # The project and package manager: another standalone tool, so it is built on

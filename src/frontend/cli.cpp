@@ -27,6 +27,7 @@
 #include "native/bare_metal.h"
 #include "native/codegen.h"
 #include "native/elf.h"
+#include "native/link.h"
 #include "native/lower.h"
 #include "native/object.h"
 #include "native/pe.h"
@@ -239,6 +240,28 @@ bool parseLinkModeName(const std::string &name, LinkMode &out) {
   return false;
 }
 
+bool parseLinkerName(const std::string &name, Linker &out) {
+  if (name == linkerName(Linker::Host)) {
+    out = Linker::Host;
+    return true;
+  }
+  if (name == linkerName(Linker::Own)) {
+    out = Linker::Own;
+    return true;
+  }
+  return false;
+}
+
+const char *linkerName(Linker linker) {
+  switch (linker) {
+    case Linker::Host:
+      return "host";
+    case Linker::Own:
+      return "own";
+  }
+  return "unknown";
+}
+
 // The C compiler the hosted link drives (PHASE 7f.4). It is a *build-time*
 // dependency, never a runtime one: the compiler turns the relocatable object
 // into an executable by linking it against the host C library, which is what
@@ -366,7 +389,9 @@ int runHostedLinkCommand(const std::string &command) {
 // half-linked image.
 int linkHostedObject(const std::string &objectPath, const std::string &output,
                      const Target &target, const std::string &tool,
-                     const std::vector<std::string> &linkLibs) {
+                     const std::vector<std::string> &linkLibs,
+                     const std::vector<std::string> &libraryPaths,
+                     const std::vector<std::string> &linkObjects) {
   const std::string compiler = hostedLinkerCommand();
   std::string command;
   if (target.os == Os::Windows && isMicrosoftCompiler(compiler)) {
@@ -374,19 +399,29 @@ int linkHostedObject(const std::string &objectPath, const std::string &output,
     // asking the linker for the CRT. Name the static CRT and kernel32
     // explicitly: without them every runtime symbol (`mainCRTStartup`,
     // `_write`, `malloc`, `GetTickCount64`, ...) stays unresolved.
-    command = shellQuote(compiler) + " /nologo /MT " + shellQuote(objectPath) +
-              " /Fe:" + shellQuote(output) +
-              " /link /SUBSYSTEM:CONSOLE"
-              " libcmt.lib libucrt.lib libvcruntime.lib kernel32.lib";
+    command = shellQuote(compiler) + " /nologo /MT " + shellQuote(objectPath);
+    for (const std::string &object : linkObjects) {
+      command += " " + shellQuote(object);
+    }
+    command += " /Fe:" + shellQuote(output) +
+               " /link /SUBSYSTEM:CONSOLE"
+               " libcmt.lib libucrt.lib libvcruntime.lib kernel32.lib";
+    for (const std::string &dir : libraryPaths) {
+      command += " /LIBPATH:" + shellQuote(dir);
+    }
     for (const std::string &lib : linkLibs) {
       command += " " + shellQuote(lib + ".lib");
     }
   } else {
-    command = shellQuote(compiler) + " " + shellQuote(objectPath) + " -o " +
-              shellQuote(output);
+    command = shellQuote(compiler) + " " + shellQuote(objectPath);
+    for (const std::string &object : linkObjects) {
+      command += " " + shellQuote(object);
+    }
+    command += " -o " + shellQuote(output);
     if (target.os == Os::Linux) command += " -no-pie";
     if (target.os == Os::MacOs) command += " -arch x86_64";
     command += " -lm";
+    for (const std::string &dir : libraryPaths) command += " -L" + shellQuote(dir);
     for (const std::string &lib : linkLibs) command += " -l" + lib;
   }
   const int status = runHostedLinkCommand(command);
@@ -422,8 +457,10 @@ int linkHostedObject(const std::string &objectPath, const std::string &output,
 // Returns 0 on success, 65 for compile errors and 74 for a write failure.
 int buildBinary(const std::string &source, const std::string &name,
                 const std::string &output, const std::string &argv0,
-                const Target &target, LinkMode mode,
-                const std::vector<std::string> &linkLibs,
+                const Target &target, LinkMode mode, Linker linker,
+                bool emitObject, const std::vector<std::string> &linkLibs,
+                const std::vector<std::string> &libraryPaths,
+                const std::vector<std::string> &linkObjects,
                 const std::string &tool) {
   std::vector<Token> tokens;
   try {
@@ -452,7 +489,7 @@ int buildBinary(const std::string &source, const std::string &name,
   // The backend emits its own `extern "C"` thunks, so the shapes it can honour
   // do not depend on how this engine was built. Validating against the build's
   // capabilities would reject a class-MEMORY struct that the backend marshals
-  // correctly, on any engine built without libffi.
+  // correctly, on any engine without a host FFI library.
   compiler.setAbiCapabilities(ffi::kAotAbiCapabilities);
   try {
     compiler.setImportLoader(makeImportLoader(resolverFor(name, argv0)));
@@ -479,25 +516,64 @@ int buildBinary(const std::string &source, const std::string &name,
     }
     LoweredChunk chunk = lowerToX64(target, bytecode, CodeGen{}, mode);
     if (mode == LinkMode::Hosted) {
-      // The hosted image is an object the linker closes against libc (PHASE
-      // 7f.4). The object emitter turns the code buffer's external references
-      // into relocations; `cc` resolves them and writes the executable itself,
-      // so there is no in-memory image to write here. The object is a temporary
-      // beside the output and is removed whether the link succeeds or fails.
+      // The hosted image is an object a linker closes against libc (PHASE 7f.4).
+      // The object emitter turns the code buffer's external references into
+      // relocations; from here either the host C compiler or the project's own
+      // linker resolves them and writes the executable.
       std::vector<std::uint8_t> object = buildRelocatableObject(
           target, chunk.code, {}, chunk.externals, chunk.exports);
-      const std::string objectPath =
-          output + (target.os == Os::Windows ? ".oskel.tmp.obj" : ".oskel.tmp.o");
-      if (!writeBinaryFile(objectPath, object)) {
-        std::string message = tool + ": cannot write temporary object '" + objectPath + "'\n";
-        platformPosix().writeErr(message.data(), message.size());
-        return 74;
+      if (emitObject) {
+        // `--emit-object` stops before the link. The object is the input of
+        // `oskelld`, and in PHASE 10.2 it becomes the unit of a relocatable
+        // link, so it is written under the requested name and nothing else.
+        if (!writeBinaryFile(output, object)) {
+          std::string message = tool + ": cannot write '" + output + "'\n";
+          platformPosix().writeErr(message.data(), message.size());
+          return 74;
+        }
+        return 0;
       }
-      const int linkStatus = linkHostedObject(objectPath, output, target, tool, linkLibs);
-      std::remove(objectPath.c_str());
-      return linkStatus;
-    }
-    if (target.os == Os::Windows) {
+      if (linker == Linker::Own) {
+        // The project's own linker closes the object itself (PHASE 10.1). It
+        // produces the image in memory, so the common write below still runs.
+        // Extra `--link-object` files may be objects or `ar` archives.
+        std::vector<LinkInput> inputs;
+        inputs.push_back({"<main>", object});
+        for (const std::string &path : linkObjects) {
+          std::string bytes;
+          if (!readSourceFile(path, bytes)) {
+            std::string message =
+                tool + ": cannot read link object '" + path + "'\n";
+            platformPosix().writeErr(message.data(), message.size());
+            return 65;
+          }
+          inputs.push_back(
+              {path, std::vector<std::uint8_t>(bytes.begin(), bytes.end())});
+        }
+        LinkOptions options;
+        options.target = target;
+        options.libraries = linkLibs;
+        options.libraryPaths = libraryPaths;
+        image = linkHostedExecutable(inputs, options);
+      } else {
+        // The historical path: the host C compiler resolves libc and writes the
+        // executable. The object is a temporary beside the output and is
+        // removed whether the link succeeds or fails.
+        const std::string objectPath =
+            output + (target.os == Os::Windows ? ".oskel.tmp.obj" : ".oskel.tmp.o");
+        if (!writeBinaryFile(objectPath, object)) {
+          std::string message =
+              tool + ": cannot write temporary object '" + objectPath + "'\n";
+          platformPosix().writeErr(message.data(), message.size());
+          return 74;
+        }
+        const int linkStatus = linkHostedObject(
+            objectPath, output, target, tool, linkLibs, libraryPaths,
+            linkObjects);
+        std::remove(objectPath.c_str());
+        return linkStatus;
+      }
+    } else if (target.os == Os::Windows) {
       image = buildStaticPe(target, chunk.code, {}, chunk.processEntry);
     } else if (target.os == Os::Freestanding) {
       image = buildBareMetalElf(target, chunk.code, chunk.processEntry);
@@ -538,7 +614,11 @@ int runBuildCommand(const std::vector<std::string> &arguments,
   Target buildTarget = hostTarget();
   LinkMode buildMode = LinkMode::Freestanding;
   bool buildModeExplicit = false;
+  Linker buildLinker = Linker::Host;
+  bool buildEmitObject = false;
   std::vector<std::string> buildLinkLibs;
+  std::vector<std::string> buildLibraryPaths;
+  std::vector<std::string> buildLinkObjects;
   for (size_t i = 0; i < arguments.size(); ++i) {
     const std::string &arg = arguments[i];
     if (arg == "-o" || arg == "--output") {
@@ -595,6 +675,40 @@ int runBuildCommand(const std::vector<std::string> &arguments,
       buildLinkLibs.push_back(name);
       continue;
     }
+    if (arg == "-L" || arg == "--library-path") {
+      if (i + 1 >= arguments.size()) {
+        std::cerr << tool << ": option '" << arg << "' needs an argument\n";
+        return 64;
+      }
+      buildLibraryPaths.push_back(arguments[++i]);
+      continue;
+    }
+    if (arg == "--link-object") {
+      if (i + 1 >= arguments.size()) {
+        std::cerr << tool << ": option '" << arg << "' needs an argument\n";
+        return 64;
+      }
+      buildLinkObjects.push_back(arguments[++i]);
+      continue;
+    }
+    if (arg == "--linker") {
+      if (i + 1 >= arguments.size()) {
+        std::cerr << tool << ": option '" << arg << "' needs an argument\n";
+        return 64;
+      }
+      const std::string name = arguments[++i];
+      if (!parseLinkerName(name, buildLinker)) {
+        std::cerr << tool << ": unknown linker '" << name << "' (supported: "
+                  << linkerName(Linker::Host) << ", " << linkerName(Linker::Own)
+                  << ")\n";
+        return 64;
+      }
+      continue;
+    }
+    if (arg == "--emit-object") {
+      buildEmitObject = true;
+      continue;
+    }
     if (arg == "-h" || arg == "--help") {
       std::cout << "Oskel " << kVersion << "\n\n" << usage;
       return 0;
@@ -627,6 +741,49 @@ int runBuildCommand(const std::vector<std::string> &arguments,
               << linkModeName(LinkMode::Hosted) << "'\n";
     return 64;
   }
+  if (!buildLibraryPaths.empty() && buildMode != LinkMode::Hosted) {
+    std::cerr << tool << ": '-L' requires '--mode "
+              << linkModeName(LinkMode::Hosted) << "'\n";
+    return 64;
+  }
+  if (!buildLinkObjects.empty() && buildMode != LinkMode::Hosted) {
+    std::cerr << tool << ": '--link-object' requires '--mode "
+              << linkModeName(LinkMode::Hosted) << "'\n";
+    return 64;
+  }
+  if (!buildLinkObjects.empty() && buildEmitObject) {
+    std::cerr << tool << ": '--link-object' and '--emit-object' are mutually "
+                 "exclusive (use 'oskelld -r' to combine objects)\n";
+    return 64;
+  }
+  // `--emit-object` writes the relocatable object a linker consumes, so it
+  // needs a mode that produces one. The freestanding image is closed by the
+  // emitter and WebAssembly has no object format here.
+  if (buildEmitObject && isWasmTarget(buildTarget)) {
+    std::cerr << tool << ": '--emit-object' is not available for the WebAssembly target\n";
+    return 64;
+  }
+  if (buildEmitObject && buildMode != LinkMode::Hosted) {
+    std::cerr << tool << ": '--emit-object' requires '--mode "
+              << linkModeName(LinkMode::Hosted) << "'\n";
+    return 64;
+  }
+  if (buildLinker == Linker::Own) {
+    if (buildEmitObject) {
+      std::cerr << tool << ": '--linker own' and '--emit-object' are mutually exclusive\n";
+      return 64;
+    }
+    if (buildMode != LinkMode::Hosted) {
+      std::cerr << tool << ": '--linker own' requires '--mode "
+                << linkModeName(LinkMode::Hosted) << "'\n";
+      return 64;
+    }
+    if (!isOwnLinkerTarget(buildTarget)) {
+      std::cerr << tool << ": '--linker own' supports "
+                << targetName(Target::linuxX64()) << " only (PHASE 10.1)\n";
+      return 64;
+    }
+  }
   if (isWasmTarget(buildTarget) && buildMode != LinkMode::Freestanding) {
     std::cerr << tool << ": the WebAssembly target supports only '--mode "
               << linkModeName(LinkMode::Freestanding) << "'\n";
@@ -644,5 +801,6 @@ int runBuildCommand(const std::vector<std::string> &arguments,
     return 66;
   }
   return buildBinary(buildSource, buildFile, buildOutput, argv0, buildTarget,
-                     buildMode, buildLinkLibs, tool);
+                     buildMode, buildLinker, buildEmitObject, buildLinkLibs,
+                     buildLibraryPaths, buildLinkObjects, tool);
 }

@@ -1,0 +1,28 @@
+// In-memory text streams.
+//
+// `std.io` is the facade over the focused submodules: `reader`, `writer` and
+// `text`. The classes live in their PascalCase modules, so
+// `import std.io.StringReader;` binds the class itself; this file keeps the
+// grouped `import std.io.*` surface working.
+//
+// File access stays with the `readFile`/`writeFile`/`fileExists` builtins: the
+// AOT freestanding backend does not seed them, and a module that mentions one
+// fails `oskel build` even when the function is never called. Everything here
+// is plain Oskel over strings, so it runs on the VM, in a native binary and on
+// WebAssembly.
+import std.io.reader as reader;
+import std.io.writer as writer;
+import std.io.text as text;
+
+let StringReader = reader.StringReader;
+let StringWriter = writer.StringWriter;
+
+@MustUse
+fn splitLines(s: string): array {
+  return text.splitLines(s);
+}
+
+@MustUse
+fn joinLines(lines: array): string {
+  return text.joinLines(lines);
+}

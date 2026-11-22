@@ -1,0 +1,10 @@
+// Fixture for the class-module error: a PascalCase module must export exactly
+// one public name, the one in its file name.
+
+fn one(): int {
+  return 1;
+}
+
+fn two(): int {
+  return 2;
+}

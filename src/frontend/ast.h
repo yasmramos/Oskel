@@ -561,7 +561,7 @@ struct SwitchStmt {
 // bytecode.
 //
 // This is the *declaration* half of the FFI. Binding the symbol to a real C
-// function (the marshalling and the call lowering without `libffi`) is a later
+// function (the marshalling and the call lowering without a host FFI library) is a later
 // slice; until then the name binds to the host function of the same name, just
 // like `native fn`.
 struct ExternBlockStmt {

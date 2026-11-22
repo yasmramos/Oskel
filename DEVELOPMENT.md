@@ -13,7 +13,7 @@ architecture rules and the development phases.
 | **Name** | Oskel |
 | **Extension** | `.oskl` |
 | **Philosophy** | Simple like Python, structured like Java, fast like Lua, safe like Kotlin |
-| **Implementation** | C++17 (standard library only; optional libffi, development engine only) |
+| **Implementation** | C++17 (standard library only; no host FFI library) |
 | **Initial platform** | Linux x86-64 (musl static), then Windows/macOS |
 | **Architecture** | Register-based bytecode + VM (dev engine) + AOT backend (production) |
 | **Niche** | Desktop apps, CLI, UI (not systems, not backend, not data science) |
@@ -105,7 +105,7 @@ Those are the documented next steps for the compiler, not implemented features.
 A third, standalone binary ships alongside them: `bindgen`, the C binding
 generator (`docs/bindgen.md`). It reads a C header and writes an Oskel
 `extern "C"` module. It is a pure text transformation, so it does not link
-`oskel_lib` (or the runtime, the compiler, the VM or libffi): its sources live
+`oskel_lib` (or the runtime, the compiler, the VM or a host FFI library): its sources live
 under `tools/`, outside the three `src/` globs that build the engine, so it can
 be built and shipped on its own.
 
@@ -118,7 +118,7 @@ code; it drives `oskel`/`oskelc` as child processes. It owns the manifest
 module root, and both engines resolve imports identically.
 
 Boundary rule: no source in `src/frontend/` may include `vm.h`, `jit/jit.h`,
-`builtins.h`, `ops.h`, `ffi_marshal.h` or libffi, and `src/frontend/compiler.*`
+`builtins.h`, `ops.h`, `ffi_marshal.h` or a host FFI library, and `src/frontend/compiler.*`
 plus `src/frontend/native/*` must also stay clear of `interpreter.h`. Enforced
 three times, because each check sees something the others cannot:
 
@@ -422,11 +422,15 @@ previous one.
   compile error rather than a stack overflow. A module's own imports are
   private to it: a namespace, alias or wildcard name it creates never reaches
   the importing program's globals, and never collides with the importer's own
-  wildcard bindings. Resolution tries the project directory first, then the
-  packages root (`$OSKEL_PACKAGES`, else `~/.oskel/packages`), so a project module
-  shadows an installed package of the same path. `require` (Lua-style) is
-  **dropped**: `import` is the only module form. See `docs/language.md` §18,
-  `tests/13_modules.oskl` and `tests/module_test.cpp`.
+  wildcard bindings. A module whose last path segment is PascalCase is a
+  **class module**: it exports exactly one public name (the file name), and a
+  qualified import binds that class instead of the module table, so
+  `import std.io.StringReader;` makes `StringReader(...)` callable. Lowercase
+  modules keep the namespace semantics. Resolution tries the project directory
+  first, then the packages root (`$OSKEL_PACKAGES`, else `~/.oskel/packages`), so
+  a project module shadows an installed package of the same path. `require`
+  (Lua-style) is **dropped**: `import` is the only module form. See
+  `docs/language.md` §18, `tests/13_modules.oskl` and `tests/module_test.cpp`.
 - **`struct`** (data only, no methods) — **done**: a named, module-level map
   shape with optional field types. The declaration emits no bytecode and adds
   no opcode; a `Point { x: 1, y: 2 }` literal is checked against the
@@ -517,15 +521,17 @@ previous one.
   See `docs/language.md` §12.11/§18, `tests/57_std_path.oskl` and the AOT
   fixture `tests/native_build_path.oskl`.
 - **Standard library: `std.collections`** — **done**: a pure-Oskel module of
-  functional helpers over arrays. It offers `map`, `filter`, `reject`, `each`,
-  `fold`, `sum`, `sumBy`, `minimum`/`maximum`, `minBy`/`maxBy`, `count`,
-  `find`/`findIndex`, `any`/`all`/`none`, `take`/`drop`, `partition`, `chunk`,
-  `zip`, `flatten`, `reverse`, `unique`/`uniqueBy`, `groupBy`, `countBy` and
-  `sort`/`sortBy`/`sortByKey`. Every function returns a new array or map and
-  never mutates its input; `sort` is a stable merge sort. No new runtime type,
-  opcode or builtin. The module stays on the portable primitive surface so it
-  also runs on WebAssembly, where the array methods are not bound; the VM and
-  the AOT backend bind them, so either form works there.
+  functional helpers over arrays. It offers `map`, `flatMap`, `filter`,
+  `reject`, `each`, `fold`, `scan`, `sum`, `sumBy`, `minimum`/`maximum`,
+  `minBy`/`maxBy`, `count`, `find`/`findIndex`, `findLast`/`findLastIndex`,
+  `any`/`all`/`none`, `take`/`drop`, `takeWhile`/`dropWhile`, `partition`,
+  `chunk`, `sliding`, `zip`, `zipWith`, `flatten`, `intersperse`, `reverse`,
+  `unique`/`uniqueBy`, `groupBy`, `countBy` and `sort`/`sortBy`/`sortByKey`.
+  Every function returns a new array or map and never mutates its input; `sort`
+  is a stable merge sort. No new runtime type, opcode or builtin. The module
+  stays on the portable primitive surface so it also runs on WebAssembly, where
+  the array methods are not bound; the VM and the AOT backend bind them, so
+  either form works there.
   See `docs/language.md` §12.12/§18, `tests/58_std_collections.oskl`
   and the AOT fixture `tests/native_build_collections.oskl`.
 - **Standard library: `std.strings`** — **done**: a pure-Oskel module of text
@@ -538,17 +544,35 @@ previous one.
   Unicode `upper`/`lower` methods. No new runtime type, opcode or builtin. See
   `docs/language.md` §12.13/§18, `tests/59_std_strings.oskl` and the AOT/WASM
   fixture `tests/native_build_strings.oskl`.
+- **Standard library: `std.io`** — **done**: in-memory text streams built on
+  classes. `StringReader` walks a string by code point (`readLine`, `read`,
+  `readChar`, `readToken`, `readWhile`, `lines`, ...); `StringWriter`
+  accumulates chunks (`write`, `writeln`, `writeAll`, `writeLines`, `toString`).
+  `splitLines`/`joinLines` are the free-function line helpers. The module is
+  split into class modules (`std/io/StringReader.oskl`,
+  `std/io/StringWriter.oskl`), namespace modules (`std/io/reader.oskl`,
+  `std/io/writer.oskl`, `std/io/text.oskl`) and the `std/io.oskl` facade, so
+  `import std.io.StringReader;` binds the class and `import std.io.*` keeps the
+  grouped surface. File access deliberately stays with the
+  `readFile`/`writeFile`/`fileExists` builtins: the freestanding AOT backend
+  does not seed them, so a module that mentions one fails `oskel build` even
+  when the function is unused. No new runtime type, opcode or builtin; classes
+  are maps with closures, so the VM, the AOT backend and WebAssembly agree. See
+  `docs/language.md` §12.14/§18, `tests/62_std_io.oskl` and the AOT/WASM
+  fixture `tests/native_build_io.oskl`.
 
 ### PHASE 6.6 — FFI with C (1.0)
 
 - `extern "C" { ... }` blocks, and the single-line `extern fn ...;` form
   (implicit `"C"` ABI); both are sugar for the same representation.
 - Compile-time stubs (like Zig/Rust).
-- **No `libffi` in the AOT backend.** The development engine (`oskel`) may use
-  libffi for callbacks; the freestanding AOT runtime never does (callbacks are
-  compile-time stubs there). This is also why the compiler validates a
-  declaration against the *destination*: an engine built without libffi still
-  accepts, for `oskel build`, every shape the backend marshals itself.
+- **No host FFI library in either engine.** The development engine (`oskel`)
+  uses compile-time thunks for fixed signatures and a small x86-64 descriptor/
+  closure stub (emitted with the AOT `CodeGen`) for a C variadic, a class-MEMORY
+  struct and a callback; the freestanding AOT runtime never links one. This is
+  also why the compiler validates a declaration against the *destination*: an
+  engine without the x86-64 stub still accepts, for `oskel build`, every shape
+  the backend marshals itself.
 - Support for ints, floats, strings, structs, callbacks.
 - **FFI type vocabulary (done)** — the type names needed to *spell* a C
   signature: `ptr` (`void *`), `cstring` (`const char *`), the fixed-width
@@ -588,9 +612,10 @@ previous one.
   module-level metadata (nesting one is a compile error). The engine resolves
   each declared name through `Platform::lookupSymbol` and binds it to a
   marshalling native that passes the arguments and reads the result across the
-  System V AMD64 ABI **without `libffi`** (the scalar/struct call path uses
-  compile-time thunks; only callbacks use libffi, and only in the development
-  engine): integers, bools and pointers in general-purpose registers,
+  host C ABI **without a host FFI library** (the fixed scalar/register-struct
+  path uses compile-time thunks; a variadic, a class-MEMORY struct and a
+  callback use the x86-64 descriptor/closure stub): integers, bools and pointers
+  in general-purpose registers,
   `float`/`double` in SSE registers, and the result read back at the exact
   declared width. A parameter may be spelled `string` as well as `cstring`: a
   Oskel string is NUL-terminated and alive for the whole call, so it is a valid
@@ -622,13 +647,13 @@ previous one.
   two eightbytes (more than 16 bytes) is class MEMORY: it travels in the
   outgoing stack-argument area and is returned through a hidden `sret` buffer the
   caller supplies in `rdi`, which shifts every integer argument one register
-  along. The development engine expresses both directions through `libffi`
-  (`kMemoryStructsSupported`, so it needs libffi + System V AMD64; elsewhere the
-  declaration is rejected at compile time). The validation is per *destination*,
+  along. The development engine expresses both directions through its x86-64
+  descriptor stub (`kMemoryStructsSupported`, so it needs System V AMD64;
+  elsewhere the declaration is rejected at compile time). The validation is per *destination*,
   not per build: the compiler asks `validateSignature` with the ABI the target
   marshals (`Compiler::setAbiCapabilities`), so `oskel build` accepts a MEMORY
-  struct with `ffi::kAotAbiCapabilities` even on an engine built without libffi,
-  while the interpreter keeps `AbiCapabilities{}`, this build's. The hosted AOT
+  struct with `ffi::kAotAbiCapabilities` even on an engine without the x86-64
+  stub, while the interpreter keeps `AbiCapabilities{}`, this build's. The hosted AOT
   backend expresses them in its register thunks: a MEMORY argument is written
   field by field straight into the outgoing area, the `sret` pointer is staged with the other
   integer arguments, and the returned bytes are read back out of the buffer and
@@ -647,7 +672,7 @@ previous one.
   `tests/hosted/memory_struct_helper.c`, which also covers the narrow,
   mixed-class, `ptr` and `cstring` field cases).
 - **Callbacks (done in both engines)** — a parameter typed `fn(P...): R` is a
-  C function pointer. The `libffi` closure below is the *development engine*
+  C function pointer. The closure stub below is the *development engine*
   implementation; the AOT backend lowers the same declaration to a generated
   stub (PHASE 7f.8). `fn` is a keyword, so `parseTypeAnnotation` reads the signature before
   the ordinary type-name path; the parameters are scalar FFI names and
@@ -657,25 +682,25 @@ previous one.
   only meaningful as a parameter: a `fn` type as the *return type of the
   `extern "C"` function* is rejected at compile
   time, as is a non-scalar callback parameter. In the development engine the
-  callback is a `libffi` closure (`ffi_closure_alloc`/`ffi_prep_closure_loc`):
-  the trampoline re-enters the VM through `Runtime::call`, boxing the C
+  callback is an x86-64 closure stub (System V AMD64 only):
+  the stub re-enters the VM through `Runtime::call`, boxing the C
   arguments as Oskel values and writing the result back in the declared C type
   (a struct return is serialised field by field into the return storage using
-  its layout, and needs the by-value struct marshalling, plus the `libffi` path
-  for a class-MEMORY struct).
-  The closure lives in a reference-counted `CallbackObj` held for the whole
+  its layout, and needs the by-value struct marshalling, plus the System V
+  descriptor stub for a class-MEMORY struct).
+  The stub lives in a reference-counted `CallbackObj` held for the whole
   extern call, so the trampoline address stays valid while C runs. A callback C
   stores for a later call is out of scope in the development engine (the
-  closure is released when the extern call returns); the AOT backend's
+  stub is released when the extern call returns); the AOT backend's
   stub/context lives in the arena and supports it (BACKLOG §6). An error raised
   inside a callback cannot unwind through the C frame, so the extern call
   captures it and re-raises it once C returns; `pcall` catches it like any other
-  runtime error. `nil` is the NULL function pointer. `libffi` is a
-  **development-engine-only** dependency (§5.1/§6): the AOT backend lowers
-  callbacks to generated stubs and never links it. The boundary check
-  (`tests/check_compiler_boundary.cmake`) forbids the compiler and the native
-  backend from including `ffi_marshal.h` or `libffi`, so the split cannot
-  regress. See `docs/language.md` §4.6, `tests/32_ffi_callback.oskl` and
+  runtime error. `nil` is the NULL function pointer. The closure stub is an
+  x86-64, **development-engine-only** mechanism (§5.1/§6): the AOT backend
+  lowers callbacks to its own generated stubs and neither links a host FFI
+  library. The boundary check (`tests/check_compiler_boundary.cmake`) forbids
+  the compiler and the native backend from including `ffi_marshal.h` or a host
+  FFI library, so the split cannot regress. See `docs/language.md` §4.6, `tests/32_ffi_callback.oskl` and
   `tests/vm_test.cpp`.
 - **C variadics (done)** — a trailing bare `...` declares a C variadic
   (`extern "C" { fn printf(fmt: cstring, ...): int; }`): the named parameters
@@ -687,12 +712,12 @@ previous one.
   declaration is recorded on the `ExternSymbol` (`variadic`), and the compiler
   checks only that the fixed prefix is present — the tail is not type-checked,
   because C promotes and consumes it at run time. The call always goes through
-  `libffi` (`ffi_prep_cif_var`, prepared per call because the argument count
-  changes), so like a class-MEMORY struct it needs `kCVariadicSupported`
-  (libffi + System V AMD64); off that the declaration is rejected at compile
-  time (`OSKEL_FFI_VARIADIC` skips the script test). `oskel build` does not
-  consult that flag: the AOT backend lowers the variadic itself on System V and
-  Win64 (7f.10). See `docs/language.md` §4.6 and
+  the x86-64 descriptor stub, which builds the outgoing register/stack layout
+  per call, so it needs `kCVariadicSupported` (System V AMD64 or Microsoft
+  x64); off that the declaration is rejected at compile time
+  (`OSKEL_FFI_VARIADIC` skips the script test). `oskel build` does not consult
+  that flag: the AOT backend lowers the variadic itself on System V and Win64
+  (7f.10). See `docs/language.md` §4.6 and
   `tests/53_ffi_variadic.oskl`.
 
 ### PHASE 6.7 — Error handling ✅
@@ -2099,16 +2124,33 @@ an array), and the builtins `print`, `write`, `eprint`, `len`, `type`, `str`,
 `$str`, `repr`, `int`, `float`, `double`, `bool`, `chr`, `ord`, `floor`,
 `ceil`, `round`, `sqrt`, `assert`, `assertEq`, `panic`, `error`, `isError`,
 `$isError`, `$nonNull`, `range`, `$range`, `$slice`, `time`, `clock` and
-`exit`. The array, map and string methods are bound too (the same list as the
-x86-64 backend), so `std/json`, `std/datetime`, `std/collections`, `std/path`
-and the bound half of `std.math` build and agree with the VM byte for byte; the
-host clock is what lets `std/datetime` read `time()`/`clock()`.
+`exit`. Every array method is bound as a receiver-capturing closure:
+`push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`, `contains`, `indexOf`,
+`clear`, `slice`, `concat`, `reversed`, `clone`, `sum`, `join`, `map`,
+`filter`, `each`, `find`, `any`, `all`, `reduce`, `sort` and `sorted`. The
+callback methods build an upward argument window and call back through the
+dispatcher; `sort`/`sorted` use a stable insertion sort over a copy and commit
+only on success. The map methods (`keys`, `values`, `entries`, `has`, `get`,
+`set`, `delete`, `merge`, `clone`, `clear`) are bound the same way, over the
+same `mapFind`/`mapSet`/`mapDelete`/`mapClear` runtime helpers as the index
+operators. The string and range methods are still open, so the
+standard-library modules stay on the portable primitive surface: `std/json`,
+`std/datetime`, `std/collections`, `std/path` and the bound half of `std.math`
+build and agree with the VM byte for byte; the host clock is what lets
+`std/datetime` read `time()`/`clock()`.
 
 Still open, and each reported rather than mis-compiled:
 
 - **Transcendental builtins** (`sin`, `cos`, `tan`, `log`, `exp`, ...) are not
   bound yet; `std.math` builds and its `abs`/`min`/`max`/`clamp`/`sqrt`/`PI`/`E`
   subset agrees with the VM, but a call to an unbound name reports the gap.
+- **String and range methods** are not bound yet: `text.upper()` and
+  `range.toArray()` report "no such member on this value". The fixtures
+  `native_build_string_methods.oskl`, `native_build_range_methods.oskl` and
+  `native_build_function_repr.oskl` are the targets. `pcall` is also still
+  VM-only, which is why `native_build_sort_methods.oskl` keeps its
+  strong-guarantee case in the AOT suite and
+  `native_build_wasm_sort_methods.oskl` covers the rest.
 - A builtin the backend does not bind is **seeded as a closure that raises a
   clear runtime error when called**, not left unseeded: a module that merely
   *declares* `native fn sin` (through `import std.math`) still builds, while a
@@ -2136,6 +2178,64 @@ maps, slicing and variadics; `oskel.build_wasm_datetime`,
 `oskel.build_wasm_double_format` add `std/datetime`, `std/collections`,
 `std/math` and the full-range double formatter. The tests need Node and are
 skipped where it is absent.
+
+### PHASE 10 — The project's own linker 🔶 in progress
+
+The AOT backend had two ways to close an image: the freestanding emitter wrote
+the whole ELF/PE itself, and the hosted mode handed a relocatable object to the
+host C compiler. PHASE 10 replaces the second dependency with the project's own
+linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
+(inside `oskel_frontend`, so `oskelc` and `oskelld` carry no interpreter), and
+`src/oskelld.cpp` is the standalone entry point.
+
+- **10.1 (done) — hosted x86-64 Linux.** `oskelld <object.o> -o <out>` and
+  `oskel build --mode hosted --linker own` close the object `--emit-object`
+  writes. The image is a non-PIE `ET_EXEC` at `0x400000` with four `PT_LOAD`
+  segments, `PT_INTERP` (`/lib64/ld-linux-x86-64.so.2`), a SysV `.hash`, a
+  `.dynsym`/`.dynstr` of the undefined symbols, a standard PLT and `.got.plt`,
+  and a `.dynamic` naming `libc.so.6` (plus `libm.so.6` when a symbol is only
+  there, and one `DT_NEEDED` per `--link-lib`). Binding is eager
+  (`DT_BIND_NOW` + `DT_FLAGS=DF_BIND_NOW`), so no resolver runs. The linker
+  supplies the canonical `_start` (`xor ebp,ebp; ...; call *__libc_start_main`)
+  so libc is initialised before the program's `malloc`. `R_X86_64_PLT32` goes to
+  a PLT entry and `R_X86_64_PC32` to a `R_X86_64_GLOB_DAT` GOT slot.
+- The symbol check is at link time, not at run time: the linker reads the
+  `.dynsym` of `libc.so.6`, `libm.so.6` and every `--link-lib` library (found
+  through `-L`, `LIBRARY_PATH`, `LD_LIBRARY_PATH` and the system defaults) and
+  reports an undefined name with exit 65. A library's `DT_SONAME` becomes its
+  `DT_NEEDED`, so `--link-lib SDL3` records `libSDL3.so.0`, not the dev symlink.
+- `--emit-object` is the object half of the same feature: it writes the ET_REL
+  instead of linking it, which is what `oskelld` consumes. It needs
+  `--mode hosted`; the freestanding image is closed by the emitter and wasm has
+  no object format here.
+- The three entry points are one implementation: `oskel build --linker own`,
+  `oskelc --linker own` and `oskelld` all call `linkHostedExecutable`, and
+  `tests/build_hosted_own.cmake` compares their images byte for byte and against
+  the VM. The output is deterministic (no timestamp, no build id).
+- `--linker own` is opt-in and x86-64 Linux only; `host` stays the default. A
+  change to the freestanding path must keep its bytes identical -- the linker
+  only runs in the hosted mode.
+- **10.2 (done) — multiple objects and `ar` archives.** `linkHostedExecutable`
+  takes a list of `LinkInput`s, concatenates every object's `.text`/`.rodata`
+  (16-byte aligned), builds one cross-object symbol table and resolves a
+  relocation against a definition in any input. `linkRelocatable` performs the
+  relocatable link (`ET_REL` + `ET_REL` → `ET_REL`): it preserves `.rela.text`
+  and leaves undefined symbols undefined, so the result can be linked again.
+  `oskelld a.o b.o libfoo.a -o out` accepts several inputs; a System V/GNU `ar`
+  archive is scanned for the members that define a still-undefined symbol, and
+  a member nobody references is not pulled in (a thin archive is rejected).
+  `--link-object <file>` (repeatable) is the same capability through
+  `oskel build`/`oskelc`, for both the own and the host linker; it requires
+  `--mode hosted` and is mutually exclusive with `--emit-object` (use
+  `oskelld -r` to combine objects).
+- **10.2b (future)** — `.data`/`.bss` and the remaining relocation shapes. The
+  parser loads `.text` and `.rodata` only: a symbol defined in another section
+  is reported by name, and a `.rela.data`/`.rela.rodata` is rejected. A GCC
+  object with a string literal also references a section symbol, which is part
+  of the same work. `.eh_frame`/`.note.*`/`.comment` are ignored (not loaded).
+- **10.3 (future)** — the macOS Mach-O/dyld and Windows PE import-table
+  containers. They are separate linkers, not a generic abstraction: the object
+  formats, the loader contracts and the entry preludes differ.
 
 ### Post-1.0 — UI library
 
@@ -2201,6 +2301,7 @@ Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.10 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY) and callbacks resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
+Phase 10: 🔶 in progress (10.1 and 10.2 done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar` and `-r`; the hosted x86-64 Linux image is a dynamic ELF closed without a C toolchain. 10.2b `.data`/`.bss` and 10.3 Mach-O/PE pending)
 Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending
 2.0: ⬜ future (static with `@Dynamic`)
 
@@ -2218,14 +2319,14 @@ and is no longer in the tree.
 
 ## 5. Code rules
 
-1. **Pure C++17**, standard library only. The single optional dependency is
-   **libffi** (for FFI callbacks, **development engine only**). The machine
-   code, the static ELF/PE emitters and the JIT are the project's own
-   (`native/codegen.*`, `native/elf.*`, `native/pe.*`): **no AsmJIT and no
-   ELFIO** (LIEF, AsmJIT and LLVM were evaluated and rejected, see PHASE 7).
-   libffi is never linked into an AOT product: the freestanding backend lowers
-   callbacks to compile-time stubs, so the end-user binary stays dependency
-   free.
+1. **Pure C++17**, standard library only. There is **no host FFI library**: the
+   development engine emits its own x86-64 descriptor/closure stubs with the
+   project's `CodeGen` (development engine only). The machine code, the static
+   ELF/PE emitters and the JIT are the project's own (`native/codegen.*`,
+   `native/elf.*`, `native/pe.*`): **no AsmJIT and no ELFIO** (LIEF, AsmJIT and
+   LLVM were evaluated and rejected, see PHASE 7). Nothing external is linked
+   into an AOT product: the freestanding backend lowers callbacks to
+   compile-time stubs, so the end-user binary stays dependency free.
 2. **Names**: `camelCase` for functions, variables and members (private data
    members end with `_`), `PascalCase` for types, `UPPER_CASE` for opcodes
    and constants.
@@ -2259,18 +2360,18 @@ and is no longer in the tree.
 | Migrating the core to pure C | The core stays in C++17 |
 | Adding features without testing the previous one | Breaks incremental development |
 | Skipping the 7-point checklist | Creates architectural debt |
-| **External libraries beyond libffi** | libffi (development engine only) is the only allowed dependency; the emitter and the JIT are the project's own |
+| **External libraries beyond the standard library** | none; the FFI stubs, the emitter and the JIT are the project's own |
 | Superinstructions | Violate the 40-opcode ceiling |
 | Inline caching | Changes the bytecode contract |
 | Runtime specialization | Changes the bytecode contract |
 | `async`/`await`, generics, full pattern matching, generators, transactions | Out of scope |
 
-**Note**: libffi is the only **optional** dependency, and it is
-**development-engine only** (FFI callbacks). The machine-code emitter, the
-static ELF/PE writers and the JIT are the project's own C++ (no AsmJIT, no
-ELFIO): the AOT product (`oskelc`) emits the binary itself and the development
-VM (`oskel`) may use libffi for callbacks. **The end-user binary (`hello.exe`)
-contains none of them.**
+**Note**: there is **no** host FFI dependency. The development engine emits its
+own x86-64 descriptor/closure stubs; the machine-code emitter, the static
+ELF/PE writers and the JIT are the project's own C++ (no AsmJIT, no ELFIO). The
+AOT product (`oskelc`) emits the binary itself and the development VM (`oskel`)
+never links a host FFI library. **The end-user binary (`hello.exe`) contains
+none of them.**
 
 ---
 

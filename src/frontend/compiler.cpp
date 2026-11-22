@@ -1793,6 +1793,29 @@ const ImportedModule& Compiler::loadModule(const std::string& path, int line, in
     } guard{loadingStack_};
     module = importModule(program, path);
   }
+  // A PascalCase last segment marks a class module: one file, one public class,
+  // imported by its own name. The rule is opt-in through the file name, so
+  // every existing lowercase module keeps the namespace semantics.
+  const std::size_t lastDot = path.rfind('.');
+  const std::string lastSegment = lastDot == std::string::npos ? path : path.substr(lastDot + 1);
+  if (!lastSegment.empty() && lastSegment[0] >= 'A' && lastSegment[0] <= 'Z') {
+    if (module.symbols.size() != 1 || module.symbols[0] != lastSegment) {
+      fail("class module '" + path + "' must export exactly one public name '" + lastSegment +
+               "'",
+           line, col);
+    }
+    module.classModule = true;
+    module.className = lastSegment;
+    // A class module's binding path is a value, not a namespace, so drop the
+    // predeclared module mapping: `StringReader.member` must not be resolved as
+    // a module export access.
+    auto dropMapping = [&](const std::string& key) {
+      auto it = moduleByBindingPath_.find(key);
+      if (it != moduleByBindingPath_.end() && it->second == path) moduleByBindingPath_.erase(it);
+    };
+    dropMapping(path);
+    dropMapping(lastSegment);
+  }
   auto inserted = loadedModules_.emplace(path, std::move(module));
   return inserted.first->second;
 }
@@ -1802,7 +1825,11 @@ void Compiler::compileImport(const ImportStmt& import, int line, int col) {
 
   if (import.mode == ImportStmt::Mode::Qualified) {
     std::string boundName = import.alias.empty() ? import.module : import.alias;
-    compileQualifiedImport(module, boundName, line, col);
+    if (module.classModule) {
+      compileClassImport(module, boundName, line, col);
+    } else {
+      compileQualifiedImport(module, boundName, line, col);
+    }
     // `import a.b;` also binds `b` when that name is free, so the module is
     // reachable without repeating the whole path. An explicit alias already
     // chose the short name, and a single-segment path is its own short name.
@@ -1811,7 +1838,11 @@ void Compiler::compileImport(const ImportStmt& import, int line, int col) {
       if (dot != std::string::npos) {
         std::string shortName = import.module.substr(dot + 1);
         if (shortName != import.module.substr(0, import.module.find('.'))) {
-          compileQualifiedImport(module, shortName, line, col, true);
+          if (module.classModule) {
+            compileClassImport(module, shortName, line, col, true);
+          } else {
+            compileQualifiedImport(module, shortName, line, col, true);
+          }
         }
       }
     }
@@ -2023,9 +2054,61 @@ void Compiler::compileQualifiedImport(const ImportedModule& module, const std::s
     emitDeclareGlobal(table, importBindingName(boundName), false);
     declareGlobal(boundName, false);
   } else {
-    int parent = ensureNamespace(boundName.substr(0, boundName.rfind('.')), line, col);
-    emit(OpCode::SETTABLE, table, parent, -addString(segments.back()) - 1);
+    if (namespaces_.find(boundName) != namespaces_.end()) {
+      // A parent module imported after one of its children must not replace the
+      // namespace table: merge its public names into the existing table, so the
+      // child paths survive whichever import comes first (`std.io` and
+      // `std.io.text`, in either order).
+      int leaf = ensureNamespace(boundName, line, col);
+      for (const std::string& symbol : module.symbols) {
+        int member = allocReg();
+        emit(OpCode::GETTABLE, member, table, -addString(symbol) - 1);
+        emit(OpCode::SETTABLE, member, leaf, -addString(symbol) - 1);
+      }
+    } else {
+      int parent = ensureNamespace(boundName.substr(0, boundName.rfind('.')), line, col);
+      emit(OpCode::SETTABLE, table, parent, -addString(segments.back()) - 1);
+    }
+    // The leaf is a table too. Recording it lets a later child import read the
+    // parent instead of replacing it with a fresh namespace.
+    namespaces_.insert(boundName);
     freeReg();
+  }
+  freeReg(nextReg_ - table);
+}
+
+void Compiler::compileClassImport(const ImportedModule& module, const std::string& boundName,
+                                  int line, int col, bool implicitShortAlias) {
+  std::vector<std::string> segments = splitDotted(boundName);
+  // The module body runs on import even when the binding below is skipped, so
+  // its side effects match the wildcard form.
+  materializeModule(module, line, col);
+
+  // A class module's binding is a value, not a table: drop any predeclared
+  // module mapping so a member access on the class is not resolved as a module
+  // export access.
+  auto mapping = moduleByBindingPath_.find(boundName);
+  if (mapping != moduleByBindingPath_.end() && mapping->second == module.path) {
+    moduleByBindingPath_.erase(mapping);
+  }
+
+  const bool isAlias = segments.size() == 1;
+  const std::string& visible = isAlias ? boundName : segments.front();
+  const ImportBinding::Kind kind =
+      isAlias ? ImportBinding::Kind::Name : ImportBinding::Kind::Namespace;
+  if (!recordImportBinding(visible, kind, module.path, line, col, implicitShortAlias)) return;
+
+  int table = allocReg();
+  emit(OpCode::GETGLOBAL, table, addString("$module$" + module.path));
+  int value = allocReg();
+  emit(OpCode::GETTABLE, value, table, -addString(module.className) - 1);
+
+  if (isAlias) {
+    emitDeclareGlobal(value, importBindingName(boundName), false);
+    declareGlobal(boundName, false);
+  } else {
+    int parent = ensureNamespace(boundName.substr(0, boundName.rfind('.')), line, col);
+    emit(OpCode::SETTABLE, value, parent, -addString(segments.back()) - 1);
   }
   freeReg(nextReg_ - table);
 }

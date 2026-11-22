@@ -1,0 +1,7 @@
+// PHASE 10.2: the helper object is linked beside this one, so the VM cannot
+// resolve the symbol on its own. `oskel.build_hosted_own_link_obj` supplies the
+// literal expected output and links the object through `oskelld` and
+// `--link-object`.
+extern "C" fn oskel_link_obj_helper(): int;
+
+print(oskel_link_obj_helper());

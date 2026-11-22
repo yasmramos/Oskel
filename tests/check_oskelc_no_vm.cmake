@@ -1,9 +1,9 @@
-# Fails when `oskelc`'s front end carries an interpreter.
+# Fails when a front-end entry point carries an interpreter.
 #
-# `oskelc` is the host compiler: sources in, a native image out. It links the
-# front end alone (lexer, parser, bytecode compiler, AOT backend), so neither its
-# symbol table nor the archive it links from may contain the VM, the JIT or the
-# builtin registry.
+# `oskelc` (sources in, a native image out) and `oskelld` (the project's own
+# linker) both link the front end alone -- lexer, parser, bytecode compiler, AOT
+# backend -- so neither symbol table, nor the archive they link from, may
+# contain the VM, the JIT or the builtin registry.
 #
 # The binary alone is not enough. A static library is linked by *pulling the
 # objects a symbol reference needs*, so a runtime object that sits in
@@ -68,6 +68,13 @@ function(oskel_check_symbols target)
 endfunction()
 
 oskel_check_symbols("${OSKELC_EXE}")
+
+if(DEFINED OSKELD_EXE AND OSKELD_EXE)
+  if(NOT EXISTS "${OSKELD_EXE}")
+    message(FATAL_ERROR "'${OSKELD_EXE}' does not exist")
+  endif()
+  oskel_check_symbols("${OSKELD_EXE}")
+endif()
 
 if(DEFINED FRONTEND_ARCHIVE AND FRONTEND_ARCHIVE)
   if(NOT EXISTS "${FRONTEND_ARCHIVE}")

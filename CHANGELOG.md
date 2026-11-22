@@ -23,6 +23,72 @@ may change between minor versions.
   `tests/cxxbind/skia_window_test.oskl` cover the path on the VM and the hosted
   AOT binary.
 
+- **Class modules: a PascalCase module binds its class.** A module whose last
+  path segment starts with an uppercase letter is a class module: it must
+  export exactly one public name, the file name, and every other top-level
+  name starts with `_`. `import std.io.StringReader;` now binds the class
+  itself (the full path and the short name), `as` binds it under the alias, and
+  `.*`/selective already bind the one export. Lowercase modules keep the
+  namespace semantics, so `ns.deep.leaf.leaf()` and
+  `std.io.text.splitLines(...)` are unchanged. `std.io` is split into
+  `std/io/StringReader.oskl` and `std/io/StringWriter.oskl` (class modules),
+  `std/io/reader.oskl`, `std/io/writer.oskl` and `std/io/text.oskl` (namespace
+  modules) and the `std/io.oskl` facade; `import std.io.*` and the existing
+  four import forms keep working. A parent module imported after one of its
+  children now merges its public names into the namespace table instead of
+  replacing it, so the facade and its submodules can be imported in either
+  order. See `docs/language.md` §18.6 and `tests/module_test.cpp`.
+
+- **The WebAssembly backend binds the string methods.** `upper`, `lower`,
+  `trim`, `trimStart`, `trimEnd`, `split`, `lines`, `replace`, `replaceFirst`,
+  `startsWith`, `endsWith`, `contains`, `indexOf`, `substr`, `chars`,
+  `repeat`, `reversed`, `padStart` and `padEnd` now compile to `.wasm` and
+  match the VM byte for byte, including the Unicode simple-case tables and
+  multibyte UTF-8. `tests/native_build_string_methods.oskl` is the shared AOT
+  fixture and `oskel.build_wasm_string_methods` adds the WASM run.
+
+- **The project's own linker (`oskelld`).** `oskel build --mode hosted
+  --linker own` and the standalone `oskelld <object.o> -o <out>` close the
+  object `--emit-object` writes into a dynamically linked x86-64 Linux ELF
+  without a C toolchain: PLT/GOT, `DT_NEEDED` libc/libm, a link-time `.dynsym`
+  check and the canonical `_start` that calls `__libc_start_main`. `-L` and
+  `--link-lib` select the libraries, and the SONAME is what the binary records.
+  `oskelc` shares the same core, and the three paths produce byte-identical
+  images. The macOS/Windows containers are PHASE 10.3.
+
+- **The own linker links several objects and `ar` archives (PHASE 10.2).**
+  `oskelld a.o b.o libfoo.a -o out` and `oskel build --linker own
+  --link-object <file>` merge objects, resolve a relocation against a
+  definition in any input, and pull an `ar` member in only when it defines a
+  still-undefined symbol. `oskelld -r` combines the inputs into a new
+  relocatable object that can be linked again. `.data`/`.bss` and the remaining
+  relocation shapes are PHASE 10.2b; the macOS/Windows containers are 10.3.
+
+- **`std.io` adds in-memory text streams built on classes.** `StringReader`
+  walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,
+  `readWhile`, `skip`, `lines`, ...); `StringWriter` accumulates chunks
+  (`write`, `writeln`, `writeAll`, `writeLines`, `toString`, `clear`); and
+  `splitLines`/`joinLines` are the free-function line helpers. A `StringReader`
+  normalises CRLF and counts code points, so it composes with `std.strings` and
+  `std.collections`. File access stays with the `readFile`/`writeFile`/
+  `fileExists` builtins: the freestanding AOT backend does not seed them, so a
+  module that mentions one fails `oskel build` even when the function is never
+  called. Classes are maps with closures, so the VM, the AOT backend and
+  WebAssembly agree; `tests/62_std_io.oskl` and `tests/native_build_io.oskl`
+  prove it.
+
+- **`std.collections` gains the missing sequence helpers.** `flatMap` maps to
+  an array and flattens one level; `scan` returns the running fold, with the
+  initial value as its first element; `findLast`/`findLastIndex` search from
+  the end; `takeWhile`/`dropWhile` split the leading run that satisfies a
+  predicate; `sliding` yields overlapping windows of a fixed size; `zipWith`
+  combines two arrays element by element; and `intersperse` inserts a separator
+  between elements. All of them stay on the portable primitive surface, so the
+  VM, `oskel build` and the WebAssembly backend produce the same output;
+  `tests/58_std_collections.oskl` and `tests/native_build_collections.oskl`
+  cover the VM and the AOT/WASM parity. `scan` is documented as returning
+  `len(xs) + 1` elements and `sliding` rejects a size below 1. (feat(native): add oskelld, the project's own linker)
+
 - **The Skia bridge compiles and runs against a real Skia build.** The
   generated shim now covers text (`SkFont` + `drawString`) and one-pixel
   readback (`SkImage::readPixels`), and `skia_facade.h` selects

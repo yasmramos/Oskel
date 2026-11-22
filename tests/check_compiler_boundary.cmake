@@ -40,10 +40,10 @@ set(forbidden "(.*/)?(interpreter|vm|jit/jit)[.]h")
 # The compiler and the native backend must also stay clear of the FFI *runtime*
 # half. `ffi_types.h` is the shared, dependency-free source of truth and is
 # allowed; `ffi_marshal.h` pulls in `runtime.h`/`value.h`, and `ffi.cpp` is the
-# only place that includes libffi. libffi is a development-engine-only
-# dependency (DEVELOPMENT.md §5.1/§6): the AOT backend lowers callbacks to compile-time
-# stubs and must never link it, so the include must not be reachable from the
-# compiler or the native backend.
+# only place that includes the FFI marshalling. It is a development-engine-only
+# component (DEVELOPMENT.md §5.1/§6): the AOT backend lowers callbacks to
+# compile-time stubs and never links a host FFI library, so the include must not
+# be reachable from the compiler or the native backend.
 set(forbidden_ffi "(.*/)?ffi_marshal[.]h|(.*/)?ffi[.]h|libffi")
 
 # What the front end as a whole may not reach: the runtime half of the engine.
@@ -103,7 +103,7 @@ if(violations)
     "${count} forbidden include(s): the compiler, the native backend and every "
     "source `oskelc` links must not include vm.h, the JIT (jit/jit.h), the "
     "builtins (builtins.h), the operator library (ops.h), the FFI runtime "
-    "(ffi_marshal.h) or libffi (see DEVELOPMENT.md, toolchain boundary).")
+    "(ffi_marshal.h) or a host FFI library (see DEVELOPMENT.md, toolchain boundary).")
 endif()
 
 list(LENGTH boundary_files checked)
