@@ -2,9 +2,14 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <filesystem>
 #include <iostream>
+#include <string>
+#include <system_error>
 
 #ifdef _WIN32
+#include <direct.h>
 #include <fcntl.h>
 #include <io.h>
 #include <malloc.h>
@@ -14,10 +19,13 @@
 #else
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
 namespace {
+
+namespace fs = std::filesystem;
 
 bool isFileFd(int fd) { return fd > Platform::kStderr; }
 
@@ -91,11 +99,16 @@ std::size_t PlatformPosix::read(int fd, char* buffer, std::size_t length) {
 
 int PlatformPosix::open(const char* path, OpenMode mode) {
 #ifdef _WIN32
-  int flags = mode == OpenMode::Read ? _O_RDONLY | _O_BINARY
-                                     : _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY;
-  return ::_open(path, flags, _S_IREAD | _S_IWRITE);
+  int flags = _O_RDONLY | _O_BINARY;
+  if (mode == OpenMode::Write) flags = _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY;
+  if (mode == OpenMode::Append) flags = _O_WRONLY | _O_CREAT | _O_APPEND | _O_BINARY;
+  // `_open` takes an ANSI path; `_wopen` keeps a UTF-8 path intact.
+  const std::wstring wide = fs::u8path(path).wstring();
+  return ::_wopen(wide.c_str(), flags, _S_IREAD | _S_IWRITE);
 #else
-  int flags = mode == OpenMode::Read ? O_RDONLY : O_WRONLY | O_CREAT | O_TRUNC;
+  int flags = O_RDONLY;
+  if (mode == OpenMode::Write) flags = O_WRONLY | O_CREAT | O_TRUNC;
+  if (mode == OpenMode::Append) flags = O_WRONLY | O_CREAT | O_APPEND;
   return ::open(path, flags, 0644);
 #endif
 }
@@ -118,6 +131,95 @@ bool PlatformPosix::seek(int fd, std::int64_t offset, SeekOrigin origin) {
 #else
   return ::lseek(fd, static_cast<off_t>(offset), seekWhence(origin)) >= 0;
 #endif
+}
+
+std::int64_t PlatformPosix::tell(int fd) {
+  if (!isFileFd(fd)) return -1;
+#ifdef _WIN32
+  return static_cast<std::int64_t>(::_lseeki64(fd, 0, SEEK_CUR));
+#else
+  return static_cast<std::int64_t>(::lseek(fd, 0, SEEK_CUR));
+#endif
+}
+
+bool PlatformPosix::remove(const char* path) {
+  std::error_code error;
+  const bool removed = fs::remove(fs::u8path(path), error);
+  return removed && !error;
+}
+
+bool PlatformPosix::rename(const char* from, const char* to) {
+  std::error_code error;
+  fs::rename(fs::u8path(from), fs::u8path(to), error);
+  return !error;
+}
+
+bool PlatformPosix::makeDirectory(const char* path) {
+  std::error_code error;
+  fs::create_directory(fs::u8path(path), error);
+  return !error;
+}
+
+bool PlatformPosix::removeDirectory(const char* path) {
+  // `std::filesystem::remove` also deletes a file, so it would make `fsRmdir`
+  // succeed on a regular file. `rmdir` keeps the "directory only" contract.
+#ifdef _WIN32
+  return ::_wrmdir(fs::u8path(path).c_str()) == 0;
+#else
+  return ::rmdir(path) == 0;
+#endif
+}
+
+bool PlatformPosix::fileStat(const char* path, Platform::FileInfo& out) {
+#ifdef _WIN32
+  // `_stat64` takes an ANSI path; `_wstat64` keeps a UTF-8 path intact.
+  struct _stat64 info;
+  if (::_wstat64(fs::u8path(path).c_str(), &info) != 0) return false;
+  out.size = static_cast<std::uint64_t>(info.st_size);
+  out.modified = static_cast<std::int64_t>(info.st_mtime);
+  out.isDirectory = (info.st_mode & _S_IFDIR) != 0;
+  out.isFile = (info.st_mode & _S_IFREG) != 0;
+#else
+  struct stat info;
+  if (::stat(path, &info) != 0) return false;
+  out.size = static_cast<std::uint64_t>(info.st_size);
+  out.modified = static_cast<std::int64_t>(info.st_mtime);
+  out.isDirectory = S_ISDIR(info.st_mode);
+  out.isFile = S_ISREG(info.st_mode);
+#endif
+  return true;
+}
+
+bool PlatformPosix::listDirectory(const char* path, Platform::DirectoryVisitor visit,
+                                  void* user) {
+  std::error_code error;
+  fs::directory_iterator entry(fs::u8path(path), error);
+  if (error) return false;
+  const fs::directory_iterator end;
+  for (; entry != end; entry.increment(error)) {
+    if (error) return false;
+    std::error_code typeError;
+    const bool isDirectory = entry->is_directory(typeError);
+    const std::string name = entry->path().filename().u8string();
+    visit(user, name.c_str(), isDirectory);
+  }
+  return true;
+}
+
+bool PlatformPosix::currentDirectory(char* buffer, std::size_t size) {
+  std::error_code error;
+  const fs::path path = fs::current_path(error);
+  if (error) return false;
+  const std::string text = path.u8string();
+  if (text.size() + 1 > size) return false;
+  std::memcpy(buffer, text.c_str(), text.size() + 1);
+  return true;
+}
+
+bool PlatformPosix::changeDirectory(const char* path) {
+  std::error_code error;
+  fs::current_path(fs::u8path(path), error);
+  return !error;
 }
 
 void PlatformPosix::exit(int code) { std::exit(code); }

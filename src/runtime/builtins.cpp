@@ -78,6 +78,31 @@ std::string wantPath(Runtime& in, const std::string& fn, const Value& value,
   return path;
 }
 
+// A file handle is an opaque `ptr` (PtrKind::Void) whose token is the host
+// descriptor. `fsClose` marks it released, so a read/write/seek after close is
+// a clear runtime error rather than a use-after-close on the host.
+PtrObj& wantFileHandle(Runtime& in, const std::string& fn, const Value& value) {
+  if (!value.isPtr()) {
+    in.fail(fn + "() expects a file handle, got '" + value.typeName() + "'");
+  }
+  PtrObj& pointer = value.ptr();
+  if (pointer.kind != PtrKind::Void) {
+    in.fail(fn + "() expects a file handle, got '" + value.typeName() + "'");
+  }
+  if (pointer.released) {
+    in.fail(fn + "() used a closed file handle");
+  }
+  return pointer;
+}
+
+struct DirectoryNames {
+  std::vector<std::string> names;
+};
+
+void collectDirectoryName(void* user, const char* name, bool /*isDirectory*/) {
+  static_cast<DirectoryNames*>(user)->names.emplace_back(name);
+}
+
 // Parses the text of `int(string)` using the same bases the language spells for
 // literals (see docs/language.md section 2.3): an explicit `0x`/`0b`/`0o`
 // prefix, otherwise decimal. `strtoll`'s base-0 mode would read a bare leading
@@ -1451,6 +1476,184 @@ void registerBuiltins(Runtime& in) {
     if (fd == Platform::kInvalidFd) return Value(false);
     in.platform().close(fd);
     return Value(true);
+  });
+
+  // Streaming file access for `std.fs`. The handle is an opaque `ptr`; the
+  // module owns the `File` class and the free functions, so the low-level
+  // names stay out of the everyday surface.
+  in.addNative("fsOpen", [](Runtime& in, Args args) -> Value {
+    need(in, "fsOpen", args, 2);
+    std::string path = wantPath(in, "fsOpen", args[0]);
+    std::string mode = wantString(in, "fsOpen", args[1], "mode");
+    Platform::OpenMode openMode = Platform::OpenMode::Read;
+    std::string verb = "reading";
+    if (mode == "r") {
+      openMode = Platform::OpenMode::Read;
+      verb = "reading";
+    } else if (mode == "w") {
+      openMode = Platform::OpenMode::Write;
+      verb = "writing";
+    } else if (mode == "a") {
+      openMode = Platform::OpenMode::Append;
+      verb = "appending";
+    } else {
+      in.fail("fsOpen() mode must be 'r', 'w' or 'a'");
+    }
+    int fd = in.platform().open(path.c_str(), openMode);
+    if (fd == Platform::kInvalidFd) {
+      in.fail("cannot open file '" + path + "' for " + verb);
+    }
+    return makePtr(PtrKind::Void, {}, fd);
+  });
+
+  in.addNative("fsRead", [](Runtime& in, Args args) -> Value {
+    need(in, "fsRead", args, 2);
+    PtrObj& handle = wantFileHandle(in, "fsRead", args[0]);
+    int64_t count = wantInt(in, "fsRead", args[1], "count");
+    if (count == 0) return Value(std::string());
+    std::string contents;
+    char buffer[4096];
+    if (count < 0) {
+      for (;;) {
+        const std::size_t n = in.platform().read(static_cast<int>(handle.address), buffer,
+                                                 sizeof buffer);
+        if (n == 0) break;
+        contents.append(buffer, n);
+      }
+    } else {
+      while (contents.size() < static_cast<std::size_t>(count)) {
+        const std::size_t want = std::min<std::size_t>(
+            sizeof buffer, static_cast<std::size_t>(count) - contents.size());
+        const std::size_t n =
+            in.platform().read(static_cast<int>(handle.address), buffer, want);
+        if (n == 0) break;
+        contents.append(buffer, n);
+      }
+    }
+    return Value(std::move(contents));
+  });
+
+  in.addNative("fsWrite", [](Runtime& in, Args args) -> Value {
+    need(in, "fsWrite", args, 2);
+    PtrObj& handle = wantFileHandle(in, "fsWrite", args[0]);
+    std::string contents = wantString(in, "fsWrite", args[1], "contents");
+    in.platform().write(static_cast<int>(handle.address), contents.data(), contents.size());
+    return Value(static_cast<int64_t>(contents.size()));
+  });
+
+  in.addNative("fsSeek", [](Runtime& in, Args args) -> Value {
+    need(in, "fsSeek", args, 3);
+    PtrObj& handle = wantFileHandle(in, "fsSeek", args[0]);
+    int64_t offset = wantInt(in, "fsSeek", args[1], "offset");
+    std::string origin = wantString(in, "fsSeek", args[2], "origin");
+    Platform::SeekOrigin whence = Platform::SeekOrigin::Start;
+    if (origin == "s") {
+      whence = Platform::SeekOrigin::Start;
+    } else if (origin == "c") {
+      whence = Platform::SeekOrigin::Current;
+    } else if (origin == "e") {
+      whence = Platform::SeekOrigin::End;
+    } else {
+      in.fail("fsSeek() origin must be 's', 'c' or 'e'");
+    }
+    if (!in.platform().seek(static_cast<int>(handle.address), offset, whence)) {
+      in.fail("cannot seek in file");
+    }
+    const std::int64_t position = in.platform().tell(static_cast<int>(handle.address));
+    if (position < 0) in.fail("cannot read the file position");
+    return Value(position);
+  });
+
+  in.addNative("fsClose", [](Runtime& in, Args args) -> Value {
+    need(in, "fsClose", args, 1);
+    PtrObj& handle = wantFileHandle(in, "fsClose", args[0]);
+    in.platform().close(static_cast<int>(handle.address));
+    handle.released = true;
+    return Value();
+  });
+
+  in.addNative("fsRemove", [](Runtime& in, Args args) -> Value {
+    need(in, "fsRemove", args, 1);
+    std::string path = wantPath(in, "fsRemove", args[0]);
+    if (!in.platform().remove(path.c_str())) {
+      in.fail("cannot remove '" + path + "'");
+    }
+    return Value();
+  });
+
+  in.addNative("fsRename", [](Runtime& in, Args args) -> Value {
+    need(in, "fsRename", args, 2);
+    std::string from = wantPath(in, "fsRename", args[0], "source path");
+    std::string to = wantPath(in, "fsRename", args[1], "destination path");
+    if (!in.platform().rename(from.c_str(), to.c_str())) {
+      in.fail("cannot rename '" + from + "' to '" + to + "'");
+    }
+    return Value();
+  });
+
+  in.addNative("fsMkdir", [](Runtime& in, Args args) -> Value {
+    need(in, "fsMkdir", args, 1);
+    std::string path = wantPath(in, "fsMkdir", args[0]);
+    if (!in.platform().makeDirectory(path.c_str())) {
+      in.fail("cannot create directory '" + path + "'");
+    }
+    return Value();
+  });
+
+  in.addNative("fsRmdir", [](Runtime& in, Args args) -> Value {
+    need(in, "fsRmdir", args, 1);
+    std::string path = wantPath(in, "fsRmdir", args[0]);
+    if (!in.platform().removeDirectory(path.c_str())) {
+      in.fail("cannot remove directory '" + path + "'");
+    }
+    return Value();
+  });
+
+  in.addNative("fsList", [](Runtime& in, Args args) -> Value {
+    need(in, "fsList", args, 1);
+    std::string path = wantPath(in, "fsList", args[0]);
+    DirectoryNames names;
+    if (!in.platform().listDirectory(path.c_str(), collectDirectoryName, &names)) {
+      in.fail("cannot list directory '" + path + "'");
+    }
+    std::sort(names.names.begin(), names.names.end());
+    std::vector<Value> items;
+    items.reserve(names.names.size());
+    for (std::string& name : names.names) items.emplace_back(std::move(name));
+    return Value(makeArray(std::move(items)));
+  });
+
+  in.addNative("fsStat", [](Runtime& in, Args args) -> Value {
+    need(in, "fsStat", args, 1);
+    std::string path = wantPath(in, "fsStat", args[0]);
+    Platform::FileInfo info;
+    if (!in.platform().fileStat(path.c_str(), info)) {
+      in.fail("cannot stat '" + path + "'");
+    }
+    MapPtr result = makeMap();
+    result->set("size", Value(static_cast<int64_t>(info.size)));
+    result->set("modified", Value(info.modified));
+    result->set("isFile", Value(info.isFile));
+    result->set("isDir", Value(info.isDirectory));
+    return Value(std::move(result));
+  });
+
+  in.addNative("fsCwd", [](Runtime& in, Args args) -> Value {
+    need(in, "fsCwd", args, 0);
+    char buffer[4096];
+    if (!in.platform().currentDirectory(buffer, sizeof buffer)) {
+      in.fail("cannot read the current directory");
+    }
+    return Value(std::string(buffer));
+  });
+
+  in.addNative("fsChdir", [](Runtime& in, Args args) -> Value {
+    need(in, "fsChdir", args, 1);
+    std::string path = wantPath(in, "fsChdir", args[0]);
+    if (!in.platform().changeDirectory(path.c_str())) {
+      in.fail("cannot change to directory '" + path + "'");
+    }
+    return Value();
   });
 
   in.addNative("range", [](Runtime& in, Args args) -> Value {

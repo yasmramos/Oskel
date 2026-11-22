@@ -387,9 +387,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     were not seeded by the AOT backend, so a program that called one failed
     `oskel build` with "global 'X' is read but never assigned" (exit 65) while
     the VM ran it. `tests/check_builtin_parity.cmake` enumerates the set from
-    both sides, so a new builtin cannot be added to one engine alone; its
-    exception list is now empty. Every one is implemented, each with the parity
-    fixture that pins it:
+    both sides, so a new builtin cannot be added to one engine alone. Its
+    exception list now holds only the `std.fs.dir` directory builtins below.
+    Every original one is implemented, each with the parity fixture that pins
+    it:
     - **Pointers** (`cstring`, `cstr`, `buffer`, `byteLen`, `loadByte`,
       `storeByte`, `intToPtr`, `ptrToInt`, `free`). The VM keeps them in a
       reference-counted `PtrObj`; the image keeps an `AotPtr` in the arena
@@ -405,6 +406,22 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
       themselves are target-independent. A bare-metal image has no file system,
       so it binds none of the handles and the lowerer rejects the three by
       name. Fixture: `tests/native_build_files.oskl`.
+    - **Streaming files** (`fsOpen`, `fsRead`, `fsWrite`, `fsSeek`, `fsClose`),
+      the primitives behind `std.fs.File`. `oskel_open` gained the append mode
+      (`O_APPEND`/`_O_APPEND`/`FILE_APPEND_DATA`) and the prelude gained
+      `oskel_seek`/`oskel_tell` (`lseek`, `SetFilePointerEx`, `_lseeki64`), so
+      the builtins stay target-independent. They are seeded wherever
+      `readFile` is, and rejected by name on bare metal. Fixtures:
+      `tests/native_build_fs.oskl` (freestanding, VM parity) and
+      `oskel.build_fs_hosted` (the same fixture through libc/`_lseeki64`).
+      The directory half (`fsRemove`, `fsRename`, `fsMkdir`, `fsRmdir`,
+      `fsList`, `fsStat`, `fsCwd`, `fsChdir`) is **VM-only for now**; it is the
+      documented `vm_only` list in `tests/check_builtin_parity.cmake`, and a
+      used name makes `oskel build` fail with "std.fs.dir is VM-only for now"
+      instead of the generic unassigned-global error. `PlatformFreestanding`
+      already implements the Linux syscalls, but the AOT prelude does not emit
+      those handles and no builtin is seeded; wiring that side is the next
+      step.
     - **`clock`**. Reads the `entry.monotonic` handle, which every prelude
       binds (Linux `clock_gettime(CLOCK_MONOTONIC)`, hosted the same through
       libc, Windows `GetTickCount64`, bare metal the PIT tick counter), and

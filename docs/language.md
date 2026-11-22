@@ -2340,7 +2340,8 @@ emitting a binary that returns a wrong number.
 
 A path is handed to the OS as a NUL-terminated C string, so a path containing an
 embedded NUL (`"a\0b"`) is rejected with a runtime error instead of silently
-operating on the truncated path.
+operating on the truncated path. These three read or write a whole file; use
+`std.fs` (§12.15) for a streaming handle, append mode and line reads.
 
 ### 12.7 Assertions and control
 
@@ -2761,6 +2762,65 @@ text length; use `size()`.
 
 The module is pure Oskel over strings and classes, so it behaves identically on
 the development VM, under `oskel build` and on WebAssembly.
+
+### 12.15 Filesystem
+
+`std.fs` is the disk counterpart of `std.io`. It has four import surfaces:
+
+| Import | Binds |
+| --- | --- |
+| `import std.fs;` | The facade table: `std.fs.readText`, `std.fs.File`, ... |
+| `import std.fs.*;` | `readText`, `writeText`, `open`, `File`, ... directly. |
+| `import std.fs.File;` | The class module (§18.6): `File(...)`. |
+| `import std.fs.dir;` | The directory namespace: `std.fs.dir.listDir(...)`. |
+
+The streaming half is deliberately small and works on both engines:
+
+| Function / method | Description |
+| --- | --- |
+| `open(path, mode)` / `File(path, mode)` | Opens `"r"`, `"w"` (truncate) or `"a"` (append). |
+| `readText(path)` | Reads the whole file and closes it. |
+| `writeText(path, text)` | Creates or truncates `path` and writes `text`. |
+| `appendText(path, text)` | Creates `path` if needed and appends `text`. |
+| `exists(path)` | True when `path` can be opened for reading. |
+| `File.read(count)` | Up to `count` bytes; a negative count reads to the end. |
+| `File.readAll()` | The rest of the file. |
+| `File.readLine()` | One line without the newline; `""` at EOF. |
+| `File.write(text)` / `File.writeln(text)` | Writes all bytes / adds `"\n"`. |
+| `File.seek(offset, origin)` | `origin` is `"start"`, `"current"` or `"end"`; returns the new position. |
+| `File.position()` / `File.size()` / `File.eof()` | Position, total size, and whether the position is at the end. |
+| `File.close()` / `File.isClosed()` | Closes once (a second call is a no-op) / reports the state. |
+
+```oskl
+import std.fs;
+
+fn main() {
+  std.fs.writeText("notes.txt", "one\n");
+  std.fs.appendText("notes.txt", "two\n");
+
+  let file = std.fs.open("notes.txt", "r");
+  defer { file.close(); }
+  print(file.readLine());   // one
+  print(file.size());       // 8
+}
+```
+
+`std.fs.dir` holds the operations that need a host directory API:
+`remove`, `rename`, `makeDir`, `removeDir`, `listDir`, `stat`, `exists`,
+`isDir`, `currentDir` and `changeDir`. `stat` returns
+`{size, modified, isFile, isDir}` with `modified` in epoch seconds.
+
+**Engine support.** The streaming surface is implemented by the VM and by
+`oskel build` on every target with a file system: freestanding Linux, Windows
+(PE/kernel32) and the hosted modes. A bare-metal image has no file system, so
+`oskel build` rejects a used `fs*` builtin by name. `std.fs.dir` is VM-only for
+now; the x86-64 AOT backend rejects it with a dedicated message instead of a
+mis-compiled image. WebAssembly builds seed every `fs*` name as a trapping
+builtin, so a call fails at run time with the backend's "not supported" message.
+
+Paths are UTF-8 and are handed to the OS as NUL-terminated C strings, so an
+embedded NUL is a runtime error. `File` owns its handle and `close` is
+idempotent; use `defer` so a `panic` still closes it.
 
 ---
 
@@ -3353,11 +3413,13 @@ print(sqrt(25));            // 5
 
 The standard library ships `std.math` (§12.3), `std.json` (§12.9),
 `std.datetime` (§12.10), `std.path` (§12.11), `std.collections` (§12.12),
-`std.strings` (§12.13) and `std.io` (§12.14). `std.io` is split into class
-modules (`std.io.StringReader`, `std.io.StringWriter`) and namespace modules
-(`std.io.reader`, `std.io.writer`, `std.io.text`) behind the `std.io` facade;
-the four import forms above apply to the facade, and the class modules add the
-direct form of §18.6. All of them are modules:
+`std.strings` (§12.13), `std.io` (§12.14) and `std.fs` (§12.15). `std.io` is
+split into class modules (`std.io.StringReader`, `std.io.StringWriter`) and
+namespace modules (`std.io.reader`, `std.io.writer`, `std.io.text`) behind the
+`std.io` facade; `std.fs` is split the same way, with `std.fs.File` as its class
+module and `std.fs.dir` as its directory namespace. The four import forms above
+apply to the facades, and the class modules add the direct form of §18.6. All of
+them are modules:
 
 ```oskel
 import std.json;             // std.json.parse and json.parse, ...

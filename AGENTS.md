@@ -149,11 +149,11 @@ it as a caveat:
   (`upper`, `lower`, `trim`, `trimStart`, `trimEnd`, `contains`, `startsWith`,
   `endsWith`, `indexOf`, `substr`, `reversed`, `repeat`, `split`, `lines`,
   `chars`, `replace`, `replaceFirst`, `padStart`, `padEnd`), so no string
-  member builds and then faults at run time. It does not seed
-  `pcall`/`error`/`readFile` at all, so a module function that calls one fails
-  `oskel build` with "global 'pcall' is read but never assigned" (exit 65) even
-  when the function is unused. A module written over the portable surface
-  behaves identically on the VM and under `oskel build`; `std/json.oskl` and
+  member builds and then faults at run time. It also seeds `pcall`, `error` and
+  the streaming file builtins, so a module may use them; the one remaining
+  standard-library gap is `std.fs.dir`, which is VM-only (see below). A module
+  written over the portable surface behaves identically on the VM and under
+  `oskel build`; `std/json.oskl` and
   `tests/native_build_json.oskl` are the reference, and `std/datetime.oskl`
   with `tests/native_build_datetime.oskl` is a second one (it also exercises
   the `time()` wall clock, the one builtin whose AOT binding differs per
@@ -161,12 +161,24 @@ it as a caveat:
   surface; `tests/native_build_ui.oskl` is its VM/AOT fixture.
 - `std.io` is **in-memory text streams, not file I/O**. `StringReader` and
   `StringWriter` are classes (maps with closures), and `splitLines`/`joinLines`
-  are free functions. File access stays with
-  `readFile`/`writeFile`/`fileExists`: the freestanding AOT backend does not
-  seed them, and the lowerer scans every function body, so a module that merely
-  mentions one fails `oskel build` even when the function is unused.
-  `tests/62_std_io.oskl` is the VM test and `tests/native_build_io.oskl` the
-  VM/AOT/WASM parity fixture.
+  are free functions. `tests/62_std_io.oskl` is the VM test and
+  `tests/native_build_io.oskl` the VM/AOT/WASM parity fixture.
+- `std.fs` is the disk module, split three ways: the facade (`std.fs`), the
+  class module `std.fs.File` and the namespace `std.fs.dir`. The streaming half
+  (`fsOpen`/`fsRead`/`fsWrite`/`fsSeek`/`fsClose`, plus `readFile`,
+  `writeFile`, `fileExists`) is seeded wherever the prelude has a file system:
+  freestanding Linux/Windows and hosted. The prelude owns the target differences
+  -- `openat`/`lseek`/`read`/`write`/`close` on Linux, `CreateFileA`/
+  `SetFilePointerEx`/`ReadFile`/`WriteFile`/`CloseHandle` on Windows,
+  `_open`/`_lseeki64`/`_read`/`_write`/`_close` hosted -- so the builtins stay
+  target-independent. Append is mode `2` at the prelude boundary
+  (`O_APPEND`/`_O_APPEND`/`FILE_APPEND_DATA`). The directory half
+  (`fsRemove`, `fsRename`, `fsMkdir`, `fsRmdir`, `fsList`, `fsStat`, `fsCwd`,
+  `fsChdir`) is **VM-only for now**: `std.fs.dir` is listed in the parity
+  script's `vm_only` set and the lowerer rejects a used name with a dedicated
+  message (exit 65), never a mis-compiled image. Fixtures:
+  `tests/native_build_fs.oskl` (freestanding parity), `oskel.build_fs_hosted`
+  (hosted parity) and `tests/64_std_fs.oskl` (VM directory/error paths).
 - A module whose last path segment is **PascalCase** is a **class module**
   (`docs/language.md` §18.6). It exports exactly one public name, the file name,
   and every other top-level name starts with `_`. `import std.io.StringReader;`
@@ -697,13 +709,16 @@ it as a caveat:
   read but never assigned". The names that are VM-only on purpose live in a list
   in that script and in BACKLOG §6 item 25; the check also fails when a listed
   exception stops being one, because a stale exception hides the next real gap.
-  The list is **empty** today: BACKLOG §6 item 25 landed the pointer, file,
-  `clock` and `args` builtins, so every name `addNative` registers is seeded by
-  the AOT backend on at least one target. Four names are seeded per target
-  rather than everywhere, and each has a lowerer gate with its own message: the
-  file builtins and `input` on anything but bare metal, `args` where the entry
-  receives an argument vector (Linux freestanding and hosted), and `memSize`
-  which only bare metal backs. The gate matters because the fallback message --
+  The list now holds only the eight `std.fs.dir` directory builtins
+  (`fsRemove`, `fsRename`, `fsMkdir`, `fsRmdir`, `fsList`, `fsStat`, `fsCwd`,
+  `fsChdir`), which are VM-only until their prelude handles land; BACKLOG §6
+  item 25 records the reason. Everything else `addNative` registers is seeded
+  by the AOT backend on at least one target. Several names are seeded per
+  target rather than everywhere, and each has a lowerer gate with its own
+  message: the streaming file builtins and `input` on anything but bare metal,
+  `args` where the entry receives an argument vector (Linux freestanding and
+  hosted), and `memSize` which only bare metal backs. The gate matters because
+  the fallback message --
   "global 'X' is read but never assigned" -- is what a *typo* produces, so a
   program that spelled a real builtin correctly must not see it. A `native fn`
   used as a rejection fixture therefore has to be a symbol the backend has *no*

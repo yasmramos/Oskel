@@ -1,0 +1,58 @@
+// Standard library: streaming files.
+//
+// Imported as `import std.fs;` (qualified: `std.fs.readText`),
+// `import std.fs.*;` (unqualified: `readText`), `import std.fs as fs;` or
+// `import { readText, writeText } from std.fs;`. The `File` class lives in its
+// own class module, so `import std.fs.File;` binds the class directly
+// (docs/language.md §18.6).
+//
+// `std.io` is the in-memory stream module; this module is the disk one. File
+// access is built on the `fs*` primitives, which the VM implements on every
+// platform and the AOT backend implements for every target with a file system.
+// Directory and metadata operations live in `std.fs.dir`; they are VM-only for
+// now, so importing that module into an AOT build fails with a named error
+// (BACKLOG §6).
+//
+// A path is an ordinary string, so `std.path.join` composes with every
+// function here. Paths are UTF-8 and a NUL byte is rejected at the primitive.
+
+import std.fs.File as FileClass;
+
+// The streaming file class, re-exported so `import std.fs.*` exposes it.
+let File = FileClass;
+
+// Opens `path` and returns a `File`. `mode` is `"r"`, `"w"` or `"a"`.
+@MustUse
+fn open(path: string, mode: string) {
+  return File(path, mode);
+}
+
+// Reads the whole file. The handle is closed even when the read fails.
+@MustUse
+fn readText(path: string): string {
+  let file = File(path, "r");
+  defer { file.close(); }
+  return file.readAll();
+}
+
+// Creates or truncates `path` and writes `text`.
+fn writeText(path: string, text: string) {
+  let file = File(path, "w");
+  defer { file.close(); }
+  file.write(text);
+}
+
+// Creates `path` if needed and appends `text` at the end.
+fn appendText(path: string, text: string) {
+  let file = File(path, "a");
+  defer { file.close(); }
+  file.write(text);
+}
+
+// True when `path` can be opened for reading. Use
+// `std.fs.dir.stat(path).isFile` to require a regular file; this predicate
+// stays on the streaming surface so it works in every AOT image.
+@MustUse
+fn exists(path: string): bool {
+  return fileExists(path);
+}

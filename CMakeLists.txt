@@ -865,6 +865,18 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_mode.cmake")
 
+    # The hosted prelude reaches the position through `lseek`/`_lseeki64` and
+    # opens an append stream with `O_APPEND`/`_O_APPEND`; the freestanding
+    # fixture above covers the syscall/kernel32 path.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32)
+      add_test(NAME oskel.build_fs_hosted
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_fs_hosted"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_fs.oskl"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+    endif()
+
     # A scalar `extern "C"` declaration resolves through the system linker in
     # the hosted mode (PHASE 7f.5): the backend emits a marshalling thunk per
     # symbol, seeds it as a function and lets the host C compiler resolve the
@@ -1367,6 +1379,16 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_files.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # Streaming file handles behind `std.fs.File` (PHASE 7g): open/read/write/
+    # seek/close, append, and the whole-file helpers. The fixture uses the same
+    # path in both runs, so `writeText` truncates the file before each one.
+    add_test(NAME oskel.build_binary_fs
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_fs"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_fs.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `clock()` reads the `entry.monotonic` handle and subtracts the origin the
     # chunk captured at entry, so it reports elapsed time. Every target backs it,
     # and only the shape is compared: the two runs happen at different times.
@@ -1398,6 +1420,18 @@ if(BUILD_TESTING)
           "-DEXPECTED_MESSAGE=args\\(\\) needs a process argument vector"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
     endif()
+
+    # The directory half of `std.fs` is VM-only for now. The AOT backend has no
+    # prelude handles for it, so a used name must fail the build with a message
+    # that names the module, not the generic unassigned-global error a typo
+    # produces.
+    add_test(NAME oskel.build_fs_dir_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_fs_dir_error"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/errors/fs_dir_vm_only.oskl"
+        "-DEXPECTED_MESSAGE=std.fs.dir is VM-only for now"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
 
     # The field-type check runs in the compiler, so `oskel build` rejects a
     # mistyped field assignment exactly as the VM does, with the same message

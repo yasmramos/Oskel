@@ -13454,7 +13454,9 @@ const std::unordered_set<std::string>& vmBuiltinNames() {
       "ceil", "round", "sqrt", "pow", "sin", "cos", "tan", "log", "exp",
       "random", "seed", "clock", "time", "memSize", "assert", "assertEq",
             "panic", "pcall", "error", "isError", "$isError", "exit", "args",
-      "readFile", "writeFile", "fileExists", "range", "$range", "$nonNull",
+      "readFile", "writeFile", "fileExists", "fsOpen", "fsRead", "fsWrite",
+      "fsSeek", "fsClose", "fsRemove", "fsRename", "fsMkdir", "fsRmdir",
+      "fsList", "fsStat", "fsCwd", "fsChdir", "range", "$range", "$nonNull",
       "$slice", "cstring", "buffer", "cstr", "byteLen", "loadByte",
       "storeByte", "intToPtr", "ptrToInt", "free",
   };
