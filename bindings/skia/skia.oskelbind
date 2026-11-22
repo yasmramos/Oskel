@@ -26,6 +26,11 @@ function readPixels(img: Image, dst: ptr, rowBytes: int): bool cpp "skia_bridge:
 # paint/font split out of the descriptor.
 function drawText(canvas: Canvas, text: string, x: float, y: float, font: const Font&, paint: const Paint&): void cpp "skia_bridge::drawText"
 
+# Advance width of `text` at `size` using the default Skia font. `std.ui`
+# passes this to `layoutWith`, so the widget tree uses the same metric as the
+# renderer instead of the fixed headless advance.
+function measureText(text: string, size: float): float cpp "skia_bridge::measureText"
+
 class Rect {
   cpp "SkRect"
   release "delete"

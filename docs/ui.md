@@ -100,13 +100,14 @@ the frames and returns new maps, so drawing never mutates the tree.
 - A column gives each child the full width and stacks it by its measured height.
 - A row gives each child its measured width and the full height.
 - Padding insets its child by `all` on every side.
-- Text is measured as `0.6 * size` per character and `1.4 * size` per line.
+- `layout` measures text as `0.6 * size` per character and `1.4 * size` per
+  line, so a headless layout stays deterministic.
+- `layoutWith(root, width, height, measure)` takes a renderer-supplied
+  `measure(text, size)` that returns the advance width in pixels. The Skia
+  window backend passes `skia_ui.measure`, which asks the same font it draws
+  with, so layout and drawing share one metric.
 - A window uses its own `width`/`height`; any other root uses the viewport passed
-  to `layout`.
-
-The measurement is deliberately deterministic, not a font engine. A real
-renderer can measure text with its own metrics later; the first slice keeps the
-tree and the test independent of a font.
+  to `layout`/`layoutWith`.
 
 ## Display list
 
@@ -144,8 +145,9 @@ only the C++ shim needs a Skia build.
 
 ## Limits
 
-- One font metric, no wrapping, alignment, borders, scrolling, input widgets or
-  animation yet.
+- No text wrapping, alignment, borders, scrolling, input widgets or animation
+  yet. `std.ui.window` uses Skia's real advance width through `layoutWith`;
+  headless `layout` keeps the deterministic fixed advance.
 - `std.ui` itself has no event loop; `std.ui.window` owns it. A button stores
   `onClick` and the window loop dispatches it after `hitTest`.
 - The window loop redraws on every frame and sleeps 16 ms; it has no dirty-region
