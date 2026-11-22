@@ -24,6 +24,18 @@ may change between minor versions.
   WebAssembly agree; `tests/62_std_io.oskl` and `tests/native_build_io.oskl`
   prove it.
 
+- **`std.collections` gains the missing sequence helpers.** `flatMap` maps to
+  an array and flattens one level; `scan` returns the running fold, with the
+  initial value as its first element; `findLast`/`findLastIndex` search from
+  the end; `takeWhile`/`dropWhile` split the leading run that satisfies a
+  predicate; `sliding` yields overlapping windows of a fixed size; `zipWith`
+  combines two arrays element by element; and `intersperse` inserts a separator
+  between elements. All of them stay on the portable primitive surface, so the
+  VM, `oskel build` and the WebAssembly backend produce the same output;
+  `tests/58_std_collections.oskl` and `tests/native_build_collections.oskl`
+  cover the VM and the AOT/WASM parity. `scan` is documented as returning
+  `len(xs) + 1` elements and `sliding` rejects a size below 1.
+
 - **The Skia bridge compiles and runs against a real Skia build.** The
   generated shim now covers text (`SkFont` + `drawString`) and one-pixel
   readback (`SkImage::readPixels`), and `skia_facade.h` selects
