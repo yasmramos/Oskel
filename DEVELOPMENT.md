@@ -2118,7 +2118,10 @@ an array), and the builtins `print`, `write`, `eprint`, `len`, `type`, `str`,
 `filter`, `each`, `find`, `any`, `all`, `reduce`, `sort` and `sorted`. The
 callback methods build an upward argument window and call back through the
 dispatcher; `sort`/`sorted` use a stable insertion sort over a copy and commit
-only on success. The map, string and range methods are still open, so the
+only on success. The map methods (`keys`, `values`, `entries`, `has`, `get`,
+`set`, `delete`, `merge`, `clone`, `clear`) are bound the same way, over the
+same `mapFind`/`mapSet`/`mapDelete`/`mapClear` runtime helpers as the index
+operators. The string and range methods are still open, so the
 standard-library modules stay on the portable primitive surface: `std/json`,
 `std/datetime`, `std/collections`, `std/path` and the bound half of `std.math`
 build and agree with the VM byte for byte; the host clock is what lets
@@ -2129,9 +2132,8 @@ Still open, and each reported rather than mis-compiled:
 - **Transcendental builtins** (`sin`, `cos`, `tan`, `log`, `exp`, ...) are not
   bound yet; `std.math` builds and its `abs`/`min`/`max`/`clamp`/`sqrt`/`PI`/`E`
   subset agrees with the VM, but a call to an unbound name reports the gap.
-- **Map, string and range methods** are not bound yet: `table.keys()`,
-  `text.upper()` and `range.toArray()` report "no such member on this value".
-  The fixtures `native_build_map_methods.oskl`,
+- **String and range methods** are not bound yet: `text.upper()` and
+  `range.toArray()` report "no such member on this value". The fixtures
   `native_build_string_methods.oskl`, `native_build_range_methods.oskl` and
   `native_build_function_repr.oskl` are the targets. `pcall` is also still
   VM-only, which is why `native_build_sort_methods.oskl` keeps its
