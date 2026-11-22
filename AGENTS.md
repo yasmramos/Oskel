@@ -400,15 +400,77 @@ it as a caveat:
   payload is the real address rather than a synthetic token — a box that stored
   an invented id would pass every `type`/`== nil` assertion and fail only when C
   dereferences it.
-- Windows code paths can be exercised locally without a Windows host: build the
-  engine with `x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude -Isrc -static
-  -o /tmp/win/oskel.exe src/main.cpp src/core/*.cpp src/frontend/*.cpp
-  src/frontend/native/*.cpp src/runtime/*.cpp src/runtime/jit/*.cpp` and run it
-  under Wine (`WINEPREFIX=$HOME/.wine-oskel wine /tmp/win/oskel.exe ...`). The
-  `tests/*.oskl` suite runs there too. This is how `lookupSymbol` (kernel32) and
-  the PE image were checked before CI. CI still gates the merge, since Wine is
-  not Windows: a green Wine run is a signal, not a substitute for the
-  `windows-latest` job.
+- Windows code paths can be exercised locally without a Windows host, through a
+  mingw cross build run under Wine. Do not hand-compile the engine: `src/*.cpp`
+  holds several `main` functions (`oskel`, `oskelc`, `oskelld`, ...) and a flat
+  `g++ src/*.cpp` fails with "multiple definition of `main'". Configure with a
+  toolchain file instead, which also keeps the target list and the conditional
+  test registration identical to a real Windows build:
+
+  ```sh
+  apt install g++-mingw-w64-x86-64 wine64      # g++ package, not just gcc:
+                                               # gcc-mingw-w64 alone ships no C++ driver
+  cat > /tmp/mingw-toolchain.cmake <<'EOF'
+  set(CMAKE_SYSTEM_NAME Windows)
+  set(CMAKE_SYSTEM_PROCESSOR x86_64)
+  set(CMAKE_C_COMPILER x86_64-w64-mingw32-gcc)
+  set(CMAKE_CXX_COMPILER x86_64-w64-mingw32-g++)
+  set(CMAKE_RC_COMPILER x86_64-w64-mingw32-windres)
+  set(CMAKE_FIND_ROOT_PATH /usr/x86_64-w64-mingw32)
+  set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+  set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+  set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+  EOF
+  cmake -S . -B /tmp/bwin -DCMAKE_TOOLCHAIN_FILE=/tmp/mingw-toolchain.cmake \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS=-static \
+        && cmake --build /tmp/bwin -j8
+  wineboot --init   # once, with WINEPREFIX=$HOME/.wine-oskel
+  ```
+
+  `CMAKE_EXE_LINKER_FLAGS=-static` matters: without it the C++ runtime stays an
+  imported DLL (`libstdc++-6.dll`, `libgcc_s_seh-1.dll`) and every run exits 53
+  with no message until both files are copied beside the `.exe`. With it the
+  binary imports only `KERNEL32.dll` and `msvcrt.dll`, so nothing else is needed.
+  Wine also needs `XDG_RUNTIME_DIR` set, or it prints an `XDG_RUNTIME_DIR is
+  invalid` line and exits 53 the same way — which looks identical to a missing
+  DLL and is worth ruling out first.
+
+  Run a script with a Windows path (`wine /tmp/bwin/oskel.exe
+  'Z:\workspace\...\tests\x.oskl'`). CTest drives the scripts through
+  `tests/run_oskel_case.cmake`, which invokes the `.exe` directly, so
+  `CMAKE_CROSSCOMPILING_EMULATOR` does not reach them: a plain `ctest` there
+  fails every script test with exit 2. Drive the harness by hand instead, and
+  compare against the *registered* list (`ctest -N`), never against
+  `tests/*.oskl`: a Windows build registers fewer tests than a Linux one, and the
+  difference is exactly the families `CMakeLists.txt` excludes with `NOT WIN32`
+  (struct-by-value, callbacks, memory structs, SDL). Running the full glob under
+  Wine reports those as failures when they are deliberate skips. Do not write the
+  two counts down — they move with every PR; derive them with `ctest -N`.
+
+  This is how `lookupSymbol` (kernel32) and the PE image were checked before CI.
+  CI still gates the merge, since Wine is not Windows: a green Wine run is a
+  signal, not a substitute for the `windows-latest` job.
+
+- A fixture that declares `extern "C"` must name symbols the Windows CRT
+  actually exports. Windows resolves the symbol with `GetProcAddress` against
+  `ucrtbase.dll` (then `msvcrt.dll`, kernel32, and every loaded module), and
+  many `float` entry points are POSIX-only: `ldexpf`, `hypotf`, `frexpf` and
+  `fabsf` are absent, so a fixture naming one dies on the Windows runner with
+  `extern "C" symbol 'ldexpf' was not found in the host` (exit 70) while passing
+  everywhere else. Check before pushing, with the import library rather than by
+  assumption:
+
+  ```sh
+  x86_64-w64-mingw32-nm /usr/x86_64-w64-mingw32/lib/libucrt.a | grep __imp_powf
+  ```
+
+  Pick a symbol present in both CRTs — `powf`, `fmodf`, `scalbnf`, `atan2f`,
+  `sqrtf`, `ceilf`, `floorf` are — and keep the fixture's coverage (mixed
+  float/int, a negative value, a second entry point) so the substitution does
+  not quietly weaken the test. A `float` argument crosses the boundary as its
+  bit pattern in the low 32 bits of an xmm register, so a fixture must also keep
+  a value that would differ under a naive cast (`0.0` instead of the real
+  number); otherwise the regression the test exists to catch goes unnoticed.
 
 ## The own linker (PHASE 10)
 
@@ -448,12 +510,71 @@ it as a caveat:
   defines a still-undefined symbol (thin archives are rejected). `--link-object
   <file>` is the same through `oskel build`/`oskelc` (repeatable, requires
   `--mode hosted`, mutually exclusive with `--emit-object`).
-- The parser loads `.text` and `.rodata` only. A symbol defined in `.data`/
-  `.bss` is a named error, and `.rela.data`/`.rela.rodata` is rejected; a GCC
-  object with a string literal references a `.rodata` section symbol, which is
-  PHASE 10.2b. `.eh_frame`/`.note.*`/`.comment` are ignored. `STT_SECTION` and
+- PHASE 10.2b loads `.data` and `.bss` and the `.text*`/`.rodata*`/`.data*`/
+  `.bss*` variants (GCC puts a string in `.rodata.str1.1` and a pointer table
+  in `.data.rel.ro`). A `STT_SECTION` symbol is resolved from the section kind
+  and offset, with the relocation addend carrying the offset inside the
+  section; `-r` maps it to the output section symbol and adds the object's
+  section offset to the addend. `.tbss`/`.tdata`, `.init_array`/`.fini_array`
+  and `.gcc_except_table` are ignored; a symbol there is a named error.
   `STT_FILE` symbols are skipped: a C object's `STT_FILE` has `SHN_ABS` and
   would otherwise look like a defined symbol in an unsupported section.
+- Copy every loaded section into the image **before** applying the patches.
+  The `.data` copy originally ran after the patch loop, so every `.data` pointer
+  table was silently zeroed again. `.text` had the copy before the loop; the
+  `.rodata`/`.data` copy must stay there too.
+- Supported relocations are `R_X86_64_64`, `32`, `32S`, `PLT32`, `PC32` and
+  the `GOTPCREL`/`GOTPCRELX`/`REX_GOTPCRELX` family. Absolute types use
+  `S + A`; PC-relative types use `S + A - P`. A GOTPCREL reference to a defined
+  symbol allocates a local GOT slot filled at link time; an undefined one uses
+  the dynamic GOT (`GLOB_DAT`). `.bss` is `SHT_NOBITS`: it has no file bytes,
+  the RW `PT_LOAD` `p_filesz` ends before it and `p_memsz` covers it, and its
+  `sh_offset` may equal the following non-alloc section's offset.
+- The data helper is built twice, `-fno-pie` and `-fPIC`, to exercise direct
+  `PC32`/`R_X86_64_64` and `GOTPCREL`; both are `-fno-sanitize=all` under ASan
+  because they are linked into a plain emitted binary.
+
+## The own Windows PE linker (PHASE 10.3a)
+
+- `linkWindowsExecutable` (`include/native/pe_link.h`,
+  `src/frontend/native/pe_link.cpp`) parses COFF `IMAGE_FILE_MACHINE_AMD64`
+  objects. It classifies `.text*`/`.rdata*`/`.data*`/`.bss*`;
+  `.pdata`/`.xdata`/`.drectve`/`.debug$*` are ignored. A COFF section symbol
+  (`STATIC`, value 0, name equal to the section) is resolved from the section
+  base; the field value is the addend. Aux symbol records are skipped, but
+  their raw indices stay in `symbolByRawIndex` so a relocation can never name
+  an aux record.
+- Supported COFF relocations: `REL32` (and `REL32_1..5`), `ADDR64`, `ADDR32`,
+  `ADDR32NB`. `REL32` is `S + A - (P + 4 + n)`; the absolute forms are `S + A`;
+  `ADDR32NB` is the RVA. A defined symbol resolves through the object's local
+  map or the cross-object global map; an undefined `REL32` becomes an import
+  thunk (`jmp [rip + IAT]`); an undefined data relocation is an error.
+- The `.idata` layout stores **RVAs** (0x1000-based) because the import
+  descriptors and thunks use them, while the section bytes are indexed from
+  zero. Writing at the RVA directly threw "internal: PE write out of range";
+  `buildIdata` subtracts `kIdataRva` for every write. Keep the two coordinate
+  systems separate.
+- Imports are grouped by DLL: `kernel32.dll` for the Windows API and
+  `ucrtbase.dll` for `_write`/`_read`/`_open`/`_close`/`_setmode`/`malloc`/
+  `exit`/`time` and the other `_`-prefixed UCRT entry points (the fallback is
+  what picks up `_lseeki64`). The import table has one descriptor per DLL,
+  ILT/IAT per DLL, hint/name entries and DLL names. The runtime's UCRT calls
+  are reached through `jmp [rip + IAT]` thunks; the `_start` calls
+  `ExitProcess` through its IAT slot directly.
+- The generated `_start` is `sub rsp, 8`; `xor ecx, ecx`; `xor edx, edx`;
+  `call main`; `mov ecx, eax`; `call [rip + ExitProcess IAT]`; `hlt`. The
+  `sub rsp, 8` is required: the entry point arrives at 8 mod 16 and `main`
+  must see the Microsoft x64 alignment. `argc=0, argv=NULL`; `args()` is empty
+  until 10.3b adds `GetCommandLineA`. The image is non-PIE
+  (`IMAGE_FILE_RELOCS_STRIPPED`, fixed `0x140000000`), so the loader needs no
+  base relocations.
+- `tests/link_pe_test.cpp` (all platforms) builds a COFF object with
+  `buildRelocatableObject(Target::winX64(), ...)` and checks the PE headers,
+  sections, imports, thunks and `_start`. `oskel.build_hosted_own_windows`
+  (Windows only) runs a real `print` binary end to end; the `windows-latest`
+  runner is the execution gate, since the Linux development host has no Wine.
+- `-r` COFF, MSVC `.lib` archives, `.pdata`/`.xdata` and TLS are 10.3b; the
+  macOS Mach-O container is 10.3d.
 - The multi-object e2e helper is an `OBJECT` library compiled with
   `-fno-sanitize=all` when the build is sanitized: the object is linked into a
   plain emitted binary that does not carry the ASan runtime. The archive test
@@ -525,6 +646,18 @@ it as a caveat:
   `"αβγδε".substr(-2)` empty because the negative start was offset by the byte
   count. `tests/native_build_string_methods.oskl` is the shared AOT/WASM
   fixture and `oskel.build_wasm_string_methods` is its WASM run.
+- The range methods (`toArray`, `contains`) live in the range branch of
+  `emitMemberGet` and are emitted by `emitRangeMethods`, which reserves two
+  selectors after the string methods. `toArray` computes the count with the
+  same unsigned magnitude as `.length`, saturates at INT64_MAX and rejects a
+  count above 10,000,000 with the VM's message; it allocates
+  `newArray(count)` and pushes each value, so a descending range needs the
+  `-1` step. `contains` calls `opIn` with the argument and the receiver, which
+  is why the range branch of `emitIn` must report "range membership requires
+  an integer", not the generic comparison message. `.length` itself saturates:
+  the old signed `select` wrapped a span wider than INT64_MAX to a negative
+  length. `tests/native_build_wasm_range_methods.oskl` is the WASM fixture;
+  the error cases stay in the AOT fixture because `pcall` is VM-only.
 - A construct the backend cannot lower yet must fail cleanly, never emit a
   mis-compiled module: an unbound builtin is seeded as a trapping closure, and
   a used `extern "C"`/`native fn` symbol with no stub is a build error (exit
@@ -542,6 +675,19 @@ it as a caveat:
   15-digit prefix that does not round-trip) and applies the exponent with one
   table multiply/divide. `tests/native_build_double_format.oskl` pins the
   whole range and `tests/native_build_math.oskl` pins `PI`/`E`/`sqrt`.
+- **Tree-shaking (PHASE 9.4).** A bound method is reachable only through a
+  static member read (`a.push`, `a?.push`); `a[k]` is an index, never a method.
+  The compiler records every member name on the proto
+  (`Bytecode::usedMethods`), and `src/frontend/native/wasm.cpp` keeps a body
+  only for the helpers named there: the rest become an `unreachable` stub and
+  the Unicode case table is emitted only for `upper`/`lower`. A `hello` module
+  is ~34 KB (gzip ~15 KB) instead of ~60 KB. `tests/wasm_tree_shake.cmake`
+  pins the size budget and the VM parity; a new bound method must be added to
+  `kEntries` and to `reserveArrayMethods` or it is silently stubbed.
+- The module still carries the method *names* and the `memberGet` comparisons;
+  the savings are the helper bodies and the case tables, not the dispatch
+  table. Removing the comparisons needs a second analysis, not a bigger
+  `kEntries`.
 
 ## SDL3 backend (`std/internal/sdl.oskl`)
 
@@ -821,8 +967,10 @@ it as a caveat:
   bulk-reads, uploads to a streaming `SDL_Texture`, presents, polls events and
   dispatches a left click through `hitTest`; a `maxFrames` bound keeps the
   headless test finite. `docs/ui.md` describes the
-  public scope. Text measurement is a fixed `0.6 * size` advance, not a font
-  engine.
+  public scope. `layout` keeps a deterministic `0.6 * size` advance for
+  headless tests; `layoutWith` takes a renderer measurer and
+  `std.internal.skia_window` passes Skia's real font advance, so layout and
+  drawing share one metric.
 - `oskelp` (the project and package manager, `docs/oskelp.md`) is a third
   standalone executable under `tools/`. It links no engine code and drives
   `oskel`/`oskelc` as child processes; `nm build/oskel | grep oskelp` must stay
@@ -887,6 +1035,10 @@ user:
 - Do I need new logic in the compiler? → which one
 - Does the feature need AOT support, or is it VM-only? → the AOT backend
   (PHASE 7) is a first-class target, not an afterthought
+- Which platforms and backends does this touch? → Linux, Windows and macOS;
+  the VM, the AOT backend and WebAssembly where they apply; the VS Code
+  grammar and snippets for syntax; every packaging format. A feature that
+  reaches only some of them is unfinished.
 
 Without this checklist complete and approved, **do not proceed to code**.
 
@@ -917,6 +1069,33 @@ and a feature that works only in AOT is a bug. Concretely:
 When the feature does break AOT parity, the same change must add the AOT
 support (or the clean failure and its fixture). Leaving it for later is not an
 option.
+
+### Platform parity is part of every feature
+
+"Supported" means every platform the project ships on, not the machine the
+feature was written on. A feature is finished only when it is implemented and
+tested on Linux, Windows and macOS, on every engine and backend it applies to
+(the VM, AOT freestanding/hosted, WebAssembly), and in every artifact that
+exposes it: the CLI, `oskelc`, `bindgen`, the VS Code grammar and snippets, and
+the installers. A feature that works only on the author's platform is a bug,
+not a partial delivery; do not merge it and plan to port it later.
+
+- The CI matrix must build and test the feature on each platform. A test that
+  is skipped because the runner lacks a dependency is not coverage: install the
+  dependency on the runner or add a platform-independent fixture that exercises
+  the same code path.
+- A platform-specific code path (a Windows API, a macOS framework, a Linux
+  syscall) gets a test on that platform in the same change. "It compiles
+  elsewhere" is not evidence that it works there.
+- If a target genuinely cannot host the capability, the feature must **fail
+  cleanly** there with a dedicated message and the documented exit code, and a
+  fixture must pin that failure. It must never be silently absent or fall back
+  to different semantics.
+- Record every such gap in `docs/BACKLOG.md` §6 with the reason and the
+  platform. Do not leave a platform quietly behind.
+- Adding a platform to the matrix means adding its real compiler and the
+  fixtures it can run; a matrix entry that only compiles while every execution
+  test skips does not make the feature portable.
 
 ---
 

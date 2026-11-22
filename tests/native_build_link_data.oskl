@@ -1,0 +1,11 @@
+// PHASE 10.2b: a helper object with .rodata, .data and .bss is linked beside
+// this one. The VM cannot resolve the symbols on its own, so
+// `oskel.build_hosted_own_link_data` supplies the literal expected output.
+extern "C" fn oskel_link_message(): cstring;
+extern "C" fn oskel_link_bump(): int;
+extern "C" fn oskel_link_zero_value(): int;
+extern "C" fn oskel_link_name(index: int): cstring;
+
+print(str(oskel_link_message()) + " " + str(oskel_link_bump()) + " " +
+      str(oskel_link_bump()) + " " + str(oskel_link_zero_value()) + " " +
+      str(oskel_link_name(0)) + " " + str(oskel_link_name(1)));
