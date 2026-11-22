@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -542,14 +543,16 @@ void emitArityFailCall(CodeGen& cg, const DataBlob& msgArgc, X64Reg argcReg = Rs
 
 // The `... (length N)` tail: appends the length in `lenReg` in decimal. It
 // mirrors `insert() index out of range (length 3)` and `removeAt() ...`, where
-// the hosted method names no index. Runs in the caller's frame.
+// the hosted method names no index. Runs in the caller's frame, so the frame is
+// sized for the worst case, a caller at `rsp == rbp`.
 void emitFailLength(CodeGen& cg, CodeGen::Label label, CodeGen::Label failDynamic,
                     CodeGen::Label sbNew, CodeGen::Label sbAppend,
                     const DataBlob& prefix, const DataBlob& close, X64Reg lenReg) {
   constexpr std::int32_t kBuilder = -96;
   constexpr std::int32_t kLength = -104;
-  constexpr std::int32_t kScratch = -160;
-  constexpr std::int32_t kFrameBytes = 176;
+  constexpr std::int32_t kScratchBytes = 24;  // 20 digits of int64 plus a sign
+  constexpr std::int32_t kScratch = -160;  // one past the last digit
+  constexpr std::int32_t kFrameBytes = -kScratch + kScratchBytes + 8;
 
   cg.bind(label);
   cg.subRegImm32(Rsp, kFrameBytes);
@@ -10171,14 +10174,33 @@ void emitAppendInt(CodeGen& cg, CodeGen::Label sbAppend, std::int32_t builderSlo
 // The numbers are parked in the frame before the first append: an append
 // clobbers rdi/rsi/rdx (and the decimal formatter also rcx/r8/r9), so a part
 // that reads a register after another part has been appended would read
-// garbage. The frame slots sit above rbp-80, leaving the caller's own slots
-// (the collection emitters use rbp-24..rbp-48) untouched.
+// garbage.
+//
+// This body does not call `prologue`, so it works against the caller's rbp and
+// its `sub rsp` is relative to whatever the caller already pushed. The frame is
+// therefore sized for the worst case, a caller at `rsp == rbp`: the lowest byte
+// touched is the last digit, at `kScratch - kScratchBytes`. The caller's own
+// slots (rbp-24..rbp-56 today) sit above `kBuilder`, so the two never overlap.
 void emitFailParts(CodeGen& cg, CodeGen::Label failDynamic, CodeGen::Label sbNew,
                    CodeGen::Label sbAppend, std::initializer_list<FailPart> parts) {
   constexpr std::int32_t kBuilder = -96;
   constexpr std::int32_t kNumBase = -104;  // 8 bytes per number part
-  constexpr std::int32_t kScratch = -160;  // 24 bytes of digits below it
-  constexpr std::int32_t kFrameBytes = 176;
+  constexpr std::int32_t kScratchBytes = 24;  // 20 digits of int64 plus a sign
+  constexpr std::int32_t kScratch = -160;  // one past the last digit
+  constexpr std::int32_t kMaxNumbers = 7;  // before the slots reach kScratch
+  // Derived, so moving a slot cannot leave the frame too small: the last digit
+  // lands at `kScratch - kScratchBytes`, and rsp may start at rbp.
+  constexpr std::int32_t kFrameBytes = -kScratch + kScratchBytes + 8;
+
+  std::int32_t numberCount = 0;
+  for (const FailPart& part : parts) {
+    if (part.text == nullptr) {
+      ++numberCount;
+    }
+  }
+  if (numberCount > kMaxNumbers) {
+    throw std::logic_error("native/runtime: too many numbers in one message");
+  }
 
   cg.subRegImm32(Rsp, kFrameBytes);
   std::int32_t numSlot = kNumBase;
