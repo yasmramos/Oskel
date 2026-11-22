@@ -3,15 +3,18 @@
 // A `float` argument travels in the low 32 bits of an xmm register, the same
 // register a `double` fills. The dispatch walk therefore carries one branch for
 // the whole SSE class and hands the callee the float's bit pattern, which is
-// what a callee expecting `float` reads. These calls prove that against real
-// libm symbols: a `float`-typed parameter in first, middle and last position,
-// and mixed with `double` in one signature.
+// what a callee expecting `float` reads.
+//
+// Every symbol below is exported by both POSIX libm and the Windows CRT
+// (`ucrtbase.dll`). The `float` entry points are not universal: `ldexpf`,
+// `hypotf`, `frexpf` and `fabsf` are POSIX-only, so a fixture that names one of
+// those fails on Windows with "was not found in the host".
 
 extern "C" {
   fn powf(base: float, exponent: float): float;
   fn fmodf(x: float, y: float): float;
-  fn ldexpf(x: float, exp: int): float;
-  fn hypotf(x: float, y: float): float;
+  fn scalbnf(x: float, exp: int): float;
+  fn atan2f(y: float, x: float): float;
   fn sqrt(x: double): double;
 }
 
@@ -21,16 +24,18 @@ assertEq(fmodf(7.5f, 2.0f), 1.5f);
 
 // A `float` and an `int` in the same signature: the float must still reach
 // xmm0 intact while the int goes in a GPR.
-assertEq(ldexpf(1.5f, 4), 24.0f);
+assertEq(scalbnf(1.5f, 4), 24.0f);
 
-// Three-four-five right triangle, the classic hypot.
-assertEq(hypotf(3.0f, 4.0f), 5.0f);
+// A negative float keeps its sign bit through the bit-pattern hand-off.
+assertEq(fmodf(-7.5f, 2.0f), -1.5f);
+
+// A third `float` entry point, so a break in one symbol cannot be masked by
+// another: atan2f(1, 1) is pi/4.
+let quarter = atan2f(1.0f, 1.0f);
+assertEq(quarter > 0.785f && quarter < 0.786f, true);
 
 // A `double` declaration next to the `float` ones must keep reading a full
 // double, not a zero-extended float pattern.
 assertEq(sqrt(16.0), 4.0);
-
-// A negative float keeps its sign bit through the bit-pattern hand-off.
-assertEq(fmodf(-7.5f, 2.0f), -1.5f);
 
 print("extern float args ok");
