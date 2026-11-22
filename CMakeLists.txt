@@ -386,9 +386,11 @@ if(BUILD_TESTING)
 
   # End-to-end: the real binary through new/check/build/run/test, a path
   # dependency, --locked, a cycle, a failing test, clean and init. The AOT
-  # backend only runs on x86-64 Linux and Windows, so the native half of the
-  # test is gated the same way as the `oskel build` fixtures.
-  if((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32) AND
+  # backend only runs on an x86-64 host (Linux, Windows and Intel macOS), so
+  # the native half of the test is gated the same way as the `oskel build`
+  # fixtures.
+  if((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32 OR
+      CMAKE_SYSTEM_NAME STREQUAL "Darwin") AND
      CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
     set(OSKELP_AOT_RUNNABLE ON)
   else()
@@ -692,6 +694,19 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_map_methods.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `repr`/`str` of a function value (BACKLOG §6.22). The VM renders
+    # `<fn name>` for a user function and `<native fn name>` for a native one,
+    # bound methods included; the AOT backend used to render the bare literal
+    # `<fn>`. The closure now carries a `display` pointer to a static
+    # `AotString`, so the name survives and the fixture compares both engines
+    # byte for byte.
+    add_test(NAME oskel.build_binary_function_repr
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_function_repr"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_function_repr.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `**` with a float/double operand or a negative exponent (PHASE 7c.1d.2).
     # It used to lower only for int/int with a non-negative exponent; every
     # other numeric pair failed with the unsupported-operand error, so a program
@@ -772,15 +787,18 @@ if(BUILD_TESTING)
     add_test(NAME oskel.build_mode
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_CC=${CMAKE_C_COMPILER}"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_mode.cmake")
 
     # A scalar `extern "C"` declaration resolves through the system linker in
     # the hosted mode (PHASE 7f.5): the backend emits a marshalling thunk per
-    # symbol, seeds it as a function and lets `cc` resolve the name. Linux x86-64
-    # only: the link needs a host C toolchain and the thunk marshalling is the
-    # System V AMD64 ABI. The same fixture must still fail the freestanding build
-    # (that backend has no host), which `oskel.build_extern_error` checks.
+    # symbol, seeds it as a function and lets the host C compiler resolve the
+    # name. These fixtures cover the full System V AMD64 surface (structs,
+    # callbacks and a C variadic), so they stay Linux x86-64 only; Windows gets
+    # the scalar/pointer fixture below. The same fixture must still fail the
+    # freestanding build (that backend has no host), which
+    # `oskel.build_extern_error` checks.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       add_test(NAME oskel.build_hosted_extern
         COMMAND ${CMAKE_COMMAND}
@@ -935,6 +953,40 @@ if(BUILD_TESTING)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
       endif()
     endif()
+
+    # macOS uses the same System V thunks as Linux but a Mach-O object and
+    # libSystem. The image is x86-64, so an arm64 host builds it but does not
+    # run it (that would need Rosetta); the link and `otool -L` still prove the
+    # Mach-O relocation and the libSystem dependency.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+      set(OSKEL_MACOS_SKIP_RUN 0)
+      if(NOT CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
+        set(OSKEL_MACOS_SKIP_RUN 1)
+      endif()
+      add_test(NAME oskel.build_hosted_extern_macos
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_macos"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_CC=${CMAKE_C_COMPILER}"
+          "-DOSKEL_SKIP_RUN=${OSKEL_MACOS_SKIP_RUN}"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted.oskl"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+    endif()
+
+    # Windows x86-64 has the same hosted link, but the Microsoft x64 ABI: the
+    # scalar/cstring/pointer surface is supported and the fixture stays inside
+    # it. Structs, callbacks and C variadics are rejected there with a dedicated
+    # message (PHASE 7f.5), so the Linux fixtures keep covering those shapes.
+    if(WIN32)
+      add_test(NAME oskel.build_hosted_extern_windows
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_windows"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_CC=${CMAKE_C_COMPILER}"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted_windows.oskl"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+    endif()
+
     # `std.json` is plain Oskel over the portable primitive surface, so it must
     # build to a native binary and agree with the VM. The fixture is the guard
     # that keeps the module off the collection/string methods and
@@ -1237,6 +1289,78 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.oskl"
         "-DOSKEL_EXPECTED_EXIT=70"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.cmake")
+  endif()
+
+  # --- WebAssembly backend (PHASE 9) ---
+  # The WASM target is platform-independent: the module runs on any host with a
+  # WebAssembly engine, so these tests are not behind the x86-64 guard above.
+  # They need Node (the host for the two imports the module declares); where
+  # Node is absent the tests are skipped, like `vscode_diagnostics`.
+  find_program(OSKEL_NODE_EXE NAMES node nodejs)
+  if(OSKEL_NODE_EXE)
+    add_test(NAME oskel.build_wasm
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_wasm.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `std.datetime` is deterministic apart from `time()`/`clock()`, which the
+    # fixture only observes through stable predicates, so the module must agree
+    # with the VM byte for byte too.
+    add_test(NAME oskel.build_wasm_datetime
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_datetime"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_datetime.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `std.collections` is pure Oskel over arrays, maps, slicing and closures,
+    # so the WASM backend must reproduce it without a special case.
+    add_test(NAME oskel.build_wasm_collections
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_collections"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_collections.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `std.math` exercises the shared shortest round-trip formatter through
+    # `PI`, `E` and `sqrt`, including the scientific and subnormal forms.
+    add_test(NAME oskel.build_wasm_math
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_math"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_math.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # The shortest round-trip formatter itself, over the whole double range.
+    add_test(NAME oskel.build_wasm_double_format
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_double_format"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_double_format.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # A mis-lowered loop must fail the test, not hang the suite: the Node run
+    # gets a hard timeout in `wasm_case.cmake`, and CTest bounds the driver.
+    set_tests_properties(oskel.build_wasm oskel.build_wasm_datetime
+      oskel.build_wasm_collections oskel.build_wasm_math
+      oskel.build_wasm_double_format PROPERTIES TIMEOUT 120)
   endif()
 
   # --- .oskl script tests (auto-detected) ---

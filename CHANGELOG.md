@@ -11,6 +11,30 @@ may change between minor versions.
 
 ### Added
 
+- **A function value now renders its name under `oskel build`.** `print`,
+  `repr`, `str` and string interpolation used to render every function as the
+  literal `<fn>` in a compiled binary, where the VM renders `<fn add>` for a
+  named function and `<native fn array.map>` for a bound method. The AOT
+  closure header gained a fourth word, `display`, holding the address of a
+  static `AotString` with the exact text to render, so the closure keeps its
+  fixed size and the render is a plain append with no per-value allocation. The
+  text is emitted once per proto (`<fn ` + the proto's name + `>`), once per
+  builtin and once per `extern "C"` thunk (`<native fn ` + symbol + `>`), and
+  once per bound array/map/string method (`<native fn owner.method>`). A
+  closure built by a path with no name keeps the `<fn>` fallback.
+  `tests/native_build_function_repr.oskl` compares the compiled binary with the
+  VM byte for byte across a declared function, a lambda, a class method, a
+  builtin, a `native fn`, a bound method of each family and a function nested
+  in a container (BACKLOG §6 item 22).
+- **WebAssembly backend (PHASE 9).** `oskel build --target
+  wasm32-freestanding-wasm` emits a freestanding `.wasm` module behind the
+  existing `Target` descriptor. The value model is the AOT `(tag, payload)`
+  pair; arrays, maps, slicing, closures, variadics, the array/map/string
+  methods and the portable builtins are lowered to ordinary WASM functions, so
+  `std/json`, `std/datetime`, `std/collections`, `std/path` and the bound
+  `std.math` surface agree with the VM byte for byte. The module imports only
+  `oskel.write`, `oskel.exit`, `oskel.time` and `oskel.clock`; Node is the test
+  host.
 - **`oskelp`, the project and package manager.** A Cargo-style tool that owns
   the project instead of the language: `oskel.toml` (a strict TOML subset with
   `[package]` and path `[dependencies]`), `oskel.lock`, recursive path
@@ -24,9 +48,29 @@ may change between minor versions.
   `OSKEL_MODULE_ROOT` variable, honoured by `resolverFor` for both the VM and
   the AOT backend. `oskelp test` runs every `tests/**/*.oskl` and exits 101 on a
   failure; `--native` compiles each test and runs the binary, which makes the
-  suite an AOT parity check. Only path dependencies are supported for now; a
-  string dependency is a registry dependency and is refused with a dedicated
-  message (BACKLOG §20).
+  suite an AOT parity check. Path and local-registry dependencies are both
+  supported; a string dependency resolves from `$OSKEL_REGISTRY` (BACKLOG §20).
+- **`oskelp add` and `oskelp remove`.** They edit `[dependencies]` in place
+  instead of rewriting the manifest, so comments, blank lines and CRLF survive,
+  then refresh `oskel.lock` and `.oskel/deps`. `add` validates the dependency's
+  manifest name and optional exact `--version` before writing, so a failed add
+  leaves `oskel.toml` untouched; a duplicate add is a no-op, a new version for
+  the same path updates the entry, and omitting the name derives it from the
+  dependency's manifest. `remove` refuses an entry that spans multiple lines
+  rather than deleting a partial one. Both accept `--manifest-path`; `add`
+  without `--path` writes a registry requirement instead.
+- **`oskelp` registry: semver requirements, `publish` and `update`.** A string
+  dependency (`utils = "^0.1.0"`) is resolved from the local registry named by
+  `OSKEL_REGISTRY` (`<root>/<name>/<version>/`), with exact versions, `^`, `~`,
+  comparators, wildcards and a comma/space-separated conjunction; a prerelease
+  is selected only by an exact requirement for it. `oskelp publish` copies
+  `oskel.toml` and `src/` into the registry and refuses to overwrite a version
+  or publish a package that keeps a path dependency. `oskel.lock` records
+  `registry+<name>@<version>` and a normal build keeps the pin while it
+  satisfies the manifest; `oskelp update [<name>]` moves it explicitly and
+  prints each change. The resolver is flat and does not backtrack, so two
+  incompatible requirements for one name are reported instead of silently
+  choosing one.
 - **SDL3 bindings: `std/sdl.oskl`.** The standard library now binds SDL3's
   window, renderer and event surface, so a program can open a window and draw
   into it on both engines. `bindings/sdl/sdl3_subset.h` is the curated C surface
@@ -96,6 +140,18 @@ may change between minor versions.
 
 ### Fixed
 
+- **WASM `double` formatting now matches the VM across the whole range.**
+  The formatter generated up to 17 fractional digits and trimmed zeros, which
+  diverged from `std::to_chars` whenever the shortest form needed rounding
+  (`123456789.123`), scientific notation (`1e10`, `1e150`) or the subnormal
+  boundary (`5e-324`). It now scales with a 633-entry `pow10` table, generates
+  18 significant digits, rounds the 18th into the 17th, tries every shorter
+  precision and re-parses the candidate, then emits the shorter of fixed and
+  scientific. `parseDoubleStr` combines the fraction into one
+  `mantissa / scale` division and applies the exponent with one table
+  multiply/divide, so the candidate check cannot accept a value that does not
+  round-trip. `tests/native_build_double_format.oskl` and
+  `tests/native_build_math.oskl` pin the result against the VM.
 - **Windows `lookupSymbol` now searches every loaded module.** After the
   process image, `kernel32.dll` and the CRT, `PlatformPosix::lookupSymbol`
   walks the modules the process has loaded with `CreateToolhelp32Snapshot`
@@ -771,8 +827,9 @@ may change between minor versions.
   done (VM/AOT parity already runs through `tests/build_binary.cmake`), the JIT
   item is decided as *keep* (it ships on by default in `oskel` and gives ~420x
   on its integer leaf subset), and §6.22 plus `docs/language.md` §16 record the
-  one known parity gap: a function renders as `<fn name>` in the VM but `<fn>`
-  in the AOT binary, since the AOT closure object has no name field.
+  one known parity gap: a function rendered as `<fn name>` in the VM but `<fn>`
+  in the AOT binary, since the AOT closure object had no name field. (Closed
+  since: the closure carries a `display` pointer and both engines agree.)
 
 - **`docs/language.md` now states the real implementation status.** The
   reference claimed "collections (PHASE 6 done)" and "No JIT ... planned for

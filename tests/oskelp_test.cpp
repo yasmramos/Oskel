@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -65,6 +66,87 @@ static void makePackage(
     const std::vector<std::pair<std::string, std::string>>& dependencies = {}) {
   writeFile(dir / "oskel.toml", manifestText(name, dependencies));
   writeFile(dir / "src" / name / "main.oskl", "print(\"ok\");\n");
+}
+
+static oskelp::SemVer parseVersion(const std::string& text) {
+  oskelp::SemVer version;
+  check(oskelp::parseSemVer(text, version), "semver: parses a valid version");
+  return version;
+}
+
+static void testSemver() {
+  parseVersion("1.2.3");
+  parseVersion("1.2.3-beta.1");
+  parseVersion("1.2.3+build.5");
+  parseVersion("1.2.3-beta.1+build.5");
+
+  oskelp::SemVer ignored;
+  check(!oskelp::parseSemVer("1.2", ignored), "semver: two parts are rejected");
+  check(!oskelp::parseSemVer("1.2.3.4", ignored),
+        "semver: four parts are rejected");
+  check(!oskelp::parseSemVer("01.2.3", ignored),
+        "semver: a leading zero is rejected");
+  check(!oskelp::parseSemVer("1.2.3-01", ignored),
+        "semver: a numeric prerelease leading zero is rejected");
+  check(!oskelp::parseSemVer("1.2.3-", ignored),
+        "semver: an empty prerelease is rejected");
+
+  check(oskelp::compareSemVer(parseVersion("1.2.3"), parseVersion("1.2.4")) < 0,
+        "semver: patch order");
+  check(oskelp::compareSemVer(parseVersion("2.0.0"), parseVersion("1.9.9")) > 0,
+        "semver: major order");
+  check(oskelp::compareSemVer(parseVersion("1.2.3-beta"),
+                              parseVersion("1.2.3")) < 0,
+        "semver: a prerelease precedes its release");
+  check(oskelp::compareSemVer(parseVersion("1.2.3-beta.10"),
+                              parseVersion("1.2.3-beta.2")) > 0,
+        "semver: numeric prerelease identifiers compare numerically");
+  check(oskelp::compareSemVer(parseVersion("1.2.3-1"),
+                              parseVersion("1.2.3-alpha")) < 0,
+        "semver: a numeric identifier precedes an alphanumeric one");
+
+  auto satisfies = [](const std::string& requirement,
+                      const std::string& version) {
+    return oskelp::satisfiesRequirement(requirement, parseVersion(version));
+  };
+  check(satisfies("1.2.3", "1.2.3"), "semver: exact matches");
+  check(!satisfies("1.2.3", "1.2.4"), "semver: exact rejects a neighbour");
+  check(satisfies("^1.2.3", "1.9.9"), "semver: caret within the major");
+  check(!satisfies("^1.2.3", "2.0.0"), "semver: caret rejects the next major");
+  check(!satisfies("^1.2.3", "1.2.2"), "semver: caret rejects an older patch");
+  check(satisfies("^0.2.3", "0.2.9"), "semver: caret within the minor");
+  check(!satisfies("^0.2.3", "0.3.0"), "semver: caret rejects the next minor");
+  check(satisfies("^0.0.3", "0.0.3"), "semver: caret on a patch");
+  check(!satisfies("^0.0.3", "0.0.4"),
+        "semver: caret on a patch rejects the next patch");
+  check(satisfies("~1.2.3", "1.2.9"), "semver: tilde within the minor");
+  check(!satisfies("~1.2.3", "1.3.0"), "semver: tilde rejects the next minor");
+  check(satisfies("~1.2", "1.2.0"), "semver: partial tilde");
+  check(!satisfies("~1.2", "1.3.0"), "semver: partial tilde upper bound");
+  check(satisfies(">=1.2.0 <2.0.0", "1.5.0"),
+        "semver: a comparator conjunction");
+  check(!satisfies(">=1.2.0 <2.0.0", "2.0.0"),
+        "semver: the conjunction upper bound");
+  check(satisfies(">= 1.2.0, < 2.0.0", "1.5.0"),
+        "semver: spaces after the operator and commas");
+  check(satisfies("1.2.*", "1.2.5"), "semver: a patch wildcard");
+  check(!satisfies("1.2.*", "1.3.0"), "semver: a patch wildcard upper bound");
+  check(satisfies("1.*", "1.9.9"), "semver: a minor wildcard");
+  check(!satisfies("1.*", "2.0.0"), "semver: a minor wildcard upper bound");
+  check(satisfies("*", "9.9.9"), "semver: a bare wildcard");
+  check(satisfies("1.2.3-beta.1", "1.2.3-beta.1"),
+        "semver: an exact prerelease");
+  check(!satisfies("^1.2.3", "1.2.4-beta"),
+        "semver: a range does not select a prerelease");
+
+  check(oskelp::isValidRequirement(">=1.0.0 <2.0.0"),
+        "semver: a comparator conjunction is valid");
+  check(!oskelp::isValidRequirement("1.2.3 || 2.0.0"),
+        "semver: disjunction is not supported");
+  check(!oskelp::isValidRequirement(">=*"),
+        "semver: a comparator on a wildcard is invalid");
+  check(!oskelp::isValidRequirement(">="), "semver: a bare operator is invalid");
+  check(!oskelp::isValidRequirement(""), "semver: an empty requirement is invalid");
 }
 
 static void testTomlBasics() {
@@ -183,14 +265,28 @@ static void testManifest() {
 
   writeFile(packageDir / "oskel.toml",
             "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n"
-            "[dependencies]\nutils = \"1.2.3\"\n");
+            "[dependencies]\nutils = \"^1.2.3\"\n");
   oskelp::Manifest registry;
   std::string registryError;
-  check(!oskelp::loadManifest((packageDir / "oskel.toml").string(), registry,
+  check(oskelp::loadManifest((packageDir / "oskel.toml").string(), registry,
                              registryError),
-        "manifest: a registry dependency is rejected for now");
-  check(contains(registryError, "registry dependencies are not supported"),
-        "manifest: the error explains the registry gap");
+        "manifest: a registry dependency is accepted");
+  auto registryDep = registry.package.dependencies.find("utils");
+  check(registryDep != registry.package.dependencies.end() &&
+            registryDep->second.isRegistry() &&
+            registryDep->second.requirement == "^1.2.3",
+        "manifest: the registry requirement is recorded");
+
+  writeFile(packageDir / "oskel.toml",
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n"
+            "[dependencies]\nutils = \"not a version\"\n");
+  oskelp::Manifest badRequirement;
+  std::string badRequirementError;
+  check(!oskelp::loadManifest((packageDir / "oskel.toml").string(),
+                              badRequirement, badRequirementError),
+        "manifest: an invalid registry requirement is rejected");
+  check(contains(badRequirementError, "invalid version requirement"),
+        "manifest: the error names the requirement");
 
   writeFile(packageDir / "oskel.toml",
             "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n"
@@ -278,6 +374,115 @@ static void testResolution() {
   fs::remove_all(root);
 }
 
+static void setRegistry(const std::string& value) {
+#ifdef _WIN32
+  _putenv_s("OSKEL_REGISTRY", value.c_str());
+#else
+  setenv("OSKEL_REGISTRY", value.c_str(), 1);
+#endif
+}
+
+static void clearRegistry() {
+#ifdef _WIN32
+  _putenv_s("OSKEL_REGISTRY", "");
+#else
+  unsetenv("OSKEL_REGISTRY");
+#endif
+}
+
+static void makeRegistryPackage(const fs::path& registry,
+                                const std::string& name,
+                                const std::string& version) {
+  fs::path dir = registry / name / version;
+  writeFile(dir / "oskel.toml",
+            "[package]\nname = \"" + name + "\"\nversion = \"" + version +
+                "\"\nentry = \"src/" + name +
+                "/main.oskl\"\n\n[dependencies]\n");
+  writeFile(dir / "src" / name / "main.oskl", "print(\"ok\");\n");
+}
+
+static void testRegistryResolution() {
+  fs::path root = makeTempDir();
+  fs::path registry = root / "registry";
+  fs::path appDir = root / "app";
+  makePackage(appDir, "app");
+  makeRegistryPackage(registry, "utils", "0.1.0");
+  makeRegistryPackage(registry, "utils", "0.2.0");
+  makeRegistryPackage(registry, "utils", "0.2.1");
+  makeRegistryPackage(registry, "utils", "1.0.0");
+
+  oskelp::Manifest app;
+  std::string error;
+  check(oskelp::loadManifest((appDir / "oskel.toml").string(), app, error),
+        "registry: loads the app");
+  oskelp::Dependency utils;
+  utils.name = "utils";
+  app.package.dependencies["utils"] = utils;
+
+  const char* previous = std::getenv("OSKEL_REGISTRY");
+  std::string saved = previous == nullptr ? std::string() : previous;
+  bool hadRegistry = previous != nullptr;
+  setRegistry(registry.string());
+
+  oskelp::Resolution resolution;
+  auto resolve = [&](const std::string& requirement,
+                     const std::map<std::string, std::string>& preferred = {}) {
+    app.package.dependencies["utils"].requirement = requirement;
+    resolution = oskelp::Resolution{};
+    error.clear();
+    return oskelp::resolveDependencies(app, resolution, error, preferred);
+  };
+
+  check(resolve("0.*"), "registry: resolves a range");
+  const oskelp::ResolvedPackage* selected = resolution.find("utils");
+  check(selected != nullptr && selected->version == "0.2.1",
+        "registry: picks the highest satisfying version");
+  check(selected != nullptr &&
+            selected->source == "registry+utils@0.2.1",
+        "registry: records the registry source");
+
+  check(resolve("0.*", {{"utils", "0.1.0"}}),
+        "registry: honours a lockfile pin");
+  selected = resolution.find("utils");
+  check(selected != nullptr && selected->version == "0.1.0",
+        "registry: the pin wins over the highest version");
+
+  check(resolve("0.*", {{"utils", "9.9.9"}}),
+        "registry: ignores a pin that does not exist");
+  selected = resolution.find("utils");
+  check(selected != nullptr && selected->version == "0.2.1",
+        "registry: a missing pin falls back to the highest version");
+
+  check(resolve("~0.2.0"), "registry: resolves a tilde range");
+  selected = resolution.find("utils");
+  check(selected != nullptr && selected->version == "0.2.1",
+        "registry: the tilde range selects the right minor");
+
+  check(!resolve(">=9.0.0"), "registry: an unsatisfiable range fails");
+  check(contains(error, "no version of 'utils' satisfies"),
+        "registry: the error names the missing version");
+
+  if (resolve("0.*")) {
+    oskelp::Lockfile lock = oskelp::buildLockfile(resolution);
+    check(oskelp::verifyLockfile(app, resolution, lock, error),
+          "registry: the lockfile verifies");
+    lock.packages["utils"].source = "registry+utils@0.1.0";
+    check(!oskelp::verifyLockfile(app, resolution, lock, error),
+          "registry: a changed source is rejected");
+    check(contains(error, "lockfile source"),
+          "registry: the error names the source");
+  }
+
+  clearRegistry();
+  check(!resolve("^0.1.0"), "registry: an unset OSKEL_REGISTRY fails");
+  check(contains(error, "OSKEL_REGISTRY"),
+        "registry: the error names OSKEL_REGISTRY");
+
+  if (hadRegistry) setRegistry(saved);
+  else clearRegistry();
+  fs::remove_all(root);
+}
+
 static void testCycle() {
   fs::path root = makeTempDir();
   makePackage(root / "a", "a", {{"b", "../b"}});
@@ -294,6 +499,34 @@ static void testCycle() {
         "cycle: the error names the cycle");
   check(contains(error, "a -> b -> a") || contains(error, "b -> a -> b"),
         "cycle: the error shows the path");
+
+  fs::remove_all(root);
+}
+
+static void testCycleFromInMemoryRoot() {
+  fs::path root = makeTempDir();
+  makePackage(root / "a", "a", {{"b", "../b"}});
+  makePackage(root / "b", "b");
+
+  oskelp::Manifest b;
+  std::string error;
+  check(oskelp::loadManifest((root / "b" / "oskel.toml").string(), b, error),
+        "in-memory cycle: loads the root");
+
+  // `oskelp add` resolves before it writes, so the root's in-memory manifest
+  // already declares `a` while b's copy on disk does not declare it back.
+  oskelp::Dependency a;
+  a.name = "a";
+  a.path = "../a";
+  b.package.dependencies["a"] = a;
+
+  oskelp::Resolution resolution;
+  check(!oskelp::resolveDependencies(b, resolution, error),
+        "in-memory cycle: a dependency back to the root is rejected");
+  check(contains(error, "dependency cycle"),
+        "in-memory cycle: the error names the cycle");
+  check(contains(error, "b -> a -> b"),
+        "in-memory cycle: the error shows the path");
 
   fs::remove_all(root);
 }
@@ -393,6 +626,134 @@ static void testVerifyLockfile() {
   fs::remove_all(root);
 }
 
+static void testManifestEditing() {
+  const std::string source =
+      "[package]\n"
+      "name = \"demo\"\n"
+      "version = \"0.1.0\"\n"
+      "\n"
+      "[dependencies]\n"
+      "alpha = { path = \"../alpha\" }\n"
+      "\n"
+      "[other]\n"
+      "keep = true\n";
+
+  oskelp::Dependency beta;
+  beta.name = "beta";
+  beta.path = "../beta";
+  std::string edited;
+  std::string error;
+  check(oskelp::addDependencyToManifest(source, beta, edited, error),
+        "edit: add to an existing section");
+  check(contains(edited, "alpha = { path = \"../alpha\" }"),
+        "edit: add keeps the existing dependency");
+  check(contains(edited, "beta = { path = \"../beta\" }"),
+        "edit: add writes the new dependency");
+  check(edited.find("beta") < edited.find("[other]"),
+        "edit: add stays inside [dependencies]");
+  check(contains(edited, "keep = true"), "edit: add keeps the next section");
+
+  oskelp::Dependency versioned;
+  versioned.name = "gamma";
+  versioned.path = "../gamma";
+  versioned.version = "1.2.3";
+  check(oskelp::addDependencyToManifest(source, versioned, edited, error),
+        "edit: add with a version");
+  check(contains(edited,
+                 "gamma = { path = \"../gamma\", version = \"1.2.3\" }"),
+        "edit: add writes the version");
+
+  oskelp::Dependency registry;
+  registry.name = "text";
+  registry.requirement = "^1.0.0";
+  check(oskelp::addDependencyToManifest(source, registry, edited, error),
+        "edit: add a registry requirement");
+  check(contains(edited, "text = \"^1.0.0\""),
+        "edit: add writes the requirement as a string");
+
+  const std::string withRegistry =
+      "[dependencies]\n"
+      "text = \"^1.0.0\"\n";
+  check(oskelp::removeDependencyFromManifest(withRegistry, "text", edited, error),
+        "edit: remove a registry requirement");
+  check(edited.find("text =") == std::string::npos,
+        "edit: remove drops the requirement line");
+
+  const std::string noSection =
+      "[package]\n"
+      "name = \"demo\"\n"
+      "version = \"0.1.0\"\n";
+  check(oskelp::addDependencyToManifest(noSection, beta, edited, error),
+        "edit: add creates the section");
+  check(contains(edited, "[dependencies]\nbeta = { path = \"../beta\" }"),
+        "edit: add creates the section at the end");
+
+  std::string duplicate;
+  check(!oskelp::addDependencyToManifest(edited, beta, duplicate, error),
+        "edit: add refuses a duplicate");
+  check(contains(error, "already declared"),
+        "edit: duplicate error names the reason");
+
+  check(oskelp::removeDependencyFromManifest(source, "alpha", edited, error),
+        "edit: remove an existing dependency");
+  check(!contains(edited, "alpha ="), "edit: remove deletes the line");
+  check(contains(edited, "[dependencies]"), "edit: remove keeps the header");
+  check(contains(edited, "keep = true"), "edit: remove keeps other sections");
+
+  const std::string quoted =
+      "[dependencies]\n"
+      "\"alpha\" = { path = \"../alpha\" }\n"
+      "'beta' = { path = \"../beta\" }\n";
+  check(oskelp::removeDependencyFromManifest(quoted, "alpha", edited, error),
+        "edit: remove a quoted key");
+  check(!contains(edited, "alpha"), "edit: quoted key removed");
+  std::string without;
+  check(oskelp::removeDependencyFromManifest(edited, "beta", without, error),
+        "edit: remove a literal-quoted key");
+  check(!contains(without, "beta"), "edit: literal-quoted key removed");
+
+  check(!oskelp::removeDependencyFromManifest(source, "missing", edited, error),
+        "edit: remove refuses an absent dependency");
+  check(contains(error, "not declared"),
+        "edit: absent error names the reason");
+
+  const std::string multiline =
+      "[dependencies]\n"
+      "alpha = { path = \"../alpha\",\n"
+      "  version = \"1.0.0\" }\n";
+  check(!oskelp::removeDependencyFromManifest(multiline, "alpha", edited, error),
+        "edit: remove refuses a multi-line entry");
+  check(contains(error, "spans multiple lines"),
+        "edit: multi-line error names the reason");
+
+  const std::string crlf =
+      "[package]\r\n"
+      "name = \"demo\"\r\n"
+      "\r\n"
+      "[dependencies]\r\n"
+      "alpha = { path = \"../alpha\" }\r\n";
+  check(oskelp::addDependencyToManifest(crlf, beta, edited, error),
+        "edit: add to CRLF");
+  check(contains(edited, "beta = { path = \"../beta\" }\r\n"),
+        "edit: add keeps CRLF");
+  check(oskelp::removeDependencyFromManifest(crlf, "alpha", without, error),
+        "edit: remove from CRLF");
+  check(contains(without, "[dependencies]\r\n"),
+        "edit: remove keeps CRLF");
+  check(!contains(without, "alpha ="), "edit: CRLF line removed");
+
+  const std::string commented =
+      "[dependencies] # dependencies\n"
+      "# alpha is local\n"
+      "alpha = { path = \"../alpha\" } # keep me\n";
+  check(oskelp::addDependencyToManifest(commented, beta, edited, error),
+        "edit: add under a commented header");
+  check(contains(edited, "beta = { path = \"../beta\" }"),
+        "edit: commented header add writes the dependency");
+  check(contains(edited, "# alpha is local"),
+        "edit: commented header keeps the comment");
+}
+
 static void testRenderManifest() {
   oskelp::Package package;
   package.name = "demo";
@@ -404,6 +765,16 @@ static void testRenderManifest() {
   check(contains(text, "entry = \"src/demo/main.oskl\""), "render: entry");
   check(contains(text, "authors = [\"Ada\"]"), "render: authors");
   check(contains(text, "[dependencies]"), "render: dependencies section");
+
+  oskelp::Dependency registry;
+  registry.name = "text";
+  registry.requirement = "^1.0.0";
+  package.dependencies["text"] = registry;
+  const std::string withRegistry = oskelp::renderManifest(package);
+  check(contains(withRegistry, "text = \"^1.0.0\""),
+        "render: a registry dependency is a string");
+  check(!contains(withRegistry, "text = { path"),
+        "render: a registry dependency is not a path table");
 }
 
 static void testHelpers() {
@@ -423,15 +794,19 @@ static void testHelpers() {
 }
 
 int main() {
+  testSemver();
   testTomlBasics();
   testTomlEscapesAndErrors();
   testManifest();
   testFindManifest();
   testResolution();
+  testRegistryResolution();
   testCycle();
+  testCycleFromInMemoryRoot();
   testDuplicateLocation();
   testLockfile();
   testVerifyLockfile();
+  testManifestEditing();
   testRenderManifest();
   testHelpers();
 

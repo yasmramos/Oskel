@@ -317,10 +317,11 @@ cc -E header.h | bindgen - -o header.oskl
 
 `extern "C"` is resolved by the **development engine** (`oskel`) through
 `Platform::lookupSymbol`, and by the **AOT backend** in `hosted` link mode
-(`oskel build --mode hosted`, Linux x86-64 for now). The default AOT mode,
-`freestanding`, is a self-contained image with no host: it does not resolve an
-`extern "C"` symbol yet (PHASE 7f.5). The generated module is valid in every
-case; only the symbol resolution depends on the engine.
+(`oskel build --mode hosted`, Linux, Windows and macOS x86-64). The default AOT
+mode, `freestanding`, is a self-contained image with no host: it does not
+resolve an `extern "C"` symbol (PHASE 7f.5), and macOS has no freestanding
+image at all. The generated module is valid in every case; only the symbol
+resolution depends on the engine.
 
 The engine resolves **every** symbol of an `extern "C"` block when the module
 loads, so the generated module must name symbols the host actually exports. A

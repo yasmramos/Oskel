@@ -69,12 +69,42 @@ struct TomlDocument {
 bool parseToml(const std::string& source, TomlDocument& out, std::string& error);
 
 // ---------------------------------------------------------------------------
+// Semantic versions
+
+struct SemVer {
+  int major = 0;
+  int minor = 0;
+  int patch = 0;
+  std::string prerelease;  // empty for a release
+};
+
+// Parses `major.minor.patch[-prerelease][+build]`. Build metadata is ignored.
+bool parseSemVer(const std::string& text, SemVer& out);
+
+// Orders two parsed versions, prereleases before their release.
+int compareSemVer(const SemVer& a, const SemVer& b);
+
+// True when `version` satisfies `requirement`. Supported requirements are an
+// exact version, `^x.y.z`, `~x.y.z`, `>=`, `>`, `<=`, `<`, `=`, `*`/`x`
+// wildcards and a comma- or space-separated conjunction of those. A
+// prerelease only matches an exact requirement for that prerelease.
+bool satisfiesRequirement(const std::string& requirement,
+                          const SemVer& version);
+
+// True when the requirement is syntactically supported (not necessarily
+// satisfiable by any published version).
+bool isValidRequirement(const std::string& requirement);
+
+// ---------------------------------------------------------------------------
 // Manifest
 
 struct Dependency {
   std::string name;
-  std::string path;     // as written; resolved against the manifest directory
-  std::string version;  // optional exact version for a path dependency
+  std::string path;         // empty for a registry dependency
+  std::string version;      // optional exact version for a path dependency
+  std::string requirement;  // registry version requirement
+
+  bool isRegistry() const { return path.empty(); }
 };
 
 struct Package {
@@ -100,6 +130,18 @@ bool findManifest(const std::string& startDir, std::string& manifestPath);
 
 // Canonical text for a fresh manifest.
 std::string renderManifest(const Package& package);
+
+// Edits a manifest's text in place, preserving comments, blank lines and line
+// endings. `addDependencyToManifest` inserts the entry at the end of
+// `[dependencies]` (creating the section when missing) and refuses a duplicate;
+// `removeDependencyFromManifest` deletes the entry and refuses one that spans
+// multiple lines, because deleting a partial line would corrupt the file.
+bool addDependencyToManifest(const std::string& source,
+                             const Dependency& dependency, std::string& out,
+                             std::string& error);
+bool removeDependencyFromManifest(const std::string& source,
+                                  const std::string& name, std::string& out,
+                                  std::string& error);
 
 // ---------------------------------------------------------------------------
 // Lockfile
@@ -135,15 +177,20 @@ struct Resolution {
   const ResolvedPackage* find(const std::string& name) const;
 };
 
-// Resolves every `path` dependency, recursively. Detects cycles, two different
-// locations for the same package name, and a dependency whose declared name
-// disagrees with its manifest.
-bool resolveDependencies(const Manifest& root, Resolution& out, std::string& error);
+// Resolves every dependency, recursively. A path dependency is read from its
+// directory; a registry dependency is picked from `$OSKEL_REGISTRY`, preferring
+// `preferred[name]` when it still satisfies the requirement. Detects cycles,
+// two different locations for the same package name, and a dependency whose
+// declared name disagrees with its manifest.
+bool resolveDependencies(
+    const Manifest& root, Resolution& out, std::string& error,
+    const std::map<std::string, std::string>& preferred = {});
 
 Lockfile buildLockfile(const Resolution& resolution);
 
 // Compares a loaded lockfile with a fresh resolution. On failure sets `error`
-// to the exact reason (missing entry, version drift, moved path, stale entry).
+// to the exact reason (missing entry, version drift, moved path, changed
+// registry source, stale entry).
 bool verifyLockfile(const Manifest& root, const Resolution& resolution,
                     const Lockfile& lock, std::string& error);
 
@@ -164,6 +211,19 @@ int commandNew(const std::string& directory, const std::string& name,
                const std::string& vcs, const std::string& argv0);
 int commandInit(const std::string& directory, const std::string& name,
                 const std::string& vcs, const std::string& argv0);
+// `add` edits the manifest, then re-resolves and refreshes the lockfile and
+// `.oskel/deps`; it never runs the compiler. With `--path`, `version` is an
+// optional exact assertion for the path dependency. Without `--path`, `version`
+// is the registry requirement and `name` is required.
+int commandAdd(const std::string& manifestPath, const std::string& name,
+               const std::string& path, const std::string& version);
+int commandRemove(const std::string& manifestPath, const std::string& name);
+// Copies `oskel.toml` and `src/` into `<registry>/<name>/<version>`. `registry`
+// is `--registry`, or `$OSKEL_REGISTRY` when empty.
+int commandPublish(const std::string& manifestPath, const std::string& registry);
+// Re-resolves ignoring the lockfile pin for `name` (or for every package when
+// `name` is empty), writes the lockfile and materialises the new tree.
+int commandUpdate(const std::string& manifestPath, const std::string& name);
 int commandBuild(const std::string& manifestPath, const BuildOptions& options,
                  const std::string& argv0);
 int commandRun(const std::string& manifestPath, const BuildOptions& options,

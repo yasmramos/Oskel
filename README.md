@@ -43,6 +43,10 @@ for language in languages {
   operating system underneath, printing to a serial port. It runs under
   `qemu-system-x86_64 -kernel`, GRUB or Limine; see
   [Bare metal](#bare-metal-experimental).
+- **WebAssembly target (experimental)**: `oskel build --target
+  wasm32-freestanding-wasm` emits a `.wasm` module that runs in a browser, an
+  edge runtime or Node. The module imports only `oskel.write` and
+  `oskel.exit`; see [WebAssembly](#webassembly-experimental).
 - Diagnostics with file, line, column, code snippet and stack trace.
 
 ## Status
@@ -151,20 +155,26 @@ skipped.
 ### oskelp (the project and package manager)
 
 `oskelp` is the Cargo-style project layer: a manifest (`oskel.toml`), a
-lockfile, dependency resolution and the `new`/`build`/`run`/`check`/`test`
+lockfile, dependency resolution (path and local-registry) and the
+`new`/`init`/`add`/`remove`/`publish`/`update`/`build`/`run`/`check`/`test`
 workflow. It is a standalone tool that drives `oskel` and `oskelc` as child
 processes, so the engine carries no project or dependency policy:
 
 ```sh
 ./build/oskelp new hello
 cd hello
+../build/oskelp add utils --path ../utils  # ../utils is another package
+../build/oskelp add text --version "^1.0.0"  # from $OSKEL_REGISTRY
 ../build/oskelp run          # the VM, for the fast development loop
 ../build/oskelp build        # target/hello, the native binary
 ../build/oskelp test         # every tests/**/*.oskl
+../build/oskelp update       # move registry pins to newer versions
 ```
 
-See [docs/oskelp.md](docs/oskelp.md) for the project layout, the manifest, the
-dependency model and every command.
+`oskelp publish --registry <dir>` copies the current package into a local
+registry, so another project can depend on its version. See
+[docs/oskelp.md](docs/oskelp.md) for the project layout, the manifest, the
+dependency model, the registry layout and every command.
 
 ## Usage
 
@@ -176,6 +186,11 @@ oskel -c <file.oskl>       compiles the script without running it
 oskel build <file.oskl>    compiles the script to a native binary (AOT)
 oskelc <file.oskl>         the same compiler without the interpreter
 oskelp new <dir>           creates a project (oskel.toml, src/<name>/...)
+oskelp add <name> --path <dir>  adds a path dependency to oskel.toml
+oskelp add <name> --version <req>  adds a registry dependency (OSKEL_REGISTRY)
+oskelp remove <name>       removes a dependency from oskel.toml
+oskelp publish             publishes the package into a local registry
+oskelp update [<name>]     moves registry pins to newer versions
 oskelp build               builds the project to target/<name>
 oskelp run                 runs the project (--native for the AOT binary)
 oskelp test                runs every tests/**/*.oskl
@@ -398,6 +413,47 @@ kernel state (the handler is silent per tick); after 500 ticks a program that
 never returns gets one `tick limit` line and a dedicated exit code. The design
 lives in
 [docs/bare-metal-interrupts-design.md](docs/bare-metal-interrupts-design.md).
+
+## WebAssembly (experimental)
+
+`oskel build --target wasm32-freestanding-wasm file.oskl -o app.wasm` emits a
+**WebAssembly module** from the same bytecode the VM and the x86-64 backend
+consume. It is a new backend behind the `Target` descriptor
+(`Target::wasm32()`), not a different compiler: the language, the type checker
+and the lowering pipeline are shared, and only the emitter differs.
+
+The module is self-contained except for four imports and one export:
+
+```wat
+(import "oskel" "write" (func (param i32 i32 i32) (result i32)))  ;; fd, ptr, len
+(import "oskel" "exit"  (func (param i32)))                       ;; exit code
+(import "oskel" "time"  (func (result i64)))                      ;; epoch second
+(import "oskel" "clock" (func (result f64)))                      ;; monotonic second
+(export "_start" (func))
+```
+
+A host supplies them. `tests/run_wasm.cjs` is the reference Node host:
+
+```sh
+oskel build --target wasm32-freestanding-wasm hello.oskl -o hello.wasm
+node tests/run_wasm.cjs hello.wasm
+```
+
+In a browser, `WebAssembly.instantiate` with an `oskel` import object whose
+`write` copies `memory.buffer[ptr .. ptr + len]` into a `Uint8Array` (or a
+`TextDecoder`) is enough; `_start` runs the program.
+
+The value model is the AOT one — a `(tag, payload)` pair of `i64` per register —
+so tags, string layout, closure layout and the semantics of every operator
+match the x86-64 backend. Strings, ranges, closures/upvalues, error values,
+arrays and maps (indexing, iteration, structural equality, `str`/`repr`),
+slicing, variadic functions, control flow, the portable builtins and the
+array/map/string *methods* (`.push`, `.map`, `.split`, ...) work;
+`std/json`, `std/datetime`, `std/collections`, `std/path` and the bound half of
+`std.math` build and agree with the VM byte for byte, and `double` printing is
+the same shortest round-trip form. A builtin with no WASM body is seeded as a
+closure that raises a clear runtime error when called. The remaining gaps are
+listed in [DEVELOPMENT.md](DEVELOPMENT.md) PHASE 9 and `docs/BACKLOG.md` §6.
 
 ## Tests
 

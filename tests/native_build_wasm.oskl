@@ -1,0 +1,172 @@
+// WebAssembly backend parity fixture (PHASE 9).
+//
+// `oskel build --target wasm32-freestanding-wasm` compiles this file to a
+// `.wasm` module; `tests/wasm_case.cmake` runs the module under Node and
+// compares its output with the development VM's, byte for byte.
+//
+// The fixture covers the portable surface the WASM runtime binds: the scalar
+// core, ranges, every operator, control flow, globals, locals, functions,
+// closures, variadic functions, arrays, maps, slices and `std.json`. String
+// and collection *methods* and the FFI are still PHASE 9 work and are rejected
+// at build time, so they stay out of this file.
+
+import std.json;
+import std.json.*;
+
+print("wasm parity");
+
+// --- arithmetic and numeric promotion -------------------------------------
+print(1 + 2 * 3, (1 + 2) * 3, 2 ** 10, 7 / 2, -7 / 2, 7 % 3, -7 % 3);
+print(10 == 10.0, 2 < 2.5, 1.5 + 2.5, 3.0 * 2.0, 2 ** -1 + 0.5);
+print(9223372036854775807 + 1);
+
+// --- bitwise and shifts ----------------------------------------------------
+print(0xFF & 0x0F, 0x01 | 0x02, 0x03 ^ 0x01, 1 << 4, 256 >> 4);
+
+// --- unary -----------------------------------------------------------------
+print(-5, !false, !0, ~0, !nil);
+
+// --- strings ---------------------------------------------------------------
+var text = "héllo";
+print(text, len(text), text[0], text[1], text[-1]);
+print("a" + "b" + "c", ord("A"), chr(66), ord("é"), chr(233));
+print("needle" in "haystack", "hay" in "haystack");
+
+// --- ranges ----------------------------------------------------------------
+var ascending = "";
+for (i in 0..5) { ascending = ascending + str(i); }
+var inclusive = "";
+for (i in 0..=3) { inclusive = inclusive + str(i); }
+var descending = "";
+for (i in 3..0) { descending = descending + str(i); }
+print(ascending, inclusive, descending);
+print(len(0..5), len(0..=5), len(5..0));
+print(5 in 0..10, 5 in 0..=5, 9 in 0..5);
+
+// --- control flow ----------------------------------------------------------
+var whileSum = 0;
+var i = 0;
+while (i < 10) {
+  i = i + 1;
+  if (i == 5) { continue; }
+  whileSum = whileSum + i;
+}
+print(whileSum);
+
+var doCount = 0;
+do {
+  doCount = doCount + 1;
+} while (doCount < 3);
+print(doCount);
+
+var switched = "";
+switch (2) {
+  case 1: { switched = "one"; }
+  case 2: { switched = "two"; }
+  default: { switched = "other"; }
+}
+print(switched);
+
+// --- functions, recursion and closures -------------------------------------
+fn add(a, b) { return a + b; }
+
+fn fib(n) {
+  if (n < 2) { return n; }
+  return fib(n - 1) + fib(n - 2);
+}
+
+var counter = 0;
+fn bump() {
+  counter = counter + 1;
+  return counter;
+}
+
+fn makeAdder(n) {
+  return (x) => x + n;
+}
+
+fn nested(a) {
+  fn middle(b) {
+    return () => a + b;
+  }
+  return middle(10);
+}
+
+print(add(2, 3), fib(10), bump(), bump());
+print(makeAdder(10)(7), nested(5)());
+
+// --- conversions and type names -------------------------------------------
+print(type(1), type(1.5), type("x"), type(true), type(nil), type(0..1), type(add));
+print(int(3.9), int(true), float(2), double(3), bool(0), bool(nil));
+print(str(42), str(nil), repr("hi"), repr("a\nb"));
+
+// --- exact math builtins ---------------------------------------------------
+print(floor(3.7), ceil(3.2), round(2.5), round(-2.5), sqrt(81));
+
+// --- error values ----------------------------------------------------------
+var failure = error("bad", 7);
+print(type(failure), isError(failure), failure.message, failure.code, repr(failure));
+print(isError("not an error"), error("x") catch "recovered");
+
+// --- assertions ------------------------------------------------------------
+assertEq(add(1, 2), 3);
+assert(1 < 2);
+assert(1 < 2, "one is less than two");
+
+
+// --- arrays ----------------------------------------------------------------
+var values = [1, 2, 3];
+print(values, len(values), values.length, values[0], values[-1]);
+values[3] = 4;
+values[0] = 10;
+print(values, len(values), str(values), repr(values));
+print(1 in values, 10 in values, 99 in values);
+print([1, 2] + [3, 4], [1, 2] == [1, 2], [1, 2] == [1, 3], [1, 2] == [1, 2, 3]);
+print(values[1:3], values[:2], values[2:], values[::-1]);
+
+var looped = "";
+for (item in values) { looped = looped + str(item) + ","; }
+print(looped);
+
+// --- maps ------------------------------------------------------------------
+var record = {"name": "Ada", "age": 36};
+print(record, record.name, record["age"], len(record), record.length);
+record.age = 37;
+record["city"] = "London";
+print(record.name, record.age, record.city, len(record));
+print("name" in record, "missing" in record);
+
+var pairs = "";
+for (key, value in record) { pairs = pairs + key + "=" + str(value) + ";"; }
+print(pairs);
+print(record == {"age": 37, "city": "London", "name": "Ada"});
+print(record == {"name": "Ada"});
+
+var nested = {"list": [1, {"deep": true}], "empty": {}};
+print(nested, nested.list[1].deep, len(nested.empty));
+
+// --- variadic functions ----------------------------------------------------
+fn collect(first, rest...) {
+  return str(first) + ":" + str(rest);
+}
+print(collect(1), collect(1, 2), collect("a", "b", "c", 4));
+
+// --- string-to-number parsing ---------------------------------------------
+print(int("  -42 "), int("+7"), int("0x1f"), int("0b101"), int("0o17"));
+print(double("3.5"), double("1e3"), float("0.5"));
+print(stringify(parse("3.5")), stringify(parse("[-1.25, 1e3, 2.5e-2]")));
+
+// --- std.json --------------------------------------------------------------
+var jsonDoc = {"name": "Ada", "age": 36, "tags": ["a", "b"], "meta": {"ok": true}};
+var jsonText = stringify(jsonDoc);
+print(jsonText);
+print(stringify(parse(jsonText)) == jsonText);
+print(stringify(parse("[1, 2, [3, null]]")));
+print(stringify({"a": [1, {"b": 2}]}, 2));
+print(isValid("{\"a\": 1}"), isValid("{bad}"));
+print(tryParse("[1, 2]").ok, tryParse("[1, 2").ok);
+
+// --- host clock ------------------------------------------------------------
+print(time() > 1704067200, clock() >= 0);
+
+print("wasm ok");

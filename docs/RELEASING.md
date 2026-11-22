@@ -37,6 +37,9 @@ cmake --build build -j"$(nproc)"
 - The suite is green on Linux, Windows and macOS; the CI runs all three.
 - The AOT execution tests (`oskel.build_binary`) run on Linux x86-64 only and
   skip themselves elsewhere.
+- The hosted-mode tests build and run on Linux and Windows x86-64, and on an
+  x86-64 macOS host. The arm64 macOS runner builds the x86-64 Mach-O image and
+  checks its libSystem dependency but does not run it (that needs Rosetta).
 - Update `CHANGELOG.md`: move the entries under `[Unreleased]` into a new
   `[x.y.z] - YYYY-MM-DD` section and leave `[Unreleased]` empty.
 

@@ -741,7 +741,7 @@ static void test_collection_repr() {
 
 // `$str` renders a collection or function with the recursive repr (PHASE
 // 7c.4b.2), so `"${[1, 2]}"` reads exactly like `print([1, 2])`: nested strings
-// quoted, maps as `{k: v}`, functions as `<fn>`, and a self-referential
+// quoted, maps as `{k: v}`, functions as `<fn name>`, and a self-referential
 // structure stops at the depth cap instead of recursing forever.
 static void test_str_helper_collections() {
   Bytecode proto = compileSource(
@@ -763,7 +763,7 @@ static void test_str_helper_collections() {
             "[\"a\", \"b\"]\n"
             "[[1, 2], {\"k\": 3}]\n"
             "{\"x\": 1, \"y\": [1, 2]}\n"
-            "<fn>\n"
+            "<fn f>\n"
             "0..=3\n") == 0,
         "a compiled program interpolates collections and functions like print");
   check(result.output.find("{\"me\":") != std::string::npos &&
