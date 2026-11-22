@@ -11,6 +11,26 @@ may change between minor versions.
 
 ### Added
 
+- **The Skia bridge compiles and runs against a real Skia build.** The
+  generated shim now covers text (`SkFont` + `drawString`) and one-pixel
+  readback (`SkImage::readPixels`), and `skia_facade.h` selects
+  `SkSurfaces::Raster` or the pre-milestone-115 `MakeRasterN32Premul` factory.
+  `tests/cxxbind/skia_test.oskl` clears a surface, draws a rectangle and a
+  circle, and checks the pixels; the VM and the hosted AOT binary agree.
+  `tests/cxxbind/skia_ui_test.oskl` renders a widget tree and checks the window
+  and button pixels. `cxxbind.skia` is opt-in with `OSKEL_SKIA_DIR` /
+  `OSKEL_SKIA_LIB`, so a checkout without Skia keeps the suite green.
+
+- **The first declarative UI layer: `std/ui.oskl`.** `window`, `column`, `row`,
+  `padding`, `spacer`, `text` and `button` build a widget tree; `layout`
+  attaches deterministic frames; `commands` emits a `rect`/`text` display list;
+  `hitTest` returns the deepest button. The module is pure Oskel over the
+  portable primitive surface, so `tests/native_build_ui.oskl` and
+  `oskel.build_binary_ui` keep the VM and AOT outputs identical.
+  `bindings/skia/skia_ui.oskl` is the Skia renderer for the display list.
+  `docs/ui.md` documents the widget set, layout rules, display list and limits
+  (no event loop, input widgets, font metrics or SDL presentation yet).
+
 - **The C++ bridge now generates factories and owned class returns.**
   `bindgen --cxx` accepts an `object` of functions (emitted as a map, so
   `Surfaces.raster(...)` reads like a namespace), `sp` returns for
@@ -169,6 +189,24 @@ may change between minor versions.
 
 ### Fixed
 
+- **A wrong argument count now reports the same text under `oskel build` as
+  in the VM.** Every guard stopped at the constant prefix, so the VM said
+  `len() expects 1 argument, got 0` where the compiled binary said
+  `len() expects 1 argument`, and a user function raised the bare
+  `wrong number of arguments` with neither its name nor the counts. One runtime
+  helper, `oskel_arity_fail(msg, len, argc)`, appends `, got N` to the constant
+  prefix through the arena string builder and fails through the same dynamic
+  sink as every other assembled message, so `pcall` presents it identically.
+  The builtins and bound methods pass their own name and expected count, a user
+  function's prologue builds `name() expects N argument(s)` (adding ` or more`
+  when it is variadic) from the name it already has, and `error()` passes its
+  `between 1 and 2` range. The same change fixes a second divergence: `floor`,
+  `ceil`, `round`, `exp`, `log`, `pow`, `sin`, `cos` and `tan` reported a
+  *type* error (`floor() expects a number argument`) when the argument *count*
+  was wrong, and `int()`, `float()` and `double()` still used the prefix-only
+  path. `tests/native_build_builtin_arity.oskl` now compares the message text
+  itself instead of only the fact that the call fails (PHASE 7c.5b.6,
+  BACKLOG §6 item 25).
 - **WASM `double` formatting now matches the VM across the whole range.**
   The formatter generated up to 17 fractional digits and trimmed zeros, which
   diverged from `std::to_chars` whenever the shortest form needed rounding

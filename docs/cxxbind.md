@@ -271,20 +271,23 @@ pointer back to the C++ type and, for a reference, dereferences it.
 ## Skia
 
 `bindings/skia/skia.oskelbind` is the first real descriptor. It covers
-`SkSurface`, `SkCanvas`, `SkPaint`, `SkRect` and `SkImage`: raster surface
-creation, clearing, rectangles, circles and an image snapshot. The only
-hand-written C++ is `bindings/skia/skia_facade.h`, one inline factory for
-`SkSurfaces::Raster`; everything else is generated.
+`SkSurface`, `SkCanvas`, `SkPaint`, `SkFont`, `SkRect` and `SkImage`: raster
+surface creation, clearing, rectangles, circles, text, an image snapshot and a
+one-pixel readback. The hand-written C++ is `bindings/skia/skia_facade.h`: the
+`SkSurfaces::Raster` factory (the API moved from `SkSurface::MakeRasterN32Premul`
+in milestone 115), the `drawString` call (it needs an explicit `SkFont`), and
+the pixel readback (it needs an `SkImageInfo`). Everything else is generated.
 
 ```sh
 cd bindings/skia
 SKIA_DIR=/path/to/skia ./build.sh
 ```
 
-The generated module is `build/skia.oskl`; `oskel -c` accepts it without Skia
-installed. Compiling the shim needs Skia's headers and `libskia`. The widget
-layer (`Window`, `Column`, `Text`, `Button`, ...) is the next slice; SDL3 owns
-the window and events, Skia owns the pixels.
+The generated modules are `build/skia.oskl` and `build/skia_ui.oskl`;
+`oskel -c` accepts them without Skia installed. Compiling the shim needs Skia's
+headers and `libskia`. `skia_ui.oskl` is the backend for `std/ui`'s display
+list; `docs/ui.md` describes the widget layer. SDL3 owns the window and events,
+Skia owns the pixels.
 
 ## Tests
 
@@ -292,6 +295,7 @@ the window and events, Skia owns the pixels.
 | --- | --- |
 | `cxxbind.generate` | The counter, factory and Skia descriptors generate the module, header and shim; `oskel -c` accepts the modules; unknown types and every ownership mistake exit 65. Runs on every platform. |
 | `cxxbind.end_to_end` | The counter and factory shims compile with the host `c++`; the VM (via `LD_PRELOAD`) and the hosted AOT binary both print `cxx bridge ok` / `cxx factory ok`. Linux only, like every hosted AOT test. |
+| `cxxbind.skia` | Optional: the real Skia shim compiles against a Skia build; `skia_test.oskl` clears, draws and reads pixels, and `skia_ui_test.oskl` renders a `std.ui` tree. Both agree on the VM and the hosted AOT binary. Registered only with `OSKEL_SKIA_DIR`/`OSKEL_SKIA_LIB`; see `bindings/skia/README.md`. |
 
 Fixtures: `tests/cxxbind/counter.*` (constructor/destructor and a free
 function), `tests/cxxbind/factory.*` (factory objects, `sp`/`value`/`borrow`/

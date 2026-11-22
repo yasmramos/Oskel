@@ -3,8 +3,9 @@
 `std/sdl.oskl` binds [SDL3](https://wiki.libsdl.org/SDL3/)'s window, renderer and
 event surface, so an Oskel program can open a window and draw into it. It is a
 low-level module: it exposes the `SDL_*` functions and a few helpers. The
-widgets will be drawn with Skia through the C++ bridge (`bindgen --cxx`,
-`docs/cxxbind.md`); SDL3 owns the window and the events.
+widget layer is `std/ui.oskl` (`docs/ui.md`); it emits a display list that Skia
+renders through the C++ bridge (`bindings/skia/skia_ui.oskl`,
+`docs/cxxbind.md`). SDL3 owns the window and the events.
 
 ```oskel
 import std.sdl;

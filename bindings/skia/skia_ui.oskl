@@ -1,0 +1,40 @@
+// Skia backend for the display list produced by `std.ui`.
+//
+// Import it beside the generated `skia.oskl`:
+//
+//   import skia;
+//   import skia_ui;
+//   import std.ui;
+//
+//   let root = ui.window("Demo", 320, 200, ui.column(8, [ui.text("Hello", 24)]));
+//   ui.layout(root, 320, 200);
+//   skia_ui.render(ui.commands(root), canvas);
+//
+// The backend owns the Skia objects it creates and closes them before it
+// returns. It only understands the two commands `std.ui` emits today: `rect`
+// and `text`.
+
+import skia;
+
+fn render(commands, canvas) {
+  for cmd in commands {
+    if (cmd.kind == "rect") {
+      let paint = skia.Paint();
+      paint.setAntiAlias(false);
+      paint.setColor(cmd.color);
+      let rect = skia.Rects.make(cmd.x, cmd.y, cmd.x + cmd.w, cmd.y + cmd.h);
+      canvas.drawRect(rect, paint);
+      rect.close();
+      paint.close();
+    } else if (cmd.kind == "text") {
+      let paint = skia.Paint();
+      paint.setAntiAlias(true);
+      paint.setColor(cmd.color);
+      let font = skia.Font();
+      font.setSize(cmd.size);
+      skia.drawText(canvas, cmd.text, cmd.x, cmd.y, font, paint);
+      font.close();
+      paint.close();
+    }
+  }
+}

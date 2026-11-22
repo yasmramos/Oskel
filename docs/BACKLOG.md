@@ -455,8 +455,24 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     both engines, which is what a program can branch on; assembling the tail
     would mean a per-message builder in the runtime and is not worth it until a
     program is shown to depend on the text. `ord`/`len`/`chr` set this
-    convention before the pointer builtins did, and the new arity guards follow
-    it (the VM appends `, got N`).
+    convention before the pointer builtins did.
+
+    **A wrong argument count is now worded identically on both engines**
+    (PHASE 7c.5b.6). The guards used to stop at the fixed prefix, so the VM said
+    `len() expects 1 argument, got 0` where the binary said
+    `len() expects 1 argument`, and a user function reported the generic
+    `wrong number of arguments` with no name and no counts. One runtime helper,
+    `oskel_arity_fail(msg, len, argc)`, appends `, got N` to a constant prefix
+    through the arena string builder and hands the result to `failDynamic`, so
+    the `pcall` presentation is the same one every other dynamic message uses.
+    Every guard reaches it: the builtins and bound methods pass their own name
+    and expected count, a user function's prologue builds
+    `name() expects N argument(s)` (with ` or more` when it is variadic) from the
+    name it already has, and `error()` passes its `between 1 and 2` range.
+    Three further divergences fell out of the same work: `floor`, `ceil`,
+    `round`, `exp`, `log`, `pow`, `sin`, `cos` and `tan` reported their *type*
+    message (`floor() expects a number argument`) when the count was wrong, and
+    `int()`, `float()` and `double()` still used the old prefix-only path.
 
     The numeric conversions are the exception that proves the rule
     (PHASE 7c.5b.2c): `int`, `float` and `double` now assemble their message in
@@ -470,7 +486,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     (malformed, overflow, empty) so the cause can be named, and a non-string
     operand quotes its type name. The builder is worth it here because a
     conversion failure is the error a program is most likely to print and
-    branch on. The arity prefix still follows the convention above.
+    branch on. Their arity guard follows the shared `, got N` helper above.
 
 26. **[P1]** WebAssembly backend gaps (PHASE 9). The backend behind
     `Target::wasm32()` (`src/frontend/native/wasm.cpp`) covers the scalar core,
@@ -899,16 +915,23 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    disagrees with its manifest, and resolves a local-registry dependency from
    `$OSKEL_REGISTRY`. The tool is standalone and drives `oskel`/`oskelc` as
    child processes; `OSKEL_MODULE_ROOT` is the only compiler-side hook.
-8. **[P3]** Add a "hello world with UI" tutorial (needs the post-1.0 UI work).
+8. **[P3]** Add a "hello world with UI" tutorial. The first headless widget
+   layer exists (`std/ui.oskl`, `docs/ui.md`); the tutorial should wait for
+   presenting a Skia surface into an SDL3 window.
 9. **[P2] [partial]** SDL3 bindings landed (post-1.0 UI): `std/sdl.oskl` binds
    the window, renderer and event surface, `docs/sdl.md` documents it, and
    `oskel build --mode hosted --link-lib SDL3` compiles it. The C++ bridge
    (`bindgen --cxx`, `docs/cxxbind.md`) now generates Oskel classes plus a C++
    shim from a descriptor. Factory objects, `sk_sp`/`unique_ptr` and value
    returns, borrowed handles and `Class&` parameters landed, and
-   `bindings/skia/skia.oskelbind` is the Skia descriptor; compiling its shim
-   needs a Skia checkout. The declarative UI layer (`Window`, `Column`, `Text`,
-   `Button`, ...) is the next slice.
+   `bindings/skia/skia.oskelbind` compiles against a real Skia build; the
+   opt-in `cxxbind.skia` test draws, reads pixels and renders a widget tree on
+   the VM and the hosted AOT binary. `std/ui.oskl` is the first declarative
+   layer (`window`, `column`, `row`, `padding`, `spacer`, `text`, `button`;
+   layout, `rect`/`text` display list and hit testing), and
+   `bindings/skia/skia_ui.oskl` renders it. Still pending: presenting that
+   raster surface into an SDL3 window, an event loop, input widgets, real font
+   metrics and text wrapping.
 10. **[P3]** Add `dlopen`/`dlsym` as a builtin for dynamic FFI.
 11. **[P1] [done]** `oskelp`: the local registry (`$OSKEL_REGISTRY`) landed
     with semver requirements (exact, `^`, `~`, comparators, wildcards and a

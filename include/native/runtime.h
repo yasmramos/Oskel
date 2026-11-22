@@ -89,10 +89,13 @@ struct AotRuntimeHandles {
   // in a cell shared with the closures that capture it, so a write through the
   // closure and a read in the frame see the same value (PHASE 7c.2c.2).
   CodeGen::Label cellNew;        // AotValue* oskel_cell_new(AotValue v)
-  // Fatal "wrong number of arguments" report. A function's prologue calls it
-  // when the argument count does not match its declared arity, the runtime
-  // counterpart of the hosted engine's arity check in `pushOskelFrame`.
-  CodeGen::Label arityError;     // void oskel_arity_error(void)
+  // Fatal wrong-arity report. A function's prologue and every builtin guard
+  // call it when the argument count does not match the expected one, the
+  // runtime counterpart of the hosted engine's arity checks. The message prefix
+  // (the name and the expected count) is constant and passed in; the helper
+  // appends `, got N` from the actual count, so both engines word the failure
+  // identically (PHASE 7c.5b.6).
+  CodeGen::Label arityFail;      // void oskel_arity_fail(const char*, long, long)
   // The `print`/`write`/`eprint` builtins, as machine-code functions with the
   // same convention as a bytecode proto (`AotValue entry(AotValue* args, long
   // argc, AotClosure* self)`). The chunk seeds each into its global slot as an
