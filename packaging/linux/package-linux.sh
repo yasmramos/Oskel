@@ -41,6 +41,10 @@ if [ ! -x "$stage/bin/oskelc" ]; then
   echo "package-linux: $stage/bin/oskelc not found; did the install step run?" >&2
   exit 1
 fi
+if [ ! -x "$stage/bin/oskelld" ]; then
+  echo "package-linux: $stage/bin/oskelld not found; did the install step run?" >&2
+  exit 1
+fi
 if [ ! -x "$stage/bin/oskelp" ]; then
   echo "package-linux: $stage/bin/oskelp not found; did the install step run?" >&2
   exit 1
@@ -78,6 +82,7 @@ root="$work/deb"
 mkdir -p "$root/DEBIAN" "$root/usr/bin" "$root/usr/share/oskel"
 install -m 0755 "$stage/bin/oskel" "$root/usr/bin/oskel"
 install -m 0755 "$stage/bin/oskelc" "$root/usr/bin/oskelc"
+install -m 0755 "$stage/bin/oskelld" "$root/usr/bin/oskelld"
 install -m 0755 "$stage/bin/oskelp" "$root/usr/bin/oskelp"
 install -m 0755 "$stage/bin/bindgen" "$root/usr/bin/bindgen"
 cp -a "$stage/share/oskel/std" "$root/usr/share/oskel/std"
@@ -133,6 +138,7 @@ general-purpose language with a Lua-style bytecode architecture.
 mkdir -p %{buildroot}/usr/bin %{buildroot}/usr/share/oskel
 install -m 0755 "$stage/bin/oskel" %{buildroot}/usr/bin/oskel
 install -m 0755 "$stage/bin/oskelc" %{buildroot}/usr/bin/oskelc
+install -m 0755 "$stage/bin/oskelld" %{buildroot}/usr/bin/oskelld
 install -m 0755 "$stage/bin/oskelp" %{buildroot}/usr/bin/oskelp
 install -m 0755 "$stage/bin/bindgen" %{buildroot}/usr/bin/bindgen
 cp -a "$stage/share/oskel/std" %{buildroot}/usr/share/oskel/std
@@ -140,6 +146,7 @@ cp -a "$stage/share/oskel/std" %{buildroot}/usr/share/oskel/std
 %files
 /usr/bin/oskel
 /usr/bin/oskelc
+/usr/bin/oskelld
 /usr/bin/oskelp
 /usr/bin/bindgen
 /usr/share/oskel/std
