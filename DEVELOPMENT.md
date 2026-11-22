@@ -1760,7 +1760,10 @@ binary prints byte for byte what the VM prints).
       with the VM -- and CTest does not inherit the environment `vcvarsall.bat`
       sets, so the test runner reaches `cl` through a generated batch wrapper
       that calls it first (without `LIB`, the link cannot find `libcmt.lib`
-      even when `cl` is on `PATH`).
+      even when `cl` is on `PATH`). The wrapper is derived from
+      `CMAKE_C_COMPILER`, falling back to `CMAKE_CXX_COMPILER` when C is not
+      enabled; the Visual Studio generator in the artifacts workflow leaves
+      the former empty.
       Covered by `tests/object_test.cpp` (all three containers),
       `tests/build_mode.cmake` on Linux, Windows and macOS (the macOS arm64
       runner builds the x86-64 image but skips running it, and checks

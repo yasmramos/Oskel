@@ -200,7 +200,10 @@ it as a caveat:
   not produced by `cl`, so it carries no `.drectve` asking for the CRT; the
   libraries are named explicitly. `$OSKEL_CC_KIND=msvc|posix` names the
   command-line dialect when `$CC` is a wrapper whose file name does not; the
-  Windows CI wrapper is one. This makes
+  Windows CI wrapper is one. The test helper takes `CMAKE_C_COMPILER` and
+  falls back to `CMAKE_CXX_COMPILER` when C is not enabled -- the Visual Studio
+  generator used by the artifacts workflow leaves `CMAKE_C_COMPILER` empty, and
+  the wrapper needs a real compiler path to derive `vcvarsall.bat`. This makes
   a C toolchain a *build-time* dependency of the hosted mode only; the
   freestanding path still needs no toolchain and emits no relocation. The
   extern thunk takes the ABI as a parameter: System V (Linux, macOS) keeps the

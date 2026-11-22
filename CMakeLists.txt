@@ -18,6 +18,17 @@ if(NOT OSKEL_HEADER_VERSION STREQUAL PROJECT_VERSION)
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
+
+# The hosted link is a C link, but this project enables only CXX. The Visual
+# Studio generator used by the artifacts workflow does not populate
+# CMAKE_C_COMPILER, so the C++ driver is the fallback; it links the C runtime
+# just the same. The Windows test helper needs a real path to derive
+# `vcvarsall.bat`, which is why an empty value is not good enough there.
+if(CMAKE_C_COMPILER)
+  set(OSKEL_HOSTED_CC "${CMAKE_C_COMPILER}")
+else()
+  set(OSKEL_HOSTED_CC "${CMAKE_CXX_COMPILER}")
+endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
