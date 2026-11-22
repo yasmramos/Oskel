@@ -413,7 +413,11 @@ previous one.
   `import { sqrt } from std.math;`) with compile-time
   conflict detection across every import form (not only two `.*` imports: an
   alias or a namespace root that collides with another import is reported too)
-  and a reserved `std.` prefix. A module is loaded
+  and a reserved `std.` prefix. A qualified import also binds the last segment
+  (`math` in `import std.math;`) when that name is free, so the module is
+  reachable without repeating the path; an explicit alias suppresses it, a
+  top-level declaration wins over it, and two imports that would claim the same
+  short name are a compile error. A module is loaded
   once, eagerly; a cyclic import (`a -> b -> a`, including a self-import) is a
   compile error rather than a stack overflow. A module's own imports are
   private to it: a namespace, alias or wildcard name it creates never reaches

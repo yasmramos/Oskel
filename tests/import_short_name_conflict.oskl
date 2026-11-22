@@ -1,0 +1,7 @@
+// expect-exit: 65
+// `import modules.util;` binds the short name `util`; a second qualified import
+// with the same last segment must be rejected instead of silently replacing it.
+import modules.util;
+import modules.sub.util;
+
+print(util.answer);
