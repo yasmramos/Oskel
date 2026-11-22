@@ -589,6 +589,21 @@ it as a caveat:
   from the written one. A CMake test cannot see that by capturing stdout with
   `OUTPUT_VARIABLE` — CMake normalizes CRLF to LF there — so a byte-exact
   comparison must go through `OUTPUT_FILE` and `cmake -E compare_files`.
+- `bindgen --cxx` (`docs/cxxbind.md`) generates the C++ bridge: a descriptor
+  (`.oskelbind`) plus a C++ header become `<stem>_shim.h`, `<stem>_shim.cpp`
+  and an Oskel module. It never parses C++; the descriptor is the contract and
+  the C++ compiler checks it when the shim is built, so a drifted signature is a
+  compile error, not a wrong call. A class becomes an Oskel `class` with an
+  opaque `handle`, `init`, `valid`, `close` and one method per descriptor
+  entry; a free function becomes a wrapper. The C++ ABI stays in the shim; the
+  engine still calls C. Exceptions are caught at the shim boundary (ctor ->
+  `nullptr`, scalar -> 0, void -> nothing). `cxxbind.generate` runs everywhere;
+  `cxxbind.end_to_end` is Linux-only (compiles the shim with the host `c++`,
+  runs the VM with `LD_PRELOAD`, then the hosted AOT binary with
+  `LIBRARY_PATH`/`LD_LIBRARY_PATH`) and compares both outputs. The first slice
+  supports one ctor/dtor, scalar/`string`/`ptr`/class parameters, scalar
+  returns and `const` methods; it rejects class/string returns, overload sets,
+  templates, callbacks and `std::` containers.
 - `oskelp` (the project and package manager, `docs/oskelp.md`) is a third
   standalone executable under `tools/`. It links no engine code and drives
   `oskel`/`oskelc` as child processes; `nm build/oskel | grep oskelp` must stay

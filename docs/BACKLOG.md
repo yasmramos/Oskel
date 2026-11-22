@@ -888,9 +888,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 8. **[P3]** Add a "hello world with UI" tutorial (needs the post-1.0 UI work).
 9. **[P2] [partial]** SDL3 bindings landed (post-1.0 UI): `std/sdl.oskl` binds
    the window, renderer and event surface, `docs/sdl.md` documents it, and
-   `oskel build --mode hosted --link-lib SDL3` compiles it. The declarative UI
-   layer (`Window`, `Column`, `Text`, `Button`, ...) and the Windows loaded-DLL
-   symbol lookup (§18) are still open.
+   `oskel build --mode hosted --link-lib SDL3` compiles it. The C++ bridge
+   (`bindgen --cxx`, `docs/cxxbind.md`) now generates Oskel classes plus a C++
+   shim from a descriptor; the Skia descriptor and the declarative UI layer
+   (`Window`, `Column`, `Text`, `Button`, ...) are the next slices.
 10. **[P3]** Add `dlopen`/`dlsym` as a builtin for dynamic FFI.
 11. **[P1] [done]** `oskelp`: the local registry (`$OSKEL_REGISTRY`) landed
     with semver requirements (exact, `^`, `~`, comparators, wildcards and a
