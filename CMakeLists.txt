@@ -1667,6 +1667,20 @@ if(BUILD_TESTING)
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
 
+    # The bound string methods (`upper`, `trim`, `split`, `replace`,
+    # `padStart`, ...) over ASCII and multibyte UTF-8. The fixture is the same
+    # one the AOT backend compares with the VM, so both backends share the
+    # expectations.
+    add_test(NAME oskel.build_wasm_string_methods
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_string_methods"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_string_methods.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
     # `std.io` is pure Oskel over strings and classes (maps with closures), so
     # the WASM backend must reproduce it without a special case.
     add_test(NAME oskel.build_wasm_io
@@ -1710,7 +1724,7 @@ if(BUILD_TESTING)
       oskel.build_wasm_array_folds oskel.build_wasm_sort_methods
       oskel.build_wasm_map_methods oskel.build_wasm_datetime
       oskel.build_wasm_collections oskel.build_wasm_strings
-      oskel.build_wasm_io oskel.build_wasm_math
+      oskel.build_wasm_string_methods oskel.build_wasm_io oskel.build_wasm_math
       oskel.build_wasm_double_format PROPERTIES TIMEOUT 120)
   endif()
 

@@ -11,6 +11,14 @@ may change between minor versions.
 
 ### Added
 
+- **The WebAssembly backend binds the string methods.** `upper`, `lower`,
+  `trim`, `trimStart`, `trimEnd`, `split`, `lines`, `replace`, `replaceFirst`,
+  `startsWith`, `endsWith`, `contains`, `indexOf`, `substr`, `chars`,
+  `repeat`, `reversed`, `padStart` and `padEnd` now compile to `.wasm` and
+  match the VM byte for byte, including the Unicode simple-case tables and
+  multibyte UTF-8. `tests/native_build_string_methods.oskl` is the shared AOT
+  fixture and `oskel.build_wasm_string_methods` adds the WASM run.
+
 - **The project's own linker (`oskelld`).** `oskel build --mode hosted
   --linker own` and the standalone `oskelld <object.o> -o <out>` close the
   object `--emit-object` writes into a dynamically linked x86-64 Linux ELF

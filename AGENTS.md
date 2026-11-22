@@ -465,8 +465,23 @@ it as a caveat:
   the entries first (so a stored `length` wins), then falls back to `length` and
   nil. New map methods go **inside that branch**; a second `kMap` branch after
   the range branch is unreachable, and a method added there silently returns
-  nil. The string branch is separate and still fails with "no such member" for
-  an unknown name.
+  nil. The string branch is separate and fails with "no such member" only for a
+  name that is not one of its nineteen bound methods.
+- The string methods (`upper`, `lower`, `trim`, `trimStart`, `trimEnd`,
+  `split`, `lines`, `replace`, `replaceFirst`, `startsWith`, `endsWith`,
+  `contains`, `indexOf`, `substr`, `chars`, `repeat`, `reversed`, `padStart`,
+  `padEnd`) live in the string branch of `emitMemberGet` and are emitted by
+  `emitStringMethods`, which reserves nineteen selectors after the map methods.
+  They share `utf8SeqLen`, `decodeCodePoint`, `encodeUtf8`, `strFind`,
+  `strSliceBytes` and `strReverse`. `caseMap` reads the Unicode simple-case
+  runs (`kUnicodeUpperRuns`/`kUnicodeLowerRuns` from
+  `src/core/unicode_case.cpp`) from a 12-byte `{first, last, delta}` table in
+  the static pool, binary-searched by `caseLookup`. A string's `len` in the
+  helpers is the **byte** length; the code-point count is `utf8Len`. `substr`
+  is the one that must start from `utf8Len`: using the byte length made
+  `"αβγδε".substr(-2)` empty because the negative start was offset by the byte
+  count. `tests/native_build_string_methods.oskl` is the shared AOT/WASM
+  fixture and `oskel.build_wasm_string_methods` is its WASM run.
 - A construct the backend cannot lower yet must fail cleanly, never emit a
   mis-compiled module: an unbound builtin is seeded as a trapping closure, and
   a used `extern "C"`/`native fn` symbol with no stub is a build error (exit
