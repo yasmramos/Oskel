@@ -1,0 +1,53 @@
+# Skia bridge descriptor. The window is owned by SDL3; Skia draws the widgets.
+#
+# Build it where a Skia checkout is available:
+#   SKIA_DIR=/path/to/skia ./build.sh
+#
+# The generated module is `build/skia.oskl`; the shim is `build/skia_shim.cpp`.
+header "skia_facade.h"
+prefix "oskel_"
+
+object Rects {
+  function make(l: float, t: float, r: float, b: float): Rect value cpp "SkRect::MakeLTRB"
+}
+
+object Surfaces {
+  function raster(w: int, h: int): Surface sp cpp "skia_bridge::makeRaster"
+}
+
+class Rect {
+  cpp "SkRect"
+  release "delete"
+  method left(): float const
+  method top(): float const
+  method right(): float const
+  method bottom(): float const
+}
+
+class Paint {
+  cpp "SkPaint"
+  ctor()
+  dtor
+  method setColor(color: uint32): void
+  method setAntiAlias(aa: bool): void
+}
+
+class Canvas {
+  cpp "SkCanvas"
+  release "none"
+  method clear(color: uint32): void
+  method drawRect(rect: const Rect&, paint: const Paint&): void
+  method drawCircle(cx: float, cy: float, radius: float, paint: const Paint&): void
+}
+
+class Surface {
+  cpp "SkSurface"
+  release "unref"
+  method getCanvas(): Canvas borrow
+  method makeImageSnapshot(): Image sp
+}
+
+class Image {
+  cpp "SkImage"
+  release "unref"
+}

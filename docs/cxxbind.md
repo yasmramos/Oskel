@@ -73,20 +73,22 @@ prefix "oskel_"             # optional; C symbol prefix (default oskel_)
 
 class Counter {
   cpp "demo::Counter"       # optional; qualified C++ name (default: Counter)
-  ctor(start: int)          # required for this slice
+  ctor(start: int)          # a class with a ctor is constructed with `Counter(...)`
   method value(): int const # `const` marks a const C++ method
   method add(n: int): void
-  dtor                      # required for this slice
+  dtor                      # shorthand for `release "delete"`
 }
 
 function add(a: int, b: int): int
 ```
 
-A class becomes an Oskel class:
+A class with a C++ constructor becomes an Oskel class whose `init` forwards to
+that constructor:
 
 ```oskel
 class Counter {
   handle: ptr;
+  owned: bool = true;
 
   fn init(start: int) {
     self.handle = oskel_Counter_new(start);
@@ -96,7 +98,9 @@ class Counter {
 
   fn close() {
     if (self.handle != nil) {
-      oskel_Counter_delete(self.handle);
+      if (self.owned) {
+        oskel_Counter_delete(self.handle);
+      }
       self.handle = nil;
     }
   }
@@ -118,6 +122,97 @@ fn add(a: int, b: int): int {
 }
 ```
 
+### Factories, class returns and ownership
+
+A class **without** a `ctor` is *adopt-only*: the generated class takes an
+existing handle.
+
+```text
+class Surface {
+  cpp "SkSurface"
+  release "unref"           # `delete`, `unref` or `none`
+  method getCanvas(): Canvas borrow
+  method makeImageSnapshot(): Image sp
+}
+
+class Canvas {
+  cpp "SkCanvas"
+  release "none"            # the SkSurface owns the canvas
+  method clear(color: uint32): void
+}
+```
+
+An adopt-only class gets:
+
+```oskel
+class Surface {
+  handle: ptr;
+  owned: bool;
+
+  fn init(handle: ptr, owned: bool) {
+    self.handle = handle;
+    self.owned = owned;
+  }
+  // valid(), close() as above
+}
+```
+
+`owned` is true for an owned handle and false for a borrowed one. `close()`
+only releases when `owned` is true; a `release "none"` class never releases.
+
+A factory is a module-level **object** of functions. The generated module is a
+map, so the call reads like a namespace:
+
+```text
+object Surfaces {
+  function raster(w: int, h: int): Surface sp cpp "skia_bridge::makeRaster"
+}
+
+object Rects {
+  function make(l: float, t: float, r: float, b: float): Rect value cpp "SkRect::MakeLTRB"
+}
+```
+
+```oskel
+let Surfaces = {
+  raster: (w: int, h: int) => Surface(oskel_Surfaces_raster(w, h), true),
+};
+
+let Rects = {
+  make: (l: float, t: float, r: float, b: float) =>
+    Rect(oskel_Rects_make(l, t, r, b), true),
+};
+```
+
+The return policy says how the C++ result becomes a handle:
+
+| Policy | C++ returns | Shim | Oskel |
+|---|---|---|---|
+| `owned` (default) | `T *` owned by the caller | returns the pointer | `Class(handle, true)` |
+| `borrow` | `T *` or `const T *` owned by someone else | `const_cast` and return | `Class(handle, false)` |
+| `sp` | `sk_sp<T>`, `std::unique_ptr<T>` or anything with `release()` | `result.release()` | `Class(handle, true)` |
+| `value` | `T` by value | `new T(result)` | `Class(handle, true)` |
+
+A class return needs an **adopt-only target**: the wrapper constructs
+`Target(handle, owned)`, and a class with a `ctor` has no such constructor. The
+generator rejects it with exit 65 instead of emitting a wrapper that cannot
+compile. `value` also requires the target's release policy to be `delete`,
+because the shim allocates with `new`.
+
+A class-reference parameter crosses as its handle and the shim dereferences it:
+
+```text
+method drawRect(rect: const Rect&, paint: const Paint&): void
+```
+
+```cpp
+static_cast<Canvas *>(self)->drawRect(
+    *static_cast<const Rect *>(rect), *static_cast<const Paint *>(paint));
+```
+
+Use `const Class&` for the common `const T&` C++ parameter, `Class&` for a
+mutable reference, and `Class`/`const Class` for a pointer.
+
 ### Types
 
 | Descriptor | C++ | C ABI | Oskel class/API |
@@ -134,33 +229,74 @@ fn add(a: int, b: int): int {
 | `ptr` | `void *` | `void *` | `ptr` |
 | `Class` | `Class *` | `void *` | `Class` (passes `.handle`) |
 | `const Class` | `const Class *` | `void *` | `Class` |
+| `Class&` | `Class &` | `void *` | `Class` (shim dereferences) |
+| `const Class&` | `const Class &` | `void *` | `Class` (shim dereferences) |
 
 A class parameter is passed as `other.handle`; the shim casts the opaque
-pointer back to the C++ type.
+pointer back to the C++ type and, for a reference, dereferences it.
+
+### Release policies
+
+| `release` | Generated thunk | Use |
+|---|---|---|
+| `delete` (default) | `delete static_cast<T *>(self)` | a class created with `new`, `value` or a `unique_ptr` |
+| `unref` | `static_cast<T *>(self)->unref()` | a refcounted class such as `SkSurface` or `SkImage` |
+| `none` | none | a borrowed class such as `SkCanvas`, owned by another object |
+
+`dtor` is the short form of `release "delete"`. A class with a `ctor` and
+`release "none"` is rejected, because its constructor would leak.
 
 ### Current limits
 
-- One constructor and one destructor per class; no class or `string` return
-  values; no static factories yet.
+- One constructor per class; a class return target must be adopt-only, so a
+  class with a `ctor` cannot be returned from a factory or a method.
+- No class or `string` return values; no `std::string` returns.
 - No overload sets (the descriptor names one method), no templates, no
-  `std::vector`/`std::string` return values, no callbacks.
+  `std::vector`/`std::string` return values, no callbacks, no default arguments
+  and no C++ enums yet.
 - `string` means `const char *`; a C++ `std::string` parameter accepts it by
   implicit conversion, but a `std::string` return is rejected.
-- Exceptions are caught at the shim boundary: a constructor returns `nullptr`,
-  a scalar method returns zero, a `void` method does nothing. A C++ exception
-  never crosses into Oskel. The generated shim uses `try`/`catch`, so compile
-  it with exceptions enabled; a library built with `-fno-exceptions` needs a
-  future no-exceptions mode.
+- A C++ value struct (for example `SkRect`) crosses as an opaque handle
+  allocated by the bridge, not as a field-by-field Oskel struct. A `value`
+  factory creates that handle.
+- Exceptions are caught at the shim boundary: a constructor or class return
+  returns `nullptr`, a scalar method returns zero, a `void` method does nothing.
+  A C++ exception never crosses into Oskel. The generated shim uses
+  `try`/`catch`, so compile it with exceptions enabled; a library built with
+  `-fno-exceptions` needs a future no-exceptions mode.
 - The shim must be compiled with the same C++ ABI and standard library as the
   bridged library. Mixing libstdc++ and libc++, or MSVC and MinGW, is a link
   error at best and an ABI mismatch at worst.
+
+## Skia
+
+`bindings/skia/skia.oskelbind` is the first real descriptor. It covers
+`SkSurface`, `SkCanvas`, `SkPaint`, `SkRect` and `SkImage`: raster surface
+creation, clearing, rectangles, circles and an image snapshot. The only
+hand-written C++ is `bindings/skia/skia_facade.h`, one inline factory for
+`SkSurfaces::Raster`; everything else is generated.
+
+```sh
+cd bindings/skia
+SKIA_DIR=/path/to/skia ./build.sh
+```
+
+The generated module is `build/skia.oskl`; `oskel -c` accepts it without Skia
+installed. Compiling the shim needs Skia's headers and `libskia`. The widget
+layer (`Window`, `Column`, `Text`, `Button`, ...) is the next slice; SDL3 owns
+the window and events, Skia owns the pixels.
 
 ## Tests
 
 | CTest name | What it proves |
 | --- | --- |
-| `cxxbind.generate` | The descriptor generates the module, header and shim; `oskel -c` accepts the module; an unknown type exits 65. Runs on every platform. |
-| `cxxbind.end_to_end` | The generated shim compiles with the host `c++`; the VM (via `LD_PRELOAD`) and the hosted AOT binary both print `cxx bridge ok`. Linux only, like every hosted AOT test. |
+| `cxxbind.generate` | The counter, factory and Skia descriptors generate the module, header and shim; `oskel -c` accepts the modules; unknown types and every ownership mistake exit 65. Runs on every platform. |
+| `cxxbind.end_to_end` | The counter and factory shims compile with the host `c++`; the VM (via `LD_PRELOAD`) and the hosted AOT binary both print `cxx bridge ok` / `cxx factory ok`. Linux only, like every hosted AOT test. |
 
-Fixtures: `tests/cxxbind/counter.h`, `counter.cpp`, `counter.oskelbind`,
-`counter_test.oskl` and `invalid.oskelbind`.
+Fixtures: `tests/cxxbind/counter.*` (constructor/destructor and a free
+function), `tests/cxxbind/factory.*` (factory objects, `sp`/`value`/`borrow`/
+`owned` returns, `release "none"`/`"unref"`, class-reference parameters) and the
+invalid
+descriptors `invalid.oskelbind`, `invalid_factory.oskelbind`,
+`invalid_release.oskelbind`, `invalid_value.oskelbind` and
+`invalid_ref.oskelbind`.
