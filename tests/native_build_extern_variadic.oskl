@@ -1,19 +1,22 @@
 // Fixture for a C variadic across `extern "C"` in the hosted AOT backend
-// (tests/build_hosted_extern.cmake, PHASE 7f.5).
+// (tests/build_hosted_extern.cmake, PHASE 7f.10).
 //
 // The thunk walks the tail at run time, so the number of trailing arguments is
 // not a compile-time constant: it continues the GPR/SSE allocation after the
 // fixed prefix, promotes each value by its tag (`float` widens to `double`,
 // `bool` to `int`, a string to a `const char *`), spills the overflow to the
-// outgoing stack area and sets `%al` to the vector-register count.
+// outgoing stack area and sets `%al` to the vector-register count (the System V
+// rule; Win64 assigns by position and ignores `%al`).
 //
 // Every case below is chosen to hit a different part of that walk:
 //   * a `%s`/`%d`/`%.1f` mix exercises GPR and SSE together;
 //   * an empty tail leaves the loop with nothing to do;
 //   * a bool proves the promotion to `int`;
-//   * nine ints overflow the four GPRs the three fixed parameters leave, so six
-//     values must reach the callee on the stack;
-//   * ten doubles overflow the eight SSE registers, so two reach the stack.
+//   * nine ints overflow the integer registers the three fixed parameters leave
+//     (three on System V, one on Win64), so the rest reach the callee on the
+//     stack;
+//   * ten doubles overflow the vector registers (eight on System V, one on
+//     Win64), so the rest reach the stack.
 extern "C" {
   fn snprintf(buf: cstring, size: size_t, fmt: cstring, ...): int;
   fn strlen(s: cstring): size_t;

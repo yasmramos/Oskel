@@ -95,9 +95,10 @@ it as a caveat:
   class-MEMORY struct must not be rejected for `oskel build` just because the
   engine lacks libffi — that conflation made
   `oskel.build_hosted_extern_memory_struct` fail without `libffi-dev` even
-  though the emitted code was right. A C variadic stays rejected for the AOT
-  destination whatever the build has, because the backend does not lower a
-  variable argument list (PHASE 7f.5).
+  though the emitted code was right. A C variadic is accepted for the AOT
+  destination whatever the build has, because the backend lowers the variable
+  argument list itself (PHASE 7f.5, 7f.10); only the development engine's
+  `libffi` path still needs System V.
 - A qualified access to a module's native export (`std.math.pow`) is a use too,
   but it reads the module table with `GETTABLE`, not with `GETGLOBAL`, so the
   lowerer cannot see it by counting reads. The compiler records such a use on
@@ -210,16 +211,24 @@ it as a caveat:
   extern thunk takes the ABI as a parameter: System V (Linux, macOS) keeps the
   six GPRs/eight SSE registers and the struct/callback/variadic surface;
   Win64 uses four of each, 32 bytes of shadow space and stack arguments from
-  offset 32, supports the scalar/`cstring`/`ptr` classes and rejects a struct,
-  a callback or a C variadic with a dedicated message. `main` on Windows moves
-  the CRT's `(argc, argv)` from rcx/rdx to rdi/rsi before the chunk so `args()`
-  works there too. The UCRT opens stdout/stderr in text mode, so
-  `oskel_init_arena` calls `_setmode(1/2, _O_BINARY)` before the first write;
-  without it every `\n` becomes `\r\n` and the hosted binary diverges from the
-  VM. `tests/hosted_cc.cmake` wraps `cl` in a batch file that calls
+  offset 32, supports the scalar/`cstring`/`ptr` classes and a C variadic, and
+  rejects a struct or a callback with a dedicated message. Win64 selects the
+  register by **argument position**, not by class: argument i uses the i-th
+  integer or SSE register, a floating value in a register position is
+  duplicated in the integer register of the same position on a variadic call,
+  and position four onward travels on the stack. The variadic thunk reserves
+  the whole outgoing area at run time (shadow space plus fixed and variable
+  stack arguments); a non-variadic one keeps it in the frame. `main` on
+  Windows moves the CRT's `(argc, argv)` from rcx/rdx to rdi/rsi before the
+  chunk so `args()` works there too. The UCRT opens stdout/stderr in text
+  mode, so `oskel_init_arena` calls `_setmode(1/2, _O_BINARY)` before the
+  first write; without it every `\n` becomes `\r\n` and the binary diverges
+  from the VM. `tests/hosted_cc.cmake` wraps `cl` in a batch file that calls
   `vcvarsall.bat` first, because CTest does not inherit the `PATH`/`INCLUDE`/
   `LIB` the build step had -- a bare `cl` link fails with "cannot open
-  libcmt.lib" even when `cl.exe` is found.
+  libcmt.lib" even when `cl.exe` is found. `tests/build_hosted_helper.cmake`
+  compiles a C helper with the same compiler and appends its object to the
+  link; on Windows it reaches `cl` through that same wrapper.
 - A `struct` crossing `extern "C"` by value is supported in the hosted backend
   in both ABI classes (PHASE 7f.7). A struct of 16 bytes or fewer is flattened
   to its System V eightbytes and travels in registers; a larger one is class
@@ -233,8 +242,9 @@ it as a caveat:
   the integer staging slots disjoint. `tests/native_build_extern_struct.oskl`
   covers the register class and `tests/native_build_extern_memory_struct.oskl`
   the MEMORY class (the latter links `tests/hosted/memory_struct_helper.c`,
-  because no libc symbol exercises that shape). A callback or C variadic
-  parameter is still PHASE 7f work.
+  because no libc symbol exercises that shape). A struct passed to a callback
+  or through a C variadic is still PHASE 7f work (BACKLOG §6 items 26/27); the
+  callback and variadic surfaces themselves are done.
 - A builtin whose argument window the AOT backend walks by hand has to read
   `args[i]` **downward**: `slotOffset` is `-16 * (index + 1)`, so `args[1]` sits
   16 bytes *below* `args[0]` (`-16` tag, `-8` payload), not at `+16`/`+24`. A

@@ -869,9 +869,9 @@ if(BUILD_TESTING)
     # the hosted mode (PHASE 7f.5): the backend emits a marshalling thunk per
     # symbol, seeds it as a function and lets the host C compiler resolve the
     # name. These fixtures cover the full System V AMD64 surface (structs,
-    # callbacks and a C variadic), so they stay Linux x86-64 only; Windows gets
-    # the scalar/pointer fixture below. The same fixture must still fail the
-    # freestanding build (that backend has no host), which
+    # callbacks and a C variadic), so they stay Linux x86-64 only; Windows has
+    # its own positional-ABI fixtures below. The same fixture must still fail
+    # the freestanding build (that backend has no host), which
     # `oskel.build_extern_error` checks.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       add_test(NAME oskel.build_hosted_extern
@@ -1026,6 +1026,18 @@ if(BUILD_TESTING)
             "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_variadic.oskl"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
       endif()
+      # A variadic with a mixed fixed prefix. System V assigns the integer and
+      # SSE classes independently, so this is the reference the Win64
+      # positional path must match; the helper returns a sum, so a wrong
+      # register is a wrong number. The helper harness does not run the VM.
+      add_test(NAME oskel.build_hosted_extern_variadic_mixed
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_variadic_mixed"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_variadic_mixed.oskl"
+          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/variadic_mixed_helper.c"
+          "-DOSKEL_EXPECTED_OUTPUT=ffi variadic mixed ok"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
     endif()
 
     # macOS uses the same System V thunks as Linux but a Mach-O object and
@@ -1045,12 +1057,26 @@ if(BUILD_TESTING)
           "-DOSKEL_SKIP_RUN=${OSKEL_MACOS_SKIP_RUN}"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted.oskl"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+      # The System V variadic walk is shared with Linux; this fixture proves the
+      # Mach-O object and the libSystem link carry it too. On an arm64 host the
+      # x86-64 image is built and linked but not run, so the expected output is
+      # used instead of the VM (the Linux fixture already pins VM parity).
+      add_test(NAME oskel.build_hosted_extern_variadic_macos
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_variadic_macos"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
+          "-DOSKEL_SKIP_RUN=${OSKEL_MACOS_SKIP_RUN}"
+          "-DOSKEL_EXPECTED_OUTPUT=ffi variadic aot ok"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_variadic.oskl"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
     endif()
 
     # Windows x86-64 has the same hosted link, but the Microsoft x64 ABI: the
-    # scalar/cstring/pointer surface is supported and the fixture stays inside
-    # it. Structs, callbacks and C variadics are rejected there with a dedicated
-    # message (PHASE 7f.5), so the Linux fixtures keep covering those shapes.
+    # scalar/cstring/pointer surface and a C variadic are supported there, with
+    # argument positions selecting the registers. Structs and callbacks are
+    # still rejected with a dedicated message (PHASE 7f.5), so the Linux
+    # fixtures keep covering those aggregate shapes.
     if(WIN32)
       add_test(NAME oskel.build_hosted_extern_windows
         COMMAND ${CMAKE_COMMAND}
@@ -1059,6 +1085,34 @@ if(BUILD_TESTING)
           "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted_windows.oskl"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+      # A C variadic is walked at run time by the thunk (PHASE 7f.10): on
+      # Win64 the tail continues the argument-position allocation, so a float
+      # in a register position goes in both the SSE and the integer register,
+      # and position four onward spills to the outgoing stack area after the
+      # shadow space. The development VM has no libffi variadic path on
+      # Windows, so the fixture asserts its own expectations and the binary's
+      # final line is the contract.
+      add_test(NAME oskel.build_hosted_extern_variadic_windows
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_variadic_windows"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_variadic.oskl"
+          "-DOSKEL_EXPECTED_OUTPUT=ffi variadic aot ok"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+      # A variadic with a mixed fixed prefix is the shape that pins the
+      # positional Win64 assignment: the fixed double must be in xmm1 (and
+      # rdx) and the tail double in xmm3 (and r9), not in xmm0/xmm1. The
+      # helper is compiled by the same `cl` the hosted link drives.
+      add_test(NAME oskel.build_hosted_extern_variadic_mixed_windows
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_variadic_mixed_windows"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_variadic_mixed.oskl"
+          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/variadic_mixed_helper.c"
+          "-DOSKEL_EXPECTED_OUTPUT=ffi variadic mixed ok"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
     endif()
 
     # `std.json` is plain Oskel over the portable primitive surface, so it must
@@ -1502,6 +1556,11 @@ if(BUILD_TESTING)
     # The many-args fixture binds a helper too; the VM has no registry entry for
     # those symbols, so it is covered by `oskel.build_hosted_extern_many_args`.
     if(name STREQUAL "native_build_extern_many_args")
+      continue()
+    endif()
+    # The mixed variadic fixture binds a helper the VM cannot resolve; its
+    # hosted tests (`..._variadic_mixed` and the Windows twin) are the coverage.
+    if(name STREQUAL "native_build_extern_variadic_mixed")
       continue()
     endif()
     # The stored/many-args/returns callback fixtures bind helpers the VM cannot
