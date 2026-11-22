@@ -2,11 +2,10 @@
 // grouping and sorting over arrays.
 //
 // The module is pure Oskel over the portable primitive surface, so every
-// expected value here must hold on the development VM and under `oskel build`
-// on every AOT target (see `tests/native_build_collections.oskl`). These are the
-// same operations as the array methods, provided as functions because the AOT
-// backend does not bind every method yet -- `sort`/`sorted` are still open
-// (`docs/BACKLOG.md` §6 item 1).
+// expected value here must hold on the development VM, under `oskel build` on
+// every AOT target and on WebAssembly (see `tests/native_build_collections.oskl`).
+// These are the same operations as the array methods, provided as functions so
+// they also work on a backend that does not bind a method.
 
 import std.collections;
 import std.collections.*;

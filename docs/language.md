@@ -2534,12 +2534,10 @@ the original and chain freely.
 
 The array methods (`xs.map(f)`, `xs.filter(f)`, `xs.reduce(f, init)`,
 `xs.sum()`, `xs.join(sep)`, `xs.push(x)`, ...) exist too and are the shorter
-form; both engines bind them. The exceptions are `xs.sort()`/`xs.sorted()` and
-the string methods (`str.upper`, `str.split`, ...), which `oskel build` compiles
-and the binary then fails at run time with `value has no such member` (BACKLOG
-§6 item 1). These functions are the same operations over the portable primitive
-surface, so they work identically on the VM and in a native binary. **Prefer
-them when a program must compile with `oskel build`.**
+form; the VM and the AOT backend bind all of them. These functions are the same
+operations over the portable primitive surface, so they also work on a backend
+that does not bind a method (WebAssembly today) and they compose with the other
+free functions.
 
 | Function | Description |
 | --- | --- |
@@ -2583,6 +2581,53 @@ which is the useful default for a grouping key. `sort` is a stable merge sort, s
 two elements the comparator considers equal keep their input order. `sort`,
 `minimum`/`maximum` and the `By` variants need the elements (or their keys) to be
 mutually comparable: numbers with numbers, strings with strings.
+
+### 12.13 Text
+
+`import std.strings;` adds text helpers that the string methods (§9.1) do not
+express, so they compose with the collection helpers:
+
+```oskl
+import std.collections.*;
+import std.strings.*;
+
+let lines = ["  a long line that needs shortening  ", "  short  "];
+print(map(lines, l => truncate(l.trim(), 12, "...")));  // ["a long li...", "short"]
+```
+
+| Function | Description |
+| --- | --- |
+| `words(s)` | The non-empty runs of non-whitespace characters. |
+| `isBlank(s)` | `true` when the string is empty or only ASCII whitespace. |
+| `countOf(s, needle)` | How many non-overlapping occurrences `s` contains (`0` for an empty needle). |
+| `indexOfAll(s, needle)` | The code-point index of every non-overlapping occurrence (`[]` for an empty needle). |
+| `containsAll(s, needles)` | `true` when every needle occurs (`true` for an empty array). |
+| `containsAny(s, needles)` | `true` when at least one needle occurs (`false` for an empty array). |
+| `padBoth(s, width, fill)` | Centers `s` in `width` code points, repeating `fill` and clipping it. |
+| `truncate(s, width, ellipsis)` | Shortens `s` to at most `width` code points, ending with `ellipsis`. |
+
+Every length and index is a **code-point** count, so a multi-byte character
+counts as one. `words` and `isBlank` use the ASCII whitespace family `trim()`
+uses (space, tab, newline, carriage return, vertical tab, form feed); a Unicode
+space is an ordinary character, as it is for `trim()`. Case mapping stays with
+the `upper`/`lower` methods, which apply the Unicode simple mapping.
+
+`countOf` and `indexOfAll` do not overlap: `countOf("aaaa", "aa")` is `2`, not
+`3`. An empty needle has no occurrences, so both return `0`/`[]` rather than
+treating every position as a match. `containsAll`/`containsAny` do treat the
+empty needle as present everywhere, which is the identity of "contains".
+
+`padBoth` gives an odd remainder to the right (`padBoth("ab", 5, " ")` is
+`" ab  "`), repeats the fill whole and then clips it, and returns a string that
+is already wide enough unchanged. `truncate` returns a string that fits
+unchanged; when the ellipsis itself does not fit it is clipped to `width`
+(`truncate("abcdef", 2, "...")` is `".."`), and an empty ellipsis yields the
+first `width` characters. A negative width and an empty `padBoth` fill are
+runtime errors.
+
+The module is pure Oskel over the portable primitive surface (indexing,
+slicing, `len`, `for ... in`, closures, `panic`), so it behaves identically on
+the development VM, under `oskel build` and on WebAssembly.
 
 ---
 
@@ -3156,8 +3201,9 @@ print(sqrt(25));            // 5
 ```
 
 The standard library ships `std.math` (§12.3), `std.json` (§12.9),
-`std.datetime` (§12.10), `std.path` (§12.11) and `std.collections` (§12.12). All
-are ordinary modules, so the same four import forms apply:
+`std.datetime` (§12.10), `std.path` (§12.11), `std.collections` (§12.12) and
+`std.strings` (§12.13). All are ordinary modules, so the same four import forms
+apply:
 
 ```oskel
 import std.json;             // std.json.parse and json.parse, ...

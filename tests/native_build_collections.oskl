@@ -2,13 +2,11 @@
 // the AOT backend.
 //
 // `std.collections` is written in plain Oskel over the portable primitive
-// surface (indexing, slicing, `len`, `str`, `panic`, `for ... in`, closures),
-// and it exists precisely because the AOT backend does not bind the array
-// methods yet (`docs/BACKLOG.md` §6 item 1). This fixture is the guard that
-// keeps it that way: it must build to a native binary and agree with the
-// development VM byte for byte, so a future edit that reaches for `xs.map(...)`,
-// a string method or `pcall`/`error` breaks the build here rather than shipping
-// a binary that dies with "value has no such member".
+// surface (indexing, slicing, `len`, `str`, `panic`, `for ... in`, closures), so
+// it must build to a native binary and agree with the development VM byte for
+// byte. The module stays on that surface so it also works on WebAssembly, where
+// the array/string methods are not bound; `oskel.build_wasm_collections` is the
+// guard for that side.
 //
 // Every line is deterministic and prints a value (the harness compares stdout),
 // so the fixture never relies on an assertion alone.
