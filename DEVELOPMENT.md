@@ -1760,7 +1760,10 @@ binary prints byte for byte what the VM prints).
       with the VM -- and CTest does not inherit the environment `vcvarsall.bat`
       sets, so the test runner reaches `cl` through a generated batch wrapper
       that calls it first (without `LIB`, the link cannot find `libcmt.lib`
-      even when `cl` is on `PATH`).
+      even when `cl` is on `PATH`). The wrapper is derived from
+      `CMAKE_C_COMPILER`, falling back to `CMAKE_CXX_COMPILER` when C is not
+      enabled; the Visual Studio generator in the artifacts workflow leaves
+      the former empty.
       Covered by `tests/object_test.cpp` (all three containers),
       `tests/build_mode.cmake` on Linux, Windows and macOS (the macOS arm64
       runner builds the x86-64 image but skips running it, and checks
@@ -2059,15 +2062,17 @@ Still open, and each reported rather than mis-compiled:
   `supportedBuiltins()` in `src/frontend/native/wasm.cpp`.
 - A used `extern "C"` or `native fn` symbol with no builtin stub is a build
   error, the WASM counterpart of the AOT backend's message.
-- `double` printing is the shortest round-trip form `std::to_chars` produces:
-  `fmtDouble` scales with a 633-entry `pow10` table, generates 18 significant
-  digits, rounds the 18th into the 17th, tries every shorter precision and
-  re-parses each candidate with `parseDoubleStr`, then emits the shorter of
-  fixed and scientific (fixed on a tie), including `-0`, subnormals and
-  `e±NN`. `parseDoubleStr` combines the fraction into one `mantissa / scale`
-  division and applies the exponent with one table multiply/divide.
-  `tests/native_build_double_format.oskl` and `tests/native_build_math.oskl`
-  pin it.
+- `double` printing is the shortest round-trip form the VM emits. The WASM
+  backend ports the x86-64 Dragon4 generator (`dtoa.cpp`): a static scratch
+  block holds the `r`/`s`/`mp`/`mm`/`t` bignums, the digit buffer and the input
+  fields; emitted helpers (`bnSetU64`, `bnSetU32`, `bnCopy`, `bnCmp`,
+  `bnMulSmall`, `bnShl`, `bnSub`, `bnAdd`, `bnMulPow10`, `bnDivMod`) implement
+  the arithmetic and `generate` fills `digits`, `nd` and `k`. `fmtDouble`
+  formats from `nd`/`k` with the same fixed/scientific choice as the x86-64
+  backend, including `-0`, subnormals and `e±NN`. `parseDoubleStr` combines the
+  fraction into one `mantissa / scale` division and applies the exponent with
+  one table multiply/divide. `tests/native_build_double_format.oskl` and
+  `tests/native_build_math.oskl` pin it.
 
 Testing: `tests/native_build_wasm.oskl` is compiled to a module and run under
 Node by `tests/wasm_case.cmake` (CTest `oskel.build_wasm`), which compares its
@@ -2083,7 +2088,12 @@ skipped where it is absent.
 - **SDL3** for windows, renderer and events: the low-level bindings landed as
   `std/sdl.oskl` (slice 1, `docs/sdl.md`), and a native binary links them with
   `oskel build --mode hosted --link-lib SDL3`.
-- **Skia** as an optional rendering backend on top of SDL3's window.
+- **C++ bridge** (`bindgen --cxx`, `docs/cxxbind.md`): a descriptor plus a
+  generated C++ shim turns a C++ class into an Oskel class with an opaque
+  `handle`, and a free function into a wrapper. The C++ ABI stays in the shim;
+  the engine still speaks C. The first slice is `Counter`; the next one is the
+  Skia descriptor.
+- **Skia** as the rendering backend for the widgets, on top of SDL3's window.
 - **Declarative UI** (SwiftUI/Flutter style): `Window`, `Column`, `Row`,
   `Text`, `Button`, `Input`, `Checkbox`, `Slider`, etc.
 
@@ -2119,7 +2129,7 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.9 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY) and callbacks resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface on Windows; a C variadic is still open. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.9 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY) and callbacks resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface on Windows; a C variadic is still open. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending
 2.0: ⬜ future (static with `@Dynamic`)

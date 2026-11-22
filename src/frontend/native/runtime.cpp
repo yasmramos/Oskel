@@ -162,6 +162,7 @@ struct CollectionEnv {
   CodeGen::Label utf8Len;      // long oskel_utf8_len(AotString* s)
   CodeGen::Label utf8CharAt;   // (AotString*, long) -> char* in rax, length in rdx
   CodeGen::Label compare;      // AotValue oskel_compare(AotValue, AotValue, long)
+  CodeGen::Label contains;     // AotValue oskel_contains(AotValue needle, AotValue haystack)
   CodeGen::Label call;         // AotValue oskel_call(AotValue, long, AotValue*)
   CodeGen::Label concat;       // AotValue oskel_concat(AotValue a, AotValue b)
   CodeGen::Label strBuiltin;   // AotValue oskel_builtin_str(AotValue* args, long argc, AotClosure* self)
@@ -183,9 +184,11 @@ struct CollectionEnv {
   std::vector<CodeGen::Label> arrayMethodDisplays;
   std::vector<CodeGen::Label> mapMethodDisplays;
   std::vector<CodeGen::Label> stringMethodDisplays;
+  std::vector<CodeGen::Label> rangeMethodDisplays;
   std::vector<std::string> arrayDisplayTexts;
   std::vector<std::string> mapDisplayTexts;
   std::vector<std::string> stringDisplayTexts;
+  std::vector<std::string> rangeDisplayTexts;
   CodeGen::Label pushMethod;
   CodeGen::Label popMethod;
   CodeGen::Label shiftMethod;
@@ -377,6 +380,15 @@ struct CollectionEnv {
   const DataBlob* msgDeleteKeyType;
   const DataBlob* msgMergeArgc;
   const DataBlob* msgMergeType;
+  // Bound range methods (PHASE 7c.3l): `r.toArray`/`r.contains`, built by
+  // `bindRangeMethod`; `lengthConst`/`containsConst` reuse the islands above.
+  CodeGen::Label bindRangeMethod;
+  CodeGen::Label rangeToArrayMethod;
+  CodeGen::Label rangeContainsMethod;
+  CodeGen::Label toArrayConst;   // data: the string "toArray"
+  const DataBlob* msgToArrayArgc;
+  const DataBlob* msgToArrayTooLarge;
+  const DataBlob* msgRangeIntType;
   // The error member names (`err.message` / `err.code`), raw `AotString`s.
   CodeGen::Label messageConst;   // data: the string "message"
   CodeGen::Label codeConst;      // data: the string "code"
@@ -2655,6 +2667,153 @@ void emitArrayAlloc(CodeGen& cg, const CollectionEnv& env, std::int64_t countSlo
   cg.movToMem(R8, kTableLengthOffset, R9);
   cg.movToMem(R8, kTableCapacityOffset, R9);
   cg.movToMem(R8, kTableBlockOffset, Rax);
+}
+
+// `AotValue oskel_builtin_range_to_array(AotValue* args, long argc, AotClosure* self)`:
+// the bound `r.toArray()`. It takes no argument and materialises the range's
+// values into a new array -- the hosted `bindRange` `toArray`, including the
+// guard that refuses a span over ten million items before allocating. The
+// receiver is unchanged.
+void emitRangeToArrayMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                            const DataBlob& msgArgc, const DataBlob& msgTooLarge) {
+  CodeGen::Label descending = cg.newLabel();
+  CodeGen::Label saturate = cg.newLabel();
+  CodeGen::Label countReady = cg.newLabel();
+  CodeGen::Label countStored = cg.newLabel();
+  CodeGen::Label stepReady = cg.newLabel();
+  CodeGen::Label loop = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label tooLarge = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 48);
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Ne, badArgc);
+  emitLoadArrayReceiver(cg, Rbx, Rdx);       // the range header
+  // The item count is the range's `.length`, computed exactly as the hosted
+  // `Range::length`: the magnitude of the bound difference in uint64 (a plain
+  // 64-bit `sub` is the unsigned difference), plus one when inclusive,
+  // saturated at INT64_MAX.
+  cg.movFromMem(R8, Rbx, kRangeStartOffset);
+  cg.movFromMem(R9, Rbx, kRangeEndOffset);
+  cg.cmpReg(R9, R8);
+  cg.jcc(Jcc::Lt, descending);
+  cg.movReg(R10, R9);
+  cg.subReg(R10, R8);                        // ascending: end - start
+  cg.jmp(saturate);
+  cg.bind(descending);
+  cg.movReg(R10, R8);
+  cg.subReg(R10, R9);                        // descending: start - end
+  cg.bind(saturate);
+  cg.movFromMem(R8, Rbx, kRangeInclusiveOffset);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Eq, countReady);
+  cg.movImm(R11, -1);
+  cg.cmpReg(R10, R11);
+  cg.jcc(Jcc::Eq, countReady);               // distance == UINT64_MAX: saturate
+  cg.addImm32(R10, 1);
+  cg.bind(countReady);
+  cg.movImm(R11, -1);
+  cg.shrImm8(R11, 1);                        // INT64_MAX
+  cg.cmpReg(R10, R11);
+  cg.jcc(Jcc::Be, countStored);
+  cg.movReg(R10, R11);                       // saturate
+  cg.bind(countStored);
+  cg.movToMem(Rbp, -24, R10);                // count
+  cg.movImm(R11, 10000000);
+  cg.cmpReg(R10, R11);
+  cg.jcc(Jcc::Gt, tooLarge);
+  emitArrayAlloc(cg, env, -24, -32, -40, oom);
+  // Fill the block: `i` walks from the start bound, `step` is +1 or -1 by the
+  // range's direction, and the loop stores exactly `count` items.
+  cg.movFromMem(R8, Rbx, kRangeStartOffset);
+  cg.movToMem(Rbp, -48, R8);                 // i
+  cg.movImm(R9, 1);
+  cg.movFromMem(R10, Rbx, kRangeEndOffset);
+  cg.movFromMem(R11, Rbx, kRangeStartOffset);
+  cg.cmpReg(R10, R11);
+  cg.jcc(Jcc::Ge, stepReady);
+  cg.movImm(R9, -1);                         // descending
+  cg.bind(stepReady);
+  cg.movToMem(Rbp, -56, R9);                 // step
+  cg.movImmToMem(Rbp, -64, 0);               // index
+  cg.bind(loop);
+  cg.movFromMem(R8, Rbp, -64);               // index
+  cg.movFromMem(R9, Rbp, -24);               // count
+  cg.cmpReg(R8, R9);
+  cg.jcc(Jcc::Ae, done);
+  cg.movFromMem(R10, Rbp, -48);              // i
+  cg.movReg(R11, R8);
+  cg.shlImm8(R11, 4);
+  cg.movFromMem(R12, Rbp, -40);              // dst block
+  cg.addReg(R11, R12);
+  cg.movImmToMem(R11, 0, kTagInt);
+  cg.movToMem(R11, 8, R10);
+  cg.addImm32(R8, 1);
+  cg.movToMem(Rbp, -64, R8);                 // index++
+  cg.movFromMem(R10, Rbp, -48);
+  cg.movFromMem(R9, Rbp, -56);               // step
+  cg.addReg(R10, R9);
+  cg.movToMem(Rbp, -48, R10);                // i += step
+  cg.jmp(loop);
+
+  cg.bind(done);
+  cg.movFromMem(Rdx, Rbp, -32);              // the new array
+  cg.movImm(Rax, kTagArray);
+  cg.addImm32(Rsp, 48);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+  cg.bind(badArgc);
+  emitFailCall(cg, env.fail, msgArgc);
+  cg.bind(tooLarge);
+  emitFailCall(cg, env.fail, msgTooLarge);
+  cg.bind(oom);
+  emitFailCall(cg, env.fail, *env.msgOom);
+}
+
+// `AotValue oskel_builtin_range_contains(AotValue* args, long argc, AotClosure* self)`:
+// the bound `r.contains(x)`, the method form of `x in r`. The receiver is the
+// closure's upvalue cell and the single argument is the needle. The needle must
+// be an integer (the hosted `bindRange` delegates to the `in` operator, whose
+// range rule rejects anything else), and the bounds test is the shared
+// `oskel_contains` range branch, so the two forms cannot drift.
+void emitRangeContainsMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                             const DataBlob& msgArgc, const DataBlob& msgIntType) {
+  CodeGen::Label done = cg.newLabel();
+  CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label badType = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Ne, badArgc);
+  cg.movFromMem(Rbx, Rdi, 0);                  // needle tag
+  cg.movFromMem(R12, Rdi, 8);                  // needle payload
+  cg.cmpImm32(Rbx, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Ne, badType);
+  emitLoadArrayReceiver(cg, Rbx, Rdx);         // the range header
+  cg.movImm(Rdi, kTagInt);                     // needle: an int
+  cg.movReg(Rsi, R12);
+  cg.movImm(Rdx, kTagRange);                   // haystack: the range
+  cg.movReg(Rcx, Rbx);
+  cg.callLabel(env.contains);
+  cg.jmp(done);
+  cg.bind(badArgc);
+  emitFailCall(cg, env.fail, msgArgc);
+  cg.bind(badType);
+  emitFailCall(cg, env.fail, msgIntType);
+  cg.bind(done);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
 }
 
 // `AotValue oskel_builtin_array_clone(AotValue* args, long argc, AotClosure* self)`:
@@ -6825,7 +6984,11 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   CodeGen::Label rangeAsc = cg.newLabel();
   CodeGen::Label rangeSat = cg.newLabel();
   CodeGen::Label rangeUse = cg.newLabel();
-  CodeGen::Label rangeMax = cg.newLabel();
+  CodeGen::Label rangeSatCheck = cg.newLabel();
+  CodeGen::Label rangeNotLength = cg.newLabel();
+  CodeGen::Label bindToArray = cg.newLabel();
+  CodeGen::Label bindRangeContains = cg.newLabel();
+  CodeGen::Label bindRange = cg.newLabel();
   CodeGen::Label mapMiss = cg.newLabel();
   CodeGen::Label isLength = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
@@ -7187,7 +7350,7 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.leaRipLabel(Rsi, env.lengthConst);
   cg.callLabel(env.strEq);
   cg.testReg(Rax);
-  cg.jcc(Jcc::Eq, failMember);
+  cg.jcc(Jcc::Eq, rangeNotLength);
   cg.movFromMem(R8, R12, kRangeStartOffset);
   cg.movFromMem(R9, R12, kRangeEndOffset);
   cg.cmpReg(R9, R8);
@@ -7201,20 +7364,51 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.bind(rangeSat);
   cg.movFromMem(R8, R12, kRangeInclusiveOffset);
   cg.testReg(R8);
-  cg.jcc(Jcc::Eq, rangeUse);
+  // An exclusive range keeps the distance as-is, but it still has to pass the
+  // saturation check: a span wider than INT64_MAX overflows either way.
+  cg.jcc(Jcc::Eq, rangeSatCheck);
   cg.movImm(R11, -1);
   cg.cmpReg(R10, R11);
-  cg.jcc(Jcc::Eq, rangeMax);       // distance == UINT64_MAX: saturate
+  cg.jcc(Jcc::Eq, rangeSatCheck);  // distance == UINT64_MAX: saturate
   cg.addImm32(R10, 1);
-  cg.bind(rangeMax);
+  cg.bind(rangeSatCheck);
   cg.movImm(R11, -1);
   cg.shrImm8(R11, 1);              // INT64_MAX
   cg.cmpReg(R10, R11);
-  cg.jcc(Jcc::Le, rangeUse);
+  // The magnitude is unsigned: a span wider than INT64_MAX sets the sign bit,
+  // so a signed `le` would leave it unsaturated (and a huge span reads as -2).
+  cg.jcc(Jcc::Be, rangeUse);
   cg.movReg(R10, R11);             // saturate
   cg.bind(rangeUse);
   cg.movReg(Rdx, R10);
   cg.movImm(Rax, kTagInt);
+  cg.jmp(done);
+
+  // The two bound range methods. The receiver travels in the closure's single
+  // upvalue cell, exactly like the array and string methods, so the binder is
+  // the shared `bindArrayMethod` emitter with its own body table.
+  cg.bind(rangeNotLength);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.toArrayConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindToArray);
+  cg.movFromMem(Rdi, Rbp, -24);
+  cg.leaRipLabel(Rsi, env.containsConst);
+  cg.callLabel(env.strEq);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, bindRangeContains);
+  cg.jmp(failMember);
+  cg.bind(bindToArray);
+  cg.movImm(Rdx, 0);               // toArray
+  cg.jmp(bindRange);
+  cg.bind(bindRangeContains);
+  cg.movImm(Rdx, 1);               // contains
+  cg.bind(bindRange);
+  cg.movImm(Rdi, kTagRange);
+  cg.movReg(Rsi, R12);
+  cg.callLabel(env.bindRangeMethod);
+  cg.jmp(done);
 
   cg.bind(done);
   cg.addImm32(Rsp, 16);
@@ -9265,7 +9459,9 @@ void emitLenBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
   cg.movImm(R11, -1);
   cg.shrImm8(R11, 1);           // INT64_MAX
   cg.cmpReg(R10, R11);
-  cg.jcc(Jcc::Le, rangeUse);
+  // Unsigned compare, matching the hosted `Range::length` (the span magnitude
+  // is unsigned, so a signed `le` misses the overflow case).
+  cg.jcc(Jcc::Be, rangeUse);
   cg.movReg(R10, R11);
   cg.bind(rangeUse);
   cg.movReg(Rdx, R10);
@@ -15307,6 +15503,9 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgMapDeleteKeyType = addText("delete() expects a string key");
   DataBlob msgMapMergeArgc = addText("merge() expects 1 argument");
   DataBlob msgMapMergeType = addText("merge() expects a map");
+  DataBlob msgToArrayArgc = addText("toArray() expects 0 arguments");
+  DataBlob msgToArrayTooLarge = addText("range is too large to convert to an array");
+  DataBlob msgRangeIntType = addText("range membership requires an integer");
   DataBlob msgInsertRange = addText("insert() index out of range");
   DataBlob msgRemoveAtRange = addText("removeAt() index out of range");
   DataBlob msgBadAssign = addText("cannot assign to this value");
@@ -15567,6 +15766,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   env.utf8Len = cg.newLabel();
   env.utf8CharAt = cg.newLabel();
   env.compare = handles.compareValues;
+  env.contains = handles.contains;
   env.call = handles.call;
   env.truthy = handles.truthy;
   env.rawPrint = handles.printValueRaw;
@@ -15599,6 +15799,10 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                              "padEnd"}) {
     env.stringMethodDisplays.push_back(cg.newLabel());
     env.stringDisplayTexts.emplace_back(nameDisplay("string", method));
+  }
+  for (const char* method : {"toArray", "contains"}) {
+    env.rangeMethodDisplays.push_back(cg.newLabel());
+    env.rangeDisplayTexts.emplace_back(nameDisplay("range", method));
   }
   env.pushMethod = handles.arrayPushMethod;
   env.popMethod = handles.arrayPopMethod;
@@ -15781,6 +15985,13 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   env.msgDeleteKeyType = &msgMapDeleteKeyType;
   env.msgMergeArgc = &msgMapMergeArgc;
   env.msgMergeType = &msgMapMergeType;
+  env.bindRangeMethod = handles.bindRangeMethod;
+  env.rangeToArrayMethod = handles.rangeToArrayMethod;
+  env.rangeContainsMethod = handles.rangeContainsMethod;
+  env.toArrayConst = cg.newLabel();
+  env.msgToArrayArgc = &msgToArrayArgc;
+  env.msgToArrayTooLarge = &msgToArrayTooLarge;
+  env.msgRangeIntType = &msgRangeIntType;
   env.messageConst = cg.newLabel();
   env.codeConst = cg.newLabel();
   env.msgOom = &msgOom;
@@ -15935,6 +16146,15 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitStringPadMethod(cg, handles.stringPadEndMethod, env, msgPadEndArgc,
                       msgPadEndWidthType, msgPadEndFillType, msgPadEndEmpty,
                       msgPadEndTooLarge, false);
+  // The bound range methods (PHASE 7c.3l). Same binder as the array and string
+  // methods; the bodies mirror the hosted `bindRange`.
+  emitBindArrayMethod(cg, handles.bindRangeMethod, handles.cellNew, handles.closure,
+                      {handles.rangeToArrayMethod, handles.rangeContainsMethod},
+                      env.rangeMethodDisplays);
+  emitRangeToArrayMethod(cg, handles.rangeToArrayMethod, env, msgToArrayArgc,
+                         msgToArrayTooLarge);
+  emitRangeContainsMethod(cg, handles.rangeContainsMethod, env, msgContainsArgc,
+                          msgRangeIntType);
   emitInitGlobals(cg, handles.initGlobals, handles.alloc, fail, msgOom);
   emitGlobalSet(cg, handles.globalSet);
   emitGlobalGet(cg, handles.globalGet);
@@ -16304,6 +16524,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitNameConst(env.replaceFirstConst, "replaceFirst");
   emitNameConst(env.padStartConst, "padStart");
   emitNameConst(env.padEndConst, "padEnd");
+  emitNameConst(env.toArrayConst, "toArray");
   emitNameConst(env.spaceConst, " ");
   // The `repr`/`str` text of each bound method value, the same raw `AotString`
   // layout. A `Func` value renders the closure's `display` field verbatim.
@@ -16315,6 +16536,9 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   }
   for (std::size_t i = 0; i < env.stringMethodDisplays.size(); ++i) {
     emitNameConst(env.stringMethodDisplays[i], env.stringDisplayTexts[i].c_str());
+  }
+  for (std::size_t i = 0; i < env.rangeMethodDisplays.size(); ++i) {
+    emitNameConst(env.rangeMethodDisplays[i], env.rangeDisplayTexts[i].c_str());
   }
   // The Unicode case tables, as `{first, last, delta}` int32 triples, the same
   // layout `UnicodeCaseRun` has on the host.

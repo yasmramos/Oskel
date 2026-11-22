@@ -203,7 +203,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    code points, the fill repeated whole and then clipped, both ordering
    branches). There is no callback form on a string: `"abc".map`/`.each`/
    `.filter` are rejected by the VM too (`type 'string' has no member 'map'`),
-   so the string method surface has no AOT gap left.
+   so the string method surface has no AOT gap left. The range methods bind in
+   PHASE 7c.3l: `toArray` (half-open or closed, either direction, and a span
+   over ten million items refused with the hosted message) and `contains` (the
+   method form of `x in r`, integer-only like the operator). `emitMemberGet`
+   only knew a range's `.length` before, so both answered "value has no such
+   member". The same change closes the `.length` saturation: a span wider than
+   INT64_MAX reports INT64_MAX, which the AOT arithmetic now computes in
+   unsigned magnitude exactly like the hosted `Range::length`.
 2. **[P0] [done]** VM/AOT divergence in structural equality: `[1,2] == [1,2]`
    is true in the VM (content) and false in AOT (identity). The equality helper
    in `oskel_compare` now descends into arrays and maps (equal length, equal
@@ -881,9 +888,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 8. **[P3]** Add a "hello world with UI" tutorial (needs the post-1.0 UI work).
 9. **[P2] [partial]** SDL3 bindings landed (post-1.0 UI): `std/sdl.oskl` binds
    the window, renderer and event surface, `docs/sdl.md` documents it, and
-   `oskel build --mode hosted --link-lib SDL3` compiles it. The declarative UI
-   layer (`Window`, `Column`, `Text`, `Button`, ...) and the Windows loaded-DLL
-   symbol lookup (§18) are still open.
+   `oskel build --mode hosted --link-lib SDL3` compiles it. The C++ bridge
+   (`bindgen --cxx`, `docs/cxxbind.md`) now generates Oskel classes plus a C++
+   shim from a descriptor; the Skia descriptor and the declarative UI layer
+   (`Window`, `Column`, `Text`, `Button`, ...) are the next slices.
 10. **[P3]** Add `dlopen`/`dlsym` as a builtin for dynamic FFI.
 11. **[P1] [done]** `oskelp`: the local registry (`$OSKEL_REGISTRY`) landed
     with semver requirements (exact, `^`, `~`, comparators, wildcards and a

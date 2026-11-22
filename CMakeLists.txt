@@ -18,8 +18,30 @@ if(NOT OSKEL_HEADER_VERSION STREQUAL PROJECT_VERSION)
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
+
+# The hosted link is a C link, but this project enables only CXX. The Visual
+# Studio generator used by the artifacts workflow does not populate
+# CMAKE_C_COMPILER, so the C++ driver is the fallback; it links the C runtime
+# just the same. The Windows test helper needs a real path to derive
+# `vcvarsall.bat`, which is why an empty value is not good enough there.
+if(CMAKE_C_COMPILER)
+  set(OSKEL_HOSTED_CC "${CMAKE_C_COMPILER}")
+else()
+  set(OSKEL_HOSTED_CC "${CMAKE_CXX_COMPILER}")
+endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# The project enables only CXX, so `CMAKE_C_COMPILER` is empty unless the caller
+# sets it. The hosted link drives a C toolchain; the C++ compiler links the same
+# object and is always identified, so fall back to it when no C compiler was
+# requested. Passing a bare `cl` here would leave the test without the MSVC
+# environment and fail with "'cl' is not recognized".
+if(CMAKE_C_COMPILER)
+  set(OSKEL_HOSTED_CC "${CMAKE_C_COMPILER}")
+else()
+  set(OSKEL_HOSTED_CC "${CMAKE_CXX_COMPILER}")
+endif()
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -221,7 +243,7 @@ install(TARGETS oskel oskelc RUNTIME DESTINATION bin)
 # writes text), so it can be built and shipped on its own. Its sources live
 # under `tools/`, outside the three `src/` globs, so the generator never ends up
 # inside `oskel`.
-add_library(bindgen_lib STATIC "${CMAKE_CURRENT_SOURCE_DIR}/tools/bindgen.cpp")
+add_library(bindgen_lib STATIC "${CMAKE_CURRENT_SOURCE_DIR}/tools/bindgen.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/tools/cxxbind.cpp")
 target_include_directories(bindgen_lib PUBLIC include src)
 target_compile_options(bindgen_lib PRIVATE ${OSKEL_WARNINGS})
 
@@ -351,6 +373,31 @@ if(BUILD_TESTING)
       "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
       "-DBINDGEN_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/tests/bindgen/target.h"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_bindgen_target.cmake")
+
+  # `--cxx` generates the module, the C header and the C++ shim. The generation
+  # and `oskel -c` half runs everywhere; the shim compile plus VM/AOT execution
+  # is Linux-only (LD_PRELOAD, hosted AOT).
+  add_test(NAME cxxbind.generate
+    COMMAND ${CMAKE_COMMAND}
+      "-DBINDGEN_EXE=$<TARGET_FILE:bindgen>"
+      "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+      "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+      "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+      "-DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/cxxbind-generate"
+      "-DRUN_RUNTIME=OFF"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_cxxbind_case.cmake")
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+     CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    add_test(NAME cxxbind.end_to_end
+      COMMAND ${CMAKE_COMMAND}
+        "-DBINDGEN_EXE=$<TARGET_FILE:bindgen>"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+        "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/cxxbind-end-to-end"
+        "-DRUN_RUNTIME=ON"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_cxxbind_case.cmake")
+  endif()
 
   # `oskelp` is standalone too, so its unit test links `oskelp_lib` directly.
   add_executable(oskelp_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/oskelp_test.cpp")
@@ -630,6 +677,20 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods_alloc.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # The bound range methods (PHASE 7c.3l): `r.toArray()` and `r.contains(x)`.
+    # `emitMemberGet` only knew a range's `.length`, so the backend answered
+    # both with "value has no such member". `toArray` materialises the range
+    # (half-open or closed, either direction) and refuses a span over ten
+    # million items with the hosted message; `contains` is the method form of
+    # `x in r`. The `.length` saturation is pinned here too: a span wider than
+    # INT64_MAX reports INT64_MAX on both engines instead of overflowing.
+    add_test(NAME oskel.build_binary_range_methods
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_range_methods"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_range_methods.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # The bound string methods: `upper`, `lower`, `trim`/`trimStart`/`trimEnd`,
     # `contains`, `startsWith`, `endsWith`, `indexOf`, `substr`, `reversed` and
     # `repeat`. Same binding mechanism as `arr.push`, so the receiver is
@@ -762,7 +823,7 @@ if(BUILD_TESTING)
     add_test(NAME oskel.build_mode
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-        "-DOSKEL_CC=${CMAKE_C_COMPILER}"
+        "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_mode.cmake")
 
@@ -942,7 +1003,7 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_COMMAND}
           "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_macos"
           "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-          "-DOSKEL_CC=${CMAKE_C_COMPILER}"
+          "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
           "-DOSKEL_SKIP_RUN=${OSKEL_MACOS_SKIP_RUN}"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted.oskl"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
@@ -957,7 +1018,7 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_COMMAND}
           "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_windows"
           "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-          "-DOSKEL_CC=${CMAKE_C_COMPILER}"
+          "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted_windows.oskl"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
     endif()
