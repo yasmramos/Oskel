@@ -1466,6 +1466,42 @@ if(BUILD_TESTING)
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
 
+    # `push` and `pop` are bound method closures that capture their receiver,
+    # so a detached method still mutates the same array.
+    add_test(NAME oskel.build_wasm_array_methods
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_array_methods"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `shift`, `unshift`, `insert`, `removeAt`, `contains`, `indexOf` and
+    # `clear` mutate or scan the captured receiver in place.
+    add_test(NAME oskel.build_wasm_array_methods_inplace
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_array_methods_inplace"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods_inplace.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `slice`, `concat`, `reversed` and `clone` allocate a fresh array and
+    # leave the receiver untouched.
+    add_test(NAME oskel.build_wasm_array_methods_alloc
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_array_methods_alloc"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_methods_alloc.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
     # `std.datetime` is deterministic apart from `time()`/`clock()`, which the
     # fixture only observes through stable predicates, so the module must agree
     # with the VM byte for byte too.
@@ -1529,9 +1565,10 @@ if(BUILD_TESTING)
     # A mis-lowered loop must fail the test, not hang the suite: the Node run
     # gets a hard timeout in `wasm_case.cmake`, and CTest bounds the driver.
     set_tests_properties(oskel.build_wasm oskel.build_wasm_builtins
-      oskel.build_wasm_datetime oskel.build_wasm_collections
-      oskel.build_wasm_strings oskel.build_wasm_math
-      oskel.build_wasm_double_format PROPERTIES TIMEOUT 120)
+      oskel.build_wasm_array_methods oskel.build_wasm_array_methods_inplace
+      oskel.build_wasm_array_methods_alloc oskel.build_wasm_datetime
+      oskel.build_wasm_collections oskel.build_wasm_strings
+      oskel.build_wasm_math oskel.build_wasm_double_format PROPERTIES TIMEOUT 120)
   endif()
 
   # --- .oskl script tests (auto-detected) ---

@@ -2101,8 +2101,13 @@ an array), and the builtins `print`, `write`, `eprint`, `len`, `type`, `str`,
 `$str`, `repr`, `int`, `float`, `double`, `bool`, `chr`, `ord`, `floor`,
 `ceil`, `round`, `sqrt`, `assert`, `assertEq`, `panic`, `error`, `isError`,
 `$isError`, `$nonNull`, `range`, `$range`, `$slice`, `time`, `clock` and
-`exit`. The array, map and string methods are bound too (the same list as the
-x86-64 backend), so `std/json`, `std/datetime`, `std/collections`, `std/path`
+`exit`. The array methods that mutate or copy the receiver -- `push`, `pop`,
+`shift`, `unshift`, `insert`, `removeAt`, `contains`, `indexOf`, `clear`,
+`slice`, `concat`, `reversed` and `clone` -- are bound as receiver-capturing
+closures. The callback methods (`map`, `filter`, `each`, `find`, `any`, `all`,
+`reduce`, `sort`, `sorted`), `sum`, `join` and the map, string and range
+methods are still open, so the standard-library modules stay on the portable
+primitive surface: `std/json`, `std/datetime`, `std/collections`, `std/path`
 and the bound half of `std.math` build and agree with the VM byte for byte; the
 host clock is what lets `std/datetime` read `time()`/`clock()`.
 
@@ -2111,6 +2116,14 @@ Still open, and each reported rather than mis-compiled:
 - **Transcendental builtins** (`sin`, `cos`, `tan`, `log`, `exp`, ...) are not
   bound yet; `std.math` builds and its `abs`/`min`/`max`/`clamp`/`sqrt`/`PI`/`E`
   subset agrees with the VM, but a call to an unbound name reports the gap.
+- **Collection and string methods** beyond the in-place and allocating array
+  methods are not bound yet: `arr.map(...)`, `arr.sum()`, `table.keys()`,
+  `text.upper()` and `range.toArray()` report "no such member on this value".
+  The fixtures `native_build_array_callbacks.oskl`,
+  `native_build_array_folds.oskl`, `native_build_map_methods.oskl`,
+  `native_build_string_methods.oskl`, `native_build_range_methods.oskl`,
+  `native_build_sort_methods.oskl` and `native_build_function_repr.oskl` are
+  the targets.
 - A builtin the backend does not bind is **seeded as a closure that raises a
   clear runtime error when called**, not left unseeded: a module that merely
   *declares* `native fn sin` (through `import std.math`) still builds, while a

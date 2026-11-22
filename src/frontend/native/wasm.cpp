@@ -86,6 +86,22 @@ constexpr std::uint32_t kMapEntryTagOffset = 8;
 constexpr std::uint32_t kMapEntryPayloadOffset = 16;
 constexpr std::uint32_t kMapEntrySize = 24;
 
+// A bound method is a closure whose `flags` word holds one of these selectors;
+// the shared dispatcher reads it and calls the matching helper.
+constexpr std::uint64_t kMethodArrayPush = 0;
+constexpr std::uint64_t kMethodArrayPop = 1;
+constexpr std::uint64_t kMethodArrayShift = 2;
+constexpr std::uint64_t kMethodArrayUnshift = 3;
+constexpr std::uint64_t kMethodArrayInsert = 4;
+constexpr std::uint64_t kMethodArrayRemoveAt = 5;
+constexpr std::uint64_t kMethodArrayContains = 6;
+constexpr std::uint64_t kMethodArrayIndexOf = 7;
+constexpr std::uint64_t kMethodArrayClear = 8;
+constexpr std::uint64_t kMethodArraySlice = 9;
+constexpr std::uint64_t kMethodArrayConcat = 10;
+constexpr std::uint64_t kMethodArrayReversed = 11;
+constexpr std::uint64_t kMethodArrayClone = 12;
+
 // mt19937_64 state (PHASE 9.3): 312 words followed by the cursor, the same
 // layout the x86-64 runtime uses, so a seeded stream is identical on both
 // backends and in the VM.
@@ -625,6 +641,11 @@ struct Runtime {
                 tMapDelete = 0, tEquals = 0, tToStrDepth = 0, tInvoke = 0,
                 tBindMethod = 0;
 
+  // Table slot 0 is the shared method dispatcher. A method closure stores that
+  // slot and its selector in `flags`; the dispatcher calls the helper.
+  std::uint32_t methodDispatch = 0;
+  std::vector<std::uint32_t> methodHelpers;
+
   std::uint32_t writeImport = 0, exitImport = 0, timeImport = 0,
                 clockImport = 0;
 
@@ -650,8 +671,13 @@ struct Runtime {
                 sNonNull = 0, sLenType = 0;
   std::uint32_t sMessage = 0, sCode = 0, sNoMember = 0, sCannotIndex = 0,
                 sStringImmutable = 0, sIndexRange = 0, sKeyValue = 0;
+  std::uint32_t sInsertRange = 0, sRemoveAtRange = 0, sInsertIndex = 0,
+                sRemoveAtIndex = 0, sConcatArray = 0;
   std::uint32_t sOpenBracket = 0, sCloseBracket = 0, sOpenBrace = 0,
                 sCloseBrace = 0, sColonSpace = 0, sEllipsis = 0, sLength = 0,
+                sPush = 0, sPop = 0, sShift = 0, sUnshift = 0, sInsert = 0,
+                sRemoveAt = 0, sContains = 0, sIndexOf = 0, sClear = 0,
+                sSlice = 0, sConcat = 0, sReversed = 0, sClone = 0,
                 sCannotSetField = 0, sCannotSlice = 0, sSliceStartInt = 0,
                 sSliceEndInt = 0, sSliceStepInt = 0, sSliceStepZero = 0;
   std::uint32_t sArrayIndexInt = 0, sMapKeyString = 0, sStringIndexInt = 0,
@@ -802,6 +828,24 @@ struct Runtime {
     sColonSpace = pool.addString(": ");
     sEllipsis = pool.addString("...");
     sLength = pool.addString("length");
+    sPush = pool.addString("push");
+    sPop = pool.addString("pop");
+    sShift = pool.addString("shift");
+    sUnshift = pool.addString("unshift");
+    sInsert = pool.addString("insert");
+    sRemoveAt = pool.addString("removeAt");
+    sContains = pool.addString("contains");
+    sIndexOf = pool.addString("indexOf");
+    sClear = pool.addString("clear");
+    sSlice = pool.addString("slice");
+    sConcat = pool.addString("concat");
+    sReversed = pool.addString("reversed");
+    sClone = pool.addString("clone");
+    sConcatArray = pool.addString("concat() expects an array");
+    sInsertRange = pool.addString("insert() index out of range");
+    sRemoveAtRange = pool.addString("removeAt() index out of range");
+    sInsertIndex = pool.addString("insert() index must be an integer");
+    sRemoveAtIndex = pool.addString("removeAt() index must be an integer");
     sCannotSetField = pool.addString("cannot set a field on this value");
     sCannotSlice = pool.addString("cannot slice a value of this type");
     sSliceStartInt = pool.addString("slice start must be an integer");
@@ -899,6 +943,11 @@ struct Runtime {
   std::uint32_t emitBuiltin(const std::string& name);
   std::uint32_t emitMemberGet();
   std::uint32_t emitMemberSet();
+  void reserveArrayMethods();
+  void emitArrayMethods();
+  void emitMethodDispatch();
+  void emitMethodValue(Func& f, const char* owner, const char* method,
+                       std::uint64_t selector);
   std::uint32_t emitUtf8ByteOffset();
   std::uint32_t emitTrapBuiltin(const std::string& name);
   // Stack helpers shared by the operator emitters.
@@ -4068,6 +4117,54 @@ std::uint32_t Runtime::emitUtf8ByteOffset() {
   return index;
 }
 
+// Builds a bound-method closure. The receiver is boxed in a cell so the
+// closure keeps it alive when the method is detached, and the selector in
+// `flags` tells the dispatcher which helper to run.
+void Runtime::emitMethodValue(Func& f, const char* owner, const char* method,
+                              std::uint64_t selector) {
+  // `fmtFunc` adds the `<native fn ...>` wrapper itself, so the header keeps
+  // the bare `owner.method` name and marks the closure native in `flags`.
+  const std::uint32_t nameAddress =
+      pool.addString(std::string(owner) + "." + method);
+  const std::uint32_t cell = f.addLocal(kI32), closure = f.addLocal(kI32);
+  f.i32c(16);
+  f.call(alloc);
+  f.lset(cell);
+  f.lget(cell);
+  f.lget(0);
+  f.i64Store(0);
+  f.lget(cell);
+  f.lget(1);
+  f.i64Store(8);
+  f.i32c(48);
+  f.call(alloc);
+  f.lset(closure);
+  f.lget(closure);
+  f.i64c(0);
+  f.i64Store(0);
+  f.lget(closure);
+  f.i64c(static_cast<std::int64_t>(selector));
+  f.i64Store(8);
+  f.lget(closure);
+  f.i64c(1);
+  f.i64Store(16);
+  f.lget(closure);
+  f.i64c(static_cast<std::int64_t>(nameAddress));
+  f.i64Store(24);
+  f.lget(closure);
+  f.i64c(1);
+  f.i64Store(32);
+  f.lget(closure);
+  f.i32c(40);
+  f.i32Add();
+  f.lget(cell);
+  f.i64ExtendI32U();
+  f.i64Store(0);
+  f.i64c(static_cast<std::int64_t>(kFunc));
+  f.lget(closure);
+  f.i64ExtendI32U();
+}
+
 std::uint32_t Runtime::emitMemberGet() {
   std::uint32_t index = m.reserveFunction(tBin);
   Func f(m, index, {kI64, kI64, kI64, kI64});
@@ -4189,6 +4286,110 @@ std::uint32_t Runtime::emitMemberGet() {
   f.i64Load(kArrayLengthOffset);
   f.ret();
   f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sPush));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "array", "push", kMethodArrayPush);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sPop));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "array", "pop", kMethodArrayPop);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sShift));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "array", "shift", kMethodArrayShift);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sUnshift));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "array", "unshift", kMethodArrayUnshift);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sInsert));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "array", "insert", kMethodArrayInsert);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sRemoveAt));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "array", "removeAt", kMethodArrayRemoveAt);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sContains));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "array", "contains", kMethodArrayContains);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sIndexOf));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "array", "indexOf", kMethodArrayIndexOf);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sClear));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "array", "clear", kMethodArrayClear);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sSlice));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "array", "slice", kMethodArraySlice);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sConcat));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "array", "concat", kMethodArrayConcat);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sReversed));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "array", "reversed", kMethodArrayReversed);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sClone));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "array", "clone", kMethodArrayClone);
+  f.ret();
+  f.end();
   emitFailStatic(f, sNoMember);
   f.end();
 
@@ -4285,6 +4486,978 @@ std::uint32_t Runtime::emitMemberSet() {
   f.end();
   emitFailStatic(f, sCannotSetField);
   return index;
+}
+
+// The method helpers are reserved before `emitCore` so the dispatcher and the
+// method closures can refer to them, and their bodies are emitted after it so
+// they can call the runtime helpers (`arrayPush`, `alloc`, ...).
+// Reads the receiver a method closure captured. The closure's first upvalue
+// is a cell holding the receiver's tag and payload.
+static void emitReadReceiver(Func& f, std::uint32_t cell, std::uint32_t header,
+                             std::uint32_t recvTag, std::uint32_t recvPayload) {
+  f.lget(2);
+  f.i32c(40);
+  f.i32Add();
+  f.i64Load(0);
+  f.i32WrapI64();
+  f.lset(cell);
+  f.lget(cell);
+  f.i64Load(0);
+  f.lset(recvTag);
+  f.lget(cell);
+  f.i64Load(8);
+  f.lset(recvPayload);
+  f.lget(recvPayload);
+  f.i32WrapI64();
+  f.lset(header);
+}
+
+// The hosted `clampIndex`: a negative bound counts from the end, then the
+// result is clamped to `[0, length]`.
+static void emitClampIndex(Func& f, std::uint32_t value, std::uint32_t len) {
+  f.lget(value);
+  f.i64c(0);
+  f.i64LtS();
+  f.if_();
+  f.lget(value);
+  f.lget(len);
+  f.i64Add();
+  f.lset(value);
+  f.end();
+  f.lget(value);
+  f.i64c(0);
+  f.i64LtS();
+  f.if_();
+  f.i64c(0);
+  f.lset(value);
+  f.end();
+  f.lget(value);
+  f.lget(len);
+  f.i64GtS();
+  f.if_();
+  f.lget(len);
+  f.lset(value);
+  f.end();
+}
+
+// The method helpers are reserved before `emitCore` so the dispatcher and the
+// method closures can refer to them, and their bodies are emitted after it so
+// they can call the runtime helpers (`arrayPush`, `equals`, `alloc`, ...).
+void Runtime::reserveArrayMethods() {
+  methodHelpers.clear();
+  methodHelpers.push_back(m.reserveFunction(tValue));  // push
+  methodHelpers.push_back(m.reserveFunction(tValue));  // pop
+  methodHelpers.push_back(m.reserveFunction(tValue));  // shift
+  methodHelpers.push_back(m.reserveFunction(tValue));  // unshift
+  methodHelpers.push_back(m.reserveFunction(tValue));  // insert
+  methodHelpers.push_back(m.reserveFunction(tValue));  // removeAt
+  methodHelpers.push_back(m.reserveFunction(tValue));  // contains
+  methodHelpers.push_back(m.reserveFunction(tValue));  // indexOf
+  methodHelpers.push_back(m.reserveFunction(tValue));  // clear
+  methodHelpers.push_back(m.reserveFunction(tValue));  // slice
+  methodHelpers.push_back(m.reserveFunction(tValue));  // concat
+  methodHelpers.push_back(m.reserveFunction(tValue));  // reversed
+  methodHelpers.push_back(m.reserveFunction(tValue));  // clone
+}
+
+void Runtime::emitArrayMethods() {
+  {
+    Func f(m, methodHelpers[kMethodArrayPush], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  i = f.addLocal(kI32);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.i32c(0);
+    f.lset(i);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(1);
+    f.i32GeS();
+    f.brIf(1);
+    f.lget(header);
+    f.lget(0);
+    f.lget(i);
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i64Load(0);
+    f.lget(0);
+    f.lget(i);
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i64Load(8);
+    f.call(arrayPush);
+    f.lget(i);
+    f.i32c(1);
+    f.i32Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kArray));
+    f.lget(recvPayload);
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodArrayPop], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  addr = f.addLocal(kI32);
+    std::uint32_t len = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(0);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i64Load(kArrayLengthOffset);
+    f.lset(len);
+    f.lget(len);
+    f.i64c(0);
+    f.i64Eq();
+    f.if_();
+    f.i64c(static_cast<std::int64_t>(kNil));
+    f.i64c(0);
+    f.ret();
+    f.end();
+    f.lget(len);
+    f.i64c(1);
+    f.i64Sub();
+    f.lset(len);
+    f.lget(header);
+    f.lget(len);
+    f.i64Store(kArrayLengthOffset);
+    f.lget(header);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lget(len);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.lset(addr);
+    f.lget(addr);
+    f.i64Load(0);
+    f.lget(addr);
+    f.i64Load(8);
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodArrayShift], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  addr = f.addLocal(kI32);
+    std::uint32_t len = f.addLocal(kI64), tag = f.addLocal(kI64),
+                  payload = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(0);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i64Load(kArrayLengthOffset);
+    f.lset(len);
+    f.lget(len);
+    f.i64c(0);
+    f.i64Eq();
+    f.if_();
+    f.i64c(static_cast<std::int64_t>(kNil));
+    f.i64c(0);
+    f.ret();
+    f.end();
+    f.lget(header);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lset(addr);
+    f.lget(addr);
+    f.i64Load(0);
+    f.lset(tag);
+    f.lget(addr);
+    f.i64Load(8);
+    f.lset(payload);
+    f.lget(addr);
+    f.lget(addr);
+    f.i32c(16);
+    f.i32Add();
+    f.lget(len);
+    f.i64c(1);
+    f.i64Sub();
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.memoryCopy();
+    f.lget(header);
+    f.lget(len);
+    f.i64c(1);
+    f.i64Sub();
+    f.i64Store(kArrayLengthOffset);
+    f.lget(tag);
+    f.lget(payload);
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodArrayUnshift], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  i = f.addLocal(kI32), addr = f.addLocal(kI32);
+    std::uint32_t len = f.addLocal(kI64), lastTag = f.addLocal(kI64),
+                  lastPayload = f.addLocal(kI64);
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(1);
+    f.lset(i);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.i32Eqz();
+    f.brIf(1);
+    f.lget(i);
+    f.i32c(1);
+    f.i32Sub();
+    f.lset(i);
+    f.lget(header);
+    f.lget(0);
+    f.lget(i);
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i64Load(0);
+    f.lget(0);
+    f.lget(i);
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i64Load(8);
+    f.call(arrayPush);
+    f.lget(header);
+    f.i64Load(kArrayLengthOffset);
+    f.lset(len);
+    f.lget(header);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lset(addr);
+    f.lget(addr);
+    f.lget(len);
+    f.i64c(1);
+    f.i64Sub();
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i64Load(0);
+    f.lset(lastTag);
+    f.lget(addr);
+    f.lget(len);
+    f.i64c(1);
+    f.i64Sub();
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i64Load(8);
+    f.lset(lastPayload);
+    f.lget(addr);
+    f.i32c(16);
+    f.i32Add();
+    f.lget(addr);
+    f.lget(len);
+    f.i64c(1);
+    f.i64Sub();
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.memoryCopy();
+    f.lget(addr);
+    f.lget(lastTag);
+    f.i64Store(0);
+    f.lget(addr);
+    f.lget(lastPayload);
+    f.i64Store(8);
+    f.br(0);
+    f.end();
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kArray));
+    f.lget(recvPayload);
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodArrayInsert], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  addr = f.addLocal(kI32);
+    std::uint32_t idx = f.addLocal(kI64), len = f.addLocal(kI64),
+                  oldLen = f.addLocal(kI64), valueTag = f.addLocal(kI64),
+                  valuePayload = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(2);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(0);
+    f.i64Load(0);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sInsertIndex);
+    f.end();
+    f.lget(0);
+    f.i64Load(8);
+    f.lset(idx);
+    f.lget(0);
+    f.i32c(16);
+    f.i32Add();
+    f.i64Load(0);
+    f.lset(valueTag);
+    f.lget(0);
+    f.i32c(16);
+    f.i32Add();
+    f.i64Load(8);
+    f.lset(valuePayload);
+    f.lget(header);
+    f.i64Load(kArrayLengthOffset);
+    f.lset(len);
+    f.lget(len);
+    f.lset(oldLen);
+    f.lget(idx);
+    f.i64c(0);
+    f.i64LtS();
+    f.if_();
+    f.lget(idx);
+    f.lget(len);
+    f.i64Add();
+    f.lset(idx);
+    f.end();
+    f.lget(idx);
+    f.i64c(0);
+    f.i64LtS();
+    f.lget(idx);
+    f.lget(len);
+    f.i64GtS();
+    f.i32Or();
+    f.if_();
+    emitFailStatic(f, sInsertRange);
+    f.end();
+    f.lget(header);
+    f.lget(valueTag);
+    f.lget(valuePayload);
+    f.call(arrayPush);
+    f.lget(header);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lset(addr);
+    f.lget(addr);
+    f.lget(idx);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i32c(16);
+    f.i32Add();
+    f.lget(addr);
+    f.lget(idx);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.lget(oldLen);
+    f.lget(idx);
+    f.i64Sub();
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.memoryCopy();
+    f.lget(addr);
+    f.lget(idx);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.lget(valueTag);
+    f.i64Store(0);
+    f.lget(addr);
+    f.lget(idx);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.lget(valuePayload);
+    f.i64Store(8);
+    f.i64c(static_cast<std::int64_t>(kArray));
+    f.lget(recvPayload);
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodArrayRemoveAt], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  addr = f.addLocal(kI32);
+    std::uint32_t idx = f.addLocal(kI64), len = f.addLocal(kI64),
+                  tag = f.addLocal(kI64), payload = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(1);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(0);
+    f.i64Load(0);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sRemoveAtIndex);
+    f.end();
+    f.lget(0);
+    f.i64Load(8);
+    f.lset(idx);
+    f.lget(header);
+    f.i64Load(kArrayLengthOffset);
+    f.lset(len);
+    f.lget(idx);
+    f.i64c(0);
+    f.i64LtS();
+    f.if_();
+    f.lget(idx);
+    f.lget(len);
+    f.i64Add();
+    f.lset(idx);
+    f.end();
+    f.lget(idx);
+    f.i64c(0);
+    f.i64LtS();
+    f.lget(idx);
+    f.lget(len);
+    f.i64GeS();
+    f.i32Or();
+    f.if_();
+    emitFailStatic(f, sRemoveAtRange);
+    f.end();
+    f.lget(header);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lset(addr);
+    f.lget(addr);
+    f.lget(idx);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i64Load(0);
+    f.lset(tag);
+    f.lget(addr);
+    f.lget(idx);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i64Load(8);
+    f.lset(payload);
+    f.lget(addr);
+    f.lget(idx);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.lget(addr);
+    f.lget(idx);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i32c(16);
+    f.i32Add();
+    f.lget(len);
+    f.lget(idx);
+    f.i64Sub();
+    f.i64c(1);
+    f.i64Sub();
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.memoryCopy();
+    f.lget(header);
+    f.lget(len);
+    f.i64c(1);
+    f.i64Sub();
+    f.i64Store(kArrayLengthOffset);
+    f.lget(tag);
+    f.lget(payload);
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodArrayContains], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  addr = f.addLocal(kI32);
+    std::uint32_t i = f.addLocal(kI64), len = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(1);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i64Load(kArrayLengthOffset);
+    f.lset(len);
+    f.lget(header);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lset(addr);
+    f.i64c(0);
+    f.lset(i);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(len);
+    f.i64GeU();
+    f.brIf(1);
+    f.lget(addr);
+    f.lget(i);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i64Load(0);
+    f.lget(addr);
+    f.lget(i);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i64Load(8);
+    f.lget(0);
+    f.i64Load(0);
+    f.lget(0);
+    f.i64Load(8);
+    f.i32c(0);
+    f.call(equals);
+    f.if_();
+    f.i64c(static_cast<std::int64_t>(kBool));
+    f.i64c(1);
+    f.ret();
+    f.end();
+    f.lget(i);
+    f.i64c(1);
+    f.i64Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kBool));
+    f.i64c(0);
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodArrayIndexOf], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  addr = f.addLocal(kI32);
+    std::uint32_t i = f.addLocal(kI64), len = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(1);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i64Load(kArrayLengthOffset);
+    f.lset(len);
+    f.lget(header);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lset(addr);
+    f.i64c(0);
+    f.lset(i);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(len);
+    f.i64GeU();
+    f.brIf(1);
+    f.lget(addr);
+    f.lget(i);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i64Load(0);
+    f.lget(addr);
+    f.lget(i);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i64Load(8);
+    f.lget(0);
+    f.i64Load(0);
+    f.lget(0);
+    f.i64Load(8);
+    f.i32c(0);
+    f.call(equals);
+    f.if_();
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.lget(i);
+    f.ret();
+    f.end();
+    f.lget(i);
+    f.i64c(1);
+    f.i64Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64c(-1);
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodArrayClear], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(0);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i64c(0);
+    f.i64Store(kArrayLengthOffset);
+    f.i64c(static_cast<std::int64_t>(kArray));
+    f.lget(recvPayload);
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodArraySlice], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  newHeader = f.addLocal(kI32), newItems = f.addLocal(kI32),
+                  oldItems = f.addLocal(kI32);
+    std::uint32_t len = f.addLocal(kI64), start = f.addLocal(kI64),
+                  end = f.addLocal(kI64), count = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(2);
+    f.i32GtS();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i64Load(kArrayLengthOffset);
+    f.lset(len);
+    f.i64c(0);
+    f.lset(start);
+    f.lget(len);
+    f.lset(end);
+    f.lget(1);
+    f.i32c(1);
+    f.i32GeS();
+    f.if_();
+    f.lget(0);
+    f.i64Load(0);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sSliceStartInt);
+    f.end();
+    f.lget(0);
+    f.i64Load(8);
+    f.lset(start);
+    f.end();
+    f.lget(1);
+    f.i32c(2);
+    f.i32GeS();
+    f.if_();
+    f.lget(0);
+    f.i32c(16);
+    f.i32Add();
+    f.i64Load(0);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sSliceEndInt);
+    f.end();
+    f.lget(0);
+    f.i32c(16);
+    f.i32Add();
+    f.i64Load(8);
+    f.lset(end);
+    f.end();
+    emitClampIndex(f, start, len);
+    emitClampIndex(f, end, len);
+    f.lget(end);
+    f.lget(start);
+    f.i64LtS();
+    f.if_();
+    f.lget(start);
+    f.lset(end);
+    f.end();
+    f.lget(end);
+    f.lget(start);
+    f.i64Sub();
+    f.lset(count);
+    f.lget(count);
+    f.call(newArray);
+    f.i32WrapI64();
+    f.lset(newHeader);
+    f.drop();
+    f.lget(header);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lset(oldItems);
+    f.lget(newHeader);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lset(newItems);
+    f.lget(newItems);
+    f.lget(oldItems);
+    f.lget(start);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.lget(count);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.memoryCopy();
+    f.lget(newHeader);
+    f.lget(count);
+    f.i64Store(kArrayLengthOffset);
+    f.i64c(static_cast<std::int64_t>(kArray));
+    f.lget(newHeader);
+    f.i64ExtendI32U();
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodArrayConcat], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  newHeader = f.addLocal(kI32), newItems = f.addLocal(kI32),
+                  selfItems = f.addLocal(kI32), otherItems = f.addLocal(kI32),
+                  otherHeader = f.addLocal(kI32);
+    std::uint32_t len = f.addLocal(kI64), otherLen = f.addLocal(kI64),
+                  total = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(1);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(0);
+    f.i64Load(0);
+    f.i64c(static_cast<std::int64_t>(kArray));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sConcatArray);
+    f.end();
+    f.lget(0);
+    f.i64Load(8);
+    f.i32WrapI64();
+    f.lset(otherHeader);
+    f.lget(header);
+    f.i64Load(kArrayLengthOffset);
+    f.lset(len);
+    f.lget(otherHeader);
+    f.i64Load(kArrayLengthOffset);
+    f.lset(otherLen);
+    f.lget(len);
+    f.lget(otherLen);
+    f.i64Add();
+    f.lset(total);
+    f.lget(total);
+    f.call(newArray);
+    f.i32WrapI64();
+    f.lset(newHeader);
+    f.drop();
+    f.lget(header);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lset(selfItems);
+    f.lget(otherHeader);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lset(otherItems);
+    f.lget(newHeader);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lset(newItems);
+    f.lget(newItems);
+    f.lget(selfItems);
+    f.lget(len);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.memoryCopy();
+    f.lget(newItems);
+    f.lget(len);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.lget(otherItems);
+    f.lget(otherLen);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.memoryCopy();
+    f.lget(newHeader);
+    f.lget(total);
+    f.i64Store(kArrayLengthOffset);
+    f.i64c(static_cast<std::int64_t>(kArray));
+    f.lget(newHeader);
+    f.i64ExtendI32U();
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodArrayReversed], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  newHeader = f.addLocal(kI32), newItems = f.addLocal(kI32),
+                  oldItems = f.addLocal(kI32);
+    std::uint32_t len = f.addLocal(kI64), i = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(0);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i64Load(kArrayLengthOffset);
+    f.lset(len);
+    f.lget(len);
+    f.call(newArray);
+    f.i32WrapI64();
+    f.lset(newHeader);
+    f.drop();
+    f.lget(header);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lset(oldItems);
+    f.lget(newHeader);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lset(newItems);
+    f.i64c(0);
+    f.lset(i);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(len);
+    f.i64GeU();
+    f.brIf(1);
+    f.lget(newItems);
+    f.lget(i);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.lget(oldItems);
+    f.lget(len);
+    f.i64c(1);
+    f.i64Sub();
+    f.lget(i);
+    f.i64Sub();
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.i32Add();
+    f.i32c(16);
+    f.memoryCopy();
+    f.lget(i);
+    f.i64c(1);
+    f.i64Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
+    f.end();
+    f.lget(newHeader);
+    f.lget(len);
+    f.i64Store(kArrayLengthOffset);
+    f.i64c(static_cast<std::int64_t>(kArray));
+    f.lget(newHeader);
+    f.i64ExtendI32U();
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodArrayClone], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  newHeader = f.addLocal(kI32), newItems = f.addLocal(kI32),
+                  oldItems = f.addLocal(kI32);
+    std::uint32_t len = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(0);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i64Load(kArrayLengthOffset);
+    f.lset(len);
+    f.lget(len);
+    f.call(newArray);
+    f.i32WrapI64();
+    f.lset(newHeader);
+    f.drop();
+    f.lget(header);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lset(oldItems);
+    f.lget(newHeader);
+    f.i64Load(kArrayItemsOffset);
+    f.i32WrapI64();
+    f.lset(newItems);
+    f.lget(newItems);
+    f.lget(oldItems);
+    f.lget(len);
+    f.i32WrapI64();
+    f.i32c(16);
+    f.i32Mul();
+    f.memoryCopy();
+    f.lget(newHeader);
+    f.lget(len);
+    f.i64Store(kArrayLengthOffset);
+    f.i64c(static_cast<std::int64_t>(kArray));
+    f.lget(newHeader);
+    f.i64ExtendI32U();
+    f.ret();
+  }
+}
+
+void Runtime::emitMethodDispatch() {
+  Func f(m, methodDispatch, {kI32, kI32, kI32});
+  std::uint32_t selector = f.addLocal(kI32);
+  f.lget(2);
+  f.i64Load(8);
+  f.i32WrapI64();
+  f.lset(selector);
+  for (std::size_t i = 0; i < methodHelpers.size(); ++i) {
+    f.lget(selector);
+    f.i32c(static_cast<std::int32_t>(i));
+    f.i32Eq();
+    f.if_();
+    f.lget(0);
+    f.lget(1);
+    f.lget(2);
+    f.call(methodHelpers[i]);
+    f.ret();
+    f.end();
+  }
+  emitFailStatic(f, sNoMember);
 }
 
 // -------------------------------------------------------------- collections
@@ -8884,7 +10057,13 @@ std::vector<std::uint8_t> Lowering::run() {
   rt.addImports();
   rt.addStaticStrings();
   rt.dtoaScratch = pool.addZeros(kDtoaScratchBytes);
+  // Table slot 0 is the dispatcher; the method helpers are ordinary functions
+  // called by it, so only the dispatcher needs a table entry.
+  rt.methodDispatch = m.reserveFunction(rt.tValue);
+  rt.reserveArrayMethods();
   rt.emitCore();
+  rt.emitArrayMethods();
+  rt.emitMethodDispatch();
 
   // One static string per string constant and per proto name, created before
   // any proto body is emitted so a LOADK/CLOSURE can name its address.
@@ -8917,7 +10096,7 @@ std::vector<std::uint8_t> Lowering::run() {
       index = rt.emitTrapBuiltin(name);
     }
     builtinFunc[name] = index;
-    builtinTable[name] = static_cast<std::uint32_t>(builtinOrder.size());
+    builtinTable[name] = 1 + static_cast<std::uint32_t>(builtinOrder.size());
     builtinOrder.push_back(name);
   }
 
@@ -8926,7 +10105,7 @@ std::vector<std::uint8_t> Lowering::run() {
   }
   for (std::size_t i = 0; i < protos.size(); ++i) {
     protoTable[protos[i]] =
-        static_cast<std::uint32_t>(builtinOrder.size() + i);
+        1 + static_cast<std::uint32_t>(builtinOrder.size() + i);
   }
 
   for (std::size_t i = 0; i < protos.size(); ++i) emitProto(*protos[i], i);
@@ -8953,6 +10132,7 @@ std::vector<std::uint8_t> Lowering::run() {
   m.data.emplace_back(pool.base, pool.bytes);
 
   m.tableFuncs.clear();
+  m.tableFuncs.push_back(rt.methodDispatch);
   for (const std::string& name : builtinOrder) m.tableFuncs.push_back(builtinFunc[name]);
   for (const Bytecode* proto : protos) m.tableFuncs.push_back(protoFunc[proto]);
 
