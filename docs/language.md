@@ -2546,20 +2546,27 @@ free functions.
 | Function | Description |
 | --- | --- |
 | `map(xs, f)` | A new array with `f(element)`. |
+| `flatMap(xs, f)` | `f(element)` (an array) flattened one level. |
 | `filter(xs, f)` / `reject(xs, f)` | The elements for which `f` is truthy / falsy. |
 | `each(xs, f)` | Calls `f(element)` for side effects; returns `xs`. |
 | `fold(xs, f, init)` | Left fold with `f(accumulator, element)`. |
+| `scan(xs, f, init)` | The running fold: `init` followed by each accumulator. |
 | `sum(xs)` / `sumBy(xs, f)` | The sum of the elements / of `f(element)`. |
 | `minimum(xs)` / `maximum(xs)` | The smallest / largest element, or `nil` when empty. |
 | `minBy(xs, key)` / `maxBy(xs, key)` | The element whose key is smallest / largest, or `nil`. |
 | `count(xs, f)` | How many elements satisfy `f`. |
 | `find(xs, f)` / `findIndex(xs, f)` | The first element / index satisfying `f`, else `nil` / `-1`. |
+| `findLast(xs, f)` / `findLastIndex(xs, f)` | The last element / index satisfying `f`, else `nil` / `-1`. |
 | `any(xs, f)` / `all(xs, f)` / `none(xs, f)` | Whether some / every / no element satisfies `f`. |
 | `take(xs, n)` / `drop(xs, n)` | The first `n` / the elements after the first `n` (clamped). |
+| `takeWhile(xs, f)` / `dropWhile(xs, f)` | The leading run satisfying `f` / the elements after it. |
 | `partition(xs, f)` | `[yes, no]`: the elements that satisfy `f` and those that do not. |
 | `chunk(xs, size)` | Consecutive groups of at most `size` elements. |
+| `sliding(xs, size)` | Overlapping windows of exactly `size` elements, advancing one at a time. |
 | `zip(a, b)` | Pairs of elements, stopping at the shorter array. |
+| `zipWith(a, b, f)` | `f(a[i], b[i])`, stopping at the shorter array. |
 | `flatten(xs)` | One level of nesting removed. |
+| `intersperse(xs, separator)` | `separator` between consecutive elements. |
 | `reverse(xs)` | The elements in reverse order. |
 | `unique(xs)` / `uniqueBy(xs, key)` | The elements with duplicates removed, keeping the first. |
 | `groupBy(xs, key)` | A map from `str(key(element))` to the elements that produced it. |
@@ -2585,6 +2592,12 @@ which is the useful default for a grouping key. `sort` is a stable merge sort, s
 two elements the comparator considers equal keep their input order. `sort`,
 `minimum`/`maximum` and the `By` variants need the elements (or their keys) to be
 mutually comparable: numbers with numbers, strings with strings.
+
+`scan` returns `len(xs) + 1` elements (the initial value plus one accumulator
+per element). `sliding` rejects a `size` below 1 and returns `[]` when `size`
+exceeds the array. `flatMap` expects `f` to return an array; `zipWith` stops at
+the shorter input like `zip`. `intersperse` returns a copy unchanged for an
+empty or single-element array.
 
 ### 12.13 Text
 
