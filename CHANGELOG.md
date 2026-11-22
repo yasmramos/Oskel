@@ -31,6 +31,18 @@ may change between minor versions.
   `docs/ui.md` documents the widget set, layout rules, display list and limits
   (no event loop, input widgets, font metrics or SDL presentation yet).
 
+- **`std.strings`, a text-helper module.** `import std.strings;` adds the
+  free-function helpers the string methods do not express: `words`, `isBlank`,
+  `countOf`, `indexOfAll`, `containsAll`, `containsAny`, `padBoth` and
+  `truncate`. Every length and index is a code-point count, occurrences are
+  non-overlapping, and `padBoth`/`truncate` repeat and clip their fill/ellipsis
+  the way `padStart`/`padEnd` do. The module stays on the portable primitive
+  surface (indexing, slicing, `len`, `for ... in`, closures, `panic`), so the VM,
+  `oskel build` and the WebAssembly backend produce the same output;
+  `tests/59_std_strings.oskl` covers the module on the VM and
+  `tests/native_build_strings.oskl` pins the AOT and WASM parity. Case mapping
+  stays with the Unicode `upper`/`lower` methods.
+
 - **The C++ bridge now generates factories and owned class returns.**
   `bindgen --cxx` accepts an `object` of functions (emitted as a map, so
   `Surfaces.raster(...)` reads like a namespace), `sp` returns for
@@ -188,6 +200,15 @@ may change between minor versions.
   real address rather than a synthetic token.
 
 ### Fixed
+
+- **The standard-library docs no longer claim an AOT gap that does not exist.**
+  `std/collections.oskl`, its two fixtures, `docs/language.md` §12.12 and
+  `DEVELOPMENT.md` said `sort`/`sorted` and the string methods were not bound
+  by the AOT backend, so `oskel build` supposedly compiled them and the binary
+  then failed with `value has no such member`. Both engines bind them now
+  (PHASE 7c.3i/7c.3j), and the modules stay on the portable primitive surface
+  so they also run on WebAssembly, where the methods are still absent. The
+  comments now say that instead of describing a retired limitation.
 
 - **A wrong argument count now reports the same text under `oskel build` as
   in the VM.** Every guard stopped at the constant prefix, so the VM said

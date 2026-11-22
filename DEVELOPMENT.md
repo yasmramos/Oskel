@@ -479,8 +479,8 @@ previous one.
   and `stringify` (compact or indented). The module is written over the portable
   primitive surface (indexing, slicing, `len`, `ord`/`chr`,
   `int`/`double`/`str`/`type`, `panic`, `for ... in`, closures), avoiding the
-  collection/string methods the AOT backend does not implement yet, so it
-  behaves identically on the VM and under `oskel build`.
+  collection/string methods so it also runs on WebAssembly; it behaves
+  identically on the VM and under `oskel build`.
   See `docs/language.md` §12.9/§18, `tests/55_std_json.oskl` and the AOT
   fixture `tests/native_build_json.oskl`.
 - **Standard library: `std.datetime`** — **done**: a pure-Oskel module for civil
@@ -490,11 +490,10 @@ previous one.
   `days_from_civil` algorithm, epoch conversion, calendar arithmetic,
   differences, components, a `strftime`-like `format` and ISO-8601
   `parse`/`iso`/`isValid`/`tryParse`. The module is written over the portable
-  primitive surface, avoiding the collection/string methods the AOT backend
-  does not implement yet, so it behaves identically on the VM and
-  under `oskel build`. See `docs/language.md` §12.10/§18,
-  `tests/56_std_datetime.oskl` and the AOT fixture
-  `tests/native_build_datetime.oskl`.
+  primitive surface, avoiding the collection/string methods so it also runs on
+  WebAssembly; it behaves identically on the VM and under `oskel build`. See
+  `docs/language.md` §12.10/§18, `tests/56_std_datetime.oskl` and the AOT
+  fixture `tests/native_build_datetime.oskl`.
 - **Builtin `time()` and the AOT wall clock** — **done**: `time()` returns the
   seconds since the Unix epoch as an `int` (`clock()` stays monotonic and
   untouched). The AOT runtime binds it as the `now` handle on every path — a
@@ -513,8 +512,8 @@ previous one.
   Windows; `normalize`/`relative` match `posixpath.normpath`/`relpath` exactly,
   with three documented deviations elsewhere (`basename`, `dirname`, `join`).
   The module is written over the portable primitive surface, avoiding the
-  collection/string methods the AOT backend does not implement yet, so it
-  behaves identically on the VM and under `oskel build`.
+  collection/string methods so it also runs on WebAssembly; it behaves
+  identically on the VM and under `oskel build`.
   See `docs/language.md` §12.11/§18, `tests/57_std_path.oskl` and the AOT
   fixture `tests/native_build_path.oskl`.
 - **Standard library: `std.collections`** — **done**: a pure-Oskel module of
@@ -524,13 +523,21 @@ previous one.
   `zip`, `flatten`, `reverse`, `unique`/`uniqueBy`, `groupBy`, `countBy` and
   `sort`/`sortBy`/`sortByKey`. Every function returns a new array or map and
   never mutates its input; `sort` is a stable merge sort. No new runtime type,
-  opcode or builtin. The module is written over the portable primitive surface
-  precisely because the array methods (`xs.map(f)`, `xs.sort()`, ...) are
-  VM-only today — the AOT backend does not bind them, so `oskel build` compiles
-  a call and the binary fails at run time with `value has no such member`
-  (BACKLOG §6 item 1). These helpers behave identically on the VM and under
-  `oskel build`. See `docs/language.md` §12.12/§18, `tests/58_std_collections.oskl`
+  opcode or builtin. The module stays on the portable primitive surface so it
+  also runs on WebAssembly, where the array methods are not bound; the VM and
+  the AOT backend bind them, so either form works there.
+  See `docs/language.md` §12.12/§18, `tests/58_std_collections.oskl`
   and the AOT fixture `tests/native_build_collections.oskl`.
+- **Standard library: `std.strings`** — **done**: a pure-Oskel module of text
+  helpers that the string methods do not express: `words`, `isBlank`, `countOf`,
+  `indexOfAll`, `containsAll`, `containsAny`, `padBoth` and `truncate`. Every
+  length and index is a code-point count; occurrences are non-overlapping. The
+  module stays on the portable primitive surface (indexing, slicing, `len`,
+  `for ... in`, closures, `panic`), so it behaves identically on the development
+  VM, under `oskel build` and on WebAssembly. Case mapping stays with the
+  Unicode `upper`/`lower` methods. No new runtime type, opcode or builtin. See
+  `docs/language.md` §12.13/§18, `tests/59_std_strings.oskl` and the AOT/WASM
+  fixture `tests/native_build_strings.oskl`.
 
 ### PHASE 6.6 — FFI with C (1.0)
 

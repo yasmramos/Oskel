@@ -1165,17 +1165,25 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_folds.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
-    # `std.collections` exists because the AOT backend does not bind every array
-    # method yet -- `sort`/`sorted` are open (docs/BACKLOG.md §6 item 1); it is
-    # plain Oskel over the
-    # portable primitive surface, so it must build to a native binary and agree
-    # with the VM. The fixture is the guard that keeps the module off the
-    # methods, `pcall`/`error` and the rest of the AOT gaps.
+    # `std.collections` is plain Oskel over the portable primitive surface, so
+    # it must build to a native binary and agree with the VM. The fixture is the
+    # guard that keeps the module off `pcall`/`error` and the rest of the AOT
+    # gaps.
     add_test(NAME oskel.build_binary_collections
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_TEST_NAME=oskel.build_binary_collections"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_collections.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `std.strings` is plain Oskel over the portable primitive surface, so it
+    # must build to a native binary and agree with the VM. The fixture pins
+    # slicing, code-point indices and the padding/shortening arithmetic.
+    add_test(NAME oskel.build_binary_strings
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_strings"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_strings.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
     # Regression for the string-builder corruption: `oskel_sb_append_escaped`
@@ -1416,6 +1424,18 @@ if(BUILD_TESTING)
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
 
+    # `std.strings` is pure Oskel over indexing, slicing, `len` and closures, so
+    # the WASM backend must reproduce it without a special case.
+    add_test(NAME oskel.build_wasm_strings
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_strings"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_strings.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
     # `std.math` exercises the shared shortest round-trip formatter through
     # `PI`, `E` and `sqrt`, including the scientific and subnormal forms.
     add_test(NAME oskel.build_wasm_math
@@ -1442,7 +1462,7 @@ if(BUILD_TESTING)
     # A mis-lowered loop must fail the test, not hang the suite: the Node run
     # gets a hard timeout in `wasm_case.cmake`, and CTest bounds the driver.
     set_tests_properties(oskel.build_wasm oskel.build_wasm_datetime
-      oskel.build_wasm_collections oskel.build_wasm_math
+      oskel.build_wasm_collections oskel.build_wasm_strings oskel.build_wasm_math
       oskel.build_wasm_double_format PROPERTIES TIMEOUT 120)
   endif()
 
