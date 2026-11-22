@@ -528,6 +528,17 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     `tests/native_build_extern_callback_wx.oskl` asserts the final mapping is
     not writable.
 
+29. **[P1]** The own linker (PHASE 10.1) closes one x86-64 Linux object into a
+    dynamic ELF; it does not merge objects or read archives yet (PHASE 10.2),
+    and the macOS Mach-O / Windows PE containers are PHASE 10.3. It accepts only
+    the object `oskel build --emit-object` writes: a GCC object has `.data`,
+    `.bss`, `.eh_frame` and `.note.GNU-stack`, and relocation shapes the parser
+    rejects by name, which is deliberate until 10.2. The image is non-PIE (fixed
+    `0x400000`), so PIE/ASLR is later work. The hash is SysV `.hash`, not
+    `.gnu.hash` (glibc accepts both). `--link-lib` needs the dev symlink
+    (`libSDL3.so`) at link time to read the SONAME, while the binary records the
+    SONAME (`libSDL3.so.0`).
+
 ---
 
 ## 7. FFI (`src/runtime/ffi.cpp`)

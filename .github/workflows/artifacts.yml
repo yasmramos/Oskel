@@ -81,8 +81,8 @@ jobs:
 
       - name: Install into a staging prefix
         # `cmake --install` produces the same layout as `make install`:
-        # stage/bin/oskel, stage/bin/oskelc, stage/bin/oskelp and
-        # stage/bin/bindgen plus
+        # stage/bin/oskel, stage/bin/oskelc, stage/bin/oskelld,
+        # stage/bin/oskelp and stage/bin/bindgen plus
         # stage/share/oskel/std/*.oskl. The engine finds the library through
         # `../share/oskel/std` relative to the executable, so the staged tree is
         # self-contained and runs after unpacking.

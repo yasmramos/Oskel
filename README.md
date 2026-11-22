@@ -108,13 +108,17 @@ g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskel \
 g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskelc \
     src/oskelc.cpp src/core/*.cpp src/frontend/*.cpp src/frontend/native/*.cpp
 
+# the project's own linker (front end only, no interpreter)
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskelld \
+    src/oskelld.cpp src/core/*.cpp src/frontend/*.cpp src/frontend/native/*.cpp
+
 # the project and package manager (standalone)
 g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskelp \
     tools/oskelp.cpp tools/oskelp_main.cpp
 ```
 
 `./build.sh` and `build.bat` run these commands for you, and `CMakeLists.txt`
-builds the same four targets (`oskel`, `oskelc`, `bindgen`, `oskelp`).
+builds the same five targets (`oskel`, `oskelc`, `oskelld`, `bindgen`, `oskelp`).
 
 ### oskelc (the host compiler)
 
@@ -132,6 +136,25 @@ defaults, the diagnostics and the exit codes are identical and the emitted image
 is byte for byte the same. `-c` (a `.oskc` bytecode image) and `-pkg` (a
 `.oskpkg`) are not implemented yet and are refused by name with exit 64.
 
+### oskelld (the project's own linker)
+
+`oskelld` closes the hosted relocatable object without a C toolchain. It is the
+standalone entry point over the same core `oskel build --linker own` and
+`oskelc --linker own` call:
+
+```sh
+./build/oskel build examples/hello.oskl --mode hosted --emit-object -o hello.o
+./build/oskelld hello.o -o hello
+./hello
+```
+
+The image is a dynamically linked x86-64 Linux ELF (`libc.so.6`, plus
+`libm.so.6` when a symbol needs it). `-L` and `--link-lib` select a third-party
+library (`--link-lib SDL3`); the binary records the library's SONAME. The
+linker is opt-in in PHASE 10.1 and only targets `x86_64-linux-sysv`;
+`--linker host` keeps the `$CC` path. See [docs/language.md](docs/language.md)
+for the flags and `DEVELOPMENT.md` PHASE 10 for the design.
+
 ### bindgen (the C binding generator)
 
 Every build above also produces `bindgen` (`bindgen.exe` on Windows) next to the
@@ -146,7 +169,8 @@ With CMake it is built as `build-cmake/bindgen`, and with the manual build it is
 a second command:
 
 ```sh
-g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/bindgen tools/bindgen.cpp tools/bindgen_main.cpp
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/bindgen \
+    tools/bindgen.cpp tools/cxxbind.cpp tools/bindgen_main.cpp
 ```
 
 See [docs/bindgen.md](docs/bindgen.md) for the C → Oskel type mapping and what is

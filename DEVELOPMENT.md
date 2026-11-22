@@ -2167,6 +2167,49 @@ maps, slicing and variadics; `oskel.build_wasm_datetime`,
 `std/math` and the full-range double formatter. The tests need Node and are
 skipped where it is absent.
 
+### PHASE 10 — The project's own linker 🔶 in progress
+
+The AOT backend had two ways to close an image: the freestanding emitter wrote
+the whole ELF/PE itself, and the hosted mode handed a relocatable object to the
+host C compiler. PHASE 10 replaces the second dependency with the project's own
+linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
+(inside `oskel_frontend`, so `oskelc` and `oskelld` carry no interpreter), and
+`src/oskelld.cpp` is the standalone entry point.
+
+- **10.1 (done) — hosted x86-64 Linux.** `oskelld <object.o> -o <out>` and
+  `oskel build --mode hosted --linker own` close the object `--emit-object`
+  writes. The image is a non-PIE `ET_EXEC` at `0x400000` with four `PT_LOAD`
+  segments, `PT_INTERP` (`/lib64/ld-linux-x86-64.so.2`), a SysV `.hash`, a
+  `.dynsym`/`.dynstr` of the undefined symbols, a standard PLT and `.got.plt`,
+  and a `.dynamic` naming `libc.so.6` (plus `libm.so.6` when a symbol is only
+  there, and one `DT_NEEDED` per `--link-lib`). Binding is eager
+  (`DT_BIND_NOW` + `DT_FLAGS=DF_BIND_NOW`), so no resolver runs. The linker
+  supplies the canonical `_start` (`xor ebp,ebp; ...; call *__libc_start_main`)
+  so libc is initialised before the program's `malloc`. `R_X86_64_PLT32` goes to
+  a PLT entry and `R_X86_64_PC32` to a `R_X86_64_GLOB_DAT` GOT slot.
+- The symbol check is at link time, not at run time: the linker reads the
+  `.dynsym` of `libc.so.6`, `libm.so.6` and every `--link-lib` library (found
+  through `-L`, `LIBRARY_PATH`, `LD_LIBRARY_PATH` and the system defaults) and
+  reports an undefined name with exit 65. A library's `DT_SONAME` becomes its
+  `DT_NEEDED`, so `--link-lib SDL3` records `libSDL3.so.0`, not the dev symlink.
+- `--emit-object` is the object half of the same feature: it writes the ET_REL
+  instead of linking it, which is what `oskelld` consumes. It needs
+  `--mode hosted`; the freestanding image is closed by the emitter and wasm has
+  no object format here.
+- The three entry points are one implementation: `oskel build --linker own`,
+  `oskelc --linker own` and `oskelld` all call `linkHostedExecutable`, and
+  `tests/build_hosted_own.cmake` compares their images byte for byte and against
+  the VM. The output is deterministic (no timestamp, no build id).
+- `--linker own` is opt-in and x86-64 Linux only; `host` stays the default. A
+  change to the freestanding path must keep its bytes identical -- the linker
+  only runs in the hosted mode.
+- **10.2 (next)** — multiple objects and `ar` archives: a relocatable link
+  (`ET_REL` + `ET_REL` → `ET_REL`) and member extraction by undefined symbol.
+  The `oskelld` CLI already rejects a second input by name.
+- **10.3 (future)** — the macOS Mach-O/dyld and Windows PE import-table
+  containers. They are separate linkers, not a generic abstraction: the object
+  formats, the loader contracts and the entry preludes differ.
+
 ### Post-1.0 — UI library
 
 - **SDL3** for windows, renderer and events: the low-level bindings landed as
@@ -2228,6 +2271,7 @@ Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.10 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY) and callbacks resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
+Phase 10: 🔶 in progress (10.1 done: `oskelld`, `--linker own`, `--emit-object` and `-L`; the hosted x86-64 Linux image is a dynamic ELF closed without a C toolchain. 10.2 multi-object/`ar` and 10.3 Mach-O/PE pending)
 Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending
 2.0: ⬜ future (static with `@Dynamic`)
 

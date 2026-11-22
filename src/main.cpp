@@ -52,8 +52,13 @@ const char *kUsage =
     "  --mode <name>             link mode for `build` (default: freestanding);\n"
     "                            freestanding (self-contained) or hosted (links libc)\n"
     "  --link-lib <name>         library for the hosted link (repeatable), e.g. SDL3\n"
+    "  -L, --library-path <dir>  where the hosted link finds lib<name>.so (repeatable)\n"
+    "  --linker <name>           how a hosted build is closed: host (default, $CC)\n"
+    "                            or own (the project's linker, x86_64-linux-sysv)\n"
+    "  --emit-object             write the hosted relocatable object (input of oskelld)\n"
     "\n"
-    "`oskelc <file.oskl> -o <out>` is the compiler without the interpreter.\n";
+    "`oskelc <file.oskl> -o <out>` is the compiler without the interpreter.\n"
+    "`oskelld <object.o> -o <out>` links the object `--emit-object` writes.\n";
 
 // Compiles `source` (resolving any imports) and, unless `checkOnly`, runs it.
 // Returns 0 on success, 65 for compile errors, 70 for runtime errors.

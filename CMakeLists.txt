@@ -89,9 +89,10 @@ file(GLOB_RECURSE OSKEL_FRONTEND_SOURCES CONFIGURE_DEPENDS
 file(GLOB_RECURSE OSKEL_RUNTIME_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/*.cpp")
 
-# The two entry points are not part of either library.
+# The entry points are not part of any library.
 set(OSKEL_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 set(OSKEL_COMPILER_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/src/oskelc.cpp")
+set(OSKEL_LINKER_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/src/oskelld.cpp")
 
 # Configure-time guard, the inverse of the old one: a `.cpp` dropped straight
 # into `src/` belongs to no library and would be compiled by nothing, or — worse
@@ -99,7 +100,8 @@ set(OSKEL_COMPILER_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/src/oskelc.cpp")
 # the three directories, so the classification cannot be skipped.
 file(GLOB OSKEL_STRAY_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
-list(REMOVE_ITEM OSKEL_STRAY_SOURCES "${OSKEL_MAIN}" "${OSKEL_COMPILER_MAIN}")
+list(REMOVE_ITEM OSKEL_STRAY_SOURCES "${OSKEL_MAIN}" "${OSKEL_COMPILER_MAIN}"
+  "${OSKEL_LINKER_MAIN}")
 if(OSKEL_STRAY_SOURCES)
   foreach(stray IN LISTS OSKEL_STRAY_SOURCES)
     file(RELATIVE_PATH shown "${CMAKE_CURRENT_SOURCE_DIR}" "${stray}")
@@ -235,7 +237,15 @@ add_executable(oskelc "${OSKEL_COMPILER_MAIN}")
 target_link_libraries(oskelc PRIVATE oskel_frontend)
 target_compile_options(oskelc PRIVATE ${OSKEL_WARNINGS})
 
-install(TARGETS oskel oskelc RUNTIME DESTINATION bin)
+# `oskelld`: the project's own linker (PHASE 10.1). The linker core lives in
+# `src/frontend/native/link.cpp`, so this is a thin third entry point over the
+# front end: it carries no interpreter, and `oskel build --linker own` calls the
+# same code in process.
+add_executable(oskelld "${OSKEL_LINKER_MAIN}")
+target_link_libraries(oskelld PRIVATE oskel_frontend)
+target_compile_options(oskelld PRIVATE ${OSKEL_WARNINGS})
+
+install(TARGETS oskel oskelc oskelld RUNTIME DESTINATION bin)
 
 # --------------------------------------------------------------------------- bindgen
 # The binding generator: a C header in, an Oskel `extern "C"` module out. It is
@@ -328,6 +338,7 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(mathlib_test)
   oskel_add_cpp_test(elf_test)
   oskel_add_cpp_test(object_test)
+  oskel_add_cpp_test(link_test)
   oskel_add_cpp_test(pe_test)
   oskel_add_cpp_test(lower_test)
   oskel_add_cpp_test(freestanding_test)
@@ -523,6 +534,7 @@ if(BUILD_TESTING)
   add_test(NAME oskelc_has_no_vm
     COMMAND ${CMAKE_COMMAND}
       "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+      "-DOSKELD_EXE=$<TARGET_FILE:oskelld>"
       "-DFRONTEND_ARCHIVE=$<TARGET_FILE:oskel_frontend>"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_oskelc_no_vm.cmake")
 
@@ -549,6 +561,12 @@ if(BUILD_TESTING)
   add_test(NAME version_consistency_oskelc
     COMMAND ${CMAKE_COMMAND}
       "-DOSKEL_EXE=$<TARGET_FILE:oskelc>"
+      "-DOSKEL_EXPECTED_VERSION=${PROJECT_VERSION}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_version.cmake")
+
+  add_test(NAME version_consistency_oskelld
+    COMMAND ${CMAKE_COMMAND}
+      "-DOSKEL_EXE=$<TARGET_FILE:oskelld>"
       "-DOSKEL_EXPECTED_VERSION=${PROJECT_VERSION}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_version.cmake")
 
@@ -913,6 +931,53 @@ if(BUILD_TESTING)
           "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_struct.oskl"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
+      # The project's own linker (PHASE 10.1) closes the hosted object without a
+      # C toolchain. Each fixture is linked three ways -- in process, through
+      # `--emit-object` + `oskelld`, and through `oskelc` -- and every output
+      # must match the VM byte for byte.
+      foreach(own_fixture
+          native_build_hello
+          native_build_extern_hosted
+          native_build_extern_ptr_return
+          native_build_extern_struct)
+        add_test(NAME oskel.build_hosted_own_${own_fixture}
+          COMMAND ${CMAKE_COMMAND}
+            "-DOSKEL_TEST_NAME=oskel.build_hosted_own_${own_fixture}"
+            "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+            "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+            "-DOSKELD_EXE=$<TARGET_FILE:oskelld>"
+            "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/${own_fixture}.oskl"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own.cmake")
+      endforeach()
+      # A shared library no system library provides: `--link-lib` is what makes
+      # the symbol resolve, so this exercises the SONAME lookup and the
+      # `.dynsym` check instead of libm (which the linker detects on its own).
+      add_library(oskel_link_lib_helper SHARED
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/link_lib_helper.cpp")
+      set_target_properties(oskel_link_lib_helper PROPERTIES
+        OUTPUT_NAME oskel_link_lib_helper
+        SOVERSION 1)
+      # The fixture is loaded into a plain emitted binary (`LD_LIBRARY_PATH`)
+      # and preloaded into the VM (`LD_PRELOAD`). An instrumented copy would
+      # drag the sanitizer runtime into a process that did not start with it,
+      # which ASan rejects ("runtime does not come first in initial library
+      # list"). Keep the C ABI fixture uninstrumented; the linker and the VM
+      # are what the sanitizer job is testing.
+      if(CMAKE_CXX_FLAGS MATCHES "-fsanitize")
+        target_compile_options(oskel_link_lib_helper PRIVATE -fno-sanitize=all)
+        target_link_options(oskel_link_lib_helper PRIVATE -fno-sanitize=all)
+      endif()
+      add_test(NAME oskel.build_hosted_own_link_lib
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_own_link_lib"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+          "-DOSKELD_EXE=$<TARGET_FILE:oskelld>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_link_lib.oskl"
+          "-DOSKEL_LINK_LIB=oskel_link_lib_helper"
+          "-DOSKEL_LIBRARY_PATH=$<TARGET_FILE_DIR:oskel_link_lib_helper>"
+          "-DOSKEL_EXPECTED_OUTPUT=link-lib ok"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own.cmake")
       # A class-MEMORY struct (larger than two eightbytes) is stack-passed and
       # `sret`-returned, a shape no libc symbol exercises: the fixture links a
       # small C helper of its own.
@@ -1700,6 +1765,13 @@ if(BUILD_TESTING)
     # The mixed variadic fixture binds a helper the VM cannot resolve; its
     # hosted tests (`..._variadic_mixed` and the Windows twin) are the coverage.
     if(name STREQUAL "native_build_extern_variadic_mixed")
+      continue()
+    endif()
+    # `native_build_link_lib` binds a symbol only the helper shared library
+    # provides, so the VM would need it preloaded. The own-linker test is the
+    # coverage: it preloads the library into the VM and sets `LD_LIBRARY_PATH`
+    # for the linked binary.
+    if(name STREQUAL "native_build_link_lib")
       continue()
     endif()
     # The stored/many-args/returns callback fixtures bind helpers the VM cannot

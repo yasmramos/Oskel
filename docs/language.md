@@ -469,8 +469,8 @@ thing that breaks that property. So the rule is simple — **if a program uses
 FFI, build it hosted.** The development engine (`oskel`) is unaffected: it
 resolves the symbol through `Platform::lookupSymbol` and runs the same program
 either way. When the symbol lives in a third-party library, name it with
-`--link-lib` (`--link-lib SDL3` becomes `-lSDL3`); libc and libm are already
-linked.
+`--link-lib` (`--link-lib SDL3` becomes `-lSDL3` for the host linker and a
+`DT_NEEDED libSDL3.so.0` for the own one); libc and libm are already linked.
 
 **`extern "C"` blocks.** A C function is declared with `extern` (PHASE 6.6).
 Three spellings are accepted and compile to the same thing:
@@ -2990,9 +2990,17 @@ oskelc <file.oskl>         the same compiler without the interpreter
 | `-o`, `--output <file>` | Output path for `build`/`oskelc` (default: the script's base name). |
 | `--target <name>` | Build target for `build`/`oskelc` (default: the host). |
 | `--mode <name>` | Link mode for `build`/`oskelc` (default: `freestanding`). |
-| `--link-lib <name>` | Library for the hosted link, passed as `-l<name>` (repeatable). |
+| `--link-lib <name>` | Library for the hosted link (repeatable), e.g. `SDL3`. |
+| `-L`, `--library-path <dir>` | Where the hosted link finds `lib<name>.so` (repeatable). |
+| `--linker <name>` | How a hosted build is closed: `host` (default, `$CC`) or `own` (the project's linker, x86-64 Linux). |
+| `--emit-object` | Writes the hosted relocatable object instead of an executable (the input of `oskelld`). |
 | `--no-jit` | Disables the JIT (development engine only). |
 | `--` | End of options; the next argument is the file. |
+
+`oskelld <object.o> -o <out>` is the standalone linker: it consumes the object
+`--emit-object` writes and closes it into a dynamically linked x86-64 Linux
+executable. `--linker own` is opt-in in PHASE 10.1 and supports
+`x86_64-linux-sysv` only; `--linker host` keeps the `$CC` path.
 
 Options must come before the file. Everything after the file is considered an argument of the script and is obtained with `args()`.
 
