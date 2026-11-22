@@ -169,6 +169,24 @@ may change between minor versions.
 
 ### Fixed
 
+- **A wrong argument count now reports the same text under `oskel build` as
+  in the VM.** Every guard stopped at the constant prefix, so the VM said
+  `len() expects 1 argument, got 0` where the compiled binary said
+  `len() expects 1 argument`, and a user function raised the bare
+  `wrong number of arguments` with neither its name nor the counts. One runtime
+  helper, `oskel_arity_fail(msg, len, argc)`, appends `, got N` to the constant
+  prefix through the arena string builder and fails through the same dynamic
+  sink as every other assembled message, so `pcall` presents it identically.
+  The builtins and bound methods pass their own name and expected count, a user
+  function's prologue builds `name() expects N argument(s)` (adding ` or more`
+  when it is variadic) from the name it already has, and `error()` passes its
+  `between 1 and 2` range. The same change fixes a second divergence: `floor`,
+  `ceil`, `round`, `exp`, `log`, `pow`, `sin`, `cos` and `tan` reported a
+  *type* error (`floor() expects a number argument`) when the argument *count*
+  was wrong, and `int()`, `float()` and `double()` still used the prefix-only
+  path. `tests/native_build_builtin_arity.oskl` now compares the message text
+  itself instead of only the fact that the call fails (PHASE 7c.5b.6,
+  BACKLOG §6 item 25).
 - **WASM `double` formatting now matches the VM across the whole range.**
   The formatter generated up to 17 fractional digits and trimmed zeros, which
   diverged from `std::to_chars` whenever the shortest form needed rounding

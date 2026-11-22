@@ -1887,7 +1887,10 @@ static void test_variadic_arity_error() {
       "print(join());\n");
   RunResult result = buildAndRun("/tmp/oskel_variadic_arity", proto);
   check(result.exitCode == 70, "a variadic call below the fixed arity exits 70");
-  check(result.output.find("wrong number of arguments") != std::string::npos,
+  // The message names the function, its fixed arity and the actual count,
+  // worded exactly as the hosted engine words it (PHASE 7c.5b.6).
+  check(result.output.find("join() expects 1 argument or more, got 0") !=
+            std::string::npos,
         "the variadic arity error names the wrong argument count");
 }
 

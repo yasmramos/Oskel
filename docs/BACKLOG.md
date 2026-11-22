@@ -455,8 +455,24 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     both engines, which is what a program can branch on; assembling the tail
     would mean a per-message builder in the runtime and is not worth it until a
     program is shown to depend on the text. `ord`/`len`/`chr` set this
-    convention before the pointer builtins did, and the new arity guards follow
-    it (the VM appends `, got N`).
+    convention before the pointer builtins did.
+
+    **A wrong argument count is now worded identically on both engines**
+    (PHASE 7c.5b.6). The guards used to stop at the fixed prefix, so the VM said
+    `len() expects 1 argument, got 0` where the binary said
+    `len() expects 1 argument`, and a user function reported the generic
+    `wrong number of arguments` with no name and no counts. One runtime helper,
+    `oskel_arity_fail(msg, len, argc)`, appends `, got N` to a constant prefix
+    through the arena string builder and hands the result to `failDynamic`, so
+    the `pcall` presentation is the same one every other dynamic message uses.
+    Every guard reaches it: the builtins and bound methods pass their own name
+    and expected count, a user function's prologue builds
+    `name() expects N argument(s)` (with ` or more` when it is variadic) from the
+    name it already has, and `error()` passes its `between 1 and 2` range.
+    Three further divergences fell out of the same work: `floor`, `ceil`,
+    `round`, `exp`, `log`, `pow`, `sin`, `cos` and `tan` reported their *type*
+    message (`floor() expects a number argument`) when the count was wrong, and
+    `int()`, `float()` and `double()` still used the old prefix-only path.
 
     The numeric conversions are the exception that proves the rule
     (PHASE 7c.5b.2c): `int`, `float` and `double` now assemble their message in
@@ -470,7 +486,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     (malformed, overflow, empty) so the cause can be named, and a non-string
     operand quotes its type name. The builder is worth it here because a
     conversion failure is the error a program is most likely to print and
-    branch on. The arity prefix still follows the convention above.
+    branch on. Their arity guard follows the shared `, got N` helper above.
 
 26. **[P1]** WebAssembly backend gaps (PHASE 9). The backend behind
     `Target::wasm32()` (`src/frontend/native/wasm.cpp`) covers the scalar core,
