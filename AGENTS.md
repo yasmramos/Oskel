@@ -393,15 +393,77 @@ it as a caveat:
   payload is the real address rather than a synthetic token — a box that stored
   an invented id would pass every `type`/`== nil` assertion and fail only when C
   dereferences it.
-- Windows code paths can be exercised locally without a Windows host: build the
-  engine with `x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude -Isrc -static
-  -o /tmp/win/oskel.exe src/main.cpp src/core/*.cpp src/frontend/*.cpp
-  src/frontend/native/*.cpp src/runtime/*.cpp src/runtime/jit/*.cpp` and run it
-  under Wine (`WINEPREFIX=$HOME/.wine-oskel wine /tmp/win/oskel.exe ...`). The
-  `tests/*.oskl` suite runs there too. This is how `lookupSymbol` (kernel32) and
-  the PE image were checked before CI. CI still gates the merge, since Wine is
-  not Windows: a green Wine run is a signal, not a substitute for the
-  `windows-latest` job.
+- Windows code paths can be exercised locally without a Windows host, through a
+  mingw cross build run under Wine. Do not hand-compile the engine: `src/*.cpp`
+  holds several `main` functions (`oskel`, `oskelc`, `oskelld`, ...) and a flat
+  `g++ src/*.cpp` fails with "multiple definition of `main'". Configure with a
+  toolchain file instead, which also keeps the target list and the conditional
+  test registration identical to a real Windows build:
+
+  ```sh
+  apt install g++-mingw-w64-x86-64 wine64      # g++ package, not just gcc:
+                                               # gcc-mingw-w64 alone ships no C++ driver
+  cat > /tmp/mingw-toolchain.cmake <<'EOF'
+  set(CMAKE_SYSTEM_NAME Windows)
+  set(CMAKE_SYSTEM_PROCESSOR x86_64)
+  set(CMAKE_C_COMPILER x86_64-w64-mingw32-gcc)
+  set(CMAKE_CXX_COMPILER x86_64-w64-mingw32-g++)
+  set(CMAKE_RC_COMPILER x86_64-w64-mingw32-windres)
+  set(CMAKE_FIND_ROOT_PATH /usr/x86_64-w64-mingw32)
+  set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+  set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+  set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+  EOF
+  cmake -S . -B /tmp/bwin -DCMAKE_TOOLCHAIN_FILE=/tmp/mingw-toolchain.cmake \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS=-static \
+        && cmake --build /tmp/bwin -j8
+  wineboot --init   # once, with WINEPREFIX=$HOME/.wine-oskel
+  ```
+
+  `CMAKE_EXE_LINKER_FLAGS=-static` matters: without it the C++ runtime stays an
+  imported DLL (`libstdc++-6.dll`, `libgcc_s_seh-1.dll`) and every run exits 53
+  with no message until both files are copied beside the `.exe`. With it the
+  binary imports only `KERNEL32.dll` and `msvcrt.dll`, so nothing else is needed.
+  Wine also needs `XDG_RUNTIME_DIR` set, or it prints an `XDG_RUNTIME_DIR is
+  invalid` line and exits 53 the same way — which looks identical to a missing
+  DLL and is worth ruling out first.
+
+  Run a script with a Windows path (`wine /tmp/bwin/oskel.exe
+  'Z:\workspace\...\tests\x.oskl'`). CTest drives the scripts through
+  `tests/run_oskel_case.cmake`, which invokes the `.exe` directly, so
+  `CMAKE_CROSSCOMPILING_EMULATOR` does not reach them: a plain `ctest` there
+  fails every script test with exit 2. Drive the harness by hand instead, and
+  compare against the *registered* list (`ctest -N`), never against
+  `tests/*.oskl`: a Windows build registers fewer tests than a Linux one, and the
+  difference is exactly the families `CMakeLists.txt` excludes with `NOT WIN32`
+  (struct-by-value, callbacks, memory structs, SDL). Running the full glob under
+  Wine reports those as failures when they are deliberate skips. Do not write the
+  two counts down — they move with every PR; derive them with `ctest -N`.
+
+  This is how `lookupSymbol` (kernel32) and the PE image were checked before CI.
+  CI still gates the merge, since Wine is not Windows: a green Wine run is a
+  signal, not a substitute for the `windows-latest` job.
+
+- A fixture that declares `extern "C"` must name symbols the Windows CRT
+  actually exports. Windows resolves the symbol with `GetProcAddress` against
+  `ucrtbase.dll` (then `msvcrt.dll`, kernel32, and every loaded module), and
+  many `float` entry points are POSIX-only: `ldexpf`, `hypotf`, `frexpf` and
+  `fabsf` are absent, so a fixture naming one dies on the Windows runner with
+  `extern "C" symbol 'ldexpf' was not found in the host` (exit 70) while passing
+  everywhere else. Check before pushing, with the import library rather than by
+  assumption:
+
+  ```sh
+  x86_64-w64-mingw32-nm /usr/x86_64-w64-mingw32/lib/libucrt.a | grep __imp_powf
+  ```
+
+  Pick a symbol present in both CRTs — `powf`, `fmodf`, `scalbnf`, `atan2f`,
+  `sqrtf`, `ceilf`, `floorf` are — and keep the fixture's coverage (mixed
+  float/int, a negative value, a second entry point) so the substitution does
+  not quietly weaken the test. A `float` argument crosses the boundary as its
+  bit pattern in the low 32 bits of an xmm register, so a fixture must also keep
+  a value that would differ under a naive cast (`0.0` instead of the real
+  number); otherwise the regression the test exists to catch goes unnoticed.
 
 ## The own linker (PHASE 10)
 
