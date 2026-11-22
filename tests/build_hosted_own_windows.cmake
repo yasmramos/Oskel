@@ -31,28 +31,18 @@ execute_process(
   ERROR_VARIABLE run_error)
 if(NOT run_result EQUAL 0)
   # The Windows loader reports STATUS_ENTRYPOINT_NOT_FOUND as 0xc0000139 when
-  # an imported symbol is missing. Dump the import table and check each UCRT
-  # and kernel32 export so the failing name is in the CI log.
-  find_program(DUMPBIN_EXECUTABLE dumpbin)
-  if(DUMPBIN_EXECUTABLE)
-    execute_process(COMMAND "${DUMPBIN_EXECUTABLE}" /imports "${output}"
-      OUTPUT_VARIABLE imports_output ERROR_QUIET)
-    message(STATUS "own-linker imports:\n${imports_output}")
-    execute_process(COMMAND "${DUMPBIN_EXECUTABLE}" /exports
-      "C:/Windows/System32/ucrtbase.dll" OUTPUT_VARIABLE ucrt_exports ERROR_QUIET)
-    execute_process(COMMAND "${DUMPBIN_EXECUTABLE}" /exports
-      "C:/Windows/System32/kernel32.dll" OUTPUT_VARIABLE kernel_exports ERROR_QUIET)
-    foreach(symbol _write exit _setmode malloc time _open _read _close _lseeki64)
-      string(FIND "${ucrt_exports}" "${symbol}" found)
-      message(STATUS "ucrtbase ${symbol}: ${found}")
-    endforeach()
-    foreach(symbol GetTickCount64 ExitProcess)
-      string(FIND "${kernel_exports}" "${symbol}" found)
-      message(STATUS "kernel32 ${symbol}: ${found}")
-    endforeach()
-  else()
-    message(STATUS "dumpbin not found on PATH")
-  endif()
+  # an imported symbol is missing. Check each expected UCRT/kernel32 export so
+  # the failing name is in the CI log.
+  execute_process(
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_LIST_DIR}/windows_import_check.ps1"
+    RESULT_VARIABLE check_result
+    OUTPUT_VARIABLE check_output
+    ERROR_VARIABLE check_error)
+  message(STATUS "import check (${check_result}):\n${check_output}${check_error}")
+  message(FATAL_ERROR
+    "the own-linker image failed (${run_result})\n${run_output}${run_error}")
+endif()
   execute_process(COMMAND powershell -NoProfile -Command
     "Get-WinEvent -LogName Application -MaxEvents 3 | Format-List TimeCreated,ProviderName,Message"
     OUTPUT_VARIABLE events_output ERROR_QUIET)
