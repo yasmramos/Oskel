@@ -8,6 +8,7 @@ namespace {
 constexpr long kSysRead = 0;
 constexpr long kSysWrite = 1;
 constexpr long kSysClose = 3;
+constexpr long kSysLseek = 8;
 constexpr long kSysMmap = 9;
 constexpr long kSysClockGettime = 228;
 constexpr long kSysExitGroup = 231;
@@ -28,7 +29,8 @@ constexpr long kClockMonotonic = 1;
 // `openat` flags for the two modes `oskel_open` supports.
 constexpr long kAtFdcwd = -100;
 constexpr long kOpenReadOnly = 0;
-constexpr long kOpenWrite = 1 | 64 | 512;  // O_WRONLY | O_CREAT | O_TRUNC
+constexpr long kOpenWrite = 1 | 64 | 512;   // O_WRONLY | O_CREAT | O_TRUNC
+constexpr long kOpenAppend = 1 | 64 | 1024;  // O_WRONLY | O_CREAT | O_APPEND
 
 }  // namespace
 
@@ -126,16 +128,23 @@ std::uint64_t emitFreestandingRuntime(CodeGen& code, const RuntimeHandles& handl
   code.retInsn();
 
   // --- long oskel_open(const char* path, long mode) ---
-  // `openat(AT_FDCWD, path, flags, 0644)`. The mode only selects the access
-  // flags: 0 reads, anything else truncates and creates. A negative return is
-  // the errno and the caller reports the failure; -1 is never a valid fd.
+  // `openat(AT_FDCWD, path, flags, 0644)`. The mode selects the access flags:
+  // 0 reads, 1 truncates and creates, 2 creates if needed and appends. A
+  // negative return is the errno and the caller reports the failure; -1 is
+  // never a valid fd.
   code.bind(handles.open);
   code.movReg(X64Reg::R8, X64Reg::Rdi);   // path
-  code.testReg(X64Reg::Rsi);              // mode: 0 reads, else writes
   CodeGen::Label reading = code.newLabel();
+  CodeGen::Label appending = code.newLabel();
+  CodeGen::Label opened = code.newLabel();
+  code.cmpImm32(X64Reg::Rsi, 2);          // mode: 0 reads, 1 writes, 2 appends
+  code.jcc(Jcc::Eq, appending);
+  code.testReg(X64Reg::Rsi);
   code.jcc(Jcc::Eq, reading);
   code.movImm(X64Reg::Rdx, kOpenWrite);
-  CodeGen::Label opened = code.newLabel();
+  code.jmp(opened);
+  code.bind(appending);
+  code.movImm(X64Reg::Rdx, kOpenAppend);
   code.jmp(opened);
   code.bind(reading);
   code.movImm(X64Reg::Rdx, kOpenReadOnly);
@@ -162,6 +171,25 @@ std::uint64_t emitFreestandingRuntime(CodeGen& code, const RuntimeHandles& handl
   // --- void oskel_close(long fd) ---
   code.bind(handles.close);
   code.movImm(X64Reg::Rax, kSysClose);
+  code.syscallInsn();
+  code.retInsn();
+
+  // --- long oskel_seek(long fd, long offset, long origin) ---
+  // `lseek(fd, offset, origin)`: the kernel returns the resulting offset, or a
+  // negative errno, so the caller can report a failed seek. The origin values
+  // are the POSIX ones (0/1/2), which is also what `Platform::SeekOrigin`
+  // maps to.
+  code.bind(handles.seek);
+  code.movImm(X64Reg::Rax, kSysLseek);
+  code.syscallInsn();
+  code.retInsn();
+
+  // --- long oskel_tell(long fd) ---
+  // `lseek(fd, 0, SEEK_CUR)`, the position query.
+  code.bind(handles.tell);
+  code.xorReg(X64Reg::Rsi, X64Reg::Rsi);  // offset = 0
+  code.movImm(X64Reg::Rdx, 1);            // SEEK_CUR
+  code.movImm(X64Reg::Rax, kSysLseek);
   code.syscallInsn();
   code.retInsn();
 
@@ -391,16 +419,23 @@ std::uint64_t emitWindowsRuntime(CodeGen& code, const RuntimeHandles& handles,
   code.bind(handles.open);
   {
     CodeGen::Label reading = code.newLabel();
+    CodeGen::Label appending = code.newLabel();
     CodeGen::Label disposed = code.newLabel();
     code.push(X64Reg::Rbp);
     code.movReg(X64Reg::Rbp, X64Reg::Rsp);
     code.push(X64Reg::Rbx);
     code.subRegImm32(X64Reg::Rsp, 72);
     code.movToMem(X64Reg::Rbp, -16, X64Reg::Rdi);  // path
-    code.testReg(X64Reg::Rsi);                     // mode
+    code.cmpImm32(X64Reg::Rsi, 2);                 // mode: 0 read, 1 write, 2 append
+    code.jcc(Jcc::Eq, appending);
+    code.testReg(X64Reg::Rsi);
     code.jcc(Jcc::Eq, reading);
     code.movImm(X64Reg::Rbx, 0x40000000LL);        // GENERIC_WRITE
     code.movImm(X64Reg::R10, 2);                   // CREATE_ALWAYS
+    code.jmp(disposed);
+    code.bind(appending);
+    code.movImm(X64Reg::Rbx, 4);                   // FILE_APPEND_DATA
+    code.movImm(X64Reg::R10, 4);                   // OPEN_ALWAYS
     code.jmp(disposed);
     code.bind(reading);
     code.movImm(X64Reg::Rbx, 0x80000000LL);        // GENERIC_READ
@@ -498,6 +533,45 @@ std::uint64_t emitWindowsRuntime(CodeGen& code, const RuntimeHandles& handles,
   code.pop(X64Reg::Rbp);
   code.retInsn();
 
+  // --- long oskel_seek(long handle, long offset, long origin) ---
+  // SetFilePointerEx(hFile, liDistanceToMove, &newPosition, dwMoveMethod). The
+  // 64-bit distance travels by value in rdx; the origin (0/1/2) is the fourth
+  // argument in r9, so it is moved out of rdx before rdx is reused. The frame
+  // is 48 bytes so the out-slot at [rbp-8] sits above the 32-byte shadow space
+  // and the saved rbp, and rsp stays 16-byte aligned at the call.
+  code.bind(handles.seek);
+  {
+    CodeGen::Label failed = code.newLabel();
+    CodeGen::Label done = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.subRegImm32(X64Reg::Rsp, 48);
+    code.movToMem(X64Reg::Rbp, -8, X64Reg::Rsi);  // liDistanceToMove
+    code.movReg(X64Reg::R9, X64Reg::Rdx);         // dwMoveMethod
+    code.movReg(X64Reg::Rcx, X64Reg::Rdi);        // hFile
+    code.movFromMem(X64Reg::Rdx, X64Reg::Rbp, -8);
+    code.leaMem(X64Reg::R8, X64Reg::Rbp, -8);     // lpNewFilePointer
+    code.movImmToMem(X64Reg::Rbp, -8, 0);
+    callImport(code, PeImport::SetFilePointerEx);
+    code.movReg32(X64Reg::Rax, X64Reg::Rax);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, failed);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, -8);
+    code.jmp(done);
+    code.bind(failed);
+    code.movImm(X64Reg::Rax, -1);
+    code.bind(done);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
+  // --- long oskel_tell(long handle) ---
+  code.bind(handles.tell);
+  code.xorReg(X64Reg::Rsi, X64Reg::Rsi);  // offset = 0
+  code.movImm(X64Reg::Rdx, 1);            // FILE_CURRENT
+  code.jmp(handles.seek);
+
   // --- the entry point ---
   // The loader calls it with no arguments (and rsp 8 mod 16). Reserve the
   // shadow space the calls below need, run the program entry and exit with its
@@ -515,7 +589,7 @@ std::uint64_t emitWindowsRuntime(CodeGen& code, const RuntimeHandles& handles,
 }
 
 std::uint64_t emitHostedRuntime(CodeGen& code, const RuntimeHandles& handles,
-                                CodeGen::Label programEntry) {
+                                CodeGen::Label programEntry, bool macos) {
   // --- long oskel_write(long fd, const char* buf, long len) ---
   // libc's `write` may write fewer bytes than asked (a pipe, a signal), so the
   // Platform contract's "no short writes" is honoured here, exactly like the
@@ -630,11 +704,19 @@ std::uint64_t emitHostedRuntime(CodeGen& code, const RuntimeHandles& handles,
   code.push(X64Reg::Rbp);
   code.movReg(X64Reg::Rbp, X64Reg::Rsp);
   code.movReg(X64Reg::R8, X64Reg::Rdi);   // path
-  code.testReg(X64Reg::Rsi);              // mode: 0 reads, else writes
   CodeGen::Label reading = code.newLabel();
-  code.jcc(Jcc::Eq, reading);
-  code.movImm(X64Reg::Rsi, 1 | 64 | 512);  // O_WRONLY | O_CREAT | O_TRUNC
+  CodeGen::Label appending = code.newLabel();
   CodeGen::Label opened = code.newLabel();
+  code.cmpImm32(X64Reg::Rsi, 2);          // mode: 0 reads, 1 writes, 2 appends
+  code.jcc(Jcc::Eq, appending);
+  code.testReg(X64Reg::Rsi);
+  code.jcc(Jcc::Eq, reading);
+  // Linux and macOS disagree on O_CREAT/O_TRUNC/O_APPEND, so the hosted
+  // prelude takes the flags from the target rather than hard-coding Linux.
+  code.movImm(X64Reg::Rsi, macos ? (1 | 512 | 1024) : (1 | 64 | 512));
+  code.jmp(opened);
+  code.bind(appending);
+  code.movImm(X64Reg::Rsi, macos ? (1 | 512 | 8) : (1 | 64 | 1024));
   code.jmp(opened);
   code.bind(reading);
   code.xorReg(X64Reg::Rsi, X64Reg::Rsi);  // O_RDONLY
@@ -667,6 +749,24 @@ std::uint64_t emitHostedRuntime(CodeGen& code, const RuntimeHandles& handles,
   code.push(X64Reg::Rbp);
   code.movReg(X64Reg::Rbp, X64Reg::Rsp);
   code.callExternal("close");
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.seek);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.callExternal("lseek");
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.tell);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.xorReg(X64Reg::Rsi, X64Reg::Rsi);  // offset = 0
+  code.movImm(X64Reg::Rdx, 1);            // SEEK_CUR
+  code.callExternal("lseek");
   code.movReg(X64Reg::Rsp, X64Reg::Rbp);
   code.pop(X64Reg::Rbp);
   code.retInsn();
@@ -803,11 +903,17 @@ std::uint64_t emitWindowsHostedRuntime(CodeGen& code, const RuntimeHandles& hand
   code.movReg(X64Reg::Rbp, X64Reg::Rsp);
   code.subRegImm32(X64Reg::Rsp, 32);
   code.movReg(X64Reg::Rcx, X64Reg::Rdi);  // path
-  code.testReg(X64Reg::Rsi);              // mode: 0 reads, else writes
   CodeGen::Label reading = code.newLabel();
+  CodeGen::Label appending = code.newLabel();
   CodeGen::Label opened = code.newLabel();
+  code.cmpImm32(X64Reg::Rsi, 2);          // mode: 0 reads, 1 writes, 2 appends
+  code.jcc(Jcc::Eq, appending);
+  code.testReg(X64Reg::Rsi);
   code.jcc(Jcc::Eq, reading);
   code.movImm(X64Reg::Rdx, 0x8301);  // _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY
+  code.jmp(opened);
+  code.bind(appending);
+  code.movImm(X64Reg::Rdx, 0x8109);  // _O_WRONLY | _O_CREAT | _O_APPEND | _O_BINARY
   code.jmp(opened);
   code.bind(reading);
   code.movImm(X64Reg::Rdx, 0x8000);  // _O_RDONLY | _O_BINARY
@@ -862,6 +968,32 @@ std::uint64_t emitWindowsHostedRuntime(CodeGen& code, const RuntimeHandles& hand
   code.callExternal("_close");
   code.shlImm8(X64Reg::Rax, 32);
   code.sarImm8(X64Reg::Rax, 32);
+  code.addImm32(X64Reg::Rsp, 32);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.seek);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, 32);
+  code.movReg(X64Reg::Rcx, X64Reg::Rdi);  // fd
+  code.movReg(X64Reg::R8, X64Reg::Rdx);   // origin (before rdx is overwritten)
+  code.movReg(X64Reg::Rdx, X64Reg::Rsi);  // offset
+  code.callExternal("_lseeki64");
+  code.addImm32(X64Reg::Rsp, 32);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.tell);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, 32);
+  code.movReg(X64Reg::Rcx, X64Reg::Rdi);  // fd
+  code.xorReg(X64Reg::Rdx, X64Reg::Rdx);  // offset = 0
+  code.movImm(X64Reg::R8, 1);             // SEEK_CUR
+  code.callExternal("_lseeki64");
   code.addImm32(X64Reg::Rsp, 32);
   code.movReg(X64Reg::Rsp, X64Reg::Rbp);
   code.pop(X64Reg::Rbp);

@@ -5,11 +5,9 @@
 // `import std.io.StringReader;` binds the class itself; this file keeps the
 // grouped `import std.io.*` surface working.
 //
-// File access stays with the `readFile`/`writeFile`/`fileExists` builtins: the
-// AOT freestanding backend does not seed them, and a module that mentions one
-// fails `oskel build` even when the function is never called. Everything here
-// is plain Oskel over strings, so it runs on the VM, in a native binary and on
-// WebAssembly.
+// File access lives in `std.fs`; this module is in-memory only. Everything
+// here is plain Oskel over strings, so it runs on the VM, in a native binary
+// and on WebAssembly.
 import std.io.reader as reader;
 import std.io.writer as writer;
 import std.io.text as text;

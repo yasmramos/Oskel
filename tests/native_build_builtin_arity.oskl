@@ -27,6 +27,16 @@ fn noArgsOrd(): any { return ord(); }
 fn extraOrd(): any { return ord("a", "b"); }
 fn noArgsChr(): any { return chr(); }
 fn extraChr(): any { return chr(65, 1); }
+fn noArgsFsOpen(): any { return fsOpen(); }
+fn extraFsOpen(): any { return fsOpen("a", "r", 1); }
+fn noArgsFsRead(): any { return fsRead(); }
+fn extraFsRead(): any { return fsRead("a", 1, 2); }
+fn noArgsFsWrite(): any { return fsWrite(); }
+fn extraFsWrite(): any { return fsWrite("a", "b", 1); }
+fn noArgsFsSeek(): any { return fsSeek(); }
+fn extraFsSeek(): any { return fsSeek("a", 0, "s", 1); }
+fn noArgsFsClose(): any { return fsClose(); }
+fn extraFsClose(): any { return fsClose("a", 1); }
 
 fn reported(f: any): string {
   let r = pcall(f);
@@ -51,6 +61,16 @@ print(reported(noArgsOrd));
 print(reported(extraOrd));
 print(reported(noArgsChr));
 print(reported(extraChr));
+print(reported(noArgsFsOpen));
+print(reported(extraFsOpen));
+print(reported(noArgsFsRead));
+print(reported(extraFsRead));
+print(reported(noArgsFsWrite));
+print(reported(extraFsWrite));
+print(reported(noArgsFsSeek));
+print(reported(extraFsSeek));
+print(reported(noArgsFsClose));
+print(reported(extraFsClose));
 
 // The one-argument form still works, so the guard did not break the happy path.
 print(len("abcd"));

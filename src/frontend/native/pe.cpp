@@ -55,6 +55,8 @@ const char* importName(PeImport import) {
       return "ReadFile";
     case PeImport::CloseHandle:
       return "CloseHandle";
+    case PeImport::SetFilePointerEx:
+      return "SetFilePointerEx";
     case PeImport::Count:
       break;
   }

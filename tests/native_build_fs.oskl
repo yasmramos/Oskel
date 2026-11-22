@@ -1,0 +1,41 @@
+// VM/AOT parity for the streaming half of `std.fs` (PHASE 7g).
+//
+// `tests/build_binary.cmake` runs this under the VM and under `oskel build`,
+// then compares the output byte for byte. It uses only the streaming surface
+// (`std.fs.File` and the whole-file helpers), because the directory half lives
+// in `std.fs.dir` and is VM-only for now (BACKLOG §6).
+import std.fs;
+import std.fs.File as DirectFile;
+
+fn main() {
+  let path = "oskel_native_fs_fixture.txt";
+  std.fs.writeText(path, "alpha\nbeta\n");
+  std.fs.appendText(path, "gamma\n");
+
+  let direct = DirectFile(path, "r");
+  print(direct.readLine());
+  direct.close();
+
+  let file = std.fs.open(path, "r");
+  defer { file.close(); }
+  print(file.readLine());
+  print(file.readLine());
+  print(file.readLine());
+  print(file.readLine());
+  print(file.size());
+  print(file.eof());
+
+  file.seek(0, "start");
+  print(file.read(5));
+  print(file.position());
+  print(file.readAll());
+  print(file.isClosed());
+
+  file.close();
+  print(file.isClosed());
+  print(std.fs.readText(path));
+  print(std.fs.exists(path));
+  print(std.fs.exists("oskel_native_fs_missing.txt"));
+}
+
+main();

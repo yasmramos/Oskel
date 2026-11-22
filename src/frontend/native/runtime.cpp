@@ -15970,6 +15970,406 @@ void emitFileExistsBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEn
   epilogue(cg);
 }
 
+// Validates `args[0]` as a live `Void` handle -- the token `fsOpen` stores --
+// and leaves the `AotPtr*` in `dst`. A `cstring`/`buffer` is a handle too, but
+// not a file handle, so the kind check is part of the contract the hosted
+// `wantFileHandle` enforces.
+void emitFsHandleCheck(CodeGen& cg, X64Reg args, X64Reg dst, CodeGen::Label fail,
+                       const DataBlob& msgType, const DataBlob& msgFreed) {
+  CodeGen::Label kindOk = cg.newLabel();
+  emitPtrArgCheck(cg, args, 0, dst, fail, msgType, msgFreed);
+  cg.movFromMem(Rax, dst, kPtrKindOffset);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, kindOk);  // kPtrKindVoid == 0
+  emitFailCall(cg, fail, msgType);
+  cg.bind(kindOk);
+}
+
+// `fsOpen(path, mode)`: open a stream and return a `Void` handle whose data
+// word is the host descriptor. The mode string is one character: 'r' -> 0,
+// 'w' -> 1, 'a' -> 2, matching the prelude's `oskel_open`.
+void emitFsOpenBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label ptrNew,
+                       const CollectionEnv& env, const RuntimeHandles& entry,
+                       const DataBlob& msgArgc, const DataBlob& msgPathType,
+                       const DataBlob& msgModeType, const DataBlob& msgModeBad,
+                       const DataBlob& msgOpenFailed, const DataBlob& msgNul) {
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label isPath = cg.newLabel();
+  CodeGen::Label isMode = cg.newLabel();
+  CodeGen::Label modeR = cg.newLabel();
+  CodeGen::Label modeW = cg.newLabel();
+  CodeGen::Label modeA = cg.newLabel();
+  CodeGen::Label modeBad = cg.newLabel();
+  CodeGen::Label modeChosen = cg.newLabel();
+  CodeGen::Label opened = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 16);
+  cg.cmpImm32(Rsi, 2);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitArityFailCall(cg, msgArgc);
+
+  cg.bind(argcOk);
+  cg.movFromMem(Rax, Rdi, 0);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, isPath);
+  emitFailCall(cg, env.fail, msgPathType);
+
+  cg.bind(isPath);
+  cg.movFromMem(R12, Rdi, 8);  // the path AotString*
+  cg.movFromMem(Rax, Rdi, -16);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, isMode);
+  emitFailCall(cg, env.fail, msgModeType);
+
+  cg.bind(isMode);
+  cg.movFromMem(Rbx, Rdi, -8);  // the mode AotString*
+  cg.movFromMem(Rax, Rbx, 0);
+  cg.cmpImm32(Rax, 1);
+  cg.jcc(Jcc::Ne, modeBad);
+  cg.movzxFromMem(Rax, Rbx, static_cast<std::int32_t>(kStringDataOffset));
+  cg.cmpImm32(Rax, 'r');
+  cg.jcc(Jcc::Eq, modeR);
+  cg.cmpImm32(Rax, 'w');
+  cg.jcc(Jcc::Eq, modeW);
+  cg.cmpImm32(Rax, 'a');
+  cg.jcc(Jcc::Eq, modeA);
+  cg.jmp(modeBad);
+
+  cg.bind(modeR);
+  cg.xorReg(Rbx, Rbx);
+  cg.jmp(modeChosen);
+  cg.bind(modeW);
+  cg.movImm(Rbx, 1);
+  cg.jmp(modeChosen);
+  cg.bind(modeA);
+  cg.movImm(Rbx, 2);
+  cg.jmp(modeChosen);
+  cg.bind(modeBad);
+  emitFailCall(cg, env.fail, msgModeBad);
+  cg.bind(modeChosen);
+
+  emitPathCopy(cg, R12, env.alloc, env.fail, *env.msgOom, msgNul);
+  cg.movReg(Rdi, Rax);
+  cg.movReg(Rsi, Rbx);
+  cg.callLabel(entry.open);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ge, opened);
+  emitFailCall(cg, env.fail, msgOpenFailed);
+
+  cg.bind(opened);
+  cg.movReg(R12, Rax);  // the host descriptor
+  cg.movImm(Rdi, kPtrKindVoid);
+  cg.xorReg(Rsi, Rsi);
+  cg.callLabel(ptrNew);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rax, kPtrDataOffset, R12);
+  cg.movReg(Rdx, Rax);
+  cg.movImm(Rax, kTagPtr);
+  cg.jmp(done);
+
+  cg.bind(oom);
+  emitFailCall(cg, env.fail, *env.msgOom);
+
+  cg.bind(done);
+  cg.addImm32(Rsp, 16);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `fsRead(handle, count)`: up to `count` bytes, or the rest of the file when
+// `count` is negative. The bytes go through the shared string builder, so a
+// short host read is handled the same way `readFile` handles one.
+void emitFsReadBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                       const RuntimeHandles& entry, CodeGen::Label sbNew,
+                       CodeGen::Label sbAppend, const DataBlob& msgArgc,
+                       const DataBlob& msgHandleType, const DataBlob& msgFreed,
+                       const DataBlob& msgCountType) {
+  constexpr std::int64_t kSb = -24;
+  constexpr std::int64_t kRemaining = -32;
+  constexpr std::int64_t kBuffer = -4144;  // 4096 bytes, below the locals
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label isCount = cg.newLabel();
+  CodeGen::Label loop = cg.newLabel();
+  CodeGen::Label loopRead = cg.newLabel();
+  CodeGen::Label buildString = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 4144);
+  cg.cmpImm32(Rsi, 2);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitArityFailCall(cg, msgArgc);
+
+  cg.bind(argcOk);
+  emitFsHandleCheck(cg, Rdi, Rbx, env.fail, msgHandleType, msgFreed);
+  cg.movFromMem(Rax, Rdi, -16);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Eq, isCount);
+  emitFailCall(cg, env.fail, msgCountType);
+
+  cg.bind(isCount);
+  cg.movFromMem(R12, Rdi, -8);  // the count
+  cg.movToMem(Rbp, kRemaining, R12);
+  cg.callLabel(sbNew);
+  cg.movToMem(Rbp, kSb, Rax);
+
+  cg.bind(loop);
+  cg.movFromMem(R12, Rbp, kRemaining);
+  cg.testReg(R12);
+  cg.jcc(Jcc::Eq, buildString);  // a zero remaining means the caller is done
+  cg.movImm(Rdx, 4096);
+  cg.testReg(R12);
+  cg.jcc(Jcc::Le, loopRead);  // negative: read until EOF
+  cg.cmpReg(R12, Rdx);
+  cg.jcc(Jcc::Ae, loopRead);
+  cg.movReg(Rdx, R12);  // fewer than a full chunk left
+  cg.bind(loopRead);
+  // The handle lives in rbx; the buffer and count are the other two arguments.
+  cg.movFromMem(Rdi, Rbx, kPtrDataOffset);
+  cg.leaMem(Rsi, Rbp, kBuffer);
+  cg.callLabel(entry.readFd);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Le, buildString);
+  cg.movReg(R12, Rax);
+  cg.movFromMem(Rdi, Rbp, kSb);
+  cg.leaMem(Rsi, Rbp, kBuffer);
+  cg.movReg(Rdx, R12);
+  cg.callLabel(sbAppend);
+  cg.movFromMem(Rax, Rbp, kRemaining);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Le, loop);  // negative: no limit to subtract from
+  cg.subReg(Rax, R12);
+  cg.movToMem(Rbp, kRemaining, Rax);
+  cg.jmp(loop);
+
+  cg.bind(buildString);
+  cg.movFromMem(Rbx, Rbp, kSb);
+  cg.movFromMem(R12, Rbx, kSbLengthOffset);
+  cg.movReg(Rdi, R12);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.callLabel(env.alloc);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rax, 0, R12);
+  cg.movReg(Rdi, Rax);
+  cg.addImm32(Rdi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movFromMem(Rsi, Rbx, kSbDataOffset);
+  cg.movReg(Rcx, R12);
+  cg.cld();
+  cg.repMovsb();
+  cg.movReg(Rdx, Rax);
+  cg.movImm(Rax, kTagStr);
+  cg.jmp(done);
+
+  cg.bind(oom);
+  emitFailCall(cg, env.fail, *env.msgOom);
+
+  cg.bind(done);
+  cg.addImm32(Rsp, 4144);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `fsWrite(handle, text)`: write every byte, retrying on a short host write.
+// The count returned is the original length, matching the hosted builtin.
+void emitFsWriteBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                        const RuntimeHandles& entry, const DataBlob& msgArgc,
+                        const DataBlob& msgHandleType, const DataBlob& msgFreed,
+                        const DataBlob& msgTextType, const DataBlob& msgWriteFailed) {
+  constexpr std::int64_t kTotal = -24;
+  constexpr std::int64_t kRemaining = -32;
+  constexpr std::int64_t kPtr = -40;
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label isText = cg.newLabel();
+  CodeGen::Label loop = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 32);
+  cg.cmpImm32(Rsi, 2);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitArityFailCall(cg, msgArgc);
+
+  cg.bind(argcOk);
+  emitFsHandleCheck(cg, Rdi, Rbx, env.fail, msgHandleType, msgFreed);
+  cg.movFromMem(Rax, Rdi, -16);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, isText);
+  emitFailCall(cg, env.fail, msgTextType);
+
+  cg.bind(isText);
+  cg.movFromMem(R12, Rdi, -8);  // the text AotString*
+  cg.movFromMem(Rax, R12, 0);
+  cg.movToMem(Rbp, kTotal, Rax);
+  cg.movToMem(Rbp, kRemaining, Rax);
+  cg.movReg(Rax, R12);
+  cg.addImm32(Rax, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movToMem(Rbp, kPtr, Rax);
+
+  cg.bind(loop);
+  cg.movFromMem(Rdx, Rbp, kRemaining);
+  cg.testReg(Rdx);
+  cg.jcc(Jcc::Le, done);
+  cg.movFromMem(Rdi, Rbx, kPtrDataOffset);
+  cg.movFromMem(Rsi, Rbp, kPtr);
+  cg.callLabel(entry.writeFd);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Le, done);
+  cg.movFromMem(R12, Rbp, kPtr);
+  cg.addReg(R12, Rax);
+  cg.movToMem(Rbp, kPtr, R12);
+  cg.movFromMem(R12, Rbp, kRemaining);
+  cg.subReg(R12, Rax);
+  cg.movToMem(Rbp, kRemaining, R12);
+  cg.jmp(loop);
+
+  cg.bind(done);
+  // A short write is a failure: the loop only reaches here after a complete
+  // write or after the host reported no progress.
+  cg.movFromMem(Rdx, Rbp, kTotal);
+  cg.movFromMem(Rax, Rbp, kRemaining);
+  CodeGen::Label complete = cg.newLabel();
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Le, complete);
+  emitFailCall(cg, env.fail, msgWriteFailed);
+  cg.bind(complete);
+  cg.movImm(Rax, kTagInt);
+  cg.addImm32(Rsp, 32);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `fsSeek(handle, offset, origin)`: move the position and return it. `origin`
+// is the one-letter form `'s'`/`'c'`/`'e'` that `std.fs.File.seek` emits; it
+// maps to 0/1/2.
+void emitFsSeekBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                       const RuntimeHandles& entry, const DataBlob& msgArgc,
+                       const DataBlob& msgHandleType, const DataBlob& msgFreed,
+                       const DataBlob& msgOffsetType, const DataBlob& msgOriginType,
+                       const DataBlob& msgOriginBad, const DataBlob& msgSeekFailed) {
+  CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label isOffset = cg.newLabel();
+  CodeGen::Label isOrigin = cg.newLabel();
+  CodeGen::Label originStart = cg.newLabel();
+  CodeGen::Label originCurrent = cg.newLabel();
+  CodeGen::Label originEnd = cg.newLabel();
+  CodeGen::Label originBad = cg.newLabel();
+  CodeGen::Label originChosen = cg.newLabel();
+  CodeGen::Label done = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  cg.push(R12);
+  cg.subRegImm32(Rsp, 16);
+  cg.cmpImm32(Rsi, 3);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitArityFailCall(cg, msgArgc);
+
+  cg.bind(argcOk);
+  emitFsHandleCheck(cg, Rdi, Rbx, env.fail, msgHandleType, msgFreed);
+  cg.movFromMem(Rax, Rdi, -16);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
+  cg.jcc(Jcc::Eq, isOffset);
+  emitFailCall(cg, env.fail, msgOffsetType);
+
+  cg.bind(isOffset);
+  cg.movFromMem(R12, Rdi, -8);  // the offset
+  cg.movFromMem(Rax, Rdi, -32);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, isOrigin);
+  emitFailCall(cg, env.fail, msgOriginType);
+
+  cg.bind(isOrigin);
+  cg.movFromMem(Rax, Rdi, -24);  // the origin AotString*
+  cg.movFromMem(Rdx, Rax, 0);
+  cg.cmpImm32(Rdx, 1);
+  cg.jcc(Jcc::Ne, originBad);
+  cg.movzxFromMem(Rdx, Rax, static_cast<std::int32_t>(kStringDataOffset));
+  cg.cmpImm32(Rdx, 's');
+  cg.jcc(Jcc::Eq, originStart);
+  cg.cmpImm32(Rdx, 'c');
+  cg.jcc(Jcc::Eq, originCurrent);
+  cg.cmpImm32(Rdx, 'e');
+  cg.jcc(Jcc::Eq, originEnd);
+  cg.jmp(originBad);
+
+  cg.bind(originStart);
+  cg.xorReg(R8, R8);
+  cg.jmp(originChosen);
+  cg.bind(originCurrent);
+  cg.movImm(R8, 1);
+  cg.jmp(originChosen);
+  cg.bind(originEnd);
+  cg.movImm(R8, 2);
+  cg.jmp(originChosen);
+  cg.bind(originBad);
+  emitFailCall(cg, env.fail, msgOriginBad);
+  cg.bind(originChosen);
+
+  cg.movFromMem(Rdi, Rbx, kPtrDataOffset);
+  cg.movReg(Rsi, R12);
+  cg.movReg(Rdx, R8);
+  cg.callLabel(entry.seek);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ge, done);
+  emitFailCall(cg, env.fail, msgSeekFailed);
+
+  cg.bind(done);
+  cg.movReg(Rdx, Rax);
+  cg.movImm(Rax, kTagInt);
+  cg.addImm32(Rsp, 16);
+  cg.pop(R12);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
+// `fsClose(handle)`: close the descriptor and mark the handle released, so a
+// later read/write/seek reports the same use-after-close the VM does.
+void emitFsCloseBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+                        const RuntimeHandles& entry, const DataBlob& msgArgc,
+                        const DataBlob& msgHandleType, const DataBlob& msgFreed) {
+  CodeGen::Label argcOk = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.push(Rbx);
+  // One saved register leaves rsp 8 mod 16; the close thunk calls a C API on
+  // Windows, which requires a 16-byte aligned stack at the call.
+  cg.subRegImm32(Rsp, 8);
+  cg.cmpImm32(Rsi, 1);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitArityFailCall(cg, msgArgc);
+
+  cg.bind(argcOk);
+  emitFsHandleCheck(cg, Rdi, Rbx, env.fail, msgHandleType, msgFreed);
+  cg.movFromMem(Rdi, Rbx, kPtrDataOffset);
+  cg.callLabel(entry.close);
+  cg.movImmToMem(Rbx, kPtrReleasedOffset, 1);
+  cg.xorReg(Rax, Rax);
+  cg.xorReg(Rdx, Rdx);
+  cg.addImm32(Rsp, 8);
+  cg.pop(Rbx);
+  epilogue(cg);
+}
+
 // `clock()`: the seconds since the process started, as a `double`. The origin is
 // the value the chunk captured from `entry.monotonic` at entry, so the first
 // call is not the reference; the difference is scaled from nanoseconds to
@@ -16481,6 +16881,26 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgReadFileArgc = addText("readFile() expects 1 argument");
   DataBlob msgWriteFileArgc = addText("writeFile() expects 2 arguments");
   DataBlob msgFileExistsArgc = addText("fileExists() expects 1 argument");
+  DataBlob msgFsOpenArgc = addText("fsOpen() expects 2 arguments");
+  DataBlob msgFsOpenPathType = addText("fsOpen() expects a string path");
+  DataBlob msgFsOpenModeType = addText("fsOpen() expects a string mode");
+  DataBlob msgFsOpenModeBad = addText("fsOpen() mode must be 'r', 'w' or 'a'");
+  DataBlob msgFsOpenFailed = addText("cannot open file");
+  DataBlob msgFsHandleType = addText("file handle expected");
+  DataBlob msgFsHandleFreed = addText("file handle is closed");
+  DataBlob msgFsReadArgc = addText("fsRead() expects 2 arguments");
+  DataBlob msgFsReadCountType = addText("fsRead() expects an integer count");
+  DataBlob msgFsWriteArgc = addText("fsWrite() expects 2 arguments");
+  DataBlob msgFsWriteTextType = addText("fsWrite() expects a string");
+  DataBlob msgFsWriteFailed = addText("cannot write file");
+  DataBlob msgFsSeekArgc = addText("fsSeek() expects 3 arguments");
+  DataBlob msgFsSeekOffsetType = addText("fsSeek() expects an integer offset");
+  DataBlob msgFsSeekOriginType = addText("fsSeek() expects a string origin");
+  DataBlob msgFsSeekOriginBad =
+      addText("fsSeek() origin must be 's', 'c' or 'e'");
+  DataBlob msgFsSeekFailed = addText("cannot seek in file");
+  DataBlob msgFsCloseArgc = addText("fsClose() expects 1 argument");
+  DataBlob msgFsNul = addText("path must not contain a NUL byte");
   DataBlob msgClockArgc = addText("clock() expects 0 arguments");
   DataBlob msgArgsArgc = addText("args() expects 0 arguments");
   DataBlob msgReadFileType = addText("readFile() expects a string path");
@@ -17169,6 +17589,20 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                          msgWriteFileNul);
     emitFileExistsBuiltin(cg, handles.fileExistsBuiltin, env, entry, msgFileExistsArgc,
                           msgFileExistsType, msgFileExistsNul);
+    emitFsOpenBuiltin(cg, handles.fsOpenBuiltin, ptrNew, env, entry, msgFsOpenArgc,
+                      msgFsOpenPathType, msgFsOpenModeType, msgFsOpenModeBad,
+                      msgFsOpenFailed, msgFsNul);
+    emitFsReadBuiltin(cg, handles.fsReadBuiltin, env, entry, sbNew, sbAppend,
+                      msgFsReadArgc, msgFsHandleType, msgFsHandleFreed,
+                      msgFsReadCountType);
+    emitFsWriteBuiltin(cg, handles.fsWriteBuiltin, env, entry, msgFsWriteArgc,
+                       msgFsHandleType, msgFsHandleFreed, msgFsWriteTextType,
+                       msgFsWriteFailed);
+    emitFsSeekBuiltin(cg, handles.fsSeekBuiltin, env, entry, msgFsSeekArgc,
+                      msgFsHandleType, msgFsHandleFreed, msgFsSeekOffsetType,
+                      msgFsSeekOriginType, msgFsSeekOriginBad, msgFsSeekFailed);
+    emitFsCloseBuiltin(cg, handles.fsCloseBuiltin, env, entry, msgFsCloseArgc,
+                       msgFsHandleType, msgFsHandleFreed);
   }
 
   // The public builtins (PHASE 7c.5a). `str` and `isError` reuse the `$str` and

@@ -1,0 +1,137 @@
+// `std.fs.File` is a class module: one file, one public class. The PascalCase
+// file name is what makes `import std.fs.File;` bind the class itself instead
+// of the module table (docs/language.md §18.6).
+//
+// A streaming file handle. The handle is an opaque `ptr` the `fs*` builtins
+// return; the class owns it and closes it exactly once.
+//
+//   import std.fs.File;
+//
+//   fn demo() {
+//     let f = File("notes.txt", "a");
+//     defer { f.close(); }
+//     f.writeln("line");
+//   }
+//
+// Modes are `"r"` (read), `"w"` (create or truncate) and `"a"` (create or
+// append). Everything else is a runtime error.
+class File {
+  handle: ptr;
+  path: string;
+  mode: string;
+  closed: bool;
+
+  fn init(path: string, mode: string) {
+    self.handle = fsOpen(path, mode);
+    self.path = path;
+    self.mode = mode;
+    self.closed = false;
+  }
+
+  fn _ensureOpen() {
+    if (self.closed) {
+      panic("File is closed");
+    }
+  }
+
+  // Up to `count` bytes. A negative count reads to the end of the file.
+  fn read(count: int): string {
+    self._ensureOpen();
+    return fsRead(self.handle, count);
+  }
+
+  // The rest of the file, as a string.
+  fn readAll(): string {
+    self._ensureOpen();
+    return fsRead(self.handle, -1);
+  }
+
+  // The next line, without its `\n` and with one trailing `\r` dropped. At the
+  // end of the file it returns `""`; check `eof()` first to tell the two apart.
+  fn readLine(): string {
+    self._ensureOpen();
+    var line = "";
+    while (true) {
+      let c = fsRead(self.handle, 1);
+      if (c == "") {
+        break;
+      }
+      if (c == "\n") {
+        break;
+      }
+      line = line + c;
+    }
+    if (len(line) > 0 && line[len(line) - 1] == "\r") {
+      return line[0:len(line) - 1];
+    }
+    return line;
+  }
+
+  // True when the read position is at the end of the file.
+  fn eof(): bool {
+    self._ensureOpen();
+    let current = self.position();
+    let end = fsSeek(self.handle, 0, "e");
+    fsSeek(self.handle, current, "s");
+    return current >= end;
+  }
+
+  // Appends `s`; returns `self` for chaining.
+  fn write(s: string) {
+    self._ensureOpen();
+    fsWrite(self.handle, s);
+    return self;
+  }
+
+  // Appends `s` followed by a newline; returns `self`.
+  fn writeln(s: string) {
+    self.write(s);
+    self.write("\n");
+    return self;
+  }
+
+  // Moves the position and returns it. `origin` is `"start"`, `"current"` or
+  // `"end"`.
+  fn seek(offset: int, origin: string): int {
+    self._ensureOpen();
+    var where = origin;
+    if (origin == "start") {
+      where = "s";
+    } else if (origin == "current") {
+      where = "c";
+    } else if (origin == "end") {
+      where = "e";
+    } else if (origin != "s" && origin != "c" && origin != "e") {
+      panic("seek origin must be 'start', 'current' or 'end'");
+    }
+    return fsSeek(self.handle, offset, where);
+  }
+
+  // The current byte position.
+  fn position(): int {
+    self._ensureOpen();
+    return fsSeek(self.handle, 0, "c");
+  }
+
+  // The file size in bytes, leaving the position unchanged.
+  fn size(): int {
+    self._ensureOpen();
+    let current = self.position();
+    let end = fsSeek(self.handle, 0, "e");
+    fsSeek(self.handle, current, "s");
+    return end;
+  }
+
+  // Closes the handle. Calling it twice is harmless.
+  fn close() {
+    if (!self.closed) {
+      fsClose(self.handle);
+      self.closed = true;
+    }
+  }
+
+  // True after `close`.
+  fn isClosed(): bool {
+    return self.closed;
+  }
+}

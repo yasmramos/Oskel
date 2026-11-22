@@ -381,6 +381,14 @@ struct AotRuntimeHandles {
   CodeGen::Label readFileBuiltin;  // AotValue oskel_builtin_read_file(...)
   CodeGen::Label writeFileBuiltin; // AotValue oskel_builtin_write_file(...)
   CodeGen::Label fileExistsBuiltin;// AotValue oskel_builtin_file_exists(...)
+  // The streaming file builtins behind `std.fs.File`: `fsOpen`, `fsRead`,
+  // `fsWrite`, `fsSeek` and `fsClose`. They are written against the prelude's
+  // file handles too, so they are emitted only with `hasFiles`.
+  CodeGen::Label fsOpenBuiltin;    // AotValue oskel_builtin_fs_open(...)
+  CodeGen::Label fsReadBuiltin;    // AotValue oskel_builtin_fs_read(...)
+  CodeGen::Label fsWriteBuiltin;   // AotValue oskel_builtin_fs_write(...)
+  CodeGen::Label fsSeekBuiltin;    // AotValue oskel_builtin_fs_seek(...)
+  CodeGen::Label fsCloseBuiltin;   // AotValue oskel_builtin_fs_close(...)
   // `clock()`: the seconds since the process started, as a `double`, read from
   // the `entry.monotonic` handle. The origin is captured once, at entry, into
   // the hidden `$clockOrigin` global, so the first call is not the reference.
