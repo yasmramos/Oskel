@@ -21,6 +21,17 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# The project enables only CXX, so `CMAKE_C_COMPILER` is empty unless the caller
+# sets it. The hosted link drives a C toolchain; the C++ compiler links the same
+# object and is always identified, so fall back to it when no C compiler was
+# requested. Passing a bare `cl` here would leave the test without the MSVC
+# environment and fail with "'cl' is not recognized".
+if(CMAKE_C_COMPILER)
+  set(OSKEL_HOSTED_CC "${CMAKE_C_COMPILER}")
+else()
+  set(OSKEL_HOSTED_CC "${CMAKE_CXX_COMPILER}")
+endif()
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
@@ -762,7 +773,7 @@ if(BUILD_TESTING)
     add_test(NAME oskel.build_mode
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-        "-DOSKEL_CC=${CMAKE_C_COMPILER}"
+        "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_mode.cmake")
 
@@ -942,7 +953,7 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_COMMAND}
           "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_macos"
           "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-          "-DOSKEL_CC=${CMAKE_C_COMPILER}"
+          "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
           "-DOSKEL_SKIP_RUN=${OSKEL_MACOS_SKIP_RUN}"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted.oskl"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
@@ -957,7 +968,7 @@ if(BUILD_TESTING)
         COMMAND ${CMAKE_COMMAND}
           "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_windows"
           "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-          "-DOSKEL_CC=${CMAKE_C_COMPILER}"
+          "-DOSKEL_CC=${OSKEL_HOSTED_CC}"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_hosted_windows.oskl"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_extern.cmake")
     endif()
