@@ -973,15 +973,15 @@ std::uint64_t emitWindowsRuntime(CodeGen& code, const RuntimeHandles& handles,
     code.testReg(X64Reg::Rax);
     code.jcc(Jcc::Eq, failed);
     // size = high << 32 | low
-    code.movFromMem(X64Reg::Rax, X64Reg::Rsp, 60);
+    code.movFromMem32(X64Reg::Rax, X64Reg::Rsp, 60);
     code.shlImm8(X64Reg::Rax, 32);
-    code.movFromMem(X64Reg::R8, X64Reg::Rsp, 64);
+    code.movFromMem32(X64Reg::R8, X64Reg::Rsp, 64);
     code.orReg(X64Reg::Rax, X64Reg::R8);
     code.movToMem(X64Reg::R12, 0, X64Reg::Rax);
     // modified = filetime / 10000000 - epoch delta
-    code.movFromMem(X64Reg::Rax, X64Reg::Rsp, 52);
+    code.movFromMem32(X64Reg::Rax, X64Reg::Rsp, 52);
     code.shlImm8(X64Reg::Rax, 32);
-    code.movFromMem(X64Reg::R8, X64Reg::Rsp, 56);
+    code.movFromMem32(X64Reg::R8, X64Reg::Rsp, 56);
     code.orReg(X64Reg::Rax, X64Reg::R8);
     code.movImm(X64Reg::R8, 10000000);
     code.divUnsigned(X64Reg::R8);
@@ -989,7 +989,7 @@ std::uint64_t emitWindowsRuntime(CodeGen& code, const RuntimeHandles& handles,
     code.subReg(X64Reg::Rax, X64Reg::R8);
     code.movToMem(X64Reg::R12, 8, X64Reg::Rax);
     // isDir from FILE_ATTRIBUTE_DIRECTORY (0x10), isFile = !isDir.
-    code.movFromMem(X64Reg::Rax, X64Reg::Rsp, 32);
+    code.movFromMem32(X64Reg::Rax, X64Reg::Rsp, 32);
     code.testImm32(X64Reg::Rax, 0x10);
     code.jcc(Jcc::Eq, notDir);
     code.movImm(X64Reg::Rax, 1);
@@ -1960,15 +1960,15 @@ std::uint64_t emitWindowsHostedRuntime(CodeGen& code, const RuntimeHandles& hand
     code.testReg(X64Reg::Rax);
     code.jcc(Jcc::Eq, failed);
     // size = high << 32 | low
-    code.movFromMem(X64Reg::Rax, X64Reg::Rsp, 60);
+    code.movFromMem32(X64Reg::Rax, X64Reg::Rsp, 60);
     code.shlImm8(X64Reg::Rax, 32);
-    code.movFromMem(X64Reg::R8, X64Reg::Rsp, 64);
+    code.movFromMem32(X64Reg::R8, X64Reg::Rsp, 64);
     code.orReg(X64Reg::Rax, X64Reg::R8);
     code.movToMem(X64Reg::R12, 0, X64Reg::Rax);
     // modified = filetime / 10000000 - epoch delta
-    code.movFromMem(X64Reg::Rax, X64Reg::Rsp, 52);
+    code.movFromMem32(X64Reg::Rax, X64Reg::Rsp, 52);
     code.shlImm8(X64Reg::Rax, 32);
-    code.movFromMem(X64Reg::R8, X64Reg::Rsp, 56);
+    code.movFromMem32(X64Reg::R8, X64Reg::Rsp, 56);
     code.orReg(X64Reg::Rax, X64Reg::R8);
     code.movImm(X64Reg::R8, 10000000);
     code.divUnsigned(X64Reg::R8);
@@ -1976,7 +1976,7 @@ std::uint64_t emitWindowsHostedRuntime(CodeGen& code, const RuntimeHandles& hand
     code.subReg(X64Reg::Rax, X64Reg::R8);
     code.movToMem(X64Reg::R12, 8, X64Reg::Rax);
     // isDir from FILE_ATTRIBUTE_DIRECTORY (0x10), isFile = !isDir.
-    code.movFromMem(X64Reg::Rax, X64Reg::Rsp, 32);
+    code.movFromMem32(X64Reg::Rax, X64Reg::Rsp, 32);
     code.testImm32(X64Reg::Rax, 0x10);
     code.jcc(Jcc::Eq, notDir);
     code.movImm(X64Reg::Rax, 1);
