@@ -1704,12 +1704,15 @@ std::uint64_t emitWindowsHostedRuntime(CodeGen& code, const RuntimeHandles& hand
   code.retInsn();
 
   // --- long oskel_time(void) ---
+  // UCRT `_time64(NULL)`: seconds since the Unix epoch. `time` is an inline
+  // wrapper over `_time64` in the UCRT headers and is not an export of
+  // ucrtbase.dll, so the own linker's import table must name `_time64`.
   code.bind(handles.now);
   code.push(X64Reg::Rbp);
   code.movReg(X64Reg::Rbp, X64Reg::Rsp);
   code.subRegImm32(X64Reg::Rsp, 32);
   code.xorReg(X64Reg::Rcx, X64Reg::Rcx);  // tloc = NULL
-  code.callExternal("time");
+  code.callExternal("_time64");
   code.addImm32(X64Reg::Rsp, 32);
   code.movReg(X64Reg::Rsp, X64Reg::Rbp);
   code.pop(X64Reg::Rbp);
