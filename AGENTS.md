@@ -556,8 +556,11 @@ it as a caveat:
   systems separate.
 - Imports are grouped by DLL: `kernel32.dll` for the Windows API and
   `ucrtbase.dll` for `_write`/`_read`/`_open`/`_close`/`_setmode`/`malloc`/
-  `exit`/`time` and the other `_`-prefixed UCRT entry points (the fallback is
-  what picks up `_lseeki64`). The import table has one descriptor per DLL,
+  `exit`/`_time64` and the other `_`-prefixed UCRT entry points (the fallback
+  is what picks up `_lseeki64`). The runtime must name `_time64`, not `time`:
+  the UCRT headers define `time` as an inline wrapper and `ucrtbase.dll`
+  exports only `_time64`, so an import of `time` makes the loader fail with
+  `0xc0000139`. The import table has one descriptor per DLL,
   ILT/IAT per DLL, hint/name entries and DLL names. The runtime's UCRT calls
   are reached through `jmp [rip + IAT]` thunks; the `_start` calls
   `ExitProcess` through its IAT slot directly.
