@@ -1612,7 +1612,21 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
         cg.cmpImm32(X64Reg::Rsi, fn.numParams);
         cg.jcc(Jcc::Eq, arityOk);
       }
-      cg.callLabel(rt.arityError);
+      // The message names the function and its expected count, both known here;
+      // only the actual count is dynamic, and the runtime helper appends it
+      // (`, got N`) exactly as the hosted engine words it.
+      const std::string expected = std::to_string(fixedParams) +
+                                   (fixedParams == 1 ? " argument" : " arguments") +
+                                   (fn.variadic ? " or more" : "");
+      StringConstant message{cg.newLabel(), fn.name + "() expects " + expected};
+      cg.movReg(X64Reg::Rdx, X64Reg::Rsi);   // argc, before rsi is reloaded
+      cg.leaRipLabel(X64Reg::Rdi, message.label);
+      // The constant's label points at its `AotString` header; the bytes start
+      // after the 8-byte length.
+      cg.addImm32(X64Reg::Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
+      cg.movImm(X64Reg::Rsi, static_cast<std::int64_t>(message.bytes.size()));
+      stringConstants.push_back(std::move(message));
+      cg.callLabel(rt.arityFail);
       cg.bind(arityOk);
     }
 
