@@ -389,6 +389,19 @@ struct AotRuntimeHandles {
   CodeGen::Label fsWriteBuiltin;   // AotValue oskel_builtin_fs_write(...)
   CodeGen::Label fsSeekBuiltin;    // AotValue oskel_builtin_fs_seek(...)
   CodeGen::Label fsCloseBuiltin;   // AotValue oskel_builtin_fs_close(...)
+  // The directory half of `std.fs.dir`: `fsRemove`, `fsRename`, `fsMkdir`,
+  // `fsRmdir`, `fsList`, `fsStat`, `fsCwd` and `fsChdir`. They are written
+  // against the prelude's directory handles (`removePath`, `renamePath`,
+  // `mkdirPath`, `rmdirPath`, `listEntry`, `statPath`, `cwd`, `chdirPath`) and
+  // emitted only with `hasFiles`.
+  CodeGen::Label fsRemoveBuiltin;  // AotValue oskel_builtin_fs_remove(...)
+  CodeGen::Label fsRenameBuiltin;  // AotValue oskel_builtin_fs_rename(...)
+  CodeGen::Label fsMkdirBuiltin;   // AotValue oskel_builtin_fs_mkdir(...)
+  CodeGen::Label fsRmdirBuiltin;   // AotValue oskel_builtin_fs_rmdir(...)
+  CodeGen::Label fsListBuiltin;    // AotValue oskel_builtin_fs_list(...)
+  CodeGen::Label fsStatBuiltin;    // AotValue oskel_builtin_fs_stat(...)
+  CodeGen::Label fsCwdBuiltin;     // AotValue oskel_builtin_fs_cwd(...)
+  CodeGen::Label fsChdirBuiltin;   // AotValue oskel_builtin_fs_chdir(...)
   // `clock()`: the seconds since the process started, as a `double`, read from
   // the `entry.monotonic` handle. The origin is captured once, at entry, into
   // the hidden `$clockOrigin` global, so the first call is not the reference.

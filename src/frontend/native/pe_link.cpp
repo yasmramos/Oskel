@@ -493,7 +493,10 @@ const char* dllForImport(const std::string& name) {
       "VirtualAlloc", "WriteFile", "GetStdHandle", "CreateFileA",
       "ReadFile", "CloseHandle", "SetFilePointerEx", "GetCommandLineA",
       "GetCommandLineW", "GetLastError", "Sleep", "QueryPerformanceCounter",
-      "QueryPerformanceFrequency", "GetProcessHeap", "HeapAlloc", "HeapFree"};
+      "QueryPerformanceFrequency", "GetProcessHeap", "HeapAlloc", "HeapFree",
+      "DeleteFileA", "MoveFileA", "CreateDirectoryA", "RemoveDirectoryA",
+      "SetCurrentDirectoryA", "GetCurrentDirectoryA", "FindFirstFileA",
+      "FindNextFileA", "FindClose", "GetFileAttributesExA"};
   static const std::unordered_set<std::string> ucrt = {
       "_write", "_read", "_open", "_close", "_setmode", "malloc", "free",
       "calloc", "realloc", "exit", "abort", "time", "strlen", "strcmp",

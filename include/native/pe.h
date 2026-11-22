@@ -41,6 +41,16 @@ enum class PeImport : int {
   ReadFile,
   CloseHandle,
   SetFilePointerEx,
+  DeleteFileA,
+  MoveFileA,
+  CreateDirectoryA,
+  RemoveDirectoryA,
+  SetCurrentDirectoryA,
+  GetCurrentDirectoryA,
+  FindFirstFileA,
+  FindNextFileA,
+  FindClose,
+  GetFileAttributesExA,
   Count,
 };
 

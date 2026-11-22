@@ -13,6 +13,14 @@ constexpr long kSysMmap = 9;
 constexpr long kSysClockGettime = 228;
 constexpr long kSysExitGroup = 231;
 constexpr long kSysOpenAt = 257;
+constexpr long kSysGetdents64 = 217;
+constexpr long kSysNewfstatat = 262;
+constexpr long kSysGetcwd = 79;
+constexpr long kSysChdir = 80;
+constexpr long kSysRename = 82;
+constexpr long kSysMkdir = 83;
+constexpr long kSysRmdir = 84;
+constexpr long kSysUnlink = 87;
 // `time(NULL)`: the wall clock as seconds since the Unix epoch. It is the one
 // value the runtime cannot compute from memory, and the kernel's own clock is
 // already in UTC, so no timezone handling is needed.
@@ -192,6 +200,273 @@ std::uint64_t emitFreestandingRuntime(CodeGen& code, const RuntimeHandles& handl
   code.movImm(X64Reg::Rax, kSysLseek);
   code.syscallInsn();
   code.retInsn();
+
+  // --- the directory and metadata handles ---
+  // These are the Linux syscalls behind `std.fs.dir`. Each helper returns 1/0
+  // (or a length), so the runtime's builtins carry no target-specific code.
+  code.bind(handles.removePath);
+  {
+    CodeGen::Label ok = code.newLabel();
+    code.movImm(X64Reg::Rax, kSysUnlink);
+    code.syscallInsn();
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Ge, ok);
+    // `remove` also accepts an empty directory, like std::filesystem::remove.
+    code.movImm(X64Reg::Rax, kSysRmdir);
+    code.syscallInsn();
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Ge, ok);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.retInsn();
+    code.bind(ok);
+    code.movImm(X64Reg::Rax, 1);
+    code.retInsn();
+  }
+
+  code.bind(handles.renamePath);
+  code.movImm(X64Reg::Rax, kSysRename);
+  code.syscallInsn();
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Ge, X64Reg::Rax);
+  code.retInsn();
+
+  code.bind(handles.mkdirPath);
+  code.movImm(X64Reg::Rsi, 0777);
+  code.movImm(X64Reg::Rax, kSysMkdir);
+  code.syscallInsn();
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Ge, X64Reg::Rax);
+  code.retInsn();
+
+  code.bind(handles.rmdirPath);
+  code.movImm(X64Reg::Rax, kSysRmdir);
+  code.syscallInsn();
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Ge, X64Reg::Rax);
+  code.retInsn();
+
+  code.bind(handles.chdirPath);
+  code.movImm(X64Reg::Rax, kSysChdir);
+  code.syscallInsn();
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Ge, X64Reg::Rax);
+  code.retInsn();
+
+  // `long oskel_cwd(char* buf, long cap)`: the getcwd syscall writes the
+  // NUL-terminated path and returns its length *including* the terminator, so
+  // subtract one before `strNew`.
+  code.bind(handles.cwd);
+  code.movImm(X64Reg::Rax, kSysGetcwd);
+  code.syscallInsn();
+  code.testReg(X64Reg::Rax);
+  CodeGen::Label cwdOk = code.newLabel();
+  code.jcc(Jcc::Ge, cwdOk);
+  code.movImm(X64Reg::Rax, -1);
+  code.retInsn();
+  code.bind(cwdOk);
+  code.subRegImm32(X64Reg::Rax, 1);
+  code.retInsn();
+
+  // `long oskel_stat(const char* path, long* out)`: newfstatat with a 144-byte
+  // `struct stat`; the x86-64 Linux offsets are stable (size 48, mtime 88,
+  // mode 24). The four output words are size, mtime, isFile and isDir.
+  code.bind(handles.statPath);
+  {
+    CodeGen::Label failed = code.newLabel();
+    CodeGen::Label failedDone = code.newLabel();
+    CodeGen::Label notDir = code.newLabel();
+    CodeGen::Label notFile = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.push(X64Reg::R12);
+    code.subRegImm32(X64Reg::Rsp, 160);
+    code.movReg(X64Reg::R12, X64Reg::Rsi);  // out
+    code.movReg(X64Reg::R8, X64Reg::Rdi);   // path
+    code.movImm(X64Reg::Rdi, kAtFdcwd);
+    code.movReg(X64Reg::Rsi, X64Reg::R8);
+    code.movReg(X64Reg::Rdx, X64Reg::Rsp);
+    code.xorReg(X64Reg::R10, X64Reg::R10);
+    code.movImm(X64Reg::Rax, kSysNewfstatat);
+    code.syscallInsn();
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Lt, failed);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rsp, 48);  // st_size
+    code.movToMem(X64Reg::R12, 0, X64Reg::Rax);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rsp, 88);  // st_mtime
+    code.movToMem(X64Reg::R12, 8, X64Reg::Rax);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rsp, 24);  // st_mode
+    code.andImm32(X64Reg::Rax, 0170000);
+    code.cmpImm32(X64Reg::Rax, 0040000);            // S_IFDIR
+    code.jcc(Jcc::Ne, notDir);
+    code.movImm(X64Reg::Rax, 1);
+    code.movToMem(X64Reg::R12, 24, X64Reg::Rax);
+    code.jmp(notFile);
+    code.bind(notDir);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.movToMem(X64Reg::R12, 24, X64Reg::Rax);
+    code.bind(notFile);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rsp, 24);
+    code.andImm32(X64Reg::Rax, 0170000);
+    code.cmpImm32(X64Reg::Rax, 0100000);            // S_IFREG
+    code.movImm(X64Reg::Rax, 0);
+    code.setcc(Jcc::Eq, X64Reg::Rax);
+    code.movToMem(X64Reg::R12, 16, X64Reg::Rax);
+    code.movImm(X64Reg::Rax, 1);
+    code.jmp(failed);  // shared epilogue
+    code.bind(failed);
+    // `failed` is reached either by a syscall error (rax < 0) or by the
+    // success path above (rax == 1); distinguish by the sign.
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Ge, failedDone);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.bind(failedDone);
+    code.addImm32(X64Reg::Rsp, 160);
+    code.pop(X64Reg::R12);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
+  // `long oskel_list_entry(const char* path, long index, char* buf, long cap)`:
+  // open the directory and walk getdents64 entries until the requested index,
+  // skipping `.` and `..`. It returns the basename length, 0 at the end of the
+  // directory and -1 on failure. The runtime calls it once per index and sorts
+  // the names, so the host's directory order never reaches the program.
+  code.bind(handles.listEntry);
+  {
+    constexpr std::int32_t kPath = -24;
+    constexpr std::int32_t kIndex = -32;
+    constexpr std::int32_t kBuf = -40;
+    constexpr std::int32_t kCap = -48;
+    constexpr std::int32_t kFd = -56;
+    constexpr std::int32_t kCount = -64;
+    constexpr std::int32_t kOffset = -72;
+    constexpr std::int32_t kBuffer = -4208;
+    CodeGen::Label readMore = code.newLabel();
+    CodeGen::Label entryLoop = code.newLabel();
+    CodeGen::Label nextEntry = code.newLabel();
+    CodeGen::Label notDot = code.newLabel();
+    CodeGen::Label copyName = code.newLabel();
+    CodeGen::Label scanName = code.newLabel();
+    CodeGen::Label scanned = code.newLabel();
+    CodeGen::Label closeEof = code.newLabel();
+    CodeGen::Label closeFail = code.newLabel();
+    CodeGen::Label closeReturn = code.newLabel();
+    CodeGen::Label cleanup = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.push(X64Reg::Rbx);
+    code.push(X64Reg::R12);
+    code.subRegImm32(X64Reg::Rsp, 4208);
+    code.movToMem(X64Reg::Rbp, kPath, X64Reg::Rdi);
+    code.movToMem(X64Reg::Rbp, kIndex, X64Reg::Rsi);
+    code.movToMem(X64Reg::Rbp, kBuf, X64Reg::Rdx);
+    code.movToMem(X64Reg::Rbp, kCap, X64Reg::Rcx);
+    code.xorReg(X64Reg::Rsi, X64Reg::Rsi);  // read mode
+    code.callLabel(handles.open);
+    code.movToMem(X64Reg::Rbp, kFd, X64Reg::Rax);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Lt, closeFail);
+
+    code.bind(readMore);
+    code.movFromMem(X64Reg::Rdi, X64Reg::Rbp, kFd);
+    code.leaMem(X64Reg::Rsi, X64Reg::Rbp, kBuffer);
+    code.movImm(X64Reg::Rdx, 4096);
+    code.movImm(X64Reg::Rax, kSysGetdents64);
+    code.syscallInsn();
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Lt, closeFail);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, closeEof);
+    code.movToMem(X64Reg::Rbp, kCount, X64Reg::Rax);
+    code.movImmToMem(X64Reg::Rbp, kOffset, 0);
+
+    code.bind(entryLoop);
+    code.movFromMem(X64Reg::R8, X64Reg::Rbp, kOffset);
+    code.movFromMem(X64Reg::R9, X64Reg::Rbp, kCount);
+    code.cmpReg(X64Reg::R8, X64Reg::R9);
+    code.jcc(Jcc::Ae, readMore);
+    code.leaMem(X64Reg::R9, X64Reg::Rbp, kBuffer);
+    code.addReg(X64Reg::R9, X64Reg::R8);          // &dirent
+    code.movFromMem(X64Reg::R11, X64Reg::R9, 16); // reclen + type + name
+    code.andImm32(X64Reg::R11, 0xFFFF);           // d_reclen
+    code.testReg(X64Reg::R11);
+    code.jcc(Jcc::Eq, closeFail);
+    code.addImm32(X64Reg::R9, 19);                // d_name
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R9, 0);
+    code.cmpImm32(X64Reg::Rax, '.');
+    code.jcc(Jcc::Ne, notDot);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R9, 1);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, nextEntry);
+    code.cmpImm32(X64Reg::Rax, '.');
+    code.jcc(Jcc::Ne, notDot);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R9, 2);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, nextEntry);
+
+    code.bind(notDot);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kIndex);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, copyName);
+    code.subRegImm32(X64Reg::Rax, 1);
+    code.movToMem(X64Reg::Rbp, kIndex, X64Reg::Rax);
+    code.jmp(nextEntry);
+
+    code.bind(copyName);
+    code.movReg(X64Reg::R12, X64Reg::R9);         // name
+    code.xorReg(X64Reg::Rbx, X64Reg::Rbx);        // length
+    code.bind(scanName);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R12, 0);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, scanned);
+    code.addImm32(X64Reg::R12, 1);
+    code.addImm32(X64Reg::Rbx, 1);
+    code.jmp(scanName);
+    code.bind(scanned);
+    code.movReg(X64Reg::Rax, X64Reg::Rbx);
+    code.addImm32(X64Reg::Rax, 1);
+    code.movFromMem(X64Reg::R8, X64Reg::Rbp, kCap);
+    code.cmpReg(X64Reg::Rax, X64Reg::R8);
+    code.jcc(Jcc::A, closeFail);
+    code.movFromMem(X64Reg::Rdi, X64Reg::Rbp, kBuf);
+    code.movReg(X64Reg::Rsi, X64Reg::R9);
+    code.movReg(X64Reg::Rcx, X64Reg::Rbx);
+    code.cld();
+    code.repMovsb();
+    code.movImmByteToMem(X64Reg::Rdi, 0, 0);
+    code.movReg(X64Reg::R12, X64Reg::Rbx);        // return length
+    code.jmp(closeReturn);
+
+    code.bind(nextEntry);
+    code.movFromMem(X64Reg::R8, X64Reg::Rbp, kOffset);
+    code.addReg(X64Reg::R8, X64Reg::R11);
+    code.movToMem(X64Reg::Rbp, kOffset, X64Reg::R8);
+    code.jmp(entryLoop);
+
+    code.bind(closeEof);
+    code.xorReg(X64Reg::R12, X64Reg::R12);
+    code.jmp(closeReturn);
+    code.bind(closeFail);
+    code.movImm(X64Reg::R12, -1);
+    code.bind(closeReturn);
+    code.movFromMem(X64Reg::Rdi, X64Reg::Rbp, kFd);
+    code.testReg(X64Reg::Rdi);
+    code.jcc(Jcc::Lt, cleanup);
+    code.callLabel(handles.close);
+    code.bind(cleanup);
+    code.movReg(X64Reg::Rax, X64Reg::R12);
+    code.addImm32(X64Reg::Rsp, 4208);
+    code.pop(X64Reg::R12);
+    code.pop(X64Reg::Rbx);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
 
   // --- _start: the ELF entry point ---
   // The kernel leaves argc at [rsp] and argv[] starting at [rsp+8]. Pass them
@@ -572,6 +847,322 @@ std::uint64_t emitWindowsRuntime(CodeGen& code, const RuntimeHandles& handles,
   code.movImm(X64Reg::Rdx, 1);            // FILE_CURRENT
   code.jmp(handles.seek);
 
+  // --- the directory and metadata handles ---
+  // The same operations as the Linux prelude, reached through kernel32 with the
+  // Microsoft ABI. Each thunk reserves the 32-byte shadow space and returns 1/0
+  // (or a length), so the runtime builtins stay target-independent.
+  code.bind(handles.removePath);
+  {
+    CodeGen::Label ok = code.newLabel();
+    CodeGen::Label done = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.subRegImm32(X64Reg::Rsp, kWinShadowSpace);
+    code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+    callImport(code, PeImport::DeleteFileA);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Ne, ok);
+    code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+    callImport(code, PeImport::RemoveDirectoryA);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Ne, ok);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.jmp(done);
+    code.bind(ok);
+    code.movImm(X64Reg::Rax, 1);
+    code.bind(done);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
+  code.bind(handles.renamePath);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, kWinShadowSpace);
+  code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+  code.movReg(X64Reg::Rdx, X64Reg::Rsi);
+  callImport(code, PeImport::MoveFileA);
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Ne, X64Reg::Rax);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.mkdirPath);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, kWinShadowSpace);
+  code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+  code.xorReg(X64Reg::Rdx, X64Reg::Rdx);
+  callImport(code, PeImport::CreateDirectoryA);
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Ne, X64Reg::Rax);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.rmdirPath);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, kWinShadowSpace);
+  code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+  callImport(code, PeImport::RemoveDirectoryA);
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Ne, X64Reg::Rax);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.chdirPath);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, kWinShadowSpace);
+  code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+  callImport(code, PeImport::SetCurrentDirectoryA);
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Ne, X64Reg::Rax);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.cwd);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, kWinShadowSpace);
+  code.movReg(X64Reg::Rcx, X64Reg::Rsi);  // capacity
+  code.movReg(X64Reg::Rdx, X64Reg::Rdi);  // buffer
+  callImport(code, PeImport::GetCurrentDirectoryA);
+  CodeGen::Label cwdFits = code.newLabel();
+  code.cmpReg(X64Reg::Rax, X64Reg::Rsi);
+  code.jcc(Jcc::Le, cwdFits);
+  code.movImm(X64Reg::Rax, -1);
+  code.retInsn();
+  code.bind(cwdFits);
+  code.testReg(X64Reg::Rax);
+  CodeGen::Label cwdOk = code.newLabel();
+  code.jcc(Jcc::Ne, cwdOk);
+  code.movImm(X64Reg::Rax, -1);
+  code.bind(cwdOk);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  // `long oskel_stat(const char* path, long* out)`: GetFileAttributesExA fills
+  // a 36-byte WIN32_FILE_ATTRIBUTE_DATA; the size is split high/low and the
+  // last-write FILETIME is converted from 100-ns units to Unix seconds.
+  code.bind(handles.statPath);
+  {
+    CodeGen::Label failed = code.newLabel();
+    CodeGen::Label notDir = code.newLabel();
+    CodeGen::Label storeFile = code.newLabel();
+    CodeGen::Label statDone = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.push(X64Reg::R12);
+    code.subRegImm32(X64Reg::Rsp, 96);
+    code.movReg(X64Reg::R12, X64Reg::Rsi);  // out
+    code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+    code.xorReg(X64Reg::Rdx, X64Reg::Rdx);  // GetFileExInfoStandard
+    code.leaMem(X64Reg::R8, X64Reg::Rsp, 32);  // above the shadow space
+    callImport(code, PeImport::GetFileAttributesExA);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, failed);
+    // size = high << 32 | low
+    code.movFromMem32(X64Reg::Rax, X64Reg::Rsp, 60);
+    code.shlImm8(X64Reg::Rax, 32);
+    code.movFromMem32(X64Reg::R8, X64Reg::Rsp, 64);
+    code.orReg(X64Reg::Rax, X64Reg::R8);
+    code.movToMem(X64Reg::R12, 0, X64Reg::Rax);
+    // modified = filetime / 10000000 - epoch delta
+    code.movFromMem32(X64Reg::Rax, X64Reg::Rsp, 52);
+    code.shlImm8(X64Reg::Rax, 32);
+    code.movFromMem32(X64Reg::R8, X64Reg::Rsp, 56);
+    code.orReg(X64Reg::Rax, X64Reg::R8);
+    code.movImm(X64Reg::R8, 10000000);
+    code.divUnsigned(X64Reg::R8);
+    code.movImm(X64Reg::R8, kWinFileTimeUnixEpochDelta);
+    code.subReg(X64Reg::Rax, X64Reg::R8);
+    code.movToMem(X64Reg::R12, 8, X64Reg::Rax);
+    // isDir from FILE_ATTRIBUTE_DIRECTORY (0x10), isFile = !isDir.
+    code.movFromMem32(X64Reg::Rax, X64Reg::Rsp, 32);
+    code.testImm32(X64Reg::Rax, 0x10);
+    code.jcc(Jcc::Eq, notDir);
+    code.movImm(X64Reg::Rax, 1);
+    code.movToMem(X64Reg::R12, 24, X64Reg::Rax);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.jmp(storeFile);
+    code.bind(notDir);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.movToMem(X64Reg::R12, 24, X64Reg::Rax);
+    code.movImm(X64Reg::Rax, 1);
+    code.bind(storeFile);
+    code.movToMem(X64Reg::R12, 16, X64Reg::Rax);
+    code.movImm(X64Reg::Rax, 1);
+    code.jmp(statDone);
+    code.bind(failed);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.bind(statDone);
+    code.addImm32(X64Reg::Rsp, 96);
+    code.pop(X64Reg::R12);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
+  // `long oskel_list_entry(const char* path, long index, char* buf, long cap)`:
+  // build `path\*`, walk FindFirstFileA/FindNextFileA and return the indexed
+  // basename. `std.fs.dir` sorts the names, so the host order does not leak.
+  code.bind(handles.listEntry);
+  {
+    constexpr std::int32_t kPath = -24;
+    constexpr std::int32_t kIndex = -32;
+    constexpr std::int32_t kBuf = -40;
+    constexpr std::int32_t kCap = -48;
+    constexpr std::int32_t kHandle = -56;
+    constexpr std::int32_t kPattern = -4176;
+    constexpr std::int32_t kFindData = -4592;
+    CodeGen::Label scanPath = code.newLabel();
+    CodeGen::Label pathScanned = code.newLabel();
+    CodeGen::Label appendSeparator = code.newLabel();
+    CodeGen::Label appendStar = code.newLabel();
+    CodeGen::Label opened = code.newLabel();
+    CodeGen::Label loop = code.newLabel();
+    CodeGen::Label next = code.newLabel();
+    CodeGen::Label copyOrNext = code.newLabel();
+    CodeGen::Label copyName = code.newLabel();
+    CodeGen::Label scanName = code.newLabel();
+    CodeGen::Label scanned = code.newLabel();
+    CodeGen::Label closeEof = code.newLabel();
+    CodeGen::Label closeFail = code.newLabel();
+    CodeGen::Label closeReturn = code.newLabel();
+    CodeGen::Label cleanup = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.push(X64Reg::Rbx);
+    code.push(X64Reg::R12);
+    code.subRegImm32(X64Reg::Rsp, 4800);
+    code.movToMem(X64Reg::Rbp, kPath, X64Reg::Rdi);
+    code.movToMem(X64Reg::Rbp, kIndex, X64Reg::Rsi);
+    code.movToMem(X64Reg::Rbp, kBuf, X64Reg::Rdx);
+    code.movToMem(X64Reg::Rbp, kCap, X64Reg::Rcx);
+    code.movImmToMem(X64Reg::Rbp, kHandle, -1);
+    // pattern = path, with a separator if needed, then `*`.
+    code.movFromMem(X64Reg::Rsi, X64Reg::Rbp, kPath);
+    code.leaMem(X64Reg::Rdi, X64Reg::Rbp, kPattern);
+    code.xorReg(X64Reg::Rcx, X64Reg::Rcx);
+    code.bind(scanPath);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::Rsi, 0);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, pathScanned);
+    code.addImm32(X64Reg::Rcx, 1);
+    code.addImm32(X64Reg::Rsi, 1);
+    code.jmp(scanPath);
+    code.bind(pathScanned);
+    code.cmpImm32(X64Reg::Rcx, 4088);
+    code.jcc(Jcc::A, closeFail);
+    code.movFromMem(X64Reg::Rsi, X64Reg::Rbp, kPath);
+    code.leaMem(X64Reg::Rdi, X64Reg::Rbp, kPattern);
+    code.cld();
+    code.repMovsb();
+    code.leaMem(X64Reg::R8, X64Reg::Rbp, kPattern);
+    code.cmpReg(X64Reg::Rdi, X64Reg::R8);
+    code.jcc(Jcc::Eq, appendSeparator);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::Rdi, -1);
+    code.cmpImm32(X64Reg::Rax, '\\');
+    code.jcc(Jcc::Eq, appendStar);
+    code.cmpImm32(X64Reg::Rax, '/');
+    code.jcc(Jcc::Eq, appendStar);
+    code.bind(appendSeparator);
+    code.movImm(X64Reg::Rax, '\\');
+    code.movByteToMem(X64Reg::Rdi, 0, X64Reg::Rax);
+    code.addImm32(X64Reg::Rdi, 1);
+    code.bind(appendStar);
+    code.movImm(X64Reg::Rax, '*');
+    code.movByteToMem(X64Reg::Rdi, 0, X64Reg::Rax);
+    code.movImmByteToMem(X64Reg::Rdi, 1, 0);
+    code.leaMem(X64Reg::Rcx, X64Reg::Rbp, kPattern);
+    code.leaMem(X64Reg::Rdx, X64Reg::Rbp, kFindData);
+    callImport(code, PeImport::FindFirstFileA);
+    code.movToMem(X64Reg::Rbp, kHandle, X64Reg::Rax);
+    code.cmpImm32(X64Reg::Rax, -1);
+    code.jcc(Jcc::Eq, closeFail);
+    code.bind(opened);
+    code.bind(loop);
+    code.leaMem(X64Reg::R9, X64Reg::Rbp, kFindData);
+    code.addImm32(X64Reg::R9, 44);  // cFileName
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R9, 0);
+    code.cmpImm32(X64Reg::Rax, '.');
+    code.jcc(Jcc::Ne, copyOrNext);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R9, 1);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, next);
+    code.cmpImm32(X64Reg::Rax, '.');
+    code.jcc(Jcc::Ne, copyOrNext);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R9, 2);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, next);
+    code.bind(copyOrNext);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kIndex);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, copyName);
+    code.subRegImm32(X64Reg::Rax, 1);
+    code.movToMem(X64Reg::Rbp, kIndex, X64Reg::Rax);
+    code.jmp(next);
+    code.bind(copyName);
+    code.movReg(X64Reg::R12, X64Reg::R9);
+    code.xorReg(X64Reg::Rbx, X64Reg::Rbx);
+    code.bind(scanName);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R12, 0);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, scanned);
+    code.addImm32(X64Reg::R12, 1);
+    code.addImm32(X64Reg::Rbx, 1);
+    code.jmp(scanName);
+    code.bind(scanned);
+    code.movReg(X64Reg::Rax, X64Reg::Rbx);
+    code.addImm32(X64Reg::Rax, 1);
+    code.movFromMem(X64Reg::R8, X64Reg::Rbp, kCap);
+    code.cmpReg(X64Reg::Rax, X64Reg::R8);
+    code.jcc(Jcc::A, closeFail);
+    code.movFromMem(X64Reg::Rdi, X64Reg::Rbp, kBuf);
+    code.movReg(X64Reg::Rsi, X64Reg::R9);
+    code.movReg(X64Reg::Rcx, X64Reg::Rbx);
+    code.cld();
+    code.repMovsb();
+    code.movImmByteToMem(X64Reg::Rdi, 0, 0);
+    code.movReg(X64Reg::R12, X64Reg::Rbx);
+    code.jmp(closeReturn);
+    code.bind(next);
+    code.movFromMem(X64Reg::Rcx, X64Reg::Rbp, kHandle);
+    code.leaMem(X64Reg::Rdx, X64Reg::Rbp, kFindData);
+    callImport(code, PeImport::FindNextFileA);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Ne, loop);
+    code.bind(closeEof);
+    code.xorReg(X64Reg::R12, X64Reg::R12);
+    code.jmp(closeReturn);
+    code.bind(closeFail);
+    code.movImm(X64Reg::R12, -1);
+    code.bind(closeReturn);
+    code.movFromMem(X64Reg::Rcx, X64Reg::Rbp, kHandle);
+    code.cmpImm32(X64Reg::Rcx, -1);
+    code.jcc(Jcc::Eq, cleanup);
+    callImport(code, PeImport::FindClose);
+    code.bind(cleanup);
+    code.movReg(X64Reg::Rax, X64Reg::R12);
+    code.addImm32(X64Reg::Rsp, 4800);
+    code.pop(X64Reg::R12);
+    code.pop(X64Reg::Rbx);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
   // --- the entry point ---
   // The loader calls it with no arguments (and rsp 8 mod 16). Reserve the
   // shadow space the calls below need, run the program entry and exit with its
@@ -770,6 +1361,250 @@ std::uint64_t emitHostedRuntime(CodeGen& code, const RuntimeHandles& handles,
   code.movReg(X64Reg::Rsp, X64Reg::Rbp);
   code.pop(X64Reg::Rbp);
   code.retInsn();
+
+  // --- the directory and metadata handles, through libc ---
+  // `remove` accepts a file or an empty directory, matching the hosted
+  // Platform's std::filesystem::remove. `stat`/`readdir` layouts differ between
+  // Linux and macOS, so the offsets are selected by `macos`.
+  code.bind(handles.removePath);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.callExternal("remove");
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Eq, X64Reg::Rax);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.renamePath);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.callExternal("rename");
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Eq, X64Reg::Rax);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.mkdirPath);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.movImm(X64Reg::Rsi, 0777);
+  code.callExternal("mkdir");
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Eq, X64Reg::Rax);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.rmdirPath);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.callExternal("rmdir");
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Eq, X64Reg::Rax);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.chdirPath);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.callExternal("chdir");
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Eq, X64Reg::Rax);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.cwd);
+  {
+    CodeGen::Label failed = code.newLabel();
+    CodeGen::Label scan = code.newLabel();
+    CodeGen::Label done = code.newLabel();
+    CodeGen::Label cwdDone = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.callExternal("getcwd");
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, failed);
+    code.movReg(X64Reg::R8, X64Reg::Rax);
+    code.bind(scan);
+    code.movzxFromMem(X64Reg::R9, X64Reg::R8, 0);
+    code.testReg(X64Reg::R9);
+    code.jcc(Jcc::Eq, done);
+    code.addImm32(X64Reg::R8, 1);
+    code.jmp(scan);
+    code.bind(done);
+    code.movReg(X64Reg::Rax, X64Reg::R8);
+    code.subReg(X64Reg::Rax, X64Reg::Rdi);
+    code.jmp(cwdDone);
+    code.bind(failed);
+    code.movImm(X64Reg::Rax, -1);
+    code.bind(cwdDone);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
+  code.bind(handles.statPath);
+  {
+    constexpr std::int32_t kSize = 48;
+    constexpr std::int32_t kMtime = 88;
+    constexpr std::int32_t kMode = 24;
+    const std::int32_t sizeOffset = macos ? 96 : kSize;
+    const std::int32_t mtimeOffset = macos ? 48 : kMtime;
+    const std::int32_t modeOffset = macos ? 4 : kMode;
+    CodeGen::Label failed = code.newLabel();
+    CodeGen::Label notDir = code.newLabel();
+    CodeGen::Label storeFile = code.newLabel();
+    CodeGen::Label statDone = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.push(X64Reg::R12);
+    code.subRegImm32(X64Reg::Rsp, 160);
+    code.movReg(X64Reg::R12, X64Reg::Rsi);  // out
+    code.movReg(X64Reg::Rsi, X64Reg::Rsp);
+    code.callExternal(macos ? "stat$INODE64" : "stat");
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Ne, failed);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rsp, sizeOffset);
+    code.movToMem(X64Reg::R12, 0, X64Reg::Rax);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rsp, mtimeOffset);
+    code.movToMem(X64Reg::R12, 8, X64Reg::Rax);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rsp, modeOffset);
+    code.andImm32(X64Reg::Rax, 0xFFFF);
+    code.andImm32(X64Reg::Rax, 0170000);
+    code.cmpImm32(X64Reg::Rax, 0040000);
+    code.jcc(Jcc::Ne, notDir);
+    code.movImm(X64Reg::Rax, 1);
+    code.movToMem(X64Reg::R12, 24, X64Reg::Rax);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.jmp(storeFile);
+    code.bind(notDir);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.movToMem(X64Reg::R12, 24, X64Reg::Rax);
+    code.movImm(X64Reg::Rax, 1);
+    code.bind(storeFile);
+    code.movToMem(X64Reg::R12, 16, X64Reg::Rax);
+    code.movImm(X64Reg::Rax, 1);
+    code.jmp(statDone);
+    code.bind(failed);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.bind(statDone);
+    code.addImm32(X64Reg::Rsp, 160);
+    code.pop(X64Reg::R12);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
+  code.bind(handles.listEntry);
+  {
+    constexpr std::int32_t kPath = -24;
+    constexpr std::int32_t kIndex = -32;
+    constexpr std::int32_t kBuf = -40;
+    constexpr std::int32_t kCap = -48;
+    constexpr std::int32_t kDir = -56;
+    const std::int32_t nameOffset = macos ? 21 : 19;
+    CodeGen::Label loop = code.newLabel();
+    CodeGen::Label next = code.newLabel();
+    CodeGen::Label copyOrNext = code.newLabel();
+    CodeGen::Label copyName = code.newLabel();
+    CodeGen::Label scanName = code.newLabel();
+    CodeGen::Label scanned = code.newLabel();
+    CodeGen::Label closeEof = code.newLabel();
+    CodeGen::Label closeFail = code.newLabel();
+    CodeGen::Label closeReturn = code.newLabel();
+    CodeGen::Label cleanup = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.push(X64Reg::Rbx);
+    code.push(X64Reg::R12);
+    code.subRegImm32(X64Reg::Rsp, 64);
+    code.movToMem(X64Reg::Rbp, kPath, X64Reg::Rdi);
+    code.movToMem(X64Reg::Rbp, kIndex, X64Reg::Rsi);
+    code.movToMem(X64Reg::Rbp, kBuf, X64Reg::Rdx);
+    code.movToMem(X64Reg::Rbp, kCap, X64Reg::Rcx);
+    code.callExternal("opendir");
+    code.movToMem(X64Reg::Rbp, kDir, X64Reg::Rax);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, closeFail);
+    code.bind(loop);
+    code.movFromMem(X64Reg::Rdi, X64Reg::Rbp, kDir);
+    code.callExternal(macos ? "readdir$INODE64" : "readdir");
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, closeEof);
+    code.movReg(X64Reg::R9, X64Reg::Rax);
+    code.addImm32(X64Reg::R9, nameOffset);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R9, 0);
+    code.cmpImm32(X64Reg::Rax, '.');
+    code.jcc(Jcc::Ne, copyOrNext);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R9, 1);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, next);
+    code.cmpImm32(X64Reg::Rax, '.');
+    code.jcc(Jcc::Ne, copyOrNext);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R9, 2);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, next);
+    code.bind(copyOrNext);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kIndex);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, copyName);
+    code.subRegImm32(X64Reg::Rax, 1);
+    code.movToMem(X64Reg::Rbp, kIndex, X64Reg::Rax);
+    code.jmp(next);
+    code.bind(copyName);
+    code.movReg(X64Reg::R12, X64Reg::R9);
+    code.xorReg(X64Reg::Rbx, X64Reg::Rbx);
+    code.bind(scanName);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R12, 0);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, scanned);
+    code.addImm32(X64Reg::R12, 1);
+    code.addImm32(X64Reg::Rbx, 1);
+    code.jmp(scanName);
+    code.bind(scanned);
+    code.movReg(X64Reg::Rax, X64Reg::Rbx);
+    code.addImm32(X64Reg::Rax, 1);
+    code.movFromMem(X64Reg::R8, X64Reg::Rbp, kCap);
+    code.cmpReg(X64Reg::Rax, X64Reg::R8);
+    code.jcc(Jcc::A, closeFail);
+    code.movFromMem(X64Reg::Rdi, X64Reg::Rbp, kBuf);
+    code.movReg(X64Reg::Rsi, X64Reg::R9);
+    code.movReg(X64Reg::Rcx, X64Reg::Rbx);
+    code.cld();
+    code.repMovsb();
+    code.movImmByteToMem(X64Reg::Rdi, 0, 0);
+    code.movReg(X64Reg::R12, X64Reg::Rbx);
+    code.jmp(closeReturn);
+    code.bind(next);
+    code.jmp(loop);
+    code.bind(closeEof);
+    code.xorReg(X64Reg::R12, X64Reg::R12);
+    code.jmp(closeReturn);
+    code.bind(closeFail);
+    code.movImm(X64Reg::R12, -1);
+    code.bind(closeReturn);
+    code.movFromMem(X64Reg::Rdi, X64Reg::Rbp, kDir);
+    code.testReg(X64Reg::Rdi);
+    code.jcc(Jcc::Eq, cleanup);
+    code.callExternal("closedir");
+    code.bind(cleanup);
+    code.movReg(X64Reg::Rax, X64Reg::R12);
+    code.addImm32(X64Reg::Rsp, 64);
+    code.pop(X64Reg::R12);
+    code.pop(X64Reg::Rbx);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
 
   // The program's entry becomes the C `main` the C runtime calls: the lowering
   // already gives it the `int main(void)` shape (no arguments, an `int`
@@ -998,6 +1833,323 @@ std::uint64_t emitWindowsHostedRuntime(CodeGen& code, const RuntimeHandles& hand
   code.movReg(X64Reg::Rsp, X64Reg::Rbp);
   code.pop(X64Reg::Rbp);
   code.retInsn();
+
+  // --- the directory and metadata handles ---
+  // The same operations as the Linux prelude, reached through kernel32 with the
+  // Microsoft ABI. Each thunk reserves the 32-byte shadow space and returns 1/0
+  // (or a length), so the runtime builtins stay target-independent.
+  code.bind(handles.removePath);
+  {
+    CodeGen::Label ok = code.newLabel();
+    CodeGen::Label done = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.subRegImm32(X64Reg::Rsp, kWinShadowSpace);
+    code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+    code.callExternal("DeleteFileA");
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Ne, ok);
+    code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+    code.callExternal("RemoveDirectoryA");
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Ne, ok);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.jmp(done);
+    code.bind(ok);
+    code.movImm(X64Reg::Rax, 1);
+    code.bind(done);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
+  code.bind(handles.renamePath);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, kWinShadowSpace);
+  code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+  code.movReg(X64Reg::Rdx, X64Reg::Rsi);
+  code.callExternal("MoveFileA");
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Ne, X64Reg::Rax);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.mkdirPath);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, kWinShadowSpace);
+  code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+  code.xorReg(X64Reg::Rdx, X64Reg::Rdx);
+  code.callExternal("CreateDirectoryA");
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Ne, X64Reg::Rax);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.rmdirPath);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, kWinShadowSpace);
+  code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+  code.callExternal("RemoveDirectoryA");
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Ne, X64Reg::Rax);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.chdirPath);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, kWinShadowSpace);
+  code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+  code.callExternal("SetCurrentDirectoryA");
+  code.testReg(X64Reg::Rax);
+  code.movImm(X64Reg::Rax, 0);
+  code.setcc(Jcc::Ne, X64Reg::Rax);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  code.bind(handles.cwd);
+  code.push(X64Reg::Rbp);
+  code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+  code.subRegImm32(X64Reg::Rsp, kWinShadowSpace);
+  code.movReg(X64Reg::Rcx, X64Reg::Rsi);  // capacity
+  code.movReg(X64Reg::Rdx, X64Reg::Rdi);  // buffer
+  code.callExternal("GetCurrentDirectoryA");
+  CodeGen::Label cwdFits = code.newLabel();
+  code.cmpReg(X64Reg::Rax, X64Reg::Rsi);
+  code.jcc(Jcc::Le, cwdFits);
+  code.movImm(X64Reg::Rax, -1);
+  code.retInsn();
+  code.bind(cwdFits);
+  code.testReg(X64Reg::Rax);
+  CodeGen::Label cwdOk = code.newLabel();
+  code.jcc(Jcc::Ne, cwdOk);
+  code.movImm(X64Reg::Rax, -1);
+  code.bind(cwdOk);
+  code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+  code.pop(X64Reg::Rbp);
+  code.retInsn();
+
+  // `long oskel_stat(const char* path, long* out)`: GetFileAttributesExA fills
+  // a 36-byte WIN32_FILE_ATTRIBUTE_DATA; the size is split high/low and the
+  // last-write FILETIME is converted from 100-ns units to Unix seconds.
+  code.bind(handles.statPath);
+  {
+    CodeGen::Label failed = code.newLabel();
+    CodeGen::Label notDir = code.newLabel();
+    CodeGen::Label storeFile = code.newLabel();
+    CodeGen::Label statDone = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.push(X64Reg::R12);
+    code.subRegImm32(X64Reg::Rsp, 96);
+    code.movReg(X64Reg::R12, X64Reg::Rsi);  // out
+    code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+    code.xorReg(X64Reg::Rdx, X64Reg::Rdx);  // GetFileExInfoStandard
+    code.leaMem(X64Reg::R8, X64Reg::Rsp, 32);  // above the shadow space
+    code.callExternal("GetFileAttributesExA");
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, failed);
+    // size = high << 32 | low
+    code.movFromMem32(X64Reg::Rax, X64Reg::Rsp, 60);
+    code.shlImm8(X64Reg::Rax, 32);
+    code.movFromMem32(X64Reg::R8, X64Reg::Rsp, 64);
+    code.orReg(X64Reg::Rax, X64Reg::R8);
+    code.movToMem(X64Reg::R12, 0, X64Reg::Rax);
+    // modified = filetime / 10000000 - epoch delta
+    code.movFromMem32(X64Reg::Rax, X64Reg::Rsp, 52);
+    code.shlImm8(X64Reg::Rax, 32);
+    code.movFromMem32(X64Reg::R8, X64Reg::Rsp, 56);
+    code.orReg(X64Reg::Rax, X64Reg::R8);
+    code.movImm(X64Reg::R8, 10000000);
+    code.divUnsigned(X64Reg::R8);
+    code.movImm(X64Reg::R8, kWinFileTimeUnixEpochDelta);
+    code.subReg(X64Reg::Rax, X64Reg::R8);
+    code.movToMem(X64Reg::R12, 8, X64Reg::Rax);
+    // isDir from FILE_ATTRIBUTE_DIRECTORY (0x10), isFile = !isDir.
+    code.movFromMem32(X64Reg::Rax, X64Reg::Rsp, 32);
+    code.testImm32(X64Reg::Rax, 0x10);
+    code.jcc(Jcc::Eq, notDir);
+    code.movImm(X64Reg::Rax, 1);
+    code.movToMem(X64Reg::R12, 24, X64Reg::Rax);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.jmp(storeFile);
+    code.bind(notDir);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.movToMem(X64Reg::R12, 24, X64Reg::Rax);
+    code.movImm(X64Reg::Rax, 1);
+    code.bind(storeFile);
+    code.movToMem(X64Reg::R12, 16, X64Reg::Rax);
+    code.movImm(X64Reg::Rax, 1);
+    code.jmp(statDone);
+    code.bind(failed);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.bind(statDone);
+    code.addImm32(X64Reg::Rsp, 96);
+    code.pop(X64Reg::R12);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
+  // `long oskel_list_entry(const char* path, long index, char* buf, long cap)`:
+  // build `path\*`, walk FindFirstFileA/FindNextFileA and return the indexed
+  // basename. `std.fs.dir` sorts the names, so the host order does not leak.
+  code.bind(handles.listEntry);
+  {
+    constexpr std::int32_t kPath = -24;
+    constexpr std::int32_t kIndex = -32;
+    constexpr std::int32_t kBuf = -40;
+    constexpr std::int32_t kCap = -48;
+    constexpr std::int32_t kHandle = -56;
+    constexpr std::int32_t kPattern = -4176;
+    constexpr std::int32_t kFindData = -4592;
+    CodeGen::Label scanPath = code.newLabel();
+    CodeGen::Label pathScanned = code.newLabel();
+    CodeGen::Label appendSeparator = code.newLabel();
+    CodeGen::Label appendStar = code.newLabel();
+    CodeGen::Label opened = code.newLabel();
+    CodeGen::Label loop = code.newLabel();
+    CodeGen::Label next = code.newLabel();
+    CodeGen::Label copyOrNext = code.newLabel();
+    CodeGen::Label copyName = code.newLabel();
+    CodeGen::Label scanName = code.newLabel();
+    CodeGen::Label scanned = code.newLabel();
+    CodeGen::Label closeEof = code.newLabel();
+    CodeGen::Label closeFail = code.newLabel();
+    CodeGen::Label closeReturn = code.newLabel();
+    CodeGen::Label cleanup = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.push(X64Reg::Rbx);
+    code.push(X64Reg::R12);
+    code.subRegImm32(X64Reg::Rsp, 4800);
+    code.movToMem(X64Reg::Rbp, kPath, X64Reg::Rdi);
+    code.movToMem(X64Reg::Rbp, kIndex, X64Reg::Rsi);
+    code.movToMem(X64Reg::Rbp, kBuf, X64Reg::Rdx);
+    code.movToMem(X64Reg::Rbp, kCap, X64Reg::Rcx);
+    code.movImmToMem(X64Reg::Rbp, kHandle, -1);
+    // pattern = path, with a separator if needed, then `*`.
+    code.movFromMem(X64Reg::Rsi, X64Reg::Rbp, kPath);
+    code.leaMem(X64Reg::Rdi, X64Reg::Rbp, kPattern);
+    code.xorReg(X64Reg::Rcx, X64Reg::Rcx);
+    code.bind(scanPath);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::Rsi, 0);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, pathScanned);
+    code.addImm32(X64Reg::Rcx, 1);
+    code.addImm32(X64Reg::Rsi, 1);
+    code.jmp(scanPath);
+    code.bind(pathScanned);
+    code.cmpImm32(X64Reg::Rcx, 4088);
+    code.jcc(Jcc::A, closeFail);
+    code.movFromMem(X64Reg::Rsi, X64Reg::Rbp, kPath);
+    code.leaMem(X64Reg::Rdi, X64Reg::Rbp, kPattern);
+    code.cld();
+    code.repMovsb();
+    code.leaMem(X64Reg::R8, X64Reg::Rbp, kPattern);
+    code.cmpReg(X64Reg::Rdi, X64Reg::R8);
+    code.jcc(Jcc::Eq, appendSeparator);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::Rdi, -1);
+    code.cmpImm32(X64Reg::Rax, '\\');
+    code.jcc(Jcc::Eq, appendStar);
+    code.cmpImm32(X64Reg::Rax, '/');
+    code.jcc(Jcc::Eq, appendStar);
+    code.bind(appendSeparator);
+    code.movImm(X64Reg::Rax, '\\');
+    code.movByteToMem(X64Reg::Rdi, 0, X64Reg::Rax);
+    code.addImm32(X64Reg::Rdi, 1);
+    code.bind(appendStar);
+    code.movImm(X64Reg::Rax, '*');
+    code.movByteToMem(X64Reg::Rdi, 0, X64Reg::Rax);
+    code.movImmByteToMem(X64Reg::Rdi, 1, 0);
+    code.leaMem(X64Reg::Rcx, X64Reg::Rbp, kPattern);
+    code.leaMem(X64Reg::Rdx, X64Reg::Rbp, kFindData);
+    code.callExternal("FindFirstFileA");
+    code.movToMem(X64Reg::Rbp, kHandle, X64Reg::Rax);
+    code.cmpImm32(X64Reg::Rax, -1);
+    code.jcc(Jcc::Eq, closeFail);
+    code.bind(opened);
+    code.bind(loop);
+    code.leaMem(X64Reg::R9, X64Reg::Rbp, kFindData);
+    code.addImm32(X64Reg::R9, 44);  // cFileName
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R9, 0);
+    code.cmpImm32(X64Reg::Rax, '.');
+    code.jcc(Jcc::Ne, copyOrNext);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R9, 1);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, next);
+    code.cmpImm32(X64Reg::Rax, '.');
+    code.jcc(Jcc::Ne, copyOrNext);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R9, 2);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, next);
+    code.bind(copyOrNext);
+    code.movFromMem(X64Reg::Rax, X64Reg::Rbp, kIndex);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, copyName);
+    code.subRegImm32(X64Reg::Rax, 1);
+    code.movToMem(X64Reg::Rbp, kIndex, X64Reg::Rax);
+    code.jmp(next);
+    code.bind(copyName);
+    code.movReg(X64Reg::R12, X64Reg::R9);
+    code.xorReg(X64Reg::Rbx, X64Reg::Rbx);
+    code.bind(scanName);
+    code.movzxFromMem(X64Reg::Rax, X64Reg::R12, 0);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, scanned);
+    code.addImm32(X64Reg::R12, 1);
+    code.addImm32(X64Reg::Rbx, 1);
+    code.jmp(scanName);
+    code.bind(scanned);
+    code.movReg(X64Reg::Rax, X64Reg::Rbx);
+    code.addImm32(X64Reg::Rax, 1);
+    code.movFromMem(X64Reg::R8, X64Reg::Rbp, kCap);
+    code.cmpReg(X64Reg::Rax, X64Reg::R8);
+    code.jcc(Jcc::A, closeFail);
+    code.movFromMem(X64Reg::Rdi, X64Reg::Rbp, kBuf);
+    code.movReg(X64Reg::Rsi, X64Reg::R9);
+    code.movReg(X64Reg::Rcx, X64Reg::Rbx);
+    code.cld();
+    code.repMovsb();
+    code.movImmByteToMem(X64Reg::Rdi, 0, 0);
+    code.movReg(X64Reg::R12, X64Reg::Rbx);
+    code.jmp(closeReturn);
+    code.bind(next);
+    code.movFromMem(X64Reg::Rcx, X64Reg::Rbp, kHandle);
+    code.leaMem(X64Reg::Rdx, X64Reg::Rbp, kFindData);
+    code.callExternal("FindNextFileA");
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Ne, loop);
+    code.bind(closeEof);
+    code.xorReg(X64Reg::R12, X64Reg::R12);
+    code.jmp(closeReturn);
+    code.bind(closeFail);
+    code.movImm(X64Reg::R12, -1);
+    code.bind(closeReturn);
+    code.movFromMem(X64Reg::Rcx, X64Reg::Rbp, kHandle);
+    code.cmpImm32(X64Reg::Rcx, -1);
+    code.jcc(Jcc::Eq, cleanup);
+    code.callExternal("FindClose");
+    code.bind(cleanup);
+    code.movReg(X64Reg::Rax, X64Reg::R12);
+    code.addImm32(X64Reg::Rsp, 4800);
+    code.pop(X64Reg::R12);
+    code.pop(X64Reg::Rbx);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
 
   const std::size_t mainOffset = code.labelOffset(programEntry);
   code.exportSymbol("main", mainOffset);

@@ -1,11 +1,21 @@
 // VM/AOT parity for the streaming half of `std.fs` (PHASE 7g).
 //
 // `tests/build_binary.cmake` runs this under the VM and under `oskel build`,
-// then compares the output byte for byte. It uses only the streaming surface
-// (`std.fs.File` and the whole-file helpers), because the directory half lives
-// in `std.fs.dir` and is VM-only for now (BACKLOG §6).
+// then compares the output byte for byte. It covers both halves of the module:
+// the streaming surface (`std.fs.File` and the whole-file helpers) and the
+// directory/metadata surface in `std.fs.dir`.
 import std.fs;
 import std.fs.File as DirectFile;
+import std.fs.dir;
+
+fn cleanDir(path: string) {
+  if (std.fs.dir.exists(path)) {
+    for name in std.fs.dir.listDir(path) {
+      std.fs.dir.remove(path + "/" + name);
+    }
+    std.fs.dir.removeDir(path);
+  }
+}
 
 fn main() {
   let path = "oskel_native_fs_fixture.txt";
@@ -36,6 +46,36 @@ fn main() {
   print(std.fs.readText(path));
   print(std.fs.exists(path));
   print(std.fs.exists("oskel_native_fs_missing.txt"));
+
+  let dir = "oskel_native_fs_dir_fixture";
+  cleanDir(dir);
+  let original = std.fs.dir.currentDir();
+  std.fs.dir.makeDir(dir);
+  std.fs.dir.changeDir(dir);
+
+  std.fs.writeText("a.txt", "one\n");
+  std.fs.writeText("b.txt", "two\n");
+  std.fs.dir.makeDir("sub");
+  print(std.fs.dir.listDir("."));
+
+  let info = std.fs.dir.stat("a.txt");
+  print(info.size);
+  print(info.isFile);
+  print(info.isDir);
+  print(info.modified > 0);
+  print(std.fs.dir.stat("sub").isDir);
+  print(std.fs.dir.exists("a.txt"));
+  print(std.fs.dir.isDir("sub"));
+
+  std.fs.dir.rename("a.txt", "c.txt");
+  print(std.fs.dir.listDir("."));
+  std.fs.dir.remove("c.txt");
+  std.fs.dir.removeDir("sub");
+  print(std.fs.dir.listDir("."));
+
+  std.fs.dir.changeDir(original);
+  cleanDir(dir);
+  print(std.fs.dir.currentDir() == original);
 }
 
 main();

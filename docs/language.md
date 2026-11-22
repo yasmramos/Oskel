@@ -2810,13 +2810,12 @@ fn main() {
 `isDir`, `currentDir` and `changeDir`. `stat` returns
 `{size, modified, isFile, isDir}` with `modified` in epoch seconds.
 
-**Engine support.** The streaming surface is implemented by the VM and by
+**Engine support.** Both surfaces are implemented by the VM and by
 `oskel build` on every target with a file system: freestanding Linux, Windows
 (PE/kernel32) and the hosted modes. A bare-metal image has no file system, so
-`oskel build` rejects a used `fs*` builtin by name. `std.fs.dir` is VM-only for
-now; the x86-64 AOT backend rejects it with a dedicated message instead of a
-mis-compiled image. WebAssembly builds seed every `fs*` name as a trapping
-builtin, so a call fails at run time with the backend's "not supported" message.
+`oskel build` rejects a used `fs*` builtin by name. WebAssembly builds seed
+every `fs*` name as a trapping builtin, so a call fails at run time with the
+backend's "not supported" message.
 
 Paths are UTF-8 and are handed to the OS as NUL-terminated C strings, so an
 embedded NUL is a runtime error. `File` owns its handle and `close` is
