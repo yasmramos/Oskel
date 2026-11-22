@@ -15,9 +15,19 @@ bindgen <header.h>                 # write the module to stdout
 bindgen <header.h> -o <out.oskl>   # write it to a file
 bindgen -                          # read the header from stdin
 bindgen --target llp64 <header.h>  # Windows data model (default: lp64)
+bindgen --abi win64 <header.h>     # destination ABI (default: this build)
 bindgen --cxx <bridge.oskelbind> --shim <dir> -o <out.oskl>
                                    # C++ bridge: module + C++ shim
 ```
+
+`--target` chooses the C data model (`long`, `wchar_t`); `--abi` chooses the
+FFI destination independently of the host that runs the tool: `build` (the
+default, this build's capabilities), `system-v` (x86-64 Linux and macOS),
+`win64` (Windows), `aapcs64` (arm64) or `wasm`. `--target llp64` implies
+`win64`, because that data model is Windows; pass `--abi` explicitly to
+override it. A shape the destination cannot marshal is written commented out,
+so a module generated on Linux for Windows never emits a struct-by-value or a
+callback that Windows rejects.
 
 `-h`/`--help` and `-v`/`--version` are also available. Exit codes follow the
 toolchain convention: `64` for a usage error, `66` for an unreadable input or an

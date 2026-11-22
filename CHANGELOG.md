@@ -11,6 +11,16 @@ may change between minor versions.
 
 ### Added
 
+- **`bindgen --abi` selects the destination ABI.** A generated module must not
+  emit a shape the destination cannot marshal: `--abi system-v` emits
+  struct-by-value, callbacks and variadics; `--abi win64` emits only the
+  variadic; `--abi aapcs64`/`wasm` comment all three out. `--target llp64`
+  implies `win64`, because that data model is Windows, and `--abi` overrides it
+  when a header is generated on another host. The decision comes from
+  `ffi::capabilitiesForAbi`, not from the host running the tool, so a module
+  generated on Linux for Windows is correct. `tests/bindgen_test.cpp` and
+  `tests/run_bindgen_target.cmake` pin the matrix.
+
 - **`std.bytes`, the byte-string and binary-codec module.** A byte is an `int`
   in `0..255` and a byte string is an ordinary array, so no runtime type is
   added. The module provides UTF-8 `fromString`/`toString`/`byteLength`,

@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include "ffi_types.h"
+
 // The C-header binding generator (the `bindgen` tool).
 //
 // It reads a C header and writes Oskel `extern "C"` declarations, so a C
@@ -41,6 +43,10 @@ enum class Target { Lp64, Llp64 };
 
 struct Options {
   Target target = Target::Lp64;
+  // The destination ABI for the emitted declarations. `Build` (the default)
+  // uses the host's capabilities; `--target llp64` implies `Win64`, because
+  // that data model is Windows, and `--abi` overrides it for cross-generation.
+  ffi::FfiAbi abi = ffi::FfiAbi::Build;
 };
 
 // The generated module and a small tally the CLI reports on stderr.

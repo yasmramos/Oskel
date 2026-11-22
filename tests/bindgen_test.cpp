@@ -177,6 +177,51 @@ int main() {
       check(contains(result.text, "// fn takes_cb(cb: fn(int32): int32, n: int32): void;"),
             "a callback parameter is commented out where the ABI cannot carry it");
     }
+
+  // The destination ABI, not the host, decides which optional shapes are
+  // emitted. `--target llp64` selects Win64 in the CLI; `--abi` selects it
+  // explicitly when the header is generated on another host.
+  {
+    const std::string header =
+        "struct P { int x; int y; };\n"
+        "struct P make_p(int x, int y);\n"
+        "void takes_cb(int (*cb)(int));\n"
+        "int printf(const char *fmt, ...);\n";
+    auto generateFor = [&](ffi::FfiAbi abi) {
+      bindgen::Options options;
+      options.abi = abi;
+      return bindgen::generate(header, "t.h", options);
+    };
+    const bindgen::Result sysv = generateFor(ffi::FfiAbi::SysVX86_64);
+    check(contains(sysv.text, "fn make_p(x: int32, y: int32): P;"),
+          "System V emits a struct-by-value declaration");
+    check(contains(sysv.text, "fn takes_cb(cb: fn(int32): int32): void;"),
+          "System V emits a callback declaration");
+    check(contains(sysv.text, "fn printf(fmt: cstring, ...): int32;"),
+          "System V emits a variadic declaration");
+    check(sysv.emitted == 3 && sysv.commented == 0,
+          "System V emits every optional shape");
+
+    const bindgen::Result win = generateFor(ffi::FfiAbi::Win64);
+    check(contains(win.text, "// fn make_p(x: int32, y: int32): P;"),
+          "Win64 comments a struct-by-value declaration");
+    check(contains(win.text, "// fn takes_cb(cb: fn(int32): int32): void;"),
+          "Win64 comments a callback declaration");
+    check(contains(win.text, "fn printf(fmt: cstring, ...): int32;"),
+          "Win64 emits a variadic declaration");
+    check(win.emitted == 1 && win.commented == 2,
+          "Win64 emits only the variadic declaration");
+
+    const bindgen::Result arm = generateFor(ffi::FfiAbi::Aapcs64);
+    check(contains(arm.text, "// fn make_p(x: int32, y: int32): P;"),
+          "AArch64 comments a struct-by-value declaration");
+    check(contains(arm.text, "// fn takes_cb(cb: fn(int32): int32): void;"),
+          "AArch64 comments a callback declaration");
+    check(contains(arm.text, "// fn printf(fmt: cstring, ...): int32;"),
+          "AArch64 comments a variadic declaration");
+    check(arm.emitted == 0 && arm.commented == 3,
+          "AArch64 comments every optional shape");
+  }
     check(result.structs == 1, "the declared struct is counted");
     check(result.skipped == 1, "only the long double is skipped");
   }

@@ -983,7 +983,12 @@ it as a caveat:
   `isKnownTypeName`/`isIntegerTypeName` from `src/frontend/ast.h` so the vocabulary it
   emits cannot drift from the compiler's; keep that the single source of truth.
   It must never emit a declaration the compiler rejects — an unsupported type
-  becomes a `// skipped:` comment, and a C variadic is written commented out.
+  becomes a `// skipped:` comment, and a shape the *destination* ABI cannot
+  marshal is written commented out. `--target` selects the C data model and
+  `--abi` the destination ABI (`build`, `system-v`, `win64`, `aapcs64`, `wasm`);
+  `--target llp64` implies `win64`. The destination is asked through
+  `ffi::capabilitiesForAbi`, never through the host that runs the tool, so a
+  module generated on Linux for Windows does not emit a struct Windows rejects.
   Its stdout is byte for byte the same module as its `-o` file, so it is set to
   binary mode on Windows (`_setmode(_fileno(stdout), _O_BINARY)`); a text-mode
   stdout would turn every `\n` into `\r\n` and the piped module would differ

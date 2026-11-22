@@ -1604,7 +1604,8 @@ class Bindgen {
     fn.variadic = variadic;
     fn.returnType = returnType.oskel.empty() ? "void" : returnType.oskel;
     fn.line = nameToken.line;
-    fn.commentedNote = ffi::validateSignature(paramSpecs, returnSpec, variadic);
+    fn.commentedNote = ffi::validateSignature(paramSpecs, returnSpec, variadic,
+                                               ffi::capabilitiesForAbi(options_.abi));
 
     auto existing = emittedNames_.find(name);
     if (existing != emittedNames_.end()) {
