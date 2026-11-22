@@ -2216,11 +2216,24 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
   `oskel build`/`oskelc`, for both the own and the host linker; it requires
   `--mode hosted` and is mutually exclusive with `--emit-object` (use
   `oskelld -r` to combine objects).
-- **10.2b (future)** — `.data`/`.bss` and the remaining relocation shapes. The
-  parser loads `.text` and `.rodata` only: a symbol defined in another section
-  is reported by name, and a `.rela.data`/`.rela.rodata` is rejected. A GCC
-  object with a string literal also references a section symbol, which is part
-  of the same work. `.eh_frame`/`.note.*`/`.comment` are ignored (not loaded).
+- **10.2b (done) — `.data`/`.bss` and the remaining relocation shapes.**
+  `parseObject` classifies every `.text*`/`.rodata*`/`.data*`/`.bss*` section
+  (so GCC's `.text.unlikely`, `.rodata.str1.1` and `.data.rel.ro` merge into
+  the right output section), loads `.data` and sizes `.bss` (NOBITS), and reads
+  `.rela.data`/`.rela.rodata`. A relocation may name a `STT_SECTION` symbol,
+  which is how a string literal or a pointer table refers to `.rodata`; the
+  section offset and the addend are combined. Supported relocation types are
+  `R_X86_64_64`, `R_X86_64_32`, `R_X86_64_32S`, `R_X86_64_PLT32`,
+  `R_X86_64_PC32`, `R_X86_64_GOTPCREL`, `R_X86_64_GOTPCRELX` and
+  `R_X86_64_REX_GOTPCRELX`; a GOTPCREL reference to a defined symbol gets a
+  local GOT slot filled at link time, and one to an undefined symbol uses the
+  dynamic GOT. `.data`/`.bss` join the RW `PT_LOAD` (`p_filesz` ends before
+  `.bss`, `p_memsz` covers it), and `-r` preserves `.data`/`.bss` and
+  `.rela.data`/`.rela.rodata`, mapping an input section symbol to the output
+  section symbol and moving the object's section offset into the addend.
+  `.tbss`/`.tdata`, `.init_array`/`.fini_array`, `.gcc_except_table` and
+  `.eh_frame` stay ignored (TLS and the C++ runtime are not supported); a
+  symbol defined there is reported by name.
 - **10.3 (future)** — the macOS Mach-O/dyld and Windows PE import-table
   containers. They are separate linkers, not a generic abstraction: the object
   formats, the loader contracts and the entry preludes differ.
@@ -2286,7 +2299,7 @@ Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.10 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY) and callbacks resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
-Phase 10: 🔶 in progress (10.1 and 10.2 done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar` and `-r`; the hosted x86-64 Linux image is a dynamic ELF closed without a C toolchain. 10.2b `.data`/`.bss` and 10.3 Mach-O/PE pending)
+Phase 10: 🔶 in progress (10.1, 10.2 and 10.2b done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar`, `-r`, `.data`/`.bss` and the common x86-64 relocations; the hosted x86-64 Linux image is a dynamic ELF closed without a C toolchain. 10.3 Mach-O/PE pending)
 Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending
 2.0: ⬜ future (static with `@Dynamic`)
 

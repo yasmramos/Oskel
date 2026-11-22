@@ -388,12 +388,29 @@ it as a caveat:
   defines a still-undefined symbol (thin archives are rejected). `--link-object
   <file>` is the same through `oskel build`/`oskelc` (repeatable, requires
   `--mode hosted`, mutually exclusive with `--emit-object`).
-- The parser loads `.text` and `.rodata` only. A symbol defined in `.data`/
-  `.bss` is a named error, and `.rela.data`/`.rela.rodata` is rejected; a GCC
-  object with a string literal references a `.rodata` section symbol, which is
-  PHASE 10.2b. `.eh_frame`/`.note.*`/`.comment` are ignored. `STT_SECTION` and
+- PHASE 10.2b loads `.data` and `.bss` and the `.text*`/`.rodata*`/`.data*`/
+  `.bss*` variants (GCC puts a string in `.rodata.str1.1` and a pointer table
+  in `.data.rel.ro`). A `STT_SECTION` symbol is resolved from the section kind
+  and offset, with the relocation addend carrying the offset inside the
+  section; `-r` maps it to the output section symbol and adds the object's
+  section offset to the addend. `.tbss`/`.tdata`, `.init_array`/`.fini_array`
+  and `.gcc_except_table` are ignored; a symbol there is a named error.
   `STT_FILE` symbols are skipped: a C object's `STT_FILE` has `SHN_ABS` and
   would otherwise look like a defined symbol in an unsupported section.
+- Copy every loaded section into the image **before** applying the patches.
+  The `.data` copy originally ran after the patch loop, so every `.data` pointer
+  table was silently zeroed again. `.text` had the copy before the loop; the
+  `.rodata`/`.data` copy must stay there too.
+- Supported relocations are `R_X86_64_64`, `32`, `32S`, `PLT32`, `PC32` and
+  the `GOTPCREL`/`GOTPCRELX`/`REX_GOTPCRELX` family. Absolute types use
+  `S + A`; PC-relative types use `S + A - P`. A GOTPCREL reference to a defined
+  symbol allocates a local GOT slot filled at link time; an undefined one uses
+  the dynamic GOT (`GLOB_DAT`). `.bss` is `SHT_NOBITS`: it has no file bytes,
+  the RW `PT_LOAD` `p_filesz` ends before it and `p_memsz` covers it, and its
+  `sh_offset` may equal the following non-alloc section's offset.
+- The data helper is built twice, `-fno-pie` and `-fPIC`, to exercise direct
+  `PC32`/`R_X86_64_64` and `GOTPCREL`; both are `-fno-sanitize=all` under ASan
+  because they are linked into a plain emitted binary.
 - The multi-object e2e helper is an `OBJECT` library compiled with
   `-fno-sanitize=all` when the build is sanitized: the object is linked into a
   plain emitted binary that does not carry the ASan runtime. The archive test
