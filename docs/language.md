@@ -2992,15 +2992,19 @@ oskelc <file.oskl>         the same compiler without the interpreter
 | `--mode <name>` | Link mode for `build`/`oskelc` (default: `freestanding`). |
 | `--link-lib <name>` | Library for the hosted link (repeatable), e.g. `SDL3`. |
 | `-L`, `--library-path <dir>` | Where the hosted link finds `lib<name>.so` (repeatable). |
+| `--link-object <file>` | Extra object or `ar` archive for the hosted link (repeatable). Requires `--mode hosted`; not with `--emit-object`. |
 | `--linker <name>` | How a hosted build is closed: `host` (default, `$CC`) or `own` (the project's linker, x86-64 Linux). |
 | `--emit-object` | Writes the hosted relocatable object instead of an executable (the input of `oskelld`). |
 | `--no-jit` | Disables the JIT (development engine only). |
 | `--` | End of options; the next argument is the file. |
 
-`oskelld <object.o> -o <out>` is the standalone linker: it consumes the object
-`--emit-object` writes and closes it into a dynamically linked x86-64 Linux
-executable. `--linker own` is opt-in in PHASE 10.1 and supports
-`x86_64-linux-sysv` only; `--linker host` keeps the `$CC` path.
+`oskelld <object.o>... [-o <out>]` is the standalone linker: it consumes the
+objects `--emit-object` writes (and System V/GNU `ar` archives) and closes them
+into a dynamically linked x86-64 Linux executable. An archive member is pulled
+in only when it defines a still-undefined symbol. `oskelld -r <object.o>...`
+combines the inputs into a new relocatable object instead, which can be linked
+again. `--linker own` is opt-in and supports `x86_64-linux-sysv` only;
+`--linker host` keeps the `$CC` path.
 
 Options must come before the file. Everything after the file is considered an argument of the script and is obtained with `args()`.
 

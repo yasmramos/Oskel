@@ -1,6 +1,7 @@
 #include "native/link.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -41,10 +42,15 @@ constexpr std::uint64_t kShfWrite = 0x1;
 constexpr std::uint64_t kShfAlloc = 0x2;
 constexpr std::uint64_t kShfExecInstr = 0x4;
 
+constexpr std::uint8_t kStbLocal = 0;
 constexpr std::uint8_t kStbGlobal = 1;
+constexpr std::uint8_t kStbWeak = 2;
 constexpr std::uint8_t kSttNotype = 0;
 constexpr std::uint8_t kSttSection = 3;
+constexpr std::uint8_t kSttFile = 4;
 constexpr std::uint16_t kShnUndef = 0;
+constexpr std::uint16_t kShnAbs = 0xfff1;
+constexpr std::uint16_t kShnCommon = 0xfff2;
 
 constexpr std::uint32_t kR_x86_64Pc32 = 2;
 constexpr std::uint32_t kR_x86_64Plt32 = 4;
@@ -203,6 +209,7 @@ struct StringTable {
 };
 
 struct Section {
+  std::uint16_t index = 0;
   std::string name;
   std::uint32_t type = kShtNull;
   std::uint64_t flags = 0;
@@ -221,6 +228,7 @@ std::vector<Section> readSections(const Reader& reader, std::uint64_t shoff,
   for (std::uint16_t i = 0; i < shnum; ++i) {
     const std::uint64_t base = shoff + static_cast<std::uint64_t>(i) * shentsize;
     Section& section = sections[i];
+    section.index = i;
     section.type = reader.u32(base + 4);
     section.flags = reader.u64(base + 8);
     section.offset = reader.u64(base + 24);
@@ -274,14 +282,31 @@ struct Rela {
   std::int64_t addend = 0;
 };
 
+// Where a defined symbol lives in the output image. `offset` is relative to
+// `.text` or `.rodata`; the executable link adds the section's file offset and
+// the base address, and a relocatable link keeps the offset as-is.
+struct Definition {
+  std::uint64_t offset = 0;
+  bool rodata = false;
+  std::uint8_t binding = kStbGlobal;
+};
+
 struct ObjectFile {
+  std::string name;
   std::vector<std::uint8_t> text;
   std::vector<std::uint8_t> rodata;
   std::vector<ObjectSymbol> symbols;
   std::vector<Rela> relas;
+  std::vector<std::string> sectionNames;
+  std::uint16_t textIndex = 0;
+  std::uint16_t rodataIndex = 0;
+  std::uint64_t textOffset = 0;
+  std::uint64_t rodataOffset = 0;
+  std::unordered_map<std::string, Definition> definitions;
 };
 
-ObjectFile parseObject(const std::vector<std::uint8_t>& bytes) {
+ObjectFile parseObject(const std::vector<std::uint8_t>& bytes,
+                       const std::string& name) {
   if (bytes.size() < kEhdrSize) throw LinkError("object is too small to be ELF64");
   const Reader reader(bytes);
   if (reader.u8(0) != 0x7F || reader.u8(1) != 'E' || reader.u8(2) != 'L' ||
@@ -330,6 +355,17 @@ ObjectFile parseObject(const std::vector<std::uint8_t>& bytes) {
   requireSectionInFile(*strtab, bytes.size(), ".strtab");
   if (rela != nullptr) requireSectionInFile(*rela, bytes.size(), ".rela.text");
   ObjectFile object;
+  object.name = name;
+  object.textIndex = text->index;
+  object.rodataIndex = rodata != nullptr ? rodata->index : 0;
+  for (const Section& section : sections) object.sectionNames.push_back(section.name);
+  // `.text` is the only section this phase loads relocations from. A `.data`
+  // or `.rodata` relocation would silently mis-place a pointer, so it is a
+  // named error until PHASE 10.2b loads those sections.
+  if (findSection(sections, ".rela.data") != nullptr ||
+      findSection(sections, ".rela.rodata") != nullptr) {
+    throw LinkError("object '" + name + "' has relocations outside .text (PHASE 10.2b)");
+  }
   object.text.assign(bytes.begin() + static_cast<std::ptrdiff_t>(text->offset),
                      bytes.begin() + static_cast<std::ptrdiff_t>(text->offset + text->size));
   if (rodata != nullptr) {
@@ -370,6 +406,253 @@ ObjectFile parseObject(const std::vector<std::uint8_t>& bytes) {
     }
   }
   return object;
+}
+
+// ---------------------------------------------------------------------------
+// `ar` archives (System V / GNU). A member is an ELF object; the symbol index
+// member is ignored because each member carries its own `.symtab`. Only the
+// members that define a still-undefined symbol are pulled in.
+// ---------------------------------------------------------------------------
+struct ArchiveMember {
+  std::string name;
+  std::vector<std::uint8_t> data;
+};
+
+bool startsWith(const std::vector<std::uint8_t>& bytes, const char* text) {
+  const std::size_t length = std::strlen(text);
+  return bytes.size() >= length &&
+         std::memcmp(bytes.data(), text, length) == 0;
+}
+
+bool isArchive(const std::vector<std::uint8_t>& bytes) {
+  return startsWith(bytes, "!<arch>\n");
+}
+
+bool isThinArchive(const std::vector<std::uint8_t>& bytes) {
+  return startsWith(bytes, "!<thin>\n");
+}
+
+std::string trimArchiveField(const char* data, std::size_t size) {
+  std::size_t end = size;
+  while (end > 0 && (data[end - 1] == ' ' || data[end - 1] == '\0')) --end;
+  return std::string(data, end);
+}
+
+std::uint64_t parseArchiveDecimal(const char* data, std::size_t size,
+                                  const std::string& archiveName) {
+  std::uint64_t value = 0;
+  std::size_t i = 0;
+  while (i < size && data[i] == ' ') ++i;
+  if (i == size) {
+    throw LinkError("'" + archiveName + "' has an empty numeric field");
+  }
+  for (; i < size && data[i] != ' '; ++i) {
+    if (data[i] < '0' || data[i] > '9') {
+      throw LinkError("'" + archiveName + "' has a malformed numeric field");
+    }
+    value = value * 10 + static_cast<std::uint64_t>(data[i] - '0');
+  }
+  return value;
+}
+
+std::vector<ArchiveMember> parseArchive(const std::vector<std::uint8_t>& bytes,
+                                        const std::string& archiveName) {
+  std::vector<ArchiveMember> members;
+  std::string longNames;
+  std::size_t pos = 8;  // past "!<arch>\n"
+  while (pos + 60 <= bytes.size()) {
+    const char* header = reinterpret_cast<const char*>(bytes.data() + pos);
+    if (header[58] != '`' || header[59] != '\n') {
+      throw LinkError("'" + archiveName + "' has a malformed member header");
+    }
+    const std::string raw = trimArchiveField(header, 16);
+    const std::uint64_t size = parseArchiveDecimal(header + 48, 10, archiveName);
+    const std::size_t dataPos = pos + 60;
+    if (size > bytes.size() - dataPos) {
+      throw LinkError("'" + archiveName + "' has a truncated member");
+    }
+    if (raw == "//") {
+      longNames.assign(reinterpret_cast<const char*>(bytes.data() + dataPos),
+                       static_cast<std::size_t>(size));
+    } else if (raw == "/" || raw == "/SYM64/") {
+      // The symbol index is redundant; each member's own `.symtab` is read.
+    } else {
+      std::string memberName = raw;
+      if (raw.size() > 1 && raw[0] == '/' &&
+          std::isdigit(static_cast<unsigned char>(raw[1])) != 0) {
+        std::size_t offset = 0;
+        for (std::size_t i = 1; i < raw.size(); ++i) {
+          if (raw[i] < '0' || raw[i] > '9') {
+            throw LinkError("'" + archiveName + "' has a malformed long member name");
+          }
+          offset = offset * 10 + static_cast<std::size_t>(raw[i] - '0');
+        }
+        if (offset >= longNames.size()) {
+          throw LinkError("'" + archiveName + "' has an invalid long member name");
+        }
+        std::size_t end = offset;
+        while (end < longNames.size() && longNames[end] != '\n' &&
+               longNames[end] != '\0') {
+          ++end;
+        }
+        memberName.assign(longNames.data() + offset, end - offset);
+      }
+      if (!memberName.empty() && memberName.back() == '/') memberName.pop_back();
+      ArchiveMember member;
+      member.name = memberName;
+      member.data.assign(bytes.begin() + static_cast<std::ptrdiff_t>(dataPos),
+                         bytes.begin() + static_cast<std::ptrdiff_t>(dataPos + size));
+      members.push_back(std::move(member));
+    }
+    pos = dataPos + static_cast<std::size_t>(size);
+    if ((pos & 1u) != 0) ++pos;  // members are two-byte aligned
+  }
+  return members;
+}
+
+bool isDefinedGlobal(const ObjectSymbol& symbol) {
+  if (symbol.name.empty() || symbol.shndx == kShnUndef) return false;
+  if ((symbol.info & 0x0F) == kSttSection) return false;
+  const std::uint8_t binding = static_cast<std::uint8_t>(symbol.info >> 4);
+  return binding == kStbGlobal || binding == kStbWeak;
+}
+
+// Expands explicit objects and archives into the objects to link, pulling an
+// archive member only when it defines a symbol that is still undefined.
+std::vector<ObjectFile> resolveInputs(const std::vector<LinkInput>& inputs) {
+  std::vector<ObjectFile> objects;
+  struct Archive {
+    std::string name;
+    std::vector<ArchiveMember> members;
+  };
+  std::vector<Archive> archives;
+  for (const LinkInput& input : inputs) {
+    if (isThinArchive(input.bytes)) {
+      throw LinkError("'" + input.name +
+                      "' is a thin archive, which the linker does not support");
+    }
+    if (isArchive(input.bytes)) {
+      archives.push_back({input.name, parseArchive(input.bytes, input.name)});
+    } else {
+      objects.push_back(parseObject(input.bytes, input.name));
+    }
+  }
+  if (archives.empty()) return objects;
+
+  struct Member {
+    std::string name;
+    ObjectFile object;
+    bool used = false;
+  };
+  std::vector<Member> members;
+  for (const Archive& archive : archives) {
+    for (const ArchiveMember& member : archive.members) {
+      if (member.data.size() < 4 || member.data[0] != 0x7F ||
+          member.data[1] != 'E' || member.data[2] != 'L' ||
+          member.data[3] != 'F') {
+        continue;  // a symbol index or long-name table, not an object
+      }
+      Member parsed;
+      parsed.name = archive.name + "(" + member.name + ")";
+      parsed.object = parseObject(member.data, parsed.name);
+      members.push_back(std::move(parsed));
+    }
+  }
+
+  std::unordered_set<std::string> definedNames;
+  const auto collectDefined = [&](const ObjectFile& object) {
+    for (const ObjectSymbol& symbol : object.symbols) {
+      if (isDefinedGlobal(symbol)) definedNames.insert(symbol.name);
+    }
+  };
+  for (const ObjectFile& object : objects) collectDefined(object);
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    std::unordered_set<std::string> undefined;
+    const auto collectUndefined = [&](const ObjectFile& object) {
+      for (const ObjectSymbol& symbol : object.symbols) {
+        if (symbol.name.empty() || symbol.shndx != kShnUndef) continue;
+        const std::uint8_t binding = static_cast<std::uint8_t>(symbol.info >> 4);
+        if (binding != kStbGlobal && binding != kStbWeak) continue;
+        if (definedNames.count(symbol.name) == 0) undefined.insert(symbol.name);
+      }
+    };
+    for (const ObjectFile& object : objects) collectUndefined(object);
+    for (const Member& member : members) {
+      if (member.used) collectUndefined(member.object);
+    }
+    if (undefined.empty()) break;
+    for (Member& member : members) {
+      if (member.used) continue;
+      bool needed = false;
+      for (const ObjectSymbol& symbol : member.object.symbols) {
+        if (isDefinedGlobal(symbol) && undefined.count(symbol.name) != 0) {
+          needed = true;
+          break;
+        }
+      }
+      if (!needed) continue;
+      member.used = true;
+      collectDefined(member.object);
+      objects.push_back(member.object);
+      changed = true;
+    }
+  }
+  return objects;
+}
+
+// Fills each object's `definitions` and returns the global (cross-object)
+// symbol table. Duplicate strong definitions are an error; a strong definition
+// wins over a weak one.
+std::unordered_map<std::string, Definition> buildDefinitions(
+    std::vector<ObjectFile>& objects) {
+  std::unordered_map<std::string, Definition> global;
+  for (ObjectFile& object : objects) {
+    for (const ObjectSymbol& symbol : object.symbols) {
+      if (symbol.name.empty() || symbol.shndx == kShnUndef) continue;
+      if ((symbol.info & 0x0F) == kSttSection) continue;
+      if ((symbol.info & 0x0F) == kSttFile) continue;
+      if (symbol.shndx == kShnAbs || symbol.shndx == kShnCommon) {
+        throw LinkError("symbol '" + symbol.name +
+                        "' has an unsupported section index");
+      }
+      Definition definition;
+      if (symbol.shndx == object.textIndex) {
+        definition.offset = object.textOffset + symbol.value;
+      } else if (object.rodataIndex != 0 && symbol.shndx == object.rodataIndex) {
+        definition.offset = object.rodataOffset + symbol.value;
+        definition.rodata = true;
+      } else {
+        std::string section = "an unknown section";
+        if (symbol.shndx < object.sectionNames.size()) {
+          section = "'" + object.sectionNames[symbol.shndx] + "'";
+        }
+        throw LinkError("object '" + object.name + "' defines '" + symbol.name +
+                        "' in " + section +
+                        ", which the linker does not load (PHASE 10.2b)");
+      }
+      definition.binding = static_cast<std::uint8_t>(symbol.info >> 4);
+      object.definitions.emplace(symbol.name, definition);
+      if (definition.binding != kStbGlobal && definition.binding != kStbWeak) {
+        continue;
+      }
+      auto found = global.find(symbol.name);
+      if (found == global.end()) {
+        global.emplace(symbol.name, definition);
+      } else if (found->second.binding == kStbWeak &&
+                 definition.binding == kStbGlobal) {
+        found->second = definition;
+      } else if (found->second.binding == kStbGlobal &&
+                 definition.binding == kStbWeak) {
+        // The strong definition wins.
+      } else {
+        throw LinkError("duplicate symbol '" + symbol.name + "'");
+      }
+    }
+  }
+  return global;
 }
 
 std::vector<std::uint8_t> readFileBytes(const std::string& path) {
@@ -515,37 +798,39 @@ bool isOwnLinkerTarget(const Target& target) {
 }
 
 std::vector<std::uint8_t> linkHostedExecutable(
-    const std::vector<std::uint8_t>& object, const LinkOptions& options) {
+    const std::vector<LinkInput>& inputs, const LinkOptions& options) {
   if (!isOwnLinkerTarget(options.target)) {
     throw LinkError("the own linker supports x86_64-linux-sysv only");
   }
-  const ObjectFile parsed = parseObject(object);
+  std::vector<ObjectFile> objects = resolveInputs(inputs);
+  if (objects.empty()) throw LinkError("no input objects");
 
-  // --- Defined symbols ---
-  std::unordered_map<std::string, std::uint64_t> defined;
-  for (const ObjectSymbol& symbol : parsed.symbols) {
-    if (symbol.name.empty() || symbol.shndx == kShnUndef) continue;
-    if ((symbol.info & 0x0F) == kSttSection) continue;
-    if (defined.count(symbol.name) != 0) {
-      throw LinkError("duplicate symbol '" + symbol.name + "'");
-    }
-    defined.emplace(symbol.name, symbol.value);
+  std::uint64_t textSize = 0;
+  std::uint64_t rodataSize = 0;
+  for (ObjectFile& object : objects) {
+    object.textOffset = alignUp(textSize, 16);
+    textSize = object.textOffset + object.text.size();
+    object.rodataOffset = alignUp(rodataSize, 16);
+    rodataSize = object.rodataOffset + object.rodata.size();
   }
-  const auto mainSymbol = defined.find("main");
-  if (mainSymbol == defined.end()) {
-    throw LinkError("the object does not export 'main'");
+
+  const std::unordered_map<std::string, Definition> definitions =
+      buildDefinitions(objects);
+  const auto mainDefinition = definitions.find("main");
+  if (mainDefinition == definitions.end()) {
+    throw LinkError("the inputs do not export 'main'");
   }
-  if (mainSymbol->second >= parsed.text.size()) {
-    throw LinkError("the 'main' symbol lies outside .text");
+  if (mainDefinition->second.rodata) {
+    throw LinkError("'main' is not in .text");
   }
 
   // --- Relocations, and the PLT/GOT slots they need ---
   struct Patch {
-    std::uint64_t offset = 0;
+    std::uint64_t writeOffset = 0;
     std::uint32_t type = 0;
     std::string symbol;
     bool defined = false;
-    std::uint64_t value = 0;
+    Definition definition;
     std::int64_t addend = 0;
   };
   std::vector<Patch> patches;
@@ -565,37 +850,53 @@ std::vector<std::uint8_t> linkHostedExecutable(
     gotSymbols.push_back(name);
   };
 
-  for (const Rela& rela : parsed.relas) {
-    if (rela.symbol >= parsed.symbols.size()) {
-      throw LinkError("relocation names an out-of-range symbol");
-    }
-    const ObjectSymbol& symbol = parsed.symbols[rela.symbol];
-    if (symbol.name.empty()) {
-      throw LinkError("relocation names an unnamed symbol");
-    }
-    if (rela.type != kR_x86_64Plt32 && rela.type != kR_x86_64Pc32) {
-      throw LinkError("unsupported relocation type " + std::to_string(rela.type) +
-                      " for '" + symbol.name + "'");
-    }
-    if (rela.offset + 4 > parsed.text.size()) {
-      throw LinkError("relocation for '" + symbol.name + "' lies outside .text");
-    }
-    const bool isDefined = defined.count(symbol.name) != 0;
-    if (!isDefined) {
-      if (rela.type == kR_x86_64Plt32) {
-        addPlt(symbol.name);
-      } else {
-        addGot(symbol.name);
+  for (const ObjectFile& object : objects) {
+    for (const Rela& rela : object.relas) {
+      if (rela.symbol >= object.symbols.size()) {
+        throw LinkError("relocation names an out-of-range symbol in '" +
+                        object.name + "'");
       }
+      const ObjectSymbol& symbol = object.symbols[rela.symbol];
+      if (symbol.name.empty()) {
+        throw LinkError("relocation names an unnamed symbol in '" + object.name +
+                        "'");
+      }
+      if (rela.type != kR_x86_64Plt32 && rela.type != kR_x86_64Pc32) {
+        throw LinkError("unsupported relocation type " +
+                        std::to_string(rela.type) + " for '" + symbol.name + "'");
+      }
+      if (rela.offset + 4 > object.text.size()) {
+        throw LinkError("relocation for '" + symbol.name + "' lies outside .text");
+      }
+      Definition definition;
+      bool isDefined = false;
+      const auto local = object.definitions.find(symbol.name);
+      if (local != object.definitions.end()) {
+        definition = local->second;
+        isDefined = true;
+      } else {
+        const auto global = definitions.find(symbol.name);
+        if (global != definitions.end()) {
+          definition = global->second;
+          isDefined = true;
+        }
+      }
+      if (!isDefined) {
+        if (rela.type == kR_x86_64Plt32) {
+          addPlt(symbol.name);
+        } else {
+          addGot(symbol.name);
+        }
+      }
+      Patch patch;
+      patch.writeOffset = object.textOffset + rela.offset;
+      patch.type = rela.type;
+      patch.symbol = symbol.name;
+      patch.defined = isDefined;
+      patch.definition = definition;
+      patch.addend = rela.addend;
+      patches.push_back(std::move(patch));
     }
-    Patch patch;
-    patch.offset = rela.offset;
-    patch.type = rela.type;
-    patch.symbol = symbol.name;
-    patch.defined = isDefined;
-    patch.value = isDefined ? defined.at(symbol.name) : 0;
-    patch.addend = rela.addend;
-    patches.push_back(std::move(patch));
   }
   // `_start` calls libc's entry point, which the program itself never names.
   addPlt("__libc_start_main");
@@ -700,8 +1001,6 @@ std::vector<std::uint8_t> linkHostedExecutable(
   const std::uint64_t dynamicEntries =
       needed.size() + 12 + (gotSymbols.empty() ? 0 : 3);
   const std::uint64_t dynamicSize = (dynamicEntries + 1) * kDynSize;
-  const std::uint64_t textSize = parsed.text.size();
-  const std::uint64_t rodataSize = parsed.rodata.size();
   const bool hasRodata = rodataSize != 0;
   const std::uint64_t phnum = hasRodata ? 8 : 7;
 
@@ -942,12 +1241,19 @@ std::vector<std::uint8_t> linkHostedExecutable(
   }
 
   // .text and its patches.
-  std::memcpy(out.data() + textOff, parsed.text.data(), parsed.text.size());
+  for (const ObjectFile& object : objects) {
+    if (!object.text.empty()) {
+      std::memcpy(out.data() + textOff + object.textOffset, object.text.data(),
+                  object.text.size());
+    }
+  }
   for (const Patch& patch : patches) {
-    const std::uint64_t place = kBaseAddress + textOff + patch.offset;
+    const std::uint64_t place = kBaseAddress + textOff + patch.writeOffset;
     std::uint64_t target = 0;
     if (patch.defined) {
-      target = kBaseAddress + textOff + patch.value;
+      target = kBaseAddress +
+               (patch.definition.rodata ? rodataOff : textOff) +
+               patch.definition.offset;
     } else if (patch.type == kR_x86_64Plt32) {
       target = kBaseAddress + pltOff + 16 * (1 + pltIndex.at(patch.symbol));
     } else {
@@ -960,7 +1266,7 @@ std::vector<std::uint8_t> linkHostedExecutable(
         value > std::numeric_limits<std::int32_t>::max()) {
       throw LinkError("relocation for '" + patch.symbol + "' does not fit in 32 bits");
     }
-    put32(out, textOff + patch.offset, static_cast<std::uint32_t>(value));
+    put32(out, textOff + patch.writeOffset, static_cast<std::uint32_t>(value));
   }
 
   // .plt
@@ -993,7 +1299,8 @@ std::vector<std::uint8_t> linkHostedExecutable(
   // .text.start: the canonical crt1 `_start`, so libc is initialised before the
   // program's `malloc` runs.
   const std::uint64_t startVaddr = kBaseAddress + startOff;
-  const std::uint64_t mainVaddr = kBaseAddress + textOff + mainSymbol->second;
+  const std::uint64_t mainVaddr =
+      kBaseAddress + textOff + mainDefinition->second.offset;
   const std::uint64_t startGot =
       gotVaddr + 8 * (3 + static_cast<std::uint64_t>(pltIndex.at("__libc_start_main")));
   const std::uint8_t startBytes[kStartSize] = {
@@ -1018,7 +1325,12 @@ std::vector<std::uint8_t> linkHostedExecutable(
 
   // .rodata
   if (hasRodata) {
-    std::memcpy(out.data() + rodataOff, parsed.rodata.data(), parsed.rodata.size());
+    for (const ObjectFile& object : objects) {
+      if (!object.rodata.empty()) {
+        std::memcpy(out.data() + rodataOff + object.rodataOffset,
+                    object.rodata.data(), object.rodata.size());
+      }
+    }
   }
 
   // .got.plt. Slot 0 is the address of `_DYNAMIC`; slots 1 and 2 are the
@@ -1075,4 +1387,333 @@ std::vector<std::uint8_t> linkHostedExecutable(
   }
 
   return out;
+}
+
+std::vector<std::uint8_t> linkRelocatable(
+    const std::vector<LinkInput>& inputs, const LinkOptions& options) {
+  if (!isOwnLinkerTarget(options.target)) {
+    throw LinkError("the own linker supports x86_64-linux-sysv only");
+  }
+  std::vector<ObjectFile> objects = resolveInputs(inputs);
+  if (objects.empty()) throw LinkError("no input objects");
+
+  std::uint64_t textSize = 0;
+  std::uint64_t rodataSize = 0;
+  for (ObjectFile& object : objects) {
+    object.textOffset = alignUp(textSize, 16);
+    textSize = object.textOffset + object.text.size();
+    object.rodataOffset = alignUp(rodataSize, 16);
+    rodataSize = object.rodataOffset + object.rodata.size();
+  }
+  buildDefinitions(objects);  // fills definitions, rejects duplicate globals
+
+  const bool hasRodata = rodataSize != 0;
+  const std::uint16_t textShndx = 1;
+  const std::uint16_t rodataShndx = hasRodata ? 2 : 0;
+
+  struct OutSymbol {
+    std::string name;
+    std::uint8_t info = 0;
+    std::uint16_t shndx = kShnUndef;
+    std::uint64_t value = 0;
+  };
+  std::vector<OutSymbol> locals;
+  std::vector<OutSymbol> globals;
+  std::unordered_map<std::string, std::uint32_t> globalIndex;
+  std::unordered_map<std::string, std::uint32_t> undefinedIndex;
+  std::vector<std::vector<std::uint32_t>> symbolMap(objects.size());
+  for (std::size_t i = 0; i < objects.size(); ++i) {
+    symbolMap[i].assign(objects[i].symbols.size(), 0);
+  }
+
+  const std::uint32_t firstLocal = 1 + (hasRodata ? 2u : 1u);
+
+  // Local definitions keep their own symbol-table entries.
+  for (std::size_t o = 0; o < objects.size(); ++o) {
+    const ObjectFile& object = objects[o];
+    for (std::size_t i = 1; i < object.symbols.size(); ++i) {
+      const ObjectSymbol& symbol = object.symbols[i];
+      if (symbol.name.empty()) continue;
+      if ((symbol.info & 0x0F) == kSttSection) continue;
+      if (static_cast<std::uint8_t>(symbol.info >> 4) != kStbLocal) continue;
+      if (symbol.shndx == kShnUndef) continue;
+      const auto definition = object.definitions.find(symbol.name);
+      if (definition == object.definitions.end()) continue;
+      OutSymbol out;
+      out.name = symbol.name;
+      out.info = symbol.info;
+      out.shndx = definition->second.rodata ? rodataShndx : textShndx;
+      out.value = definition->second.offset;
+      symbolMap[o][i] = firstLocal + static_cast<std::uint32_t>(locals.size());
+      locals.push_back(std::move(out));
+    }
+  }
+  const std::uint32_t firstGlobal =
+      firstLocal + static_cast<std::uint32_t>(locals.size());
+
+  // Every global definition first, so an undefined reference in an earlier
+  // object still points at the definition, not at a duplicate undefined slot.
+  for (std::size_t o = 0; o < objects.size(); ++o) {
+    const ObjectFile& object = objects[o];
+    for (std::size_t i = 1; i < object.symbols.size(); ++i) {
+      const ObjectSymbol& symbol = object.symbols[i];
+      if (symbol.name.empty() || symbol.shndx == kShnUndef) continue;
+      if ((symbol.info & 0x0F) == kSttSection) continue;
+      const std::uint8_t binding = static_cast<std::uint8_t>(symbol.info >> 4);
+      if (binding != kStbGlobal && binding != kStbWeak) continue;
+      const auto definition = object.definitions.find(symbol.name);
+      if (definition == object.definitions.end()) {
+        throw LinkError("object '" + object.name + "' has a defined symbol '" +
+                        symbol.name + "' the linker could not place");
+      }
+      auto found = globalIndex.find(symbol.name);
+      if (found == globalIndex.end()) {
+        OutSymbol out;
+        out.name = symbol.name;
+        out.info = symbol.info;
+        out.shndx = definition->second.rodata ? rodataShndx : textShndx;
+        out.value = definition->second.offset;
+        globalIndex.emplace(symbol.name,
+                            static_cast<std::uint32_t>(globals.size()));
+        symbolMap[o][i] = firstGlobal + static_cast<std::uint32_t>(globals.size());
+        globals.push_back(std::move(out));
+      } else {
+        symbolMap[o][i] = firstGlobal + found->second;
+      }
+    }
+  }
+
+  // Undefined references, deduplicated and resolved to a definition when one
+  // exists in another object.
+  for (std::size_t o = 0; o < objects.size(); ++o) {
+    const ObjectFile& object = objects[o];
+    for (std::size_t i = 1; i < object.symbols.size(); ++i) {
+      const ObjectSymbol& symbol = object.symbols[i];
+      if (symbol.name.empty() || symbol.shndx != kShnUndef) continue;
+      if ((symbol.info & 0x0F) == kSttSection) continue;
+      const auto defined = globalIndex.find(symbol.name);
+      if (defined != globalIndex.end()) {
+        symbolMap[o][i] = firstGlobal + defined->second;
+        continue;
+      }
+      const auto existing = undefinedIndex.find(symbol.name);
+      if (existing != undefinedIndex.end()) {
+        symbolMap[o][i] = firstGlobal + existing->second;
+        continue;
+      }
+      OutSymbol out;
+      out.name = symbol.name;
+      out.info = symbol.info;
+      out.shndx = kShnUndef;
+      out.value = 0;
+      undefinedIndex.emplace(symbol.name,
+                             static_cast<std::uint32_t>(globals.size()));
+      symbolMap[o][i] = firstGlobal + static_cast<std::uint32_t>(globals.size());
+      globals.push_back(std::move(out));
+    }
+  }
+
+  std::vector<OutSymbol> symbols;
+  symbols.push_back(OutSymbol{});
+  symbols.push_back(OutSymbol{
+      "", static_cast<std::uint8_t>((kStbLocal << 4) | kSttSection), textShndx, 0});
+  if (hasRodata) {
+    symbols.push_back(OutSymbol{
+        "", static_cast<std::uint8_t>((kStbLocal << 4) | kSttSection),
+        rodataShndx, 0});
+  }
+  symbols.insert(symbols.end(), locals.begin(), locals.end());
+  symbols.insert(symbols.end(), globals.begin(), globals.end());
+
+  struct OutRela {
+    std::uint64_t offset = 0;
+    std::uint32_t symbol = 0;
+    std::uint32_t type = 0;
+    std::int64_t addend = 0;
+  };
+  std::vector<OutRela> relas;
+  for (std::size_t o = 0; o < objects.size(); ++o) {
+    const ObjectFile& object = objects[o];
+    for (const Rela& rela : object.relas) {
+      if (rela.symbol >= object.symbols.size()) {
+        throw LinkError("relocation names an out-of-range symbol in '" +
+                        object.name + "'");
+      }
+      const std::uint32_t outIndex = symbolMap[o][rela.symbol];
+      if (outIndex == 0) {
+        throw LinkError("relocation names an unnamed symbol in '" + object.name +
+                        "'");
+      }
+      OutRela out;
+      out.offset = object.textOffset + rela.offset;
+      out.symbol = outIndex;
+      out.type = rela.type;
+      out.addend = rela.addend;
+      relas.push_back(out);
+    }
+  }
+
+  StringTable strtab;
+  for (const OutSymbol& symbol : symbols) {
+    if (!symbol.name.empty()) strtab.add(symbol.name);
+  }
+
+  std::vector<std::string> sectionNames;
+  sectionNames.push_back(".text");
+  if (hasRodata) sectionNames.push_back(".rodata");
+  if (!relas.empty()) sectionNames.push_back(".rela.text");
+  sectionNames.push_back(".symtab");
+  sectionNames.push_back(".strtab");
+  sectionNames.push_back(".shstrtab");
+  StringTable shstr;
+  for (const std::string& name : sectionNames) shstr.add(name);
+
+  std::uint64_t offset = kEhdrSize;
+  const std::uint64_t textOff = offset;
+  offset += textSize;
+  offset = alignUp(offset, 16);
+  std::uint64_t rodataOff = 0;
+  if (hasRodata) {
+    rodataOff = offset;
+    offset += rodataSize;
+    offset = alignUp(offset, 8);
+  }
+  std::uint64_t relaOff = 0;
+  if (!relas.empty()) {
+    relaOff = offset;
+    offset += relas.size() * kRelaSize;
+    offset = alignUp(offset, 8);
+  }
+  const std::uint64_t symtabOff = offset;
+  offset += symbols.size() * kSymSize;
+  offset = alignUp(offset, 8);
+  const std::uint64_t strtabOff = offset;
+  offset += strtab.data.size();
+  const std::uint64_t shstrOff = offset;
+  offset += shstr.data.size();
+  const std::uint64_t shoff = alignUp(offset, 8);
+  const std::uint64_t fileSize =
+      shoff + (sectionNames.size() + 1) * kShdrSize;
+
+  std::uint32_t sectionIndex = 1;
+  const std::uint32_t textSection = sectionIndex++;
+  std::uint32_t rodataSection = 0;
+  if (hasRodata) rodataSection = sectionIndex++;
+  std::uint32_t relaSection = 0;
+  if (!relas.empty()) relaSection = sectionIndex++;
+  const std::uint32_t symtabSection = sectionIndex++;
+  const std::uint32_t strtabSection = sectionIndex++;
+  const std::uint32_t shstrSection = sectionIndex++;
+  (void)rodataSection;
+  (void)relaSection;
+
+  std::vector<std::uint8_t> out(fileSize, 0);
+  put8(out, 0, 0x7F);
+  put8(out, 1, 'E');
+  put8(out, 2, 'L');
+  put8(out, 3, 'F');
+  put8(out, 4, kElfClass64);
+  put8(out, 5, kElfDataLsb);
+  put8(out, 6, kEvCurrent);
+  put8(out, 7, 0);
+  put16(out, 16, kEtRel);
+  put16(out, 18, kEmX86_64);
+  put32(out, 20, kEvCurrent);
+  put64(out, 24, 0);      // e_entry
+  put64(out, 32, 0);      // e_phoff
+  put64(out, 40, shoff);  // e_shoff
+  put32(out, 48, 0);      // e_flags
+  put16(out, 52, static_cast<std::uint16_t>(kEhdrSize));
+  put16(out, 54, 0);  // e_phentsize
+  put16(out, 56, 0);  // e_phnum
+  put16(out, 58, static_cast<std::uint16_t>(kShdrSize));
+  put16(out, 60, static_cast<std::uint16_t>(sectionIndex));
+  put16(out, 62, static_cast<std::uint16_t>(shstrSection));
+
+  for (const ObjectFile& object : objects) {
+    if (!object.text.empty()) {
+      std::memcpy(out.data() + textOff + object.textOffset, object.text.data(),
+                  object.text.size());
+    }
+    if (hasRodata && !object.rodata.empty()) {
+      std::memcpy(out.data() + rodataOff + object.rodataOffset,
+                  object.rodata.data(), object.rodata.size());
+    }
+  }
+  for (std::size_t i = 0; i < relas.size(); ++i) {
+    const std::uint64_t base = relaOff + i * kRelaSize;
+    put64(out, base, relas[i].offset);
+    put64(out, base + 8,
+          (static_cast<std::uint64_t>(relas[i].symbol) << 32) | relas[i].type);
+    put64(out, base + 16, static_cast<std::uint64_t>(relas[i].addend));
+  }
+  for (std::size_t i = 0; i < symbols.size(); ++i) {
+    const std::uint64_t base = symtabOff + i * kSymSize;
+    const std::uint32_t nameOffset =
+        symbols[i].name.empty() ? 0 : strtab.offsets.at(symbols[i].name);
+    put32(out, base, nameOffset);
+    put8(out, base + 4, symbols[i].info);
+    put8(out, base + 5, 0);
+    put16(out, base + 6, symbols[i].shndx);
+    put64(out, base + 8, symbols[i].value);
+    put64(out, base + 16, 0);
+  }
+  std::memcpy(out.data() + strtabOff, strtab.data.data(), strtab.data.size());
+  std::memcpy(out.data() + shstrOff, shstr.data.data(), shstr.data.size());
+
+  struct Header {
+    std::string name;
+    std::uint32_t type;
+    std::uint64_t flags;
+    std::uint64_t offset;
+    std::uint64_t size;
+    std::uint32_t link;
+    std::uint32_t info;
+    std::uint64_t addralign;
+    std::uint64_t entsize;
+  };
+  std::vector<Header> headers;
+  headers.push_back({"", kShtNull, 0, 0, 0, 0, 0, 0, 0});
+  headers.push_back({".text", kShtProgbits, kShfAlloc | kShfExecInstr, textOff,
+                     textSize, 0, 0, 16, 0});
+  if (hasRodata) {
+    headers.push_back({".rodata", kShtProgbits, kShfAlloc, rodataOff, rodataSize,
+                       0, 0, 16, 0});
+  }
+  if (!relas.empty()) {
+    headers.push_back({".rela.text", kShtRela, 0, relaOff,
+                       relas.size() * kRelaSize, symtabSection, textSection, 8,
+                       kRelaSize});
+  }
+  headers.push_back({".symtab", kShtSymtab, 0, symtabOff,
+                     symbols.size() * kSymSize, strtabSection,
+                     static_cast<std::uint32_t>(firstGlobal), 8, kSymSize});
+  headers.push_back({".strtab", kShtStrtab, 0, strtabOff, strtab.data.size(), 0,
+                     0, 1, 0});
+  headers.push_back({".shstrtab", kShtStrtab, 0, shstrOff, shstr.data.size(), 0,
+                     0, 1, 0});
+  if (headers.size() != sectionIndex) {
+    throw LinkError("internal: section table index mismatch");
+  }
+  for (std::size_t i = 0; i < headers.size(); ++i) {
+    const std::uint64_t base = shoff + i * kShdrSize;
+    put32(out, base,
+          headers[i].name.empty() ? 0 : shstr.offsets.at(headers[i].name));
+    put32(out, base + 4, headers[i].type);
+    put64(out, base + 8, headers[i].flags);
+    put64(out, base + 16, 0);  // sh_addr
+    put64(out, base + 24, headers[i].offset);
+    put64(out, base + 32, headers[i].size);
+    put32(out, base + 40, headers[i].link);
+    put32(out, base + 44, headers[i].info);
+    put64(out, base + 48, headers[i].addralign);
+    put64(out, base + 56, headers[i].entsize);
+  }
+  return out;
+}
+
+std::vector<std::uint8_t> linkHostedExecutable(
+    const std::vector<std::uint8_t>& object, const LinkOptions& options) {
+  return linkHostedExecutable(std::vector<LinkInput>{{"<object>", object}},
+                              options);
 }

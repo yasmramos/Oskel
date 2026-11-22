@@ -1,15 +1,16 @@
-// `oskelld`: the project's own linker (PHASE 10.1).
+// `oskelld`: the project's own linker (PHASE 10).
 //
 // The core lives in `src/frontend/native/link.cpp`, inside `oskel_frontend`, so
 // this binary, `oskel build --linker own` and `oskelc --linker own` are three
 // entry points over one implementation instead of three linkers that drift.
-// `oskelld` takes the object `oskel build --emit-object` writes and closes it
-// into a dynamically linked x86-64 Linux executable; it never runs the program,
-// so it can cross-link from any host with a reachable target libc (`-L`).
+// `oskelld` takes the objects `oskel build --emit-object` writes (and `ar`
+// archives of them) and closes them into a dynamically linked x86-64 Linux
+// executable, or combines them into a new relocatable object with `-r`. It
+// never runs the program, so it can cross-link from any host with a reachable
+// target libc (`-L`).
 //
-// Multiple objects, `ar` archives and the macOS/Windows containers are PHASE
-// 10.2/10.3; an input this phase does not understand is reported, never
-// mis-linked.
+// The macOS Mach-O and Windows PE containers are PHASE 10.3; an input this
+// phase does not understand is reported, never mis-linked.
 
 #include <cstdio>
 #include <fstream>
@@ -31,17 +32,23 @@ namespace {
 
 const char *kUsage =
     "usage:\n"
-    "  oskelld <object.o> [-o <out>]   link a hosted object into an executable\n"
+    "  oskelld <input>... [-o <out>] [options]\n"
+    "  link objects and `ar` archives into a hosted executable\n"
     "\n"
     "options:\n"
     "  -h, --help                 show this help\n"
     "  -v, --version              show the version\n"
     "  -o, --output <file>        output path (default: a.out)\n"
+    "  -r, --relocatable          combine the inputs into a new ET_REL object\n"
     "  --target <name>            target (default: x86_64-linux-sysv)\n"
     "  --link-lib <name>          shared library to link (repeatable), e.g. SDL3\n"
     "  -L, --library-path <dir>   where to find lib<name>.so (repeatable)\n"
     "\n"
-    "The input is the object `oskel build --mode hosted --emit-object` writes.\n";
+    "Inputs are ELF64 relocatable objects (`oskel build --mode hosted\n"
+    "--emit-object`) or System V/GNU `ar` archives. An archive member is\n"
+    "pulled in only when it defines a still-undefined symbol. `-r` leaves\n"
+    "external symbols undefined, so `--link-lib`/`-L` apply only to an\n"
+    "executable link.\n";
 
 std::vector<std::uint8_t> readFile(const std::string &path) {
   std::ifstream in(path, std::ios::binary);
@@ -60,8 +67,9 @@ std::vector<std::uint8_t> readFile(const std::string &path) {
 
 int main(int argc, char **argv) {
   const std::vector<std::string> arguments(argv + 1, argv + argc);
-  std::string input;
+  std::vector<LinkInput> inputs;
   std::string output = "a.out";
+  bool relocatable = false;
   Target target = Target::linuxX64();
   LinkOptions options;
   options.target = target;
@@ -84,6 +92,10 @@ int main(int argc, char **argv) {
       output = arguments[++i];
       continue;
     }
+    if (arg == "-r" || arg == "--relocatable") {
+      relocatable = true;
+      continue;
+    }
     if (arg == "--target") {
       if (i + 1 >= arguments.size()) {
         std::cerr << "oskelld: option '" << arg << "' needs an argument\n";
@@ -96,7 +108,7 @@ int main(int argc, char **argv) {
       }
       if (!isOwnLinkerTarget(target)) {
         std::cerr << "oskelld: the own linker supports "
-                  << targetName(Target::linuxX64()) << " only (PHASE 10.1)\n";
+                  << targetName(Target::linuxX64()) << " only\n";
         return 64;
       }
       options.target = target;
@@ -122,28 +134,24 @@ int main(int argc, char **argv) {
       std::cerr << "oskelld: unknown option '" << arg << "'\n";
       return 64;
     }
-    if (!input.empty()) {
-      std::cerr << "oskelld: a single object file is expected (multiple objects "
-                   "are PHASE 10.2)\n";
-      return 64;
-    }
-    input = arg;
+    inputs.push_back({arg, readFile(arg)});
   }
 
-  if (input.empty()) {
-    std::cerr << "oskelld: an object file is required\n";
+  if (inputs.empty()) {
+    std::cerr << "oskelld: at least one input is required\n";
     return 64;
   }
-
-  const std::vector<std::uint8_t> object = readFile(input);
-  if (object.empty()) {
-    std::cerr << "oskelld: cannot read '" << input << "'\n";
-    return 65;
+  for (const LinkInput &input : inputs) {
+    if (input.bytes.empty()) {
+      std::cerr << "oskelld: cannot read '" << input.name << "'\n";
+      return 65;
+    }
   }
 
   std::vector<std::uint8_t> image;
   try {
-    image = linkHostedExecutable(object, options);
+    image = relocatable ? linkRelocatable(inputs, options)
+                        : linkHostedExecutable(inputs, options);
   } catch (const LinkError &error) {
     std::cerr << "oskelld: " << error.what() << '\n';
     return 65;
@@ -157,7 +165,7 @@ int main(int argc, char **argv) {
     return 74;
   }
 #ifndef _WIN32
-  ::chmod(output.c_str(), 0755);
+  if (!relocatable) ::chmod(output.c_str(), 0755);
 #endif
   return 0;
 }

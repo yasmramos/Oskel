@@ -169,7 +169,7 @@ static void testTargets() {
   try {
     LinkOptions options;
     options.target = Target::winX64();
-    linkHostedExecutable({}, options);
+    linkHostedExecutable(std::vector<std::uint8_t>{}, options);
   } catch (const LinkError& error) {
     rejected = std::string(error.what()).find("x86_64-linux-sysv") != std::string::npos;
   }
@@ -344,6 +344,224 @@ static void testErrors() {
   check(undefined, "an undefined symbol is reported at link time");
 }
 
+static std::vector<std::string> readStaticSymbols(
+    const std::vector<std::uint8_t>& image,
+    const std::vector<SectionView>& sections) {
+  std::vector<std::string> names;
+  const SectionView* symtab = findSection(sections, ".symtab");
+  const SectionView* strtab = findSection(sections, ".strtab");
+  if (symtab == nullptr || strtab == nullptr) return names;
+  const std::uint64_t count = symtab->size / 24;
+  for (std::uint64_t i = 0; i < count; ++i) {
+    const std::uint64_t entry = symtab->offset + i * 24;
+    names.push_back(readString(image, strtab->offset + read32(image, entry)));
+  }
+  return names;
+}
+
+static void appendArchiveField(std::vector<std::uint8_t>& archive,
+                               const std::string& text, std::size_t width) {
+  std::string field = text;
+  if (field.size() > width) field.resize(width);
+  field.resize(width, ' ');
+  archive.insert(archive.end(), field.begin(), field.end());
+}
+
+static void appendArchiveMember(std::vector<std::uint8_t>& archive,
+                                const std::string& name,
+                                const std::vector<std::uint8_t>& data) {
+  appendArchiveField(archive, name, 16);
+  appendArchiveField(archive, "0", 12);
+  appendArchiveField(archive, "0", 6);
+  appendArchiveField(archive, "0", 6);
+  appendArchiveField(archive, "100644", 8);
+  appendArchiveField(archive, std::to_string(data.size()), 10);
+  archive.push_back('`');
+  archive.push_back('\n');
+  archive.insert(archive.end(), data.begin(), data.end());
+  if ((data.size() & 1u) != 0) archive.push_back('\n');
+}
+
+// A System V/GNU archive with no symbol index: the linker reads each member's
+// own `.symtab`. A long name goes through the `//` table, as `ar` writes it.
+static std::vector<std::uint8_t> makeArchive(
+    const std::vector<std::pair<std::string, std::vector<std::uint8_t>>>& members,
+    bool longNames = false) {
+  std::vector<std::uint8_t> archive = {'!', '<', 'a', 'r', 'c', 'h', '>', '\n'};
+  if (longNames) {
+    std::string table;
+    for (const auto& member : members) table += member.first + "/\n";
+    appendArchiveMember(archive, "//", std::vector<std::uint8_t>(table.begin(), table.end()));
+    std::size_t offset = 0;
+    for (const auto& member : members) {
+      appendArchiveMember(archive, "/" + std::to_string(offset), member.second);
+      offset += member.first.size() + 2;  // name + "/\n"
+    }
+  } else {
+    for (const auto& member : members) {
+      appendArchiveMember(archive, member.first + "/", member.second);
+    }
+  }
+  return archive;
+}
+
+static std::vector<std::uint8_t> makeCallingObject(const std::string& symbol) {
+  ExternalRef reference;
+  reference.patchAt = 1;
+  reference.symbol = symbol;
+  reference.call = true;
+  return makeObject({0xE8, 0, 0, 0, 0, 0xC3}, {reference}, {{"main", 0}});
+}
+
+static void testMultipleObjects() {
+  const std::vector<std::uint8_t> mainObject = makeCallingObject("helper");
+  const std::vector<std::uint8_t> helperObject =
+      makeObject({0xB8, 42, 0, 0, 0, 0xC3}, {}, {{"helper", 0}});
+
+  const std::vector<std::uint8_t> image = linkHostedExecutable(
+      std::vector<LinkInput>{{"main.o", mainObject}, {"helper.o", helperObject}},
+      LinkOptions{});
+  check(read16(image, 16) == 2, "two objects link into an ET_EXEC");
+
+  const std::vector<SectionView> sections = readSections(image);
+  const SectionView* text = findSection(sections, ".text");
+  const SectionView* rela = findSection(sections, ".rela.plt");
+  check(text != nullptr && text->size == 22,
+        "the output .text concatenates both objects with 16-byte alignment");
+  check(rela != nullptr && rela->size == 24,
+        "a cross-object call resolves without a PLT entry");
+  if (text != nullptr) {
+    const std::int32_t displacement =
+        static_cast<std::int32_t>(read32(image, text->offset + 1));
+    const std::uint64_t target =
+        text->addr + 5 + static_cast<std::int64_t>(displacement);
+    check(target == text->addr + 16,
+          "the call lands on the second object's helper");
+  }
+
+  bool duplicate = false;
+  try {
+    const std::vector<std::uint8_t> otherMain =
+        makeObject({0xB8, 7, 0, 0, 0, 0xC3}, {}, {{"main", 0}});
+    linkHostedExecutable(
+        std::vector<LinkInput>{{"a.o", mainObject}, {"b.o", otherMain}},
+        LinkOptions{});
+  } catch (const LinkError& error) {
+    duplicate = std::string(error.what()).find("duplicate symbol") != std::string::npos;
+  }
+  check(duplicate, "a duplicate global symbol across objects is rejected");
+}
+
+static void testArchive() {
+  const std::vector<std::uint8_t> mainObject = makeCallingObject("helper");
+  const std::vector<std::uint8_t> helperObject =
+      makeObject({0xB8, 42, 0, 0, 0, 0xC3}, {}, {{"helper", 0}});
+  // If this member were pulled in, its unresolved `missing` would fail the link.
+  const std::vector<std::uint8_t> unusedObject =
+      makeCallingObject("missing");
+
+  const std::vector<std::uint8_t> archive = makeArchive(
+      {{"helper.o", helperObject}, {"unused.o", unusedObject}});
+  const std::vector<std::uint8_t> image = linkHostedExecutable(
+      std::vector<LinkInput>{{"main.o", mainObject}, {"libhelper.a", archive}},
+      LinkOptions{});
+  check(read16(image, 16) == 2, "an archive member is extracted into an ET_EXEC");
+  const std::vector<SectionView> sections = readSections(image);
+  const SectionView* rela = findSection(sections, ".rela.plt");
+  check(rela != nullptr && rela->size == 24,
+        "the extracted member resolves the call without a PLT entry");
+
+  const std::vector<std::uint8_t> longNameArchive = makeArchive(
+      {{"a_very_long_member_name_helper.o", helperObject}}, true);
+  const std::vector<std::uint8_t> longNameImage = linkHostedExecutable(
+      std::vector<LinkInput>{{"main.o", mainObject},
+                             {"liblong.a", longNameArchive}},
+      LinkOptions{});
+  check(read16(longNameImage, 16) == 2,
+        "a long archive member name is resolved through the // table");
+
+  bool missing = false;
+  try {
+    const std::vector<std::uint8_t> incomplete =
+        makeArchive({{"unused.o", unusedObject}});
+    linkHostedExecutable(
+        std::vector<LinkInput>{{"main.o", mainObject}, {"libbad.a", incomplete}},
+        LinkOptions{});
+  } catch (const LinkError& error) {
+    missing = std::string(error.what()).find("undefined symbol") != std::string::npos;
+  }
+  check(missing, "an archive that does not define the symbol is reported");
+}
+
+static void testRelocatable() {
+  const std::vector<std::uint8_t> mainObject = makeCallingObject("helper");
+  const std::vector<std::uint8_t> helperObject =
+      makeObject({0xB8, 42, 0, 0, 0, 0xC3}, {}, {{"helper", 0}});
+
+  const std::vector<std::uint8_t> combined = linkRelocatable(
+      std::vector<LinkInput>{{"main.o", mainObject}, {"helper.o", helperObject}},
+      LinkOptions{});
+  check(read16(combined, 16) == 1, "linkRelocatable emits ET_REL");
+  check(read16(combined, 56) == 0, "a relocatable object has no program headers");
+
+  const std::vector<SectionView> sections = readSections(combined);
+  const SectionView* text = findSection(sections, ".text");
+  const SectionView* rela = findSection(sections, ".rela.text");
+  const SectionView* symtab = findSection(sections, ".symtab");
+  check(text != nullptr && text->size == 22,
+        "the relocatable .text concatenates both objects");
+  check(rela != nullptr && rela->size == 24,
+        "the cross-object relocation is preserved");
+  check(symtab != nullptr, "the relocatable object carries a .symtab");
+
+  const std::vector<std::string> names = readStaticSymbols(combined, sections);
+  bool hasMain = false;
+  bool hasHelper = false;
+  std::size_t helperIndex = 0;
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    if (names[i] == "main") hasMain = true;
+    if (names[i] == "helper") { hasHelper = true; helperIndex = i; }
+  }
+  check(hasMain && hasHelper, "main and helper are in the relocatable .symtab");
+  if (rela != nullptr) {
+    const std::uint64_t info = read64(combined, rela->offset + 8);
+    check((info >> 32) == helperIndex,
+          "the preserved relocation names the defined helper");
+  }
+
+  // The result is itself a valid linker input.
+  const std::vector<std::uint8_t> image =
+      linkHostedExecutable(combined, LinkOptions{});
+  check(read16(image, 16) == 2,
+        "the relocatable output can be linked into an executable");
+
+  // An external reference survives `-r` and resolves in the final link.
+  const std::vector<std::uint8_t> externalMain = makeCallingObject("write");
+  const std::vector<std::uint8_t> externalCombined =
+      linkRelocatable(std::vector<LinkInput>{{"write.o", externalMain}},
+                      LinkOptions{});
+  const std::vector<SectionView> externalSections = readSections(externalCombined);
+  const std::vector<std::string> externalNames =
+      readStaticSymbols(externalCombined, externalSections);
+  bool hasWrite = false;
+  for (const std::string& name : externalNames) {
+    if (name == "write") hasWrite = true;
+  }
+  check(hasWrite, "an undefined symbol stays undefined across -r");
+  const std::vector<std::uint8_t> externalImage =
+      linkHostedExecutable(externalCombined, LinkOptions{});
+  check(read16(externalImage, 16) == 2,
+        "the final link resolves the preserved external symbol");
+
+  // A relocatable link also accepts an archive.
+  const std::vector<std::uint8_t> archive = makeArchive(
+      {{"helper.o", helperObject}});
+  const std::vector<std::uint8_t> archived = linkRelocatable(
+      std::vector<LinkInput>{{"main.o", mainObject}, {"libhelper.a", archive}},
+      LinkOptions{});
+  check(read16(archived, 16) == 1, "linkRelocatable pulls an archive member");
+}
+
 #endif  // __linux__
 
 int main() {
@@ -352,6 +570,9 @@ int main() {
   testMinimalImage();
   testExternalCall();
   testErrors();
+  testMultipleObjects();
+  testArchive();
+  testRelocatable();
 #else
   std::printf("skipping image checks: the own linker targets x86-64 Linux\n");
 #endif

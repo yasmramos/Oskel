@@ -390,7 +390,8 @@ int runHostedLinkCommand(const std::string &command) {
 int linkHostedObject(const std::string &objectPath, const std::string &output,
                      const Target &target, const std::string &tool,
                      const std::vector<std::string> &linkLibs,
-                     const std::vector<std::string> &libraryPaths) {
+                     const std::vector<std::string> &libraryPaths,
+                     const std::vector<std::string> &linkObjects) {
   const std::string compiler = hostedLinkerCommand();
   std::string command;
   if (target.os == Os::Windows && isMicrosoftCompiler(compiler)) {
@@ -398,10 +399,13 @@ int linkHostedObject(const std::string &objectPath, const std::string &output,
     // asking the linker for the CRT. Name the static CRT and kernel32
     // explicitly: without them every runtime symbol (`mainCRTStartup`,
     // `_write`, `malloc`, `GetTickCount64`, ...) stays unresolved.
-    command = shellQuote(compiler) + " /nologo /MT " + shellQuote(objectPath) +
-              " /Fe:" + shellQuote(output) +
-              " /link /SUBSYSTEM:CONSOLE"
-              " libcmt.lib libucrt.lib libvcruntime.lib kernel32.lib";
+    command = shellQuote(compiler) + " /nologo /MT " + shellQuote(objectPath);
+    for (const std::string &object : linkObjects) {
+      command += " " + shellQuote(object);
+    }
+    command += " /Fe:" + shellQuote(output) +
+               " /link /SUBSYSTEM:CONSOLE"
+               " libcmt.lib libucrt.lib libvcruntime.lib kernel32.lib";
     for (const std::string &dir : libraryPaths) {
       command += " /LIBPATH:" + shellQuote(dir);
     }
@@ -409,8 +413,11 @@ int linkHostedObject(const std::string &objectPath, const std::string &output,
       command += " " + shellQuote(lib + ".lib");
     }
   } else {
-    command = shellQuote(compiler) + " " + shellQuote(objectPath) + " -o " +
-              shellQuote(output);
+    command = shellQuote(compiler) + " " + shellQuote(objectPath);
+    for (const std::string &object : linkObjects) {
+      command += " " + shellQuote(object);
+    }
+    command += " -o " + shellQuote(output);
     if (target.os == Os::Linux) command += " -no-pie";
     if (target.os == Os::MacOs) command += " -arch x86_64";
     command += " -lm";
@@ -453,6 +460,7 @@ int buildBinary(const std::string &source, const std::string &name,
                 const Target &target, LinkMode mode, Linker linker,
                 bool emitObject, const std::vector<std::string> &linkLibs,
                 const std::vector<std::string> &libraryPaths,
+                const std::vector<std::string> &linkObjects,
                 const std::string &tool) {
   std::vector<Token> tokens;
   try {
@@ -528,11 +536,25 @@ int buildBinary(const std::string &source, const std::string &name,
       if (linker == Linker::Own) {
         // The project's own linker closes the object itself (PHASE 10.1). It
         // produces the image in memory, so the common write below still runs.
+        // Extra `--link-object` files may be objects or `ar` archives.
+        std::vector<LinkInput> inputs;
+        inputs.push_back({"<main>", object});
+        for (const std::string &path : linkObjects) {
+          std::string bytes;
+          if (!readSourceFile(path, bytes)) {
+            std::string message =
+                tool + ": cannot read link object '" + path + "'\n";
+            platformPosix().writeErr(message.data(), message.size());
+            return 65;
+          }
+          inputs.push_back(
+              {path, std::vector<std::uint8_t>(bytes.begin(), bytes.end())});
+        }
         LinkOptions options;
         options.target = target;
         options.libraries = linkLibs;
         options.libraryPaths = libraryPaths;
-        image = linkHostedExecutable(object, options);
+        image = linkHostedExecutable(inputs, options);
       } else {
         // The historical path: the host C compiler resolves libc and writes the
         // executable. The object is a temporary beside the output and is
@@ -545,8 +567,9 @@ int buildBinary(const std::string &source, const std::string &name,
           platformPosix().writeErr(message.data(), message.size());
           return 74;
         }
-        const int linkStatus = linkHostedObject(objectPath, output, target, tool,
-                                                linkLibs, libraryPaths);
+        const int linkStatus = linkHostedObject(
+            objectPath, output, target, tool, linkLibs, libraryPaths,
+            linkObjects);
         std::remove(objectPath.c_str());
         return linkStatus;
       }
@@ -595,6 +618,7 @@ int runBuildCommand(const std::vector<std::string> &arguments,
   bool buildEmitObject = false;
   std::vector<std::string> buildLinkLibs;
   std::vector<std::string> buildLibraryPaths;
+  std::vector<std::string> buildLinkObjects;
   for (size_t i = 0; i < arguments.size(); ++i) {
     const std::string &arg = arguments[i];
     if (arg == "-o" || arg == "--output") {
@@ -659,6 +683,14 @@ int runBuildCommand(const std::vector<std::string> &arguments,
       buildLibraryPaths.push_back(arguments[++i]);
       continue;
     }
+    if (arg == "--link-object") {
+      if (i + 1 >= arguments.size()) {
+        std::cerr << tool << ": option '" << arg << "' needs an argument\n";
+        return 64;
+      }
+      buildLinkObjects.push_back(arguments[++i]);
+      continue;
+    }
     if (arg == "--linker") {
       if (i + 1 >= arguments.size()) {
         std::cerr << tool << ": option '" << arg << "' needs an argument\n";
@@ -714,6 +746,16 @@ int runBuildCommand(const std::vector<std::string> &arguments,
               << linkModeName(LinkMode::Hosted) << "'\n";
     return 64;
   }
+  if (!buildLinkObjects.empty() && buildMode != LinkMode::Hosted) {
+    std::cerr << tool << ": '--link-object' requires '--mode "
+              << linkModeName(LinkMode::Hosted) << "'\n";
+    return 64;
+  }
+  if (!buildLinkObjects.empty() && buildEmitObject) {
+    std::cerr << tool << ": '--link-object' and '--emit-object' are mutually "
+                 "exclusive (use 'oskelld -r' to combine objects)\n";
+    return 64;
+  }
   // `--emit-object` writes the relocatable object a linker consumes, so it
   // needs a mode that produces one. The freestanding image is closed by the
   // emitter and WebAssembly has no object format here.
@@ -760,5 +802,5 @@ int runBuildCommand(const std::vector<std::string> &arguments,
   }
   return buildBinary(buildSource, buildFile, buildOutput, argv0, buildTarget,
                      buildMode, buildLinker, buildEmitObject, buildLinkLibs,
-                     buildLibraryPaths, tool);
+                     buildLibraryPaths, buildLinkObjects, tool);
 }
