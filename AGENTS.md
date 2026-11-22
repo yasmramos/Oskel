@@ -499,6 +499,19 @@ it as a caveat:
   15-digit prefix that does not round-trip) and applies the exponent with one
   table multiply/divide. `tests/native_build_double_format.oskl` pins the
   whole range and `tests/native_build_math.oskl` pins `PI`/`E`/`sqrt`.
+- **Tree-shaking (PHASE 9.4).** A bound method is reachable only through a
+  static member read (`a.push`, `a?.push`); `a[k]` is an index, never a method.
+  The compiler records every member name on the proto
+  (`Bytecode::usedMethods`), and `src/frontend/native/wasm.cpp` keeps a body
+  only for the helpers named there: the rest become an `unreachable` stub and
+  the Unicode case table is emitted only for `upper`/`lower`. A `hello` module
+  is ~34 KB (gzip ~15 KB) instead of ~60 KB. `tests/wasm_tree_shake.cmake`
+  pins the size budget and the VM parity; a new bound method must be added to
+  `kEntries` and to `reserveArrayMethods` or it is silently stubbed.
+- The module still carries the method *names* and the `memberGet` comparisons;
+  the savings are the helper bodies and the case tables, not the dispatch
+  table. Removing the comparisons needs a second analysis, not a bigger
+  `kEntries`.
 
 ## SDL3 bindings (`std/sdl.oskl`)
 

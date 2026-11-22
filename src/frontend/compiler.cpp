@@ -3110,6 +3110,9 @@ int Compiler::compileAssign(const AssignExpr& assign, int line, int col) {
     key = compileExpr(*index->index);
   } else if (const auto* member = std::get_if<MemberExpr>(&assign.target->node)) {
     checkFieldAssign(*member, assign);
+    // A compound assignment reads the member first; record the name for the
+    // WASM backend's method reachability analysis (PHASE 9.4).
+    bc_.usedMethods.push_back(member->name);
     object = compileExpr(*member->object);
     key = -addString(member->name) - 1;  // constant member name
   } else {
@@ -3529,6 +3532,10 @@ int Compiler::compileExpr(const Expr& expr) {
             const bool isCallCallee = callCalleeMember_ == &member;
             recordModuleNativeUse(member, isCallCallee ? &callCalleeArgs_ : nullptr, expr.line,
                                   expr.col);
+            // A static member read is the only way the WASM backend can see a
+            // bound method at compile time; record the name so it can emit
+            // just the helpers the program can reach (PHASE 9.4).
+            bc_.usedMethods.push_back(member.name);
             int object = compileExpr(*member.object);
             if (!member.safe) {
               int key = -addString(member.name) - 1;

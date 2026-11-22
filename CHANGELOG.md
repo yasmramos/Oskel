@@ -11,6 +11,17 @@ may change between minor versions.
 
 ### Added
 
+- **The WebAssembly backend tree-shakes the runtime (PHASE 9.4).** A bound
+  method is only reachable through a static member read (`a.push`, `a?.push`);
+  indexing (`a[k]`) is an index, never a method. The compiler records those
+  names on the proto (`Bytecode::usedMethods`) and the WASM lowering keeps a
+  body only for the reachable helpers, replacing the rest with an `unreachable`
+  stub and omitting the Unicode case table a program never uses. A
+  `print("hello")` module drops from 60,384 to 34,179 bytes (gzip: 24,141 to
+  15,473), while a program that reads `"abc".upper` keeps exactly the upper
+  helper and its table. `tests/wasm_tree_shake.cmake` pins both the size and
+  the VM parity.
+
 - **The WebAssembly backend binds the string methods.** `upper`, `lower`,
   `trim`, `trimStart`, `trimEnd`, `split`, `lines`, `replace`, `replaceFirst`,
   `startsWith`, `endsWith`, `contains`, `indexOf`, `substr`, `chars`,
