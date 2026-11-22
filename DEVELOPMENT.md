@@ -683,8 +683,10 @@ previous one.
   `libffi` (`ffi_prep_cif_var`, prepared per call because the argument count
   changes), so like a class-MEMORY struct it needs `kCVariadicSupported`
   (libffi + System V AMD64); off that the declaration is rejected at compile
-  time (`OSKEL_FFI_VARIADIC` skips the script test). See `docs/language.md`
-  §4.6 and `tests/53_ffi_variadic.oskl`.
+  time (`OSKEL_FFI_VARIADIC` skips the script test). `oskel build` does not
+  consult that flag: the AOT backend lowers the variadic itself on System V and
+  Win64 (7f.10). See `docs/language.md` §4.6 and
+  `tests/53_ffi_variadic.oskl`.
 
 ### PHASE 6.7 — Error handling ✅
 
@@ -1730,8 +1732,9 @@ binary prints byte for byte what the VM prints).
       process-lifetime: C may store the pointer, so freeing it when the extern
       call returns would break a stored callback (BACKLOG §6 item 28). A
       callback returning a struct by value and a callback with a struct
-      parameter are rejected with a dedicated build error; a C variadic remains
-      7f work. Covered by `tests/native_build_extern_callback.oskl` (`qsort`,
+      parameter are rejected with a dedicated build error; a C variadic is
+      lowered separately (7f.10). Covered by
+      `tests/native_build_extern_callback.oskl` (`qsort`,
       VM parity), `tests/native_build_extern_callback_stored.oskl`,
       `..._exit.oskl` (an `atexit` handler after the chunk returns),
       `..._wx.oskl` (the stub page is not W+X), `..._many_args.oskl` and
@@ -1769,9 +1772,10 @@ binary prints byte for byte what the VM prints).
       ABI as a parameter: four integer and four SSE registers, shadow space,
       stack arguments from offset 32, and a fifth SSE value spilled to the
       outgoing stack area. The scalar, `cstring` and `ptr` classes are supported
-      on Windows; a struct, a callback and a C variadic are rejected with a
-      dedicated message (the System V fixtures keep covering those). macOS uses
-      System V, so it shares the existing thunk unchanged. Two Windows details
+      on Windows; a struct and a callback are rejected with a dedicated message
+      (the System V fixtures keep covering those), and a C variadic is lowered
+      positionally (7f.10). macOS uses System V, so it shares the existing thunk
+      unchanged. Two Windows details
       are easy to miss: the UCRT opens stdout and stderr in text mode, so
       `oskel_init_arena` calls `_setmode(1/2, _O_BINARY)` before the first
       write -- otherwise every `\n` becomes `\r\n` and the binary disagrees
@@ -1787,6 +1791,31 @@ binary prints byte for byte what the VM prints).
       runner builds the x86-64 image but skips running it, and checks
       `otool -L` for libSystem), and
       `tests/native_build_extern_hosted_windows.oskl` on Windows.
+    - **7f.10** (done) — C variadics on the hosted backend, Windows included.
+      System V continues the independent GPR/SSE counters after the fixed
+      prefix. Win64 assigns registers by **argument position**, not by class:
+      a fixed `double` at position one is xmm1 (not xmm0), and the same rule
+      picks the tail registers from `arity` onward. A floating value in a
+      register position is duplicated in the integer register of the same
+      position (the Microsoft varargs rule), and every position from four
+      onward travels on the stack. The fixed frame of a Win64 variadic thunk
+      carries no outgoing area; the thunk reserves it at run time as
+      `32 + 8*fixedStackCount + 8*stackSlots + 8*tailCount` bytes (aligned to
+      16), so the shadow space, the fixed stack arguments and the variable tail
+      are one contiguous area and the staging slots sit above it. `%al` counts
+      the vector registers actually used. A non-variadic Win64 thunk keeps the
+      shadow space plus its fixed stack arguments in the frame, and its
+      `gprUsed` mask loads only the integer registers an argument actually
+      occupies. The mixed `ldexp`/`modf`/`remquo` calls in
+      `tests/native_build_extern_hosted_windows.oskl` pin the positional fixed
+      rule. `tests/native_build_extern_variadic.oskl` runs on Windows (AOT-only,
+      because the development VM has no libffi variadic path there) and on
+      macOS (built and linked on every host, run only on x86-64).
+      `tests/native_build_extern_variadic_mixed.oskl` with
+      `tests/hosted/variadic_mixed_helper.c` pins a mixed fixed prefix on Linux
+      and Windows. The development engine's own variadic path still needs
+      libffi plus System V; the AOT destination accepts the declaration through
+      `kAotAbiCapabilities`, independent of how the engine was built.
   - **7g** (done) — bare-metal x86-64 (multiboot). A third target,
     `x86_64-freestanding-sysv` (`oskel build --target
     x86_64-freestanding-sysv`), emits a multiboot 1 kernel that a boot loader
@@ -2160,7 +2189,7 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.9 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY) and callbacks resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface on Windows; a C variadic is still open. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.10 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY) and callbacks resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending
 2.0: ⬜ future (static with `@Dynamic`)

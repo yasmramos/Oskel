@@ -13547,6 +13547,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   const X64Reg* intArgRegs = intArgRegsFor(abi);
   const int intArgCount = intArgCountFor(abi);
   const int sseArgCount = sseArgCountFor(abi);
+  const bool win64 = abi == Abi::Win64;
 
   cg.bind(thunk.label);
   prologue(cg);
@@ -13573,6 +13574,14 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   const std::int64_t sretBytes =
       thunk.returnMemoryBytes > 0 ? (thunk.returnMemoryBytes + 15) / 16 * 16 : 0;
   const std::int64_t sretBase = kStructBufBase - sretBytes;
+  // A Win64 variadic thunk reserves the outgoing area itself: the 32-byte
+  // shadow space, the fixed stack arguments (positions four and later) and the
+  // variable tail. The fixed stack arguments are already in `thunk.params`.
+  int fixedStackCount = 0;
+  for (const AotThunkParam& param : thunk.params) {
+    if (param.stackOffset >= 0) ++fixedStackCount;
+  }
+  const std::int64_t varOutBase = win64 ? 32 + 8LL * fixedStackCount : 0;
   // A C variadic carries its walk state in eight 8-byte slots, because the only
   // operation that clobbers the argument registers (`alloc`, while a tail string
   // is materialised) happens inside the walk. A fixed signature reserves none,
@@ -13634,14 +13643,27 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   // so pass A can park a materialised string and pass B can read it back.
   if (thunk.variadic) {
     const std::int32_t fixedArity = static_cast<std::int32_t>(thunk.arity);
-    // The GPR/SSE allocation continues after the fixed prefix.
+    // The GPR/SSE allocation continues after the fixed prefix. Win64 assigns
+    // by argument position instead: the tail starts at position `arity`, and
+    // only the vector registers actually used are counted for `%al`.
     int fixedGpr = 0;
     int fixedSse = 0;
-    for (const AotThunkParam& param : thunk.params) {
-      if (param.cls == ffi::ParamClass::Double || param.cls == ffi::ParamClass::Float) {
-        ++fixedSse;
-      } else {
-        ++fixedGpr;
+    if (win64) {
+      fixedGpr = fixedArity;
+      for (const AotThunkParam& param : thunk.params) {
+        if ((param.cls == ffi::ParamClass::Double ||
+             param.cls == ffi::ParamClass::Float) &&
+            param.argIndex < 4) {
+          ++fixedSse;
+        }
+      }
+    } else {
+      for (const AotThunkParam& param : thunk.params) {
+        if (param.cls == ffi::ParamClass::Double || param.cls == ffi::ParamClass::Float) {
+          ++fixedSse;
+        } else {
+          ++fixedGpr;
+        }
       }
     }
 
@@ -13691,23 +13713,44 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     cg.jcc(Jcc::Eq, countGpr);
     emitFailCall(cg, fail, msgType);
     cg.bind(countSse);
-    cg.movFromMem(R11, Rbp, kVarSse);
-    cg.cmpImm32(R11, sseArgCount);
-    cg.jcc(Jcc::Lt, countSseFit);
-    cg.jmp(countSpill);
-    cg.bind(countSseFit);
-    cg.addImm32(R11, 1);
-    cg.movToMem(Rbp, kVarSse, R11);
-    cg.jmp(countNext);
+    if (win64) {
+      // Position four and later always spill; a register-position float only
+      // consumes one vector register.
+      cg.movFromMem(R11, Rbp, kVarGpr);
+      cg.cmpImm32(R11, 4);
+      cg.jcc(Jcc::Lt, countSseFit);
+      cg.jmp(countSpill);
+      cg.bind(countSseFit);
+      cg.movFromMem(R11, Rbp, kVarSse);
+      cg.addImm32(R11, 1);
+      cg.movToMem(Rbp, kVarSse, R11);
+      cg.jmp(countNext);
+    } else {
+      cg.movFromMem(R11, Rbp, kVarSse);
+      cg.cmpImm32(R11, sseArgCount);
+      cg.jcc(Jcc::Lt, countSseFit);
+      cg.jmp(countSpill);
+      cg.bind(countSseFit);
+      cg.addImm32(R11, 1);
+      cg.movToMem(Rbp, kVarSse, R11);
+      cg.jmp(countNext);
+    }
     cg.bind(countGpr);
-    cg.movFromMem(R11, Rbp, kVarGpr);
-    cg.cmpImm32(R11, intArgCount);
-    cg.jcc(Jcc::Lt, countGprFit);
-    cg.jmp(countSpill);
-    cg.bind(countGprFit);
-    cg.addImm32(R11, 1);
-    cg.movToMem(Rbp, kVarGpr, R11);
-    cg.jmp(countNext);
+    if (win64) {
+      cg.movFromMem(R11, Rbp, kVarGpr);
+      cg.cmpImm32(R11, 4);
+      cg.jcc(Jcc::Lt, countNext);
+      cg.jmp(countSpill);
+    } else {
+      cg.movFromMem(R11, Rbp, kVarGpr);
+      cg.cmpImm32(R11, intArgCount);
+      cg.jcc(Jcc::Lt, countGprFit);
+      cg.jmp(countSpill);
+      cg.bind(countGprFit);
+      cg.addImm32(R11, 1);
+      cg.movToMem(Rbp, kVarGpr, R11);
+      cg.jmp(countNext);
+    }
     cg.bind(countSpill);
     cg.movFromMem(R11, Rbp, kVarStackSlots);
     cg.addImm32(R11, 1);
@@ -13719,16 +13762,25 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     cg.movFromMem(R11, Rbp, kVarRemaining);
     cg.subRegImm32(R11, 1);
     cg.movToMem(Rbp, kVarRemaining, R11);
+    if (win64) {
+      // The position advances for every tail argument, including a spill.
+      cg.movFromMem(R11, Rbp, kVarGpr);
+      cg.addImm32(R11, 1);
+      cg.movToMem(Rbp, kVarGpr, R11);
+    }
     cg.jmp(countLoop);
     cg.bind(countDone);
 
-    // dynamicBytes = align16((stackSlots + tailCount) * 8), so `rsp` stays
-    // 16-byte aligned at the call.
+    // dynamicBytes = align16(varOutBase + (stackSlots + tailCount) * 8), so
+    // `rsp` stays 16-byte aligned at the call. On Win64 `varOutBase` is the
+    // shadow space plus the fixed stack arguments, which the callee reads from
+    // the bottom of this area.
     cg.movFromMem(R11, Rbp, kVarStackSlots);
     cg.shlImm8(R11, 3);
     cg.movFromMem(R10, Rbp, kVarTailCount);
     cg.shlImm8(R10, 3);
     cg.addReg(R11, R10);
+    if (varOutBase > 0) cg.addImm32(R11, static_cast<std::int32_t>(varOutBase));
     cg.addImm32(R11, 15);
     cg.andImm32(R11, -16);
     cg.subReg(Rsp, R11);
@@ -13737,6 +13789,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     cg.shlImm8(R10, 3);
     cg.movReg(R12, Rsp);
     cg.addReg(R12, R10);
+    if (varOutBase > 0) cg.addImm32(R12, static_cast<std::int32_t>(varOutBase));
     cg.movToMem(Rbp, kVarStageBase, R12);
 
     // Pass A: every tail string becomes a NUL-terminated arena copy, parked in
@@ -13815,9 +13868,21 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   // integer arguments start one register later. The pointer is staged with the
   // other integer arguments and loaded just before the call, like them.
   int gpr = 0;
+  bool gprUsed[6] = {};
+  auto stageGpr = [&](const AotThunkParam& param, X64Reg value) {
+    if (win64) {
+      cg.movToMem(Rbp, kStageBase + 8LL * param.argIndex, value);
+      gprUsed[param.argIndex] = true;
+    } else {
+      cg.movToMem(Rbp, kStageBase + 8LL * gpr, value);
+      gprUsed[gpr] = true;
+      ++gpr;
+    }
+  };
   if (thunk.returnMemoryBytes > 0) {
     cg.leaMem(R11, Rbp, sretBase);
     cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
+    gprUsed[gpr] = true;
     ++gpr;
   }
   int sse = 0;
@@ -13836,8 +13901,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         cg.movqToXmm(kXmmBase + sse, R11);
         ++sse;
       } else {
-        cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
-        ++gpr;
+        stageGpr(param, R11);
       }
       continue;
     }
@@ -13869,8 +13933,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         if (param.stackOffset >= 0) {
           cg.movToMem(Rsp, param.stackOffset, R11);
         } else {
-          cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
-          ++gpr;
+          stageGpr(param, R11);
         }
         break;
       }
@@ -13883,6 +13946,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         CodeGen::Label asInt = cg.newLabel();
         CodeGen::Label done = cg.newLabel();
         const bool onStack = param.stackOffset >= 0;
+        const int sseIndex = win64 ? param.argIndex : sse;
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagFloat));
         cg.jcc(Jcc::Eq, asIs);
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagDouble));
@@ -13897,7 +13961,11 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
           cg.movqFromXmm(R11, XmmScratch);
           cg.movToMem(Rsp, param.stackOffset, R11);
         } else {
-          cg.cvtsi2sd(kXmmBase + sse, R11);
+          cg.cvtsi2sd(kXmmBase + sseIndex, R11);
+          if (win64 && thunk.variadic) {
+            cg.movqFromXmm(R11, kXmmBase + sseIndex);
+            stageGpr(param, R11);
+          }
         }
         cg.jmp(done);
         cg.bind(asIs);
@@ -13905,10 +13973,11 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         if (onStack) {
           cg.movToMem(Rsp, param.stackOffset, R11);
         } else {
-          cg.movqToXmm(kXmmBase + sse, R11);
+          cg.movqToXmm(kXmmBase + sseIndex, R11);
+          if (win64 && thunk.variadic) stageGpr(param, R11);
         }
         cg.bind(done);
-        if (!onStack) ++sse;
+        if (!onStack && !win64) ++sse;
         break;
       }
       case ffi::ParamClass::Float: {
@@ -13918,6 +13987,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         CodeGen::Label asInt = cg.newLabel();
         CodeGen::Label done = cg.newLabel();
         const bool onStack = param.stackOffset >= 0;
+        const int sseIndex = win64 ? param.argIndex : sse;
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagFloat));
         cg.jcc(Jcc::Eq, asIs);
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagDouble));
@@ -13934,7 +14004,11 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
           cg.movToMem32(Rsp, param.stackOffset, R11);
         } else {
           cg.cvtsi2sd(XmmScratch, R11);
-          cg.cvtsd2ss(kXmmBase + sse, XmmScratch);
+          cg.cvtsd2ss(kXmmBase + sseIndex, XmmScratch);
+          if (win64 && thunk.variadic) {
+            cg.movqFromXmm(R11, kXmmBase + sseIndex);
+            stageGpr(param, R11);
+          }
         }
         cg.jmp(done);
         cg.bind(asIs);
@@ -13945,11 +14019,15 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
           cg.movqFromXmm(R11, XmmScratch);
           cg.movToMem32(Rsp, param.stackOffset, R11);
         } else {
-          cg.movqToXmm(kXmmBase + sse, R11);
-          cg.cvtsd2ss(kXmmBase + sse, kXmmBase + sse);
+          cg.movqToXmm(kXmmBase + sseIndex, R11);
+          cg.cvtsd2ss(kXmmBase + sseIndex, kXmmBase + sseIndex);
+          if (win64 && thunk.variadic) {
+            cg.movqFromXmm(R11, kXmmBase + sseIndex);
+            stageGpr(param, R11);
+          }
         }
         cg.bind(done);
-        if (!onStack) ++sse;
+        if (!onStack && !win64) ++sse;
         break;
       }
       case ffi::ParamClass::Pointer: {
@@ -13974,8 +14052,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
             if (param.stackOffset >= 0) {
               cg.movToMem(Rsp, param.stackOffset, Rax);
             } else {
-              cg.movToMem(Rbp, kStageBase + 8LL * gpr, Rax);
-              ++gpr;
+              stageGpr(param, Rax);
             }
           }
           cg.jmp(staged);
@@ -14036,8 +14113,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         if (param.stackOffset >= 0) {
           cg.movToMem(Rsp, param.stackOffset, R11);
         } else {
-          cg.movToMem(Rbp, kStageBase + 8LL * gpr, R11);
-          ++gpr;
+          stageGpr(param, R11);
         }
         break;
       }
@@ -14050,9 +14126,12 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   }
 
   // Load the staged integer arguments into their registers now that every
-  // `alloc`/`rep movsb` has run. The SSE arguments are already in place.
-  for (int k = 0; k < gpr; ++k)
-    cg.movFromMem(intArgRegs[k], Rbp, kStageBase + 8LL * k);
+  // `alloc`/`rep movsb` has run. The SSE arguments are already in place. A
+  // Win64 argument uses the register that matches its position, so an unused
+  // slot is left alone instead of shifting the later ones.
+  for (int k = 0; k < intArgCount; ++k) {
+    if (gprUsed[k]) cg.movFromMem(intArgRegs[k], Rbp, kStageBase + 8LL * k);
+  }
 
   // --- C variadic: assign the tail --------------------------------------------
   //
@@ -14066,11 +14145,22 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     const std::int32_t fixedArity = static_cast<std::int32_t>(thunk.arity);
     int fixedGpr = 0;
     int fixedSse = 0;
-    for (const AotThunkParam& param : thunk.params) {
-      if (param.cls == ffi::ParamClass::Double || param.cls == ffi::ParamClass::Float) {
-        ++fixedSse;
-      } else {
-        ++fixedGpr;
+    if (win64) {
+      fixedGpr = fixedArity;
+      for (const AotThunkParam& param : thunk.params) {
+        if ((param.cls == ffi::ParamClass::Double ||
+             param.cls == ffi::ParamClass::Float) &&
+            param.argIndex < 4) {
+          ++fixedSse;
+        }
+      }
+    } else {
+      for (const AotThunkParam& param : thunk.params) {
+        if (param.cls == ffi::ParamClass::Double || param.cls == ffi::ParamClass::Float) {
+          ++fixedSse;
+        } else {
+          ++fixedGpr;
+        }
       }
     }
     cg.movFromMem(R11, Rbp, kVarTailCount);
@@ -14085,6 +14175,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     cg.movImm(R11, fixedSse);
     cg.movToMem(Rbp, kVarSse, R11);
     cg.movReg(R12, Rsp);  // the outgoing stack cursor
+    if (varOutBase > 0) cg.addImm32(R12, static_cast<std::int32_t>(varOutBase));
 
     CodeGen::Label tailLoop = cg.newLabel();
     CodeGen::Label tailDone = cg.newLabel();
@@ -14156,24 +14247,46 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     }
     cg.jmp(gprSpill);
     cg.bind(gprAssigned);
-    cg.addImm32(Rax, 1);
-    cg.movToMem(Rbp, kVarGpr, Rax);
+    if (!win64) {
+      cg.addImm32(Rax, 1);
+      cg.movToMem(Rbp, kVarGpr, Rax);
+    }
     cg.jmp(tailNext);
 
     cg.bind(assignSse);
-    cg.movFromMem(Rax, Rbp, kVarSse);
-    for (int k = 0; k < sseArgCount; ++k) {
-      CodeGen::Label skip = cg.newLabel();
-      cg.cmpImm32(Rax, k);
-      cg.jcc(Jcc::Ne, skip);
-      cg.movqToXmm(kXmmBase + k, R11);
-      cg.jmp(sseAssigned);
-      cg.bind(skip);
+    if (win64) {
+      // Win64 picks the xmm register by argument position and duplicates the
+      // value in the integer register of the same position.
+      cg.movFromMem(Rax, Rbp, kVarGpr);
+      for (int k = 0; k < sseArgCount; ++k) {
+        CodeGen::Label skip = cg.newLabel();
+        cg.cmpImm32(Rax, k);
+        cg.jcc(Jcc::Ne, skip);
+        cg.movqToXmm(kXmmBase + k, R11);
+        cg.movReg(intArgRegs[k], R11);
+        cg.jmp(sseAssigned);
+        cg.bind(skip);
+      }
+      cg.jmp(sseSpill);
+      cg.bind(sseAssigned);
+      cg.movFromMem(Rax, Rbp, kVarSse);
+      cg.addImm32(Rax, 1);
+      cg.movToMem(Rbp, kVarSse, Rax);
+    } else {
+      cg.movFromMem(Rax, Rbp, kVarSse);
+      for (int k = 0; k < sseArgCount; ++k) {
+        CodeGen::Label skip = cg.newLabel();
+        cg.cmpImm32(Rax, k);
+        cg.jcc(Jcc::Ne, skip);
+        cg.movqToXmm(kXmmBase + k, R11);
+        cg.jmp(sseAssigned);
+        cg.bind(skip);
+      }
+      cg.jmp(sseSpill);
+      cg.bind(sseAssigned);
+      cg.addImm32(Rax, 1);
+      cg.movToMem(Rbp, kVarSse, Rax);
     }
-    cg.jmp(sseSpill);
-    cg.bind(sseAssigned);
-    cg.addImm32(Rax, 1);
-    cg.movToMem(Rbp, kVarSse, Rax);
     cg.jmp(tailNext);
 
     // No register left: the value goes to the outgoing stack area, in order.
@@ -14195,6 +14308,12 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     cg.movFromMem(R11, Rbp, kVarRemaining);
     cg.subRegImm32(R11, 1);
     cg.movToMem(Rbp, kVarRemaining, R11);
+    if (win64) {
+      // Win64 consumes a position for every tail argument, register or stack.
+      cg.movFromMem(R11, Rbp, kVarGpr);
+      cg.addImm32(R11, 1);
+      cg.movToMem(Rbp, kVarGpr, R11);
+    }
     cg.jmp(tailLoop);
     cg.bind(tailDone);
 

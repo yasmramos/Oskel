@@ -2,19 +2,22 @@
 # (PHASE 7f.5): compile a program that calls real C functions and run it.
 #
 # Registered by CMakeLists.txt on Linux and macOS x86-64 (the System V surface)
-# and Windows x86-64 (the scalar/pointer surface): hosted mode links against the
-# host C library with a C toolchain. Expects:
+# and Windows x86-64 (the scalar/pointer and C-variadic surface): hosted mode
+# links against the host C library with a C toolchain. Expects:
 #   -DOSKEL_EXE=<path to the oskel executable>
 #   -DOSKEL_SCRIPT=<the .oskl file to build>
 #   -DOSKEL_TEST_NAME=<the CTest name, used for a unique output path>
 #   -DOSKEL_CC=<the C compiler the hosted link should drive, optional>
 #   -DOSKEL_SKIP_RUN=<skip the run, e.g. an x86-64 image on arm64 macOS>
+#   -DOSKEL_EXPECTED_OUTPUT=<a line the binary must print, instead of the VM>
 #
 # It asserts:
 #   1. `oskel build --mode hosted` exits 0 and writes the requested output,
 #   2. the generated binary runs and prints exactly the VM's output (the
 #      marshalling must reproduce the hosted engine, which resolves the same
-#      symbols through its own host registry),
+#      symbols through its own host registry); when `OSKEL_EXPECTED_OUTPUT` is
+#      given the VM is not run, because that engine cannot execute the fixture
+#      on this host (a Windows VM has no variadic path, for instance),
 #   3. the binary is dynamically linked against libc/libSystem -- the property
 #      that lets the linker resolve the `extern "C"` symbol in the first place.
 
@@ -49,17 +52,6 @@ if(NOT EXISTS "${out}")
 endif()
 
 if(NOT DEFINED OSKEL_SKIP_RUN OR NOT OSKEL_SKIP_RUN)
-  # The reference output is the development VM's: the hosted binary resolves
-  # the same C symbols and must agree.
-  execute_process(
-    COMMAND "${OSKEL_EXE}" "${OSKEL_SCRIPT}"
-    RESULT_VARIABLE vm_exit
-    OUTPUT_VARIABLE vm_stdout
-  )
-  if(NOT vm_exit EQUAL 0)
-    message(FATAL_ERROR "the VM failed to run the fixture (exit ${vm_exit})")
-  endif()
-
   execute_process(
     COMMAND "${out}"
     RESULT_VARIABLE run_exit
@@ -71,10 +63,31 @@ if(NOT DEFINED OSKEL_SKIP_RUN OR NOT OSKEL_SKIP_RUN)
       "the hosted binary exited ${run_exit}\n--- stdout ---\n${run_stdout}\n"
       "--- stderr ---\n${run_stderr}")
   endif()
-  if(NOT run_stdout STREQUAL vm_stdout)
-    message(FATAL_ERROR
-      "the hosted binary disagrees with the VM\n"
-      "--- vm ---\n${vm_stdout}\n--- binary ---\n${run_stdout}")
+
+  if(DEFINED OSKEL_EXPECTED_OUTPUT)
+    # The development VM cannot run this fixture on this host (a Windows VM has
+    # no libffi variadic path, for instance), so the fixture asserts its own
+    # expectations and only its final line is the contract.
+    if(NOT run_stdout MATCHES "${OSKEL_EXPECTED_OUTPUT}")
+      message(FATAL_ERROR
+        "the hosted binary did not report success:\n${run_stdout}")
+    endif()
+  else()
+    # The reference output is the development VM's: the hosted binary resolves
+    # the same C symbols and must agree.
+    execute_process(
+      COMMAND "${OSKEL_EXE}" "${OSKEL_SCRIPT}"
+      RESULT_VARIABLE vm_exit
+      OUTPUT_VARIABLE vm_stdout
+    )
+    if(NOT vm_exit EQUAL 0)
+      message(FATAL_ERROR "the VM failed to run the fixture (exit ${vm_exit})")
+    endif()
+    if(NOT run_stdout STREQUAL vm_stdout)
+      message(FATAL_ERROR
+        "the hosted binary disagrees with the VM\n"
+        "--- vm ---\n${vm_stdout}\n--- binary ---\n${run_stdout}")
+    endif()
   endif()
 endif()
 

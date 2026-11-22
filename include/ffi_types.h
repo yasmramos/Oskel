@@ -132,14 +132,17 @@ inline constexpr AbiCapabilities kFullAbiCapabilities{true, true, true};
 // calls libffi: a class-MEMORY struct travels in the outgoing stack area and
 // comes back through an `sret` pointer, and a register-class struct goes through
 // the eightbyte buffers. Its thunks follow the target's C ABI: System V on
-// Linux and macOS, Microsoft x64 on Windows (scalar/pointer classes only).
+// Linux and macOS, Microsoft x64 on Windows (scalar/pointer classes and a C
+// variadic; structs and callbacks are rejected there).
 //
-// A C variadic is lowered too (PHASE 7f.5): the thunk walks the tail at run
-// time, promotes each value by its tag, continues the GPR/SSE allocation after
-// the fixed prefix, spills the overflow to the outgoing stack area and sets
-// `%al` to the vector-register count. The declaration is accepted for the AOT
-// destination even when the development engine has no libffi, because the
-// backend does not need it.
+// A C variadic is lowered too (PHASE 7f.5, 7f.10): the thunk walks the tail at
+// run time, promotes each value by its tag, continues the target's register
+// allocation after the fixed prefix (independent GPR/SSE counters on System V,
+// argument positions on Win64, including the integer duplicate of a floating
+// value), spills the overflow to the outgoing stack area and sets `%al` to the
+// vector-register count. The declaration is accepted for the AOT destination
+// even when the development engine has no libffi, because the backend does not
+// need it.
 //
 // The compiler validates `extern "C"` against the *destination*: `oskel build`
 // asks with these capabilities, so a shape the backend can emit is not rejected
