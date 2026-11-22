@@ -1,0 +1,293 @@
+// Standard library: declarative widgets and a headless layout.
+//
+// Imported as `import std.ui as ui;` (qualified: `ui.column`), as
+// `import std.ui.*;`, or with a selective import.
+//
+// The module is pure Oskel over the portable primitive surface (maps, arrays,
+// indexing, `len`, `int`, `for ... in`, closures and the operators), so a
+// widget tree behaves identically on the development VM and under
+// `oskel build`. It produces a display list; a backend (Skia, SDL, a test)
+// consumes the list. The module never calls a window or graphics API itself.
+//
+//   import std.ui as ui;
+//
+//   let root = ui.window("Demo", 320, 200,
+//     ui.column(8, [
+//       ui.text("Hello", 24),
+//       ui.button("OK", () => print("clicked")),
+//     ]));
+//   ui.layout(root, 320, 200);
+//   for cmd in ui.commands(root) {
+//     // cmd.kind is "rect" or "text"; a backend draws it.
+//   }
+//
+// A widget is a map with a `kind`, a frame (`x`, `y`, `w`, `h`) and the fields
+// its kind needs. `layout` mutates the tree and attaches the frame; `commands`
+// reads the frames and returns new maps, so drawing never mutates the tree.
+//
+// Layout is deliberately small: a column stacks its children, a row places
+// them side by side, and padding insets one child. Text is measured with a
+// fixed 0.6 advance per character and a 1.4 line height; that is enough for a
+// deterministic layout test and for the first Skia slice. A real font metric
+// belongs to the renderer, not to the tree.
+
+// --- constructors -----------------------------------------------------------
+
+// A top-level window. `child` is usually a column or a row.
+@MustUse
+fn window(title, width, height, child) {
+  return {
+    kind: "window",
+    title: title,
+    width: width,
+    height: height,
+    child: child,
+    background: 0xFFFFFFFF,
+    x: 0,
+    y: 0,
+    w: 0,
+    h: 0,
+  };
+}
+
+// A vertical stack. `gap` is the space between two children.
+@MustUse
+fn column(gap, children) {
+  return { kind: "column", gap: gap, children: children, x: 0, y: 0, w: 0, h: 0 };
+}
+
+// A horizontal stack. `gap` is the space between two children.
+@MustUse
+fn row(gap, children) {
+  return { kind: "row", gap: gap, children: children, x: 0, y: 0, w: 0, h: 0 };
+}
+
+// Insets one child by `all` pixels on every side.
+@MustUse
+fn padding(all, child) {
+  return { kind: "padding", all: all, child: child, x: 0, y: 0, w: 0, h: 0 };
+}
+
+// Empty vertical space.
+@MustUse
+fn spacer(height) {
+  return { kind: "spacer", height: height, x: 0, y: 0, w: 0, h: 0 };
+}
+
+// Black text at `size`.
+@MustUse
+fn text(content, size) {
+  return textColor(content, size, 0xFF000000);
+}
+
+// Text with an explicit ARGB colour.
+@MustUse
+fn textColor(content, size, color) {
+  return {
+    kind: "text",
+    content: content,
+    size: size,
+    color: color,
+    x: 0,
+    y: 0,
+    w: 0,
+    h: 0,
+  };
+}
+
+// A blue button with white text.
+@MustUse
+fn button(label, onClick) {
+  return buttonStyle(label, onClick, 0xFF2563EB, 0xFFFFFFFF);
+}
+
+// A button with an explicit background and text colour.
+@MustUse
+fn buttonStyle(label, onClick, background, color) {
+  return {
+    kind: "button",
+    label: label,
+    onClick: onClick,
+    size: 14,
+    background: background,
+    color: color,
+    x: 0,
+    y: 0,
+    w: 0,
+    h: 0,
+  };
+}
+
+// --- measurement ------------------------------------------------------------
+
+fn _max(a, b) {
+  if (a > b) {
+    return a;
+  }
+  return b;
+}
+
+// The intrinsic size of `node` as `[width, height]`.
+fn _measure(node, maxWidth) {
+  if (node.kind == "window") {
+    return [node.width, node.height];
+  }
+  if (node.kind == "text") {
+    return [int(len(node.content) * node.size * 0.6), int(node.size * 1.4)];
+  }
+  if (node.kind == "button") {
+    return [int(len(node.label) * node.size * 0.6) + 24, int(node.size * 1.4) + 16];
+  }
+  if (node.kind == "spacer") {
+    return [0, node.height];
+  }
+  if (node.kind == "padding") {
+    let inner = _measure(node.child, maxWidth);
+    return [inner[0] + node.all * 2, inner[1] + node.all * 2];
+  }
+  if (node.kind == "column") {
+    var width = 0;
+    var height = 0;
+    var first = true;
+    for child in node.children {
+      let size = _measure(child, maxWidth);
+      width = _max(width, size[0]);
+      if (first) {
+        height = size[1];
+        first = false;
+      } else {
+        height = height + node.gap + size[1];
+      }
+    }
+    return [width, height];
+  }
+  if (node.kind == "row") {
+    var width = 0;
+    var height = 0;
+    var first = true;
+    for child in node.children {
+      let size = _measure(child, maxWidth);
+      if (first) {
+        width = size[0];
+        first = false;
+      } else {
+        width = width + node.gap + size[0];
+      }
+      height = _max(height, size[1]);
+    }
+    return [width, height];
+  }
+  return [0, 0];
+}
+
+// --- placement --------------------------------------------------------------
+
+fn _place(node, x, y, width, height) {
+  node.x = x;
+  node.y = y;
+  node.w = width;
+  node.h = height;
+
+  if (node.kind == "window") {
+    _place(node.child, x, y, width, height);
+  } else if (node.kind == "padding") {
+    _place(node.child, x + node.all, y + node.all, width - node.all * 2,
+           height - node.all * 2);
+  } else if (node.kind == "column") {
+    var cursor = y;
+    for child in node.children {
+      let size = _measure(child, width);
+      _place(child, x, cursor, width, size[1]);
+      cursor = cursor + size[1] + node.gap;
+    }
+  } else if (node.kind == "row") {
+    var cursor = x;
+    for child in node.children {
+      let size = _measure(child, width);
+      _place(child, cursor, y, size[0], height);
+      cursor = cursor + size[0] + node.gap;
+    }
+  }
+  return node;
+}
+
+// Measures and places the tree. A window uses its own size; any other root
+// uses the viewport passed here.
+fn layout(root, width, height) {
+  if (root.kind == "window") {
+    return _place(root, 0, 0, root.width, root.height);
+  }
+  return _place(root, 0, 0, width, height);
+}
+
+// --- display list -----------------------------------------------------------
+
+fn _push(out, kind, x, y, w, h, color, content, size) {
+  out[len(out)] = {
+    kind: kind,
+    x: x,
+    y: y,
+    w: w,
+    h: h,
+    color: color,
+    text: content,
+    size: size,
+  };
+}
+
+fn _collect(node, out) {
+  if (node.kind == "window") {
+    _push(out, "rect", node.x, node.y, node.w, node.h, node.background, "", 0);
+    _collect(node.child, out);
+  } else if (node.kind == "padding") {
+    _collect(node.child, out);
+  } else if (node.kind == "column" || node.kind == "row") {
+    for child in node.children {
+      _collect(child, out);
+    }
+  } else if (node.kind == "text") {
+    _push(out, "text", node.x, node.y + node.size, node.w, node.h, node.color,
+          node.content, node.size);
+  } else if (node.kind == "button") {
+    _push(out, "rect", node.x, node.y, node.w, node.h, node.background, "", 0);
+    _push(out, "text", node.x + 12, node.y + int((node.h + node.size) / 2),
+          node.w - 24, node.size, node.color, node.label, node.size);
+  }
+}
+
+// The draw commands for a laid-out tree, in paint order.
+@MustUse
+fn commands(root) {
+  var out = [];
+  _collect(root, out);
+  return out;
+}
+
+// --- hit testing ------------------------------------------------------------
+
+fn _contains(node, x, y) {
+  return x >= node.x && x < node.x + node.w && y >= node.y && y < node.y + node.h;
+}
+
+// The deepest button under `(x, y)`, or nil.
+@MustUse
+fn hitTest(node, x, y) {
+  if (!_contains(node, x, y)) {
+    return nil;
+  }
+  if (node.kind == "button") {
+    return node;
+  }
+  if (node.kind == "window" || node.kind == "padding") {
+    return hitTest(node.child, x, y);
+  }
+  if (node.kind == "column" || node.kind == "row") {
+    for child in node.children {
+      let hit = hitTest(child, x, y);
+      if (hit != nil) {
+        return hit;
+      }
+    }
+  }
+  return nil;
+}
