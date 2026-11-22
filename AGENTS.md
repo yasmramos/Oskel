@@ -93,12 +93,12 @@ it as a caveat:
   through `Compiler::setAbiCapabilities`, while the interpreter keeps
   `AbiCapabilities{}`, this build's. The backend emits its own thunks, so a
   class-MEMORY struct must not be rejected for `oskel build` just because the
-  engine lacks libffi — that conflation made
-  `oskel.build_hosted_extern_memory_struct` fail without `libffi-dev` even
+  engine lacks the x86-64 FFI trampoline — that conflation made
+  `oskel.build_hosted_extern_memory_struct` fail without an FFI backend even
   though the emitted code was right. A C variadic is accepted for the AOT
   destination whatever the build has, because the backend lowers the variable
-  argument list itself (PHASE 7f.5, 7f.10); only the development engine's
-  `libffi` path still needs System V.
+  argument list itself (PHASE 7f.5, 7f.10); the development engine's descriptor
+  stub covers System V and Microsoft x64.
 - A qualified access to a module's native export (`std.math.pow`) is a use too,
   but it reads the module table with `GETTABLE`, not with `GETGLOBAL`, so the
   lowerer cannot see it by counting reads. The compiler records such a use on
@@ -149,11 +149,11 @@ it as a caveat:
   (`upper`, `lower`, `trim`, `trimStart`, `trimEnd`, `contains`, `startsWith`,
   `endsWith`, `indexOf`, `substr`, `reversed`, `repeat`, `split`, `lines`,
   `chars`, `replace`, `replaceFirst`, `padStart`, `padEnd`), so no string
-  member builds and then faults at run time. It does not seed
-  `pcall`/`error`/`readFile` at all, so a module function that calls one fails
-  `oskel build` with "global 'pcall' is read but never assigned" (exit 65) even
-  when the function is unused. A module written over the portable surface
-  behaves identically on the VM and under `oskel build`; `std/json.oskl` and
+  member builds and then faults at run time. It also seeds `pcall`, `error` and
+  the streaming file builtins, so a module may use them; the one remaining
+  standard-library gap is `std.fs.dir`, which is VM-only (see below). A module
+  written over the portable surface behaves identically on the VM and under
+  `oskel build`; `std/json.oskl` and
   `tests/native_build_json.oskl` are the reference, and `std/datetime.oskl`
   with `tests/native_build_datetime.oskl` is a second one (it also exercises
   the `time()` wall clock, the one builtin whose AOT binding differs per
@@ -161,12 +161,48 @@ it as a caveat:
   surface; `tests/native_build_ui.oskl` is its VM/AOT fixture.
 - `std.io` is **in-memory text streams, not file I/O**. `StringReader` and
   `StringWriter` are classes (maps with closures), and `splitLines`/`joinLines`
-  are free functions. File access stays with
-  `readFile`/`writeFile`/`fileExists`: the freestanding AOT backend does not
-  seed them, and the lowerer scans every function body, so a module that merely
-  mentions one fails `oskel build` even when the function is unused.
-  `tests/62_std_io.oskl` is the VM test and `tests/native_build_io.oskl` the
-  VM/AOT/WASM parity fixture.
+  are free functions. `tests/62_std_io.oskl` is the VM test and
+  `tests/native_build_io.oskl` the VM/AOT/WASM parity fixture.
+- `std.fs` is the disk module, split three ways: the facade (`std.fs`), the
+  class module `std.fs.File` and the namespace `std.fs.dir`. The streaming half
+  (`fsOpen`/`fsRead`/`fsWrite`/`fsSeek`/`fsClose`, plus `readFile`,
+  `writeFile`, `fileExists`) is seeded wherever the prelude has a file system:
+  freestanding Linux/Windows and hosted. The prelude owns the target differences
+  -- `openat`/`lseek`/`read`/`write`/`close` on Linux, `CreateFileA`/
+  `SetFilePointerEx`/`ReadFile`/`WriteFile`/`CloseHandle` on Windows,
+  `_open`/`_lseeki64`/`_read`/`_write`/`_close` hosted -- so the builtins stay
+  target-independent. Append is mode `2` at the prelude boundary
+  (`O_APPEND`/`_O_APPEND`/`FILE_APPEND_DATA`). The directory half
+  (`fsRemove`, `fsRename`, `fsMkdir`, `fsRmdir`, `fsList`, `fsStat`, `fsCwd`,
+  `fsChdir`) is **VM-only for now**: `std.fs.dir` is listed in the parity
+  script's `vm_only` set and the lowerer rejects a used name with a dedicated
+  message (exit 65), never a mis-compiled image. Fixtures:
+  `tests/native_build_fs.oskl` (freestanding parity), `oskel.build_fs_hosted`
+  (hosted parity) and `tests/64_std_fs.oskl` (VM directory/error paths). The
+  `fsClose` emitter saves only `rbx`, so it reserves 8 extra bytes before
+  calling the close thunk: Windows C APIs require `rsp` 16-byte aligned at the
+  call, and an odd number of saved registers otherwise crashes under `cl` and
+  kernel32.
+- A module whose last path segment is **PascalCase** is a **class module**
+  (`docs/language.md` §18.6). It exports exactly one public name, the file name,
+  and every other top-level name starts with `_`. `import std.io.StringReader;`
+  binds the class itself, not the module table, so `StringReader(...)` works;
+  `as` binds the class under the alias, and `.*`/selective already bind the one
+  export. A lowercase module keeps the namespace semantics, which is why
+  `ns.deep.leaf.leaf()` and `std.io.text.splitLines(...)` still work. The
+  compiler enforces the shape: a PascalCase module with zero or several public
+  names, or a different name, is a compile error. `std/io/` is the reference:
+  `StringReader.oskl`/`StringWriter.oskl` are class modules,
+  `reader.oskl`/`writer.oskl`/`text.oskl` are namespace modules, and
+  `std/io.oskl` is the facade. The facade imports
+  `std.io.reader as reader;` and aliases `reader.StringReader`, so keep that
+  shape when adding a class to the module.
+- A parent module imported after one of its children **merges** its public names
+  into the existing namespace table instead of replacing it, so `std.io` and
+  `std.io.text` work in either order. `compileQualifiedImport` records a module
+  leaf in `namespaces_` and `ensureNamespace` reads the existing table; do not
+  put back a bare `SETTABLE` for the leaf, because that drops the child paths
+  (and a class path such as `std.io.StringReader` that was bound first).
 - `sort`/`sorted` are the only collection methods whose comparator is arbitrary
   program code, so their AOT body calls back through `oskel_call` from inside a
   bottom-up stable merge sort (a recursive one would deepen the program's stack
@@ -295,8 +331,25 @@ it as a caveat:
   matched to the VM's but cannot go in that fixture: a raised runtime error is
   not a value, so `try`/`catch` does not capture it and `build_binary.cmake`
   requires exit 0 from both engines.
+- The development engine's FFI no longer links a host FFI library. A fixed
+  scalar signature (and a register struct on System V) is a compile-time thunk;
+  a C variadic, a class-MEMORY struct and a callback use an x86-64 descriptor or
+  closure stub emitted with the AOT `CodeGen` (`src/runtime/ffi_trampoline.*`).
+  The stubs are available on x86-64 only: System V (Linux, x86-64 macOS) for all
+  three, Microsoft x64 (Windows) for a C variadic; class MEMORY and callbacks
+  are rejected there. arm64 keeps the fixed-scalar typed thunk but rejects a
+  struct by value, a variadic, a class-MEMORY struct and a callback. Three bugs
+  were first: the
+  `CodeGen` SSE emitters take a synthetic register number (`kXmmBase + N`), so
+  passing `0..7` encoded xmm8..15 and the first double variadic crashed; the
+  descriptor's 32-bit fields (`stackBytes`, `vectorCount`) must be loaded with
+  `movFromMem32`, because an 8-byte load picked up the adjacent field and
+  subtracted 4 GiB from `rsp`; and on Microsoft x64 the outgoing stack arguments
+  start at `[rsp+32]`, after the 32-byte shadow space, not at `[rsp]`. The VM
+  variadic fixture uses `printf` rather than `sprintf`, because Wine's
+  `sprintf` mis-handles `%.1f` even though `printf` is correct.
 - A C callback (`fn(...): R` parameter) is a generated stub in the hosted
-  backend (PHASE 7f.8), not a libffi closure. `oskel_callback_create` allocates
+  backend (PHASE 7f.8), not a host FFI closure. `oskel_callback_create` allocates
   a 32-byte context (closure tag/payload, the Oskel global base, a pointer to a
   16-byte shared arena-state block) and a private `mmap` page holding
   `movabs r10, context; movabs r11, body; jmp r11`. The page is mapped
@@ -317,7 +370,7 @@ it as a caveat:
   `8 * slot` read the wrong slot and crashed. A callback returning a struct by
   value and a callback with a struct parameter are rejected with dedicated
   messages; a stored callback works in AOT but not in the VM (the VM frees the
-  libffi closure when the extern call returns), and both are BACKLOG §6 items
+  closure stub when the extern call returns), and both are BACKLOG §6 items
   26/27. The stub page is process-lifetime: C may store the pointer (a stored
   callback, including an `atexit` handler), so freeing it when the extern call
   returns would break that contract; BACKLOG §6 item 28 tracks a pool or an
@@ -465,8 +518,23 @@ it as a caveat:
   the entries first (so a stored `length` wins), then falls back to `length` and
   nil. New map methods go **inside that branch**; a second `kMap` branch after
   the range branch is unreachable, and a method added there silently returns
-  nil. The string branch is separate and still fails with "no such member" for
-  an unknown name.
+  nil. The string branch is separate and fails with "no such member" only for a
+  name that is not one of its nineteen bound methods.
+- The string methods (`upper`, `lower`, `trim`, `trimStart`, `trimEnd`,
+  `split`, `lines`, `replace`, `replaceFirst`, `startsWith`, `endsWith`,
+  `contains`, `indexOf`, `substr`, `chars`, `repeat`, `reversed`, `padStart`,
+  `padEnd`) live in the string branch of `emitMemberGet` and are emitted by
+  `emitStringMethods`, which reserves nineteen selectors after the map methods.
+  They share `utf8SeqLen`, `decodeCodePoint`, `encodeUtf8`, `strFind`,
+  `strSliceBytes` and `strReverse`. `caseMap` reads the Unicode simple-case
+  runs (`kUnicodeUpperRuns`/`kUnicodeLowerRuns` from
+  `src/core/unicode_case.cpp`) from a 12-byte `{first, last, delta}` table in
+  the static pool, binary-searched by `caseLookup`. A string's `len` in the
+  helpers is the **byte** length; the code-point count is `utf8Len`. `substr`
+  is the one that must start from `utf8Len`: using the byte length made
+  `"αβγδε".substr(-2)` empty because the negative start was offset by the byte
+  count. `tests/native_build_string_methods.oskl` is the shared AOT/WASM
+  fixture and `oskel.build_wasm_string_methods` is its WASM run.
 - A construct the backend cannot lower yet must fail cleanly, never emit a
   mis-compiled module: an unbound builtin is seeded as a trapping closure, and
   a used `extern "C"`/`native fn` symbol with no stub is a build error (exit
@@ -484,15 +552,38 @@ it as a caveat:
   15-digit prefix that does not round-trip) and applies the exponent with one
   table multiply/divide. `tests/native_build_double_format.oskl` pins the
   whole range and `tests/native_build_math.oskl` pins `PI`/`E`/`sqrt`.
+- **Tree-shaking (PHASE 9.4).** A bound method is reachable only through a
+  static member read (`a.push`, `a?.push`); `a[k]` is an index, never a method.
+  The compiler records every member name on the proto
+  (`Bytecode::usedMethods`), and `src/frontend/native/wasm.cpp` keeps a body
+  only for the helpers named there: the rest become an `unreachable` stub and
+  the Unicode case table is emitted only for `upper`/`lower`. A `hello` module
+  is ~34 KB (gzip ~15 KB) instead of ~60 KB. `tests/wasm_tree_shake.cmake`
+  pins the size budget and the VM parity; a new bound method must be added to
+  `kEntries` and to `reserveArrayMethods` or it is silently stubbed.
+- The module still carries the method *names* and the `memberGet` comparisons;
+  the savings are the helper bodies and the case tables, not the dispatch
+  table. Removing the comparisons needs a second analysis, not a bigger
+  `kEntries`.
 
-## SDL3 bindings (`std/sdl.oskl`)
+## SDL3 backend (`std/internal/sdl.oskl`)
 
+- SDL3 is an **implementation detail**, not public API. User code imports
+  `std.ui` for widgets and `std.ui.window` for the event loop; the low-level
+  module lives at `std/internal/sdl.oskl`, and the Skia backend lives at
+  `std/internal/skia*.oskl`. `std.ui` stays pure and portable; only
+  `std.ui.window` pulls in SDL3 and Skia, so a headless `std.ui` import keeps
+  working without either library.
 - The module binds **SDL3**, not SDL2: `SDL_CreateWindow(title, w, h, flags)`,
   `SDL_CreateRenderer(window, name)`, `bool` predicates, `Uint64` window flags
   and `SDL_FRect` (floats). The `extern "C"` block is generated by `bindgen`
   from `bindings/sdl/sdl3_subset.h`; regenerate it rather than editing it.
   `sdl.bindgen` compares the block against a fresh `bindgen` run, so a header
   edit that was not regenerated fails the suite.
+- A frame reaches the screen through a streaming `SDL_Texture`:
+  `SDL_UpdateTexture` takes the tightly packed Skia readback and
+  `SDL_RenderTexture` draws it. `tests/sdl_bindings.oskl` exercises the texture
+  creation, update, draw and destroy path headlessly.
 - `SDL_Event` is a union, so it stays an opaque `ptr` and the helpers read a
   128-byte buffer at fixed offsets. `tests/sdl_bindings.oskl` pins them by
   pushing a synthetic event of each kind.
@@ -662,13 +753,16 @@ it as a caveat:
   read but never assigned". The names that are VM-only on purpose live in a list
   in that script and in BACKLOG §6 item 25; the check also fails when a listed
   exception stops being one, because a stale exception hides the next real gap.
-  The list is **empty** today: BACKLOG §6 item 25 landed the pointer, file,
-  `clock` and `args` builtins, so every name `addNative` registers is seeded by
-  the AOT backend on at least one target. Four names are seeded per target
-  rather than everywhere, and each has a lowerer gate with its own message: the
-  file builtins and `input` on anything but bare metal, `args` where the entry
-  receives an argument vector (Linux freestanding and hosted), and `memSize`
-  which only bare metal backs. The gate matters because the fallback message --
+  The list now holds only the eight `std.fs.dir` directory builtins
+  (`fsRemove`, `fsRename`, `fsMkdir`, `fsRmdir`, `fsList`, `fsStat`, `fsCwd`,
+  `fsChdir`), which are VM-only until their prelude handles land; BACKLOG §6
+  item 25 records the reason. Everything else `addNative` registers is seeded
+  by the AOT backend on at least one target. Several names are seeded per
+  target rather than everywhere, and each has a lowerer gate with its own
+  message: the streaming file builtins and `input` on anything but bare metal,
+  `args` where the entry receives an argument vector (Linux freestanding and
+  hosted), and `memSize` which only bare metal backs. The gate matters because
+  the fallback message --
   "global 'X' is read but never assigned" -- is what a *typo* produces, so a
   program that spelled a real builtin correctly must not see it. A `native fn`
   used as a rejection fixture therefore has to be a symbol the backend has *no*
@@ -728,13 +822,16 @@ it as a caveat:
   `Class&`/`const Class&` parameters cross as handles and the shim dereferences
   them. `bindings/skia/skia.oskelbind` is the first real descriptor; its shim
   needs a Skia checkout, while `cxxbind.generate` checks generation and
-  `oskel -c` on every platform. `bindings/skia/skia_facade.h` keeps the three
-  calls the descriptor cannot spell: `SkSurfaces::Raster` (the factory moved
-  from `SkSurface::MakeRasterN32Premul` at milestone 115), `drawString` (it
-  takes an explicit `SkFont`), and `readPixels` (it takes an `SkImageInfo`).
-  `cxxbind.skia` is opt-in through `OSKEL_SKIA_DIR`/`OSKEL_SKIA_LIB`: it compiles
-  the shim against a real Skia, then checks drawing, text and the widget
-  display list on the VM and the hosted AOT binary. The bridge still rejects
+  `oskel -c` on every platform. `bindings/skia/skia_facade.h` keeps the calls
+  the descriptor cannot spell: `SkSurfaces::Raster` (the factory moved from
+  `SkSurface::MakeRasterN32Premul` at milestone 115), `drawString` (it takes an
+  explicit `SkFont`), and the one-pixel and bulk `readPixels` (they take an
+  `SkImageInfo`). The generated module is checked in at
+  `std/internal/skia.oskl`; `bindings/skia/build.sh` regenerates it and builds
+  the shim, and `cxxbind.skia` rejects a descriptor/module drift. The test is
+  opt-in through `OSKEL_SKIA_DIR`/`OSKEL_SKIA_LIB`: it compiles the shim against
+  a real Skia, then checks drawing, text, the widget display list and the SDL
+  window loop on the VM and the hosted AOT binary. The bridge still rejects
   string returns, overload sets, templates, callbacks, default arguments, C++
   enums and `std::` containers.
 - `std/ui.oskl` is a widget tree over maps, not a new runtime type:
@@ -742,11 +839,15 @@ it as a caveat:
   `layout` attaches a frame, `commands` returns `rect`/`text` display-list maps
   and `hitTest` returns the deepest button. It is pure Oskel over the portable
   primitive surface, so `tests/native_build_ui.oskl` and
-  `oskel.build_binary_ui` keep the VM and AOT outputs identical. The Skia
-  backend is `bindings/skia/skia_ui.oskl`; `docs/ui.md` describes the scope.
-  Text measurement is a fixed `0.6 * size` advance, not a font engine, and the
-  module has no event loop: SDL3 owns the window and the application dispatches
-  `onClick` after `hitTest`.
+  `oskel.build_binary_ui` keep the VM and AOT outputs identical.
+  `std/ui/window.oskl` is the public presentation entry point: it imports
+  `std.internal.skia_window`, which owns the SDL3, Skia and widget backends, so
+  `std.ui` itself stays headless and SDL/Skia remain internal. `run` renders,
+  bulk-reads, uploads to a streaming `SDL_Texture`, presents, polls events and
+  dispatches a left click through `hitTest`; a `maxFrames` bound keeps the
+  headless test finite. `docs/ui.md` describes the
+  public scope. Text measurement is a fixed `0.6 * size` advance, not a font
+  engine.
 - `oskelp` (the project and package manager, `docs/oskelp.md`) is a third
   standalone executable under `tools/`. It links no engine code and drives
   `oskel`/`oskelc` as child processes; `nm build/oskel | grep oskelp` must stay
@@ -811,6 +912,10 @@ user:
 - Do I need new logic in the compiler? → which one
 - Does the feature need AOT support, or is it VM-only? → the AOT backend
   (PHASE 7) is a first-class target, not an afterthought
+- Which platforms and backends does this touch? → Linux, Windows and macOS;
+  the VM, the AOT backend and WebAssembly where they apply; the VS Code
+  grammar and snippets for syntax; every packaging format. A feature that
+  reaches only some of them is unfinished.
 
 Without this checklist complete and approved, **do not proceed to code**.
 
@@ -841,6 +946,33 @@ and a feature that works only in AOT is a bug. Concretely:
 When the feature does break AOT parity, the same change must add the AOT
 support (or the clean failure and its fixture). Leaving it for later is not an
 option.
+
+### Platform parity is part of every feature
+
+"Supported" means every platform the project ships on, not the machine the
+feature was written on. A feature is finished only when it is implemented and
+tested on Linux, Windows and macOS, on every engine and backend it applies to
+(the VM, AOT freestanding/hosted, WebAssembly), and in every artifact that
+exposes it: the CLI, `oskelc`, `bindgen`, the VS Code grammar and snippets, and
+the installers. A feature that works only on the author's platform is a bug,
+not a partial delivery; do not merge it and plan to port it later.
+
+- The CI matrix must build and test the feature on each platform. A test that
+  is skipped because the runner lacks a dependency is not coverage: install the
+  dependency on the runner or add a platform-independent fixture that exercises
+  the same code path.
+- A platform-specific code path (a Windows API, a macOS framework, a Linux
+  syscall) gets a test on that platform in the same change. "It compiles
+  elsewhere" is not evidence that it works there.
+- If a target genuinely cannot host the capability, the feature must **fail
+  cleanly** there with a dedicated message and the documented exit code, and a
+  fixture must pin that failure. It must never be silently absent or fall back
+  to different semantics.
+- Record every such gap in `docs/BACKLOG.md` §6 with the reason and the
+  platform. Do not leave a platform quietly behind.
+- Adding a platform to the matrix means adding its real compiler and the
+  fixtures it can run; a matrix entry that only compiles while every execution
+  test skips does not make the feature portable.
 
 ---
 

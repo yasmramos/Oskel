@@ -1,8 +1,8 @@
-// requires: libffi
+// requires: x86-64-system-v
 // expect-exit: 0
 // A callback may return a struct by value (PHASE 6.6): the trampoline
 // serialises the map the Oskel function returns into the C return storage.
-// Where the dev engine implements the System V AMD64 ABI (libffi on x86-64)
+// Where the dev engine implements the System V AMD64 ABI (x86-64 Linux/macOS)
 // the declaration compiles; elsewhere the compiler rejects it. `-c` runs the
 // whole compiler and never the VM, so this proves the declaration is accepted;
 // the marshalling itself is exercised from tests/vm_test.cpp.

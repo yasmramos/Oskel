@@ -1,4 +1,4 @@
-// `-c` only: `std.sdl` parses and type-checks on every platform, without SDL3
+// `-c` only: `std.internal.sdl` parses and type-checks on every platform, without SDL3
 // installed. The symbols are resolved at run time (the development engine) or
 // at link time (`oskel build --mode hosted --link-lib SDL3`), so a compile-only
 // check needs neither.
@@ -6,10 +6,10 @@
 // Registered by the `tests/check/*.oskl` glob, which runs `oskel -c` and
 // requires exit 0 and empty stdout.
 
-import std.sdl;
+import std.internal.sdl;
 
 fn drawSample(renderer: ptr): bool {
-  let rect = std.sdl.fRectBuffer();
-  std.sdl.setFRect(rect, 10, 20, 30, 40);
-  return std.sdl.fillRect(renderer, rect);
+  let rect = std.internal.sdl.fRectBuffer();
+  std.internal.sdl.setFRect(rect, 10, 20, 30, 40);
+  return std.internal.sdl.fillRect(renderer, rect);
 }

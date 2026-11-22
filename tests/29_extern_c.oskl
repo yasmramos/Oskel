@@ -1,6 +1,6 @@
 // `extern "C" { ... }` blocks (PHASE 6.6). A declaration binds to a real C
 // symbol resolved from the host, and a call marshals its arguments and its
-// result across the System V AMD64 ABI without `libffi`. The functions below
+// result across the host C ABI without a host FFI library. The functions below
 // are standard C library names, present in libc/libm on POSIX and in the CRT
 // on Windows, so the test runs on both.
 

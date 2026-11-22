@@ -40,6 +40,7 @@ enum class PeImport : int {
   CreateFileA,
   ReadFile,
   CloseHandle,
+  SetFilePointerEx,
   Count,
 };
 

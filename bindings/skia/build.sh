@@ -5,11 +5,15 @@ set -eu
 
 : "${SKIA_DIR:?set SKIA_DIR to a Skia root}"
 here=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$here/../.." && pwd)
 out="$here/build"
-mkdir -p "$out"
+mkdir -p "$out" "$root/std/internal"
 
-bindgen --cxx "$here/skia.oskelbind" --shim "$out" -o "$out/skia.oskl"
-cp "$here/skia_ui.oskl" "$out/skia_ui.oskl"
+# The generated module is checked in under std/internal so `std.ui.window`
+# resolves in a clean checkout; regenerating it here keeps the descriptor and
+# the committed module in step. The C++ shim stays a build artifact.
+(cd "$root" && bindgen --cxx bindings/skia/skia.oskelbind --shim "$out" \
+  -o std/internal/skia.oskl)
 
 skia_lib=${SKIA_LIB:-}
 if [ -z "$skia_lib" ]; then
@@ -36,4 +40,4 @@ c++ -std=c++17 -shared -fPIC \
   -o "$out/libskia_shim.so" \
   "$out/skia_shim.cpp" "$skia_lib" $skia_libs
 
-echo "generated $out/skia.oskl, $out/skia_ui.oskl and $out/libskia_shim.so"
+echo "generated $root/std/internal/skia.oskl and $out/libskia_shim.so"

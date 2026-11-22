@@ -1835,7 +1835,7 @@ extern "C" OskelTwoBytes oskelTestMakeTwoBytes(char a, char b) { return OskelTwo
 
 // Structs larger than 16 bytes, class MEMORY (PHASE 6.6): passed on the stack
 // and returned through a hidden `sret` pointer. `{int; double; int; int64}` is
-// 32 bytes after alignment, so it exercises both directions of the libffi path.
+// 32 bytes after alignment, so it exercises both directions of the stub path.
 extern "C" struct OskelBig { int a; double b; int c; long long d; };
 extern "C" OskelBig oskelTestMakeBig(int a, double b, int c, long long d) {
   return OskelBig{a, b, c, d};
@@ -2142,7 +2142,7 @@ void testExternMarshalsSubEightbyteStruct() {
 
 #if OSKEL_FFI_MEMORY_STRUCTS
 // A struct larger than 16 bytes is class MEMORY: it is passed on the stack and
-// returned through a hidden `sret` pointer, which only the libffi-backed call
+// returned through a hidden `sret` pointer, which only the stub-backed call
 // path expresses. These tests prove both directions and the mixed cases.
 void testExternMarshalsMemoryStructReturn() {
   TEST_SCOPE();
@@ -2193,10 +2193,10 @@ void testExternMarshalsTwoMemoryStructs() {
 }
 #endif  // OSKEL_FFI_MEMORY_STRUCTS
 
-#ifdef OSKEL_HAVE_LIBFFI
+#if OSKEL_FFI_CALLBACKS
 void testExternCallbackGprShape() {
   TEST_SCOPE();
-  // The callback is a Oskel function; C calls it through a libffi trampoline that
+  // The callback is a Oskel function; C calls it through a closure stub that
   // re-enters the VM with the C argument boxed as a Oskel value.
   const std::string out = runWithSymbols(
       "extern \"C\" { fn oskelTestApply(f: fn(int): int, x: int): int; }\n"
@@ -2257,7 +2257,7 @@ void testExternCallbackNarrowReturnIsWrittenAtItsOwnWidth() {
   TEST_SCOPE();
   // The callback's declared return is one byte. The trampoline must write the
   // result at that width and, on the error path, zero exactly that width: a
-  // hard-coded eight-byte `memset` would overrun the return slot libffi sized
+  // hard-coded eight-byte `memset` would overrun the return slot the stub sized
   // for a `signed char` (caught under ASan; a wrong result otherwise).
   const std::string out = runWithSymbols(
       "extern \"C\" { fn oskelTestApplyNarrow(f: fn(int): int8, x: int): int; }\n"
@@ -2319,10 +2319,10 @@ void testExternCallbackStructReturnErrorIsReraised() {
       "print(r.error.message);\n");
   assert(out == "false\nstruct callback failed\n");
 }
-#endif  // OSKEL_HAVE_LIBFFI
+#endif  // OSKEL_FFI_CALLBACKS
 
 // The C variadic path (PHASE 6.6). A variadic declaration is accepted only where
-// the build can express it (`kCVariadicSupported`, i.e. libffi on System V
+// the build can express it (`kCVariadicSupported`, i.e. an x86-64 descriptor
 // AMD64), so the tests that run one are guarded exactly like the callback ones.
 #if OSKEL_FFI_VARIADIC
 void testExternVariadicPassesPromotedIntegers() {
@@ -2349,7 +2349,7 @@ void testExternVariadicPromotesFloatToDouble() {
 void testExternVariadicAcceptsZeroTrailingArguments() {
   TEST_SCOPE();
   // A variadic call may pass only the named prefix; the tail is empty, so the
-  // `ffi_prep_cif_var` is prepared with zero variadic arguments.
+  // descriptor stub is built with zero variadic arguments.
   const std::string out = runWithSymbols(
       "extern \"C\" { fn oskelTestVCount(tag: cstring, ...): int; }\n"
       "print(oskelTestVCount(\"x\"));\n");
@@ -2432,9 +2432,11 @@ void testExternVariadicAndFixedDeclarationsConflict() {
 void testExternVariadicRejectsStructPrefix() {
   TEST_SCOPE();
   // A variadic's fixed prefix is limited to scalars: the per-call `cif` builds
-  // the prefix types with `libffiTypeFor`, which cannot express a struct, so the
-  // declaration must be rejected up front.
-#if OSKEL_FFI_VARIADIC
+  // the prefix types with the descriptor stub, which cannot express a struct, so the
+  // declaration must be rejected up front. Where a struct cannot cross by value
+  // at all, the compiler rejects it earlier with the struct message, so the
+  // prefix rule is only observable where a struct is otherwise expressible.
+#if OSKEL_FFI_VARIADIC && OSKEL_FFI_STRUCT_BY_VALUE
   bool threw = false;
   try {
     auto tokens = lex("struct P { x: int; y: int; }\n"
@@ -2474,10 +2476,10 @@ void testExternValidatedAgainstDestinationAbi() {
   TEST_SCOPE();
   // The compiler validates `extern "C"` against the destination, not against
   // how the engine was built. The AOT backend emits its own thunks, so it
-  // marshals a class-MEMORY struct even on an engine built without libffi: a
+  // marshals a class-MEMORY struct even on an engine without a host FFI library: a
   // build that can only reject it in the interpreter must still accept it for
   // `oskel build`. The same holds for a C variadic, which the backend walks at
-  // run time without libffi (PHASE 7f.5).
+  // run time without a host FFI library (PHASE 7f.5).
   const std::string memoryStruct =
       "struct Big { a: int64; b: int64; c: int64; }\n"
       "extern \"C\" { fn f(x: Big): int64; }\n";
@@ -2508,7 +2510,7 @@ void testExternValidatedAgainstDestinationAbi() {
 
   // A class-MEMORY struct is accepted for the AOT destination on every build.
   compileFor(memoryStruct, ffi::kAotAbiCapabilities);
-  // The interpreter keeps this build's capability: where libffi provides the
+  // The interpreter keeps this build's capability: where the x86-64 stub provides the
   // marshalling it is accepted, otherwise the rejection names the reason.
   if (ffi::kMemoryStructsSupported) {
     compileFor(memoryStruct, ffi::AbiCapabilities{});
@@ -2519,7 +2521,7 @@ void testExternValidatedAgainstDestinationAbi() {
   // A C variadic is lowered by the AOT backend, so it is accepted for that
   // destination on every build.
   compileFor(variadic, ffi::kAotAbiCapabilities);
-  // The interpreter keeps this build's capability: where libffi provides the
+  // The interpreter keeps this build's capability: where the x86-64 stub provides the
   // marshalling it is accepted, otherwise the rejection names the reason.
   if (ffi::kCVariadicSupported) {
     compileFor(variadic, ffi::AbiCapabilities{});
@@ -2532,14 +2534,14 @@ void testExternValidatedAgainstDestinationAbi() {
 void testExternRejectsLargeStructAtCompileTime() {
   TEST_SCOPE();
   // A struct larger than 16 bytes is class MEMORY: passed on the stack and
-  // returned through a hidden pointer. Where the libffi-backed marshalling can
-  // express that (System V + libffi) the declaration is accepted; elsewhere it
+  // returned through a hidden pointer. Where the stub-backed marshalling can
+  // express that (System V + the x86-64 stub) the declaration is accepted; elsewhere it
   // is rejected up front with a message naming the reason.
   const std::string source =
       "struct Big { a: int; b: int; c: int; d: int; e: int; }\n"
       "extern \"C\" { fn f(x: Big): int; }\n";
 #if OSKEL_FFI_MEMORY_STRUCTS
-  // Accepted where the libffi-backed marshalling expresses class MEMORY.
+  // Accepted where the stub-backed marshalling expresses class MEMORY.
   compileSource(source);
 #else
   const std::string message = compileErrorMessage(source);
@@ -2755,7 +2757,7 @@ int main() {
   testExternMarshalsMemoryStructAmongScalars();
   testExternMarshalsTwoMemoryStructs();
 #endif
-#ifdef OSKEL_HAVE_LIBFFI
+#if OSKEL_FFI_CALLBACKS
   testExternCallbackGprShape();
   testExternCallbackSseShape();
   testExternCallbackVoidReturnAndClosure();

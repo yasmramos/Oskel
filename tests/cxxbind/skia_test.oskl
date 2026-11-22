@@ -1,4 +1,4 @@
-import skia;
+import std.internal.skia as skia;
 
 fn assertEq(actual: int, expected: int) {
   if (actual != expected) {
@@ -13,6 +13,16 @@ let canvas = surface.getCanvas();
 canvas.clear(0xFFFF0000);
 let red = surface.makeImageSnapshot();
 assertEq(skia.imagePixel(red, 0, 0), 0xFFFF0000);
+
+// Bulk readback: one call fills the whole tightly packed BGRA buffer. On a
+// little-endian target opaque red is B=0, G=0, R=255, A=255.
+let pixels = buffer(8 * 8 * 4);
+assert(skia.readPixels(red, pixels, 8 * 4));
+assertEq(loadByte(pixels, 0), 0);
+assertEq(loadByte(pixels, 1), 0);
+assertEq(loadByte(pixels, 2), 255);
+assertEq(loadByte(pixels, 3), 255);
+assertEq(loadByte(pixels, (7 * 8 + 7) * 4 + 2), 255);
 red.close();
 
 let paint = skia.Paint();

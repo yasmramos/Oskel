@@ -227,10 +227,8 @@ int main(int argc, char** argv) {
     if (result.macroConstants > 0) {
       std::cerr << ", " << result.macroConstants << " macro constant(s)";
     }
-    if (result.commented > 0) {
-      std::cerr << ", " << result.commented
-                << " commented out (this build cannot marshal it)";
-    }
+    std::cerr << ", " << result.commented
+              << " commented out (this build cannot marshal it)";
     if (result.skipped > 0) {
       std::cerr << ", skipped " << result.skipped << " (see the '// skipped:' comments)";
     }

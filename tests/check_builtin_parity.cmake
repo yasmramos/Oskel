@@ -82,11 +82,20 @@ endif()
 # --- the documented exceptions ---------------------------------------------
 # Each name here is a builtin that exists on one side only *on purpose*. The
 # value is the side it lives on, so a name that moves engines also fails.
-# Every builtin the VM registers is now seeded by the AOT backend, so this list
-# is empty: the pointer, file, clock and argument builtins of BACKLOG §6 item 25
-# landed in both engines. It stays as the place to record a *new* divergence --
-# with its reason -- rather than letting one go unnoticed.
-set(vm_only "")
+# The streaming file builtins (`fsOpen`/`fsRead`/`fsWrite`/`fsSeek`/`fsClose`)
+# are seeded by every AOT target with a file system. The directory and metadata
+# half (`std.fs.dir`) is VM-only for now: it still needs per-target prelude
+# handles, so those eight names are the documented divergence tracked by
+# BACKLOG §6 item 25.
+set(vm_only
+  fsRemove
+  fsRename
+  fsMkdir
+  fsRmdir
+  fsList
+  fsStat
+  fsCwd
+  fsChdir)
 set(aot_only "")
 
 set(problems "")

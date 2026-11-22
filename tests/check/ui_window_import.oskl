@@ -1,0 +1,17 @@
+// `-c` only: the public `std.ui.window` entry point type-checks without SDL3
+// or Skia loaded. The internal modules resolve their externs at run time or at
+// link time, so a compile-only check needs neither library.
+
+import std.ui as ui;
+import std.ui.window as ui_window;
+
+fn main() {
+  let root = ui.window("Demo", 320, 200,
+    ui.column(8, [ui.text("Hello", 24)]));
+  ui.layout(root, 320, 200);
+  if (ui_window.click(root, 10, 10)) {
+    ui.layout(root, 320, 200);
+  }
+}
+
+main();

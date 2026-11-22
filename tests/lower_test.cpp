@@ -141,13 +141,25 @@ static void testBackingTargetGates() {
 
   // The file builtins are written against the prelude's file handles, which a
   // bare-metal image has no file system to bind.
-  for (const char* name : {"readFile", "writeFile", "fileExists"}) {
+  for (const char* name : {"readFile", "writeFile", "fileExists", "fsOpen",
+                           "fsRead", "fsWrite", "fsSeek", "fsClose"}) {
     auto proto = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::HALT)},
                            {Value(std::string(name))}, 1);
     check(!lower(proto).code.empty(), "a file builtin lowers on the Linux target");
     const std::string expected = std::string(name) + "() needs a file system";
     check(loweringThrowsOn(Target::bareMetalX64(), proto, expected.c_str()),
           "a file builtin on bare metal names the missing file system");
+  }
+
+  // The directory half is VM-only for now: the lowerer names the module rather
+  // than a particular helper, because every function in `std.fs.dir` reads one
+  // of these globals.
+  for (const char* name : {"fsRemove", "fsRename", "fsMkdir", "fsRmdir",
+                           "fsList", "fsStat", "fsCwd", "fsChdir"}) {
+    auto proto = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::HALT)},
+                           {Value(std::string(name))}, 1);
+    check(loweringThrowsOn(Target::linuxX64(), proto, "std.fs.dir is VM-only"),
+          "a directory builtin names the VM-only module");
   }
 
   // `input()` reads the keyboard through `entry.read`, which only the bare-metal

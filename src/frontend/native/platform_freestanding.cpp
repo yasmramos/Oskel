@@ -4,6 +4,8 @@
 
 #if defined(__linux__) && defined(__x86_64__)
 
+#include <sys/stat.h>
+
 namespace {
 
 // Raw Linux x86-64 syscall gate. The System V register order is
@@ -30,8 +32,16 @@ constexpr long kSysWrite = 1;
 constexpr long kSysClose = 3;
 constexpr long kSysLseek = 8;
 constexpr long kSysMmap = 9;
+constexpr long kSysGetcwd = 79;
+constexpr long kSysChdir = 80;
+constexpr long kSysRename = 82;
+constexpr long kSysMkdir = 83;
+constexpr long kSysRmdir = 84;
+constexpr long kSysUnlink = 87;
+constexpr long kSysGetdents64 = 217;
 constexpr long kSysExitGroup = 231;
 constexpr long kSysOpenAt = 257;
+constexpr long kSysNewfstatat = 262;
 
 // openat / lseek constants.
 constexpr long kAtFdcwd = -100;
@@ -39,6 +49,7 @@ constexpr int kOReadOnly = 0;
 constexpr int kOWriteOnly = 1;
 constexpr int kOCreate = 64;
 constexpr int kOTrunc = 512;
+constexpr int kOAppend = 1024;
 
 // mmap constants.
 constexpr long kProtReadWrite = 3;          // PROT_READ | PROT_WRITE
@@ -94,6 +105,7 @@ std::size_t PlatformFreestanding::read(int fd, char* buffer, std::size_t length)
 int PlatformFreestanding::open(const char* path, OpenMode mode) {
   int flags = kOReadOnly;
   if (mode == OpenMode::Write) flags = kOWriteOnly | kOCreate | kOTrunc;
+  if (mode == OpenMode::Append) flags = kOWriteOnly | kOCreate | kOAppend;
   long fd;
   do {
     fd = rawSyscall(kSysOpenAt, kAtFdcwd, reinterpret_cast<long>(path), flags, 0644, 0, 0);
@@ -117,6 +129,109 @@ bool PlatformFreestanding::seek(int fd, std::int64_t offset, SeekOrigin origin) 
   do {
     result = rawSyscall(kSysLseek, fd, static_cast<long>(offset), whence, 0, 0, 0);
   } while (isInterrupted(result));
+  return !isError(result);
+}
+
+std::int64_t PlatformFreestanding::tell(int fd) {
+  long result;
+  do {
+    result = rawSyscall(kSysLseek, fd, 0, 1, 0, 0, 0);
+  } while (isInterrupted(result));
+  return isError(result) ? -1 : static_cast<std::int64_t>(result);
+}
+
+namespace {
+// The prefix of `struct linux_dirent64`: the name starts at offset 19.
+struct LinuxDirent64 {
+  std::uint64_t ino;
+  std::int64_t off;
+  std::uint16_t reclen;
+  std::uint8_t type;
+  char name[1];
+};
+constexpr std::size_t kLinuxDirentNameOffset = 19;
+constexpr std::uint8_t kDirentDirectory = 4;
+}  // namespace
+
+bool PlatformFreestanding::remove(const char* path) {
+  const long result = rawSyscall(kSysUnlink, reinterpret_cast<long>(path), 0, 0, 0, 0, 0);
+  if (!isError(result)) return true;
+  // `remove` also accepts an empty directory, like `std::filesystem::remove`.
+  const long directory = rawSyscall(kSysRmdir, reinterpret_cast<long>(path), 0, 0, 0, 0, 0);
+  return !isError(directory);
+}
+
+bool PlatformFreestanding::rename(const char* from, const char* to) {
+  const long result =
+      rawSyscall(kSysRename, reinterpret_cast<long>(from), reinterpret_cast<long>(to), 0, 0, 0, 0);
+  return !isError(result);
+}
+
+bool PlatformFreestanding::makeDirectory(const char* path) {
+  const long result = rawSyscall(kSysMkdir, reinterpret_cast<long>(path), 0755, 0, 0, 0, 0);
+  return !isError(result);
+}
+
+bool PlatformFreestanding::removeDirectory(const char* path) {
+  const long result = rawSyscall(kSysRmdir, reinterpret_cast<long>(path), 0, 0, 0, 0, 0);
+  return !isError(result);
+}
+
+bool PlatformFreestanding::fileStat(const char* path, Platform::FileInfo& out) {
+  struct stat info;
+  const long result = rawSyscall(kSysNewfstatat, kAtFdcwd, reinterpret_cast<long>(path),
+                                 reinterpret_cast<long>(&info), 0, 0, 0);
+  if (isError(result)) return false;
+  out.size = static_cast<std::uint64_t>(info.st_size);
+  out.modified = static_cast<std::int64_t>(info.st_mtime);
+  out.isDirectory = S_ISDIR(info.st_mode);
+  out.isFile = S_ISREG(info.st_mode);
+  return true;
+}
+
+bool PlatformFreestanding::listDirectory(const char* path, Platform::DirectoryVisitor visit,
+                                         void* user) {
+  const int fd = open(path, OpenMode::Read);
+  if (fd == kInvalidFd) return false;
+  char buffer[4096];
+  bool ok = true;
+  for (;;) {
+    long count;
+    do {
+      count = rawSyscall(kSysGetdents64, fd, reinterpret_cast<long>(buffer), sizeof buffer, 0, 0, 0);
+    } while (isInterrupted(count));
+    if (isError(count)) {
+      ok = false;
+      break;
+    }
+    if (count == 0) break;
+    long offset = 0;
+    while (offset < count) {
+      const auto* entry = reinterpret_cast<const LinuxDirent64*>(buffer + offset);
+      if (entry->reclen == 0 || offset + entry->reclen > count) {
+        ok = false;
+        break;
+      }
+      const char* name = buffer + offset + kLinuxDirentNameOffset;
+      const bool dot = name[0] == '.' && name[1] == '\0';
+      const bool dotdot = name[0] == '.' && name[1] == '.' && name[2] == '\0';
+      if (!dot && !dotdot) visit(user, name, entry->type == kDirentDirectory);
+      offset += entry->reclen;
+    }
+    if (!ok) break;
+  }
+  close(fd);
+  return ok;
+}
+
+bool PlatformFreestanding::currentDirectory(char* buffer, std::size_t size) {
+  const long result = rawSyscall(kSysGetcwd, reinterpret_cast<long>(buffer), static_cast<long>(size),
+                                 0, 0, 0, 0);
+  return !isError(result);
+}
+
+bool PlatformFreestanding::changeDirectory(const char* path) {
+  const long result = rawSyscall(kSysChdir, reinterpret_cast<long>(path), 0, 0, 0, 0, 0);
   return !isError(result);
 }
 
@@ -178,6 +293,15 @@ std::size_t PlatformFreestanding::read(int, char*, std::size_t) { unsupported();
 int PlatformFreestanding::open(const char*, OpenMode) { unsupported(); }
 void PlatformFreestanding::close(int) { unsupported(); }
 bool PlatformFreestanding::seek(int, std::int64_t, SeekOrigin) { unsupported(); }
+std::int64_t PlatformFreestanding::tell(int) { unsupported(); }
+bool PlatformFreestanding::remove(const char*) { unsupported(); }
+bool PlatformFreestanding::rename(const char*, const char*) { unsupported(); }
+bool PlatformFreestanding::makeDirectory(const char*) { unsupported(); }
+bool PlatformFreestanding::removeDirectory(const char*) { unsupported(); }
+bool PlatformFreestanding::fileStat(const char*, Platform::FileInfo&) { unsupported(); }
+bool PlatformFreestanding::listDirectory(const char*, Platform::DirectoryVisitor, void*) { unsupported(); }
+bool PlatformFreestanding::currentDirectory(char*, std::size_t) { unsupported(); }
+bool PlatformFreestanding::changeDirectory(const char*) { unsupported(); }
 void PlatformFreestanding::exit(int) { unsupported(); }
 void* PlatformFreestanding::alloc(std::size_t, std::size_t) { unsupported(); }
 void PlatformFreestanding::dealloc(void*) { unsupported(); }
