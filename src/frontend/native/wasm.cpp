@@ -112,6 +112,16 @@ constexpr std::uint64_t kMethodArrayAll = 20;
 constexpr std::uint64_t kMethodArrayReduce = 21;
 constexpr std::uint64_t kMethodArraySort = 22;
 constexpr std::uint64_t kMethodArraySorted = 23;
+constexpr std::uint64_t kMethodMapKeys = 24;
+constexpr std::uint64_t kMethodMapValues = 25;
+constexpr std::uint64_t kMethodMapEntries = 26;
+constexpr std::uint64_t kMethodMapHas = 27;
+constexpr std::uint64_t kMethodMapGet = 28;
+constexpr std::uint64_t kMethodMapSet = 29;
+constexpr std::uint64_t kMethodMapDelete = 30;
+constexpr std::uint64_t kMethodMapMerge = 31;
+constexpr std::uint64_t kMethodMapClone = 32;
+constexpr std::uint64_t kMethodMapClear = 33;
 
 // mt19937_64 state (PHASE 9.3): 312 words followed by the cursor, the same
 // layout the x86-64 runtime uses, so a seeded stream is identical on both
@@ -684,7 +694,8 @@ struct Runtime {
                 sStringImmutable = 0, sIndexRange = 0, sKeyValue = 0;
   std::uint32_t sInsertRange = 0, sRemoveAtRange = 0, sInsertIndex = 0,
                 sRemoveAtIndex = 0, sConcatArray = 0, sSumType = 0,
-                sReduceEmpty = 0, sComparatorBool = 0;
+                sReduceEmpty = 0, sComparatorBool = 0, sMapKey = 0,
+                sMergeMap = 0;
   std::uint32_t sOpenBracket = 0, sCloseBracket = 0, sOpenBrace = 0,
                 sCloseBrace = 0, sColonSpace = 0, sEllipsis = 0, sLength = 0,
                 sPush = 0, sPop = 0, sShift = 0, sUnshift = 0, sInsert = 0,
@@ -692,7 +703,8 @@ struct Runtime {
                 sSlice = 0, sConcat = 0, sReversed = 0, sClone = 0,
                 sSum = 0, sJoin = 0, sMap = 0, sFilter = 0, sEach = 0,
                 sFind = 0, sAny = 0, sAll = 0, sReduce = 0, sSort = 0,
-                sSorted = 0,
+                sSorted = 0, sKeys = 0, sValues = 0, sEntries = 0,
+                sHas = 0, sGet = 0, sSet = 0, sDelete = 0, sMerge = 0,
                 sCannotSetField = 0, sCannotSlice = 0, sSliceStartInt = 0,
                 sSliceEndInt = 0, sSliceStepInt = 0, sSliceStepZero = 0;
   std::uint32_t sArrayIndexInt = 0, sMapKeyString = 0, sStringIndexInt = 0,
@@ -871,6 +883,16 @@ struct Runtime {
     sSumType = pool.addString("sum() expects an array of numbers");
     sReduceEmpty = pool.addString("reduce() of an empty array needs an initial value");
     sComparatorBool = pool.addString("sort comparator must return a bool");
+    sKeys = pool.addString("keys");
+    sValues = pool.addString("values");
+    sEntries = pool.addString("entries");
+    sHas = pool.addString("has");
+    sGet = pool.addString("get");
+    sSet = pool.addString("set");
+    sDelete = pool.addString("delete");
+    sMerge = pool.addString("merge");
+    sMapKey = pool.addString("map key must be a string");
+    sMergeMap = pool.addString("merge() expects a map");
     sInsertRange = pool.addString("insert() index out of range");
     sRemoveAtRange = pool.addString("removeAt() index out of range");
     sInsertIndex = pool.addString("insert() index must be an integer");
@@ -4294,6 +4316,86 @@ std::uint32_t Runtime::emitMemberGet() {
   f.i64Load(kMapLengthOffset);
   f.ret();
   f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sKeys));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "map", "keys", kMethodMapKeys);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sValues));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "map", "values", kMethodMapValues);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sEntries));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "map", "entries", kMethodMapEntries);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sHas));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "map", "has", kMethodMapHas);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sGet));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "map", "get", kMethodMapGet);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sSet));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "map", "set", kMethodMapSet);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sDelete));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "map", "delete", kMethodMapDelete);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sMerge));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "map", "merge", kMethodMapMerge);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sClone));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "map", "clone", kMethodMapClone);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sClear));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "map", "clear", kMethodMapClear);
+  f.ret();
+  f.end();
   f.i64c(static_cast<std::int64_t>(kNil));
   f.i64c(0);
   f.ret();
@@ -4865,6 +4967,16 @@ void Runtime::reserveArrayMethods() {
   methodHelpers.push_back(m.reserveFunction(tValue));  // reduce
   methodHelpers.push_back(m.reserveFunction(tValue));  // sort
   methodHelpers.push_back(m.reserveFunction(tValue));  // sorted
+  methodHelpers.push_back(m.reserveFunction(tValue));  // keys
+  methodHelpers.push_back(m.reserveFunction(tValue));  // values
+  methodHelpers.push_back(m.reserveFunction(tValue));  // entries
+  methodHelpers.push_back(m.reserveFunction(tValue));  // has
+  methodHelpers.push_back(m.reserveFunction(tValue));  // get
+  methodHelpers.push_back(m.reserveFunction(tValue));  // set
+  methodHelpers.push_back(m.reserveFunction(tValue));  // delete
+  methodHelpers.push_back(m.reserveFunction(tValue));  // merge
+  methodHelpers.push_back(m.reserveFunction(tValue));  // clone
+  methodHelpers.push_back(m.reserveFunction(tValue));  // clear
 }
 
 void Runtime::emitArrayMethods() {
@@ -6781,6 +6893,514 @@ void Runtime::emitArrayMethods() {
     f.i64c(static_cast<std::int64_t>(kArray));
     f.lget(copyHeader);
     f.i64ExtendI32U();
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodMapKeys], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  entries = f.addLocal(kI32), entry = f.addLocal(kI32),
+                  newHeader = f.addLocal(kI32);
+    std::uint32_t len = f.addLocal(kI64), i = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(0);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i64Load(kMapLengthOffset);
+    f.lset(len);
+    f.lget(header);
+    f.i64Load(kMapEntriesOffset);
+    f.i32WrapI64();
+    f.lset(entries);
+    f.lget(len);
+    f.call(newArray);
+    f.i32WrapI64();
+    f.lset(newHeader);
+    f.drop();
+    f.i64c(0);
+    f.lset(i);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(len);
+    f.i64GeS();
+    f.brIf(1);
+    f.lget(entries);
+    f.lget(i);
+    f.i32WrapI64();
+    f.i32c(kMapEntrySize);
+    f.i32Mul();
+    f.i32Add();
+    f.lset(entry);
+    f.lget(newHeader);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.lget(entry);
+    f.i64Load(kMapEntryKeyOffset);
+    f.call(arrayPush);
+    f.lget(i);
+    f.i64c(1);
+    f.i64Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kArray));
+    f.lget(newHeader);
+    f.i64ExtendI32U();
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodMapValues], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  entries = f.addLocal(kI32), entry = f.addLocal(kI32),
+                  newHeader = f.addLocal(kI32);
+    std::uint32_t len = f.addLocal(kI64), i = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(0);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i64Load(kMapLengthOffset);
+    f.lset(len);
+    f.lget(header);
+    f.i64Load(kMapEntriesOffset);
+    f.i32WrapI64();
+    f.lset(entries);
+    f.lget(len);
+    f.call(newArray);
+    f.i32WrapI64();
+    f.lset(newHeader);
+    f.drop();
+    f.i64c(0);
+    f.lset(i);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(len);
+    f.i64GeS();
+    f.brIf(1);
+    f.lget(entries);
+    f.lget(i);
+    f.i32WrapI64();
+    f.i32c(kMapEntrySize);
+    f.i32Mul();
+    f.i32Add();
+    f.lset(entry);
+    f.lget(newHeader);
+    f.lget(entry);
+    f.i64Load(kMapEntryTagOffset);
+    f.lget(entry);
+    f.i64Load(kMapEntryPayloadOffset);
+    f.call(arrayPush);
+    f.lget(i);
+    f.i64c(1);
+    f.i64Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kArray));
+    f.lget(newHeader);
+    f.i64ExtendI32U();
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodMapEntries], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  entries = f.addLocal(kI32), entry = f.addLocal(kI32),
+                  newHeader = f.addLocal(kI32), pair = f.addLocal(kI32);
+    std::uint32_t len = f.addLocal(kI64), i = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(0);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i64Load(kMapLengthOffset);
+    f.lset(len);
+    f.lget(header);
+    f.i64Load(kMapEntriesOffset);
+    f.i32WrapI64();
+    f.lset(entries);
+    f.lget(len);
+    f.call(newArray);
+    f.i32WrapI64();
+    f.lset(newHeader);
+    f.drop();
+    f.i64c(0);
+    f.lset(i);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(len);
+    f.i64GeS();
+    f.brIf(1);
+    f.lget(entries);
+    f.lget(i);
+    f.i32WrapI64();
+    f.i32c(kMapEntrySize);
+    f.i32Mul();
+    f.i32Add();
+    f.lset(entry);
+    f.i64c(2);
+    f.call(newArray);
+    f.i32WrapI64();
+    f.lset(pair);
+    f.drop();
+    f.lget(pair);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.lget(entry);
+    f.i64Load(kMapEntryKeyOffset);
+    f.call(arrayPush);
+    f.lget(pair);
+    f.lget(entry);
+    f.i64Load(kMapEntryTagOffset);
+    f.lget(entry);
+    f.i64Load(kMapEntryPayloadOffset);
+    f.call(arrayPush);
+    f.lget(newHeader);
+    f.i64c(static_cast<std::int64_t>(kArray));
+    f.lget(pair);
+    f.i64ExtendI32U();
+    f.call(arrayPush);
+    f.lget(i);
+    f.i64c(1);
+    f.i64Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kArray));
+    f.lget(newHeader);
+    f.i64ExtendI32U();
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodMapHas], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  keyPtr = f.addLocal(kI32), idx = f.addLocal(kI32);
+    f.lget(1);
+    f.i32c(1);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(0);
+    f.i64Load(0);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sMapKey);
+    f.end();
+    f.lget(0);
+    f.i64Load(8);
+    f.i32WrapI64();
+    f.lset(keyPtr);
+    f.lget(header);
+    f.lget(keyPtr);
+    f.call(mapFind);
+    f.lset(idx);
+    f.i64c(static_cast<std::int64_t>(kBool));
+    f.lget(idx);
+    f.i32c(0);
+    f.i32GeS();
+    f.i64ExtendI32U();
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodMapGet], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  keyPtr = f.addLocal(kI32), idx = f.addLocal(kI32),
+                  entries = f.addLocal(kI32), entry = f.addLocal(kI32);
+    f.lget(1);
+    f.i32c(1);
+    f.i32LtS();
+    f.lget(1);
+    f.i32c(2);
+    f.i32GtS();
+    f.i32Or();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(0);
+    f.i64Load(0);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sMapKey);
+    f.end();
+    f.lget(0);
+    f.i64Load(8);
+    f.i32WrapI64();
+    f.lset(keyPtr);
+    f.lget(header);
+    f.lget(keyPtr);
+    f.call(mapFind);
+    f.lset(idx);
+    f.lget(idx);
+    f.i32c(0);
+    f.i32GeS();
+    f.if_();
+    f.lget(header);
+    f.i64Load(kMapEntriesOffset);
+    f.i32WrapI64();
+    f.lset(entries);
+    f.lget(entries);
+    f.lget(idx);
+    f.i32c(kMapEntrySize);
+    f.i32Mul();
+    f.i32Add();
+    f.lset(entry);
+    f.lget(entry);
+    f.i64Load(kMapEntryTagOffset);
+    f.lget(entry);
+    f.i64Load(kMapEntryPayloadOffset);
+    f.ret();
+    f.end();
+    f.lget(1);
+    f.i32c(2);
+    f.i32Eq();
+    f.if_();
+    f.lget(0);
+    f.i32c(16);
+    f.i32Add();
+    f.i64Load(0);
+    f.lget(0);
+    f.i32c(16);
+    f.i32Add();
+    f.i64Load(8);
+    f.ret();
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kNil));
+    f.i64c(0);
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodMapSet], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  keyPtr = f.addLocal(kI32);
+    f.lget(1);
+    f.i32c(2);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(0);
+    f.i64Load(0);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sMapKey);
+    f.end();
+    f.lget(0);
+    f.i64Load(8);
+    f.i32WrapI64();
+    f.lset(keyPtr);
+    f.lget(header);
+    f.lget(keyPtr);
+    f.lget(0);
+    f.i32c(16);
+    f.i32Add();
+    f.i64Load(0);
+    f.lget(0);
+    f.i32c(16);
+    f.i32Add();
+    f.i64Load(8);
+    f.call(mapSet);
+    f.i64c(static_cast<std::int64_t>(kMap));
+    f.lget(recvPayload);
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodMapDelete], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  keyPtr = f.addLocal(kI32);
+    f.lget(1);
+    f.i32c(1);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(0);
+    f.i64Load(0);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sMapKey);
+    f.end();
+    f.lget(0);
+    f.i64Load(8);
+    f.i32WrapI64();
+    f.lset(keyPtr);
+    f.i64c(static_cast<std::int64_t>(kBool));
+    f.lget(header);
+    f.lget(keyPtr);
+    f.call(mapDelete);
+    f.i64ExtendI32U();
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodMapMerge], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  otherHeader = f.addLocal(kI32), entries = f.addLocal(kI32),
+                  entry = f.addLocal(kI32);
+    std::uint32_t len = f.addLocal(kI64), i = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(1);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(0);
+    f.i64Load(0);
+    f.i64c(static_cast<std::int64_t>(kMap));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sMergeMap);
+    f.end();
+    f.lget(0);
+    f.i64Load(8);
+    f.i32WrapI64();
+    f.lset(otherHeader);
+    f.lget(otherHeader);
+    f.i64Load(kMapLengthOffset);
+    f.lset(len);
+    f.lget(otherHeader);
+    f.i64Load(kMapEntriesOffset);
+    f.i32WrapI64();
+    f.lset(entries);
+    f.i64c(0);
+    f.lset(i);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(len);
+    f.i64GeS();
+    f.brIf(1);
+    f.lget(entries);
+    f.lget(i);
+    f.i32WrapI64();
+    f.i32c(kMapEntrySize);
+    f.i32Mul();
+    f.i32Add();
+    f.lset(entry);
+    f.lget(header);
+    f.lget(entry);
+    f.i64Load(kMapEntryKeyOffset);
+    f.i32WrapI64();
+    f.lget(entry);
+    f.i64Load(kMapEntryTagOffset);
+    f.lget(entry);
+    f.i64Load(kMapEntryPayloadOffset);
+    f.call(mapSet);
+    f.lget(i);
+    f.i64c(1);
+    f.i64Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kMap));
+    f.lget(recvPayload);
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodMapClone], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  entries = f.addLocal(kI32), entry = f.addLocal(kI32),
+                  newHeader = f.addLocal(kI32);
+    std::uint32_t len = f.addLocal(kI64), i = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(0);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.call(newMap);
+    f.i32WrapI64();
+    f.lset(newHeader);
+    f.drop();
+    f.lget(header);
+    f.i64Load(kMapLengthOffset);
+    f.lset(len);
+    f.lget(header);
+    f.i64Load(kMapEntriesOffset);
+    f.i32WrapI64();
+    f.lset(entries);
+    f.i64c(0);
+    f.lset(i);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(len);
+    f.i64GeS();
+    f.brIf(1);
+    f.lget(entries);
+    f.lget(i);
+    f.i32WrapI64();
+    f.i32c(kMapEntrySize);
+    f.i32Mul();
+    f.i32Add();
+    f.lset(entry);
+    f.lget(newHeader);
+    f.lget(entry);
+    f.i64Load(kMapEntryKeyOffset);
+    f.i32WrapI64();
+    f.lget(entry);
+    f.i64Load(kMapEntryTagOffset);
+    f.lget(entry);
+    f.i64Load(kMapEntryPayloadOffset);
+    f.call(mapSet);
+    f.lget(i);
+    f.i64c(1);
+    f.i64Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kMap));
+    f.lget(newHeader);
+    f.i64ExtendI32U();
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodMapClear], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(0);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sBadArity);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.call(mapClear);
+    f.i64c(static_cast<std::int64_t>(kMap));
+    f.lget(recvPayload);
     f.ret();
   }
 }
