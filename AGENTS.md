@@ -250,12 +250,17 @@ it as a caveat:
   name built from whatever happened to sit there (`int` after a four-`int` call)
   and `chr(65, 1)` returned `"A"` while the VM raised "expects 1 argument".
   The VM's `need(in, name, args, 1)` is the counterpart; a new builtin gets the
-  guard in the same commit. The message keeps only its fixed prefix in AOT
-  (`type() expects 1 argument`), which is the documented convention for a tail
-  that would need a per-message builder (BACKLOG §6 item 25);
-  `tests/native_build_builtin_arity.oskl` drives every wrong-count call through
-  `pcall`, because a raised runtime error is not a value and `try`/`catch` never
-  sees it.
+  guard in the same commit. A guard fails through `emitArityFailCall`, which
+  calls the one `oskel_arity_fail(msg, len, argc)` body: the prefix is constant
+  and the helper appends `, got N`, so both engines word the count identically
+  (`len() expects 1 argument, got 0`). A guard whose count is not in `rsi` passes
+  the register it is in — `error()` keeps its count in `r12`. A user function's
+  prologue uses the same body with `name() expects N argument(s)` (` or more`
+  when variadic), and `tests/native_build_builtin_arity.oskl` drives every
+  wrong-count call through `pcall`, because a raised runtime error is not a value
+  and `try`/`catch` never sees it. The fixture prints the message text, not just
+  the fact of failing (PHASE 7c.5b.6). Other dynamic tails — a type name or an
+  index — still keep only their fixed prefix (BACKLOG §6 item 25).
 - `random`/`seed` are AOT-backed (PHASE 7g): `mt19937_64` is emitted as machine
   code, so a native binary reproduces the VM's stream after the same `seed(n)`.
   Three rules keep it correct, and each was a real bug first: only `rbx` and
