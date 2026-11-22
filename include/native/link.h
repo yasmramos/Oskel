@@ -8,7 +8,8 @@
 
 #include "native/target.h"
 
-// PHASE 10: the project's own linker for the hosted x86-64 Linux target.
+// PHASE 10: the project's own linker. It closes x86-64 Linux ELF objects and,
+// from PHASE 10.3a, x86-64 Windows COFF objects into PE32+ images.
 //
 // `native/object.*` already wraps the lowered code in an ELF64 `ET_REL` object
 // with a symbol table and `.rela.text` relocations. This module closes one or
@@ -24,10 +25,12 @@
 // can link a Linux object from any host, provided the target's shared libraries
 // are reachable through `-L`/`LIBRARY_PATH` for the symbol check.
 //
-// Scope: the object shape `oskel build --emit-object` writes. `.text` and
-// `.rodata` are loaded; a symbol in `.data`/`.bss` is reported by name (PHASE
-// 10.2b). Archives are System V/GNU `ar` (not thin archives). The macOS Mach-O
-// and Windows PE containers are later phases; an input this module does not
+// Scope: the object shape `oskel build --emit-object` writes. On Linux,
+// `.text`/`.rodata`/`.data`/`.bss` are loaded (PHASE 10.2b) and archives are
+// System V/GNU `ar` (not thin archives). On Windows, COFF `.text`/`.rdata`/
+// `.data`/`.bss` are loaded and the undefined runtime symbols become imports
+// (PHASE 10.3a); MSVC `.lib` archives and relocatable COFF links are later.
+// The macOS Mach-O container is PHASE 10.3d; an input this module does not
 // understand is reported, never mis-linked.
 struct LinkError : std::exception {
   explicit LinkError(std::string message) : message(std::move(message)) {}
@@ -55,7 +58,8 @@ struct LinkOptions {
   std::vector<std::string> libraryPaths;
 };
 
-// The only (arch, os, abi) the own linker implements today.
+// The (arch, os, abi) triples the own linker implements today: Linux SysV and
+// Windows Win64.
 bool isOwnLinkerTarget(const Target& target);
 
 // Links one or more objects (and `ar` archives) into a dynamically linked

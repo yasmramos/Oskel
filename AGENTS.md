@@ -150,8 +150,8 @@ it as a caveat:
   `endsWith`, `indexOf`, `substr`, `reversed`, `repeat`, `split`, `lines`,
   `chars`, `replace`, `replaceFirst`, `padStart`, `padEnd`), so no string
   member builds and then faults at run time. It also seeds `pcall`, `error` and
-  the streaming file builtins, so a module may use them; the one remaining
-  standard-library gap is `std.fs.dir`, which is VM-only (see below). A module
+  the file builtins, including the directory half of `std.fs.dir`, so a module
+  may use them. A module
   written over the portable surface behaves identically on the VM and under
   `oskel build`; `std/json.oskl` and
   `tests/native_build_json.oskl` are the reference, and `std/datetime.oskl`
@@ -174,12 +174,19 @@ it as a caveat:
   target-independent. Append is mode `2` at the prelude boundary
   (`O_APPEND`/`_O_APPEND`/`FILE_APPEND_DATA`). The directory half
   (`fsRemove`, `fsRename`, `fsMkdir`, `fsRmdir`, `fsList`, `fsStat`, `fsCwd`,
-  `fsChdir`) is **VM-only for now**: `std.fs.dir` is listed in the parity
-  script's `vm_only` set and the lowerer rejects a used name with a dedicated
-  message (exit 65), never a mis-compiled image. Fixtures:
-  `tests/native_build_fs.oskl` (freestanding parity), `oskel.build_fs_hosted`
-  (hosted parity) and `tests/64_std_fs.oskl` (VM directory/error paths). The
-  `fsClose` emitter saves only `rbx`, so it reserves 8 extra bytes before
+  `fsChdir`) is seeded on the same targets and rides the prelude too: Linux
+  `unlink`/`rename`/`mkdir`/`rmdir`/`chdir`/`getcwd` plus `getdents64` and
+  `newfstatat`, Windows `DeleteFileA`/`MoveFileA`/`CreateDirectoryA`/
+  `RemoveDirectoryA`/`SetCurrentDirectoryA`/`GetCurrentDirectoryA` plus
+  `FindFirstFileA`/`FindNextFileA` and `GetFileAttributesExA`, and hosted
+  `remove`/`rename`/`mkdir`/`rmdir`/`chdir`/`getcwd`/`opendir`/`readdir`/
+  `closedir`/`stat`. A bare-metal image rejects a used name with the same
+  "needs a file system" message, never a mis-compiled image. `listDir` sorts
+  in `std.fs.dir`, so the host order does not reach the program. Fixtures:
+  `tests/native_build_fs.oskl` (both halves, freestanding parity),
+  `oskel.build_fs_hosted` (hosted parity) and `tests/64_std_fs.oskl` (VM
+  directory/error paths). The `fsClose` emitter saves only `rbx`, so it
+  reserves 8 extra bytes before
   calling the close thunk: Windows C APIs require `rsp` 16-byte aligned at the
   call, and an odd number of saved registers otherwise crashes under `cl` and
   kernel32.
@@ -393,15 +400,77 @@ it as a caveat:
   payload is the real address rather than a synthetic token — a box that stored
   an invented id would pass every `type`/`== nil` assertion and fail only when C
   dereferences it.
-- Windows code paths can be exercised locally without a Windows host: build the
-  engine with `x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude -Isrc -static
-  -o /tmp/win/oskel.exe src/main.cpp src/core/*.cpp src/frontend/*.cpp
-  src/frontend/native/*.cpp src/runtime/*.cpp src/runtime/jit/*.cpp` and run it
-  under Wine (`WINEPREFIX=$HOME/.wine-oskel wine /tmp/win/oskel.exe ...`). The
-  `tests/*.oskl` suite runs there too. This is how `lookupSymbol` (kernel32) and
-  the PE image were checked before CI. CI still gates the merge, since Wine is
-  not Windows: a green Wine run is a signal, not a substitute for the
-  `windows-latest` job.
+- Windows code paths can be exercised locally without a Windows host, through a
+  mingw cross build run under Wine. Do not hand-compile the engine: `src/*.cpp`
+  holds several `main` functions (`oskel`, `oskelc`, `oskelld`, ...) and a flat
+  `g++ src/*.cpp` fails with "multiple definition of `main'". Configure with a
+  toolchain file instead, which also keeps the target list and the conditional
+  test registration identical to a real Windows build:
+
+  ```sh
+  apt install g++-mingw-w64-x86-64 wine64      # g++ package, not just gcc:
+                                               # gcc-mingw-w64 alone ships no C++ driver
+  cat > /tmp/mingw-toolchain.cmake <<'EOF'
+  set(CMAKE_SYSTEM_NAME Windows)
+  set(CMAKE_SYSTEM_PROCESSOR x86_64)
+  set(CMAKE_C_COMPILER x86_64-w64-mingw32-gcc)
+  set(CMAKE_CXX_COMPILER x86_64-w64-mingw32-g++)
+  set(CMAKE_RC_COMPILER x86_64-w64-mingw32-windres)
+  set(CMAKE_FIND_ROOT_PATH /usr/x86_64-w64-mingw32)
+  set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+  set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+  set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+  EOF
+  cmake -S . -B /tmp/bwin -DCMAKE_TOOLCHAIN_FILE=/tmp/mingw-toolchain.cmake \
+        -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS=-static \
+        && cmake --build /tmp/bwin -j8
+  wineboot --init   # once, with WINEPREFIX=$HOME/.wine-oskel
+  ```
+
+  `CMAKE_EXE_LINKER_FLAGS=-static` matters: without it the C++ runtime stays an
+  imported DLL (`libstdc++-6.dll`, `libgcc_s_seh-1.dll`) and every run exits 53
+  with no message until both files are copied beside the `.exe`. With it the
+  binary imports only `KERNEL32.dll` and `msvcrt.dll`, so nothing else is needed.
+  Wine also needs `XDG_RUNTIME_DIR` set, or it prints an `XDG_RUNTIME_DIR is
+  invalid` line and exits 53 the same way — which looks identical to a missing
+  DLL and is worth ruling out first.
+
+  Run a script with a Windows path (`wine /tmp/bwin/oskel.exe
+  'Z:\workspace\...\tests\x.oskl'`). CTest drives the scripts through
+  `tests/run_oskel_case.cmake`, which invokes the `.exe` directly, so
+  `CMAKE_CROSSCOMPILING_EMULATOR` does not reach them: a plain `ctest` there
+  fails every script test with exit 2. Drive the harness by hand instead, and
+  compare against the *registered* list (`ctest -N`), never against
+  `tests/*.oskl`: a Windows build registers fewer tests than a Linux one, and the
+  difference is exactly the families `CMakeLists.txt` excludes with `NOT WIN32`
+  (struct-by-value, callbacks, memory structs, SDL). Running the full glob under
+  Wine reports those as failures when they are deliberate skips. Do not write the
+  two counts down — they move with every PR; derive them with `ctest -N`.
+
+  This is how `lookupSymbol` (kernel32) and the PE image were checked before CI.
+  CI still gates the merge, since Wine is not Windows: a green Wine run is a
+  signal, not a substitute for the `windows-latest` job.
+
+- A fixture that declares `extern "C"` must name symbols the Windows CRT
+  actually exports. Windows resolves the symbol with `GetProcAddress` against
+  `ucrtbase.dll` (then `msvcrt.dll`, kernel32, and every loaded module), and
+  many `float` entry points are POSIX-only: `ldexpf`, `hypotf`, `frexpf` and
+  `fabsf` are absent, so a fixture naming one dies on the Windows runner with
+  `extern "C" symbol 'ldexpf' was not found in the host` (exit 70) while passing
+  everywhere else. Check before pushing, with the import library rather than by
+  assumption:
+
+  ```sh
+  x86_64-w64-mingw32-nm /usr/x86_64-w64-mingw32/lib/libucrt.a | grep __imp_powf
+  ```
+
+  Pick a symbol present in both CRTs — `powf`, `fmodf`, `scalbnf`, `atan2f`,
+  `sqrtf`, `ceilf`, `floorf` are — and keep the fixture's coverage (mixed
+  float/int, a negative value, a second entry point) so the substitution does
+  not quietly weaken the test. A `float` argument crosses the boundary as its
+  bit pattern in the low 32 bits of an xmm register, so a fixture must also keep
+  a value that would differ under a naive cast (`0.0` instead of the real
+  number); otherwise the regression the test exists to catch goes unnoticed.
 
 ## The own linker (PHASE 10)
 
@@ -464,6 +533,51 @@ it as a caveat:
 - The data helper is built twice, `-fno-pie` and `-fPIC`, to exercise direct
   `PC32`/`R_X86_64_64` and `GOTPCREL`; both are `-fno-sanitize=all` under ASan
   because they are linked into a plain emitted binary.
+
+## The own Windows PE linker (PHASE 10.3a)
+
+- `linkWindowsExecutable` (`include/native/pe_link.h`,
+  `src/frontend/native/pe_link.cpp`) parses COFF `IMAGE_FILE_MACHINE_AMD64`
+  objects. It classifies `.text*`/`.rdata*`/`.data*`/`.bss*`;
+  `.pdata`/`.xdata`/`.drectve`/`.debug$*` are ignored. A COFF section symbol
+  (`STATIC`, value 0, name equal to the section) is resolved from the section
+  base; the field value is the addend. Aux symbol records are skipped, but
+  their raw indices stay in `symbolByRawIndex` so a relocation can never name
+  an aux record.
+- Supported COFF relocations: `REL32` (and `REL32_1..5`), `ADDR64`, `ADDR32`,
+  `ADDR32NB`. `REL32` is `S + A - (P + 4 + n)`; the absolute forms are `S + A`;
+  `ADDR32NB` is the RVA. A defined symbol resolves through the object's local
+  map or the cross-object global map; an undefined `REL32` becomes an import
+  thunk (`jmp [rip + IAT]`); an undefined data relocation is an error.
+- The `.idata` layout stores **RVAs** (0x1000-based) because the import
+  descriptors and thunks use them, while the section bytes are indexed from
+  zero. Writing at the RVA directly threw "internal: PE write out of range";
+  `buildIdata` subtracts `kIdataRva` for every write. Keep the two coordinate
+  systems separate.
+- Imports are grouped by DLL: `kernel32.dll` for the Windows API and
+  `ucrtbase.dll` for `_write`/`_read`/`_open`/`_close`/`_setmode`/`malloc`/
+  `exit`/`_time64` and the other `_`-prefixed UCRT entry points (the fallback
+  is what picks up `_lseeki64`). The runtime must name `_time64`, not `time`:
+  the UCRT headers define `time` as an inline wrapper and `ucrtbase.dll`
+  exports only `_time64`, so an import of `time` makes the loader fail with
+  `0xc0000139`. The import table has one descriptor per DLL,
+  ILT/IAT per DLL, hint/name entries and DLL names. The runtime's UCRT calls
+  are reached through `jmp [rip + IAT]` thunks; the `_start` calls
+  `ExitProcess` through its IAT slot directly.
+- The generated `_start` is `sub rsp, 8`; `xor ecx, ecx`; `xor edx, edx`;
+  `call main`; `mov ecx, eax`; `call [rip + ExitProcess IAT]`; `hlt`. The
+  `sub rsp, 8` is required: the entry point arrives at 8 mod 16 and `main`
+  must see the Microsoft x64 alignment. `argc=0, argv=NULL`; `args()` is empty
+  until 10.3b adds `GetCommandLineA`. The image is non-PIE
+  (`IMAGE_FILE_RELOCS_STRIPPED`, fixed `0x140000000`), so the loader needs no
+  base relocations.
+- `tests/link_pe_test.cpp` (all platforms) builds a COFF object with
+  `buildRelocatableObject(Target::winX64(), ...)` and checks the PE headers,
+  sections, imports, thunks and `_start`. `oskel.build_hosted_own_windows`
+  (Windows only) runs a real `print` binary end to end; the `windows-latest`
+  runner is the execution gate, since the Linux development host has no Wine.
+- `-r` COFF, MSVC `.lib` archives, `.pdata`/`.xdata` and TLS are 10.3b; the
+  macOS Mach-O container is 10.3d.
 - The multi-object e2e helper is an `OBJECT` library compiled with
   `-fno-sanitize=all` when the build is sanitized: the object is linked into a
   plain emitted binary that does not carry the ASan runtime. The archive test
@@ -535,6 +649,18 @@ it as a caveat:
   `"αβγδε".substr(-2)` empty because the negative start was offset by the byte
   count. `tests/native_build_string_methods.oskl` is the shared AOT/WASM
   fixture and `oskel.build_wasm_string_methods` is its WASM run.
+- The range methods (`toArray`, `contains`) live in the range branch of
+  `emitMemberGet` and are emitted by `emitRangeMethods`, which reserves two
+  selectors after the string methods. `toArray` computes the count with the
+  same unsigned magnitude as `.length`, saturates at INT64_MAX and rejects a
+  count above 10,000,000 with the VM's message; it allocates
+  `newArray(count)` and pushes each value, so a descending range needs the
+  `-1` step. `contains` calls `opIn` with the argument and the receiver, which
+  is why the range branch of `emitIn` must report "range membership requires
+  an integer", not the generic comparison message. `.length` itself saturates:
+  the old signed `select` wrapped a span wider than INT64_MAX to a negative
+  length. `tests/native_build_wasm_range_methods.oskl` is the WASM fixture;
+  the error cases stay in the AOT fixture because `pcall` is VM-only.
 - A construct the backend cannot lower yet must fail cleanly, never emit a
   mis-compiled module: an unbound builtin is seeded as a trapping closure, and
   a used `extern "C"`/`native fn` symbol with no stub is a build error (exit
@@ -619,6 +745,41 @@ it as a caveat:
   stack-struct shapes. A ninth value needs a wider bound and a check on the
   VM's `3^N` template budget; MSVC also needs `/bigobj` (already in
   `OSKEL_WARNINGS`) at the eight-eightbyte bound.
+
+
+## The UI backend bundle
+
+- `std/ui.oskl` is pure Oskel (widget tree, layout, display list, hit testing)
+  and builds freestanding. Only its native backends need a host:
+  `std/internal/skia.oskl` (raster), `std/internal/skia_ui.oskl`,
+  `std/internal/skia_window.oskl` and `std/internal/sdl.oskl`.
+- `oskel build` chooses the mode from the **modules the compiler loaded**, not
+  from symbol names. A user binding may spell `oskel_Rect_new` exactly like
+  the Skia shim (`tests/cxxbind` does), so `oskel_*` cannot be the signal. A
+  direct `extern "C"` declaration of an `SDL_*`/`skia_*` symbol is also enough.
+  An explicit `--mode freestanding` still wins and fails with "std.ui requires
+  a hosted binary"; `--linker own` is rejected the same way.
+- `ui_runtime.cpp` is the single place that finds the bundle: `$OSKEL_UI_LIBDIR`
+  first, then `<exe>/../lib/oskel/ui`, then `<exe>/lib/oskel/ui`, and finally
+  the build directory CMake baked in. The installed prefix wins over the build
+  path, so a packaged engine does not keep using its build tree.
+- The build links the libraries the program needs by absolute path and adds
+  their directory as an rpath; a user does not pass `--link-lib` or
+  `LD_LIBRARY_PATH`. `std.internal.sdl` needs only SDL3, the Skia modules need
+  only `skia_shim`, and the window module needs both. Windows has no rpath, so
+  a hosted UI image gets the DLLs copied beside it. The bundle installs under
+  `lib/oskel/ui` on all three platforms; the engine loads SDL3 lazily, only
+  when a program asks for one of its symbols, so a non-UI program never opens
+  the UI libraries.
+- `skia_shim` is built only when `OSKEL_SKIA_DIR` and `OSKEL_SKIA_LIB` are
+  supplied. A static Skia is linked into the shim; the shim is stripped in
+  Release because the archive otherwise carries its debug information. A
+  Windows DLL needs `WINDOWS_EXPORT_ALL_SYMBOLS`, because the generated shim
+  has no `__declspec(dllexport)`.
+- `tests/run_skia_case.cmake` is the end-to-end guard: VM, hosted AOT, UI and
+  SDL window, with no `LD_PRELOAD`, `LD_LIBRARY_PATH` or `--link-lib`. The
+  `cxxbind.end_to_end` fixture is the other guard: a non-UI binding whose
+  symbols share the Skia names must stay a freestanding build.
 
 ## The VS Code extension
 
@@ -753,13 +914,11 @@ it as a caveat:
   read but never assigned". The names that are VM-only on purpose live in a list
   in that script and in BACKLOG §6 item 25; the check also fails when a listed
   exception stops being one, because a stale exception hides the next real gap.
-  The list now holds only the eight `std.fs.dir` directory builtins
-  (`fsRemove`, `fsRename`, `fsMkdir`, `fsRmdir`, `fsList`, `fsStat`, `fsCwd`,
-  `fsChdir`), which are VM-only until their prelude handles land; BACKLOG §6
-  item 25 records the reason. Everything else `addNative` registers is seeded
-  by the AOT backend on at least one target. Several names are seeded per
-  target rather than everywhere, and each has a lowerer gate with its own
-  message: the streaming file builtins and `input` on anything but bare metal,
+  The list is **empty** today: BACKLOG §6 item 25 landed the pointer, file,
+  `clock`, `args` and `std.fs.dir` builtins, so every name `addNative`
+  registers is seeded by the AOT backend on at least one target. Several names
+  are seeded per target rather than everywhere, and each has a lowerer gate with
+  its own message: the streaming file builtins and `input` on anything but bare metal,
   `args` where the entry receives an argument vector (Linux freestanding and
   hosted), and `memSize` which only bare metal backs. The gate matters because
   the fallback message --

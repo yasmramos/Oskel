@@ -82,20 +82,10 @@ endif()
 # --- the documented exceptions ---------------------------------------------
 # Each name here is a builtin that exists on one side only *on purpose*. The
 # value is the side it lives on, so a name that moves engines also fails.
-# The streaming file builtins (`fsOpen`/`fsRead`/`fsWrite`/`fsSeek`/`fsClose`)
-# are seeded by every AOT target with a file system. The directory and metadata
-# half (`std.fs.dir`) is VM-only for now: it still needs per-target prelude
-# handles, so those eight names are the documented divergence tracked by
-# BACKLOG §6 item 25.
-set(vm_only
-  fsRemove
-  fsRename
-  fsMkdir
-  fsRmdir
-  fsList
-  fsStat
-  fsCwd
-  fsChdir)
+# Every name `addNative` registers is seeded by the AOT backend on at least one
+# target, including the streaming and directory halves of `std.fs`. The list is
+# kept so a future divergence has a documented place instead of a silent gap.
+set(vm_only)
 set(aot_only "")
 
 set(problems "")

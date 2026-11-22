@@ -529,9 +529,9 @@ previous one.
   `unique`/`uniqueBy`, `groupBy`, `countBy` and `sort`/`sortBy`/`sortByKey`.
   Every function returns a new array or map and never mutates its input; `sort`
   is a stable merge sort. No new runtime type, opcode or builtin. The module
-  stays on the portable primitive surface so it also runs on WebAssembly, where
-  the array methods are not bound; the VM and the AOT backend bind them, so
-  either form works there.
+  stays on the portable primitive surface, so it also runs on WebAssembly; the
+  VM, the AOT backend and the WASM backend bind the array methods, so either
+  form works there.
   See `docs/language.md` §12.12/§18, `tests/58_std_collections.oskl`
   and the AOT fixture `tests/native_build_collections.oskl`.
 - **Standard library: `std.strings`** — **done**: a pure-Oskel module of text
@@ -2133,7 +2133,11 @@ dispatcher; `sort`/`sorted` use a stable insertion sort over a copy and commit
 only on success. The map methods (`keys`, `values`, `entries`, `has`, `get`,
 `set`, `delete`, `merge`, `clone`, `clear`) are bound the same way, over the
 same `mapFind`/`mapSet`/`mapDelete`/`mapClear` runtime helpers as the index
-operators. The string and range methods are still open, so the
+operators. The string methods (`upper`, `lower`, `trim`, `trimStart`,
+`trimEnd`, `split`, `lines`, `replace`, `replaceFirst`, `startsWith`,
+`endsWith`, `contains`, `indexOf`, `substr`, `chars`, `repeat`, `reversed`,
+`padStart`, `padEnd`) and the range methods (`toArray`, `contains`) are bound
+the same way; a range's `.length` saturates at INT64_MAX. The
 standard-library modules stay on the portable primitive surface: `std/json`,
 `std/datetime`, `std/collections`, `std/path` and the bound half of `std.math`
 build and agree with the VM byte for byte; the host clock is what lets
@@ -2144,13 +2148,13 @@ Still open, and each reported rather than mis-compiled:
 - **Transcendental builtins** (`sin`, `cos`, `tan`, `log`, `exp`, ...) are not
   bound yet; `std.math` builds and its `abs`/`min`/`max`/`clamp`/`sqrt`/`PI`/`E`
   subset agrees with the VM, but a call to an unbound name reports the gap.
-- **String and range methods** are not bound yet: `text.upper()` and
-  `range.toArray()` report "no such member on this value". The fixtures
-  `native_build_string_methods.oskl`, `native_build_range_methods.oskl` and
-  `native_build_function_repr.oskl` are the targets. `pcall` is also still
-  VM-only, which is why `native_build_sort_methods.oskl` keeps its
-  strong-guarantee case in the AOT suite and
-  `native_build_wasm_sort_methods.oskl` covers the rest.
+- **`pcall`** is still VM-only, which is why `native_build_sort_methods.oskl`
+  keeps its strong-guarantee case in the AOT suite and
+  `native_build_wasm_sort_methods.oskl` covers the rest. The range method
+  error cases (`toArray(1)`, `contains()`, a non-integer `contains` operand and
+  a range too large to materialise) stay in `native_build_range_methods.oskl`
+  for the same reason; `native_build_wasm_range_methods.oskl` covers the
+  successful paths and `oskel.build_wasm_range_methods` runs it.
 - A builtin the backend does not bind is **seeded as a closure that raises a
   clear runtime error when called**, not left unseeded: a module that merely
   *declares* `native fn sin` (through `import std.math`) still builds, while a
@@ -2246,9 +2250,23 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
   `.tbss`/`.tdata`, `.init_array`/`.fini_array`, `.gcc_except_table` and
   `.eh_frame` stay ignored (TLS and the C++ runtime are not supported); a
   symbol defined there is reported by name.
-- **10.3 (future)** — the macOS Mach-O/dyld and Windows PE import-table
-  containers. They are separate linkers, not a generic abstraction: the object
-  formats, the loader contracts and the entry preludes differ.
+- **10.3a (done) — Windows PE.** `linkWindowsExecutable`
+  (`include/native/pe_link.h`, `src/frontend/native/pe_link.cpp`) parses COFF
+  `IMAGE_FILE_MACHINE_AMD64` objects, merges `.text*`/`.rdata*`/`.data*`/
+  `.bss*` (ignoring `.pdata`/`.xdata`/`.drectve`/`.debug$*`), resolves
+  `REL32`/`ADDR64`/`ADDR32`/`ADDR32NB` and emits a non-PIE PE32+ image. The
+  undefined runtime symbols become imports from `ucrtbase.dll` and
+  `kernel32.dll`; the import table has one descriptor per DLL, ILT/IAT per DLL
+  and a `jmp [rip + IAT]` thunk per import. A generated `_start` calls
+  `main(0, NULL)` and then `ExitProcess`. `--linker own` on Windows and
+  `oskelld --target x86_64-windows-win64` share the path; `oskelc` stays in
+  step because it links the same frontend.
+- **10.3b (future)** — Windows `-r` COFF, MSVC `.lib` archives, `args()` via
+  `GetCommandLineA`/`CommandLineToArgvW`, and the `.pdata`/`.xdata` exception
+  data. TLS remains unsupported.
+- **10.3d (future)** — the macOS Mach-O/dyld container. It is a separate
+  linker, not a generic abstraction: the object format, the loader contract
+  and the entry prelude differ.
 
 ### Post-1.0 — UI library
 
@@ -2314,7 +2332,7 @@ Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.10 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY) and callbacks resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
-Phase 10: 🔶 in progress (10.1, 10.2 and 10.2b done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar`, `-r`, `.data`/`.bss` and the common x86-64 relocations; the hosted x86-64 Linux image is a dynamic ELF closed without a C toolchain. 10.3 Mach-O/PE pending)
+Phase 10: 🔶 in progress (10.1, 10.2, 10.2b and 10.3a done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar`, `-r`, `.data`/`.bss`, the common x86-64 ELF relocations, and the Windows COFF→PE32+ path with UCRT/kernel32 imports. 10.3b Windows `-r`/`.lib`/`args` and 10.3d Mach-O pending)
 Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending
 2.0: ⬜ future (static with `@Dynamic`)
 

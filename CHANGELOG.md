@@ -11,6 +11,17 @@ may change between minor versions.
 
 ### Added
 
+- **The WebAssembly backend binds the range methods (PHASE 9.5).**
+  `r.toArray()` materialises a range into an array (exclusive or inclusive,
+  ascending or descending), `r.contains(x)` is the method form of `x in r`, and
+  a range's `.length` saturates at INT64_MAX instead of wrapping negative on a
+  span wider than the signed range. `contains` reuses the `in` helper, so a
+  non-integer operand reports the VM's "range membership requires an integer";
+  `toArray` keeps the VM's "range is too large to convert to an array" cap.
+  The bound methods are receiver-capturing closures like the array, map and
+  string ones. `tests/native_build_wasm_range_methods.oskl` is the WASM parity
+  fixture and `oskel.build_wasm_range_methods` runs it.
+
 - **`std.ui` accepts a renderer font metric.** `layoutWith(root, width, height,
   measure)` takes a `measure(text, size)` callback, so a backend can drive
   layout with the same advance it draws with. `layout` keeps the deterministic
@@ -90,6 +101,13 @@ may change between minor versions.
   and `R_X86_64_64/32/32S/PLT32/PC32/GOTPCREL*`, and puts `.data`/`.bss` in the
   RW segment. `-r` preserves `.data`/`.bss` and their relocations. TLS and the
   C++ runtime sections remain out of scope.
+- **The own linker emits Windows PE32+ images (PHASE 10.3a).** `--linker own`
+  on Windows parses COFF objects, merges `.text`/`.rdata`/`.data`/`.bss`,
+  resolves the common x86-64 COFF relocations and builds the import table for
+  the runtime's UCRT (`ucrtbase.dll`) and Windows API (`kernel32.dll`) calls.
+  A generated `_start` calls `main` and `ExitProcess`; `oskelld --target
+  x86_64-windows-win64` shares the path. Windows `-r`, MSVC `.lib` archives and
+  `args()` are 10.3b; macOS Mach-O is 10.3d.
 
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,

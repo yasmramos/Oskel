@@ -388,7 +388,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     `oskel build` with "global 'X' is read but never assigned" (exit 65) while
     the VM ran it. `tests/check_builtin_parity.cmake` enumerates the set from
     both sides, so a new builtin cannot be added to one engine alone. Its
-    exception list now holds only the `std.fs.dir` directory builtins below.
+    exception list is empty.
     Every original one is implemented, each with the parity fixture that pins
     it:
     - **Pointers** (`cstring`, `cstr`, `buffer`, `byteLen`, `loadByte`,
@@ -415,13 +415,19 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
       `tests/native_build_fs.oskl` (freestanding, VM parity) and
       `oskel.build_fs_hosted` (the same fixture through libc/`_lseeki64`).
       The directory half (`fsRemove`, `fsRename`, `fsMkdir`, `fsRmdir`,
-      `fsList`, `fsStat`, `fsCwd`, `fsChdir`) is **VM-only for now**; it is the
-      documented `vm_only` list in `tests/check_builtin_parity.cmake`, and a
-      used name makes `oskel build` fail with "std.fs.dir is VM-only for now"
-      instead of the generic unassigned-global error. `PlatformFreestanding`
-      already implements the Linux syscalls, but the AOT prelude does not emit
-      those handles and no builtin is seeded; wiring that side is the next
-      step.
+      `fsList`, `fsStat`, `fsCwd`, `fsChdir`) rides the same prelude handles:
+      Linux uses `unlink`/`rename`/`mkdir`/`rmdir`/`chdir`/`getcwd` plus
+      `getdents64` and `newfstatat`, Windows uses
+      `DeleteFileA`/`MoveFileA`/`CreateDirectoryA`/`RemoveDirectoryA`/
+      `SetCurrentDirectoryA`/`GetCurrentDirectoryA` plus
+      `FindFirstFileA`/`FindNextFileA` and `GetFileAttributesExA`, and the
+      hosted modes use `remove`/`rename`/`mkdir`/`rmdir`/`chdir`/`getcwd`/
+      `opendir`/`readdir`/`closedir`/`stat`. A bare-metal image has no file
+      system, so the lowerer rejects a used name by name. `listDir` sorts in
+      `std.fs.dir`, so the host's directory order never reaches the program.
+      Fixtures: `tests/native_build_fs.oskl` (both halves, VM parity),
+      `oskel.build_fs_hosted` (the same fixture through libc) and
+      `tests/64_std_fs.oskl` (VM directory/error paths).
     - **`clock`**. Reads the `entry.monotonic` handle, which every prelude
       binds (Linux `clock_gettime(CLOCK_MONOTONIC)`, hosted the same through
       libc, Windows `GetTickCount64`, bare metal the PIT tick counter), and
@@ -508,22 +514,24 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 26. **[P1]** WebAssembly backend gaps (PHASE 9). The backend behind
     `Target::wasm32()` (`src/frontend/native/wasm.cpp`) covers the scalar core,
-    arrays, maps, slicing, variadic functions, the array/map/string methods,
-    `std/json`, `std/datetime`, `std/collections`, `std/path` and the bound half
-    of `std.math`, and its `double` printing is the same shortest round-trip
-    form as `std::to_chars`. What is still open:
+    arrays, maps, slicing, variadic functions, the array/map/string/range
+    methods, `random`/`seed`, `std/json`, `std/datetime`, `std/collections`,
+    `std/path` and the bound half of `std.math`, and its `double` printing is
+    the same shortest round-trip form as `std::to_chars`. What is still open:
     - A builtin with no WASM body is seeded as a trapping closure: declaring it
       is harmless, calling it reports the gap. The unbound names are the
       complement of `supportedBuiltins()`; the transcendental `pow`, `sin`,
-      `cos`, `tan`, `log` and `exp`, plus `random`, `seed`, `input`, `pcall`,
-      `args`, the file builtins and the pointer builtins are in that set today.
+      `cos`, `tan`, `log` and `exp`, plus `input`, `pcall`, `args`, `memSize`,
+      the file builtins and the pointer builtins are in that set today.
     - A used `extern "C"` or `native fn` symbol with no builtin stub is a build
       error, mirroring the AOT backend's message.
     Each gap fails cleanly (build error 65 or a runtime error), never a
     mis-compiled module. `tests/native_build_wasm.oskl`,
     `tests/native_build_datetime.oskl`, `tests/native_build_collections.oskl`,
-    `tests/native_build_math.oskl` and `tests/native_build_double_format.oskl`
-    pin the supported surface against the VM byte for byte.
+    `tests/native_build_math.oskl`,
+    `tests/native_build_wasm_range_methods.oskl` and
+    `tests/native_build_double_format.oskl` pin the supported surface against
+    the VM byte for byte.
 27. **[P1]** A callback that C stores for a later call works in AOT but not in
     the VM: the development engine's `CallbackObj` is released when the
     `extern "C"` call returns, while the AOT stub and its context live in the
@@ -560,6 +568,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     `.hash`, not `.gnu.hash` (glibc accepts both). `--link-lib` needs the dev
     symlink (`libSDL3.so`) at link time to read the SONAME, while the binary
     records the SONAME (`libSDL3.so.0`).
+    The Windows own linker (PHASE 10.3a) closes COFF objects into a PE32+
+    image with a dynamic import table (`kernel32.dll`/`ucrtbase.dll`) and a
+    generated `_start`. Remaining Windows work: `-r` COFF, MSVC `.lib`
+    archives, `args()` (`GetCommandLineA`), `.pdata`/`.xdata` exception data
+    and TLS. The macOS Mach-O container is PHASE 10.3d.
 
 ---
 

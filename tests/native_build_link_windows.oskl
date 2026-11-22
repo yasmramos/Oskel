@@ -1,0 +1,4 @@
+// PHASE 10.3a: the own linker closes a Windows COFF object into a PE32+ image.
+// `oskel.build_hosted_own_windows` runs the resulting `.exe`; the VM also runs
+// this plain `print` fixture.
+print("windows own linker");

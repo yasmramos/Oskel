@@ -144,8 +144,10 @@ constexpr std::uint64_t kMethodStrRepeat = 49;
 constexpr std::uint64_t kMethodStrReversed = 50;
 constexpr std::uint64_t kMethodStrPadStart = 51;
 constexpr std::uint64_t kMethodStrPadEnd = 52;
-constexpr std::size_t kMethodCount = 53;
-static_assert(kMethodStrPadEnd + 1 == kMethodCount,
+constexpr std::uint64_t kMethodRangeToArray = 53;
+constexpr std::uint64_t kMethodRangeContains = 54;
+constexpr std::size_t kMethodCount = 55;
+static_assert(kMethodRangeContains + 1 == kMethodCount,
               "the last method selector must match the helper count");
 
 // The method names a static member read can reach. The same name may belong to
@@ -212,6 +214,8 @@ bool enableMethodsForName(const std::string& name,
       {"reversed", kMethodStrReversed},
       {"padStart", kMethodStrPadStart},
       {"padEnd", kMethodStrPadEnd},
+      {"toArray", kMethodRangeToArray},
+      {"contains", kMethodRangeContains},
   };
   static_assert(std::size(kEntries) == kMethodCount,
                 "every method helper needs a name entry");
@@ -808,6 +812,8 @@ struct Runtime {
                 sRandomType = 0, sSeedArgc = 0, sSeedType = 0,
                 sIntRange = 0, sFloatString = 0, sAssertFailed = 0, sPanic = 0,
                 sNonNull = 0, sLenType = 0;
+  std::uint32_t sToArrayArgc = 0, sContainsArgc = 0, sRangeTooLarge = 0,
+                sRangeMembership = 0;
   std::uint32_t sMessage = 0, sCode = 0, sNoMember = 0, sCannotIndex = 0,
                 sStringImmutable = 0, sIndexRange = 0, sKeyValue = 0;
   std::uint32_t sInsertRange = 0, sRemoveAtRange = 0, sInsertIndex = 0,
@@ -817,7 +823,8 @@ struct Runtime {
   std::uint32_t sOpenBracket = 0, sCloseBracket = 0, sOpenBrace = 0,
                 sCloseBrace = 0, sColonSpace = 0, sEllipsis = 0, sLength = 0,
                 sPush = 0, sPop = 0, sShift = 0, sUnshift = 0, sInsert = 0,
-                sRemoveAt = 0, sContains = 0, sIndexOf = 0, sClear = 0,
+                sRemoveAt = 0, sContains = 0, sToArray = 0, sIndexOf = 0,
+                sClear = 0,
                 sSlice = 0, sConcat = 0, sReversed = 0, sClone = 0,
                 sSum = 0, sJoin = 0, sMap = 0, sFilter = 0, sEach = 0,
                 sFind = 0, sAny = 0, sAll = 0, sReduce = 0, sSort = 0,
@@ -963,6 +970,10 @@ struct Runtime {
     sCloseParen = pool.addString(")");
     sBadArity = pool.addString("wrong number of arguments to a builtin");
     sRangeBounds = pool.addString("range bounds must be integers");
+    sToArrayArgc = pool.addString("toArray() expects 0 arguments");
+    sContainsArgc = pool.addString("contains() expects 1 argument");
+    sRangeTooLarge = pool.addString("range is too large to convert to an array");
+    sRangeMembership = pool.addString("range membership requires an integer");
     sChrRange = pool.addString("chr() code point out of range");
     sChrSurrogate = pool.addString("chr() code point is a surrogate");
     sOrdSingle = pool.addString("ord() expects a single character");
@@ -997,6 +1008,7 @@ struct Runtime {
     sInsert = pool.addString("insert");
     sRemoveAt = pool.addString("removeAt");
     sContains = pool.addString("contains");
+    sToArray = pool.addString("toArray");
     sIndexOf = pool.addString("indexOf");
     sClear = pool.addString("clear");
     sSlice = pool.addString("slice");
@@ -1176,6 +1188,7 @@ struct Runtime {
   void reserveArrayMethods();
   void emitArrayMethods();
   void emitStringMethods();
+  void emitRangeMethods();
   void emitMethodDispatch();
   void emitMethodValue(Func& f, const char* owner, const char* method,
                        std::uint64_t selector);
@@ -4210,7 +4223,7 @@ std::uint32_t Runtime::emitIn() {
   f.i64Eq();
   f.i32Eqz();
   f.if_();
-  emitFailStatic(f, sNotComparable);
+  emitFailStatic(f, sRangeMembership);
   f.end();
   f.lget(1);
   f.lset(v);
@@ -5077,12 +5090,55 @@ void Runtime::emitMethodValue(Func& f, const char* owner, const char* method,
   f.i64ExtendI32U();
 }
 
+// The range's `.length`: the magnitude of the bound difference, plus one when
+// inclusive, saturated at INT64_MAX. The subtraction is unsigned, so a span
+// wider than INT64_MAX does not wrap to a negative length.
+static void emitRangeCount(Func& f, std::uint32_t start, std::uint32_t end,
+                           std::uint32_t incl, std::uint32_t count) {
+  f.lget(start);
+  f.lget(end);
+  f.i64LeS();
+  f.ifResult(kI64);
+  f.lget(end);
+  f.lget(start);
+  f.i64Sub();
+  f.else_();
+  f.lget(start);
+  f.lget(end);
+  f.i64Sub();
+  f.end();
+  f.lset(count);
+  f.lget(incl);
+  f.if_();
+  f.lget(count);
+  f.i64c(-1);
+  f.i64Eq();
+  f.if_();
+  f.i64c(9223372036854775807LL);
+  f.lset(count);
+  f.else_();
+  f.lget(count);
+  f.i64c(1);
+  f.i64Add();
+  f.lset(count);
+  f.end();
+  f.end();
+  f.lget(count);
+  f.i64c(9223372036854775807LL);
+  f.i64GtU();
+  f.if_();
+  f.i64c(9223372036854775807LL);
+  f.lset(count);
+  f.end();
+}
+
 std::uint32_t Runtime::emitMemberGet() {
   std::uint32_t index = m.reserveFunction(tBin);
   Func f(m, index, {kI64, kI64, kI64, kI64});
   std::uint32_t addr = f.addLocal(kI32), idx = f.addLocal(kI32),
                 entry = f.addLocal(kI32), start = f.addLocal(kI64),
-                end = f.addLocal(kI64), incl = f.addLocal(kI32);
+                end = f.addLocal(kI64), incl = f.addLocal(kI32),
+                count = f.addLocal(kI64), range = f.addLocal(kI32);
 
   // An error exposes its `message` and `code` fields.
   f.lget(0);
@@ -5656,31 +5712,36 @@ std::uint32_t Runtime::emitMemberGet() {
   f.if_();
   f.lget(1);
   f.i32WrapI64();
-  f.lset(addr);
-  f.lget(addr);
+  f.lset(range);
+  f.lget(range);
   f.i64Load(0);
   f.lset(start);
-  f.lget(addr);
+  f.lget(range);
   f.i64Load(8);
   f.lset(end);
-  f.lget(addr);
+  f.lget(range);
   f.i64Load(16);
   f.i32WrapI64();
   f.lset(incl);
+  emitRangeCount(f, start, end, incl, count);
   f.i64c(static_cast<std::int64_t>(kInt));
-  f.lget(end);
-  f.lget(start);
-  f.i64Sub();
-  f.lget(start);
-  f.lget(end);
-  f.i64Sub();
-  f.lget(end);
-  f.lget(start);
-  f.i64GeS();
-  f.select();
-  f.lget(incl);
-  f.i64ExtendI32U();
-  f.i64Add();
+  f.lget(count);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sToArray));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "range", "toArray", kMethodRangeToArray);
+  f.ret();
+  f.end();
+  f.lget(addr);
+  f.i32c(static_cast<std::int32_t>(sContains));
+  f.call(strCmp);
+  f.i32Eqz();
+  f.if_();
+  emitMethodValue(f, "range", "contains", kMethodRangeContains);
   f.ret();
   f.end();
   emitFailStatic(f, sNoMember);
@@ -6009,6 +6070,8 @@ void Runtime::reserveArrayMethods() {
   methodHelpers.push_back(m.reserveFunction(tValue));  // string.reversed
   methodHelpers.push_back(m.reserveFunction(tValue));  // string.padStart
   methodHelpers.push_back(m.reserveFunction(tValue));  // string.padEnd
+  methodHelpers.push_back(m.reserveFunction(tValue));  // range.toArray
+  methodHelpers.push_back(m.reserveFunction(tValue));  // range.contains
 }
 
 void Runtime::emitArrayMethods() {
@@ -9689,6 +9752,103 @@ void Runtime::emitStringMethods() {
   };
   emitPad(kMethodStrPadStart, true, sPadStartFill, sPadStartLarge);
   emitPad(kMethodStrPadEnd, false, sPadEndFill, sPadEndLarge);
+}
+
+void Runtime::emitRangeMethods() {
+  {
+    Func f(m, methodHelpers[kMethodRangeToArray], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
+                  start = f.addLocal(kI64), end = f.addLocal(kI64),
+                  incl = f.addLocal(kI32), count = f.addLocal(kI64),
+                  i = f.addLocal(kI64), step = f.addLocal(kI64),
+                  arrTag = f.addLocal(kI64), arrPayload = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(0);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sToArrayArgc);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(header);
+    f.i64Load(0);
+    f.lset(start);
+    f.lget(header);
+    f.i64Load(8);
+    f.lset(end);
+    f.lget(header);
+    f.i64Load(16);
+    f.i32WrapI64();
+    f.lset(incl);
+    emitRangeCount(f, start, end, incl, count);
+    f.lget(count);
+    f.i64c(10000000);
+    f.i64GtS();
+    f.if_();
+    emitFailStatic(f, sRangeTooLarge);
+    f.end();
+    f.lget(count);
+    f.call(newArray);
+    f.lset(arrPayload);
+    f.lset(arrTag);
+    f.lget(start);
+    f.lget(end);
+    f.i64LeS();
+    f.ifResult(kI64);
+    f.i64c(1);
+    f.else_();
+    f.i64c(-1);
+    f.end();
+    f.lset(step);
+    f.i64c(0);
+    f.lset(i);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(count);
+    f.i64GeS();
+    f.brIf(1);
+    f.lget(arrPayload);
+    f.i32WrapI64();
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.lget(start);
+    f.lget(i);
+    f.lget(step);
+    f.i64Mul();
+    f.i64Add();
+    f.call(arrayPush);
+    f.lget(i);
+    f.i64c(1);
+    f.i64Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
+    f.end();
+    f.lget(arrTag);
+    f.lget(arrPayload);
+    f.ret();
+  }
+  {
+    Func f(m, methodHelpers[kMethodRangeContains], {kI32, kI32, kI32});
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
+                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64);
+    f.lget(1);
+    f.i32c(1);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, sContainsArgc);
+    f.end();
+    emitReadReceiver(f, cell, header, recvTag, recvPayload);
+    f.lget(0);
+    f.i64Load(0);
+    f.lget(0);
+    f.i64Load(8);
+    f.i64c(static_cast<std::int64_t>(kRange));
+    f.lget(header);
+    f.i64ExtendI32U();
+    f.call(opIn);
+    f.ret();
+  }
 }
 
 void Runtime::emitMethodDispatch() {
@@ -14341,6 +14501,7 @@ std::vector<std::uint8_t> Lowering::run() {
   rt.emitCore();
   rt.emitArrayMethods();
   rt.emitStringMethods();
+  rt.emitRangeMethods();
   rt.emitMethodDispatch();
 
   // Discard the bodies of methods the program cannot reach. The dispatcher

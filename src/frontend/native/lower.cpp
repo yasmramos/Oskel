@@ -1327,6 +1327,14 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     builtins.emplace("fsWrite", rt.fsWriteBuiltin);
     builtins.emplace("fsSeek", rt.fsSeekBuiltin);
     builtins.emplace("fsClose", rt.fsCloseBuiltin);
+    builtins.emplace("fsRemove", rt.fsRemoveBuiltin);
+    builtins.emplace("fsRename", rt.fsRenameBuiltin);
+    builtins.emplace("fsMkdir", rt.fsMkdirBuiltin);
+    builtins.emplace("fsRmdir", rt.fsRmdirBuiltin);
+    builtins.emplace("fsList", rt.fsListBuiltin);
+    builtins.emplace("fsStat", rt.fsStatBuiltin);
+    builtins.emplace("fsCwd", rt.fsCwdBuiltin);
+    builtins.emplace("fsChdir", rt.fsChdirBuiltin);
   }
   if (hasArgv) builtins.emplace("args", rt.argsBuiltin);
   // `random()`/`seed()` (PHASE 7c.5b.6) work on every target: the generator is
@@ -1394,27 +1402,18 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
         "(x86_64-freestanding-sysv) provides; a hosted image reads standard "
         "input instead");
   }
-  // The file builtins need the `open`/`readFd`/`writeFd`/`close` handles, which
-  // a bare-metal image has no file system for.
+  // The file and directory builtins need the prelude's file-system handles,
+  // which a bare-metal image has no file system for.
   if (!hasFiles) {
     for (const char* name : {"readFile", "writeFile", "fileExists", "fsOpen",
-                             "fsRead", "fsWrite", "fsSeek", "fsClose"}) {
+                             "fsRead", "fsWrite", "fsSeek", "fsClose",
+                             "fsRemove", "fsRename", "fsMkdir", "fsRmdir",
+                             "fsList", "fsStat", "fsCwd", "fsChdir"}) {
       if (!unassignedRead(name)) continue;
       throw LoweringError(std::string("lowering: ") + name +
                           "() needs a file system, which the bare-metal target "
                           "does not have");
     }
-  }
-  // Directory and metadata operations are VM-only for now: the streaming file
-  // builtins above carry the disk surface into an AOT image, while the
-  // directory half of `std.fs.dir` still needs target-specific prelude handles.
-  // The failure is named so it cannot be mistaken for a typo.
-  for (const char* name : {"fsRemove", "fsRename", "fsMkdir", "fsRmdir", "fsList",
-                           "fsStat", "fsCwd", "fsChdir"}) {
-    if (!unassignedRead(name)) continue;
-    throw LoweringError(
-        "lowering: std.fs.dir is VM-only for now: the AOT backend has no "
-        "directory handles");
   }
 
   // The scalar `extern "C"` surface, hosted only (PHASE 7f.5): each symbol gets

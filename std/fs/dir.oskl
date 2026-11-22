@@ -1,10 +1,8 @@
 // Standard library: directories and file metadata.
 //
-// This is the half of `std.fs` that needs a host directory API. It is VM-only
-// for now: the AOT backend implements the streaming file primitives
-// (`std.fs.File`) on every target with a file system, but the directory and
-// metadata primitives still need per-target prelude handles, so `oskel build`
-// reports a named error when this module is used (BACKLOG §6).
+// This is the half of `std.fs` that needs a host directory API. The AOT
+// backend implements it on every target with a file system, through the same
+// per-target prelude handles the streaming primitives use.
 //
 //   import std.fs.dir;
 //   std.fs.dir.makeDir("out");
@@ -37,7 +35,9 @@ fn removeDir(path: string) {
 // The entry names in `path`, sorted. The names are basenames, not paths.
 @MustUse
 fn listDir(path: string): array {
-  return fsList(path);
+  let names = fsList(path);
+  names.sort();
+  return names;
 }
 
 // Metadata for `path`: `{size, modified, isFile, isDir}`. `modified` is epoch

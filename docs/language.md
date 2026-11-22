@@ -2810,13 +2810,12 @@ fn main() {
 `isDir`, `currentDir` and `changeDir`. `stat` returns
 `{size, modified, isFile, isDir}` with `modified` in epoch seconds.
 
-**Engine support.** The streaming surface is implemented by the VM and by
+**Engine support.** Both surfaces are implemented by the VM and by
 `oskel build` on every target with a file system: freestanding Linux, Windows
 (PE/kernel32) and the hosted modes. A bare-metal image has no file system, so
-`oskel build` rejects a used `fs*` builtin by name. `std.fs.dir` is VM-only for
-now; the x86-64 AOT backend rejects it with a dedicated message instead of a
-mis-compiled image. WebAssembly builds seed every `fs*` name as a trapping
-builtin, so a call fails at run time with the backend's "not supported" message.
+`oskel build` rejects a used `fs*` builtin by name. WebAssembly builds seed
+every `fs*` name as a trapping builtin, so a call fails at run time with the
+backend's "not supported" message.
 
 Paths are UTF-8 and are handed to the OS as NUL-terminated C strings, so an
 embedded NUL is a runtime error. `File` owns its handle and `close` is
@@ -3104,8 +3103,13 @@ combines the inputs into a new relocatable object instead, which can be linked
 again. The linker loads `.text`, `.rodata`, `.data` and `.bss` (including the
 `.text.*`/`.rodata.*`/`.data.*`/`.bss.*` variants a C compiler emits), resolves
 section symbols and the common x86-64 relocations, and ignores `.eh_frame`,
-TLS and the C++ runtime sections. `--linker own` is opt-in and supports
-`x86_64-linux-sysv` only; `--linker host` keeps the `$CC` path.
+TLS and the C++ runtime sections. On Windows the own linker consumes COFF
+objects and emits a non-PIE PE32+ image with a generated `_start`; the
+runtime's UCRT calls (`_write`, `_setmode`, `malloc`, `exit`, ...) become
+imports from `ucrtbase.dll`, and the Windows API calls (`GetTickCount64`,
+`ExitProcess`) from `kernel32.dll`. `--linker own` is opt-in and supports
+`x86_64-linux-sysv` and `x86_64-windows-win64`; `--linker host` keeps the
+`$CC` path.
 
 Options must come before the file. Everything after the file is considered an argument of the script and is obtained with `args()`.
 
