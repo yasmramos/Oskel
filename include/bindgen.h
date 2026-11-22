@@ -20,8 +20,8 @@
 // cannot express is skipped with a `// skipped:` comment instead of emitting
 // something the compiler would reject.
 //
-// A declaration this *build* cannot marshal -- a C variadic, which needs libffi
-// and the System V AMD64 ABI, or a struct by value on an ABI whose register
+// A declaration this *build* cannot marshal -- a C variadic, which needs the
+// x86-64 FFI trampoline, or a struct by value on an ABI whose register
 // thunks cannot express it -- is written commented out: the module compiles
 // everywhere and the real signature is there to uncomment on a build that
 // supports it. Both questions are put to the compiler's own
@@ -54,8 +54,8 @@ struct Result {
   // FFI vocabulary, which the tool reports instead of mis-translating.
   int skipped = 0;
   // Number of declarations emitted *commented out* because this build cannot
-  // marshal them: a C variadic needs libffi and the System V AMD64 ABI, and a
-  // struct by value needs that ABI too, so the compiler rejects the declaration
+  // marshal them: a C variadic needs the x86-64 FFI trampoline, and a struct
+  // by value needs the System V AMD64 ABI, so the compiler rejects the declaration
   // outright on a build without them. The tool writes the real signature as a
   // comment with the compiler's own reason: the module compiles everywhere, and
   // the user uncomments it on a build that supports it. A declaration the

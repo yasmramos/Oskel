@@ -514,7 +514,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     and `..._exit.oskl` (an `atexit` handler after the chunk returns) cover it;
     keeping the VM closure alive would close the gap.
 28. **[P1]** A callback returning a struct by value is supported by the VM
-    (`libffi`) and rejected by the AOT backend with a dedicated message; the AOT
+    (the descriptor/closure stub) and rejected by the AOT backend with a dedicated message; the AOT
     callback body does not rebuild the returned registers into a map. A struct
     *parameter* is rejected by both. `tests/errors/callback_struct_{return,param}.oskl`
     pin the AOT rejection.
@@ -547,18 +547,19 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    declared. Provide a way (or a documented reason it is out of scope).~~ **Done**:
    a trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...):
    int`). The compiler records the flag on the `ExternSymbol` and checks only the
-   fixed prefix; the runtime prepares an `ffi_prep_cif_var` call per call and
-   applies the default argument promotions. The development engine needs
-   `libffi` plus the System V AMD64 ABI (`kCVariadicSupported`), so off that the
-   declaration is rejected at compile time there; the hosted AOT backend lowers
-   the tail itself on System V and Win64 (PHASE 7f.10), independent of libffi.
-   See `tests/53_ffi_variadic.oskl`, `vm_test.cpp::testExternVariadic*`,
-   `tests/native_build_extern_variadic.oskl` and `docs/language.md` §4.6.
+   fixed prefix; the runtime builds the outgoing register/stack layout per call
+   and applies the default argument promotions. Needs the x86-64 descriptor stub
+   (System V AMD64 or Microsoft x64, `kCVariadicSupported`), so off that the
+   declaration is rejected at compile time. The hosted AOT backend lowers the
+   tail itself on System V and Win64 (PHASE 7f.10), independent of the
+   development engine. See `tests/53_ffi_variadic.oskl`,
+   `vm_test.cpp::testExternVariadic*`, `tests/native_build_extern_variadic.oskl`
+   and `docs/language.md` §4.6.
 2. ~~**[P1]** `extern "C"` does not support structs larger than 16 bytes by value
    (System V passes them via a hidden pointer / `sret`).~~ **Done**: a struct
    larger than 16 bytes (class MEMORY) is passed on the stack and returned through
-   the hidden `sret` pointer via the `libffi` path (`kMemoryStructsSupported`).
-   Off System V + `libffi` the declaration is rejected at compile time. See
+   the hidden `sret` pointer via the descriptor stub (`kMemoryStructsSupported`).
+   Off System V x86-64 the declaration is rejected at compile time. See
    `vm_test.cpp::testExternMarshalsMemoryStruct*` and `docs/language.md` §4.6.
 3. ~~**[P1]** `extern "C"` does not support callbacks returning structs (scalars
    only).~~ **Done**: a callback may return a struct by value. The compiler
@@ -567,16 +568,16 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    builds the struct `ffi_type` for the `ffi_cif`, and the trampoline serialises
    the returned map into the C return storage using the layout (a shape that
    does not match is a re-raised error, not a wild write). A struct over 16
-   bytes (class MEMORY) needs the `libffi` path, like a large struct argument;
-   elsewhere the declaration is rejected at compile time
+   bytes (class MEMORY) needs the System V descriptor stub, like a large struct
+   argument; elsewhere the declaration is rejected at compile time
    (`tests/check/ffi_callback_struct_return.oskl`,
    `tests/errors/extern_callback_struct_return_nested.oskl`,
    `vm_test.cpp::testExternCallbackReturnsStruct`/`ReturnsMixedStruct`).
 4. **[P1]** `extern "C"` does not support nested callbacks (a callback that
    takes another callback). **Out of scope**: `TypeSpec` stores a callback's
    signature as scalar type names, so supporting a callback parameter would need
-   a recursive `TypeSpec`, and the libffi closure path would have to build a
-   nested `ffi_cif`. A nested callback has no Oskel spelling either (the type
+   a recursive `TypeSpec`, and the closure stub path would have to build a
+   nested C callback context. A nested callback has no Oskel spelling either (the type
    grammar reads a callback parameter as a scalar name), so the declaration is
    rejected with a clear message rather than mis-parsed.
 5. **[P1]** `extern "C"` does not support `long double`. **Out of scope**: Oskel
@@ -622,8 +623,8 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     building the `CallbackObj` (the caller does).~~ **Done**: `makeCallback`
     checks `isFunc()` itself.
 17. ~~**[P2]** `dispatch` for callbacks is limited to `kMaxExternArgs = 6`; the
-    error message does not say so.~~ **Not a bug**: callbacks go through libffi,
-    not `dispatch`, so they are not bound by `kMaxExternArgs`; an 8-parameter
+    error message does not say so.~~ **Not a bug**: callbacks go through the
+    closure stub, not `dispatch`, so they are not bound by `kMaxExternArgs`; an 8-parameter
     callback compiles and runs. **Done**: the scalar bound is now eight
     eightbytes. The VM's typed call lets the C++ compiler spill the seventh and
     eighth GPR arguments; the AOT thunk writes them to the outgoing stack area

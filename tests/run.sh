@@ -7,7 +7,7 @@
 # declared exit code must match and nothing may reach stdout.
 #
 # A test may declare a capability it needs on its first line, such as:
-#   // requires: libffi
+#   // requires: x86-64
 # The runner skips the test (instead of failing it) when the built engine does
 # not have that capability, mirroring the CMake gating in CMakeLists.txt so a
 # tree that is green under CTest is also green here.
@@ -29,20 +29,28 @@ else
 fi
 
 # Whether the built engine has a capability, probed from the binary itself.
-# `libffi` is linked only when the build found it (CMake); `build.sh` never
-# links it, so callbacks are compiled out there (a clear runtime error then).
+# The FFI trampoline is x86-64 only; callbacks and class-MEMORY structs are
+# further limited to the System V ABI (Linux and x86-64 macOS, not Windows).
 # An unknown platform or capability reports "present", so a real failure is
 # never hidden behind a skip.
 has_capability() {
     case "$1" in
-        libffi)
-            if command -v ldd >/dev/null 2>&1; then
-                ldd "$exe" 2>/dev/null | grep -qi 'libffi'
-            elif command -v otool >/dev/null 2>&1; then
-                otool -L "$exe" 2>/dev/null | grep -qi 'libffi'
+        x86-64)
+            case "$(uname -m 2>/dev/null)" in
+                x86_64|amd64) return 0 ;;
+            esac
+            if command -v file >/dev/null 2>&1; then
+                file "$exe" 2>/dev/null | grep -Eq 'x86-64|x86_64'
             else
                 return 0
             fi
+            ;;
+        x86-64-system-v)
+            has_capability x86-64 || return 1
+            if head -c 2 "$exe" 2>/dev/null | grep -q '^MZ'; then
+                return 1
+            fi
+            return 0
             ;;
         win32)
             # The Win32 base API (kernel32.dll) only exists on Windows. Probed
@@ -139,6 +147,15 @@ done
 # tests/errors/*.oskl: run the script, expected exit 70 unless declared.
 for test in "$test_dir/errors"/*.oskl; do
     [ -e "$test" ] || continue
+    name=$(basename "$test" .oskl)
+    # AOT-only rejection inputs: the VM accepts these shapes.
+    case "$name" in
+        callback_struct_param|callback_struct_return) continue ;;
+    esac
+    # A class-MEMORY struct is rejected only where the descriptor stub is absent.
+    if [ "$name" = "extern_struct_too_large" ] && has_capability x86-64-system-v; then
+        continue
+    fi
     expected=$(declared_exit "$test")
     [ -n "$expected" ] || expected=70
     run_one "errors/$(basename "$test")" "$test" run "$expected"

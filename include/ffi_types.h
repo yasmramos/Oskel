@@ -75,15 +75,12 @@ constexpr std::size_t kMaxExternArgs = 8;
 constexpr bool kStructByValueSupported = OSKEL_FFI_STRUCT_BY_VALUE != 0;
 
 // Whether an `extern "C"` declaration may be variadic (`fn printf(fmt: cstring,
-// ...): int`). A C variadic call needs `ffi_prep_cif_var`, so it needs libffi,
-// and the default-argument promotions it applies are the System V AMD64 ones
-// (the Microsoft x64 ABI passes a variadic floating-point argument in *both* an
-// xmm and a general-purpose register, a shape the register thunks cannot
-// express). Scalars stay portable, but variadics are a development-engine,
-// System V feature, exactly like a class-MEMORY struct. A macro, not only a
-// `constexpr`, for the same `#if` reason as `OSKEL_FFI_STRUCT_BY_VALUE`.
+// ...): int`). The development engine lowers the tail with its own descriptor
+// stub on x86-64 (System V and Microsoft x64), so the declaration is available
+// wherever that backend runs. A macro, not only a `constexpr`, for the same
+// `#if` reason as `OSKEL_FFI_STRUCT_BY_VALUE`.
 #ifndef OSKEL_FFI_VARIADIC
-#if defined(OSKEL_HAVE_LIBFFI) && defined(__x86_64__) && !defined(_WIN32)
+#if defined(__x86_64__) || defined(_M_X64)
 #define OSKEL_FFI_VARIADIC 1
 #else
 #define OSKEL_FFI_VARIADIC 0
@@ -95,14 +92,11 @@ constexpr bool kCVariadicSupported = OSKEL_FFI_VARIADIC != 0;
 // Whether a struct larger than 16 bytes (System V class MEMORY) may cross the
 // boundary. The register thunks express a struct only as up to two eightbytes,
 // so a MEMORY struct — passed on the stack, and returned through a hidden
-// `sret` pointer — cannot go through them; it goes through `libffi`, which
-// reproduces the stack layout at run time. That makes it available only where
-// the dev engine is built with libffi on the System V AMD64 ABI; elsewhere the
-// declaration is rejected at compile time with a clear message. The macro
-// derives from `OSKEL_HAVE_LIBFFI` so the compiler and the runtime agree
-// without the compiler pulling in any libffi header.
+// `sret` pointer — goes through the descriptor stub instead. That stub is
+// x86-64 System V; the Microsoft x64 ABI passes a struct by reference, which
+// the hosted backend does not lower, so the declaration is rejected there.
 #ifndef OSKEL_FFI_MEMORY_STRUCTS
-#if defined(OSKEL_HAVE_LIBFFI) && defined(__x86_64__) && !defined(_WIN32)
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(_WIN32)
 #define OSKEL_FFI_MEMORY_STRUCTS 1
 #else
 #define OSKEL_FFI_MEMORY_STRUCTS 0
@@ -110,6 +104,20 @@ constexpr bool kCVariadicSupported = OSKEL_FFI_VARIADIC != 0;
 #endif
 
 constexpr bool kMemoryStructsSupported = OSKEL_FFI_MEMORY_STRUCTS != 0;
+
+// Whether a `fn(...): R` callback may cross the boundary. The development
+// engine builds a closure stub that re-enters the VM; it is emitted for the
+// System V x86-64 ABI, which is also the only ABI the hosted backend lowers a
+// callback for. Windows and the arm64 development engine reject it.
+#ifndef OSKEL_FFI_CALLBACKS
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(_WIN32)
+#define OSKEL_FFI_CALLBACKS 1
+#else
+#define OSKEL_FFI_CALLBACKS 0
+#endif
+#endif
+
+constexpr bool kCallbacksSupported = OSKEL_FFI_CALLBACKS != 0;
 
 // The optional ABI capabilities of a build, bundled so a caller can ask the
 // same validation twice: once for this build, and once with every capability
@@ -121,19 +129,19 @@ struct AbiCapabilities {
   bool structByValue = kStructByValueSupported;
   bool memoryStructs = kMemoryStructsSupported;
   bool variadic = kCVariadicSupported;
+  bool callbacks = kCallbacksSupported;
 };
 
-// Every optional capability on: what a build with libffi on the System V AMD64
-// ABI accepts.
-inline constexpr AbiCapabilities kFullAbiCapabilities{true, true, true};
+// Every optional capability on: what the full x86-64 surface accepts.
+inline constexpr AbiCapabilities kFullAbiCapabilities{true, true, true, true};
 
 // What the AOT backend marshals, independent of how the development engine was
 // built. The backend emits its own thunks (`native/runtime.cpp`), so it never
-// calls libffi: a class-MEMORY struct travels in the outgoing stack area and
-// comes back through an `sret` pointer, and a register-class struct goes through
-// the eightbyte buffers. Its thunks follow the target's C ABI: System V on
-// Linux and macOS, Microsoft x64 on Windows (scalar/pointer classes and a C
-// variadic; structs and callbacks are rejected there).
+// needs a host FFI library: a class-MEMORY struct travels in the outgoing stack
+// area and comes back through an `sret` pointer, and a register-class struct
+// goes through the eightbyte buffers. Its thunks follow the target's C ABI:
+// System V on Linux and macOS, Microsoft x64 on Windows (scalar/pointer classes
+// and a C variadic; structs and callbacks are rejected there).
 //
 // A C variadic is lowered too (PHASE 7f.5, 7f.10): the thunk walks the tail at
 // run time, promotes each value by its tag, continues the target's register
@@ -141,16 +149,16 @@ inline constexpr AbiCapabilities kFullAbiCapabilities{true, true, true};
 // argument positions on Win64, including the integer duplicate of a floating
 // value), spills the overflow to the outgoing stack area and sets `%al` to the
 // vector-register count. The declaration is accepted for the AOT destination
-// even when the development engine has no libffi, because the backend does not
-// need it.
+// because the backend does not need the development engine's trampolines.
 //
 // The compiler validates `extern "C"` against the *destination*: `oskel build`
 // asks with these capabilities, so a shape the backend can emit is not rejected
-// because the development engine happened to be built without libffi. The
+// because the development engine happens to run on a different host. The
 // interpreter asks with `AbiCapabilities{}`, the build's own.
 inline constexpr AbiCapabilities kAotAbiCapabilities{/*structByValue=*/true,
                                                      /*memoryStructs=*/true,
-                                                     /*variadic=*/true};
+                                                     /*variadic=*/true,
+                                                     /*callbacks=*/true};
 
 // One field of a struct crossing the C boundary. `type` is an FFI scalar type
 // name (the same vocabulary as a parameter annotation); a nested struct is not
@@ -174,7 +182,8 @@ struct StructLayout {
   // System V classification: at most two eightbytes, each `'I'` (INTEGER, a
   // general-purpose register) or `'S'` (SSE, an xmm register). A struct whose
   // size exceeds 16 bytes is class MEMORY: `isMemory` is set, the eightbytes are
-  // not classified, and the whole buffer crosses the boundary through libffi.
+  // not classified, and the whole buffer crosses the boundary through the
+  // descriptor stub.
   bool isMemory = false;
   char eightbyte[2] = {'I', 'I'};
   int eightbyteCount = 0;
@@ -396,6 +405,10 @@ inline std::string validateTypeSpec(const TypeSpec& spec, bool isReturn,
     if (isReturn) {
       return "a callback cannot be a return type";
     }
+    if (!caps.callbacks) {
+      return "a callback cannot cross the C boundary on this target: it needs the System V AMD64 "
+             "x86-64 FFI trampoline, which this build does not have";
+    }
     for (const std::string& param : spec.callbackParams) {
       ParamClass ignored;
       // A callback parameter is a scalar; a nested callback or a struct by
@@ -414,7 +427,7 @@ inline std::string validateTypeSpec(const TypeSpec& spec, bool isReturn,
           return "a callback returning a struct of " + std::to_string(layout.size) +
                  " bytes is class MEMORY (> 16 bytes: passed on the stack, returned through a "
                  "hidden pointer), which this build does not support: it needs the System V AMD64 "
-                 "ABI and libffi in the development engine";
+                 "x86-64 FFI trampoline, which this build does not have";
         }
       } else if (!caps.structByValue) {
         return "a callback cannot return a struct by value on this target: the marshalling "
@@ -449,13 +462,13 @@ inline std::string validateTypeSpec(const TypeSpec& spec, bool isReturn,
   if (!buildStructLayout(spec.fields, layout, reason)) return reason;
   if (layout.isMemory) {
     // A struct larger than 16 bytes is class MEMORY (passed on the stack,
-    // returned through a hidden `sret` pointer). Only the libffi-backed
-    // marshalling expresses that; the register thunks cannot.
+    // returned through a hidden `sret` pointer). The descriptor stub expresses
+    // that; the register thunks cannot.
     if (!caps.memoryStructs) {
       return "a struct of " + std::to_string(layout.size) +
              " bytes is class MEMORY (> 16 bytes: passed on the stack, returned through a hidden "
-             "pointer), which this build does not support: it needs the System V AMD64 ABI and "
-             "libffi in the development engine";
+             "pointer), which this build does not support: it needs the System V AMD64 x86-64 FFI "
+             "trampoline, which this build does not have";
     }
     return "";
   }
@@ -533,8 +546,8 @@ inline std::string canonicalSignature(const std::vector<TypeSpec>& params,
 // at compile time with a clear error instead of at the first call.
 //
 // `variadic` is true for a C variadic (`fn printf(fmt: cstring, ...): int`).
-// Such a declaration always goes through `libffi` (the register thunks cannot
-// express a variable argument list), so it needs `caps.variadic` and is
+// Such a declaration goes through the descriptor stub (the register thunks
+// cannot express a variable argument list), so it needs `caps.variadic` and is
 // not bound by the register budget below; its return must be a scalar.
 //
 // `caps` is the ABI this check is asked about; the default is this build. Pass
@@ -549,8 +562,8 @@ inline std::string validateSignature(const std::vector<TypeSpec>& params,
   // register-class aggregate that does not fit wholly in the remaining
   // registers is passed wholly on the stack, per the System V rule. All eight
   // SSE registers remain available, so an SSE eightbyte never spills at this
-  // bound. A variadic call goes through libffi, which reproduces the stack
-  // layout, so the bound does not apply to it.
+  // bound. A variadic call goes through the descriptor stub, which reproduces
+  // the stack layout, so the bound does not apply to it.
   std::size_t eightbytes = 0;
   for (const TypeSpec& spec : params) {
     if (spec.isStruct) {
@@ -569,8 +582,7 @@ inline std::string validateSignature(const std::vector<TypeSpec>& params,
   if (variadic) {
     if (!caps.variadic) {
       return "a variadic 'extern \"C\"' declaration needs a marshalling that builds the variable "
-             "argument list per call (libffi in the development engine), on the System V AMD64 "
-             "ABI, which this destination does not have";
+             "argument list per call, on the x86-64 ABI, which this destination does not have";
     }
     for (const TypeSpec& spec : params) {
       if (spec.isStruct || spec.isCallback) {

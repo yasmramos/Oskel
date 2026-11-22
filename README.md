@@ -526,7 +526,7 @@ Current limitations:
 - There is no `++`/`--` or default parameters. `switch` on literals and integer ranges is supported, with no fallthrough, and so is the post-test loop `do { ... } while (cond);`.
 - `defer { ... }` runs a block when its scope exits, in LIFO order, on fall-through, `return` and `break`/`continue` alike; it compiles to no new opcode.
 - Optional types and nullability are compile-time only and are erased before the bytecode; a union (`T | E`) has no C representation, so it is rejected in `extern "C"`/`native fn` signatures and struct fields.
-- FFI **callbacks** need `libffi`, which is an optional dependency of the development engine only. When it is absent the build stays green and a callback reports a clear runtime error; the AOT backend never links `libffi` (it lowers callbacks to compile-time stubs).
+- FFI **callbacks** use a small x86-64 closure stub in the development engine, available on the System V ABI (Linux and x86-64 macOS). On Windows and arm64 a callback declaration is rejected with a clear compile-time message; the AOT backend emits its own callback stub on System V.
 - Map keys are always strings. Map literals accept identifier, string, scalar (`int`, `true`, `false`, `nil`) and computed `[expr]` keys; non-string keys are canonicalized to their string form.
 - The body of `if`, `while`, `for` and `for-in` may be a block or a single statement without braces; a brace-less body is wrapped in a block, so its bytecode and scoping match the brace form. `switch` arms always require braces.
 - Slicing syntax works for strings and arrays (`s[1:3]`, `a[2:]`, `a[:-1]`), with negative bounds counted from the end and an optional step (`a[::2]`, `a[::-1]` reverses); `substr`/`slice` remain available.

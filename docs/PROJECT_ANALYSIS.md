@@ -30,7 +30,7 @@ tests and no CI).
 Build (`sh build.sh`) and the full CTest suite run clean on Linux x86-64, and
 `tests/run.sh` now mirrors CTest: it runs the same `.oskl` scripts (including
 `examples/` and the `-c` check tests) and skips `32_ffi_callback.oskl` when
-`libffi` is absent (see §3.1).
+the x86-64 FFI stub is absent (see §3.1).
 
 ---
 
@@ -82,7 +82,7 @@ the asymmetry. Low priority.
 ### 3.1 Local/CI test parity — **resolved**
 `tests/run.sh` used to run only `tests/*.oskl` and `tests/errors/*.oskl`, so it
 skipped `examples/*.oskl` and the `tests/check/*.oskl` compile-only tests that
-CMake/CTest does run, and it failed `32_ffi_callback.oskl` when `libffi` was
+CMake/CTest does run, and it failed `32_ffi_callback.oskl` when the x86-64 FFI stub was
 absent while CTest skipped it. The runner now mirrors CTest: it executes the
 same four groups (run `tests/` and `examples/`, error tests under
 `tests/errors/`, and `-c` check tests under `tests/check/`, requiring an empty

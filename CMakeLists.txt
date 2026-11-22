@@ -129,66 +129,34 @@ add_library(oskel_lib STATIC ${OSKEL_RUNTIME_SOURCES})
 target_link_libraries(oskel_lib PUBLIC oskel_frontend)
 target_compile_options(oskel_lib PRIVATE ${OSKEL_WARNINGS})
 
-# --------------------------------------------------------------------------- libffi (optional)
-# FFI callbacks (PHASE 6.6) need a trampoline that C can call back into the VM.
-# The development engine uses libffi for that; the AOT backend lowers callbacks
-# to compile-time stubs and never links libffi (DEVELOPMENT.md §5.1/§6.6). The build
-# stays green without libffi: `OSKEL_HAVE_LIBFFI` is only defined when found, and
-# the callback path is compiled out otherwise (a clear runtime error instead).
-#
-# There is no FindLibFFI module and pkg-config may be absent, so probe the
-# library and the header directly. The header lives under the multiarch dir on
-# Debian/Ubuntu (/usr/include/<triplet>/ffi.h), so that path is hinted too.
-option(OSKEL_ENABLE_LIBFFI "Use libffi for FFI callbacks in the dev engine" ON)
-if(OSKEL_ENABLE_LIBFFI)
-  find_library(FFI_LIBRARY NAMES ffi libffi)
-  find_path(FFI_INCLUDE_DIR NAMES ffi.h
-    PATH_SUFFIXES ${CMAKE_LIBRARY_ARCHITECTURE}
-    PATHS /usr/include /usr/local/include)
-  if(FFI_LIBRARY AND FFI_INCLUDE_DIR)
-    set(OSKEL_LIBFFI_FOUND TRUE)
-    # The compiler reads `OSKEL_HAVE_LIBFFI` through `include/ffi_types.h` to
-    # decide which `extern "C"` shapes it may accept (a variadic, a MEMORY
-    # struct), so the definition belongs to the front end and must reach both
-    # binaries: `oskelc` has to reject exactly what `oskel` rejects.
-    target_compile_definitions(oskel_frontend PUBLIC OSKEL_HAVE_LIBFFI)
-    # Only the runtime's marshalling includes `<ffi.h>` and links the library.
-    target_include_directories(oskel_lib PRIVATE ${FFI_INCLUDE_DIR})
-    target_link_libraries(oskel_lib PUBLIC ${FFI_LIBRARY})
-    message(STATUS "libffi found: FFI callbacks enabled in the dev engine")
-  else()
-    set(OSKEL_LIBFFI_FOUND FALSE)
-    message(STATUS "libffi not found: FFI callbacks disabled (set OSKEL_ENABLE_LIBFFI=OFF to silence)")
-  endif()
-endif()
-
 # Struct-by-value FFI is written for the System V AMD64 ABI only; the Microsoft
 # x64 ABI passes a struct larger than 8 bytes through a hidden pointer, a shape
 # the register thunks cannot express. The compiler rejects such a declaration
 # with a clear error on other targets, and the test that exercises it is skipped.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
   set(OSKEL_FFI_STRUCT_BY_VALUE TRUE)
+  set(OSKEL_FFI_CALLBACKS TRUE)
 else()
   set(OSKEL_FFI_STRUCT_BY_VALUE FALSE)
+  set(OSKEL_FFI_CALLBACKS FALSE)
 endif()
 
 # A struct larger than 16 bytes is class MEMORY (passed on the stack, returned
-# through a hidden pointer). Only the libffi-backed call path expresses that, so
-# it needs the System V AMD64 ABI *and* libffi in the dev engine; elsewhere the
-# declaration is rejected at compile time and the test that exercises the
-# rejection stays. This must mirror `OSKEL_FFI_MEMORY_STRUCTS` in
-# `include/ffi_types.h`, which derives from `OSKEL_HAVE_LIBFFI`.
-if(OSKEL_LIBFFI_FOUND AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
+# through a hidden pointer). The development engine's descriptor stub expresses
+# that on the System V AMD64 ABI; elsewhere the declaration is rejected at
+# compile time and the test that exercises the rejection stays. This must mirror
+# `OSKEL_FFI_MEMORY_STRUCTS` in `include/ffi_types.h`.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
   set(OSKEL_FFI_MEMORY_STRUCTS TRUE)
 else()
   set(OSKEL_FFI_MEMORY_STRUCTS FALSE)
 endif()
 
-# A C variadic call needs `ffi_prep_cif_var` and the System V AMD64 default
-# argument promotions, so it needs libffi *and* that ABI; elsewhere the
-# declaration is rejected at compile time and the test that exercises it is
-# skipped. This mirrors `OSKEL_FFI_VARIADIC` in `include/ffi_types.h`.
-if(OSKEL_LIBFFI_FOUND AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
+# A C variadic call goes through the development engine's descriptor stub, which
+# is emitted for both x86-64 ABIs; elsewhere the declaration is rejected at
+# compile time and the test that exercises it is skipped. This mirrors
+# `OSKEL_FFI_VARIADIC` in `include/ffi_types.h`.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
   set(OSKEL_FFI_VARIADIC TRUE)
 else()
   set(OSKEL_FFI_VARIADIC FALSE)
@@ -983,11 +951,10 @@ if(BUILD_TESTING)
       # small C helper of its own.
       #
       # The compiler only *accepts* such a declaration when the development
-      # engine has libffi (`OSKEL_FFI_MEMORY_STRUCTS`, mirroring
+      # engine has the descriptor stub (`OSKEL_FFI_MEMORY_STRUCTS`, mirroring
       # `OSKEL_FFI_MEMORY_STRUCTS` in `include/ffi_types.h`); without it the
-      # build fails by design with the "needs libffi" message, so the test has
-      # to be gated on the same flag or it fails on every machine without
-      # libffi-dev.
+      # build fails by design with the "needs the x86-64 FFI trampoline"
+      # message, so the test has to be gated on the same flag.
       if(OSKEL_FFI_MEMORY_STRUCTS)
         add_test(NAME oskel.build_hosted_extern_memory_struct
           COMMAND ${CMAKE_COMMAND}
@@ -1001,8 +968,7 @@ if(BUILD_TESTING)
       # GPRs, so the thunk spills them to the outgoing stack area; a
       # register-class struct that no longer fits is passed wholly on the stack.
       # No libc symbol exercises those shapes, so the fixture links its own C
-      # helper. It needs no libffi (there is no struct-by-value *return*), just
-      # the hosted link mode.
+      # helper. It needs only the hosted link mode.
       add_test(NAME oskel.build_hosted_extern_many_args
         COMMAND ${CMAKE_COMMAND}
           "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_many_args"
@@ -1011,11 +977,11 @@ if(BUILD_TESTING)
           "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/many_args_helper.c"
           "-DOSKEL_EXPECTED_OUTPUT=ffi many args ok"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
-      # A callback is a C function pointer. The VM marshals it through libffi;
-      # the AOT backend emits a runtime stub per registration whose body boxes
-      # the C arguments and calls the Oskel closure. `qsort` invokes the
-      # comparator from libc, so the reference is the VM.
-      if(OSKEL_LIBFFI_FOUND)
+      # A callback is a C function pointer. The VM emits a closure stub per
+      # registration whose body boxes the C arguments and calls the Oskel
+      # closure; the AOT backend does the same. `qsort` invokes the comparator
+      # from libc, so the reference is the VM.
+      if(OSKEL_FFI_CALLBACKS)
         add_test(NAME oskel.build_hosted_extern_callback
           COMMAND ${CMAKE_COMMAND}
             "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_callback"
@@ -1094,9 +1060,8 @@ if(BUILD_TESTING)
       # A C variadic is walked at run time by the thunk (PHASE 7f.5): the tail
       # continues the GPR/SSE allocation after the fixed prefix, spills to the
       # outgoing stack area and sets `%al` to the vector-register count. The
-      # reference is the VM, whose `ffi_prep_cif_var` path needs libffi in the
-      # development engine, so the test is gated on the same flag as the VM
-      # variadic fixture rather than on the AOT capability alone.
+      # reference is the VM, whose descriptor stub lowers the same tail, so the
+      # test is gated on the VM capability.
       if(OSKEL_FFI_VARIADIC)
         add_test(NAME oskel.build_hosted_extern_variadic
           COMMAND ${CMAKE_COMMAND}
@@ -1168,9 +1133,9 @@ if(BUILD_TESTING)
       # Win64 the tail continues the argument-position allocation, so a float
       # in a register position goes in both the SSE and the integer register,
       # and position four onward spills to the outgoing stack area after the
-      # shadow space. The development VM has no libffi variadic path on
-      # Windows, so the fixture asserts its own expectations and the binary's
-      # final line is the contract.
+      # shadow space. The Windows VM's symbol lookup does not resolve the
+      # fixture's `snprintf`, so the fixture asserts its own expectations and
+      # the binary's final line is the contract.
       add_test(NAME oskel.build_hosted_extern_variadic_windows
         COMMAND ${CMAKE_COMMAND}
           "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_variadic_windows"
@@ -1741,9 +1706,9 @@ if(BUILD_TESTING)
     if(name STREQUAL "native_build_sdl_freestanding")
       continue()
     endif()
-    # FFI callbacks need libffi in the dev engine; skip the callback test when
-    # the build has no libffi (the feature reports a clear runtime error then).
-    if(name STREQUAL "32_ffi_callback" AND NOT OSKEL_LIBFFI_FOUND)
+    # FFI callbacks need the x86-64 closure stub; skip the callback test when
+    # this build does not emit one (the feature reports a clear error then).
+    if(name STREQUAL "32_ffi_callback" AND NOT OSKEL_FFI_CALLBACKS)
       continue()
     endif()
     # Struct-by-value FFI needs the System V AMD64 ABI; see the capability above.
@@ -1783,9 +1748,9 @@ if(BUILD_TESTING)
        name STREQUAL "native_build_extern_callback_returns")
       continue()
     endif()
-    # The qsort callback fixture needs libffi in the development engine; the
-    # hosted test (which also runs the VM) is gated on the same flag.
-    if(name STREQUAL "native_build_extern_callback" AND NOT OSKEL_LIBFFI_FOUND)
+    # The qsort callback fixture needs the x86-64 closure stub in the
+    # development engine; the hosted test is gated on the same flag.
+    if(name STREQUAL "native_build_extern_callback" AND NOT OSKEL_FFI_CALLBACKS)
       continue()
     endif()
     # The two `native fn` rejection fixtures are inputs for
@@ -1809,8 +1774,13 @@ if(BUILD_TESTING)
         name STREQUAL "native_build_extern_ptr_return") AND WIN32)
       continue()
     endif()
-    # C variadics need libffi plus the System V AMD64 ABI; the declaration is
-    # rejected at compile time elsewhere, so the test is skipped.
+    # The variadic fixture uses `snprintf`, which the VM's Windows symbol lookup
+    # does not resolve; its Windows hosted twin covers the native shape.
+    if(name STREQUAL "native_build_extern_variadic" AND WIN32)
+      continue()
+    endif()
+    # C variadics need the x86-64 descriptor stub; the declaration is rejected
+    # at compile time elsewhere, so the test is skipped.
     if((name STREQUAL "53_ffi_variadic" OR name STREQUAL "native_build_extern_variadic") AND
        NOT OSKEL_FFI_VARIADIC)
       continue()
@@ -1865,8 +1835,8 @@ if(BUILD_TESTING)
   foreach(script IN LISTS oskel_error_tests)
     get_filename_component(name "${script}" NAME_WE)
     # `extern_struct_too_large` asserts the *rejection* of a class-MEMORY struct,
-    # which only holds where the libffi-backed marshalling is unavailable; where
-    # it is available the declaration compiles and the rejection case is gone.
+    # which only holds where the descriptor stub is unavailable; where it is
+    # available the declaration compiles and the rejection case is gone.
     if(name STREQUAL "extern_struct_too_large" AND OSKEL_FFI_MEMORY_STRUCTS)
       continue()
     endif()
@@ -1888,13 +1858,13 @@ if(BUILD_TESTING)
   )
   foreach(script IN LISTS oskel_check_tests)
     get_filename_component(name "${script}" NAME_WE)
-    # A class-MEMORY struct only compiles where the libffi-backed marshalling is
+    # A class-MEMORY struct only compiles where the descriptor stub is
     # available; elsewhere the same declaration is a compile error.
     if(name STREQUAL "ffi_memory_struct" AND NOT OSKEL_FFI_MEMORY_STRUCTS)
       continue()
     endif()
     # A callback that returns a struct needs the by-value struct marshalling
-    # (and, for a struct over 16 bytes, the libffi path); elsewhere the same
+    # (and, for a struct over 16 bytes, the descriptor stub); elsewhere the same
     # declaration is a compile error.
     if(name STREQUAL "ffi_callback_struct_return" AND NOT OSKEL_FFI_STRUCT_BY_VALUE)
       continue()
