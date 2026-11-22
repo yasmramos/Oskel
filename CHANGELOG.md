@@ -11,6 +11,19 @@ may change between minor versions.
 
 ### Added
 
+- **`std.io` adds in-memory text streams built on classes.** `StringReader`
+  walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,
+  `readWhile`, `skip`, `lines`, ...); `StringWriter` accumulates chunks
+  (`write`, `writeln`, `writeAll`, `writeLines`, `toString`, `clear`); and
+  `splitLines`/`joinLines` are the free-function line helpers. A `StringReader`
+  normalises CRLF and counts code points, so it composes with `std.strings` and
+  `std.collections`. File access stays with the `readFile`/`writeFile`/
+  `fileExists` builtins: the freestanding AOT backend does not seed them, so a
+  module that mentions one fails `oskel build` even when the function is never
+  called. Classes are maps with closures, so the VM, the AOT backend and
+  WebAssembly agree; `tests/62_std_io.oskl` and `tests/native_build_io.oskl`
+  prove it.
+
 - **`std.collections` gains the missing sequence helpers.** `flatMap` maps to
   an array and flattens one level; `scan` returns the running fold, with the
   initial value as its first element; `findLast`/`findLastIndex` search from
