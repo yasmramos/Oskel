@@ -452,7 +452,7 @@ int buildBinary(const std::string &source, const std::string &name,
   // The backend emits its own `extern "C"` thunks, so the shapes it can honour
   // do not depend on how this engine was built. Validating against the build's
   // capabilities would reject a class-MEMORY struct that the backend marshals
-  // correctly, on any engine built without libffi.
+  // correctly, on any engine without a host FFI library.
   compiler.setAbiCapabilities(ffi::kAotAbiCapabilities);
   try {
     compiler.setImportLoader(makeImportLoader(resolverFor(name, argv0)));

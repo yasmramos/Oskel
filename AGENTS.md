@@ -93,8 +93,8 @@ it as a caveat:
   through `Compiler::setAbiCapabilities`, while the interpreter keeps
   `AbiCapabilities{}`, this build's. The backend emits its own thunks, so a
   class-MEMORY struct must not be rejected for `oskel build` just because the
-  engine lacks libffi — that conflation made
-  `oskel.build_hosted_extern_memory_struct` fail without `libffi-dev` even
+  engine lacks the x86-64 FFI trampoline — that conflation made
+  `oskel.build_hosted_extern_memory_struct` fail without an FFI backend even
   though the emitted code was right. A C variadic stays rejected for the AOT
   destination whatever the build has, because the backend does not lower a
   variable argument list (PHASE 7f.5).
@@ -272,8 +272,25 @@ it as a caveat:
   matched to the VM's but cannot go in that fixture: a raised runtime error is
   not a value, so `try`/`catch` does not capture it and `build_binary.cmake`
   requires exit 0 from both engines.
+- The development engine's FFI no longer links a host FFI library. A fixed
+  scalar signature (and a register struct on System V) is a compile-time thunk;
+  a C variadic, a class-MEMORY struct and a callback use an x86-64 descriptor or
+  closure stub emitted with the AOT `CodeGen` (`src/runtime/ffi_trampoline.*`).
+  The stubs are available on x86-64 only: System V (Linux, x86-64 macOS) for all
+  three, Microsoft x64 (Windows) for a C variadic; class MEMORY and callbacks
+  are rejected there. arm64 keeps the fixed-scalar typed thunk but rejects a
+  struct by value, a variadic, a class-MEMORY struct and a callback. Three bugs
+  were first: the
+  `CodeGen` SSE emitters take a synthetic register number (`kXmmBase + N`), so
+  passing `0..7` encoded xmm8..15 and the first double variadic crashed; the
+  descriptor's 32-bit fields (`stackBytes`, `vectorCount`) must be loaded with
+  `movFromMem32`, because an 8-byte load picked up the adjacent field and
+  subtracted 4 GiB from `rsp`; and on Microsoft x64 the outgoing stack arguments
+  start at `[rsp+32]`, after the 32-byte shadow space, not at `[rsp]`. The VM
+  variadic fixture uses `printf` rather than `sprintf`, because Wine's
+  `sprintf` mis-handles `%.1f` even though `printf` is correct.
 - A C callback (`fn(...): R` parameter) is a generated stub in the hosted
-  backend (PHASE 7f.8), not a libffi closure. `oskel_callback_create` allocates
+  backend (PHASE 7f.8), not a host FFI closure. `oskel_callback_create` allocates
   a 32-byte context (closure tag/payload, the Oskel global base, a pointer to a
   16-byte shared arena-state block) and a private `mmap` page holding
   `movabs r10, context; movabs r11, body; jmp r11`. The page is mapped
@@ -294,7 +311,7 @@ it as a caveat:
   `8 * slot` read the wrong slot and crashed. A callback returning a struct by
   value and a callback with a struct parameter are rejected with dedicated
   messages; a stored callback works in AOT but not in the VM (the VM frees the
-  libffi closure when the extern call returns), and both are BACKLOG §6 items
+  closure stub when the extern call returns), and both are BACKLOG §6 items
   26/27. The stub page is process-lifetime: C may store the pointer (a stored
   callback, including an `atexit` handler), so freeing it when the extern call
   returns would break that contract; BACKLOG §6 item 28 tracks a pool or an

@@ -267,15 +267,16 @@ in silence.
 
 ## Variadic functions
 
-A C variadic (`int printf(const char *fmt, ...)`) needs libffi and the System V
-AMD64 ABI, and the compiler rejects the declaration outright on a build without
-both. `bindgen` therefore writes the real signature **commented out**, so the
-module still compiles everywhere and the line is right there to uncomment on a
+A C variadic (`int printf(const char *fmt, ...)`) needs the engine's x86-64
+descriptor stub, which follows either x86-64 C ABI (System V AMD64 or Microsoft
+x64); the compiler rejects the declaration outright on a build without one.
+`bindgen` therefore writes the real signature **commented out**, so the module
+still compiles everywhere and the line is right there to uncomment on a
 supporting build:
 
 ```oskel
 extern "C" {
-  // fn printf(fmt: cstring, ...): int32;  // a variadic 'extern "C"' declaration needs libffi and the System V AMD64 ABI, which this build does not have
+  // fn printf(fmt: cstring, ...): int32;  // a variadic 'extern "C"' declaration needs a marshalling that builds the variable argument list per call, on the x86-64 ABI, which this destination does not have
 }
 ```
 

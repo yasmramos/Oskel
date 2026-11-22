@@ -116,15 +116,23 @@ int main() {
   expectGenerated("no parameters", "int a(void);\nint b();\n",
                   {"fn a(): int32;", "fn b(): int32;"});
 
-  // A variadic declaration is emitted commented out, so the module compiles
-  // even where libffi (and the System V ABI) is absent.
+  // A variadic declaration is emitted where the build has an x86-64 descriptor
+  // stub and commented out elsewhere, so the module compiles everywhere.
   {
     const bindgen::Result result =
         bindgen::generate("int printf(const char *fmt, ...);\n", "t.h");
-    check(contains(result.text, "// fn printf(fmt: cstring, ...): int32;"),
-          "a variadic is commented out");
-    check(result.commented == 1, "the variadic is counted as commented");
-    check(result.emitted == 0, "a commented variadic is not counted as emitted");
+    if (ffi::kCVariadicSupported) {
+      check(contains(result.text, "fn printf(fmt: cstring, ...): int32;"),
+            "a variadic is emitted");
+      check(!contains(result.text, "// fn printf"), "an emitted variadic is not commented");
+      check(result.commented == 0, "an emitted variadic is not counted as commented");
+      check(result.emitted == 1, "an emitted variadic is counted as emitted");
+    } else {
+      check(contains(result.text, "// fn printf(fmt: cstring, ...): int32;"),
+            "a variadic is commented out");
+      check(result.commented == 1, "the variadic is counted as commented");
+      check(result.emitted == 0, "a commented variadic is not counted as emitted");
+    }
   }
 
   // Unsupported declarations are skipped with a comment, never mis-translated.
@@ -495,7 +503,7 @@ int main() {
 
   // The register thunks cover at most `kMaxExternArgs` eightbytes; a longer
   // non-variadic signature would be rejected by the compiler, so it is skipped
-  // rather than emitted. A variadic is exempt (it goes through libffi).
+  // rather than emitted. A variadic is exempt (it goes through the stub).
   {
     const bindgen::Result result = bindgen::generate(
         "int seven(int a, int b, int c, int d, int e, int f, int g);\n"
@@ -507,12 +515,16 @@ int main() {
     check(contains(result.text, "// skipped: nine: an 'extern' function may pass at most 8 "
                                 "register-sized values"),
           "a nine-value signature is skipped");
-    check(contains(result.text, "// fn vlog(fmt: cstring, ...): void;"),
-          "a variadic is exempt from the budget");
     if (ffi::kCVariadicSupported) {
-      check(!contains(result.text, "// fn vlog"), "a variadic is emitted on a libffi build");
+      check(contains(result.text, "fn vlog(fmt: cstring, ...): void;"),
+            "a variadic is emitted on an x86-64 build");
+      check(!contains(result.text, "// fn vlog"), "an emitted variadic is not commented");
+      check(result.emitted == 2, "the in-budget and variadic declarations are emitted");
+    } else {
+      check(contains(result.text, "// fn vlog(fmt: cstring, ...): void;"),
+            "a variadic is exempt from the budget");
+      check(result.emitted == 1, "only the in-budget declaration is emitted");
     }
-    check(result.emitted == 1, "only the in-budget declaration is emitted");
   }
 
   // The budget is on eightbytes, not parameters: a 16-byte struct spends two,

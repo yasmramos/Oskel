@@ -1,5 +1,5 @@
 // The AOT callback body cannot rebuild a struct return from the C registers
-// (the hosted engine can, through libffi). The build must reject it with the
+// (the development engine can, through its closure stub). The build must reject it with the
 // dedicated message and write no binary.
 struct Point {
   x: int;

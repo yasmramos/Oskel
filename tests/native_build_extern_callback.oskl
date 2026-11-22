@@ -1,6 +1,6 @@
 // Fixture for the hosted callback test (tests/build_hosted_extern.cmake).
 //
-// A callback is a C function pointer: the VM marshals it through libffi, and
+// A callback is a C function pointer: the VM marshals it through a closure stub, and
 // the AOT backend now binds the Oskel closure to a runtime-created stub, so the
 // same program must behave identically in both engines. `qsort` is a libc
 // symbol whose comparator is arbitrary program code, which is the point: the
