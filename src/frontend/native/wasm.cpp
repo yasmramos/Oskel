@@ -1,10 +1,12 @@
 #include "native/wasm.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -142,6 +144,86 @@ constexpr std::uint64_t kMethodStrRepeat = 49;
 constexpr std::uint64_t kMethodStrReversed = 50;
 constexpr std::uint64_t kMethodStrPadStart = 51;
 constexpr std::uint64_t kMethodStrPadEnd = 52;
+constexpr std::size_t kMethodCount = 53;
+static_assert(kMethodStrPadEnd + 1 == kMethodCount,
+              "the last method selector must match the helper count");
+
+// The method names a static member read can reach. The same name may belong to
+// more than one owner (`contains`, `indexOf`, `clone`, `clear`, `reversed`), so
+// every selector with that name is enabled: the receiver type is not known at
+// compile time, and a false positive only keeps one extra body.
+bool enableMethodsForName(const std::string& name,
+                          std::array<bool, kMethodCount>& enabled) {
+  struct Entry {
+    const char* name;
+    std::uint64_t selector;
+  };
+  static constexpr Entry kEntries[] = {
+      {"push", kMethodArrayPush},
+      {"pop", kMethodArrayPop},
+      {"shift", kMethodArrayShift},
+      {"unshift", kMethodArrayUnshift},
+      {"insert", kMethodArrayInsert},
+      {"removeAt", kMethodArrayRemoveAt},
+      {"contains", kMethodArrayContains},
+      {"indexOf", kMethodArrayIndexOf},
+      {"clear", kMethodArrayClear},
+      {"slice", kMethodArraySlice},
+      {"concat", kMethodArrayConcat},
+      {"reversed", kMethodArrayReversed},
+      {"clone", kMethodArrayClone},
+      {"sum", kMethodArraySum},
+      {"join", kMethodArrayJoin},
+      {"map", kMethodArrayMap},
+      {"filter", kMethodArrayFilter},
+      {"each", kMethodArrayEach},
+      {"find", kMethodArrayFind},
+      {"any", kMethodArrayAny},
+      {"all", kMethodArrayAll},
+      {"reduce", kMethodArrayReduce},
+      {"sort", kMethodArraySort},
+      {"sorted", kMethodArraySorted},
+      {"keys", kMethodMapKeys},
+      {"values", kMethodMapValues},
+      {"entries", kMethodMapEntries},
+      {"has", kMethodMapHas},
+      {"get", kMethodMapGet},
+      {"set", kMethodMapSet},
+      {"delete", kMethodMapDelete},
+      {"merge", kMethodMapMerge},
+      {"clone", kMethodMapClone},
+      {"clear", kMethodMapClear},
+      {"upper", kMethodStrUpper},
+      {"lower", kMethodStrLower},
+      {"trim", kMethodStrTrim},
+      {"trimStart", kMethodStrTrimStart},
+      {"trimEnd", kMethodStrTrimEnd},
+      {"split", kMethodStrSplit},
+      {"lines", kMethodStrLines},
+      {"replace", kMethodStrReplace},
+      {"replaceFirst", kMethodStrReplaceFirst},
+      {"startsWith", kMethodStrStartsWith},
+      {"endsWith", kMethodStrEndsWith},
+      {"contains", kMethodStrContains},
+      {"indexOf", kMethodStrIndexOf},
+      {"substr", kMethodStrSubstr},
+      {"chars", kMethodStrChars},
+      {"repeat", kMethodStrRepeat},
+      {"reversed", kMethodStrReversed},
+      {"padStart", kMethodStrPadStart},
+      {"padEnd", kMethodStrPadEnd},
+  };
+  static_assert(std::size(kEntries) == kMethodCount,
+                "every method helper needs a name entry");
+  bool any = false;
+  for (const Entry& entry : kEntries) {
+    if (name == entry.name) {
+      enabled[static_cast<std::size_t>(entry.selector)] = true;
+      any = true;
+    }
+  }
+  return any;
+}
 
 // mt19937_64 state (PHASE 9.3): 312 words followed by the cursor, the same
 // layout the x86-64 runtime uses, so a seeded stream is identical on both
@@ -756,6 +838,10 @@ struct Runtime {
                 sPadEndLarge = 0;
   std::uint32_t upperTable = 0, lowerTable = 0;
   std::uint32_t upperCount = 0, lowerCount = 0;
+  // PHASE 9.4: only the bound methods the program can reach keep a body, and
+  // the Unicode case tables are only emitted when `upper`/`lower` are used.
+  std::array<bool, kMethodCount> methodEnabled{};
+  bool useUpper = true, useLower = true;
 
   std::uint32_t randomState = 0, randomSeedFn = 0, randomTwistFn = 0,
                 randomNextFn = 0;
@@ -985,10 +1071,16 @@ struct Runtime {
     sPadEndFill = pool.addString("padEnd() fill cannot be empty");
     sPadStartLarge = pool.addString("padStart() result is too large");
     sPadEndLarge = pool.addString("padEnd() result is too large");
-    upperTable = pool.addCaseRuns(kUnicodeUpperRuns, kUnicodeUpperRunCount);
-    upperCount = static_cast<std::uint32_t>(kUnicodeUpperRunCount);
-    lowerTable = pool.addCaseRuns(kUnicodeLowerRuns, kUnicodeLowerRunCount);
-    lowerCount = static_cast<std::uint32_t>(kUnicodeLowerRunCount);
+    // The case tables are 12 bytes per run (16 KB together). A program that
+    // never reads `upper`/`lower` does not need either one (PHASE 9.4).
+    if (useUpper) {
+      upperTable = pool.addCaseRuns(kUnicodeUpperRuns, kUnicodeUpperRunCount);
+      upperCount = static_cast<std::uint32_t>(kUnicodeUpperRunCount);
+    }
+    if (useLower) {
+      lowerTable = pool.addCaseRuns(kUnicodeLowerRuns, kUnicodeLowerRunCount);
+      lowerCount = static_cast<std::uint32_t>(kUnicodeLowerRunCount);
+    }
     if (randomStateSlot >= 0) {
       sRandomHigh = pool.addString("random() bound must be positive");
       sRandomBounds = pool.addString(
@@ -14221,6 +14313,20 @@ std::vector<std::uint8_t> Lowering::run() {
                            ? globalSlot.at("$randomState")
                            : -1;
 
+  // PHASE 9.4: a bound method is only reachable through a static member read
+  // (`a.push`, `a?.push`); indexing (`a[k]`) is an index, never a method. The
+  // compiler records every member name, so only the reachable helpers keep a
+  // body and the Unicode case tables are emitted only for `upper`/`lower`.
+  std::unordered_set<std::string> usedMethodNames;
+  for (const Bytecode* proto : protos) {
+    usedMethodNames.insert(proto->usedMethods.begin(), proto->usedMethods.end());
+  }
+  rt.useUpper = usedMethodNames.count("upper") != 0;
+  rt.useLower = usedMethodNames.count("lower") != 0;
+  for (const std::string& name : usedMethodNames) {
+    enableMethodsForName(name, rt.methodEnabled);
+  }
+
   pool.base = static_cast<std::uint32_t>(globalCount * 16);
   rt.declareTypes();
   rt.addImports();
@@ -14234,6 +14340,17 @@ std::vector<std::uint8_t> Lowering::run() {
   rt.emitArrayMethods();
   rt.emitStringMethods();
   rt.emitMethodDispatch();
+
+  // Discard the bodies of methods the program cannot reach. The dispatcher
+  // still names every helper, so the function index and type stay valid; an
+  // unreachable body is the smallest legal one and traps if a future dynamic
+  // path ever reaches it (PHASE 9.4).
+  for (std::size_t i = 0; i < rt.methodHelpers.size() && i < kMethodCount; ++i) {
+    if (rt.methodEnabled[i]) continue;
+    Body& body = m.funcs[rt.methodHelpers[i] - m.importCount()];
+    body.code = {0x00};
+    body.localTypes.clear();
+  }
 
   // One static string per string constant and per proto name, created before
   // any proto body is emitted so a LOADK/CLOSURE can name its address.
