@@ -576,7 +576,14 @@ it as a caveat:
   sections, imports, thunks and `_start`. `oskel.build_hosted_own_windows`
   (Windows only) runs a real `print` binary end to end; the `windows-latest`
   runner is the execution gate, since the Linux development host has no Wine.
-- `-r` COFF, MSVC `.lib` archives, `.pdata`/`.xdata` and TLS are 10.3b; the
+- `-r` COFF (`linkRelocatableCoff`, PHASE 10.3b.1) is implemented. It emits a
+  normal COFF object: section symbols with their aux record, defined globals
+  deduplicated, local symbols renamed `name$object.index` (the second link
+  resolves locals by index, not by name), and section-symbol relocations
+  retargeted to the output section symbol with the input section's merged
+  offset added to the field. The output is accepted by `linkWindowsExecutable`
+  and by the two-object `link_pe_test` fixture.
+- MSVC `.lib` archives, `args()` and `.pdata`/`.xdata`/TLS remain 10.3b; the
   macOS Mach-O container is 10.3d.
 - The multi-object e2e helper is an `OBJECT` library compiled with
   `-fno-sanitize=all` when the build is sanitized: the object is linked into a

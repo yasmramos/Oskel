@@ -19,3 +19,10 @@
 // ignored. `args()` is empty until the `GetCommandLineA` parser lands (10.3b).
 std::vector<std::uint8_t> linkWindowsExecutable(
     const std::vector<LinkInput>& inputs, const LinkOptions& options);
+
+// PHASE 10.3b: combines COFF objects into a new COFF object. Defined symbols
+// are placed at their merged section offsets, local symbols are renamed to stay
+// unique, section-symbol relocations are retargeted to the output section
+// symbol with the addend adjusted, and undefined symbols stay undefined.
+std::vector<std::uint8_t> linkRelocatableCoff(
+    const std::vector<LinkInput>& inputs, const LinkOptions& options);
