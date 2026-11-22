@@ -846,6 +846,10 @@ user:
 - Do I need new logic in the compiler? → which one
 - Does the feature need AOT support, or is it VM-only? → the AOT backend
   (PHASE 7) is a first-class target, not an afterthought
+- Which platforms and backends does this touch? → Linux, Windows and macOS;
+  the VM, the AOT backend and WebAssembly where they apply; the VS Code
+  grammar and snippets for syntax; every packaging format. A feature that
+  reaches only some of them is unfinished.
 
 Without this checklist complete and approved, **do not proceed to code**.
 
@@ -876,6 +880,33 @@ and a feature that works only in AOT is a bug. Concretely:
 When the feature does break AOT parity, the same change must add the AOT
 support (or the clean failure and its fixture). Leaving it for later is not an
 option.
+
+### Platform parity is part of every feature
+
+"Supported" means every platform the project ships on, not the machine the
+feature was written on. A feature is finished only when it is implemented and
+tested on Linux, Windows and macOS, on every engine and backend it applies to
+(the VM, AOT freestanding/hosted, WebAssembly), and in every artifact that
+exposes it: the CLI, `oskelc`, `bindgen`, the VS Code grammar and snippets, and
+the installers. A feature that works only on the author's platform is a bug,
+not a partial delivery; do not merge it and plan to port it later.
+
+- The CI matrix must build and test the feature on each platform. A test that
+  is skipped because the runner lacks a dependency is not coverage: install the
+  dependency on the runner or add a platform-independent fixture that exercises
+  the same code path.
+- A platform-specific code path (a Windows API, a macOS framework, a Linux
+  syscall) gets a test on that platform in the same change. "It compiles
+  elsewhere" is not evidence that it works there.
+- If a target genuinely cannot host the capability, the feature must **fail
+  cleanly** there with a dedicated message and the documented exit code, and a
+  fixture must pin that failure. It must never be silently absent or fall back
+  to different semantics.
+- Record every such gap in `docs/BACKLOG.md` §6 with the reason and the
+  platform. Do not leave a platform quietly behind.
+- Adding a platform to the matrix means adding its real compiler and the
+  fixtures it can run; a matrix entry that only compiles while every execution
+  test skips does not make the feature portable.
 
 ---
 
