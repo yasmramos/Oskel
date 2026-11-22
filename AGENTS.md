@@ -159,6 +159,14 @@ it as a caveat:
   the `time()` wall clock, the one builtin whose AOT binding differs per
   target). `std/ui.oskl` is the declarative widget/layout layer over the same
   surface; `tests/native_build_ui.oskl` is its VM/AOT fixture.
+- `std.io` is **in-memory text streams, not file I/O**. `StringReader` and
+  `StringWriter` are classes (maps with closures), and `splitLines`/`joinLines`
+  are free functions. File access stays with
+  `readFile`/`writeFile`/`fileExists`: the freestanding AOT backend does not
+  seed them, and the lowerer scans every function body, so a module that merely
+  mentions one fails `oskel build` even when the function is unused.
+  `tests/62_std_io.oskl` is the VM test and `tests/native_build_io.oskl` the
+  VM/AOT/WASM parity fixture.
 - `sort`/`sorted` are the only collection methods whose comparator is arbitrary
   program code, so their AOT body calls back through `oskel_call` from inside a
   bottom-up stable merge sort (a recursive one would deepen the program's stack
