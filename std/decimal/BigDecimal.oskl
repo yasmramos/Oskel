@@ -1,0 +1,889 @@
+// Standard library: arbitrary-precision decimal arithmetic.
+//
+// `std.decimal.BigDecimal` is a class module: its PascalCase file name is the
+// class, so `import std.decimal.BigDecimal;` binds the constructor.
+//
+// The API follows Java's `java.math.BigDecimal`: the value is an arbitrary
+// precision signed integer (the *unscaled* value) plus a 32-bit scale, and the
+// represented number is `unscaled * 10^-scale`. Addition, subtraction and
+// multiplication are exact. Division is exact when it terminates; otherwise
+// call `divide(divisor, scale, roundingMode)` with one of the Java rounding
+// modes (`UP`, `DOWN`, `CEILING`, `FLOOR`, `HALF_UP`, `HALF_DOWN`,
+// `HALF_EVEN`, `UNNECESSARY`).
+//
+// The implementation is pure Oskel over arrays, strings, loops and closures.
+// The big integer uses base-10 limbs in little-endian order, so parsing and
+// formatting are exact and the same code runs on the VM, under `oskel build`
+// and on WebAssembly. There is no `double` in the representation.
+
+class BigDecimal {
+  // Sign is -1, 0 or 1. `digits` is the little-endian magnitude in base 10,
+  // without high-order zeros. `scale` is the number of decimal places, and may
+  // be negative (`1E+3` has scale -3).
+  _sign: int = 0;
+  _digits: array = [];
+  _scale: int = 0;
+
+  // Java-style constructor. A string is the exact form; an int is exact; a
+  // float/double uses the shortest round-tripping decimal text (the same idea
+  // as `BigDecimal.valueOf(double)`), and another BigDecimal is copied.
+  fn init(value) {
+    if (type(value) == "string") {
+      let parsed = _parseDecimal(value);
+      self._sign = parsed.sign;
+      self._digits = parsed.digits;
+      self._scale = parsed.scale;
+    } else if (type(value) == "int") {
+      let big = _fromText(str(value));
+      self._sign = big.sign;
+      self._digits = big.digits;
+      self._scale = 0;
+    } else if (type(value) == "float" || type(value) == "double") {
+      let parsed = _parseDecimal(str(value));
+      self._sign = parsed.sign;
+      self._digits = parsed.digits;
+      self._scale = parsed.scale;
+    } else if (type(value) == "map" && value._digits != nil && value._scale != nil) {
+      self._sign = value._sign;
+      self._digits = value._digits;
+      self._scale = value._scale;
+    } else {
+      panic("BigDecimal: expected a string, int, float, double or BigDecimal");
+    }
+  }
+
+  // The number of digits to the right of the decimal point. A negative scale
+  // means the value is an integer with trailing zeros.
+  fn scale(): int {
+    return self._scale;
+  }
+
+  // The number of significant digits in the unscaled value; zero has one.
+  fn precision(): int {
+    return _precision(self._big());
+  }
+
+  // -1, 0 or 1.
+  fn signum(): int {
+    return self._sign;
+  }
+
+  fn negate() {
+    return _make(_neg(self._big()), self._scale);
+  }
+
+  fn abs() {
+    if (self._sign < 0) {
+      return self.negate();
+    }
+    return _make(self._big(), self._scale);
+  }
+
+  // Exact sum, with the larger of the two scales.
+  fn add(other) {
+    let rhs = _coerce(other);
+    let scale = self._scale > rhs._scale ? self._scale : rhs._scale;
+    let left = self._scale < scale ? _shiftUp(self._big(), scale - self._scale) : self._big();
+    let right = rhs._scale < scale ? _shiftUp(rhs._big(), scale - rhs._scale) : rhs._big();
+    return _make(_add(left, right), scale);
+  }
+
+  // Exact difference, with the larger of the two scales.
+  fn subtract(other) {
+    let rhs = _coerce(other);
+    return self.add(rhs.negate());
+  }
+
+  // Exact product; the resulting scale is the sum of the operand scales.
+  fn multiply(other) {
+    let rhs = _coerce(other);
+    return _make(_mul(self._big(), rhs._big()), self._scale + rhs._scale);
+  }
+
+  // Java's `divide(BigDecimal)` when called with one argument: the quotient
+  // must be exact. With one extra argument, it is a rounding mode and the
+  // result uses this value's scale. With two, they are the target scale and
+  // the rounding mode.
+  fn divide(divisor, rest...) {
+    let rhs = _coerce(divisor);
+    if (_isZero(rhs._big())) {
+      panic("BigDecimal.divide: division by zero");
+    }
+    if (len(rest) == 0) {
+      return _divideExact(self._big(), self._scale, rhs._big(), rhs._scale);
+    }
+    if (len(rest) == 1) {
+      return _divideToScale(self._big(), self._scale, rhs._big(), rhs._scale, self._scale, rest[0]);
+    }
+    if (len(rest) == 2) {
+      return _divideToScale(self._big(), self._scale, rhs._big(), rhs._scale, rest[0], rest[1]);
+    }
+    panic("BigDecimal.divide: expected divisor, optionally followed by scale and rounding mode");
+  }
+
+  // Truncates toward zero to an integer-valued BigDecimal with scale 0.
+  fn divideToIntegralValue(divisor) {
+    let rhs = _coerce(divisor);
+    if (_isZero(rhs._big())) {
+      panic("BigDecimal.divideToIntegralValue: division by zero");
+    }
+    let shift = rhs._scale - self._scale;
+    var numerator = self._big();
+    var denominator = rhs._big();
+    if (shift >= 0) {
+      numerator = _shiftUp(numerator, shift);
+    } else {
+      denominator = _shiftUp(denominator, -shift);
+    }
+    return _make(_divMod(numerator, denominator).q, 0);
+  }
+
+  // The exact remainder `self - divideToIntegralValue(divisor) * divisor`.
+  fn remainder(divisor) {
+    let rhs = _coerce(divisor);
+    let quotient = self.divideToIntegralValue(rhs);
+    return self.subtract(quotient.multiply(rhs));
+  }
+
+  // Java's `setScale(int)` when no rounding mode is supplied: it raises when
+  // digits would be discarded. `setScale(scale, mode)` rounds instead.
+  fn setScale(targetScale, rest...) {
+    if (len(rest) > 1) {
+      panic("BigDecimal.setScale: expected scale, optionally followed by a rounding mode");
+    }
+    if (targetScale == self._scale) {
+      return _make(self._big(), self._scale);
+    }
+    if (targetScale > self._scale) {
+      return _make(_shiftUp(self._big(), targetScale - self._scale), targetScale);
+    }
+    let den = _pow10(self._scale - targetScale);
+    let dm = _divMod(self._big(), den);
+    var quotient = dm.q;
+    if (!_isZero(dm.r)) {
+      if (len(rest) == 0) {
+        panic("BigDecimal.setScale: rounding necessary");
+      }
+      quotient = _round(quotient, dm.r, den, rest[0], self._sign);
+    }
+    return _make(quotient, targetScale);
+  }
+
+  // Alias for `setScale(scale, mode)`, matching the common Java call shape.
+  fn round(targetScale, mode) {
+    return self.setScale(targetScale, mode);
+  }
+
+  // Removes trailing zeros from the unscaled value and lowers the scale.
+  fn stripTrailingZeros() {
+    if (self._sign == 0) {
+      return _make(_zero(), 0);
+    }
+    var digits = self._digits;
+    var scale = self._scale;
+    while (len(digits) > 1 && digits[0] == 0) {
+      digits = digits[1:len(digits)];
+      scale = scale - 1;
+    }
+    return _make(_fromLittle(self._sign, digits), scale);
+  }
+
+  // Java's `compareTo`: numeric comparison, ignoring the scale.
+  fn compareTo(other) {
+    let rhs = _coerce(other);
+    let scale = self._scale > rhs._scale ? self._scale : rhs._scale;
+    let left = self._scale < scale ? _shiftUp(self._big(), scale - self._scale) : self._big();
+    let right = rhs._scale < scale ? _shiftUp(rhs._big(), scale - rhs._scale) : rhs._big();
+    return _compare(left, right);
+  }
+
+  // Java's `equals`: both the numeric value and the scale must match.
+  fn equals(other) {
+    if (type(other) != "map" || other._digits == nil || other._scale == nil) {
+      return false;
+    }
+    return self._scale == other._scale && _compare(self._big(), other._big()) == 0;
+  }
+
+  // A non-negative exponent; the scale is multiplied by the exponent.
+  fn pow(exponent) {
+    if (type(exponent) != "int" || exponent < 0) {
+      panic("BigDecimal.pow: exponent must be a non-negative int");
+    }
+    var result = BigDecimal(1);
+    var base = _make(self._big(), self._scale);
+    var n = exponent;
+    while (n > 0) {
+      if (n % 2 == 1) {
+        result = result.multiply(base);
+      }
+      n = n / 2;
+      if (n > 0) {
+        base = base.multiply(base);
+      }
+    }
+    return result;
+  }
+
+  fn doubleValue(): double {
+    return double(self.toPlainString());
+  }
+
+  // Java's `intValue` truncates toward zero; an out-of-range result is a
+  // runtime error from the `int` conversion.
+  fn intValue(): int {
+    let text = self.toPlainString();
+    var start = 0;
+    if (len(text) > 0 && text[0] == "-") {
+      start = 1;
+    }
+    var end = start;
+    while (end < len(text) && text[end] != ".") {
+      end = end + 1;
+    }
+    if (end == start) {
+      return 0;
+    }
+    let digits = text[start:end];
+    return start == 1 ? -int(digits) : int(digits);
+  }
+
+  // The exact plain decimal text; no exponent is used.
+  fn toPlainString(): string {
+    return _plain(self._sign, self._digits, self._scale);
+  }
+
+  // Java's `toString`: plain notation when the adjusted exponent is at least
+  // -6, scientific notation otherwise (and for a negative scale).
+  fn toString(): string {
+    if (self._sign == 0) {
+      if (self._scale == 0) {
+        return "0";
+      }
+      if (self._scale < 0) {
+        return "0E+" + str(-self._scale);
+      }
+      return "0." + _zeros(self._scale);
+    }
+    let magnitude = _toText({ sign: 1, digits: self._digits });
+    let prefix = self._sign < 0 ? "-" : "";
+    if (self._scale == 0) {
+      return prefix + magnitude;
+    }
+    let adjusted = len(magnitude) - self._scale - 1;
+    if (self._scale < 0 || adjusted < -6) {
+      return prefix + _scientific(magnitude, adjusted);
+    }
+    return self.toPlainString();
+  }
+
+  fn _big() {
+    return { sign: self._sign, digits: self._digits };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// BigDecimal construction and coercion
+// ---------------------------------------------------------------------------
+
+fn _make(big, scale) {
+  let out = BigDecimal(0);
+  out._sign = big.sign;
+  out._digits = big.digits;
+  out._scale = scale;
+  return out;
+}
+
+fn _coerce(value) {
+  if (type(value) == "map" && value._digits != nil && value._scale != nil) {
+    return value;
+  }
+  return BigDecimal(value);
+}
+
+// ---------------------------------------------------------------------------
+// Big integer: sign and base-10 limbs, little-endian
+// ---------------------------------------------------------------------------
+
+fn _zero() {
+  return { sign: 0, digits: [] };
+}
+
+fn _fromLittle(sign, digits) {
+  var end = len(digits);
+  while (end > 0 && digits[end - 1] == 0) {
+    end = end - 1;
+  }
+  if (end == 0) {
+    return _zero();
+  }
+  var out = [];
+  var i = 0;
+  while (i < end) {
+    out[len(out)] = digits[i];
+    i = i + 1;
+  }
+  return { sign: sign < 0 ? -1 : 1, digits: out };
+}
+
+fn _fromMsd(sign, digits) {
+  var little = [];
+  var i = len(digits) - 1;
+  while (i >= 0) {
+    little[len(little)] = digits[i];
+    i = i - 1;
+  }
+  return _fromLittle(sign, little);
+}
+
+fn _fromText(text) {
+  if (len(text) == 0) {
+    panic("BigDecimal: empty integer");
+  }
+  var i = 0;
+  var sign = 1;
+  if (text[0] == "+" || text[0] == "-") {
+    if (text[0] == "-") {
+      sign = -1;
+    }
+    i = 1;
+  }
+  if (i >= len(text)) {
+    panic("BigDecimal: expected digits");
+  }
+  var digits = [];
+  while (i < len(text)) {
+    let c = text[i];
+    if (c < "0" || c > "9") {
+      panic("BigDecimal: invalid digit '" + c + "'");
+    }
+    digits[len(digits)] = ord(c) - 48;
+    i = i + 1;
+  }
+  return _fromMsd(sign, digits);
+}
+
+fn _toText(big) {
+  if (big.sign == 0) {
+    return "0";
+  }
+  var out = "";
+  var i = len(big.digits) - 1;
+  while (i >= 0) {
+    out = out + chr(48 + big.digits[i]);
+    i = i - 1;
+  }
+  return big.sign < 0 ? "-" + out : out;
+}
+
+fn _precision(big) {
+  if (big.sign == 0) {
+    return 1;
+  }
+  return len(big.digits);
+}
+
+fn _isZero(big) {
+  return big.sign == 0;
+}
+
+fn _isOdd(big) {
+  return big.sign != 0 && big.digits[0] % 2 == 1;
+}
+
+fn _neg(big) {
+  if (big.sign == 0) {
+    return _zero();
+  }
+  return { sign: -big.sign, digits: big.digits };
+}
+
+fn _cmpAbs(a, b) {
+  if (len(a.digits) != len(b.digits)) {
+    return len(a.digits) < len(b.digits) ? -1 : 1;
+  }
+  var i = len(a.digits) - 1;
+  while (i >= 0) {
+    if (a.digits[i] != b.digits[i]) {
+      return a.digits[i] < b.digits[i] ? -1 : 1;
+    }
+    i = i - 1;
+  }
+  return 0;
+}
+
+fn _compare(a, b) {
+  if (a.sign != b.sign) {
+    return a.sign < b.sign ? -1 : 1;
+  }
+  if (a.sign == 0) {
+    return 0;
+  }
+  let magnitude = _cmpAbs(a, b);
+  return a.sign > 0 ? magnitude : -magnitude;
+}
+
+fn _addAbs(a, b) {
+  var out = [];
+  var carry = 0;
+  var i = 0;
+  let n = len(a) > len(b) ? len(a) : len(b);
+  while (i < n) {
+    let da = i < len(a) ? a[i] : 0;
+    let db = i < len(b) ? b[i] : 0;
+    let sum = da + db + carry;
+    out[len(out)] = sum % 10;
+    carry = sum / 10;
+    i = i + 1;
+  }
+  if (carry > 0) {
+    out[len(out)] = carry;
+  }
+  return out;
+}
+
+// Requires the magnitude of `a` to be at least the magnitude of `b`.
+fn _subAbs(a, b) {
+  var out = [];
+  var borrow = 0;
+  var i = 0;
+  while (i < len(a)) {
+    let db = i < len(b) ? b[i] : 0;
+    var value = a[i] - db - borrow;
+    if (value < 0) {
+      value = value + 10;
+      borrow = 1;
+    } else {
+      borrow = 0;
+    }
+    out[len(out)] = value;
+    i = i + 1;
+  }
+  return out;
+}
+
+fn _add(a, b) {
+  if (a.sign == 0) {
+    return b;
+  }
+  if (b.sign == 0) {
+    return a;
+  }
+  if (a.sign == b.sign) {
+    return _fromLittle(a.sign, _addAbs(a.digits, b.digits));
+  }
+  let magnitude = _cmpAbs(a, b);
+  if (magnitude == 0) {
+    return _zero();
+  }
+  if (magnitude > 0) {
+    return _fromLittle(a.sign, _subAbs(a.digits, b.digits));
+  }
+  return _fromLittle(b.sign, _subAbs(b.digits, a.digits));
+}
+
+fn _sub(a, b) {
+  return _add(a, _neg(b));
+}
+
+fn _mulSmall(big, factor) {
+  if (big.sign == 0 || factor == 0) {
+    return _zero();
+  }
+  var out = [];
+  var carry = 0;
+  var i = 0;
+  while (i < len(big.digits)) {
+    let product = big.digits[i] * factor + carry;
+    out[len(out)] = product % 10;
+    carry = product / 10;
+    i = i + 1;
+  }
+  while (carry > 0) {
+    out[len(out)] = carry % 10;
+    carry = carry / 10;
+  }
+  return _fromLittle(big.sign, out);
+}
+
+fn _addSmall(big, value) {
+  return _add(big, _fromText(str(value)));
+}
+
+fn _mul(a, b) {
+  if (a.sign == 0 || b.sign == 0) {
+    return _zero();
+  }
+  var out = [];
+  let total = len(a.digits) + len(b.digits);
+  var i = 0;
+  while (i < total) {
+    out[len(out)] = 0;
+    i = i + 1;
+  }
+  i = 0;
+  while (i < len(a.digits)) {
+    var carry = 0;
+    var j = 0;
+    while (j < len(b.digits)) {
+      let index = i + j;
+      let product = out[index] + a.digits[i] * b.digits[j] + carry;
+      out[index] = product % 10;
+      carry = product / 10;
+      j = j + 1;
+    }
+    var k = i + len(b.digits);
+    while (carry > 0) {
+      let sum = out[k] + carry;
+      out[k] = sum % 10;
+      carry = sum / 10;
+      k = k + 1;
+    }
+    i = i + 1;
+  }
+  return _fromLittle(a.sign * b.sign, out);
+}
+
+fn _shiftUp(big, places) {
+  if (big.sign == 0 || places == 0) {
+    return big;
+  }
+  var out = [];
+  var i = 0;
+  while (i < places) {
+    out[len(out)] = 0;
+    i = i + 1;
+  }
+  for digit in big.digits {
+    out[len(out)] = digit;
+  }
+  return _fromLittle(big.sign, out);
+}
+
+fn _shiftDown(big, places) {
+  if (big.sign == 0 || places == 0) {
+    return big;
+  }
+  if (places >= len(big.digits)) {
+    return _zero();
+  }
+  return _fromLittle(big.sign, big.digits[places:len(big.digits)]);
+}
+
+fn _pow10(exponent) {
+  var digits = [];
+  var i = 0;
+  while (i < exponent) {
+    digits[len(digits)] = 0;
+    i = i + 1;
+  }
+  digits[len(digits)] = 1;
+  return _fromLittle(1, digits);
+}
+
+// Long division of two non-negative magnitudes. The quotient and remainder
+// are little-endian magnitudes; the caller applies the signs.
+fn _divModAbs(a, b) {
+  if (b.sign == 0) {
+    panic("BigDecimal: division by zero");
+  }
+  if (_cmpAbs(a, b) < 0) {
+    return { q: _zero(), r: _fromLittle(1, a.digits) };
+  }
+  var remainder = _zero();
+  var quotient = [];
+  var i = len(a.digits) - 1;
+  while (i >= 0) {
+    remainder = _addSmall(_mulSmall(remainder, 10), a.digits[i]);
+    var digit = 0;
+    while (digit < 9) {
+      let next = _mulSmall(b, digit + 1);
+      if (_cmpAbs(next, remainder) > 0) {
+        break;
+      }
+      digit = digit + 1;
+    }
+    if (digit > 0) {
+      remainder = _fromLittle(1, _subAbs(remainder.digits, _mulSmall(b, digit).digits));
+    }
+    quotient[len(quotient)] = digit;
+    i = i - 1;
+  }
+  var little = [];
+  i = len(quotient) - 1;
+  while (i >= 0) {
+    little[len(little)] = quotient[i];
+    i = i - 1;
+  }
+  return { q: _fromLittle(1, little), r: remainder };
+}
+
+fn _divMod(a, b) {
+  if (b.sign == 0) {
+    panic("BigDecimal: division by zero");
+  }
+  if (a.sign == 0) {
+    return { q: _zero(), r: _zero() };
+  }
+  let absolute = _divModAbs(_fromLittle(1, a.digits), _fromLittle(1, b.digits));
+  return {
+    q: _fromLittle(a.sign * b.sign, absolute.q.digits),
+    r: _fromLittle(a.sign, absolute.r.digits)
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Decimal parsing and formatting
+// ---------------------------------------------------------------------------
+
+fn _parseDecimal(text) {
+  if (len(text) == 0) {
+    panic("BigDecimal: empty string");
+  }
+  var i = 0;
+  var sign = 1;
+  if (text[0] == "+" || text[0] == "-") {
+    if (text[0] == "-") {
+      sign = -1;
+    }
+    i = 1;
+  }
+  var msd = [];
+  var fraction = 0;
+  var seen = false;
+  while (i < len(text) && text[i] != "." && text[i] != "e" && text[i] != "E") {
+    let c = text[i];
+    if (c < "0" || c > "9") {
+      panic("BigDecimal: invalid digit '" + c + "'");
+    }
+    msd[len(msd)] = ord(c) - 48;
+    seen = true;
+    i = i + 1;
+  }
+  if (i < len(text) && text[i] == ".") {
+    i = i + 1;
+    while (i < len(text) && text[i] != "e" && text[i] != "E") {
+      let c = text[i];
+      if (c < "0" || c > "9") {
+        panic("BigDecimal: invalid digit '" + c + "'");
+      }
+      msd[len(msd)] = ord(c) - 48;
+      fraction = fraction + 1;
+      seen = true;
+      i = i + 1;
+    }
+  }
+  if (!seen) {
+    panic("BigDecimal: expected digits");
+  }
+  var exponent = 0;
+  if (i < len(text) && (text[i] == "e" || text[i] == "E")) {
+    i = i + 1;
+    var exponentSign = 1;
+    if (i < len(text) && (text[i] == "+" || text[i] == "-")) {
+      if (text[i] == "-") {
+        exponentSign = -1;
+      }
+      i = i + 1;
+    }
+    var exponentDigits = false;
+    while (i < len(text)) {
+      let c = text[i];
+      if (c < "0" || c > "9") {
+        panic("BigDecimal: invalid exponent digit '" + c + "'");
+      }
+      exponent = exponent * 10 + (ord(c) - 48);
+      if (exponent > 1000000) {
+        panic("BigDecimal: exponent is too large");
+      }
+      exponentDigits = true;
+      i = i + 1;
+    }
+    if (!exponentDigits) {
+      panic("BigDecimal: expected exponent digits");
+    }
+    exponent = exponent * exponentSign;
+  }
+  if (i != len(text)) {
+    panic("BigDecimal: unexpected trailing characters");
+  }
+  let big = _fromMsd(sign, msd);
+  return { sign: big.sign, digits: big.digits, scale: fraction - exponent };
+}
+
+fn _zeros(count) {
+  var out = "";
+  var i = 0;
+  while (i < count) {
+    out = out + "0";
+    i = i + 1;
+  }
+  return out;
+}
+
+fn _scientific(magnitude, adjusted) {
+  var text = magnitude[0];
+  if (len(magnitude) > 1) {
+    text = text + "." + magnitude[1:len(magnitude)];
+  }
+  let exponent = adjusted < 0 ? "-" + str(-adjusted) : "+" + str(adjusted);
+  return text + "E" + exponent;
+}
+
+fn _plain(sign, digits, scale) {
+  if (sign == 0) {
+    if (scale <= 0) {
+      return "0";
+    }
+    return "0." + _zeros(scale);
+  }
+  let magnitude = _toText({ sign: 1, digits: digits });
+  let prefix = sign < 0 ? "-" : "";
+  if (scale <= 0) {
+    return prefix + magnitude + _zeros(-scale);
+  }
+  if (len(magnitude) <= scale) {
+    return prefix + "0." + _zeros(scale - len(magnitude)) + magnitude;
+  }
+  return prefix + magnitude[0:len(magnitude) - scale] + "."
+    + magnitude[len(magnitude) - scale:len(magnitude)];
+}
+
+// ---------------------------------------------------------------------------
+// Exact division
+// ---------------------------------------------------------------------------
+
+fn _isOne(big) {
+  return big.sign == 1 && len(big.digits) == 1 && big.digits[0] == 1;
+}
+
+fn _gcd(a, b) {
+  var x = _fromLittle(1, a.digits);
+  var y = _fromLittle(1, b.digits);
+  while (!_isZero(y)) {
+    let remainder = _divMod(x, y).r;
+    x = y;
+    y = _fromLittle(1, remainder.digits);
+  }
+  return x;
+}
+
+// Divides a non-negative magnitude by 2 or 5. The quotient is a magnitude and
+// the remainder is a single digit.
+fn _divModSmall(big, divisor) {
+  var msd = [];
+  var remainder = 0;
+  var i = len(big.digits) - 1;
+  while (i >= 0) {
+    let current = remainder * 10 + big.digits[i];
+    msd[len(msd)] = current / divisor;
+    remainder = current % divisor;
+    i = i - 1;
+  }
+  var little = [];
+  i = len(msd) - 1;
+  while (i >= 0) {
+    little[len(little)] = msd[i];
+    i = i - 1;
+  }
+  return { q: _fromLittle(1, little), r: remainder };
+}
+
+// Java's exact `divide(BigDecimal)`: the result has the smallest scale that
+// represents the quotient exactly. A reduced denominator with a prime factor
+// other than 2 or 5 has no terminating decimal expansion and raises.
+fn _divideExact(numerator, numeratorScale, denominator, denominatorScale) {
+  if (_isZero(denominator)) {
+    panic("BigDecimal.divide: division by zero");
+  }
+  if (_isZero(numerator)) {
+    return _make(_zero(), numeratorScale - denominatorScale);
+  }
+  let absNumerator = _fromLittle(1, numerator.digits);
+  let absDenominator = _fromLittle(1, denominator.digits);
+  let common = _gcd(absNumerator, absDenominator);
+  let reducedNumerator = _divMod(absNumerator, common).q;
+  let reducedDenominator = _divMod(absDenominator, common).q;
+
+  var rest = reducedDenominator;
+  var twos = 0;
+  while (true) {
+    let dm = _divModSmall(rest, 2);
+    if (dm.r != 0) {
+      break;
+    }
+    rest = dm.q;
+    twos = twos + 1;
+  }
+  var fives = 0;
+  while (true) {
+    let dm = _divModSmall(rest, 5);
+    if (dm.r != 0) {
+      break;
+    }
+    rest = dm.q;
+    fives = fives + 1;
+  }
+  if (!_isOne(rest)) {
+    panic("BigDecimal.divide: non-terminating decimal expansion; use divide(divisor, scale, mode)");
+  }
+  let places = twos > fives ? twos : fives;
+  let scale = numeratorScale - denominatorScale + places;
+  let scaledNumerator = _mul(reducedNumerator, _pow10(places));
+  let quotient = _divMod(scaledNumerator, reducedDenominator).q;
+  return _make(_fromLittle(numerator.sign * denominator.sign, quotient.digits), scale);
+}
+
+// ---------------------------------------------------------------------------
+// Division with a target scale and Java rounding modes
+// ---------------------------------------------------------------------------
+
+fn _divideToScale(numerator, numeratorScale, denominator, denominatorScale, targetScale, mode) {
+  var num = numerator;
+  var den = denominator;
+  let shift = denominatorScale - numeratorScale + targetScale;
+  if (shift >= 0) {
+    num = _shiftUp(num, shift);
+  } else {
+    den = _shiftUp(den, -shift);
+  }
+  let dm = _divMod(num, den);
+  var quotient = dm.q;
+  if (!_isZero(dm.r)) {
+    quotient = _round(quotient, dm.r, den, mode, numerator.sign * denominator.sign);
+  }
+  return _make(quotient, targetScale);
+}
+
+fn _round(quotient, remainder, divisor, mode, exactSign) {
+  if (_isZero(remainder)) {
+    return quotient;
+  }
+  if (mode == "UNNECESSARY") {
+    panic("BigDecimal: rounding necessary");
+  }
+  if (mode == "DOWN") {
+    return quotient;
+  }
+  var increment = false;
+  if (mode == "UP") {
+    increment = true;
+  } else if (mode == "CEILING") {
+    increment = exactSign > 0;
+  } else if (mode == "FLOOR") {
+    increment = exactSign < 0;
+  } else if (mode == "HALF_UP") {
+    increment = _cmpAbs(_mulSmall(remainder, 2), divisor) >= 0;
+  } else if (mode == "HALF_DOWN") {
+    increment = _cmpAbs(_mulSmall(remainder, 2), divisor) > 0;
+  } else if (mode == "HALF_EVEN") {
+    let comparison = _cmpAbs(_mulSmall(remainder, 2), divisor);
+    increment = comparison > 0 || (comparison == 0 && _isOdd(quotient));
+  } else {
+    panic("BigDecimal: unknown rounding mode '" + mode + "'");
+  }
+  if (increment) {
+    return _add(quotient, _fromText(str(exactSign)));
+  }
+  return quotient;
+}
