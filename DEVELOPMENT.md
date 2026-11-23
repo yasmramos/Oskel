@@ -1375,7 +1375,8 @@ binary prints byte for byte what the VM prints).
       through `emitMapListMethod` + `emitArrayAlloc`: `keys` yields the key
       strings, `values` the value slots and `entries` a two-element `[key,
       value]` array per entry. `has`/`get`/`delete` share a one-string-key
-      preamble (`emitMapKeyQueryMethod`) and a linear `mapFind`; `set` upserts
+      preamble (`emitMapKeyQueryMethod`) and a `mapFind` that probes a hash
+      index when one is valid (see below); `set` upserts
       and `merge` folds another map in (last writer wins), both returning the
       receiver, and `delete`/`clear` mutate it in place. The list loop keeps its
       state in stack slots, never in r13/r14 (the allocator's cursor and end),
@@ -1387,6 +1388,20 @@ binary prints byte for byte what the VM prints).
       it, so the `.oskc` is untouched. Covered by the freestanding
       `test_map_methods` (values, mutation and the error paths) and the
       `oskel build` fixture `tests/native_build_map_methods.oskl`.
+      The AOT map keeps an insertion-ordered entries array, and `mapFind` used
+      to be a linear scan over it (BACKLOG §6 item 6), so a loop over a large
+      map was O(n²) against the VM's `unordered_map`. The header now carries a
+      fourth word pointing at a lazily built open-addressing index (FNV-1a,
+      linear probing), which `mapFind` builds on the first lookup above
+      `kMapIndexMinEntries` and every append keeps in step; `delete` and
+      `clear` drop it because the entries move. The entries stay the only
+      source of truth: the index is trusted only while its recorded count
+      matches the map's length, so a stale index costs a rebuild and never a
+      wrong answer. An array header stays 24 bytes and a map header is 32, so
+      `emitTableNew` sizes by kind -- writing the index word into an array
+      would land in the next allocation. 120k lookups over 300 keys measure
+      0.006s against 0.053s for the scan; `tests/native_build_map_index.oskl`
+      pins the parity with the VM byte for byte.
     - **7c.3h** (done) — the callback-taking and folding array methods:
       `map`, `filter`, `each`, `find`, `any`, `all`, `reduce`, `sum` and `join`.
       The first six are the first emitted helpers that call *back* into the

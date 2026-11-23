@@ -104,6 +104,17 @@ may change between minor versions.
   parameter and a returned future keep the type. A future is still a map at run
   time, so a value erased to `any` can bypass the check until PHASE 11.2.5 adds
   a runtime tag. `tests/errors/async_future_*.oskl` pin every rejected form.
+- **`oskel build` map lookups are O(1) (BACKLOG §6 item 6).** The AOT map kept
+  an insertion-ordered entries array and `mapFind` scanned it, so a loop over a
+  large map was O(n²) where the VM used an `unordered_map`. The map header now
+  carries a lazily built open-addressing index (FNV-1a, linear probing): built
+  by the first lookup above eight entries, kept in step by every append, and
+  dropped by `delete`/`clear`. The entries stay the only source of truth — the
+  index is trusted only while its recorded count matches the map's length, so a
+  stale index costs a rebuild and never a wrong answer. 120k lookups over 300
+  keys measure 0.006s against 0.053s for the scan.
+  `tests/native_build_map_index.oskl` pins the parity with the VM byte for
+  byte.
 
 ### Fixed
 
@@ -125,6 +136,14 @@ may change between minor versions.
   the freestanding image, on the hosted image (`oskel.build_hosted_own_*`) and
   on Windows. Bare metal has no page allocator, so its `.bss` region stays the
   ceiling and the allocator keeps reporting `out of memory` there.
+
+- **`import { x } from from;` silently resolved a module named `from`.** A
+  `from` keyword in the module-name or path-segment position of an `import` was
+  accepted as an identifier, so `import { square } from from;` and
+  `import m. from;` produced a confusing "module not found" instead of naming
+  the real problem. Both positions now report `'from' is a keyword and cannot
+  name a module` (or `... cannot be a module path segment`).
+
 - **`oskelint` missed an `enum` shadow and reported a bodyless parameter.** An
   `enum len { A, B }` binds a global named `len` — the compiler accepts it and
   the builtin is replaced — but the walker never visited `EnumDeclStmt`, so the
