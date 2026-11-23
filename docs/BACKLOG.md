@@ -254,11 +254,33 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    program.
 10. **[P1]** `emitIterNext` for `str` allocates a string per character — same
     as item 7.
-11. **[P1]** `collectGlobals` does not detect name-resolution cycles: a
+11. ~~**[P1]** `collectGlobals` does not detect name-resolution cycles: a
     `GETGLOBAL` of a name assigned only inside a never-called function is
-    accepted and reads nil at run time. Report it.
-12. **[P1]** `collectGlobals` pre-assigns builtin slots in first-read order; a
-    `var print` then overwrites the builtin. Make the precedence explicit.
+    accepted and reads nil at run time. Report it.~~ **Done**: the read is
+    reported, and as the hosted engine reports it — at run time with
+    "undefined variable '<name>'" and exit 70, not by reading the zeroed slot
+    as `nil`. `checkedGlobalReads` runs a forward "may be unset" dataflow over
+    each proto's instruction graph, with the candidate set computed across the
+    whole program, so an assignment that only lives in a never-called function
+    still leaves the top-level read checked (21bb9f3). Fixtures:
+    `tests/native_build_unset_global.oskl` (read before the assignment) and
+    `tests/native_build_unset_global_fn.oskl` (the assignment is in a function
+    the program never calls); `tests/native_build_global_nil.oskl` is the
+    passing counterpart, so a regression that checked every read would fail.
+12. ~~**[P1]** `collectGlobals` pre-assigns builtin slots in first-read order; a
+    `var print` then overwrites the builtin. Make the precedence explicit.~~
+    **Done**: the precedence is intentional and now documented at the site. A
+    builtin is an ordinary global (`addNative` is `defineGlobal`), so the
+    pre-assignment pass runs *first* and the user's `SETGLOBAL` reuses the same
+    slot: the builtin is shadowed, not duplicated, matching the hosted engine's
+    "install, then run" order and language.md §4.2. This is the behaviour of
+    every dynamic language the language is modelled on, and the standard
+    library depends on it (`std.sys` re-exports `time`, `clock`, `arch`,
+    `platform` and `exit` with `let time = time;`), so it is specified rather
+    than warned about. Pinned by `tests/native_build_builtin_shadow.oskl`
+    (slot reuse: the value read back is the user's) and
+    `tests/native_build_builtin_shadow_error.oskl` (calling a shadowed builtin
+    fails at run time, exit 70, like the VM).
 13. **[P2]** `emitArith`'s float path depends on `emitToDouble` not clobbering
     `Rdi`/`Rdx`; a change there breaks it. Document the invariant and assert.
 14. **[P2]** `emitCompare`'s `orderMixed` uses `cg.ucomisd(1, 0)` with magic

@@ -1885,6 +1885,30 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_global_nil.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # A builtin is a global, so a declaration with a builtin's name replaces it
+    # (language.md §4.2). `collectGlobals` pre-assigns the builtin slots first,
+    # so the user's assignment reuses that slot: the value read back is the
+    # user's, not the builtin's. A backend that allocated a second slot would
+    # keep the builtin reachable and disagree with the VM.
+    add_test(NAME oskel.build_builtin_shadow
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_builtin_shadow"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_builtin_shadow.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # Calling a shadowed builtin reaches the shadowing value, so a non-function
+    # callee fails at run time with the VM's wording and exit code -- never by
+    # falling back to the builtin the name used to hold.
+    add_test(NAME oskel.build_builtin_shadow_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_builtin_shadow_error"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_builtin_shadow_error.oskl"
+        "-DOSKEL_EXPECTED_EXIT=70"
+        "-DOSKEL_EXPECTED_MESSAGE=cannot call a value of type"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.cmake")
   endif()
 
   # --- WebAssembly backend (PHASE 9) ---
@@ -2287,8 +2311,11 @@ if(BUILD_TESTING)
     # The unset-global fixtures are inputs for the AOT runtime-error harness:
     # they exit 70 by design, so the VM glob (which expects 0) must skip them.
     # `native_build_global_nil` is the passing counterpart and stays in the glob.
+    # `native_build_builtin_shadow_error` is skipped for the same reason: it
+    # exits 70 on purpose, while its passing counterpart stays in the glob.
     if(name STREQUAL "native_build_unset_global" OR
-       name STREQUAL "native_build_unset_global_fn")
+       name STREQUAL "native_build_unset_global_fn" OR
+       name STREQUAL "native_build_builtin_shadow_error")
       continue()
     endif()
     oskel_add_script_test("oskel.${name}" "${script}")
