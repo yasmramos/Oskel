@@ -162,18 +162,18 @@ static std::vector<std::uint8_t> makeObject(
 static void testTargets() {
   check(isOwnLinkerTarget(Target::linuxX64()), "the own linker accepts x86-64 Linux");
   check(isOwnLinkerTarget(Target::winX64()), "the own linker accepts Windows");
-  check(!isOwnLinkerTarget(Target::macX64()), "the own linker rejects macOS");
+  check(isOwnLinkerTarget(Target::macX64()), "the own linker accepts macOS x86-64");
   check(!isOwnLinkerTarget(Target::bareMetalX64()), "the own linker rejects bare metal");
 
   bool rejected = false;
   try {
     LinkOptions options;
-    options.target = Target::macX64();
+    options.target = Target::bareMetalX64();
     linkHostedExecutable(std::vector<std::uint8_t>{}, options);
   } catch (const LinkError& error) {
     rejected = std::string(error.what()).find("x86_64-linux-sysv") != std::string::npos;
   }
-  check(rejected, "a non-Linux target is reported before the object is read");
+  check(rejected, "an unsupported target is reported before the object is read");
 }
 
 #ifdef __linux__

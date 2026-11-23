@@ -474,6 +474,15 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(object_test)
   oskel_add_cpp_test(link_test)
   oskel_add_cpp_test(link_pe_test)
+  oskel_add_cpp_test(link_macho_test)
+  if(APPLE)
+    add_test(NAME oskel.build_hosted_own_macos
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_hosted_own_macos"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_macos.cmake")
+  endif()
 
   # PHASE 10.3a: the own linker emits a PE32+ image on Windows. The fixture is
   # a plain `print`, so the test exercises the UCRT imports and the generated

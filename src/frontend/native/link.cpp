@@ -1,4 +1,5 @@
 #include "native/link.h"
+#include "native/macho.h"
 #include "native/pe_link.h"
 
 #include <algorithm>
@@ -864,17 +865,21 @@ bool isOwnLinkerTarget(const Target& target) {
   if (target.arch != Arch::X86_64) return false;
   if (target.os == Os::Linux && target.abi == Abi::SysV) return true;
   if (target.os == Os::Windows && target.abi == Abi::Win64) return true;
+  if (target.os == Os::MacOs && target.abi == Abi::SysV) return true;
   return false;
 }
 
 std::vector<std::uint8_t> linkHostedExecutable(
     const std::vector<LinkInput>& inputs, const LinkOptions& options) {
+  if (options.target.os == Os::MacOs) {
+    return linkMachOExecutable(inputs, options);
+  }
   if (options.target.os == Os::Windows) {
     return linkWindowsExecutable(inputs, options);
   }
   if (!isOwnLinkerTarget(options.target)) {
     throw LinkError(
-        "the own linker supports x86_64-linux-sysv and x86_64-windows-win64 only");
+        "the own linker supports x86_64-linux-sysv, x86_64-windows-win64 and x86_64-macos-sysv");
   }
   std::vector<ObjectFile> objects = resolveInputs(inputs);
   if (objects.empty()) throw LinkError("no input objects");
@@ -1586,12 +1591,15 @@ std::vector<std::uint8_t> linkHostedExecutable(
 
 std::vector<std::uint8_t> linkRelocatable(
     const std::vector<LinkInput>& inputs, const LinkOptions& options) {
+  if (options.target.os == Os::MacOs) {
+    throw LinkError("the Mach-O relocatable link is not implemented yet");
+  }
   if (options.target.os == Os::Windows) {
     return linkRelocatableCoff(inputs, options);
   }
   if (!isOwnLinkerTarget(options.target)) {
     throw LinkError(
-        "the own linker supports x86_64-linux-sysv and x86_64-windows-win64 only");
+        "the own linker supports x86_64-linux-sysv, x86_64-windows-win64 and x86_64-macos-sysv");
   }
   std::vector<ObjectFile> objects = resolveInputs(inputs);
   if (objects.empty()) throw LinkError("no input objects");
