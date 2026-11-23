@@ -58,6 +58,18 @@ may change between minor versions.
   the VM with the helper preloaded and compare its output with the hosted
   binary.
 
+- **The WebAssembly backend binds the pointer builtins (PHASE 9.6).**
+  `cstring`, `buffer`, `cstr`, `byteLen`, `loadByte`, `storeByte`,
+  `intToPtr`, `ptrToInt` and `free` now work in a `.wasm` module. A handle is
+  the `AotPtr` layout in linear memory (`{kind, data, length, released}`), so
+  `type()` reports `cstring` for a `cstring` and `ptr` for a buffer or a
+  `void *`, `str`/`repr` render a `cstring` as its text (quoted for `repr`)
+  and every other handle as `<ptr>`, and `free` marks the handle released
+  without reclaiming the arena. The error paths use the AOT wording, but stay
+  in the AOT fixture because `pcall` is still VM-only.
+  `tests/native_build_wasm_pointers.oskl` is the parity fixture and
+  `oskel.build_wasm_pointers` runs it.
+
 - **The WebAssembly backend binds the range methods (PHASE 9.5).**
   `r.toArray()` materialises a range into an array (exclusive or inclusive,
   ascending or descending), `r.contains(x)` is the method form of `x in r`, and
