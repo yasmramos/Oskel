@@ -189,6 +189,52 @@ void testAmbiguityIsCompileError() {
         "ambiguity error names both modules");
 }
 
+void testFromCannotNameAModule() {
+  // `from` separates the selective list from the module, so a module named
+  // `from` makes `import { x } from from;` unreadable. Every import form is
+  // rejected at the path, not later with a confusing "module 'from' not found".
+  const char* sources[] = {
+      "import { square } from from;\n",
+      "import from;\n",
+      "import from as f;\n",
+      "import from.*;\n",
+  };
+  for (const char* source : sources) {
+    Compiler compiler;
+    ModuleResolver resolver = fixtureResolver();
+    compiler.setImportLoader(loaderFor(resolver));
+    bool threw = false;
+    std::string message;
+    try {
+      compiler.compile(parseSource(source));
+    } catch (const CompileError& error) {
+      threw = true;
+      message = error.message;
+    }
+    check(threw, "a module named 'from' is a compile error");
+    check(message.find("'from' is a keyword") != std::string::npos,
+          "the error explains that 'from' is a keyword");
+  }
+}
+
+void testFromCannotBeAPathSegment() {
+  Compiler compiler;
+  ModuleResolver resolver = fixtureResolver();
+  compiler.setImportLoader(loaderFor(resolver));
+  bool threw = false;
+  std::string message;
+  try {
+    // Before, this silently became a module named "m.from".
+    compiler.compile(parseSource("import m. from;\n"));
+  } catch (const CompileError& error) {
+    threw = true;
+    message = error.message;
+  }
+  check(threw, "'m.from' is a compile error");
+  check(message.find("'from' is a keyword") != std::string::npos,
+        "'m.from' error explains that 'from' is a keyword");
+}
+
 void testModuleRunsOnce() {
   // `modules/counter.oskl` increments the caller's `runs` global at load time.
   // Three imports must run it once, so `runs` ends at 1.
@@ -586,6 +632,8 @@ int main() {
   testParentChildImportOrder();
   testPrivateNameIsNotExported();
   testAmbiguityIsCompileError();
+  testFromCannotNameAModule();
+  testFromCannotBeAPathSegment();
   testModuleRunsOnce();
   testNestedImport();
   testRepeatedImportBindsOnce();

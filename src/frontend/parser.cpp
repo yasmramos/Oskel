@@ -2207,6 +2207,14 @@ StmtPtr Parser::parseImport() {
 }
 
 std::string Parser::parseImportPath() {
+  // `from` is the separator of the selective form, so a module literally named
+  // `from` would make `import { x } from from;` unreadable. Reject it here, at
+  // the one place a module path is read, so every import form agrees.
+  if (check(Tok::Ident) && peek().lexeme == "from") {
+    throw CompileError{"'from' is a keyword and cannot name a module; rename the module or "
+                       "import it under another name",
+                       peek().line, peek().col};
+  }
   const Token& first = consume(Tok::Ident, "expected a module name");
   std::string path = first.lexeme;
   while (check(Tok::Dot)) {
@@ -2214,6 +2222,12 @@ std::string Parser::parseImportPath() {
     // dot belongs to the caller (the wildcard `.*` case).
     if (!peek(1).is(Tok::Ident)) break;
     advance();  // '.'
+    // `m.from` is as ambiguous as a bare `from`, and it silently became a
+    // module named "m.from" before.
+    if (peek().lexeme == "from") {
+      throw CompileError{"'from' is a keyword and cannot be a module path segment",
+                         peek().line, peek().col};
+    }
     path += '.';
     path += advance().lexeme;
   }

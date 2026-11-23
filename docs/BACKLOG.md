@@ -54,10 +54,13 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    (`Compiler::checkCaseLabelName`) rejects a `var`, an unknown name or a
    captured binding, so the label stays a fixed value. No new opcode.
 4. **[P1] [done]** `parseImport` did not reject `from` being a user variable,
-   so `import { x } from from;` was ambiguous. **Done**: `parseImport` rejects
-   `from` both as an imported name and as the module path of a selective
-   import, while `let from = 7;` outside an import stays an ordinary binding
-   (`tests/errors/import_from_ambiguous.oskl`, `tests/13_modules.oskl`).
+   so `import { x } from from;` was ambiguous, and `import m.from;` silently
+   resolved a module named `m.from`. **Done**: `parseImport` rejects `from`
+   both as an imported name and as the module path of a selective import,
+   `parseImportPath` rejects it as the first segment and as any later segment
+   of a dotted path, and `let from = 7;` outside an import stays an ordinary
+   binding (`tests/errors/import_from_ambiguous.oskl`, `tests/13_modules.oskl`,
+   `tests/module_test.cpp`).
 5. **[P1] [done]** `parseProgram` pre-scanned `structNames_` without requiring
    `struct` to be followed by `{`, so a malformed declaration could make
    `Name { ... }` parse as a literal elsewhere. **Done**: the pre-scan requires
@@ -271,17 +274,17 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `isError`, `err.message`/`err.code`, structural equality, `print`/`repr` and
    string interpolation all agree with the VM. `tests/native_build_error.oskl`
    pins the parity (built and run by `tests/build_binary.cmake`).
-6. **[P1] [done]** VM/AOT divergence in `map.get`: the VM uses
-   `unordered_map` (O(1)) while AOT used a linear scan (O(n)), so a loop over a
-   large map was O(n²). **Done**: the AOT map keeps a lazy open-addressing
-   index over its insertion-ordered entry array (FNV-1a over the key, load
-   factor 7/10, grown and rebuilt on demand). It is built on the first lookup
-   of a map with eight or more entries, so small maps keep the linear scan's
-   cache behaviour. `set`, `delete` and `merge` maintain it; `delete` refills
-   the existing table in place instead of allocating, because a delete loop
-   otherwise exhausted the arena. `tests/native_build_map_hash.oskl` is the
-   2000-entry stress fixture (`oskel.build_binary_map_hash`), and
-   `tests/native_build_map_methods.oskl` pins the method surface.
+6. **[P1] [done]** VM/AOT divergence in `map.get`: the VM uses `unordered_map`
+   (O(1)), AOT used a linear scan (O(n)), so a loop over a large map was O(n²).
+   The AOT map now carries a lazily built open-addressing hash index (FNV-1a,
+   linear probing) in a fourth header word, built by `mapFind` on the first
+   lookup above eight entries and kept in step by every append. The entries
+   array stays the only source of truth: the index is trusted only while its
+   recorded count matches the map's length, and `delete`/`clear` drop it, so a
+   stale index costs a rebuild, never a wrong answer. Measured on 120k lookups
+   over 300 keys: 0.006s against 0.053s for the scan. `tests/native_build_map_index.oskl`
+   pins the parity byte for byte.
+(fix: reject 'from' as a module name and path segment)
 7. **[P1]** VM/AOT divergence in string iteration: AOT allocates one
    `AotString` per character; a 1M-char string means 1M arena allocations.
 8. **[P1] [done]** `emitContains` for arrays uses `AotCompareOp::Eq`, which
