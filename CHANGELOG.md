@@ -21,6 +21,17 @@ may change between minor versions.
   same pair with `tools/prepare_ui_deps.py`; the `install_stdlib` test runs the
   real shim from the installed tree. The Windows and macOS artifacts now build
   the UI backend instead of silently omitting it.
+- **`oskelp` supports multi-member workspaces.** A root `oskel.toml` with a
+  `[workspace] members = [...]` table shares one `oskel.lock`, one
+  `.oskel/deps` and one `target/` across every member. `build`, `check` and
+  `test` cover all members at the virtual root; `run`, `add`, `remove` and
+  `publish` require one member and accept `--package`/`-p`, falling back to the
+  invoked member or the only member. Members may path-depend on each other, a
+  registry requirement that names a member is rejected, and members stay out of
+  the lockfile. A root package is itself a member and the default target.
+  Duplicate names, missing member manifests and nested workspaces are rejected
+  at load time. `tests/oskelp_test.cpp` and `tests/run_oskelp_case.cmake` cover
+  the loader, the resolver and the CLI.
 
 - **`async fn`, `await` and `Future` (PHASE 11.1).** A call to an async function
   returns a `Future`; `await` yields its payload, and the declared return type
@@ -52,18 +63,39 @@ may change between minor versions.
   `tests/oskelp_test.cpp` and `tests/run_oskelp_case.cmake` pin the behavior.
 - **`oskelint`, the linter.** A fifth binary reports suspicious but legal code.
   The first rule, `builtin-shadow`, warns when a declaration (`var`, `let`,
-  `const`, `fn`, `struct`, a parameter, a lambda parameter or a `for ... in`
-  variable) replaces a builtin. Shadowing is legal — the standard library
-  re-exports its own builtins with `let time = time;` — so the check belongs in
-  a tool and not in the compiler, which must accept every program the language
-  defines and must stay clear of the builtin names. The re-export idiom is
-  deliberately silent, and the rule reads the builtin names from the engine
-  (`VM::globals()` after `registerBuiltins`) instead of keeping a second list
-  that would drift. A lint warning exits 0. See `docs/oskelint.md`.
+  `const`, `fn`, `struct`, `enum`, a parameter, a lambda parameter or a
+  `for ... in` variable) replaces a builtin; a bodyless declaration reports its
+  name but not its parameters, which bind nothing. Shadowing is legal — the
+  standard library re-exports its own builtins with `let time = time;` — so the
+  check belongs in a tool and not in the compiler, which must accept every
+  program the language defines and must stay clear of the builtin names. The
+  re-export idiom is deliberately silent, and the rule reads the builtin names
+  from the engine (`VM::globals()` after `registerBuiltins`) instead of keeping
+  a second list that would drift. A lint warning exits 0. See
+  `docs/oskelint.md`.
+
+- **`oskelp yank` withdraws a published version without deleting it.**
+  `oskelp yank <name> --version <version>` writes a `.yanked` marker in the
+  registry entry; `add`, `update` and `outdated` skip the version, while a
+  lockfile that already pins it keeps building. `--precise` refuses a yanked
+  version instead of silently choosing another, and `--undo` clears the marker.
+  Both directions are idempotent. `tests/oskelp_test.cpp` and
+  `tests/run_oskelp_case.cmake` cover the resolver, the lockfile exception and
+  the CLI.
 
 ### Changed
 
 ### Fixed
+
+- **`oskelint` missed an `enum` shadow and reported a bodyless parameter.** An
+  `enum len { A, B }` binds a global named `len` — the compiler accepts it and
+  the builtin is replaced — but the walker never visited `EnumDeclStmt`, so the
+  diagnostic was lost. The same block read an `extern "C"` declaration
+  backwards: it reported the parameters, which are the C side's names and bind
+  nothing in Oskel, and stayed silent on the declaration's own name, which does
+  bind a global. A bodyless declaration (`extern "C"`, `native fn`) now reports
+  its name and skips its parameters. Four cases in `tests/oskelint_test.cpp`
+  pin the shapes.
 
 ## [0.3.0] - 2026-11-23
 

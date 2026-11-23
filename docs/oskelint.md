@@ -30,9 +30,14 @@ print(len);           // 3, the builtin is gone for this scope
 It is the Oskel equivalent of pylint's `redefined-builtin` (W0622) and ruff's
 `A001`.
 
-The rule reports a **declaration**: `var`, `let`, `const`, `fn`, a `struct`, a
-parameter, a lambda parameter and a `for ... in` variable. It does not report a
-use.
+The rule reports a **declaration**: `var`, `let`, `const`, `fn`, a `struct`, an
+`enum`, a parameter, a lambda parameter and a `for ... in` variable. It does not
+report a use.
+
+A bodyless declaration is the exception. The parameters of an `extern "C"` or a
+`native fn` are names for the signature — the C side's, or the host's — so they
+bind nothing here and shadow nothing; the declaration's own name does bind a
+global and is reported like a `fn`'s.
 
 ### The re-export idiom is not a shadow
 

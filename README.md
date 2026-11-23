@@ -202,8 +202,8 @@ skipped.
 
 `oskelp` is the Cargo-style project layer: a manifest (`oskel.toml`), a
 lockfile, dependency resolution (path and local-registry) and the
-`new`/`init`/`add`/`remove`/`publish`/`update`/`outdated`/`build`/`run`/
-`check`/`test` workflow. It is a standalone tool that drives `oskel` and
+`new`/`init`/`add`/`remove`/`publish`/`yank`/`update`/`outdated`/`build`/
+`run`/`check`/`test` workflow. It is a standalone tool that drives `oskel` and
 `oskelc` as child processes, so the engine carries no project or dependency
 policy:
 
@@ -219,12 +219,18 @@ cd hello
 ../build/oskelp outdated     # registry updates available to the lockfile
 ../build/oskelp update       # move registry pins to newer versions
 ../build/oskelp update text --precise 1.0.2  # pin one registry version
+../build/oskelp yank text --version 1.0.1   # hide a broken release
 ```
 
 `oskelp publish --registry <dir>` copies the current package into a local
-registry, so another project can depend on its version. See
+registry, so another project can depend on its version; `oskelp yank` hides a
+published version without deleting it (an existing lockfile pin keeps working,
+and `--undo` restores it). A `[workspace]` manifest in the project root shares
+one `oskel.lock`, one `.oskel/deps` and one `target/` across its members;
+`oskelp build`, `check` and `test` cover every member at the root, and
+`--package`/`-p <name>` selects one. See
 [docs/oskelp.md](docs/oskelp.md) for the project layout, the manifest, the
-dependency model, the registry layout and every command.
+dependency model, workspaces, the registry layout and every command.
 
 ### oskelint (the linter)
 
@@ -260,6 +266,7 @@ oskelp update [<name>]     moves registry pins to newer versions
 oskelp update <name> --precise <version>  pins one registry version
 oskelp outdated            shows registry updates available to the lockfile
 oskelp build               builds the project to target/<name>
+oskelp build -p <member>   builds one member of a [workspace]
 oskelp run                 runs the project (--native for the AOT binary)
 oskelp test                runs every tests/**/*.oskl
 ```

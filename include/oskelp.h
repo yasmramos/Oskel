@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -122,7 +123,30 @@ struct Manifest {
   std::vector<std::string> warnings;  // unknown keys and sections
 };
 
+// A single package or a `[workspace]` with several members. `rootDir` is the
+// directory that owns `oskel.lock`, `.oskel/deps` and `target/`; `members` are
+// the packages that can be built. For a workspace, `root` is a synthetic
+// manifest whose dependencies are the member paths, so the existing resolver
+// builds one graph; the members themselves are flagged and kept out of the
+// lockfile. For a single package, `root` is that package and `members` has one
+// entry.
+struct Workspace {
+  bool isWorkspace = false;
+  std::string rootDir;
+  std::string manifestPath;
+  std::string invokedMember;  // member selected by the manifest path, if any
+  std::vector<Manifest> members;
+  std::set<std::string> memberNames;
+  Manifest root;
+};
+
 bool loadManifest(const std::string& path, Manifest& out, std::string& error);
+
+// Loads a manifest, following an enclosing `[workspace]` when the manifest is
+// a member. Validates that every member exists, is unique and is not itself a
+// workspace.
+bool loadWorkspace(const std::string& manifestPath, Workspace& out,
+                   std::string& error);
 
 // Walks up from `startDir` looking for `oskel.toml`. Returns false when no
 // manifest is found; `manifestPath` is the absolute path when it is.
@@ -169,6 +193,7 @@ struct ResolvedPackage {
   std::string source;  // "path+../utils"
   std::string dir;     // absolute package directory
   bool root = false;
+  bool workspaceMember = false;  // a member, not a dependency of the lockfile
 };
 
 struct Resolution {
@@ -188,7 +213,10 @@ struct Resolution {
 bool resolveDependencies(
     const Manifest& root, Resolution& out, std::string& error,
     const std::map<std::string, std::string>& preferred = {},
-    const std::map<std::string, std::string>& forced = {});
+    const std::map<std::string, std::string>& forced = {},
+    const std::string& sourceRoot = "",
+    const std::set<std::string>& workspaceMembers = {},
+    const std::map<std::string, Manifest>& overrides = {});
 
 // The highest version of `name` published in `$OSKEL_REGISTRY`, as a
 // `major.minor.patch[-prerelease]` string. With `includePrerelease == false`,
@@ -196,6 +224,13 @@ bool resolveDependencies(
 // message telling the user to pass an explicit version.
 bool latestRegistryVersion(const std::string& name, std::string& version,
                            bool includePrerelease, std::string& error);
+
+// True when `<registry>/<name>/<version>/.yanked` exists. A yanked version is
+// hidden from new selections (`add`, `update`, `outdated`) but a lockfile pin
+// that already names it keeps working, so a build does not break when a
+// publisher withdraws a release.
+bool isRegistryVersionYanked(const std::string& name, const std::string& version,
+                             const std::string& registry);
 
 Lockfile buildLockfile(const Resolution& resolution);
 
@@ -213,8 +248,9 @@ bool verifyLockfile(const Manifest& root, const Resolution& resolution,
 // `oskelc`.
 
 struct BuildOptions {
-  std::string target;  // empty: the host
-  std::string mode;    // empty: the compiler default (freestanding)
+  std::string target;   // empty: the host
+  std::string mode;     // empty: the compiler default (freestanding)
+  std::string package;  // empty: every member (or the invoked one)
   bool locked = false;
 };
 
@@ -226,12 +262,22 @@ int commandInit(const std::string& directory, const std::string& name,
 // `.oskel/deps`; it never runs the compiler. With `--path`, `version` is an
 // optional exact assertion for the path dependency. Without `--path`, `version`
 // is the registry requirement and `name` is required.
-int commandAdd(const std::string& manifestPath, const std::string& name,
-               const std::string& path, const std::string& version);
-int commandRemove(const std::string& manifestPath, const std::string& name);
+int commandAdd(const std::string& manifestPath, const std::string& package,
+               const std::string& name, const std::string& path,
+               const std::string& version);
+int commandRemove(const std::string& manifestPath, const std::string& package,
+                  const std::string& name);
 // Copies `oskel.toml` and `src/` into `<registry>/<name>/<version>`. `registry`
-// is `--registry`, or `$OSKEL_REGISTRY` when empty.
-int commandPublish(const std::string& manifestPath, const std::string& registry);
+// is `--registry`, or `$OSKEL_REGISTRY` when empty. `package` selects a
+// workspace member; empty means the invoked member or the only member.
+int commandPublish(const std::string& manifestPath, const std::string& package,
+                   const std::string& registry);
+// Marks a published version as yanked (`--undo` clears the marker). `registry`
+// is `--registry`, or `$OSKEL_REGISTRY` when empty. Yanking an already yanked
+// version and un-yanking a live one are successful no-ops, so the command is
+// idempotent.
+int commandYank(const std::string& name, const std::string& version,
+                const std::string& registry, bool undo);
 // Re-resolves ignoring the lockfile pin for `name` (or for every package when
 // `name` is empty), writes the lockfile and materialises the new tree. A
 // non-empty `precise` pins `name` to exactly that registry version and fails
@@ -254,7 +300,8 @@ int commandCheck(const std::string& manifestPath, const BuildOptions& options,
 int commandTest(const std::string& manifestPath, const BuildOptions& options,
                 bool native, const std::string& argv0);
 int commandClean(const std::string& manifestPath, const std::string& argv0);
-int commandTree(const std::string& manifestPath, const std::string& argv0);
+int commandTree(const std::string& manifestPath, const std::string& package,
+                const std::string& argv0);
 
 // ---------------------------------------------------------------------------
 // Helpers (exposed for the unit tests)

@@ -12,6 +12,7 @@ oskelp init [dir]       add a manifest to an existing directory
 oskelp add <name>       add a dependency (latest release without --version)
 oskelp remove <name>    remove a dependency from the manifest
 oskelp publish          copy the package into the local registry
+oskelp yank <name>      hide a published version from new selections
 oskelp update [<name>]  move the lockfile to newer registry versions
 oskelp outdated         show the registry updates that are available
 oskelp build            compile the entry point to target/<name>
@@ -52,6 +53,23 @@ hello/
   .gitignore                 /target and /.oskel
 ```
 
+A workspace keeps one of those layouts per member and moves the generated
+directories to the root:
+
+```text
+workspace/
+  oskel.toml                 [workspace] members = ["alpha", "beta"]
+  oskel.lock                 one lockfile for every member
+  alpha/
+    oskel.toml
+    src/alpha/
+  beta/
+    oskel.toml
+    src/beta/
+  target/                    one target/ for every member
+  .oskel/deps/               one dependency tree for every member
+```
+
 Every package lives under `src/<package>/`, and every import is qualified:
 
 ```oskel
@@ -64,6 +82,35 @@ import std.math;                // the standard library
 `oskelp` runs the compiler with `OSKEL_MODULE_ROOT=<project>/src` and
 `OSKEL_PACKAGES=<project>/.oskel/deps`, so the two lookups agree on every
 engine.
+
+## Workspaces
+
+A manifest may declare members instead of (or in addition to) its own package:
+
+```toml
+[workspace]
+members = ["alpha", "beta"]
+```
+
+The directory that holds this manifest owns one `oskel.lock`, one
+`.oskel/deps` and one `target/`; each member keeps its own `oskel.toml` and
+`src/<member>/`. A member may depend on another member with a path dependency
+(`alpha = { path = "../alpha" }`). A registry requirement that names a member
+is rejected: the workspace copy is the one the build uses.
+
+- At a virtual workspace root (no `[package]`), `build`, `check` and `test`
+  cover every member. Inside a member they cover that member, and
+  `--package <name>` (`-p <name>`) selects a named one.
+- `run`, `add`, `remove` and `publish` need exactly one member. They use
+  `--package`, then the member the command was invoked from, then the only
+  member; an ambiguous virtual root asks for `--package` instead of picking
+  one arbitrarily.
+- `update` and `outdated` always operate on the whole workspace graph.
+- `clean` removes the workspace `target/` and `.oskel/`.
+- A root manifest that has both `[package]` and `[workspace]` is itself a
+  member and the default target; `-p <member>` selects another one.
+- A member cannot itself be a workspace. Duplicate member names and missing
+  member manifests are rejected when the workspace loads.
 
 ## The manifest: `oskel.toml`
 
@@ -181,6 +228,14 @@ package with a **path** dependency cannot be published: the consumer would
 resolve that path relative to the registry copy. Publish the dependency and
 depend on its version first. A package that depends on itself is refused too.
 
+`oskelp yank` writes `<registry>/<name>/<version>/.yanked`, which hides that
+version from every new selection: `add`, `update` and `outdated` ignore it. The
+files are not deleted, and a lockfile that already pins the yanked version keeps
+building, so withdrawing a release does not break an existing project. A
+`--precise <version>` that names a yanked version fails instead of silently
+choosing another one. `--undo` removes the marker; both directions are
+idempotent, so repeating the command is safe.
+
 `oskelp update` re-resolves without the pin for the named package, or for
 every package when no name is given, writes `oskel.lock` and refreshes
 `.oskel/deps`. It prints `updated utils 0.1.0 -> 0.2.0` (or
@@ -240,9 +295,9 @@ characters are dropped, and a result that starts with a digit is rejected
 Adds the same layout to an existing directory. It refuses to overwrite an
 existing `oskel.toml` and leaves existing source files alone.
 
-### `oskelp add <name> --path <path> [--version <v>]`
+### `oskelp add <name> --path <path> [--version <v>] [--package <name>]`
 
-### `oskelp add <name> [--version <requirement>]`
+### `oskelp add <name> [--version <requirement>] [--package <name>]`
 
 Adds a dependency to `[dependencies]`, creating the section when the manifest
 has none. With `--path`, the name may be omitted
@@ -257,23 +312,26 @@ refreshes its requirement to the latest release, as `cargo add` does. The
 command resolves the new graph before it writes, then
 refreshes `oskel.lock` and `.oskel/deps`; a name mismatch, a self-dependency,
 a cycle, a missing manifest or an unsatisfiable requirement fails without
-touching `oskel.toml`.
+touching `oskel.toml`. In a workspace, `--package <name>` chooses the member
+to edit; without it the command uses the member it runs in, or the only
+member, and asks for `--package` when the root has several.
 
-### `oskelp remove <name>`
+### `oskelp remove <name> [--package <name>]`
 
 Removes the dependency from `[dependencies]` and refreshes `oskel.lock` and
 `.oskel/deps`. It refuses a dependency that is not declared, and refuses to
 delete an entry that spans multiple lines (edit that one by hand). A package
 still required transitively by another dependency stays in the lockfile.
+`--package` selects a workspace member exactly as it does for `add`.
 
-### `oskelp publish [--registry <dir>]`
+### `oskelp publish [--registry <dir>] [--package <name>]`
 
 Copies `oskel.toml` and `src/` to
 `<registry>/<name>/<version>/`, where `<registry>` is `--registry` or
 `$OSKEL_REGISTRY`. It refuses an existing version (versions are immutable), a
 package with a path dependency, a package that depends on itself, and a
 missing entry or `src/<name>/` directory. The registry directory is created
-on demand.
+on demand. In a workspace, `--package` selects the member to publish.
 
 ### `oskelp update [<name>] [--precise <version>]`
 
@@ -286,6 +344,9 @@ to exactly that published registry version; the version must exist and satisfy
 the manifest requirement, and a path dependency is rejected because it has no
 registry version. `--precise` never falls back to another version, so a typo
 or an out-of-range version fails instead of silently picking the newest one.
+In a workspace, `update` rewrites the one root `oskel.lock` and accepts a
+name declared by any member; `--precise` still rejects a path dependency,
+including a workspace member.
 
 ### `oskelp outdated [--manifest-path <file>]`
 
@@ -303,9 +364,11 @@ A transitive dependency has no requirement in the root manifest, so it shows
 the registry's latest version. When everything is current it prints
 `All registry dependencies are up to date.` The command only reads the
 manifest and the registry; it does not write the lockfile. It exits `0` in
-both cases.
+both cases. In a workspace it reports the whole graph; a direct requirement
+comes from the member that declares it (distinct requirements are listed
+together).
 
-### `oskelp build`
+### `oskelp build [--package <name>]`
 
 Resolves the graph, writes or checks the lockfile, materialises
 `.oskel/deps`, and runs `oskelc` on the entry point. The binary is
@@ -313,26 +376,30 @@ Resolves the graph, writes or checks the lockfile, materialises
 `--mode` are passed through to the compiler; see `oskelc`'s flags.
 
 If `oskelc` is not installed, `oskelp` falls back to `oskel build`, which is
-the same pipeline.
+the same pipeline. At a virtual workspace root it builds every member into the
+shared `target/`; `--package` narrows it to one.
 
-### `oskelp run [--native] [-- <args>...]`
+### `oskelp run [--native] [--package <name>] [-- <args>...]`
 
 Runs the entry point on the VM (`oskel`), which is the fast development loop.
 `--native` builds first and runs the native binary. Arguments after `--` are
-passed to the program.
+passed to the program. In a workspace it needs one member: `--package`, the
+member it runs in, or the only member.
 
-### `oskelp check`
+### `oskelp check [--package <name>]`
 
 Runs `oskel -c` on the entry point, so syntax, type and import errors are
-reported without executing anything.
+reported without executing anything. At a virtual workspace root it checks
+every member.
 
-### `oskelp test [--native]`
+### `oskelp test [--native] [--package <name>]`
 
 Runs every `.oskl` file under `tests/`, recursively, in sorted order. A test
 passes when its process exits with `0`; any other exit code is a failure. The
 summary is `test result: ok. N passed; 0 failed`, and the command exits `101`
 when at least one test fails (the cargo convention). `--native` compiles each
-test with `oskelc` and runs the binary, which is the AOT parity check.
+test with `oskelc` and runs the binary, which is the AOT parity check. At a
+virtual workspace root it tests every member; `--package` narrows it.
 
 A test imports the package under test, not a sibling test file:
 `import { message } from hello.greeting;` works because the module root is
@@ -340,9 +407,9 @@ A test imports the package under test, not a sibling test file:
 
 ### `oskelp clean`
 
-Removes `target/` and `.oskel/`.
+Removes `target/` and `.oskel/`. In a workspace it removes the root copies.
 
-### `oskelp tree`
+### `oskelp tree [--package <name>]`
 
 Prints the dependency tree:
 
@@ -350,6 +417,9 @@ Prints the dependency tree:
 hello v0.1.0
 `-- utils v0.1.0
 ```
+
+At a virtual workspace root it prints every member under one header; in a
+member or with `--package` it prints that member's tree.
 
 ### `--manifest-path <file>`
 
@@ -392,8 +462,9 @@ imports identically.
   checksums or signatures.
 - A flat package namespace: one version per package name. The resolver does
   not backtrack; two incompatible requirements for one name are an error.
-- A published package cannot keep a path dependency.
-- No workspaces, no build profiles. `target/<name>` is the only output.
+- A published package cannot keep a path dependency, including a dependency
+  on another workspace member.
+- No build profiles. `target/<name>` is the only output.
 - Tests are whole files that exit `0`; there is no `@Test` attribute yet.
 
 These are tracked in `docs/BACKLOG.md` §20.
