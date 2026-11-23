@@ -2289,6 +2289,8 @@ assertEq(sqrt(81), 9.0);
 | `seed(n)` | Reseeds the generator. |
 | `clock()` | Seconds elapsed since the process started (monotonic, for timing — not a date). |
 | `time()` | Seconds since the Unix epoch, UTC, as an `int` (the wall clock; see `std.datetime` in §12.10). |
+| `platform()` | Host OS name: `"linux"`, `"windows"`, `"macos"` or `"freestanding"`. |
+| `arch()` | Host architecture name: `"x86_64"`, `"aarch64"` or `"wasm32"`. |
 | `memSize()` | Total physical memory of the machine, in bytes, as an `int` (`0` when it cannot be determined). |
 
 `random()` draws from `mt19937_64`, whose bit stream the C++ standard fully
@@ -2308,8 +2310,14 @@ reproducible. A program that needs a fixed stream calls `seed(n)` first.
 under `oskel build` on every target: the AOT runtime binds it to a syscall on
 Linux, `time(NULL)` in hosted mode, `GetSystemTimeAsFileTime` on Windows, and
 the CMOS real-time clock in a bare-metal kernel. `clock()` is monotonic (it
-measures elapsed time, not the date) and has no AOT binding, so a native build
-that calls it fails cleanly.
+measures elapsed time, not the date) and is bound on every target too, so a
+native build reports elapsed seconds just like the VM.
+
+`platform()` and `arch()` report the engine that is running the program: the
+host OS and architecture on the development VM, and the compile-time target
+under `oskel build` (`linux`, `windows`, `macos` or `freestanding`; `x86_64`,
+`aarch64` or `wasm32`). They take no argument and are available on every AOT
+target.
 
 `memSize()` reads the machine's RAM, the way `time()` reads its clock. On the
 development VM it comes from the platform (`sysconf` on POSIX, `GlobalMemoryStatusEx`
@@ -2820,6 +2828,55 @@ backend's "not supported" message.
 Paths are UTF-8 and are handed to the OS as NUL-terminated C strings, so an
 embedded NUL is a runtime error. `File` owns its handle and `close` is
 idempotent; use `defer` so a `panic` still closes it.
+
+### 12.16 Process and system
+
+Two namespace modules split the host surface:
+
+| Import | Binds |
+| --- | --- |
+| `import std.os;` | `std.os.platform`, `std.os.arch`, `std.os.exit`, `std.os.cwd`, `std.os.chdir`, ... |
+| `import std.sys;` | `std.sys.platform`, `std.sys.arch`, `std.sys.time`, `std.sys.clock`, `std.sys.exit`, ... |
+
+`std.sys` is the portable half and uses only builtins every AOT target seeds,
+so it also builds for bare metal:
+
+| Function | Description |
+| --- | --- |
+| `platform()` | `"linux"`, `"windows"`, `"macos"` or `"freestanding"`. |
+| `arch()` | `"x86_64"`, `"aarch64"` or `"wasm32"`. |
+| `time()` | Seconds since the Unix epoch, UTC. |
+| `clock()` | Seconds elapsed since the process started. |
+| `exit(code)` | Ends the process with `code`. |
+| `pointerSize()` | 8 on x86-64/AArch64, 4 on wasm32. |
+| `is64Bit()` | True when `pointerSize()` is 8. |
+| `isWindows()`, `isLinux()`, `isMacOs()`, `isBareMetal()` | Platform predicates. |
+
+`std.os` adds the process and filesystem services:
+
+| Function | Description |
+| --- | --- |
+| `cwd()` / `chdir(path)` | Reads / changes the current working directory. |
+| `isWindows()`, `isLinux()`, `isMacOs()` | Platform predicates. |
+| `platform()`, `arch()`, `exit(code)` | Re-exported from the same builtins. |
+
+```oskl
+import std.os;
+import std.sys;
+
+fn main() {
+  if (std.os.isLinux()) {
+    print("linux");
+  }
+  print(std.sys.pointerSize());
+  print(std.sys.time());
+}
+```
+
+`std.os` needs a process and a file system, so a bare-metal image rejects a
+used `std.os` operation by name; `std.sys` remains available there. Both
+modules are ordinary Oskel namespaces, so `import std.os.*;` binds the members
+directly and `import std.os as os;` renames the table.
 
 ---
 

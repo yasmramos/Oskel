@@ -1282,6 +1282,10 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       // builtin, so `time()` is one more builtin that lowers to an ordinary
       // call.
       {"time", rt.timeBuiltin},
+      // The target names (PHASE 10): compile-time constants, so every target
+      // seeds them just like `time()`.
+      {"platform", rt.platformBuiltin},
+      {"arch", rt.archBuiltin},
       // The pointer builtins (BACKLOG §6 item 25). A handle is an `AotPtr` in the
       // arena, so every target backs them and they are seeded unconditionally.
       {"cstring", rt.cstringBuiltin},
@@ -1737,6 +1741,8 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   extras.hasFiles = hasFiles;
   extras.callbackStateSlot = callbackStateSlot;
   extras.abi = target.abi;
+  extras.platformName = osName(target.os);
+  extras.archName = archName(target.arch);
   emitAotRuntime(cg, rt, entry, externThunks.empty() ? nullptr : &externThunks,
                  mode == LinkMode::Hosted, hasInput,
                  target.os == Os::Freestanding, randomStateSlot, pcallHandlerSlot,

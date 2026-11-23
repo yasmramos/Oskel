@@ -1606,6 +1606,17 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_clock.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `std.os`/`std.sys` are facades over builtins every target seeds:
+    # `platform()`/`arch()` are compile-time names, `time()`/`clock()` read the
+    # prelude handles, and `exit` is the shared process exit. The fixture keeps
+    # the VM and the binary on the same names.
+    add_test(NAME oskel.build_binary_os_sys
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_os_sys"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_os_sys.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `args()` reads the array the entry point builds from `(argc, argv)`, so it
     # is seeded only where the entry receives one: Linux freestanding and hosted.
     # Windows calls the entry with no arguments and bare metal has no command
