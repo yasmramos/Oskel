@@ -1,0 +1,6 @@
+// expect-exit: 65
+// `from` is the contextual keyword that follows the imported names, so a
+// module path that starts with `from` makes `import { x } from from;`
+// ambiguous. The parser rejects it instead of guessing which `from` is the
+// module.
+import { x } from from;

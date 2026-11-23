@@ -36,8 +36,26 @@ int main(int argc, char** argv) {
   return 0;
 }
 #else
+#include "platform_posix.h"
+
+// A symbol the test executable itself defines. `dlsym(RTLD_DEFAULT)` only
+// finds it when the executable exports its dynamic symbols, which is what
+// `ENABLE_EXPORTS` (CMake) or `-rdynamic` adds.
+extern "C" int oskelOwnExecutableSymbol() { return 4242; }
+
 int main() {
-  std::printf("loaded dll symbol skipped: Windows only\n");
+  using Symbol = int (*)();
+  auto symbol =
+      reinterpret_cast<Symbol>(platformPosix().lookupSymbol("oskelOwnExecutableSymbol"));
+  if (symbol == nullptr) {
+    std::fprintf(stderr, "lookupSymbol did not find oskelOwnExecutableSymbol\n");
+    return 1;
+  }
+  if (symbol() != 4242) {
+    std::fprintf(stderr, "oskelOwnExecutableSymbol returned the wrong value\n");
+    return 1;
+  }
+  std::printf("own executable symbol ok\n");
   return 0;
 }
 #endif

@@ -1,0 +1,70 @@
+// BACKLOG §6 item 6: `map.get` used a linear scan in the AOT backend while the
+// VM's map is a hash table, so a loop over a large map was O(n²). The AOT map
+// now builds a lazy open-addressing index over its insertion-ordered entries.
+// This fixture pins the observable behaviour of that index: lookups, misses,
+// delete, clone, merge and clear all agree with the VM byte for byte.
+
+let m = {};
+var i = 0;
+while (i < 2000) {
+  m["k" + str(i)] = i;
+  i = i + 1;
+}
+
+// Insertion order is still the iteration order.
+let keys = m.keys();
+print(keys[0]);
+print(keys[1]);
+print(keys[1999]);
+
+// 2000 lookups exercise the index, not the linear scan.
+var sum = 0;
+i = 0;
+while (i < 2000) {
+  sum = sum + m["k" + str(i)];
+  i = i + 1;
+}
+print(sum);
+
+// A miss and the default.
+print(m.get("missing", -1));
+print(m.has("k1999"));
+print(m.has("nope"));
+
+// Deleting shifts the entry indices; the index is rebuilt.
+i = 0;
+while (i < 2000) {
+  if (i % 2 == 0) {
+    m.delete("k" + str(i));
+  }
+  i = i + 1;
+}
+print(m.length);
+
+sum = 0;
+i = 0;
+while (i < 2000) {
+  if (i % 2 == 1) {
+    sum = sum + m["k" + str(i)];
+  }
+  i = i + 1;
+}
+print(sum);
+
+// A clone starts without an index and builds one on its first lookup.
+let c = m.clone();
+c["extra"] = 7;
+print(c.get("extra"));
+print(m.has("extra"));
+
+// Merging appends through the same indexed path.
+let merged = {};
+merged.merge(c);
+print(merged.length);
+print(merged.get("k1"));
+print(merged.get("k3"));
+
+// Clearing resets the index as well as the entries.
+merged.clear();
+print(merged.length);
+print(merged.has("k1"));

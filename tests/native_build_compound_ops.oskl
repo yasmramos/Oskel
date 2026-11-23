@@ -43,3 +43,36 @@ print(seven);
 var one = 1;
 one <<= 63;
 print(one);
+
+// The shift count is checked at run time, so an indirect call reaches the
+// guard in both engines; `pcall` hands back the message the VM raises.
+fn shiftLeft(x: int64, n: int64): int64 { return x << n; }
+fn shiftRight(x: int64, n: int64): int64 { return x >> n; }
+fn report(f: any): string {
+  let r = pcall(f);
+  if (r.ok) { return "no error"; }
+  return r.error.message;
+}
+print(report(() => shiftLeft(1, -1)));
+print(report(() => shiftLeft(1, 64)));
+print(report(() => shiftRight(1, -1)));
+print(report(() => shiftRight(1, 64)));
+
+// Bool ordering is the same in both engines (`false < true`).
+print(false < true);
+print(true < false);
+print(false <= false);
+print(true >= false);
+
+// Arithmetic wraps on overflow, as the language spec says. Negating
+// `INT64_MIN` is the one case that cannot be represented positively; both
+// engines return the same bit pattern (the parser warns only for a constant
+// expression, because the runtime has no warning channel).
+fn negate(x: int64): int64 { return -x; }
+print(negate(-9223372036854775808));
+
+// A negative integer exponent takes the widest operand's rank, so the result
+// is a double in both engines.
+print(2 ** 3);
+print(2 ** -1);
+print(2.0 ** -1);

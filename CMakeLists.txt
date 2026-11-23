@@ -175,6 +175,13 @@ add_executable(oskel "${OSKEL_MAIN}")
 target_link_libraries(oskel PRIVATE oskel_lib)
 target_compile_options(oskel PRIVATE ${OSKEL_WARNINGS})
 
+# `dlsym(RTLD_DEFAULT)` only sees the executable's own symbols when they are in
+# its dynamic symbol table. Exporting them is what makes an `extern "C"` to a
+# symbol the host program itself defines resolve in the development engine.
+if(NOT WIN32)
+  set_target_properties(oskel PROPERTIES ENABLE_EXPORTS ON)
+endif()
+
 # --------------------------------------------------------------------------- SDL3 (optional)
 # `std/internal/sdl.oskl` binds SDL3's window, renderer and event surface. The
 # module is always installed; the engine loads the bundled library lazily when
@@ -488,6 +495,7 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(dtoa_test)
   oskel_add_cpp_test(parse_float_test)
   oskel_add_cpp_test(mathlib_test)
+  oskel_add_cpp_test(arena_test)
   oskel_add_cpp_test(elf_test)
   oskel_add_cpp_test(object_test)
   oskel_add_cpp_test(link_test)
@@ -528,18 +536,27 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(freestanding_test)
   oskel_add_cpp_test(bare_metal_test)
 
-  # Windows only: `lookupSymbol` must search a DLL loaded after startup, not
-  # just the process image, kernel32 and the CRT. The test loads the DLL CMake
-  # builds beside it and resolves its export.
+  # `lookupSymbol` must find a DLL loaded after startup on Windows and a symbol
+  # the executable itself defines on POSIX. The Windows path loads the DLL CMake
+  # builds beside it; the POSIX path looks up a C function in the test binary.
+  add_executable(platform_lookup_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/platform_lookup_test.cpp")
+  target_link_libraries(platform_lookup_test PRIVATE oskel_lib)
+  target_compile_options(platform_lookup_test PRIVATE ${OSKEL_WARNINGS})
   if(WIN32)
     add_library(oskel_lookup_test_dll SHARED
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/platform_lookup_dll.cpp")
-    add_executable(platform_lookup_test
-      "${CMAKE_CURRENT_SOURCE_DIR}/tests/platform_lookup_test.cpp")
-    target_link_libraries(platform_lookup_test PRIVATE oskel_lib)
-    target_compile_options(platform_lookup_test PRIVATE ${OSKEL_WARNINGS})
+    add_dependencies(platform_lookup_test oskel_lookup_test_dll)
     add_test(NAME platform_lookup_test
       COMMAND platform_lookup_test "$<TARGET_FILE:oskel_lookup_test_dll>"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  else()
+    # The test defines its own C symbol and looks it up through the same
+    # `dlsym(RTLD_DEFAULT)` path; `ENABLE_EXPORTS` puts it in the dynamic
+    # symbol table.
+    set_target_properties(platform_lookup_test PROPERTIES ENABLE_EXPORTS ON)
+    add_test(NAME platform_lookup_test
+      COMMAND platform_lookup_test
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   endif()
 
@@ -909,6 +926,17 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_conversions.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # The shortest round-trip formatter over the whole double range, including
+    # the subnormals, the non-finite spellings and a repeated pass that catches
+    # leaked scratch state. The WASM backend has its own registration; the AOT
+    # path was previously covered only indirectly by `native_build_math.oskl`.
+    add_test(NAME oskel.build_binary_double_format
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_double_format"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_double_format.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `+` on two arrays concatenates them; the hosted engine builds a fresh
     # array and leaves both operands unchanged. Checked against the VM here
     # because the script test that covers array concatenation
@@ -1023,6 +1051,16 @@ if(BUILD_TESTING)
         "-DOSKEL_TEST_NAME=oskel.build_binary_map_methods"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_map_methods.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The AOT map's lazy hash index (BACKLOG §6 item 6). `map.get` used to be a
+    # linear scan, so a loop over a large map was O(n²); the fixture exercises
+    # 2000 keys, misses, delete, clone, merge and clear against the VM.
+    add_test(NAME oskel.build_binary_map_hash
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_map_hash"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_map_hash.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
     # `repr`/`str` of a function value (BACKLOG §6.22). The VM renders
