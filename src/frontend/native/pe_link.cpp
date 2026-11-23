@@ -364,6 +364,15 @@ CoffObject parseCoffObject(const std::vector<std::uint8_t>& bytes,
     section.relocCount = reader.u16(base + 32);
     section.characteristics = reader.u32(base + 36);
     section.kind = classifySection(section.name);
+    if (nameHasPrefix(section.name, ".pdata") ||
+        nameHasPrefix(section.name, ".xdata")) {
+      throw LinkError("'" + name + "' has a " + section.name +
+                      " section; the own linker does not emit PE exception data");
+    }
+    if (nameHasPrefix(section.name, ".tls")) {
+      throw LinkError("'" + name +
+                      "' has a .tls section; the own linker does not support TLS");
+    }
     if (section.kind == SectionKind::Ignored) continue;
     if (section.kind == SectionKind::Bss) {
       const std::uint32_t size =

@@ -478,6 +478,108 @@ require_success("oskelp update everything")
 require_contains("oskelp update everything" "${run_out}"
                  "everything is up to date")
 
+# `add` without --version uses the latest release and writes a caret
+# requirement. `outdated` then compares the lock with the registry; publishing
+# a newer compatible and a newer incompatible release exercises both branches.
+run_oskelp("${WORK_DIR}" new latest_app)
+require_success("oskelp new latest_app")
+run_oskelp("${WORK_DIR}/latest_app" add utils)
+require_success("oskelp add without --version")
+require_contains("oskelp add without --version" "${run_out}"
+                 "added 'utils' (^0.2.0)")
+require_file_contains("${WORK_DIR}/latest_app/oskel.toml"
+                      "utils = \"^0.2.0\"")
+require_file_contains("${WORK_DIR}/latest_app/oskel.lock"
+                      "source = \"registry+utils@0.2.0\"")
+
+run_oskelp("${WORK_DIR}/latest_app" outdated)
+require_success("oskelp outdated with the latest pin")
+require_contains("oskelp outdated with the latest pin" "${run_out}"
+                 "All registry dependencies are up to date.")
+
+file(READ "${WORK_DIR}/utils/oskel.toml" utils_manifest)
+string(REPLACE "version = \"0.2.0\"" "version = \"0.2.1\"" utils_manifest
+       "${utils_manifest}")
+file(WRITE "${WORK_DIR}/utils/oskel.toml" "${utils_manifest}")
+run_oskelp("${WORK_DIR}/utils" publish --registry "${REGISTRY}")
+require_success("oskelp publish 0.2.1")
+
+file(READ "${WORK_DIR}/utils/oskel.toml" utils_manifest)
+string(REPLACE "version = \"0.2.1\"" "version = \"0.3.0\"" utils_manifest
+       "${utils_manifest}")
+file(WRITE "${WORK_DIR}/utils/oskel.toml" "${utils_manifest}")
+run_oskelp("${WORK_DIR}/utils" publish --registry "${REGISTRY}")
+require_success("oskelp publish 0.3.0")
+
+run_oskelp("${WORK_DIR}/latest_app" outdated)
+require_success("oskelp outdated finds a compatible update")
+require_contains("oskelp outdated finds a compatible update" "${run_out}"
+                 "utils 0.2.0 -> 0.2.1 (^0.2.0)")
+require_contains("oskelp outdated finds a compatible update" "${run_out}"
+                 "latest 0.3.0 needs a new requirement")
+
+run_oskelp("${WORK_DIR}/latest_app" update utils --precise 0.2.1)
+require_success("oskelp update --precise picks an allowed version")
+require_file_contains("${WORK_DIR}/latest_app/oskel.lock"
+                      "source = \"registry+utils@0.2.1\"")
+
+run_oskelp("${WORK_DIR}/latest_app" outdated)
+require_success("oskelp outdated reports the incompatible latest")
+require_contains("oskelp outdated reports the incompatible latest" "${run_out}"
+                 "utils 0.2.1 (latest 0.3.0 needs a new requirement")
+
+run_oskelp("${WORK_DIR}/latest_app" update utils --precise 0.3.0)
+require_failure("oskelp update --precise outside the requirement" "1")
+require_contains("oskelp update --precise outside the requirement" "${run_err}"
+                 "does not satisfy '^0.2.0'")
+require_file_contains("${WORK_DIR}/latest_app/oskel.lock"
+                      "source = \"registry+utils@0.2.1\"")
+
+run_oskelp("${WORK_DIR}/latest_app" update utils --precise 0.2.9)
+require_failure("oskelp update --precise for a missing version" "1")
+require_contains("oskelp update --precise for a missing version" "${run_err}"
+                 "has no 'utils' version '0.2.9'")
+
+run_oskelp("${WORK_DIR}/latest_app" update --precise 0.2.1)
+require_failure("oskelp update --precise without a package" "64")
+require_contains("oskelp update --precise without a package" "${run_err}"
+                 "--precise needs a package name")
+
+run_oskelp("${WORK_DIR}/latest_app" update utils --precise nope)
+require_failure("oskelp update --precise with a bad version" "64")
+require_contains("oskelp update --precise with a bad version" "${run_err}"
+                 "is not a semantic version")
+
+run_oskelp("${WORK_DIR}/latest_app" update utils --precise)
+require_failure("oskelp update --precise without a value" "64")
+
+# A path dependency has no registry version to pin.
+run_oskelp("${WORK_DIR}/demo" update utils --precise 0.1.0)
+require_failure("oskelp update --precise on a path dependency" "1")
+require_contains("oskelp update --precise on a path dependency" "${run_err}"
+                 "is a path dependency")
+
+# A prerelease-only package is not picked implicitly: the caret requirement
+# `^<prerelease>` is ambiguous, so the user must name the version.
+run_oskelp("${WORK_DIR}" new pre)
+require_success("oskelp new pre")
+run_oskelp("${WORK_DIR}" new pre_app)
+require_success("oskelp new pre_app")
+file(READ "${WORK_DIR}/pre/oskel.toml" pre_manifest)
+string(REPLACE "version = \"0.1.0\"" "version = \"0.1.0-beta.1\""
+       pre_manifest "${pre_manifest}")
+file(WRITE "${WORK_DIR}/pre/oskel.toml" "${pre_manifest}")
+run_oskelp("${WORK_DIR}/pre" publish --registry "${REGISTRY}")
+require_success("oskelp publish a prerelease")
+run_oskelp("${WORK_DIR}/pre_app" add pre)
+require_failure("oskelp add a prerelease-only package" "1")
+require_contains("oskelp add a prerelease-only package" "${run_err}"
+                 "pass an explicit version")
+run_oskelp("${WORK_DIR}/pre_app" add pre --version "0.1.0-beta.1")
+require_success("oskelp add a prerelease with an exact version")
+require_file_contains("${WORK_DIR}/pre_app/oskel.toml"
+                      "pre = \"0.1.0-beta.1\"")
+
 run_oskelp("${WORK_DIR}/registry_app" update missing)
 require_failure("oskelp update an unknown package" "1")
 require_contains("oskelp update an unknown package" "${run_err}"

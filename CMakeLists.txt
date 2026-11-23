@@ -1658,6 +1658,34 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_classes.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # An `enum` (PHASE 6.9) is compile-time metadata too: a declaration emits
+    # nothing and a member folds to a `LOADK`, so the fixture proves the VM and
+    # a native binary agree on every form (`Color.RED`, bare `case RED`).
+    add_test(NAME oskel.build_binary_enum
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_enum"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/62_enum.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # An imported enum is compile-time metadata too: the compiler registers it
+    # from the module's declarations, so the qualified, short, aliased and
+    # selective forms all fold to the same `LOADK`. The fixture proves the VM
+    # and a native binary agree on the cross-module forms.
+    add_test(NAME oskel.build_binary_enum_import
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_enum_import"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/63_enum_import.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    add_test(NAME oskel.build_binary_enum_wildcard
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_enum_wildcard"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/64_enum_wildcard.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # The pointer builtins (BACKLOG §6 item 25): `cstring`/`cstr`/`buffer`/
     # `byteLen`/`loadByte`/`storeByte`/`intToPtr`/`ptrToInt`/`free` are opaque
     # handles an `AotPtr` in the arena backs, so every target emits them. The

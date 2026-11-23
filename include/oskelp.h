@@ -179,12 +179,23 @@ struct Resolution {
 
 // Resolves every dependency, recursively. A path dependency is read from its
 // directory; a registry dependency is picked from `$OSKEL_REGISTRY`, preferring
-// `preferred[name]` when it still satisfies the requirement. Detects cycles,
-// two different locations for the same package name, and a dependency whose
+// `preferred[name]` when it still satisfies the requirement. `forced[name]`
+// pins a registry package to exactly that version: it is an error when the
+// version is missing from the registry or does not satisfy the requirement, so
+// `oskelp update --precise` never falls back silently. Detects cycles, two
+// different locations for the same package name, and a dependency whose
 // declared name disagrees with its manifest.
 bool resolveDependencies(
     const Manifest& root, Resolution& out, std::string& error,
-    const std::map<std::string, std::string>& preferred = {});
+    const std::map<std::string, std::string>& preferred = {},
+    const std::map<std::string, std::string>& forced = {});
+
+// The highest version of `name` published in `$OSKEL_REGISTRY`, as a
+// `major.minor.patch[-prerelease]` string. With `includePrerelease == false`,
+// only releases count; a package that has only prereleases fails with a
+// message telling the user to pass an explicit version.
+bool latestRegistryVersion(const std::string& name, std::string& version,
+                           bool includePrerelease, std::string& error);
 
 Lockfile buildLockfile(const Resolution& resolution);
 
@@ -222,8 +233,17 @@ int commandRemove(const std::string& manifestPath, const std::string& name);
 // is `--registry`, or `$OSKEL_REGISTRY` when empty.
 int commandPublish(const std::string& manifestPath, const std::string& registry);
 // Re-resolves ignoring the lockfile pin for `name` (or for every package when
-// `name` is empty), writes the lockfile and materialises the new tree.
-int commandUpdate(const std::string& manifestPath, const std::string& name);
+// `name` is empty), writes the lockfile and materialises the new tree. A
+// non-empty `precise` pins `name` to exactly that registry version and fails
+// when it is missing, is not a registry dependency, or does not satisfy the
+// manifest requirement.
+int commandUpdate(const std::string& manifestPath, const std::string& name,
+                  const std::string& precise);
+// Prints each registry dependency whose pinned version is behind the registry.
+// The target is the highest version still allowed by a direct dependency's
+// requirement; when a newer version exists but needs a manifest change, the
+// line says so instead of hiding it.
+int commandOutdated(const std::string& manifestPath);
 int commandBuild(const std::string& manifestPath, const BuildOptions& options,
                  const std::string& argv0);
 int commandRun(const std::string& manifestPath, const BuildOptions& options,

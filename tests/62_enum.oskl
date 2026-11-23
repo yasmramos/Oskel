@@ -1,0 +1,95 @@
+// PHASE 6.9: enum declarations.
+//
+// An enum is compile-time metadata: a declaration emits no bytecode, every
+// member is an `int` constant, and a member access folds to a `LOADK`. The
+// compiler still knows the enum type, so mixing two enums -- or an enum and a
+// plain int -- is rejected, while the value stays an ordinary int at run time.
+
+enum Color { RED, GREEN, BLUE }
+enum Status { OK = 200, NOT_FOUND = 404, SERVER_ERROR }
+enum Signed { A = -1, B, C = A + 10 }
+
+// Auto-numbering starts at 0 and continues from the previous member.
+assertEq(Color.RED, 0);
+assertEq(Color.GREEN, 1);
+assertEq(Color.BLUE, 2);
+// An explicit value restarts the sequence; the next member follows it.
+assertEq(Status.OK, 200);
+assertEq(Status.NOT_FOUND, 404);
+assertEq(Status.SERVER_ERROR, 405);
+// A negative start and an expression that names an earlier member.
+assertEq(Signed.A, -1);
+assertEq(Signed.B, 0);
+assertEq(Signed.C, 9);
+
+// A member is an int value: arithmetic, comparison and `int(...)` all work.
+assertEq(Color.GREEN + 1, 2);
+assertEq(Color.RED == 0, true);
+assertEq(int(Color.BLUE), 2);
+
+// A member access works anywhere an expression does, including a hoisted
+// function compiled before the declaration that follows it.
+fn blue(): Color { return Color.BLUE; }
+assertEq(blue(), 2);
+
+// The enum is a type annotation, and a value of another type does not fit.
+let c: Color = Color.GREEN;
+assertEq(c, 1);
+var d: Color = Color.RED;
+d = Color.BLUE;
+assertEq(d, 2);
+let maybe: Color? = nil;
+assertEq(maybe, nil);
+
+// `switch` accepts the qualified member and the bare member. Both forms are
+// fixed values, and the body is a block, so `case RED: { ... }` is valid.
+fn describe(value: Color): string {
+  switch (value) {
+    case Color.RED: { return "red"; }
+    case Color.GREEN: { return "green"; }
+    case Color.BLUE: { return "blue"; }
+  }
+  return "?";
+}
+assertEq(describe(Color.RED), "red");
+assertEq(describe(Color.GREEN), "green");
+assertEq(describe(Color.BLUE), "blue");
+
+fn describeBare(value: Color): string {
+  switch (value) {
+    case RED: { return "bare red"; }
+    case GREEN: { return "bare green"; }
+    case BLUE: { return "bare blue"; }
+  }
+  return "?";
+}
+assertEq(describeBare(Color.RED), "bare red");
+assertEq(describeBare(Color.BLUE), "bare blue");
+
+// An earlier top-level `const` is a constant expression too.
+const BASE = 300;
+enum FromConst { A = BASE, B }
+assertEq(FromConst.A, 300);
+assertEq(FromConst.B, 301);
+
+// A top-level `const` may be an enum member: the parser folds it to the int.
+const FAVORITE = Status.NOT_FOUND;
+assertEq(FAVORITE, 404);
+
+// A local `const` folds too.
+fn localConst(): int {
+  const FALLBACK = Status.SERVER_ERROR;
+  return FALLBACK;
+}
+assertEq(localConst(), 405);
+
+// A declared binding shadows a bare member of the same name.
+enum Extra { SHADOW }
+let SHADOW = 99;
+assertEq(Extra.SHADOW, 0);
+assertEq(SHADOW, 99);
+switch (SHADOW) {
+  case SHADOW: { print("shadowed"); }
+}
+
+print("enum ok");

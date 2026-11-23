@@ -920,6 +920,70 @@ Tested by `tests/58_classes.oskl` (VM), the `tests/errors/class_*.oskl` cases
 fixture, registered as `oskel.build_binary_classes`, which asserts the native
 binary prints byte for byte what the VM prints).
 
+### PHASE 6.9 — `enum` (compile-time integer constants) ✅
+- `enum Name { A, B = 5, C }` declares a scoped set of integer constants. The
+  declaration is **compile-time metadata**: it emits no bytecode, adds no
+  opcode and needs no VM or AOT change. Each member is folded by the parser to
+  an `int64_t`, and a use compiles to a `LOADK` of that value.
+- **Numbering** starts at `0` and continues from the previous member. An
+  explicit `= <constant>` restarts the sequence; the next member follows it.
+  The value is folded by the parser's `foldConstant`, so it may be an integer
+  literal, a unary/binary constant expression, an earlier top-level `const`, or an
+  earlier member (`B = A + 1`). A float, a string, a call or a cycle is
+  rejected. Auto-numbering past `INT64_MAX` is an error, never a wrap-around.
+- **Member access** is `Color.RED`. The compiler records the enum's members
+  (`enumMembers_`) and resolves the qualified form to a constant; an unknown
+  member is a compile error that names the enum and the member. The value is an
+  ordinary `int` at run time, so `Color.RED + 1`, `int(Color.RED)` and
+  comparisons work.
+- **Bare members** are accepted in two places: a `case` label (`case RED: { ... }`)
+  and a constant initializer (`const X = RED;`). Anywhere else the qualified
+  form is required, because a bare member is not a runtime binding. A bare
+  member is allowed only when exactly one enum declares it; otherwise the
+  compiler reports the ambiguity and names the qualified choices. A declared
+  binding (`let`, `var`, `const`, `fn`, an import) of the same name shadows the
+  member, and a mutable binding in a `case` label is rejected as before.
+- **The enum name is a namespace**, not a value binding: `let Color = ...`,
+  `fn Color()`, a parameter named `Color`, a `struct`/`class` named `Color`, and
+  an import that would bind `Color` are all rejected. A member name may repeat
+  across enums (`Color.RED` and `Shape.RED`); only the bare form is ambiguous.
+- **`enum` is a type annotation.** `let c: Color = Color.RED;` is checked, and
+  `Color` is assignable only to `Color` (or to `any`/an untyped slot). Mixing
+  two enums, or an enum and an `int`, is rejected with a message that points at
+  `int(...)` for an explicit conversion; a nullable `Color?` accepts `nil` and
+  a `Color` value, and a `Color?` does not fit a non-nullable slot.
+- **Scope**: `enum` is top-level only, like `struct` and `class`. A module
+  **exports** its own enums as compile-time metadata, not as a value in its
+  module table. An importer names one with a qualified path (`geom.Color`), a
+  selective import (`import { Color } from geom;`) or a wildcard import
+  (`import geom.*;`); a dotted path also exposes its short last segment, and a
+  `switch` over the imported enum is exhaustive against its members. An
+  imported enum is not a value: `geom.Color` alone is an error.
+- **Imports**: the parser pre-scans imports (`prescanImportedEnums`) and the
+  compiler registers the imported enums before hoisting
+  (`registerImportedEnums`), both through a resolver-backed, cached
+  `EnumScanner`. The compiler reads a module's enum metadata without loading
+  it, so a module imported only for its enum still runs at its `import`
+  statement and the chunk that names the module binds its `$module$...` global.
+  `importModule` carries a module's own declarations in `ImportedModule::enums`;
+  an enum the module imported is not re-exported.
+- The parser pre-scans enum names (`enumNames_`) so an annotation, a qualified
+  access or a `case` label may appear before the declaration; the compiler
+  pre-registers the members (`registerEnumDecls`) before hoisting functions, so
+  a hoisted function that reads `Color.RED` sees them. The REPL seeds the
+  parser with the session's enum names and folded values, and `:clear` forgets
+  them.
+- Tested by `tests/62_enum.oskl` (VM and the `oskel.build_binary_enum` AOT
+  parity fixture, which also runs on WASM), the cross-module fixtures
+  `tests/63_enum_switch.oskl`, `tests/63_enum_import.oskl` and
+  `tests/64_enum_wildcard.oskl` (with `tests/modules/enum_geom.oskl`; the
+  import forms also run as `oskel.build_binary_enum_import` and
+  `oskel.build_binary_enum_wildcard`), and the `tests/errors/enum_*.oskl`
+  cases (nested, duplicate, duplicate member, unknown member, non-constant,
+  float, int assignment, different enum types, member assignment, shadowing,
+  ambiguity, overflow, plus the import mismatch, unknown member and
+  non-exhaustive cases).
+
 ### PHASE 7 — Bytecode → native backend (AOT, freestanding) 🔶 in progress
 - New module `src/frontend/native/` + `include/native/`: lowering of every opcode to
   x86-64 following the bytecode → native lowering table of §3.
@@ -2311,10 +2375,14 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
   and second linker members are skipped, `//` long names and `/N` references
   are resolved, and a short import object is rejected with a dedicated
   message. `args()` is handled too: the generated `_start` calls
-  `msvcrt.dll`'s `__getmainargs` and passes `(argc, argv)` to the Windows `main` wrapper,
-  which moves `rcx`/`rdx` to the chunk's `rdi`/`rsi`; the hosted `cl` path
-  uses the same wrapper. The `.pdata`/`.xdata` exception data remain; TLS is
-  unsupported.
+  `msvcrt.dll`'s `__getmainargs` and passes `(argc, argv)` to the Windows
+  `main` wrapper, which moves `rcx`/`rdx` to the chunk's `rdi`/`rsi`; the
+  hosted `cl` path uses the same wrapper. A `.pdata`/`.xdata` input is rejected
+  with a dedicated message: the AOT object emits no unwind data, so the PE
+  exception directory stays zero and a C++ exception must not cross an Oskel
+  frame. A `.tls` input is rejected too; the image defines no TLS variables, so
+  the PE TLS directory stays zero. Emitting unwind data is a future container
+  feature.
 - **10.3d (future)** — the macOS Mach-O/dyld container. It is a separate
   linker, not a generic abstraction: the object format, the loader contract
   and the entry prelude differ.
@@ -2381,9 +2449,10 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
+Phase 6.9: ✅ completed (`enum`: a scoped set of integer constants, folded by the parser; no opcode, no engine code, and identical on the VM, the AOT backend and WASM)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.11 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY), callbacks (including a struct return) and a stored callback resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
-Phase 10: 🔶 in progress (10.1, 10.2, 10.2b and 10.3a done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar`, `-r`, `.data`/`.bss`, the common x86-64 ELF relocations, and the Windows COFF→PE32+ path with UCRT/kernel32 imports. 10.3b `-r` COFF, `.lib` and `args` done, `.pdata`/TLS pending, and 10.3d Mach-O pending)
+Phase 10: 🔶 in progress (10.1, 10.2, 10.2b and 10.3a done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar`, `-r`, `.data`/`.bss`, the common x86-64 ELF relocations, and the Windows COFF→PE32+ path with UCRT/kernel32 imports. 10.3b `-r` COFF, `.lib`, `args` and the `.pdata`/TLS rejection done, and 10.3d Mach-O pending)
 Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending
 2.0: ⬜ future (static with `@Dynamic`)
 

@@ -1,0 +1,6 @@
+// expect-exit: 65
+enum Color { RED, GREEN }
+let c: Color = Color.RED;
+switch (c) {
+  case Color.RED: { print("r"); }
+}

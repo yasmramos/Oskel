@@ -94,6 +94,15 @@
           }
         },
         {
+          "comment": "`enum Name`",
+          "name": "meta.enum.oskl",
+          "match": "\\b(enum)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.type.enum.oskl" },
+            "2": { "name": "entity.name.type.enum.oskl" }
+          }
+        },
+        {
           "comment": "`class Name`",
           "name": "meta.class.oskl",
           "match": "\\b(class)\\s+([A-Za-z_][A-Za-z0-9_]*)",
@@ -133,7 +142,7 @@
         },
         {
           "name": "storage.type.oskl",
-          "match": "\\b(?:let|var|const|fn|struct|class|native|extern|import)\\b"
+          "match": "\\b(?:let|var|const|fn|struct|enum|class|native|extern|import)\\b"
         }
       ]
     },

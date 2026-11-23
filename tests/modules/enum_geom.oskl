@@ -1,0 +1,20 @@
+// Module used by the cross-module enum fixtures (PHASE 6.9).
+//
+// The enums are compile-time metadata: they are not part of the module table,
+// so an importer names them with the module path (`enum_geom.Color.RED`), an
+// alias (`g.Color.RED`), a selective import (`import { Shape } from ...`) or a
+// wildcard import (`import ...*`).
+enum Color { RED, GREEN, BLUE }
+enum Shape { CIRCLE, SQUARE }
+
+fn pick(): Color {
+  return Color.GREEN;
+}
+
+fn area(s: Shape): int {
+  switch (s) {
+    case Shape.CIRCLE: { return 1; }
+    case Shape.SQUARE: { return 4; }
+  }
+  return 0;
+}

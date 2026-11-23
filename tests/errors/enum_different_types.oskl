@@ -1,0 +1,6 @@
+// expect-exit: 65
+// Two enums are distinct types even though both are integers at run time.
+enum Color { RED }
+enum Shape { ROUND }
+let c: Color = Shape.ROUND;
+print(c);

@@ -17,13 +17,16 @@ const char* kUsage =
     "usage:\n"
     "  oskelp new <dir> [--name <name>] [--vcs none|git]\n"
     "  oskelp init [dir] [--name <name>] [--vcs none|git]\n"
+    "  oskelp add <name> [--version <requirement>]\n"
+    "             [--manifest-path <file>]\n"
     "  oskelp add <name> --path <path> [--version <v>]\n"
     "             [--manifest-path <file>]\n"
     "  oskelp add --path <path> [--version <v>] [--manifest-path <file>]\n"
-    "  oskelp add <name> --version <requirement> [--manifest-path <file>]\n"
     "  oskelp remove <name> [--manifest-path <file>]\n"
     "  oskelp publish [--registry <dir>] [--manifest-path <file>]\n"
-    "  oskelp update [<name>] [--manifest-path <file>]\n"
+    "  oskelp update [<name>] [--precise <version>]\n"
+    "                [--manifest-path <file>]\n"
+    "  oskelp outdated [--manifest-path <file>]\n"
     "  oskelp build [--target <name>] [--mode <name>] [--locked]\n"
     "               [--manifest-path <file>]\n"
     "  oskelp run [--native] [--target <name>] [--mode <name>] [--locked]\n"
@@ -41,12 +44,14 @@ const char* kUsage =
     "`oskelp add` and `oskelp remove` edit oskel.toml in place and refresh\n"
     "oskel.lock and .oskel/deps. `add` takes `--path` for a path dependency or\n"
     "`--version <requirement>` for one from the registry named by\n"
-    "OSKEL_REGISTRY. `oskelp publish` copies the package to that registry and\n"
-    "`oskelp update` re-resolves every package, or only <name>, and rewrites\n"
-    "oskel.lock. `oskelp build` compiles the project's entry point to a native\n"
-    "binary; `oskelp run` runs it on the VM unless --native is given. Both\n"
-    "resolve the dependencies in oskel.toml and materialise them under\n"
-    ".oskel/deps.\n";
+    "OSKEL_REGISTRY; without `--version` it uses the latest published release\n"
+    "and writes a caret requirement. `oskelp publish` copies the package to\n"
+    "that registry. `oskelp update` re-resolves every package, or only <name>,\n"
+    "and rewrites oskel.lock; `--precise <version>` pins that registry package\n"
+    "to one version. `oskelp outdated` prints the available registry updates.\n"
+    "`oskelp build` compiles the project's entry point to a native binary;\n"
+    "`oskelp run` runs it on the VM unless --native is given. Both resolve the\n"
+    "dependencies in oskel.toml and materialise them under .oskel/deps.\n";
 
 bool takeValue(const std::vector<std::string>& arguments, size_t& index,
                const std::string& option, std::string& value) {
@@ -248,12 +253,17 @@ int commandPublish(const std::vector<std::string>& arguments) {
 
 int commandUpdate(const std::vector<std::string>& arguments) {
   std::string name;
+  std::string precise;
   std::string manifestPath;
   for (size_t i = 1; i < arguments.size(); ++i) {
     const std::string& arg = arguments[i];
     if (arg == "-h" || arg == "--help") {
       std::cout << "oskelp " << OSKEL_VERSION << "\n\n" << kUsage;
       return oskelp::kOk;
+    }
+    if (arg == "--precise") {
+      if (!takeValue(arguments, i, arg, precise)) return oskelp::kUsage;
+      continue;
     }
     if (arg == "--manifest-path") {
       if (!takeValue(arguments, i, arg, manifestPath)) return oskelp::kUsage;
@@ -272,7 +282,28 @@ int commandUpdate(const std::vector<std::string>& arguments) {
   std::string manifest;
   int status = resolveManifest(manifestPath, manifest);
   if (status != oskelp::kOk) return status;
-  return oskelp::commandUpdate(manifest, name);
+  return oskelp::commandUpdate(manifest, name, precise);
+}
+
+int commandOutdated(const std::vector<std::string>& arguments) {
+  std::string manifestPath;
+  for (size_t i = 1; i < arguments.size(); ++i) {
+    const std::string& arg = arguments[i];
+    if (arg == "-h" || arg == "--help") {
+      std::cout << "oskelp " << OSKEL_VERSION << "\n\n" << kUsage;
+      return oskelp::kOk;
+    }
+    if (arg == "--manifest-path") {
+      if (!takeValue(arguments, i, arg, manifestPath)) return oskelp::kUsage;
+      continue;
+    }
+    std::cerr << "oskelp outdated: unexpected argument '" << arg << "'\n";
+    return oskelp::kUsage;
+  }
+  std::string manifest;
+  int status = resolveManifest(manifestPath, manifest);
+  if (status != oskelp::kOk) return status;
+  return oskelp::commandOutdated(manifest);
 }
 
 // Parses the options shared by build/run/check/test. `allowArguments` lets
@@ -368,6 +399,7 @@ int main(int argc, char** argv) {
   if (command == "remove") return commandRemove(arguments);
   if (command == "publish") return commandPublish(arguments);
   if (command == "update") return commandUpdate(arguments);
+  if (command == "outdated") return commandOutdated(arguments);
 
   oskelp::BuildOptions options;
   std::string manifestPath;
