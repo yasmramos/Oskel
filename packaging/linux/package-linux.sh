@@ -91,6 +91,7 @@ install -m 0755 "$stage/bin/oskelc" "$root/usr/bin/oskelc"
 install -m 0755 "$stage/bin/oskelld" "$root/usr/bin/oskelld"
 install -m 0755 "$stage/bin/oskelp" "$root/usr/bin/oskelp"
 install -m 0755 "$stage/bin/bindgen" "$root/usr/bin/bindgen"
+install -m 0755 "$stage/bin/oskelint" "$root/usr/bin/oskelint"
 cp -a "$stage/share/oskel/std" "$root/usr/share/oskel/std"
 cp -a "$stage/lib/oskel/ui" "$root/usr/lib/oskel/ui"
 
@@ -149,6 +150,7 @@ install -m 0755 "$stage/bin/oskelc" %{buildroot}/usr/bin/oskelc
 install -m 0755 "$stage/bin/oskelld" %{buildroot}/usr/bin/oskelld
 install -m 0755 "$stage/bin/oskelp" %{buildroot}/usr/bin/oskelp
 install -m 0755 "$stage/bin/bindgen" %{buildroot}/usr/bin/bindgen
+install -m 0755 "$stage/bin/oskelint" %{buildroot}/usr/bin/oskelint
 cp -a "$stage/share/oskel/std" %{buildroot}/usr/share/oskel/std
 cp -a "$stage/lib/oskel/ui" %{buildroot}/usr/lib/oskel/ui
 
@@ -158,6 +160,7 @@ cp -a "$stage/lib/oskel/ui" %{buildroot}/usr/lib/oskel/ui
 /usr/bin/oskelld
 /usr/bin/oskelp
 /usr/bin/bindgen
+/usr/bin/oskelint
 /usr/share/oskel/std
 /usr/lib/oskel/ui
 

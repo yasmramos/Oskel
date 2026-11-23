@@ -1,0 +1,3 @@
+// expect-exit: 65
+// There is no top-level await: the program's chunk is not an async function.
+await 1;

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(oskel VERSION 0.2.0 LANGUAGES CXX)
+project(oskel VERSION 0.3.0 LANGUAGES CXX)
 
 # `include/version.h` is the version the binary prints; CMake's project version
 # names the packages and the release tag. They must agree, so the configure step
@@ -448,6 +448,24 @@ endif()
 
 install(TARGETS oskelp RUNTIME DESTINATION bin)
 
+# --------------------------------------------------------------------------- oskelint
+# The linter. Unlike `bindgen` and `oskelp` it links the engine, but only for one
+# question: `builtinNames()` constructs a `VM` and reads `globals()`, so the rule
+# uses the names `registerBuiltins` actually installs instead of a second list
+# that would drift. It never runs a program, so `oskelc` (which must not carry
+# the interpreter) is untouched. Its sources live under `tools/`, outside the
+# `src/*.cpp` glob, so it is never pulled into `oskel` or `oskelc`.
+add_library(oskelint_lib STATIC "${CMAKE_CURRENT_SOURCE_DIR}/tools/oskelint.cpp")
+target_include_directories(oskelint_lib PUBLIC include src)
+target_link_libraries(oskelint_lib PUBLIC oskel_lib)
+target_compile_options(oskelint_lib PRIVATE ${OSKEL_WARNINGS})
+
+add_executable(oskelint "${CMAKE_CURRENT_SOURCE_DIR}/tools/oskelint_main.cpp")
+target_link_libraries(oskelint PRIVATE oskelint_lib)
+target_compile_options(oskelint PRIVATE ${OSKEL_WARNINGS})
+
+install(TARGETS oskelint RUNTIME DESTINATION bin)
+
 # The standard library ships next to the binary: `standardLibraryDir` looks for
 # `../share/oskel/std` relative to the executable, so `import std.math` resolves
 # after `make install` and not only when running from the source tree.
@@ -504,6 +522,15 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(object_test)
   oskel_add_cpp_test(link_test)
   oskel_add_cpp_test(link_pe_test)
+  oskel_add_cpp_test(link_macho_test)
+  if(APPLE)
+    add_test(NAME oskel.build_hosted_own_macos
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_hosted_own_macos"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_macos.cmake")
+  endif()
 
   # PHASE 10.3a: the own linker emits a PE32+ image on Windows. The fixture is
   # a plain `print`, so the test exercises the UCRT imports and the generated
@@ -514,6 +541,15 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_link_windows.oskl"
         "-DOSKEL_EXPECTED_OUTPUT=windows own linker"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_windows.cmake")
+    # PHASE 10.3b.3: `_start` obtains argc/argv with `__getmainargs`; the
+    # quoted argument with a space survives as one element.
+    add_test(NAME oskel.build_hosted_own_windows_args
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_link_windows_args.oskl"
+        "-DOSKEL_EXPECTED_OUTPUT=2 <one><two words>"
+        "-DOSKEL_ARGS=one;two words"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_windows.cmake")
   endif()
   oskel_add_cpp_test(pe_test)
@@ -544,6 +580,22 @@ if(BUILD_TESTING)
   target_compile_options(bindgen_test PRIVATE ${OSKEL_WARNINGS})
   add_test(NAME bindgen_test COMMAND bindgen_test
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+  # The linter's unit test links `oskelint_lib`, which pulls the engine for
+  # `builtinNames()` (a `VM` is built and its globals read; no program runs).
+  add_executable(oskelint_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/oskelint_test.cpp")
+  target_link_libraries(oskelint_test PRIVATE oskelint_lib)
+  target_compile_options(oskelint_test PRIVATE ${OSKEL_WARNINGS})
+  add_test(NAME oskelint_test COMMAND oskelint_test
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+  # End-to-end: the tool itself on a real file, so the CLI wiring (argument
+  # parsing, the exit codes, the formatted line) is covered too.
+  add_test(NAME oskelint.cli
+    COMMAND ${CMAKE_COMMAND}
+      "-DOSKELINT_EXE=$<TARGET_FILE:oskelint>"
+      "-DOSKELINT_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_builtin_shadow.oskl"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_oskelint_cli.cmake")
 
   # End-to-end: run the `bindgen` binary on a header, then feed the generated
   # module back to `oskel -c`, so the tool and the compiler cannot drift apart.
@@ -1641,6 +1693,16 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_bytes.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `std.decimal` is a pure-Oskel BigDecimal over arrays and strings, so its
+    # arbitrary-precision arithmetic must build to a native binary and agree
+    # with the VM.
+    add_test(NAME oskel.build_binary_decimal
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_decimal"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_decimal.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `std.io` is plain Oskel over strings, and its readers and writers are
     # ordinary classes (maps with closures), so it must build to a native binary
     # and agree with the VM. The fixture also pins that an instance travels
@@ -1675,6 +1737,55 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_TEST_NAME=oskel.build_binary_classes"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_classes.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # An `enum` (PHASE 6.9) is compile-time metadata too: a declaration emits
+    # nothing and a member folds to a `LOADK`, so the fixture proves the VM and
+    # a native binary agree on every form (`Color.RED`, bare `case RED`).
+    add_test(NAME oskel.build_binary_enum
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_enum"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/62_enum.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # An imported enum is compile-time metadata too: the compiler registers it
+    # from the module's declarations, so the qualified, short, aliased and
+    # selective forms all fold to the same `LOADK`. The fixture proves the VM
+    # and a native binary agree on the cross-module forms.
+    add_test(NAME oskel.build_binary_enum_import
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_enum_import"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/63_enum_import.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    add_test(NAME oskel.build_binary_enum_wildcard
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_enum_wildcard"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/64_enum_wildcard.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `async fn` / `await` (PHASE 11.1) add no opcode and no builtin: a future is
+    # a map the compiler builds with `NEWTABLE`/`SETTABLE`, and `await` reads it
+    # with `GETTABLE` plus a `panic` call. The fixture proves the VM and a
+    # native binary agree on the payload, recursion, methods and error values.
+    add_test(NAME oskel.build_binary_async
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_async"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/65_async.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # An async function crosses a module boundary as an ordinary closure, so the
+    # importer's `await` reads the same future map. The fixture awaits an
+    # exported async function both qualified and through an alias.
+    add_test(NAME oskel.build_binary_async_modules
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_async_modules"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/65_async_modules.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
     # The pointer builtins (BACKLOG §6 item 25): `cstring`/`cstr`/`buffer`/
@@ -1904,6 +2015,30 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_global_nil.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # A builtin is a global, so a declaration with a builtin's name replaces it
+    # (language.md §4.2). `collectGlobals` pre-assigns the builtin slots first,
+    # so the user's assignment reuses that slot: the value read back is the
+    # user's, not the builtin's. A backend that allocated a second slot would
+    # keep the builtin reachable and disagree with the VM.
+    add_test(NAME oskel.build_builtin_shadow
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_builtin_shadow"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_builtin_shadow.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # Calling a shadowed builtin reaches the shadowing value, so a non-function
+    # callee fails at run time with the VM's wording and exit code -- never by
+    # falling back to the builtin the name used to hold.
+    add_test(NAME oskel.build_builtin_shadow_error
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_builtin_shadow_error"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_builtin_shadow_error.oskl"
+        "-DOSKEL_EXPECTED_EXIT=70"
+        "-DOSKEL_EXPECTED_MESSAGE=cannot call a value of type"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.cmake")
   endif()
 
   # --- WebAssembly backend (PHASE 9) ---
@@ -1918,6 +2053,29 @@ if(BUILD_TESTING)
         "-DOSKEL_TEST_NAME=oskel.build_wasm"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_wasm.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `async fn` / `await` (PHASE 11.1) lower to the same map operations the
+    # backend already binds, so the WASM module must agree with the VM byte for
+    # byte on the payload, recursion, methods and error values.
+    add_test(NAME oskel.build_wasm_async
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_async"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/65_async.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    add_test(NAME oskel.build_wasm_async_modules
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_async_modules"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/65_async_modules.oskl"
         "-DNODE_EXE=${OSKEL_NODE_EXE}"
         "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
@@ -2070,6 +2228,18 @@ if(BUILD_TESTING)
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
 
+    # `std.decimal` is pure Oskel over arrays and strings, so its
+    # arbitrary-precision arithmetic must also match the VM in WebAssembly.
+    add_test(NAME oskel.build_wasm_decimal
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_decimal"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_decimal.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
     # The bound string methods (`upper`, `trim`, `split`, `replace`,
     # `padStart`, ...) over ASCII and multibyte UTF-8. The fixture is the same
     # one the AOT backend compares with the VM, so both backends share the
@@ -2092,6 +2262,19 @@ if(BUILD_TESTING)
         "-DOSKEL_TEST_NAME=oskel.build_wasm_range_methods"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_wasm_range_methods.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # Pointer handles (`cstring`, `buffer`, `cstr`, `byteLen`, `loadByte`,
+    # `storeByte`, `intToPtr`, `ptrToInt`, `free`) in linear memory. The error
+    # cases stay in the AOT fixture because `pcall` is VM-only.
+    add_test(NAME oskel.build_wasm_pointers
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_pointers"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_wasm_pointers.oskl"
         "-DNODE_EXE=${OSKEL_NODE_EXE}"
         "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
@@ -2153,6 +2336,8 @@ if(BUILD_TESTING)
       oskel.build_wasm_map_methods oskel.build_wasm_datetime
       oskel.build_wasm_collections oskel.build_wasm_strings
       oskel.build_wasm_string_methods oskel.build_wasm_range_methods
+      oskel.build_wasm_pointers oskel.build_wasm_async
+      oskel.build_wasm_async_modules
       oskel.build_wasm_io oskel.build_wasm_math
       oskel.build_wasm_double_format oskel.build_wasm_tree_shake PROPERTIES TIMEOUT 120)
   endif()
@@ -2280,8 +2465,11 @@ if(BUILD_TESTING)
     # The unset-global fixtures are inputs for the AOT runtime-error harness:
     # they exit 70 by design, so the VM glob (which expects 0) must skip them.
     # `native_build_global_nil` is the passing counterpart and stays in the glob.
+    # `native_build_builtin_shadow_error` is skipped for the same reason: it
+    # exits 70 on purpose, while its passing counterpart stays in the glob.
     if(name STREQUAL "native_build_unset_global" OR
-       name STREQUAL "native_build_unset_global_fn")
+       name STREQUAL "native_build_unset_global_fn" OR
+       name STREQUAL "native_build_builtin_shadow_error")
       continue()
     endif()
     oskel_add_script_test("oskel.${name}" "${script}")

@@ -22,6 +22,78 @@ may change between minor versions.
   real shim from the installed tree. The Windows and macOS artifacts now build
   the UI backend instead of silently omitting it.
 
+- **`async fn`, `await` and `Future` (PHASE 11.1).** A call to an async function
+  returns a `Future`; `await` yields its payload, and the declared return type
+  is the payload type (`async fn f(): int` returns `Future<int>`). `await` is
+  only valid inside an `async fn` (a lambda and the top level are rejected), an
+  `async fn init` is rejected, and a replacement for an async method must be
+  async too. The body runs eagerly in this phase: a future is a plain map
+  `{state, value, error}`, so the feature adds no opcode and no builtin and the
+  VM, the AOT backend and the WASM backend agree by construction. A pending
+  future has no producer yet, and awaiting one is a runtime error. Covered by
+  `tests/65_async.oskl`, `tests/65_async_modules.oskl`, the `oskel.build_binary_async`
+  and `oskel.build_wasm_async` fixtures and the `tests/errors/async_*.oskl`
+  diagnostics.
+- **The macOS own linker closes a hosted Mach-O executable (PHASE 10.3d).**
+  `linkMachOExecutable` parses the `MH_OBJECT` and emits a non-PIE
+  `MH_EXECUTE` with `__TEXT`/`__DATA`/`__LINKEDIT`, `LC_MAIN`,
+  `LC_LOAD_DYLINKER`, `LC_LOAD_DYLIB` (libSystem), `LC_SYMTAB`,
+  `LC_DYSYMTAB` and `LC_DYLD_INFO_ONLY`. A call import becomes a `__stubs`
+  entry and a non-lazy `__got` bind; `__const` is carried through.
+  `link_macho_test` pins the container on every host and
+  `oskel.build_hosted_own_macos` runs the image on `macos-15-intel` (x86-64); the
+  arm64 runner checks the `file` type only.
+- **`oskelp` resolves the latest release and inspects registry updates.**
+  `oskelp add <name>` without `--version` writes a caret requirement for the
+  highest published release (a prerelease-only package needs an explicit
+  version), `oskelp outdated` prints the compatible and latest registry
+  versions, and `oskelp update <name> --precise <version>` pins one registry
+  version, failing when it is missing or outside the manifest requirement.
+  `tests/oskelp_test.cpp` and `tests/run_oskelp_case.cmake` pin the behavior.
+- **`oskelint`, the linter.** A fifth binary reports suspicious but legal code.
+  The first rule, `builtin-shadow`, warns when a declaration (`var`, `let`,
+  `const`, `fn`, `struct`, a parameter, a lambda parameter or a `for ... in`
+  variable) replaces a builtin. Shadowing is legal — the standard library
+  re-exports its own builtins with `let time = time;` — so the check belongs in
+  a tool and not in the compiler, which must accept every program the language
+  defines and must stay clear of the builtin names. The re-export idiom is
+  deliberately silent, and the rule reads the builtin names from the engine
+  (`VM::globals()` after `registerBuiltins`) instead of keeping a second list
+  that would drift. A lint warning exits 0. See `docs/oskelint.md`.
+
+### Changed
+
+### Fixed
+
+## [0.3.0] - 2026-11-23
+
+### Added
+
+- **`std.os` and `std.sys`, the system surface in two halves.** `std.sys` is the
+  target-independent half (`time()`/`clock()`, the `platform()` and `arch()`
+  names, `exit`) and builds on every target, bare metal included. `std.os` is
+  the process and filesystem half (`cwd`, `chdir` over `std.fs.dir`, `exit`) and
+  is therefore not a bare-metal module. The split exists because a module built
+  over a builtin that only some targets seed fails `oskel build` on the rest:
+  `platform()`/`arch()` resolve to the compile-time target under `oskel build`
+  and to the host on the VM, and `memSize()` stays out of `std.sys` because only
+  the bare-metal target backs it. `args()` is not re-exported either, since a
+  Windows freestanding image has no argv.
+
+- **`oskelc -c` produces a portable `.oskc` bytecode image.** A compiled chunk
+  can now be written to disk and loaded back, so a program ships as bytecode
+  instead of source and runs on the VM or builds through the AOT backend without
+  a reparse. The format is versioned and verified on load, so a truncated or
+  stale image is rejected instead of executed, and `-pkg` (`.oskpkg`) is
+  refused with a dedicated message rather than written wrong.
+
+- **`std.fs` grows a streaming `File`, `copyFile` and `dir.walk`.**
+  `std.fs.File` is a class module over a streaming handle (read and write
+  incrementally instead of loading a whole file), owning the `ptr` the `fs*`
+  builtins return and closing it exactly once; `copyFile` refuses a source equal
+  to its destination instead of truncating it, and `dir.walk` returns every
+  entry below a path, sorted, built in Oskel over `listDir`/`isDir` so it runs
+  unchanged under `oskel build`.
 - **`bindgen --abi` selects the destination ABI.** A generated module must not
   emit a shape the destination cannot marshal: `--abi system-v` emits
   struct-by-value, callbacks and variadics; `--abi win64` emits only the
@@ -31,6 +103,19 @@ may change between minor versions.
   `ffi::capabilitiesForAbi`, not from the host running the tool, so a module
   generated on Linux for Windows is correct. `tests/bindgen_test.cpp` and
   `tests/run_bindgen_target.cmake` pin the matrix.
+- **`std.decimal`, Java-style arbitrary-precision decimals.** `BigDecimal`
+  stores an arbitrary-precision signed unscaled integer plus an `int` scale and
+  implements the Java `java.math.BigDecimal` surface: exact `add`, `subtract`
+  and `multiply`; exact `divide` when the expansion terminates and
+  `divide(divisor, scale, mode)` otherwise; `divideToIntegralValue`,
+  `remainder`, `setScale`, `round`, `compareTo`, scale-sensitive `equals`,
+  `stripTrailingZeros`, `pow`, `intValue` and `doubleValue`; and the Java
+  rounding modes (`UP`, `DOWN`, `CEILING`, `FLOOR`, `HALF_UP`, `HALF_DOWN`,
+  `HALF_EVEN`, `UNNECESSARY`). The class lives in the
+  `std.decimal.BigDecimal` class module and the `std.decimal` facade exposes
+  `decimal(value)`. It is pure Oskel, so the VM, `oskel build` and WebAssembly
+  agree exactly. `tests/68_std_decimal.oskl` and
+  `tests/native_build_decimal.oskl` pin the three engines.
 
 - **`std.bytes`, the byte-string and binary-codec module.** A byte is an `int`
   in `0..255` and a byte string is an ordinary array, so no runtime type is
@@ -68,6 +153,18 @@ may change between minor versions.
   mixed INTEGER/SSE and MEMORY shapes, and the stored/exit/struct fixtures run
   the VM with the helper preloaded and compare its output with the hosted
   binary.
+
+- **The WebAssembly backend binds the pointer builtins (PHASE 9.6).**
+  `cstring`, `buffer`, `cstr`, `byteLen`, `loadByte`, `storeByte`,
+  `intToPtr`, `ptrToInt` and `free` now work in a `.wasm` module. A handle is
+  the `AotPtr` layout in linear memory (`{kind, data, length, released}`), so
+  `type()` reports `cstring` for a `cstring` and `ptr` for a buffer or a
+  `void *`, `str`/`repr` render a `cstring` as its text (quoted for `repr`)
+  and every other handle as `<ptr>`, and `free` marks the handle released
+  without reclaiming the arena. The error paths use the AOT wording, but stay
+  in the AOT fixture because `pcall` is still VM-only.
+  `tests/native_build_wasm_pointers.oskl` is the parity fixture and
+  `oskel.build_wasm_pointers` runs it.
 
 - **The WebAssembly backend binds the range methods (PHASE 9.5).**
   `r.toArray()` materialises a range into an array (exclusive or inclusive,
@@ -110,6 +207,17 @@ may change between minor versions.
   `tests/cxxbind/skia_test.oskl` and the new
   `tests/cxxbind/skia_window_test.oskl` cover the path on the VM and the hosted
   AOT binary.
+
+- **The UI backend bundle needs no flags.** The SDL3 and Skia libraries that a
+  UI program links ship under `lib/oskel/ui` and `oskel build` finds them from
+  the modules the compiler loaded, not from symbol names: it links them by
+  absolute path with an rpath on Linux and macOS and copies the DLLs beside a
+  Windows hosted image, so a user passes neither `--link-lib` nor
+  `LD_LIBRARY_PATH`. `ui_runtime.cpp` resolves the bundle from
+  `$OSKEL_UI_LIBDIR`, then the installed prefix, then the build tree, so a
+  packaged engine never keeps using its build directory. SDL3 is opened lazily,
+  only when a program asks for one of its symbols, so a non-UI program never
+  loads it.
 
 - **Class modules: a PascalCase module binds its class.** A module whose last
   path segment starts with an uppercase letter is a class module: it must
@@ -174,8 +282,26 @@ may change between minor versions.
   `!<arch>` inputs before parsing: it skips the first/second linker members,
   resolves `//` long names and `/N` references, strips the member's trailing
   `/`, and rejects a short import object with a dedicated message. A static
-  `.lib` member links through both the direct PE path and `-r`. `args()`
-  remains 10.3b.
+  `.lib` member links through both the direct PE path and `-r`.
+- **`args()` on the Windows own linker (PHASE 10.3b.3).** The generated
+  `_start` calls `msvcrt.dll`'s `__getmainargs`, then hands `(argc, argv)` to a
+  `main` wrapper that moves the Microsoft x64 `rcx`/`rdx` pair into the chunk's
+  `rdi`/`rsi`. The hosted `cl` path shares the wrapper, so `args()` matches the
+  VM under both linkers; an argument containing a space survives as one
+  element. The freestanding Windows image still rejects `args()` by name.
+- **`.pdata`/`.xdata` and TLS are rejected on the own linker (PHASE 10.3b.4).**
+  The COFF parser refuses a `.pdata`/`.xdata` input with a dedicated message,
+  because the AOT object emits no unwind data and a C++ exception must not
+  cross an Oskel frame; the PE exception directory stays zero. A `.tls` input
+  is rejected too, and the PE TLS directory stays zero. `link_pe_test` pins
+  both messages and both zero directories.
+
+- **The Windows linker refuses the sections it cannot represent (PHASE
+  10.3b.4).** An input carrying `.pdata`/`.xdata` (the PE exception directory)
+  or `.tls` is rejected with a dedicated message instead of being linked into a
+  zero-directory image: an Oskel frame has no unwind data, and the image
+  defines no TLS variables, so a C++ exception must not cross it. Emitting them
+  is future container work; `pcall`/`error` uses the runtime's own handler.
 
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,
@@ -403,6 +529,13 @@ may change between minor versions.
 
 ### Fixed
 
+- **`std.decimal` integral division keeps Java's preferred scale.**
+  `divideToIntegralValue` now returns `10.5 / 3` as `3.0` (scale 1) and
+  `10.5 / 3.0` as `3` (scale 0), matching `java.math.BigDecimal`; a negative
+  preferred scale is reduced toward zero only when the integer quotient cannot
+  carry it. The values were cross-checked against OpenJDK 21 and the regression
+  cases are in `tests/68_std_decimal.oskl` and the AOT/WASM fixture.
+
 - **A direct call to a user function is checked at compile time.** A parameter
   annotation used to be erased without ever being compared to an argument, so
   `fn f(x: int) { return x; }` accepted `f("s")` and failed only when the body
@@ -440,6 +573,30 @@ may change between minor versions.
   (`fsRead() expects a file handle`, not `file handle expected`), and `$slice`
   checks the receiver before the bounds so `5[1:2]` names the receiver in both
   engines. The WebAssembly pool was aligned the same way.
+  The dynamic tail is assembled too, not truncated at the fixed prefix:
+  `emitTypeTailFail` appends `, got '<type>'`, `emitTypeQuoteFail` appends
+  ` '<type>'` for a prefix that already names the condition, and
+  `emitNoMemberFail` builds `type '<t>' has no member '<name>'`. The type name
+  comes from the same table `type()` reads, so a pointer handle reports
+  `cstring` or `ptr`. A builtin, method or operator that used to stop early now
+  prints the VM's sentence: `free() expects a pointer, got 'int'`,
+  `insert() expects an integer index, got 'string'`,
+  `padStart() expects a string fill, got 'int'`, the string
+  `contains`/`startsWith`/`endsWith`/`indexOf`/`split`/`replace`/
+  `replaceFirst`/`substr`/`repeat` tails, the map `has`/`get`/`set`/`delete`
+  key tail, and `unsupported unary operator for type 'int'`. The two-operand
+  tails quote both operands too: `cannot compare 'int' with 'string'` and
+  `operator 'in' is not supported for 'int' and 'int'`; `>` and `<=` swap the
+  names, because the VM lowers them to `lessThan(b, a)` and its message is the
+  one a program sees. The callback methods name themselves too -- `map() must
+  be a function, got 'int'`, and the same for `filter`, `each`, `find`, `any`,
+  `all` and `reduce` -- and only at the call, so an empty receiver still
+  returns without reporting, as in the VM. The arithmetic, bitwise, shift and
+  power operators name themselves too, from the selector the helper already
+  receives: `unsupported operand types for '+': 'int' and 'string'`. A shift by
+  a non-integer now reports that operand pair instead of the count range, which
+  is what the VM does. One tail still stops at the prefix: the FFI
+  struct-field name, which names a C layout field rather than a runtime value.
   `tests/native_build_runtime_error_messages.oskl` pins both halves through
   `pcall` and compares the binary's output with the VM's.
 
@@ -1623,6 +1780,7 @@ dependencies beyond the C++ standard library.
 - The AOT backend targets `x86_64-linux-sysv`; on any other target `oskel
   build` reports the unsupported target instead of emitting bytes.
 
-[Unreleased]: https://github.com/yasmramos/Oskel/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/yasmramos/Oskel/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/yasmramos/Oskel/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/yasmramos/Oskel/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/yasmramos/Oskel/releases/tag/v0.1.0

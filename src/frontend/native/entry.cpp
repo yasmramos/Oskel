@@ -2154,7 +2154,17 @@ std::uint64_t emitWindowsHostedRuntime(CodeGen& code, const RuntimeHandles& hand
   }
 
 
-  const std::size_t mainOffset = code.labelOffset(programEntry);
+  // The C runtime and the own linker's `_start` call `main` with the Microsoft
+  // x64 convention: argc in rcx, argv in rdx. The Oskel chunk reads rdi/rsi,
+  // so a two-instruction wrapper moves them before the chunk. The `jmp` keeps
+  // the caller's return address, so the chunk returns straight to the CRT or
+  // `_start`.
+  CodeGen::Label main = code.newLabel();
+  code.bind(main);
+  code.movReg(X64Reg::Rdi, X64Reg::Rcx);
+  code.movReg(X64Reg::Rsi, X64Reg::Rdx);
+  code.jmp(programEntry);
+  const std::size_t mainOffset = code.labelOffset(main);
   code.exportSymbol("main", mainOffset);
   return mainOffset;
 }

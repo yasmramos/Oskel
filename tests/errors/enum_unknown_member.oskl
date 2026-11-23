@@ -1,0 +1,3 @@
+// expect-exit: 65
+enum Color { RED }
+print(Color.NOPE);

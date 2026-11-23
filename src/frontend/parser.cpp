@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -14,6 +15,22 @@ namespace {
 const std::vector<StmtPtr>* blockStatements(const StmtNode& node) {
   if (const auto* block = std::get_if<BlockStmt>(&node)) return &block->stmts;
   return nullptr;
+}
+
+// Flattens a member chain `a.b.c` into its dotted spelling. Returns false when
+// the base is not a plain variable, so `f().x` and `a[0].x` cannot be mistaken
+// for an enum path.
+bool flattenMemberPath(const Expr& expr, std::string& out) {
+  if (const auto* variable = std::get_if<VariableExpr>(&expr.node)) {
+    out = variable->name;
+    return true;
+  }
+  const auto* member = std::get_if<MemberExpr>(&expr.node);
+  if (member == nullptr || member->safe) return false;
+  std::string base;
+  if (!flattenMemberPath(*member->object, base)) return false;
+  out = base + "." + member->name;
+  return true;
 }
 
 // A `case` label is a literal, an integer range, or a signed numeric literal
@@ -113,8 +130,8 @@ void Parser::resolveTopLevelConsts(StmtPtr& program) {
   program->node = std::move(rebuilt);
 }
 
-Parser::TopLevelScope::TopLevelScope(bool& flag) : flag_(flag), previous_(flag) {
-  flag_ = true;
+Parser::TopLevelScope::TopLevelScope(bool& flag, bool value) : flag_(flag), previous_(flag) {
+  flag_ = value;
 }
 
 Parser::TopLevelScope::~TopLevelScope() { flag_ = previous_; }
@@ -137,7 +154,16 @@ StmtPtr Parser::parseProgram() {
     if (tokens_[i].type == Tok::Class && tokens_[i + 1].type == Tok::Ident) {
       classNames_.insert(tokens_[i + 1].lexeme);
     }
+    // An `enum` name is visible to the whole module too: `Color.RED` may be
+    // written before the declaration, and `Color` is a valid annotation.
+    if (tokens_[i].type == Tok::Enum && tokens_[i + 1].type == Tok::Ident) {
+      enumNames_.insert(tokens_[i + 1].lexeme);
+    }
   }
+  // Imported enums are visible to the whole module too (PHASE 6.9 across
+  // modules), so they are seeded before the first statement is parsed. The
+  // compiler registers the same names when it compiles the imports.
+  prescanImportedEnums();
   std::vector<StmtPtr> statements;
   int line = peek().line;
   int col = peek().col;
@@ -153,6 +179,145 @@ StmtPtr Parser::parseProgram() {
   // idempotent (the parser state was consumed by the first pass).
   resolveTopLevelConsts(program);
   return program;
+}
+
+void Parser::prescanImportedEnums() {
+  if (!enumScanner_) return;
+  // Imports are top-level only, so the scan ignores everything inside braces.
+  // It reads the import grammar from the token vector instead of consuming the
+  // main parser state: the statements are parsed afterwards, in source order.
+  int depth = 0;
+  for (size_t i = 0; i < tokens_.size(); ++i) {
+    const Token& token = tokens_[i];
+    if (token.type == Tok::LBrace) {
+      ++depth;
+      continue;
+    }
+    if (token.type == Tok::RBrace) {
+      if (depth > 0) --depth;
+      continue;
+    }
+    if (depth != 0 || token.type != Tok::Import) continue;
+    size_t j = i + 1;
+    if (j >= tokens_.size()) break;
+    if (tokens_[j].type == Tok::LBrace) {
+      // Selective: `import { A, B } from path;`
+      ++j;
+      std::vector<std::string> names;
+      while (j < tokens_.size() && tokens_[j].type != Tok::RBrace) {
+        if (tokens_[j].type == Tok::Ident) names.push_back(tokens_[j].lexeme);
+        ++j;
+      }
+      if (j < tokens_.size()) ++j;  // '}'
+      if (j < tokens_.size() && tokens_[j].type == Tok::Ident &&
+          tokens_[j].lexeme == "from") {
+        ++j;
+        std::string path;
+        if (j < tokens_.size() && tokens_[j].type == Tok::Ident) {
+          path = tokens_[j].lexeme;
+          ++j;
+          while (j + 1 < tokens_.size() && tokens_[j].type == Tok::Dot &&
+                 tokens_[j + 1].type == Tok::Ident) {
+            path += ".";
+            path += tokens_[j + 1].lexeme;
+            j += 2;
+          }
+        }
+        if (!path.empty()) seedImportedEnums(path, names, "", false);
+      }
+      i = j;
+      continue;
+    }
+    // Qualified or wildcard: `import path [.* | as alias];`
+    std::string path;
+    if (tokens_[j].type != Tok::Ident) continue;
+    path = tokens_[j].lexeme;
+    ++j;
+    while (j + 1 < tokens_.size() && tokens_[j].type == Tok::Dot &&
+           tokens_[j + 1].type == Tok::Ident) {
+      path += ".";
+      path += tokens_[j + 1].lexeme;
+      j += 2;
+    }
+    if (j + 1 < tokens_.size() && tokens_[j].type == Tok::Dot &&
+        tokens_[j + 1].type == Tok::Star) {
+      seedImportedEnums(path, {}, "", true);
+      i = j + 1;
+      continue;
+    }
+    std::string alias;
+    if (j + 1 < tokens_.size() && tokens_[j].type == Tok::Ident &&
+        tokens_[j].lexeme == "as" && tokens_[j + 1].type == Tok::Ident) {
+      alias = tokens_[j + 1].lexeme;
+      j += 2;
+    }
+    if (!alias.empty()) {
+      seedImportedEnums(path, {}, alias, false);
+    } else {
+      seedImportedEnums(path, {}, path, false);
+      // `import a.b;` also binds the short name `b` (the compiler does the
+      // same), so `b.Enum.MEMBER` is valid as well as `a.b.Enum.MEMBER`.
+      const size_t dot = path.rfind('.');
+      if (dot != std::string::npos) {
+        const std::string shortName = path.substr(dot + 1);
+        if (shortName != path.substr(0, path.find('.'))) {
+          seedImportedEnums(path, {}, shortName, false);
+        }
+      }
+    }
+    i = j;
+  }
+}
+
+void Parser::seedImportedEnums(const std::string& module,
+                               const std::vector<std::string>& selected,
+                               const std::string& alias, bool wildcard) {
+  if (!enumScanner_) return;
+  const auto enums = enumScanner_(module);
+  if (enums.empty()) return;
+  if (!selected.empty()) {
+    for (const std::string& name : selected) {
+      if (name.empty() || name[0] == '_') continue;
+      auto found = enums.find(name);
+      if (found != enums.end()) seedEnum(name, found->second, true);
+    }
+    return;
+  }
+  if (wildcard) {
+    for (const auto& entry : enums) {
+      if (entry.first.empty() || entry.first[0] == '_') continue;
+      seedEnum(entry.first, entry.second, true);
+    }
+    return;
+  }
+  if (!alias.empty()) {
+    for (const auto& entry : enums) {
+      if (entry.first.empty() || entry.first[0] == '_') continue;
+      seedEnum(alias + "." + entry.first, entry.second, false);
+    }
+  }
+}
+
+void Parser::seedEnum(const std::string& visibleName,
+                      const std::vector<EnumMember>& members, bool bare) {
+  if (visibleName.empty()) return;
+  // A declaration already owns the name: a local enum, struct or class wins
+  // over an imported one, exactly like a declared binding wins over an import.
+  if (enumNames_.count(visibleName) != 0 || structNames_.count(visibleName) != 0 ||
+      classNames_.count(visibleName) != 0) {
+    return;
+  }
+  enumNames_.insert(visibleName);
+  importedEnumNames_.insert(visibleName);
+  for (const EnumMember& member : members) {
+    enumValues_[visibleName + "." + member.name] = Value(member.value);
+    if (bare) {
+      auto& owners = enumMemberOwners_[member.name];
+      if (std::find(owners.begin(), owners.end(), visibleName) == owners.end()) {
+        owners.push_back(visibleName);
+      }
+    }
+  }
 }
 
 // Signed-overflow predicates for constant folding. The runtime wraps on
@@ -276,6 +441,13 @@ bool isAssignable(const ExprPtr& expr) {
 Parser::Parser(std::vector<Token> tokens, std::string where)
     : tokens_(std::move(tokens)), where_(std::move(where)) {}
 
+void Parser::rejectEnumNameAsBinding(const Token& name) const {
+  if (enumNames_.count(name.lexeme) == 0) return;
+  throw CompileError{"'" + name.lexeme +
+                         "' is an enum name and cannot be used as a variable or function name",
+                     name.line, name.col};
+}
+
 namespace {
 // Maximum nesting depth of the recursive-descent parser. It bounds the C++
 // stack a single parse can consume so that a hostile input cannot crash the
@@ -361,11 +533,16 @@ StmtPtr Parser::parseStatement() {
 
   if (match(Tok::Var) || match(Tok::Let) || match(Tok::Const)) return parseVarDecl();
   if (check(Tok::At)) return parseAttributedDecl();
+  if (match(Tok::Async)) {
+    consume(Tok::Fn, "expected 'fn' after 'async'");
+    return parseFnDecl(false, true);
+  }
   if (match(Tok::Fn)) return parseFnDecl();
   if (match(Tok::Native)) return parseNativeDecl();
   if (match(Tok::Extern)) return parseExternDecl();
   if (match(Tok::Struct)) return parseStructDecl();
   if (match(Tok::Class)) return parseClassDecl();
+  if (match(Tok::Enum)) return parseEnumDecl();
   if (match(Tok::If)) return parseIf();
   if (match(Tok::While)) return parseWhile();
   if (match(Tok::Do)) return parseDoWhile();
@@ -401,22 +578,28 @@ StmtPtr Parser::parseVarDecl() {
   // need to honor immutability.
   const bool isImmutable = keyword.type != Tok::Var;
   const Token& name = consume(Tok::Ident, "expected a variable name");
+  rejectEnumNameAsBinding(name);
   TypeRef type = parseTypeAnnotation();
   ExprPtr init;
   if (match(Tok::Eq)) {
     init = parseExpression();
-    // Top-level consts are folded in resolveTopLevelConsts after the whole
-    // program is parsed (so they may reference other top-level consts);
-    // nested ones must only use literals and already-known values here.
-    if (keyword.type == Tok::Const && !atTopLevel_) {
+    // A `const` initializer is folded as soon as it is known, so a later
+    // declaration (an `enum` value in particular) can use it. A top-level
+    // const may reference another top-level const declared later in the file,
+    // so a failed fold there is left for resolveTopLevelConsts, which retries
+    // to a fixed point after the whole program is parsed. A nested const has no
+    // such second chance: it must fold here.
+    if (keyword.type == Tok::Const) {
       Value constantValue;
       std::string reason;
-      if (!foldConstant(*init, constantValue, reason)) {
+      if (foldConstant(*init, constantValue, reason)) {
+        // Normalize the node to a literal so every backend gets the folded
+        // value without repeating the fold.
+        init = makeExpr(LiteralExpr{constantValue}, keyword.line, keyword.col);
+        constValues_[name.lexeme] = constantValue;
+      } else if (!atTopLevel_) {
         error(keyword, "'const' initializer must be a constant expression: " + reason);
       }
-      // Normalize the node to a literal so every backend gets the folded
-      // value without repeating the fold.
-      init = makeExpr(LiteralExpr{constantValue}, keyword.line, keyword.col);
     }
   } else if (isImmutable) {
     error(peek(), "'" + keyword.lexeme + "' declaration requires a value (use 'var' for a mutable binding)");
@@ -494,6 +677,15 @@ TypeRef Parser::parseTypeAlternative(bool allowVoid) {
   const Token& typeName = consume(Tok::Ident, "expected a type name after ':'");
   TypeRef type;
   type.name = typeName.lexeme;
+  // A qualified type name (`geom.Color`, PHASE 6.9 across modules): the
+  // segments name a module and an enum it exports. The compiler resolved the
+  // import before this parse, so the dotted name is in `enumNames_` when it is
+  // real; an unknown dotted name is still rejected here.
+  while (check(Tok::Dot) && peek(1).is(Tok::Ident)) {
+    advance();  // '.'
+    type.name += ".";
+    type.name += advance().lexeme;
+  }
   if (type.name == "void" && !allowVoid) {
     // Thrown directly, not through `error`, so the message matches the other
     // "only allowed here" diagnostics without the trailing ", found ...".
@@ -502,9 +694,11 @@ TypeRef Parser::parseTypeAlternative(bool allowVoid) {
   }
   // A struct name is a valid annotation too (PHASE 6.5): `let p: Point = ...`.
   // A class name is also a valid annotation (it denotes the map an instance is),
-  // so the same lookup covers both.
+  // so the same lookup covers both. An enum name is a compile-time integer type
+  // (PHASE 6.9): the value is an `int` at run time, but the name keeps the
+  // annotation readable and lets the compiler reject mixing two enums.
   if (!isKnownTypeName(type.name) && structNames_.count(type.name) == 0 &&
-      classNames_.count(type.name) == 0) {
+      classNames_.count(type.name) == 0 && enumNames_.count(type.name) == 0) {
     error(typeName, "unknown type name");
   }
   if (match(Tok::Question)) type.nullable = true;
@@ -529,12 +723,52 @@ bool Parser::foldConstant(const Expr& expr, Value& out, std::string& reason) con
   }
   if (const auto* var = std::get_if<VariableExpr>(&expr.node)) {
     auto it = constValues_.find(var->name);
-    if (it == constValues_.end()) {
-      reason = "'" + var->name + "' is not a previously declared 'const'";
-      return false;
+    if (it != constValues_.end()) {
+      out = it->second;
+      return true;
     }
-    out = it->second;
-    return true;
+    // A bare enum member is a constant too (PHASE 6.9), as long as exactly one
+    // enum declares it. `const X = RED;` folds like `const X = Color.RED;`.
+    auto owners = enumMemberOwners_.find(var->name);
+    if (owners != enumMemberOwners_.end()) {
+      if (owners->second.size() > 1) {
+        reason = "ambiguous enum member '" + var->name + "'; write Enum.MEMBER";
+        return false;
+      }
+      auto value = enumValues_.find(owners->second.front() + "." + var->name);
+      if (value != enumValues_.end()) {
+        out = value->second;
+        return true;
+      }
+    }
+    reason = "'" + var->name + "' is not a previously declared 'const'";
+    return false;
+  }
+  if (const auto* member = std::get_if<MemberExpr>(&expr.node)) {
+    if (!member->safe) {
+      // A member chain that names an enum member is a constant: `Color.RED`
+      // locally, `geom.Color.RED` through an import. A qualified chain has a
+      // `MemberExpr` object, so the whole path is flattened, not just a
+      // `VariableExpr` object.
+      std::string path;
+      if (flattenMemberPath(expr, path)) {
+        auto it = enumValues_.find(path);
+        if (it != enumValues_.end()) {
+          out = it->second;
+          return true;
+        }
+        const size_t dot = path.rfind('.');
+        if (dot != std::string::npos) {
+          const std::string owner = path.substr(0, dot);
+          if (enumNames_.count(owner) != 0) {
+            reason = "enum '" + owner + "' has no member '" + path.substr(dot + 1) + "'";
+            return false;
+          }
+        }
+      }
+    }
+    reason = "member access is not a compile-time constant";
+    return false;
   }
   if (const auto* u = std::get_if<UnaryExpr>(&expr.node)) {
     Value operand;
@@ -731,9 +965,13 @@ StmtPtr Parser::parseAttributedDecl() {
   // declaration and add no bytecode.
   advance();  // '@'
   bool mustUse = parseAttributes();
+  if (match(Tok::Async)) {
+    consume(Tok::Fn, "expected 'fn' after 'async'");
+    return parseFnDecl(mustUse, true);
+  }
   if (match(Tok::Fn)) return parseFnDecl(mustUse);
   if (match(Tok::Native)) return parseNativeDecl(mustUse);
-  error(peek(), "an attribute must precede a 'fn' or 'native fn' declaration");
+  error(peek(), "an attribute must precede a 'fn', 'async fn' or 'native fn' declaration");
 }
 
 // One or more `@name` attributes. The caller has already consumed the first
@@ -753,7 +991,7 @@ bool Parser::parseAttributes() {
   return mustUse;
 }
 
-StmtPtr Parser::parseFnDecl(bool mustUse) {
+StmtPtr Parser::parseFnDecl(bool mustUse, bool isAsync) {
   const Token& keyword = previous();
   if (check(Tok::LParen)) {
     error(peek(),
@@ -761,13 +999,19 @@ StmtPtr Parser::parseFnDecl(bool mustUse) {
           "'x => expr' or '(a, b) => expr'");
   }
   const Token& name = consume(Tok::Ident, "expected a function name");
+  rejectEnumNameAsBinding(name);
   auto params = parseParams();
   TypeRef returnType = parseTypeAnnotation(/*allowVoid=*/true);
   StmtPtr body;
   if (check(Tok::Arrow)) {
     const Token& arrow = advance();
     const bool isBlock = check(Tok::LBrace);
-    body = parseFunctionBody(arrow);
+    if (isAsync) {
+      AsyncScope scope(asyncDepth_, asyncDepth_ + 1);
+      body = parseFunctionBody(arrow);
+    } else {
+      body = parseFunctionBody(arrow);
+    }
     // An expression body is a statement of its own and needs a terminator.
     if (isBlock) {
       match(Tok::Semicolon);
@@ -775,12 +1019,18 @@ StmtPtr Parser::parseFnDecl(bool mustUse) {
       consume(Tok::Semicolon, "expected ';' after the function body");
     }
   } else {
-    body = parseBlock();
+    if (isAsync) {
+      AsyncScope scope(asyncDepth_, asyncDepth_ + 1);
+      body = parseBlock();
+    } else {
+      body = parseBlock();
+    }
     match(Tok::Semicolon);
   }
-  return makeStmt(FnDeclStmt{name.lexeme, std::move(params), std::move(returnType),
-                             std::move(body), false, mustUse},
-                  keyword.line, keyword.col);
+  FnDeclStmt decl{name.lexeme, std::move(params), std::move(returnType), std::move(body), false,
+                  mustUse};
+  decl.isAsync = isAsync;
+  return makeStmt(std::move(decl), keyword.line, keyword.col);
 }
 
 // `native fn name(params): ret;` (PHASE 6.5): a bodyless declaration that binds
@@ -799,6 +1049,7 @@ StmtPtr Parser::parseNativeDecl(bool mustUse) {
   }
   consume(Tok::Fn, "expected 'fn' after 'native'");
   const Token& name = consume(Tok::Ident, "expected a function name");
+  rejectEnumNameAsBinding(name);
   auto params = parseParams();
   TypeRef returnType = parseTypeAnnotation(/*allowVoid=*/true);
   if (check(Tok::Arrow) || check(Tok::LBrace)) {
@@ -883,6 +1134,7 @@ StmtPtr Parser::parseExternDecl() {
 // so both accept exactly the same grammar and produce the same `FnDeclStmt`.
 FnDeclStmt Parser::parseExternFnDecl() {
   const Token& name = consume(Tok::Ident, "expected a function name");
+  rejectEnumNameAsBinding(name);
   bool cVariadic = false;
   auto params = parseParams(/*allowBareEllipsis=*/true, &cVariadic);
   TypeRef returnType = parseTypeAnnotation(/*allowVoid=*/true);
@@ -922,6 +1174,7 @@ StmtPtr Parser::parseStructDecl() {
                        keyword.col};
   }
   const Token& name = consume(Tok::Ident, "expected a struct name");
+  rejectEnumNameAsBinding(name);
   if (declaredStructs_.count(name.lexeme) != 0) {
     throw CompileError{"struct '" + name.lexeme + "' is already declared", name.line, name.col};
   }
@@ -958,6 +1211,113 @@ StmtPtr Parser::parseStructDecl() {
 
   structNames_.insert(decl.name);
   declaredStructs_.insert(decl.name);
+  return makeStmt(std::move(decl), keyword.line, keyword.col);
+}
+
+// `enum Name { A, B = 5, C }` (PHASE 6.9). A scoped set of integer constants.
+// The declaration is compile-time metadata: it emits no bytecode, and each
+// member is folded here to the `int64_t` the compiler will load at a use.
+StmtPtr Parser::parseEnumDecl() {
+  const Token& keyword = previous();
+  if (nestingDepth_ > 0) {
+    throw CompileError{"'enum' is only allowed at the top level of a module", keyword.line,
+                       keyword.col};
+  }
+  const Token& name = consume(Tok::Ident, "expected an enum name");
+  if (declaredEnums_.count(name.lexeme) != 0) {
+    throw CompileError{"enum '" + name.lexeme + "' is already declared", name.line, name.col};
+  }
+  if (declaredStructs_.count(name.lexeme) != 0) {
+    throw CompileError{"'" + name.lexeme + "' is already declared as a struct", name.line,
+                       name.col};
+  }
+  if (declaredClasses_.count(name.lexeme) != 0) {
+    throw CompileError{"'" + name.lexeme + "' is already declared as a class", name.line,
+                       name.col};
+  }
+  consume(Tok::LBrace, "expected '{' to start the enum body");
+
+  EnumDeclStmt decl;
+  decl.name = name.lexeme;
+  std::unordered_set<std::string> seen;
+  int64_t next = 0;
+  bool nextOverflows = false;
+  // Bare member names are visible while the enum body is parsed, so
+  // `B = A + 1` works; the entries are restored after the closing brace so a
+  // bare name does not leak into the surrounding const scope.
+  std::vector<std::pair<std::string, std::optional<Value>>> savedBare;
+  auto restoreBare = [&]() {
+    for (auto it = savedBare.rbegin(); it != savedBare.rend(); ++it) {
+      if (it->second.has_value()) {
+        constValues_[it->first] = *it->second;
+      } else {
+        constValues_.erase(it->first);
+      }
+    }
+    savedBare.clear();
+  };
+
+  while (!check(Tok::RBrace)) {
+    if (check(Tok::Eof)) error(peek(), "expected '}' to close the enum body");
+    if (match(Tok::Semicolon)) continue;  // stray separators are harmless
+    const Token& member = consume(Tok::Ident, "expected an enum member name");
+    if (!seen.insert(member.lexeme).second) {
+      throw CompileError{
+          "duplicate member '" + member.lexeme + "' in enum '" + decl.name + "'", member.line,
+          member.col};
+    }
+    int64_t value = next;
+    if (match(Tok::Eq)) {
+      ExprPtr init = parseExpression();
+      Value folded;
+      std::string reason;
+      if (!foldConstant(*init, folded, reason)) {
+        throw CompileError{"enum member '" + member.lexeme +
+                               "' value must be a constant expression: " + reason,
+                           member.line, member.col};
+      }
+      if (!folded.isInt()) {
+        throw CompileError{"enum member '" + member.lexeme + "' value must be an int",
+                           member.line, member.col};
+      }
+      value = folded.asInt();
+      nextOverflows = false;
+    } else if (nextOverflows) {
+      throw CompileError{"enum member '" + member.lexeme + "' value overflows int", member.line,
+                         member.col};
+    }
+
+    EnumMember entry;
+    entry.name = member.lexeme;
+    entry.value = value;
+    entry.line = member.line;
+    entry.col = member.col;
+    decl.members.push_back(entry);
+
+    const std::string qualified = decl.name + "." + entry.name;
+    enumValues_[qualified] = Value(entry.value);
+    enumMemberOwners_[entry.name].push_back(decl.name);
+    auto previous = constValues_.find(entry.name);
+    savedBare.emplace_back(entry.name,
+                           previous == constValues_.end() ? std::nullopt
+                                                          : std::optional<Value>(previous->second));
+    constValues_[entry.name] = Value(entry.value);
+
+    if (value == INT64_MAX) {
+      nextOverflows = true;
+    } else {
+      next = value + 1;
+    }
+    if (!match(Tok::Comma) && !check(Tok::RBrace)) {
+      error(peek(), "expected ',' or '}' after the enum member");
+    }
+  }
+  consume(Tok::RBrace, "expected '}' to close the enum body");
+  match(Tok::Semicolon);
+  restoreBare();
+
+  enumNames_.insert(decl.name);
+  declaredEnums_.insert(decl.name);
   return makeStmt(std::move(decl), keyword.line, keyword.col);
 }
 
@@ -1071,6 +1431,7 @@ StmtPtr Parser::parseClassDecl() {
                        keyword.col};
   }
   const Token& name = consume(Tok::Ident, "expected a class name");
+  rejectEnumNameAsBinding(name);
   if (declaredClasses_.count(name.lexeme) != 0) {
     throw CompileError{"class '" + name.lexeme + "' is already declared", name.line, name.col};
   }
@@ -1087,6 +1448,7 @@ StmtPtr Parser::parseClassDecl() {
     StmtPtr body;
     int line;
     int col;
+    bool isAsync = false;
   };
   std::vector<StructField> fields;
   std::vector<Method> methods;
@@ -1096,10 +1458,15 @@ StmtPtr Parser::parseClassDecl() {
   while (!check(Tok::RBrace)) {
     if (check(Tok::Eof)) error(peek(), "expected '}' to close the class body");
     if (match(Tok::Semicolon)) continue;  // stray separators are harmless
-    if (match(Tok::Fn)) {
+    bool isAsync = match(Tok::Async);
+    if (isAsync) consume(Tok::Fn, "expected 'fn' after 'async'");
+    if (isAsync || match(Tok::Fn)) {
       const Token& methodName = consume(Tok::Ident, "expected a method name");
       if (methodName.lexeme == "self") {
         error(methodName, "'self' is reserved inside a class");
+      }
+      if (isAsync && methodName.lexeme == "init") {
+        error(methodName, "'init' cannot be async: the constructor calls it without awaiting");
       }
       if (!seenMethods.insert(methodName.lexeme).second) {
         throw CompileError{
@@ -1110,6 +1477,7 @@ StmtPtr Parser::parseClassDecl() {
       method.name = methodName.lexeme;
       method.line = methodName.line;
       method.col = methodName.col;
+      method.isAsync = isAsync;
       method.params = parseParams();
       for (const Param& param : method.params) {
         if (param.name == "self") error(methodName, "'self' is reserved inside a class");
@@ -1118,14 +1486,24 @@ StmtPtr Parser::parseClassDecl() {
       if (check(Tok::Arrow)) {
         const Token& arrow = advance();
         const bool isBlock = check(Tok::LBrace);
-        method.body = parseFunctionBody(arrow);
+        if (isAsync) {
+          AsyncScope scope(asyncDepth_, asyncDepth_ + 1);
+          method.body = parseFunctionBody(arrow);
+        } else {
+          method.body = parseFunctionBody(arrow);
+        }
         if (isBlock) {
           match(Tok::Semicolon);
         } else {
           consume(Tok::Semicolon, "expected ';' after the method body");
         }
       } else {
-        method.body = parseBlock();
+        if (isAsync) {
+          AsyncScope scope(asyncDepth_, asyncDepth_ + 1);
+          method.body = parseBlock();
+        } else {
+          method.body = parseBlock();
+        }
         match(Tok::Semicolon);
       }
       methods.push_back(std::move(method));
@@ -1239,6 +1617,7 @@ StmtPtr Parser::parseClassDecl() {
     lambda.name = name.lexeme + "." + method.name;
     lambda.returnType = method.returnType;
     lambda.ownerClass = name.lexeme;
+    lambda.isAsync = method.isAsync;
     ExprPtr target = makeExpr(
         MemberExpr{makeExpr(VariableExpr{"self"}, method.line, method.col), method.name, false},
         method.line, method.col);
@@ -1286,6 +1665,7 @@ StmtPtr Parser::parseClassDecl() {
     sig.name = method.name;
     sig.params = method.params;
     sig.returnType = method.returnType;
+    sig.isAsync = method.isAsync;
     constructor.classMethods.push_back(std::move(sig));
   }
 
@@ -1333,7 +1713,13 @@ ExprPtr Parser::parseLambda() {
     params = parseParams();
   }
   const Token& arrow = consume(Tok::Arrow, "expected '=>' after the lambda parameters");
-  auto body = parseFunctionBody(arrow);
+  StmtPtr body;
+  {
+    // A lambda is not an async function: `await` cannot cross its boundary,
+    // even when the lambda is written inside an async function body.
+    AsyncScope scope(asyncDepth_, 0);
+    body = parseFunctionBody(arrow);
+  }
   LambdaExpr lambda;
   lambda.params = std::move(params);
   lambda.body = std::move(body);
@@ -1361,6 +1747,7 @@ std::vector<Param> Parser::parseParams(bool allowBareEllipsis, bool* outCVariadi
         break;
       }
       const Token& param = consume(Tok::Ident, "expected a parameter name");
+      rejectEnumNameAsBinding(param);
       Param parsed;
       parsed.name = param.lexeme;
       // `rest...` collects the extra arguments into an array. The `...` comes
@@ -1451,12 +1838,15 @@ StmtPtr Parser::parseFor() {
   if (parenthesizedForIn || !check(Tok::LParen)) {
     if (parenthesizedForIn) consume(Tok::LParen, "expected '(' after 'for'");
     const Token& var = consume(Tok::Ident, "expected a loop variable or '(' after 'for'");
+    rejectEnumNameAsBinding(var);
     // `for k, v in map`: an optional second identifier binds the value of each
     // pair, so the loop walks a map as key/value entries. Only meaningful for
     // maps; the compiler reports a clear error for the other iterables.
     std::string valueVar;
     if (match(Tok::Comma)) {
-      valueVar = consume(Tok::Ident, "expected a second loop variable after ','").lexeme;
+      const Token& valueName = consume(Tok::Ident, "expected a second loop variable after ','");
+      rejectEnumNameAsBinding(valueName);
+      valueVar = valueName.lexeme;
     }
     consume(Tok::In, "expected 'in' in the for-in loop");
     auto iterable = parseExpression();
@@ -1533,6 +1923,11 @@ StmtPtr Parser::parseBody() {
 
 StmtPtr Parser::parseBlock() {
   DepthGuard guard(*this);
+  // A block is never the program's top level, even when it is a function body
+  // parsed while the program flag is set: a `const` declared here is local, so
+  // its initializer must be folded now (and a non-constant one is rejected
+  // here, not left for `resolveTopLevelConsts`, which never sees it).
+  TopLevelScope nested(atTopLevel_, false);
   const Token& open = consume(Tok::LBrace, "expected '{'");
   ++nestingDepth_;
   std::vector<StmtPtr> statements;
@@ -1574,6 +1969,9 @@ StmtPtr Parser::parseImport() {
       while (true) {
         if (check(Tok::RBrace)) break;
         const Token& name = consume(Tok::Ident, "expected an imported name");
+        // An imported enum is a name the import introduces, not a binding that
+        // shadows one; a local enum of the same name still wins and is rejected.
+        if (importedEnumNames_.count(name.lexeme) == 0) rejectEnumNameAsBinding(name);
         stmt.names.push_back(name.lexeme);
         if (!match(Tok::Comma)) break;
       }
@@ -1598,6 +1996,7 @@ StmtPtr Parser::parseImport() {
     advance();
     stmt.mode = ImportStmt::Mode::Qualified;
     const Token& alias = consume(Tok::Ident, "expected an alias name after 'as'");
+    rejectEnumNameAsBinding(alias);
     stmt.alias = alias.lexeme;
   } else {
     stmt.mode = ImportStmt::Mode::Qualified;
@@ -1665,12 +2064,25 @@ StmtPtr Parser::parseSwitch() {
     while (true) {
       auto label = parseExpression();
       // A case label is a fixed value: a literal (optionally signed), an
-      // integer range, or a bare name the compiler resolves to an immutable
-      // `const`/`let` binding. A call or any other expression is not a fixed
-      // value and is rejected here; the compiler rejects a name that is not an
-      // immutable binding.
-      if (!isCaseLabel(label) && !std::holds_alternative<VariableExpr>(label->node)) {
-        throw CompileError{"a 'case' label must be a literal, a range or a 'const' name",
+      // integer range, a bare name the compiler resolves to an immutable
+      // `const`/`let` binding or a unique enum member, or `Enum.MEMBER`
+      // (PHASE 6.9). A call or any other expression is not a fixed value and
+      // is rejected here; the compiler rejects a name that is not fixed.
+      bool enumMember = false;
+      if (const auto* member = std::get_if<MemberExpr>(&label->node)) {
+        if (!member->safe) {
+          // `Color.RED`, and the qualified `geom.Color.RED`: the object chain
+          // names the enum. The compiler resolves the value and rejects a
+          // member of the wrong enum.
+          std::string objectName;
+          if (flattenMemberPath(*member->object, objectName)) {
+            enumMember = enumNames_.count(objectName) != 0;
+          }
+        }
+      }
+      if (!isCaseLabel(label) && !std::holds_alternative<VariableExpr>(label->node) &&
+          !enumMember) {
+        throw CompileError{"a 'case' label must be a literal, a range, a 'const' name or an enum member",
                            label->line, label->col};
       }
       entry.values.push_back(std::move(label));
@@ -1894,6 +2306,17 @@ ExprPtr Parser::parsePower() {
 
 ExprPtr Parser::parseUnary() {
   DepthGuard guard(*this);
+  // `await expr` (PHASE 11.1): unwrap a `Future`. It binds like the other
+  // prefix operators, so `await f().x` awaits the call and then reads `.x`.
+  // The parser rejects it outside an `async fn`; a lambda resets the depth.
+  if (check(Tok::Await)) {
+    const Token& op = advance();
+    if (asyncDepth_ == 0) {
+      throw CompileError{"'await' is only allowed inside an 'async fn'", op.line, op.col};
+    }
+    auto operand = parseUnary();
+    return makeExpr(AwaitExpr{std::move(operand)}, op.line, op.col);
+  }
   // `try expr` (PHASE 6.7.3): prefix propagation. It binds like the other
   // prefix operators (`-`, `!`, `~`), so it applies to the whole postfix
   // operand: `try f().x` propagates the result of the member access.
@@ -2001,6 +2424,13 @@ ExprPtr Parser::parsePrimary() {
   if (match(Tok::Nil)) return makeExpr(LiteralExpr{Value()}, token.line, token.col);
   if (atLambda()) return parseLambda();
   if (match(Tok::Ident)) {
+    // An enum name is a namespace, not a value: `Color` alone is meaningless,
+    // only `Color.MEMBER` (or a bare member) names an integer.
+    if (enumNames_.count(token.lexeme) != 0 && !check(Tok::Dot)) {
+      throw CompileError{"enum '" + token.lexeme + "' is not a value; use '" + token.lexeme +
+                             ".MEMBER'",
+                         token.line, token.col};
+    }
     // `Point { x: 1, y: 2 }` (PHASE 6.5): an identifier that names a declared
     // struct, immediately followed by `{`, is a struct literal. Gating on the
     // declared name keeps `for x in name { ... }` unambiguous: `name` is not a

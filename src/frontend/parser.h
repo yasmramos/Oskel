@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -20,13 +22,13 @@ class Parser {
   // in the top-level statements with literal nodes (see foldConstant).
   void resolveTopLevelConsts(StmtPtr& program);
 
-  // RAII helper: marks the parser as being at program statement level so
-  // top-level `const` initializers skip eager folding (they are folded by
+  // RAII helper: sets the parser's "program statement level" flag, so top-level
+  // `const` initializers skip eager folding (they are folded by
   // resolveTopLevelConsts after the whole program is parsed). Nested blocks
   // clear the flag again, keeping their eager per-statement folding.
   class TopLevelScope {
    public:
-    explicit TopLevelScope(bool& flag);
+    explicit TopLevelScope(bool& flag, bool value = true);
     ~TopLevelScope();
     TopLevelScope(const TopLevelScope&) = delete;
     TopLevelScope& operator=(const TopLevelScope&) = delete;
@@ -58,6 +60,43 @@ class Parser {
     classNames_.insert(names.begin(), names.end());
   }
 
+  // Makes the `enum` names declared by earlier REPL entries visible to this
+  // parser, so `Color.RED` and a bare member keep resolving after the entry
+  // that declared the enum. A file parse never needs this.
+  void seedEnumNames(const std::unordered_set<std::string>& names) {
+    enumNames_.insert(names.begin(), names.end());
+  }
+
+  // Restores the folded member values and the bare-member index from an
+  // earlier REPL entry, so `const X = Color.RED;` and `const X = RED;` keep
+  // folding after the entry that declared the enum. `names` above only
+  // restores the enum namespace; this restores the constants behind it.
+  void seedEnumValues(
+      const std::unordered_map<std::string, Value>& values,
+      const std::unordered_map<std::string, std::vector<std::string>>& owners) {
+    for (const auto& entry : values) enumValues_[entry.first] = entry.second;
+    for (const auto& entry : owners) {
+      auto& dest = enumMemberOwners_[entry.first];
+      for (const std::string& owner : entry.second) {
+        if (std::find(dest.begin(), dest.end(), owner) == dest.end()) {
+          dest.push_back(owner);
+        }
+      }
+    }
+  }
+
+  // Supplies the module's enums to the parser without making the parser depend
+  // on the filesystem (PHASE 6.9 across modules). The CLI wires it to a
+  // resolver-backed scanner, so `import { Color } from geom;` makes `Color` a
+  // type annotation and `geom.Color.RED` a fixed switch label before the
+  // compiler loads the module. The returned map is keyed by the module's own
+  // enum names; an empty map means the module declares none (or cannot be
+  // read here, in which case the compiler reports the real error).
+  using EnumScanner =
+      std::function<std::unordered_map<std::string, std::vector<EnumMember>>(
+          const std::string& modulePath)>;
+  void setEnumScanner(EnumScanner scanner) { enumScanner_ = std::move(scanner); }
+
   const std::string& where() const { return where_; }
 
   // Non-fatal diagnostics raised while folding `const` initializers. An integer
@@ -78,6 +117,11 @@ class Parser {
     }
     warnings_.push_back(Warning{message, line, col});
   }
+
+  // Rejects a binding whose name is an enum name: `let Color = ...`,
+  // `fn Color`, a parameter or a loop variable would shadow the `Color.RED`
+  // namespace, so the qualified form would silently change meaning.
+  void rejectEnumNameAsBinding(const Token& name) const;
   // Fold-time warnings (see `warn`). `mutable` because `foldConstant` is const.
   mutable std::vector<Warning> warnings_;
   // Folded values of `const` declarations seen so far, used by the parser to
@@ -103,6 +147,44 @@ class Parser {
   // `parseProgram` (like `structNames_`) so an annotation written before the
   // declaration is accepted, and seeded by the REPL across entries.
   std::unordered_set<std::string> classNames_;
+  // Names of the `enum` types declared in this source (PHASE 6.9). Pre-scanned
+  // in `parseProgram` so `Color.RED` is recognized before the declaration and
+  // `Color` is accepted as a type annotation. A binding may not reuse one of
+  // these names: the qualified form would become ambiguous.
+  std::unordered_set<std::string> enumNames_;
+  // The enums actually declared during this parse, so a redeclaration in the
+  // same file is caught while a name merely made visible by the pre-scan is
+  // not mistaken for one.
+  std::unordered_set<std::string> declaredEnums_;
+  // Folded value of every enum member, keyed by its qualified name
+  // (`Color.RED`). Used by `foldConstant` so `const X = Color.RED;` folds.
+  std::unordered_map<std::string, Value> enumValues_;
+  // Every enum that declares a given member name, keyed by the bare name. A
+  // bare `RED` folds only when exactly one enum owns it.
+  std::unordered_map<std::string, std::vector<std::string>> enumMemberOwners_;
+  // Enum names made visible by an import, as opposed to a local declaration.
+  // A selective import of one of these names is the import itself, so it is
+  // not rejected as "an enum name used as a binding".
+  std::unordered_set<std::string> importedEnumNames_;
+  // Module enums made visible by an import, resolved before the main parse so
+  // a type annotation or a switch label written before the import statement
+  // is still accepted (PHASE 6.9 across modules). Null when no scanner is set.
+  EnumScanner enumScanner_;
+  // Seeds the enums of every top-level import in the token stream. Runs once
+  // at the start of `parseProgram`, before any statement is parsed.
+  void prescanImportedEnums();
+  // Seeds the enums an import makes visible. `selected` is the selective list
+  // (empty for a qualified/wildcard import); `alias` is the qualified binding
+  // path (`geom`, `g`, `pkg.geom`), empty for selective/wildcard. A bare enum
+  // is visible by its own name; a qualified one by `alias.Enum`. `wildcard`
+  // makes every exported enum visible by its own name.
+  void seedImportedEnums(const std::string& module,
+                         const std::vector<std::string>& selected,
+                         const std::string& alias, bool wildcard);
+  // Registers one visible enum and its members in the parser's folding state.
+  // `bare` also makes the members resolvable without the enum prefix.
+  void seedEnum(const std::string& visibleName, const std::vector<EnumMember>& members,
+                bool bare);
   // True while parseProgram is running at statement level: top-level consts
   // are folded later in resolveTopLevelConsts (after the whole program was
   // parsed), so nested blocks keep folding eagerly during parsing.
@@ -111,6 +193,10 @@ class Parser {
   // at depth 0 (a program's top level), so an import nested in a block or a
   // function body is rejected at parse time.
   int nestingDepth_ = 0;
+  // Number of enclosing `async fn` bodies being parsed. `await` is only valid
+  // while it is positive; a lambda resets it to zero, so a lambda written inside
+  // an async function cannot await (a user lambda has no async form).
+  int asyncDepth_ = 0;
   // Current recursion depth of the expression/statement/type walk. The
   // recursive-descent parser consumes one C++ frame per nested construct, so a
   // deeply nested source (e.g. thousands of `(` or `[`) would otherwise
@@ -136,6 +222,22 @@ class Parser {
     const Parser& parser_;
   };
 
+  // Sets `asyncDepth_` for the duration of a function body and restores the
+  // previous value on every exit path, including a `CompileError`. An async
+  // function body enters with the current depth plus one; a lambda enters with
+  // zero, because `await` cannot cross a lambda boundary.
+  class AsyncScope {
+   public:
+    AsyncScope(int& depth, int value) : depth_(depth), saved_(depth) { depth_ = value; }
+    ~AsyncScope() { depth_ = saved_; }
+    AsyncScope(const AsyncScope&) = delete;
+    AsyncScope& operator=(const AsyncScope&) = delete;
+
+   private:
+    int& depth_;
+    int saved_;
+  };
+
   bool foldConstant(const Expr& expr, Value& out, std::string& reason) const;
 
   const Token& peek(size_t ahead = 0) const;
@@ -152,7 +254,7 @@ class Parser {
   // `@MustUse fn f() ...` (PHASE 6.7.5): `mustUse` is true when an attribute
   // was parsed before the declaration. Attributes are metadata, so they are
   // stored on the node and never reach the bytecode.
-  StmtPtr parseFnDecl(bool mustUse = false);
+  StmtPtr parseFnDecl(bool mustUse = false, bool isAsync = false);
   // `native fn name(params): ret;` (PHASE 6.5): a bodyless declaration that
   // binds a name to a host-registered native function.
   StmtPtr parseNativeDecl(bool mustUse = false);
@@ -170,6 +272,9 @@ class Parser {
   FnDeclStmt parseExternFnDecl();
   // `struct Name { field: T; ... }` (PHASE 6.5). A data-only declaration.
   StmtPtr parseStructDecl();
+  // `enum Name { A, B = 5, C }` (PHASE 6.9). Compile-time metadata: each
+  // member is an integer constant, resolved to a `LOADK` at its use.
+  StmtPtr parseEnumDecl();
   // `class Name { field: T; ...; fn method(...) { ... } }`. A class is sugar
   // over the map-plus-closures idiom: the parser desugars it into an ordinary
   // top-level constructor function, so no AST node, opcode, compiler or VM

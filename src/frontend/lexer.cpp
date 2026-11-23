@@ -19,14 +19,14 @@ struct Keyword {
 
 const Keyword kKeywords[] = {
     {"let", Tok::Let},       {"var", Tok::Var},        {"const", Tok::Const},
-    {"fn", Tok::Fn},
+    {"fn", Tok::Fn},         {"async", Tok::Async},    {"await", Tok::Await},
     {"if", Tok::If},         {"else", Tok::Else},       {"while", Tok::While},
     {"do", Tok::Do},         {"for", Tok::For},         {"in", Tok::In},
     {"break", Tok::Break},
     {"continue", Tok::Continue}, {"return", Tok::Return}, {"import", Tok::Import},
     {"switch", Tok::Switch}, {"case", Tok::Case},     {"default", Tok::Default},
     {"defer", Tok::Defer},       {"struct", Tok::Struct},
-    {"class", Tok::Class},
+    {"class", Tok::Class},       {"enum", Tok::Enum},
     {"native", Tok::Native},
     {"extern", Tok::Extern},
     {"try", Tok::Try},       {"catch", Tok::Catch},

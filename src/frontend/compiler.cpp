@@ -449,7 +449,7 @@ void Compiler::declareGlobal(const std::string& name, bool isImmutable) {
   }
 }
 
-void Compiler::checkCaseLabelName(const std::string& name, int line, int col) {
+const EnumMember* Compiler::checkCaseLabelName(const std::string& name, int line, int col) {
   // A label that is a bare name must be a fixed value, so the binding has to be
   // immutable. A `const`/`let` local of the current frame qualifies; so does a
   // `const`/`let` local of an enclosing function (the label captures it as an
@@ -458,18 +458,30 @@ void Compiler::checkCaseLabelName(const std::string& name, int line, int col) {
   // name -- is rejected rather than silently compiling to a mutable read.
   LocalVar local;
   if (resolveLocal(name, local)) {
-    if (local.isImmutable) return;
+    if (local.isImmutable) return nullptr;
     fail("a 'case' label name must be an immutable 'const' or 'let' binding", line, col);
   }
   for (FuncState* frame = funcStack_.empty() ? nullptr : &funcStack_.back(); frame != nullptr;
        frame = frame->enclosing) {
     if (resolveLocalIn(frame->scopes, name, local)) {
-      if (local.isImmutable) return;
+      if (local.isImmutable) return nullptr;
       fail("a 'case' label name must be an immutable 'const' or 'let' binding", line, col);
     }
   }
-  if (globalConsts_.find(name) != globalConsts_.end()) return;
-  fail("a 'case' label name must be an immutable 'const' or 'let' binding", line, col);
+  if (globalConsts_.find(name) != globalConsts_.end()) return nullptr;
+  // A declared but mutable global (`var`, `fn`, an import alias) shadows the
+  // bare enum member, so the label is not a fixed value and is rejected rather
+  // than silently resolving to the member.
+  if (declaredGlobals_.find(name) != declaredGlobals_.end()) {
+    fail("a 'case' label name must be an immutable 'const' or 'let' binding", line, col);
+  }
+  // A bare enum member is a fixed value too (PHASE 6.9). A declared binding
+  // shadows it, which is why the lookups above run first.
+  std::string reason;
+  if (const EnumMember* member = lookupBareEnumMember(name, reason)) return member;
+  if (!reason.empty()) fail(reason, line, col);
+  fail("a 'case' label name must be an immutable 'const' or 'let' binding, or an enum member",
+       line, col);
 }
 
 // --------------------------------------------------------------- type checks
@@ -570,6 +582,27 @@ std::string Compiler::assignError(const TypeRef& from, const TypeRef& to,
   // the callback is invoked, not here.
   if (to.isCallback() && from.name == "function") return "";
   if (from.isCallback() && to.name == "function") return "";
+
+  // An enum is its own compile-time type (PHASE 6.9), although its value is an
+  // `int` at run time. Only the same enum is assignable, so mixing two enums
+  // -- or an enum and a plain int -- is a mistake the compiler can catch. The
+  // value can be turned into an int explicitly with `int(...)`.
+  if (isEnumTypeName(from.name) || isEnumTypeName(to.name)) {
+    if (from.name == to.name) {
+      if (from.nullable && !to.nullable) {
+        return "cannot assign '" + describeType(from) + "' to '" + describeType(to) +
+               "' in " + context + ": a nullable value is not allowed here (use '" +
+               to.name + "?')";
+      }
+      return "";
+    }
+    if (isEnumTypeName(from.name) && isEnumTypeName(to.name)) {
+      return "cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " +
+             context + ": different enum types";
+    }
+    return "cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " +
+           context + ": an enum value is not an int (convert it explicitly with 'int(...)')";
+  }
 
   if (from.name == to.name) {
     // Same type; a nullable value does not fit a non-nullable slot unless the
@@ -937,6 +970,11 @@ void Compiler::checkMethodReassign(const std::string& className, const ClassMeth
   // known even though its type is not, and a method body reads its parameters
   // positionally.
   if (const auto* lambda = std::get_if<LambdaExpr>(&assign.value->node)) {
+    if (lambda->isAsync != method.isAsync) {
+      fail("cannot replace " + context + " with a " +
+               (lambda->isAsync ? "async" : "non-async") + " function",
+           assign.value->line, assign.value->col);
+    }
     checkMethodArity(method, lambda->params, assign.value->line, assign.value->col, context);
     for (size_t i = 0; i < lambda->params.size() && i < method.params.size(); ++i) {
       if (!method.params[i].type.isPresent() || !lambda->params[i].type.isPresent()) continue;
@@ -1007,6 +1045,18 @@ TypeRef Compiler::inferExprType(const Expr& expr) const {
     inner.nullable = false;
     return inner;
   }
+  // `await f()` (PHASE 11.1): the payload of an async function, recovered from
+  // the declaration table. A `Future`-typed operand or an unknown one yields no
+  // static type; `compileAwait` is where a non-Future operand is rejected.
+  if (const auto* awaited = std::get_if<AwaitExpr>(&expr.node)) {
+    if (const auto* call = std::get_if<CallExpr>(&awaited->operand->node)) {
+      if (const auto* callee = std::get_if<VariableExpr>(&call->callee->node)) {
+        auto found = asyncReturnTypes_.find(callee->name);
+        if (found != asyncReturnTypes_.end()) return found->second;
+      }
+    }
+    return TypeRef{};
+  }
   // `a ?? b`: when `a` is a nullable `T?`, the result is `b`'s type (or a
   // non-null `T`); otherwise it is `a`'s type unchanged.
   if (const auto* binary = std::get_if<BinaryExpr>(&expr.node)) {
@@ -1062,6 +1112,11 @@ TypeRef Compiler::inferExprType(const Expr& expr) const {
   // chained write (`d.inner.n = ...`) is checked like a direct one.
   if (const auto* member = std::get_if<MemberExpr>(&expr.node)) {
     if (member->safe) return TypeRef{};
+    std::string enumName;
+    if (resolveEnumMemberPath(*member, enumName) != nullptr) {
+      return TypeRef{enumName, false};
+    }
+    if (!enumName.empty()) return TypeRef{};
     TypeRef objectType = inferExprType(*member->object);
     if (!objectType.isPresent() || objectType.nullable || objectType.isUnion()) return TypeRef{};
     if (const auto* fields = lookupAggregateFields(objectType.name)) {
@@ -1080,6 +1135,68 @@ const std::vector<StructField>* Compiler::lookupAggregateFields(const std::strin
   auto classFound = classDefs_.find(name);
   if (classFound != classDefs_.end()) return &classFound->second;
   return nullptr;
+}
+
+bool Compiler::isEnumTypeName(const std::string& name) const {
+  return enumNames_.find(name) != enumNames_.end();
+}
+
+const EnumMember* Compiler::lookupEnumMember(const std::string& enumName,
+                                             const std::string& member) const {
+  auto found = enumMembers_.find(enumName);
+  if (found == enumMembers_.end()) return nullptr;
+  for (const EnumMember& entry : found->second) {
+    if (entry.name == member) return &entry;
+  }
+  return nullptr;
+}
+
+const std::vector<EnumMember>* Compiler::lookupEnumMembers(const std::string& enumName) const {
+  auto found = enumMembers_.find(enumName);
+  return found == enumMembers_.end() ? nullptr : &found->second;
+}
+
+std::unordered_map<std::string, Value> Compiler::enumValues() const {
+  std::unordered_map<std::string, Value> values;
+  for (const auto& entry : enumMembers_) {
+    for (const EnumMember& member : entry.second) {
+      values[entry.first + "." + member.name] = Value(member.value);
+    }
+  }
+  return values;
+}
+
+const EnumMember* Compiler::resolveEnumMemberPath(const MemberExpr& member,
+                                                  std::string& enumName) const {
+  enumName.clear();
+  if (member.safe) return nullptr;
+  std::string root;
+  std::vector<std::string> members;
+  if (!flattenMemberPath(member, root, members) || members.empty()) return nullptr;
+  // The last segment is the member; everything before it is the enum type, so
+  // `Color.RED` names `Color` and `geom.Color.RED` names `geom.Color`.
+  std::string prefix = root;
+  for (size_t i = 0; i + 1 < members.size(); ++i) prefix += "." + members[i];
+  if (!isEnumTypeName(prefix)) return nullptr;
+  enumName = prefix;
+  return lookupEnumMember(prefix, members.back());
+}
+
+const EnumMember* Compiler::lookupBareEnumMember(const std::string& name,
+                                                 std::string& reason) const {
+  reason.clear();
+  auto owners = enumMemberOwners_.find(name);
+  if (owners == enumMemberOwners_.end() || owners->second.empty()) return nullptr;
+  if (owners->second.size() > 1) {
+    std::string choices;
+    for (const std::string& owner : owners->second) {
+      if (!choices.empty()) choices += " or ";
+      choices += owner + "." + name;
+    }
+    reason = "'" + name + "' is ambiguous between enum members; write " + choices;
+    return nullptr;
+  }
+  return lookupEnumMember(owners->second.front(), name);
 }
 
 // -------------------------------------------------------------------- program
@@ -1102,6 +1219,7 @@ void Compiler::resetChunk(const std::string& name) {
   predeclaredLetSlots_.clear();
   predeclaredFnSlots_.clear();
   inFunction_ = false;
+  currentIsAsync_ = false;
   currentLine_ = 1;
   currentCol_ = 1;
   moduleBody_ = false;
@@ -1109,6 +1227,7 @@ void Compiler::resetChunk(const std::string& name) {
   moduleImportNames_.clear();
   loadingStack_.clear();
   pendingModuleUses_.clear();
+  declaredGlobals_.clear();
   warnings_.clear();
 }
 
@@ -1120,8 +1239,12 @@ void Compiler::clearSession() {
   classNames_.clear();
   classDefs_.clear();
   classMethodDefs_.clear();
+  enumNames_.clear();
+  enumMembers_.clear();
+  enumMemberOwners_.clear();
   nativeSigs_.clear();
   functionReturnTypes_.clear();
+  asyncReturnTypes_.clear();
   functionParams_.clear();
   externSignatures_.clear();
   mustUseGlobals_.clear();
@@ -1160,6 +1283,13 @@ Bytecode Compiler::compileTopLevelBody(const StmtPtr& program) {
     // can already build a literal.
     registerStructDecls(*block);
     registerClassDecls(*block);
+    // Enums are metadata too: a hoisted function that reads `Color.RED` must
+    // find the members, and a bare member must lose to a declared binding.
+    registerEnumDecls(*block);
+    // Imported enums are metadata as well, and a hoisted function may use one
+    // before the `import` statement is compiled (PHASE 6.9 across modules).
+    registerImportedEnums(*block);
+    registerDeclaredGlobals(*block);
     // Register native signatures too: a hoisted function may call one and must
     // be checked against its signature.
     registerNativeDecls(*block);
@@ -1247,7 +1377,11 @@ Compiler::SessionSnapshot Compiler::snapshotSession() const {
   snapshot.classNames = classNames_;
   snapshot.classDefs = classDefs_;
   snapshot.classMethodDefs = classMethodDefs_;
+  snapshot.enumNames = enumNames_;
+  snapshot.enumMembers = enumMembers_;
+  snapshot.enumMemberOwners = enumMemberOwners_;
   snapshot.functionReturnTypes = functionReturnTypes_;
+  snapshot.asyncReturnTypes = asyncReturnTypes_;
   snapshot.functionParams = functionParams_;
   snapshot.nativeSigs = nativeSigs_;
   snapshot.externSignatures = externSignatures_;
@@ -1268,7 +1402,11 @@ void Compiler::restoreSession(SessionSnapshot snapshot) {
   classNames_ = std::move(snapshot.classNames);
   classDefs_ = std::move(snapshot.classDefs);
   classMethodDefs_ = std::move(snapshot.classMethodDefs);
+  enumNames_ = std::move(snapshot.enumNames);
+  enumMembers_ = std::move(snapshot.enumMembers);
+  enumMemberOwners_ = std::move(snapshot.enumMemberOwners);
   functionReturnTypes_ = std::move(snapshot.functionReturnTypes);
+  asyncReturnTypes_ = std::move(snapshot.asyncReturnTypes);
   functionParams_ = std::move(snapshot.functionParams);
   nativeSigs_ = std::move(snapshot.nativeSigs);
   externSignatures_ = std::move(snapshot.externSignatures);
@@ -1316,6 +1454,9 @@ Bytecode Compiler::compileReplEntry(const StmtPtr& program) {
     // Register struct shapes first, then hoist top-level function declarations.
     registerStructDecls(*block);
     registerClassDecls(*block);
+    registerEnumDecls(*block);
+    registerImportedEnums(*block);
+    registerDeclaredGlobals(*block);
     registerNativeDecls(*block);
     registerMustUseDecls(*block);
     registerImportBindings(*block);
@@ -1364,6 +1505,8 @@ void Compiler::compileBlockBody(const BlockStmt& block) {
   // already see them.
   registerStructDecls(block);
   registerClassDecls(block);
+  registerEnumDecls(block);
+  registerImportedEnums(block);
   registerNativeDecls(block);
   registerMustUseDecls(block);
   // Register the module binding paths before hoisting, so a hoisted function
@@ -1523,6 +1666,10 @@ void Compiler::compileStmt(const Stmt& stmt) {
           [&](const LetStmt& s) { compileLet(s); },
           [&](const FnDeclStmt& s) { compileFnDecl(s, stmt.line, stmt.col); },
           [&](const StructDeclStmt& s) { compileStructDecl(s, stmt.line, stmt.col); },
+          // An enum is compile-time metadata: `registerEnumDecls` recorded its
+          // members before anything in the block was compiled, and every use is
+          // a `LOADK` of the folded integer. The declaration emits nothing.
+          [&](const EnumDeclStmt&) {},
           [&](const BlockStmt& s) {
             pushScope();
             compileBlockBody(s);
@@ -1660,6 +1807,7 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   auto savedClassDefs = std::move(classDefs_);
   auto savedClassMethodDefs = std::move(classMethodDefs_);
   auto savedFunctionReturnTypes = std::move(functionReturnTypes_);
+  auto savedAsyncReturnTypes = std::move(asyncReturnTypes_);
   auto savedFunctionParams = std::move(functionParams_);
   auto savedNativeSigs = std::move(nativeSigs_);
   auto savedMustUseGlobals = std::move(mustUseGlobals_);
@@ -1673,6 +1821,10 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   auto savedImportedNames = std::move(importedNames_);
   auto savedModuleByBindingPath = std::move(moduleByBindingPath_);
   auto savedPendingModuleUses = std::move(pendingModuleUses_);
+  auto savedEnumNames = std::move(enumNames_);
+  auto savedEnumMembers = std::move(enumMembers_);
+  auto savedEnumMemberOwners = std::move(enumMemberOwners_);
+  auto savedDeclaredGlobals = std::move(declaredGlobals_);
   std::string savedModulePath = std::move(modulePath_);
   auto savedModuleImportNames = std::move(moduleImportNames_);
 
@@ -1698,10 +1850,15 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   structDefs_.clear();
   nativeSigs_.clear();
   functionReturnTypes_.clear();
+  asyncReturnTypes_.clear();
   functionParams_.clear();
   mustUseGlobals_.clear();
   namespaces_.clear();
   importedNames_.clear();
+  enumNames_.clear();
+  enumMembers_.clear();
+  enumMemberOwners_.clear();
+  declaredGlobals_.clear();
 
   std::vector<std::string> symbols;
   const auto* block = program ? std::get_if<BlockStmt>(&program->node) : nullptr;
@@ -1748,6 +1905,19 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
     auto sig = nativeSigs_.find(name);
     if (sig != nativeSigs_.end()) module.nativeSigs.emplace(name, sig->second);
   }
+  // Enums are compile-time metadata, so they are not in `symbols`; carry the
+  // module's own declarations beside it for the importer that names the enum
+  // (PHASE 6.9 across modules). Only declarations written in this module are
+  // exported: an enum the module imported stays private to it.
+  if (block) {
+    for (const auto& child : block->stmts) {
+      if (!child) continue;
+      const auto* decl = std::get_if<EnumDeclStmt>(&child->node);
+      if (!decl) continue;
+      auto found = enumMembers_.find(decl->name);
+      if (found != enumMembers_.end()) module.enums[decl->name] = found->second;
+    }
+  }
 
   bc_ = std::move(savedChunk);
   currentUpvalueNames_ = std::move(savedUpvalueNames);
@@ -1771,6 +1941,7 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   classDefs_ = std::move(savedClassDefs);
   classMethodDefs_ = std::move(savedClassMethodDefs);
   functionReturnTypes_ = std::move(savedFunctionReturnTypes);
+  asyncReturnTypes_ = std::move(savedAsyncReturnTypes);
   functionParams_ = std::move(savedFunctionParams);
   nativeSigs_ = std::move(savedNativeSigs);
   mustUseGlobals_ = std::move(savedMustUseGlobals);
@@ -1779,6 +1950,10 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   importedNames_ = std::move(savedImportedNames);
   moduleByBindingPath_ = std::move(savedModuleByBindingPath);
   pendingModuleUses_ = std::move(savedPendingModuleUses);
+  enumNames_ = std::move(savedEnumNames);
+  enumMembers_ = std::move(savedEnumMembers);
+  enumMemberOwners_ = std::move(savedEnumMemberOwners);
+  declaredGlobals_ = std::move(savedDeclaredGlobals);
   modulePath_ = std::move(savedModulePath);
   moduleImportNames_ = std::move(savedModuleImportNames);
   return module;
@@ -1791,6 +1966,10 @@ void Compiler::compileModuleBody(const StmtPtr& program) {
   pushScope();
 
   if (const auto* block = program ? std::get_if<BlockStmt>(&program->node) : nullptr) {
+    // Top-level names of the module shadow a bare enum member, exactly as they
+    // do in the root chunk. `importModule` cleared the state for this body, so
+    // this sees only the module's own declarations.
+    registerDeclaredGlobals(*block);
     // `compileBlockBody` hoists function declarations and pre-declares block
     // locals, exactly as it does for any other block, so a module function can
     // reference a binding declared later in the file.
@@ -1917,10 +2096,12 @@ void Compiler::compileImport(const ImportStmt& import, int line, int col) {
     names = module.symbols;
   } else {
     names = import.names;
-    // Validate that every selected name is actually exported.
+    // Validate that every selected name is actually exported. An enum is a
+    // compile-time export too, even though it has no table entry.
     for (const std::string& name : names) {
-      if (std::find(module.symbols.begin(), module.symbols.end(), name) ==
-          module.symbols.end()) {
+      const bool isValue = std::find(module.symbols.begin(), module.symbols.end(), name) !=
+                           module.symbols.end();
+      if (!isValue && module.enums.find(name) == module.enums.end()) {
         fail("module '" + import.module + "' has no export named '" + name + "'", line, col);
       }
     }
@@ -2216,6 +2397,13 @@ bool Compiler::recordImportBinding(const std::string& visible, ImportBinding::Ki
              module + "'; rename one of them to disambiguate",
          line, col);
   }
+  // An enum name is a namespace for its members (`Color.RED`), so an import
+  // must not bind it either: the qualified form would become ambiguous.
+  if (enumNames_.find(visible) != enumNames_.end()) {
+    fail("'" + visible + "' is ambiguous between enum '" + visible + "' and module '" +
+             module + "'; rename one of them to disambiguate",
+         line, col);
+  }
 
   auto existing = importedNames_.find(visible);
   if (existing == importedNames_.end()) {
@@ -2282,6 +2470,9 @@ void Compiler::compileNameImport(const ImportedModule& module,
   materializeModule(module, line, col);
 
   for (const std::string& name : names) {
+    // An enum is compile-time metadata, not a table entry: `registerImportedEnums`
+    // already made it visible, and there is no value to bind.
+    if (module.enums.find(name) != module.enums.end()) continue;
     // Conflict detection is centralised in `recordImportBinding`, so a
     // wildcard or selective name colliding with any other import form is
     // reported here, not only wildcard-vs-wildcard. This is the compile-time
@@ -2321,7 +2512,8 @@ void Compiler::compileFnDecl(const FnDeclStmt& fn, int line, int col) {
     bc_.nativeFns.push_back(fn.name);
     emit(OpCode::GETGLOBAL, reg, addString(fn.name));
   } else {
-    int child = compileFunctionProto(fn.name, fn.params, fn.body, line, col, fn.returnType);
+    int child = compileFunctionProto(fn.name, fn.params, fn.body, line, col, fn.returnType,
+                                     std::string(), fn.isAsync);
     emit(OpCode::CLOSURE, reg, child);
   }
 
@@ -2345,12 +2537,21 @@ void Compiler::compileFnDecl(const FnDeclStmt& fn, int line, int col) {
       // A native's type is its declared signature; the call path above already
       // covers it, so the user-function table must not shadow that.
       functionReturnTypes_.erase(fn.name);
+      asyncReturnTypes_.erase(fn.name);
       functionParams_.erase(fn.name);
     } else {
-      if (fn.returnType.isPresent()) {
-        functionReturnTypes_[fn.name] = fn.returnType;
+      if (fn.isAsync) {
+        // An async function returns `Future` at the call site; its annotation
+        // is the payload, kept for `await f()`.
+        functionReturnTypes_[fn.name] = TypeRef{"Future", false};
+        asyncReturnTypes_[fn.name] = fn.returnType;
       } else {
-        functionReturnTypes_.erase(fn.name);
+        asyncReturnTypes_.erase(fn.name);
+        if (fn.returnType.isPresent()) {
+          functionReturnTypes_[fn.name] = fn.returnType;
+        } else {
+          functionReturnTypes_.erase(fn.name);
+        }
       }
       // The parameters are recorded even when none carries an annotation: the
       // arity check needs the count, and `checkUserCall` skips an unannotated
@@ -2432,6 +2633,146 @@ void Compiler::registerStructDecls(const BlockStmt& block) {
     if (!child) continue;
     if (const auto* decl = std::get_if<StructDeclStmt>(&child->node)) {
       structDefs_[decl->name] = decl->fields;
+    }
+  }
+}
+
+// Registers every `enum` declared directly in `block` before anything else in
+// it is compiled. The declaration emits no bytecode; recording the members here
+// lets a hoisted function resolve `Color.RED` (or a bare `RED` in a `case`
+// label) whatever the declaration order.
+void Compiler::registerEnumDecls(const BlockStmt& block) {
+  for (const auto& child : block.stmts) {
+    if (!child) continue;
+    const auto* decl = std::get_if<EnumDeclStmt>(&child->node);
+    if (!decl) continue;
+    // A struct or class of the same name would make `Name.MEMBER` and
+    // `Name { ... }` / `Name(...)` mean different things. The parser rejects
+    // this within one file; this covers a REPL session, where the earlier
+    // declaration came from another entry.
+    if (structDefs_.find(decl->name) != structDefs_.end()) {
+      fail("'" + decl->name + "' is already declared as a struct", child->line, child->col);
+    }
+    if (classNames_.find(decl->name) != classNames_.end()) {
+      fail("'" + decl->name + "' is already declared as a class", child->line, child->col);
+    }
+    // A redefinition in a later REPL entry replaces the enum. Remove the old
+    // members from the bare-name index first, so a member the new declaration
+    // no longer has does not stay ambiguously visible.
+    auto previous = enumMembers_.find(decl->name);
+    if (previous != enumMembers_.end()) {
+      for (const EnumMember& member : previous->second) {
+        auto owners = enumMemberOwners_.find(member.name);
+        if (owners == enumMemberOwners_.end()) continue;
+        owners->second.erase(
+            std::remove(owners->second.begin(), owners->second.end(), decl->name),
+            owners->second.end());
+        if (owners->second.empty()) enumMemberOwners_.erase(owners);
+      }
+    }
+    enumNames_.insert(decl->name);
+    enumMembers_[decl->name] = decl->members;
+    for (const EnumMember& member : decl->members) {
+      enumMemberOwners_[member.name].push_back(decl->name);
+    }
+  }
+}
+
+void Compiler::registerImportedEnums(const BlockStmt& block) {
+  auto isPublic = [](const std::string& name) {
+    return !name.empty() && name[0] != '_';
+  };
+  auto registerOne = [&](const std::string& visible,
+                         const std::vector<EnumMember>& members, bool bare) {
+    if (visible.empty() || !isPublic(visible)) return;
+    // A declaration wins over an import, exactly like a declared binding.
+    if (enumNames_.count(visible) != 0 || structDefs_.count(visible) != 0 ||
+        classNames_.count(visible) != 0) {
+      return;
+    }
+    enumNames_.insert(visible);
+    enumMembers_[visible] = members;
+    if (bare) {
+      for (const EnumMember& member : members) {
+        auto& owners = enumMemberOwners_[member.name];
+        if (std::find(owners.begin(), owners.end(), visible) == owners.end()) {
+          owners.push_back(visible);
+        }
+      }
+    }
+  };
+
+  for (const auto& child : block.stmts) {
+    if (!child) continue;
+    const auto* import = std::get_if<ImportStmt>(&child->node);
+    if (!import) continue;
+    // Read the module's enum declarations through the scanner the parser
+    // already uses. Loading the module here would run its body's imports into
+    // the shared "materialized" set before the importing chunk materializes
+    // them, which would leave the hidden global unbound (the module body is
+    // compiled once and shared, but the hidden global is what every reader
+    // names). The import statement loads it later.
+    if (!enumScanner_) continue;
+    const auto enums = enumScanner_(import->module);
+    if (enums.empty()) continue;
+    if (import->mode == ImportStmt::Mode::Selective) {
+      for (const std::string& name : import->names) {
+        if (!isPublic(name)) continue;
+        auto found = enums.find(name);
+        if (found != enums.end()) registerOne(name, found->second, true);
+      }
+      continue;
+    }
+    if (import->mode == ImportStmt::Mode::Wildcard) {
+      for (const auto& entry : enums) registerOne(entry.first, entry.second, true);
+      continue;
+    }
+    // Qualified (optionally aliased): `geom.Color`, `g.Color`, `pkg.geom.Color`.
+    const std::string bindingPath = import->alias.empty() ? import->module : import->alias;
+    for (const auto& entry : enums) {
+      registerOne(bindingPath + "." + entry.first, entry.second, false);
+    }
+    if (import->alias.empty()) {
+      const std::size_t dot = import->module.rfind('.');
+      if (dot != std::string::npos) {
+        const std::string shortName = import->module.substr(dot + 1);
+        if (shortName != import->module.substr(0, import->module.find('.'))) {
+          for (const auto& entry : enums) {
+            registerOne(shortName + "." + entry.first, entry.second, false);
+          }
+        }
+      }
+    }
+  }
+}
+
+// Collects the top-level binding names of `block` before anything is emitted.
+// A declared binding shadows a bare enum member, so resolving `RED` must not
+// depend on whether the declaration was compiled before the use (a hoisted
+// function is compiled first, but the binding it refers to is a global that is
+// assigned later).
+void Compiler::registerDeclaredGlobals(const BlockStmt& block) {
+  auto add = [&](const std::string& name) {
+    if (!name.empty()) declaredGlobals_.insert(name);
+  };
+  for (const auto& child : block.stmts) {
+    if (!child) continue;
+    if (const auto* let = std::get_if<LetStmt>(&child->node)) {
+      add(let->name);
+    } else if (const auto* fn = std::get_if<FnDeclStmt>(&child->node)) {
+      add(fn->name);
+    } else if (const auto* ext = std::get_if<ExternBlockStmt>(&child->node)) {
+      for (const FnDeclStmt& decl : ext->decls) add(decl.name);
+    } else if (const auto* import = std::get_if<ImportStmt>(&child->node)) {
+      if (!import->alias.empty()) {
+        add(import->alias);
+      } else if (import->mode == ImportStmt::Mode::Selective) {
+        for (const std::string& name : import->names) add(name);
+      } else if (import->mode == ImportStmt::Mode::Qualified) {
+        // `import std.math;` binds the root `std`; a later component is read
+        // through it, so only the root can shadow a bare enum member.
+        add(import->module.substr(0, import->module.find('.')));
+      }
     }
   }
 }
@@ -2645,6 +2986,10 @@ void Compiler::compileReturn(const ReturnStmt& stmt) {
   // the deferred blocks cannot change what the function returns. This is also
   // why `defer` needs no opcode and no VM support: the blocks are inlined here.
   emitDeferredBlocks(1);
+  // An `async fn` returns a future, not the payload: wrap the value after the
+  // deferred blocks so they cannot change what the future carries. The wrap is
+  // ordinary map construction, so the VM, AOT and WASM agree by construction.
+  if (currentIsAsync_) reg = compileMakeFuture(reg, currentLine_, currentCol_);
   // A `return` at the top level of a function body is followed by the
   // implicit epilogue emitted in `compileFunctionProto`. Skipping the second
   // RETURN when the last instruction already returns keeps the frame stack
@@ -2659,7 +3004,7 @@ void Compiler::compileReturn(const ReturnStmt& stmt) {
 int Compiler::compileFunctionProto(const std::string& name,
                                    const std::vector<Param>& params, const StmtPtr& body,
                                    int line, int col, const TypeRef& returnType,
-                                   const std::string& ownerClass) {
+                                   const std::string& ownerClass, bool isAsync) {
   // Save the parent chunk and its compilation state. Functions are compiled
   // into their own proto with fresh registers, locals, scopes and loops.
   Bytecode parent = std::move(bc_);
@@ -2675,6 +3020,7 @@ int Compiler::compileFunctionProto(const std::string& name,
   const int parentCol = currentCol_;
   const bool parentInFunction = inFunction_;
   const TypeRef parentReturnType = currentReturnType_;
+  const bool parentIsAsync = currentIsAsync_;
   const std::string parentOwnerClass = std::move(currentOwnerClass_);
 
   bc_ = Bytecode{};
@@ -2724,6 +3070,7 @@ int Compiler::compileFunctionProto(const std::string& name,
     declareLocal(param.name, false, bindingType);
   }
   currentReturnType_ = returnType;
+  currentIsAsync_ = isAsync;
   currentOwnerClass_ = ownerClass;
 
   // Incoming arguments already sit in R0 .. R(n-1), so the prologue only has
@@ -2751,6 +3098,7 @@ int Compiler::compileFunctionProto(const std::string& name,
   // Falling off the end of a function returns nil, like the interpreter.
   int nilReg = allocReg();
   emit(OpCode::LOADK, nilReg, addConstant(Value()));
+  if (currentIsAsync_) nilReg = compileMakeFuture(nilReg, line, col);
   emit(OpCode::RETURN, nilReg);
 
   bc_.numRegisters = maxReg_;
@@ -2774,6 +3122,7 @@ int Compiler::compileFunctionProto(const std::string& name,
   currentCol_ = savedParent.col;
   inFunction_ = savedParent.inFunction;
   currentReturnType_ = parentReturnType;
+  currentIsAsync_ = parentIsAsync;
   currentOwnerClass_ = std::move(parentOwnerClass);
 
   int index = static_cast<int>(bc_.children.size());
@@ -2797,7 +3146,8 @@ int Compiler::compileLambda(const LambdaExpr& lambda, int line, int col) {
   // frame, which would dangle a reference into it.
   const std::string owner = lambda.ownerClass.empty() ? currentOwnerClass_ : lambda.ownerClass;
   int child = compileFunctionProto(lambda.name.empty() ? "<anonymous>" : lambda.name, lambda.params,
-                                   lambda.body, line, col, lambda.returnType, owner);
+                                   lambda.body, line, col, lambda.returnType, owner,
+                                   lambda.isAsync);
   int reg = allocReg();
   emit(OpCode::CLOSURE, reg, child);
   return reg;
@@ -2981,6 +3331,26 @@ void Compiler::compileSwitch(const SwitchStmt& s) {
   // membership (`IN`) for a range. There is no fallthrough, so the matching
   // case's body is the only one that runs and each body ends with a jump past
   // the remaining cases.
+  TypeRef subjectType = inferExprType(*s.subject);
+  // A switch over an enum is exhaustive when it has no `default` and every
+  // member appears (plus `nil` for a nullable enum). The check is static: an
+  // enum value is an `int` at run time, so the engine cannot see the intent.
+  const bool enumSubject = subjectType.isPresent() && !subjectType.isUnion() &&
+                           subjectType.name != "any" && isEnumTypeName(subjectType.name);
+  const std::vector<EnumMember>* enumMembers =
+      enumSubject ? lookupEnumMembers(subjectType.name) : nullptr;
+  std::unordered_set<std::string> coveredMembers;
+  bool nilCovered = false;
+  // A switch on a constant enum value (`switch (Color.RED)`) has only one
+  // reachable case; requiring every member there would be a false positive.
+  bool constantSubject = std::holds_alternative<LiteralExpr>(s.subject->node);
+  if (!constantSubject) {
+    if (const auto* member = std::get_if<MemberExpr>(&s.subject->node)) {
+      std::string enumName;
+      if (resolveEnumMemberPath(*member, enumName) != nullptr) constantSubject = true;
+    }
+  }
+
   int subject = compileExpr(*s.subject);
 
   const size_t caseCount = s.cases.size();
@@ -2993,11 +3363,110 @@ void Compiler::compileSwitch(const SwitchStmt& s) {
   for (size_t i = 0; i < caseCount; ++i) {
     const SwitchCase& entry = s.cases[i];
     testStart[i] = currentOffset();
+    auto emitConstantMatch = [&](int64_t value) {
+      int reg = allocReg();
+      emit(OpCode::LOADK, reg, addConstant(Value(value)));
+      emit(OpCode::EQ, reg, subject, reg);
+      matchJumps[i].push_back(emitJump(OpCode::JMP_IF_TRUE, reg));
+      freeReg();
+    };
     for (const ExprPtr& label : entry.values) {
-      if (const auto* name = std::get_if<VariableExpr>(&label->node)) {
-        checkCaseLabelName(name->name, label->line, label->col);
+      const int line = label->line;
+      const int col = label->col;
+      if (enumSubject) {
+        // A switch over an enum may only compare against that enum's members.
+        // An integer literal, a range or another enum would compare the
+        // member's integer to an unrelated value and silently miss, and a
+        // dynamic member access would hide which member it means.
+        if (const auto* name = std::get_if<VariableExpr>(&label->node)) {
+          const EnumMember* member = checkCaseLabelName(name->name, line, col);
+          if (member == nullptr) {
+            fail("a switch over enum '" + subjectType.name +
+                     "' must use its members (e.g. '" + subjectType.name + "." +
+                     name->name + "') as labels",
+                 line, col);
+          }
+          auto owners = enumMemberOwners_.find(name->name);
+          const std::string owner =
+              (owners != enumMemberOwners_.end() && !owners->second.empty())
+                  ? owners->second.front()
+                  : subjectType.name;
+          if (owner != subjectType.name) {
+            fail("case '" + owner + "." + name->name + "' is not a member of enum '" +
+                     subjectType.name + "'",
+                 line, col);
+          }
+          if (!coveredMembers.insert(name->name).second) {
+            warn("case '" + name->name + "' is repeated in this switch", line, col);
+          }
+          emitConstantMatch(member->value);
+          continue;
+        }
+        if (const auto* member = std::get_if<MemberExpr>(&label->node)) {
+          std::string enumName;
+          const EnumMember* found = resolveEnumMemberPath(*member, enumName);
+          if (!enumName.empty()) {
+            if (found == nullptr) {
+              fail("enum '" + enumName + "' has no member '" + member->name + "'", line, col);
+            }
+            if (enumName != subjectType.name) {
+              fail("case '" + enumName + "." + member->name +
+                       "' is not a member of enum '" + subjectType.name + "'",
+                   line, col);
+            }
+            if (!coveredMembers.insert(member->name).second) {
+              warn("case '" + enumName + "." + member->name +
+                       "' is repeated in this switch",
+                   line, col);
+            }
+            emitConstantMatch(found->value);
+            continue;
+          }
+          fail("a switch over enum '" + subjectType.name +
+                   "' must use its members (e.g. '" + subjectType.name + ".RED') as labels",
+               line, col);
+        }
+        if (const auto* literal = std::get_if<LiteralExpr>(&label->node)) {
+          if (literal->value.isNil()) {
+            if (!subjectType.nullable) {
+              fail("case 'nil' is not possible: enum '" + subjectType.name +
+                       "' is not nullable",
+                   line, col);
+            }
+            if (nilCovered) warn("case 'nil' is repeated in this switch", line, col);
+            nilCovered = true;
+            int value = compileExpr(*label);
+            emit(OpCode::EQ, value, subject, value);
+            matchJumps[i].push_back(emitJump(OpCode::JMP_IF_TRUE, value));
+            freeReg();
+            continue;
+          }
+        }
+        if (std::holds_alternative<RangeExpr>(label->node)) {
+          fail("a switch over enum '" + subjectType.name +
+                   "' does not accept a range label",
+               line, col);
+        }
+        fail("a switch over enum '" + subjectType.name +
+                 "' must use its members (e.g. '" + subjectType.name + ".RED') as labels",
+             line, col);
       }
-      if (std::holds_alternative<RangeExpr>(label->node)) {
+
+      const EnumMember* enumLabel = nullptr;
+      if (const auto* name = std::get_if<VariableExpr>(&label->node)) {
+        enumLabel = checkCaseLabelName(name->name, line, col);
+      } else if (const auto* member = std::get_if<MemberExpr>(&label->node)) {
+        std::string enumName;
+        enumLabel = resolveEnumMemberPath(*member, enumName);
+        if (enumLabel == nullptr && !enumName.empty()) {
+          fail("enum '" + enumName + "' has no member '" + member->name + "'", line, col);
+        }
+      }
+      if (enumLabel != nullptr) {
+        // A bare enum member is a fixed integer: emit the constant directly,
+        // because the name is not a runtime binding.
+        emitConstantMatch(enumLabel->value);
+      } else if (std::holds_alternative<RangeExpr>(label->node)) {
         int range = compileExpr(*label);
         emit(OpCode::IN, range, subject, range);
         matchJumps[i].push_back(emitJump(OpCode::JMP_IF_TRUE, range));
@@ -3015,6 +3484,32 @@ void Compiler::compileSwitch(const SwitchStmt& s) {
     bodyStart[i] = currentOffset();
     compileScopedBlock(*entry.body);
     endJumps.push_back(emitJump(OpCode::JMP));
+  }
+
+  if (enumSubject && !constantSubject) {
+    const bool hasDefault = s.defaultBody != nullptr;
+    const bool needNil = subjectType.nullable && !nilCovered && !hasDefault;
+    std::vector<std::string> missing;
+    if (!hasDefault && enumMembers != nullptr) {
+      for (const EnumMember& member : *enumMembers) {
+        if (coveredMembers.find(member.name) == coveredMembers.end()) {
+          missing.push_back(member.name);
+        }
+      }
+    }
+    if (needNil || !missing.empty()) {
+      std::string message =
+          "switch on enum '" + subjectType.name + "' is not exhaustive";
+      if (needNil) message += "; add 'case nil' for the nullable value";
+      if (!missing.empty()) {
+        message += needNil ? " and missing " : "; missing ";
+        for (size_t i = 0; i < missing.size(); ++i) {
+          if (i != 0) message += ", ";
+          message += "'" + subjectType.name + "." + missing[i] + "'";
+        }
+      }
+      fail(message, s.subject->line, s.subject->col);
+    }
   }
 
   const int defaultStart = currentOffset();
@@ -3168,8 +3663,29 @@ int Compiler::compileCall(const CallExpr& call, int line, int col) {
 }
 
 int Compiler::compileAssign(const AssignExpr& assign, int line, int col) {
+  // An enum member is a compile-time constant, not a storage location.
+  if (const auto* member = std::get_if<MemberExpr>(&assign.target->node)) {
+    std::string enumName;
+    resolveEnumMemberPath(*member, enumName);
+    if (!enumName.empty()) {
+      fail("cannot assign to enum member '" + enumName + "." + member->name + "'", line,
+           col);
+    }
+    std::string root;
+    std::vector<std::string> parts;
+    if (!member->safe && flattenMemberPath(*member, root, parts)) {
+      std::string full = root;
+      for (const std::string& part : parts) full += "." + part;
+      if (isEnumTypeName(full)) {
+        fail("cannot assign to enum '" + full + "'", line, col);
+      }
+    }
+  }
   if (const auto* target = std::get_if<VariableExpr>(&assign.target->node)) {
     const std::string& name = target->name;
+    if (isEnumTypeName(name)) {
+      fail("cannot assign to enum '" + name + "'", line, col);
+    }
     LocalVar local;
     bool isLocal = resolveLocal(name, local);
 
@@ -3561,6 +4077,74 @@ int Compiler::compileSlice(const SliceExpr& slice, int line, int col) {
   return object;
 }
 
+// Builds the map an `async fn` returns. A future is deliberately a plain map:
+// the VM, the AOT backend and the WASM backend all already construct and read
+// maps, so async needs no runtime tag, no builtin and no opcode. The keys are
+// the private protocol `await` reads (`state`, `value`, `error`); user code can
+// see them, but the type checker keeps a `Future` away from ordinary map code.
+int Compiler::compileMakeFuture(int value, int line, int col) {
+  currentLine_ = line;
+  currentCol_ = col;
+  int map = allocReg();
+  emit(OpCode::NEWTABLE, map, 0, 1);
+  int state = allocReg();
+  emit(OpCode::LOADK, state, addConstant(Value("fulfilled")));
+  emit(OpCode::SETTABLE, state, map, -addString("state") - 1);
+  freeReg();
+  emit(OpCode::SETTABLE, value, map, -addString("value") - 1);
+  int nil = allocReg();
+  emit(OpCode::LOADK, nil, addConstant(Value()));
+  emit(OpCode::SETTABLE, nil, map, -addString("error") - 1);
+  freeReg();
+  return map;
+}
+
+// `await expr` (PHASE 11.1): read the future's state and yield its payload, or
+// raise the carried error. Every path is an existing opcode or a `panic` call,
+// so the three engines behave identically. A pending future has no scheduler in
+// this phase; it is a runtime error rather than a silent nil.
+int Compiler::compileAwait(const AwaitExpr& awaited, int line, int col) {
+  TypeRef operandType = inferExprType(*awaited.operand);
+  if (operandType.isPresent() && operandType.name != "Future" && operandType.name != "any") {
+    fail("'await' expects a Future, found '" + describeType(operandType) + "'", line, col);
+  }
+  currentLine_ = line;
+  currentCol_ = col;
+  int future = compileExpr(*awaited.operand);
+  // The operand's own register is the result, like `a!!`: the caller (a call
+  // argument list, an assignment) expects the expression to leave its value in
+  // the register it reserved, and reusing it keeps the arguments contiguous.
+  int state = allocReg();
+  emit(OpCode::GETTABLE, state, future, -addString("state") - 1);
+  int fulfilled = allocReg();
+  emit(OpCode::LOADK, fulfilled, addConstant(Value("fulfilled")));
+  int isFulfilled = allocReg();
+  emit(OpCode::EQ, isFulfilled, state, fulfilled);
+  int rejected = allocReg();
+  emit(OpCode::LOADK, rejected, addConstant(Value("rejected")));
+  int isRejected = allocReg();
+  emit(OpCode::EQ, isRejected, state, rejected);
+  int checkRejected = emitJump(OpCode::JMP_IF_FALSE, isFulfilled);
+  // The map is dead on this path after the read, so the payload replaces it in
+  // place; the rejected path below still sees the map.
+  emit(OpCode::GETTABLE, future, future, -addString("value") - 1);
+  int endJump = emitJump(OpCode::JMP);
+  patchJump(checkRejected, currentOffset());
+  int pending = emitJump(OpCode::JMP_IF_FALSE, isRejected);
+  int error = allocReg();
+  emit(OpCode::GETTABLE, error, future, -addString("error") - 1);
+  emit(OpCode::LOADK, future, addConstant(Value()));
+  compileHelperCall("panic", {error}, line, col);
+  patchJump(pending, currentOffset());
+  emit(OpCode::LOADK, future, addConstant(Value()));
+  int message = allocReg();
+  emit(OpCode::LOADK, message, addConstant(Value("await on a pending Future is not supported yet")));
+  compileHelperCall("panic", {message}, line, col);
+  patchJump(endJump, currentOffset());
+  freeReg(nextReg_ - future - 1);
+  return future;
+}
+
 int Compiler::compileInterpolation(const InterpExpr& interpolation, int /*line*/, int /*col*/) {
   int result = allocReg();
   emit(OpCode::LOADK, result, addConstant(Value(std::string())));
@@ -3695,6 +4279,34 @@ int Compiler::compileExpr(const Expr& expr) {
             return compileSlice(slice, expr.line, expr.col);
           },
           [&](const MemberExpr& member) -> int {
+            // `Color.RED` and the imported `geom.Color.RED` (PHASE 6.9) are
+            // compile-time constants, not table reads: emit a `LOADK` of the
+            // folded integer. The parser rejects a binding with an enum name,
+            // so a chain whose prefix is a registered enum is unambiguous.
+            if (!member.safe) {
+              std::string enumName;
+              if (const EnumMember* entry = resolveEnumMemberPath(member, enumName)) {
+                int reg = allocReg();
+                emit(OpCode::LOADK, reg, addConstant(Value(entry->value)));
+                return reg;
+              }
+              if (!enumName.empty()) {
+                fail("enum '" + enumName + "' has no member '" + member.name + "'", expr.line,
+                     expr.col);
+              }
+              // `Color` / `geom.Color` alone is a type, not a value. Report it
+              // here rather than reading a nil entry from the module table.
+              std::string root;
+              std::vector<std::string> parts;
+              if (flattenMemberPath(member, root, parts)) {
+                std::string full = root;
+                for (const std::string& part : parts) full += "." + part;
+                if (isEnumTypeName(full)) {
+                  fail("enum '" + full + "' is not a value; use '" + full + ".MEMBER'",
+                       expr.line, expr.col);
+                }
+              }
+            }
             // A qualified access to a module's native export (`std.math.pow`)
             // is a use of a host binding the AOT backend must resolve; record
             // it before emitting the member read (PHASE 7f.2). When the member
@@ -3737,6 +4349,9 @@ int Compiler::compileExpr(const Expr& expr) {
             emit(OpCode::MOVE, operand, result);
             freeReg(nextReg_ - operand - 1);
             return operand;
+          },
+          [&](const AwaitExpr& awaited) -> int {
+            return compileAwait(awaited, expr.line, expr.col);
           },
           [&](const RangeExpr& range) -> int {
             return compileRange(range, expr.line, expr.col);

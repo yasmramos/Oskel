@@ -1,0 +1,4 @@
+// expect-exit: 65
+// Auto-numbering must not wrap around.
+enum E { A = 9223372036854775807, B }
+print(E.B);

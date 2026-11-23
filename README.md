@@ -23,6 +23,7 @@ for language in languages {
 - Optional types and nullability: annotations (`let x: int = 5`), local inference, nullable `T?`, unions (`T | E`) and the null-safe expressions `?.`, `??` and `!!`.
 - `struct` declarations (data only, no methods) checked against their literal at compile time.
 - `class` declarations (fields plus methods): instantiating is calling the class name (`Point(3, 4)`, no `new`), `self` is explicit and there is no inheritance. A class is parser sugar over a map plus closures, so it runs identically on the VM and under `oskel build`. Field and method annotations are checked at compile time.
+- `async fn` / `await` (PHASE 11.1): a call returns a `Future`, `await` yields its payload and the declared return type is the payload. The body runs eagerly (no scheduler yet); a future is a map, so it behaves identically on the VM, `oskel build` and WASM.
 - String interpolation with `"${expression}"` and UTF-8 support.
 - Ordered arrays and maps that preserve insertion order, with `for k, v in map` key/value iteration.
 - Ascending and descending ranges: `1..5`, `0..=10`, `5..0`.
@@ -51,7 +52,7 @@ for language in languages {
 
 ## Status
 
-Version **0.2.0**. The language is functional and covered by a test suite, but it is not yet considered stable or complete. See the [limitations](#limitations-and-roadmap) section and the [changelog](CHANGELOG.md) for what each release contains.
+Version **0.3.0**. The language is functional and covered by a test suite, but it is not yet considered stable or complete. See the [limitations](#limitations-and-roadmap) section and the [changelog](CHANGELOG.md) for what each release contains.
 
 ## Requirements
 
@@ -201,25 +202,44 @@ skipped.
 
 `oskelp` is the Cargo-style project layer: a manifest (`oskel.toml`), a
 lockfile, dependency resolution (path and local-registry) and the
-`new`/`init`/`add`/`remove`/`publish`/`update`/`build`/`run`/`check`/`test`
-workflow. It is a standalone tool that drives `oskel` and `oskelc` as child
-processes, so the engine carries no project or dependency policy:
+`new`/`init`/`add`/`remove`/`publish`/`update`/`outdated`/`build`/`run`/
+`check`/`test` workflow. It is a standalone tool that drives `oskel` and
+`oskelc` as child processes, so the engine carries no project or dependency
+policy:
 
 ```sh
 ./build/oskelp new hello
 cd hello
 ../build/oskelp add utils --path ../utils  # ../utils is another package
-../build/oskelp add text --version "^1.0.0"  # from $OSKEL_REGISTRY
+../build/oskelp add text                    # the latest registry release
+../build/oskelp add json --version "^1.0.0"  # an explicit requirement
 ../build/oskelp run          # the VM, for the fast development loop
 ../build/oskelp build        # target/hello, the native binary
 ../build/oskelp test         # every tests/**/*.oskl
+../build/oskelp outdated     # registry updates available to the lockfile
 ../build/oskelp update       # move registry pins to newer versions
+../build/oskelp update text --precise 1.0.2  # pin one registry version
 ```
 
 `oskelp publish --registry <dir>` copies the current package into a local
 registry, so another project can depend on its version. See
 [docs/oskelp.md](docs/oskelp.md) for the project layout, the manifest, the
 dependency model, the registry layout and every command.
+
+### oskelint (the linter)
+
+`oskelint` reports suspicious but legal code. The first rule, `builtin-shadow`,
+warns when a declaration replaces a builtin — legal, and the standard library
+relies on it, which is why the check lives in a tool instead of the compiler:
+
+```sh
+./build/oskelint mylib.oskl      # report the diagnostics on stdout
+./build/oskelint --list-rules    # the rule names
+```
+
+A lint warning exits 0; it never fails a build. See
+[docs/oskelint.md](docs/oskelint.md) for the rule and where the builtin names
+come from.
 
 ## Usage
 
@@ -232,10 +252,13 @@ oskel build <file.oskl>    compiles the script to a native binary (AOT)
 oskelc <file.oskl>         the same compiler without the interpreter
 oskelp new <dir>           creates a project (oskel.toml, src/<name>/...)
 oskelp add <name> --path <dir>  adds a path dependency to oskel.toml
-oskelp add <name> --version <req>  adds a registry dependency (OSKEL_REGISTRY)
+oskelp add <name>          adds the latest registry release (OSKEL_REGISTRY)
+oskelp add <name> --version <req>  adds an explicit registry requirement
 oskelp remove <name>       removes a dependency from oskel.toml
 oskelp publish             publishes the package into a local registry
 oskelp update [<name>]     moves registry pins to newer versions
+oskelp update <name> --precise <version>  pins one registry version
+oskelp outdated            shows registry updates available to the lockfile
 oskelp build               builds the project to target/<name>
 oskelp run                 runs the project (--native for the AOT binary)
 oskelp test                runs every tests/**/*.oskl
@@ -283,7 +306,7 @@ for name in args() {
 Running `oskel` with no arguments opens the REPL:
 
 ```text
-Oskel 0.2.0 - a small scripting language written in C++
+Oskel 0.3.0 - a small scripting language written in C++
 Type :help for help, :quit to exit.
 oskel> let x = 21
 oskel> x * 2
@@ -381,13 +404,13 @@ Oskel has two execution paths: the register-based **VM** (used by `oskel`,
 `oskel -e` and the REPL) and the **AOT backend** (used by `oskel build`, which
 emits a static native binary). The AOT backend covers the language core, not
 the whole runtime yet, so a program can run on the VM and fail to build — or
-behave differently — under AOT. This is the exact split in 0.2.0.
+behave differently — under AOT. This is the exact split in 0.3.0.
 
 **Available in both:**
 
 - Arithmetic, comparisons, logical and bitwise operators, control flow
   (`if`/`while`/`for`/`for-in`/`switch`), functions, closures, `defer`,
-  `struct`, `class`, ranges, slicing, string interpolation.
+  `struct`, `class`, `async fn`/`await`, ranges, slicing, string interpolation.
 - Arrays and maps (literals, indexing, `in`, `for-in`, printing, and `+` to
   concatenate two arrays).
 - The array methods `push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`,
@@ -568,7 +591,7 @@ Editor support: a VS Code syntax-highlighting extension lives in
 
 ## Releases
 
-**0.2.0 is the current release.** Prebuilt packages are published on the
+**0.3.0 is the current release.** Prebuilt packages are published on the
 [releases page](https://github.com/yasmramos/Oskel/releases):
 
 | Platform | Asset |

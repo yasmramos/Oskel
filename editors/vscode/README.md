@@ -132,7 +132,7 @@ Extension Development Host.
 npm install -g @vscode/vsce
 cd editors/vscode
 vsce package
-code --install-extension oskel-0.2.0.vsix
+code --install-extension oskel-0.3.0.vsix
 ```
 
 ## Files

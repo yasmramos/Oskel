@@ -1,0 +1,12 @@
+// The failure side of the shadow in `native_build_builtin_shadow.oskl`: once a
+// global replaces a builtin, calling the name reaches the *new* value, and a
+// non-function callee is a runtime error. The hosted engine reports
+// "cannot call a value of type 'int'" and exits 70; the binary must do the same
+// instead of keeping the builtin reachable through its own slot.
+//
+// The wording is matched by prefix, not in full: the AOT sink writes one fixed
+// message blob and stops before the quoted type name (BACKLOG §6 item 25), so
+// `cannot call a value of type` is the longest common prefix. The engine and the
+// exit code are what a program branches on, and those are identical.
+var print = 5;
+print("hi");

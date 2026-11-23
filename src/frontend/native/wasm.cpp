@@ -74,6 +74,7 @@ constexpr std::uint64_t kRange = static_cast<std::uint64_t>(AotTag::Range);
 constexpr std::uint64_t kError = static_cast<std::uint64_t>(AotTag::Error);
 constexpr std::uint64_t kArray = static_cast<std::uint64_t>(AotTag::Array);
 constexpr std::uint64_t kMap = static_cast<std::uint64_t>(AotTag::Map);
+constexpr std::uint64_t kPtr = static_cast<std::uint64_t>(AotTag::Ptr);
 
 // On-image layouts, shared with `include/native/value.h`. An array is
 // {length, capacity, items}; a map is {length, capacity, entries}, where an
@@ -88,6 +89,19 @@ constexpr std::uint32_t kMapEntryKeyOffset = 0;
 constexpr std::uint32_t kMapEntryTagOffset = 8;
 constexpr std::uint32_t kMapEntryPayloadOffset = 16;
 constexpr std::uint32_t kMapEntrySize = 24;
+
+// A pointer handle is {kind, data, length, released}, the `AotPtr` layout in
+// `include/native/value.h`. `data` owns the bytes for a `cstring`/`buffer` and
+// is the opaque token for a `void *`; `free` only marks the handle released,
+// because the arena never reclaims.
+constexpr std::uint32_t kPtrKindOffset = 0;
+constexpr std::uint32_t kPtrDataOffset = 8;
+constexpr std::uint32_t kPtrLengthOffset = 16;
+constexpr std::uint32_t kPtrReleasedOffset = 24;
+constexpr std::uint32_t kPtrHeaderSize = 32;
+constexpr std::uint64_t kPtrKindVoid = 0;
+constexpr std::uint64_t kPtrKindCString = 1;
+constexpr std::uint64_t kPtrKindBuffer = 2;
 
 // A bound method is a closure whose `flags` word holds one of these selectors;
 // the shared dispatcher reads it and calls the matching helper.
@@ -468,6 +482,11 @@ class Func {
     uleb(body_.code, 0);
     uleb(body_.code, 0);
   }
+  void memoryFill() {
+    op(0xFC);
+    uleb(body_.code, 0x0B);
+    uleb(body_.code, 0);
+  }
   void memorySize() {
     op(0x3F);
     uleb(body_.code, 0);
@@ -800,7 +819,7 @@ struct Runtime {
   std::uint32_t sTypeNil = 0, sTypeBool = 0, sTypeInt = 0, sTypeFloat = 0,
                 sTypeDouble = 0, sTypeString = 0, sTypeFunction = 0,
                 sTypeRange = 0, sTypeError = 0, sTypeArray = 0, sTypeMap = 0,
-                sTypePtr = 0, sUnknown = 0;
+                sTypePtr = 0, sTypeCString = 0, sPtrDisplay = 0, sUnknown = 0;
   std::uint32_t sDivZero = 0, sBadShift = 0, sNonIntegral = 0, sLargeDouble = 0,
                 sNotIterable = 0, sNotComparable = 0, sUnsupportedOperands = 0,
                 sUnsupportedUnary = 0, sBadPower = 0, sNotCallable = 0;
@@ -814,6 +833,20 @@ struct Runtime {
                 sNonNull = 0, sLenType = 0;
   std::uint32_t sToArrayArgc = 0, sContainsArgc = 0, sRangeTooLarge = 0,
                 sRangeMembership = 0;
+  std::uint32_t sCStringArgc = 0, sCStringType = 0, sBufferArgc = 0,
+                sBufferType = 0, sBufferNegative = 0, sCstrArgc = 0,
+                sCstrType = 0, sCstrFreed = 0, sByteLenArgc = 0,
+                sByteLenType = 0, sByteLenFreed = 0, sLoadArgc = 0,
+                sLoadType = 0, sLoadFreed = 0, sLoadNeeds = 0,
+                sLoadIndexType = 0, sLoadRangePrefix = 0,
+                sLoadRangeSuffix = 0, sStoreArgc = 0, sStoreType = 0,
+                sStoreFreed = 0, sStoreNeeds = 0, sStoreIndexType = 0,
+                sStoreByteType = 0, sStoreRangePrefix = 0,
+                sStoreRangeSuffix = 0, sStoreByteRange = 0,
+                sIntToPtrArgc = 0, sIntToPtrType = 0, sPtrToIntArgc = 0,
+                sPtrToIntType = 0, sPtrToIntFreed = 0, sFreeArgc = 0,
+                sFreeType = 0, sFreeFreed = 0, sBufferTooLarge = 0,
+                sOutOfMemory = 0;
   std::uint32_t sMessage = 0, sCode = 0, sNoMember = 0, sCannotIndex = 0,
                 sStringImmutable = 0, sIndexRange = 0, sKeyValue = 0;
   std::uint32_t sInsertRange = 0, sRemoveAtRange = 0, sInsertIndex = 0,
@@ -872,6 +905,7 @@ struct Runtime {
                 mapDelete = 0, mapClear = 0, equals = 0, toStrDepth = 0,
                 reprDepth = 0, slice = 0, parseIntStr = 0,
                 parseDoubleStr = 0;
+  std::uint32_t newPtr = 0, ptrTextLen = 0, ptrText = 0, ptrTypeName = 0;
 
   std::uint32_t opAdd = 0, opSub = 0, opMul = 0, opDiv = 0, opMod = 0,
                 opPow = 0, opBand = 0, opBor = 0, opBxor = 0, opShl = 0,
@@ -951,6 +985,8 @@ struct Runtime {
     sTypeArray = pool.addString("array");
     sTypeMap = pool.addString("map");
     sTypePtr = pool.addString("ptr");
+    sTypeCString = pool.addString("cstring");
+    sPtrDisplay = pool.addString("<ptr>");
     sUnknown = pool.addString("unknown");
     sDivZero = pool.addString("division by zero");
     sBadShift = pool.addString("shift count must be between 0 and 63");
@@ -975,6 +1011,43 @@ struct Runtime {
     sContainsArgc = pool.addString("contains() expects 1 argument");
     sRangeTooLarge = pool.addString("range is too large to convert to an array");
     sRangeMembership = pool.addString("range membership requires an integer");
+    sCStringArgc = pool.addString("cstring() expects 1 argument");
+    sCStringType = pool.addString("cstring() expects a string argument");
+    sBufferArgc = pool.addString("buffer() expects 1 argument");
+    sBufferType = pool.addString("buffer() expects an integer size");
+    sBufferNegative = pool.addString("buffer() size must not be negative");
+    sCstrArgc = pool.addString("cstr() expects 1 argument");
+    sCstrType = pool.addString("cstr() expects a pointer argument");
+    sCstrFreed = pool.addString("cstr() used a pointer after it was freed");
+    sByteLenArgc = pool.addString("byteLen() expects 1 argument");
+    sByteLenType = pool.addString("byteLen() expects a pointer argument");
+    sByteLenFreed = pool.addString("byteLen() used a pointer after it was freed");
+    sLoadArgc = pool.addString("loadByte() expects 2 arguments");
+    sLoadType = pool.addString("loadByte() expects a pointer value");
+    sLoadFreed = pool.addString("loadByte() used a pointer after it was freed");
+    sLoadNeeds = pool.addString("loadByte() needs a cstring or buffer");
+    sLoadIndexType = pool.addString("loadByte() expects an integer index");
+    sLoadRangePrefix = pool.addString("loadByte() index ");
+    sLoadRangeSuffix = pool.addString(" is out of range");
+    sStoreArgc = pool.addString("storeByte() expects 3 arguments");
+    sStoreType = pool.addString("storeByte() expects a pointer value");
+    sStoreFreed = pool.addString("storeByte() used a pointer after it was freed");
+    sStoreNeeds = pool.addString("storeByte() needs a buffer (a cstring is read-only)");
+    sStoreIndexType = pool.addString("storeByte() expects an integer index");
+    sStoreByteType = pool.addString("storeByte() expects an integer byte");
+    sStoreRangePrefix = pool.addString("storeByte() index ");
+    sStoreRangeSuffix = pool.addString(" is out of range");
+    sStoreByteRange = pool.addString("storeByte() byte must be in 0..255");
+    sIntToPtrArgc = pool.addString("intToPtr() expects 1 argument");
+    sIntToPtrType = pool.addString("intToPtr() expects an integer token");
+    sPtrToIntArgc = pool.addString("ptrToInt() expects 1 argument");
+    sPtrToIntType = pool.addString("ptrToInt() expects a pointer argument");
+    sPtrToIntFreed = pool.addString("ptrToInt() used a pointer after it was freed");
+    sFreeArgc = pool.addString("free() expects 1 argument");
+    sFreeType = pool.addString("free() expects a pointer");
+    sFreeFreed = pool.addString("free() used a pointer after it was freed");
+    sBufferTooLarge = pool.addString("buffer() size is too large");
+    sOutOfMemory = pool.addString("out of memory");
     sChrRange = pool.addString("chr() code point out of range");
     sChrSurrogate = pool.addString("chr() code point is a surrogate");
     sOrdSingle = pool.addString("ord() expects a single character");
@@ -1163,6 +1236,10 @@ struct Runtime {
   std::uint32_t emitFmtFunc();
   std::uint32_t emitNewArray();
   std::uint32_t emitNewMap();
+  std::uint32_t emitNewPtr();
+  std::uint32_t emitPtrTextLen();
+  std::uint32_t emitPtrText();
+  std::uint32_t emitPtrTypeName();
   std::uint32_t emitArrayPush();
   std::uint32_t emitArrayGet();
   std::uint32_t emitArraySet();
@@ -1213,6 +1290,13 @@ std::uint32_t Runtime::emitAlloc() {
   f.lget(0);
   f.i32Add();
   f.lset(need);
+  // `need` wrapped past the 32-bit address space: the allocation cannot fit.
+  f.lget(need);
+  f.lget(cur);
+  f.i32LtU();
+  f.if_();
+  emitFailStatic(f, sOutOfMemory);
+  f.end();
   f.memorySize();
   f.i32c(65536);
   f.i32Mul();
@@ -1229,7 +1313,11 @@ std::uint32_t Runtime::emitAlloc() {
   f.i32c(65536);
   f.i32DivU();
   f.memoryGrow();
-  f.drop();
+  f.i32c(-1);
+  f.i32Eq();
+  f.if_();
+  emitFailStatic(f, sOutOfMemory);
+  f.end();
   f.end();
   f.lget(need);
   f.gset(0);
@@ -9946,6 +10034,142 @@ std::uint32_t Runtime::emitNewMap() {
   return index;
 }
 
+std::uint32_t Runtime::emitNewPtr() {
+  std::uint32_t type = m.typeFor({kI64, kI64, kI64}, {kI64, kI64});
+  std::uint32_t index = m.reserveFunction(type);
+  Func f(m, index, {kI64, kI64, kI64});
+  std::uint32_t header = f.addLocal(kI32);
+  f.i32c(static_cast<std::int32_t>(kPtrHeaderSize));
+  f.call(alloc);
+  f.lset(header);
+  f.lget(header);
+  f.lget(0);
+  f.i64Store(kPtrKindOffset);
+  f.lget(header);
+  f.lget(1);
+  f.i64Store(kPtrDataOffset);
+  f.lget(header);
+  f.lget(2);
+  f.i64Store(kPtrLengthOffset);
+  f.lget(header);
+  f.i64c(0);
+  f.i64Store(kPtrReleasedOffset);
+  f.i64c(static_cast<std::int64_t>(kPtr));
+  f.lget(header);
+  f.i64ExtendI32U();
+  return index;
+}
+
+// The text a `cstring` owns, up to its first NUL. A `buffer` yields every byte
+// and a `void *` owns none, matching the hosted `PtrObj`.
+std::uint32_t Runtime::emitPtrTextLen() {
+  std::uint32_t index = m.reserveFunction(m.typeFor({kI32}, {kI64}));
+  Func f(m, index, {kI32});
+  std::uint32_t kind = f.addLocal(kI64), data = f.addLocal(kI32),
+                length = f.addLocal(kI64), i = f.addLocal(kI64);
+  f.lget(0);
+  f.i64Load(kPtrKindOffset);
+  f.lset(kind);
+  f.lget(kind);
+  f.i64c(static_cast<std::int64_t>(kPtrKindBuffer));
+  f.i64Eq();
+  f.if_();
+  f.lget(0);
+  f.i64Load(kPtrLengthOffset);
+  f.ret();
+  f.end();
+  f.lget(kind);
+  f.i64c(static_cast<std::int64_t>(kPtrKindCString));
+  f.i64Ne();
+  f.if_();
+  f.i64c(0);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64Load(kPtrDataOffset);
+  f.i32WrapI64();
+  f.lset(data);
+  f.lget(0);
+  f.i64Load(kPtrLengthOffset);
+  f.lset(length);
+  f.i64c(0);
+  f.lset(i);
+  f.block();
+  f.loop();
+  f.lget(i);
+  f.lget(length);
+  f.i64GeU();
+  f.brIf(1);
+  f.lget(data);
+  f.lget(i);
+  f.i32WrapI64();
+  f.i32Add();
+  f.i32Load8u(0);
+  f.i32Eqz();
+  f.if_();
+  f.br(2);
+  f.end();
+  f.lget(i);
+  f.i64c(1);
+  f.i64Add();
+  f.lset(i);
+  f.br(0);
+  f.end();
+  f.end();
+  f.lget(i);
+  return index;
+}
+
+// The rendered form of a handle: a `cstring` as its text, anything else as
+// `<ptr>` (the VM never leaks the opaque token).
+std::uint32_t Runtime::emitPtrText() {
+  std::uint32_t index = m.reserveFunction(m.typeFor({kI32}, {kI32}));
+  Func f(m, index, {kI32});
+  std::uint32_t length = f.addLocal(kI64), out = f.addLocal(kI32);
+  f.lget(0);
+  f.i64Load(kPtrKindOffset);
+  f.i64c(static_cast<std::int64_t>(kPtrKindCString));
+  f.i64Ne();
+  f.if_();
+  f.i32c(static_cast<std::int32_t>(sPtrDisplay));
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.call(ptrTextLen);
+  f.lset(length);
+  f.lget(length);
+  f.i32WrapI64();
+  f.call(newStr);
+  f.lset(out);
+  f.lget(out);
+  f.i32c(8);
+  f.i32Add();
+  f.lget(0);
+  f.i64Load(kPtrDataOffset);
+  f.i32WrapI64();
+  f.lget(length);
+  f.i32WrapI64();
+  f.memoryCopy();
+  f.lget(out);
+  return index;
+}
+
+std::uint32_t Runtime::emitPtrTypeName() {
+  std::uint32_t index = m.reserveFunction(m.typeFor({kI32}, {kI32}));
+  Func f(m, index, {kI32});
+  f.lget(0);
+  f.i64Load(kPtrKindOffset);
+  f.i64c(static_cast<std::int64_t>(kPtrKindCString));
+  f.i64Eq();
+  f.if_();
+  f.i32c(static_cast<std::int32_t>(sTypeCString));
+  f.ret();
+  f.end();
+  f.i32c(static_cast<std::int32_t>(sTypePtr));
+  f.ret();
+  return index;
+}
+
 std::uint32_t Runtime::emitArrayPush() {
   std::uint32_t index = m.reserveFunction(tArrayPush);
   Func f(m, index, {kI32, kI64, kI64});
@@ -10817,6 +11041,15 @@ std::uint32_t Runtime::emitToStrDepthBody(std::uint32_t index) {
   f.i32WrapI64();
   f.ret();
   f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kPtr));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.call(ptrText);
+  f.ret();
+  f.end();
   emitFailStatic(f, sUnknown);
   return index;
 }
@@ -11015,6 +11248,26 @@ std::uint32_t Runtime::emitReprDepthBody(std::uint32_t index) {
   f.lget(s);
   f.i32c(static_cast<std::int32_t>(sCloseBrace));
   f.call(concat);
+  f.ret();
+  f.end();
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kPtr));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lset(addr);
+  f.lget(addr);
+  f.i64Load(kPtrKindOffset);
+  f.i64c(static_cast<std::int64_t>(kPtrKindCString));
+  f.i64Eq();
+  f.if_();
+  f.lget(addr);
+  f.call(ptrText);
+  f.call(quote);
+  f.ret();
+  f.end();
+  f.i32c(static_cast<std::int32_t>(sPtrDisplay));
   f.ret();
   f.end();
   f.lget(0);
@@ -12202,9 +12455,9 @@ std::uint32_t Runtime::emitParseDoubleStr() {
 }
 
 void Runtime::emitCore() {
-  alloc = emitAlloc();
   writeStr = emitWriteStr();
   fail = emitFail();
+  alloc = emitAlloc();
   utf8Len = emitUtf8Len();
   newStr = emitNewStr();
   concat = emitConcat();
@@ -12217,6 +12470,10 @@ void Runtime::emitCore() {
   fmtFunc = emitFmtFunc();
   fmtRange = emitFmtRange();
   quote = emitQuote();
+  newPtr = emitNewPtr();
+  ptrTextLen = emitPtrTextLen();
+  ptrText = emitPtrText();
+  ptrTypeName = emitPtrTypeName();
   // The two renderers call each other, so both indices are reserved before
   // either body is emitted.
   toStrDepth = m.reserveFunction(tToStrDepth);
@@ -12595,6 +12852,14 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
     emitFailStatic(f, sBadArity);
     f.end();
   };
+  auto arityMsg = [&](int n, std::uint32_t message) {
+    f.lget(1);
+    f.i32c(n);
+    f.i32Ne();
+    f.if_();
+    emitFailStatic(f, message);
+    f.end();
+  };
   auto retNil = [&]() {
     f.i64c(static_cast<std::int64_t>(kNil));
     f.i64c(0);
@@ -12762,7 +13027,16 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
     arity(1);
     f.i64c(static_cast<std::int64_t>(kStr));
     argTag(0);
+    f.i64c(static_cast<std::int64_t>(kPtr));
+    f.i64Eq();
+    f.ifResult(kI32);
+    argPayload(0);
+    f.i32WrapI64();
+    f.call(ptrTypeName);
+    f.else_();
+    argTag(0);
     f.call(typeName);
+    f.end();
     f.i64ExtendI32U();
     return index;
   }
@@ -13691,6 +13965,475 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
     return index;
   }
 
+  if (name == "cstring") {
+    arityMsg(1, sCStringArgc);
+    argTag(0);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.i64Eq();
+    f.if_();
+    f.else_();
+    emitFailStatic(f, sCStringType);
+    f.end();
+    std::uint32_t text = f.addLocal(kI32), length = f.addLocal(kI64),
+                  data = f.addLocal(kI32);
+    argPayload(0);
+    f.i32WrapI64();
+    f.lset(text);
+    f.lget(text);
+    f.i64Load(0);
+    f.lset(length);
+    f.lget(length);
+    f.i32WrapI64();
+    f.i32c(1);
+    f.i32Add();
+    f.call(alloc);
+    f.lset(data);
+    f.lget(data);
+    f.lget(text);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(length);
+    f.i32WrapI64();
+    f.memoryCopy();
+    f.lget(data);
+    f.lget(length);
+    f.i32WrapI64();
+    f.i32Add();
+    f.i32c(0);
+    f.i32Store8(0);
+    f.i64c(static_cast<std::int64_t>(kPtrKindCString));
+    f.lget(data);
+    f.i64ExtendI32U();
+    f.lget(length);
+    f.i64c(1);
+    f.i64Add();
+    f.call(newPtr);
+    return index;
+  }
+
+  if (name == "buffer") {
+    arityMsg(1, sBufferArgc);
+    argTag(0);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64Eq();
+    f.if_();
+    f.else_();
+    emitFailStatic(f, sBufferType);
+    f.end();
+    std::uint32_t size = f.addLocal(kI64), data = f.addLocal(kI32);
+    argPayload(0);
+    f.lset(size);
+    f.lget(size);
+    f.i64c(0);
+    f.i64LtS();
+    f.if_();
+    emitFailStatic(f, sBufferNegative);
+    f.end();
+    // WASM addresses are 32-bit: a larger request would truncate the
+    // allocation while the header kept the original length.
+    f.lget(size);
+    f.i64c(0xFFFFFFFF);
+    f.i64GtU();
+    f.if_();
+    emitFailStatic(f, sBufferTooLarge);
+    f.end();
+    f.lget(size);
+    f.i32WrapI64();
+    f.call(alloc);
+    f.lset(data);
+    f.lget(data);
+    f.i32c(0);
+    f.lget(size);
+    f.i32WrapI64();
+    f.memoryFill();
+    f.i64c(static_cast<std::int64_t>(kPtrKindBuffer));
+    f.lget(data);
+    f.i64ExtendI32U();
+    f.lget(size);
+    f.call(newPtr);
+    return index;
+  }
+
+  if (name == "cstr") {
+    arityMsg(1, sCstrArgc);
+    argTag(0);
+    f.i64c(static_cast<std::int64_t>(kPtr));
+    f.i64Eq();
+    f.if_();
+    f.else_();
+    emitFailStatic(f, sCstrType);
+    f.end();
+    std::uint32_t header = f.addLocal(kI32), length = f.addLocal(kI64),
+                  out = f.addLocal(kI32);
+    argPayload(0);
+    f.i32WrapI64();
+    f.lset(header);
+    f.lget(header);
+    f.i64Load(kPtrReleasedOffset);
+    f.i64c(0);
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sCstrFreed);
+    f.end();
+    f.lget(header);
+    f.call(ptrTextLen);
+    f.lset(length);
+    f.lget(length);
+    f.i32WrapI64();
+    f.call(newStr);
+    f.lset(out);
+    // A `void *` owns no bytes, so its token may point past linear memory.
+    // `memory.copy` validates the source even for a zero length, so skip it.
+    f.lget(length);
+    f.i64c(0);
+    f.i64GtS();
+    f.if_();
+    f.lget(out);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(header);
+    f.i64Load(kPtrDataOffset);
+    f.i32WrapI64();
+    f.lget(length);
+    f.i32WrapI64();
+    f.memoryCopy();
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.lget(out);
+    f.i64ExtendI32U();
+    return index;
+  }
+
+  if (name == "byteLen") {
+    arityMsg(1, sByteLenArgc);
+    argTag(0);
+    f.i64c(static_cast<std::int64_t>(kPtr));
+    f.i64Eq();
+    f.if_();
+    f.else_();
+    emitFailStatic(f, sByteLenType);
+    f.end();
+    std::uint32_t header = f.addLocal(kI32), kind = f.addLocal(kI64),
+                  length = f.addLocal(kI64);
+    argPayload(0);
+    f.i32WrapI64();
+    f.lset(header);
+    f.lget(header);
+    f.i64Load(kPtrReleasedOffset);
+    f.i64c(0);
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sByteLenFreed);
+    f.end();
+    f.lget(header);
+    f.i64Load(kPtrKindOffset);
+    f.lset(kind);
+    f.lget(header);
+    f.i64Load(kPtrLengthOffset);
+    f.lset(length);
+    f.lget(kind);
+    f.i64c(static_cast<std::int64_t>(kPtrKindVoid));
+    f.i64Eq();
+    f.if_();
+    f.i64c(0);
+    f.lset(length);
+    f.else_();
+    f.lget(kind);
+    f.i64c(static_cast<std::int64_t>(kPtrKindCString));
+    f.i64Eq();
+    f.if_();
+    f.lget(length);
+    f.i64c(0);
+    f.i64GtS();
+    f.if_();
+    f.lget(header);
+    f.i64Load(kPtrDataOffset);
+    f.i32WrapI64();
+    f.lget(length);
+    f.i64c(1);
+    f.i64Sub();
+    f.i32WrapI64();
+    f.i32Add();
+    f.i32Load8u(0);
+    f.i32Eqz();
+    f.if_();
+    f.lget(length);
+    f.i64c(1);
+    f.i64Sub();
+    f.lset(length);
+    f.end();
+    f.end();
+    f.end();
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.lget(length);
+    return index;
+  }
+
+  if (name == "loadByte") {
+    arityMsg(2, sLoadArgc);
+    argTag(0);
+    f.i64c(static_cast<std::int64_t>(kPtr));
+    f.i64Eq();
+    f.if_();
+    f.else_();
+    emitFailStatic(f, sLoadType);
+    f.end();
+    std::uint32_t header = f.addLocal(kI32), kind = f.addLocal(kI64),
+                  at = f.addLocal(kI64), length = f.addLocal(kI64),
+                  msg = f.addLocal(kI32);
+    argPayload(0);
+    f.i32WrapI64();
+    f.lset(header);
+    f.lget(header);
+    f.i64Load(kPtrReleasedOffset);
+    f.i64c(0);
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sLoadFreed);
+    f.end();
+    argTag(1);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64Eq();
+    f.if_();
+    f.else_();
+    emitFailStatic(f, sLoadIndexType);
+    f.end();
+    argPayload(1);
+    f.lset(at);
+    f.lget(header);
+    f.i64Load(kPtrKindOffset);
+    f.lset(kind);
+    f.lget(kind);
+    f.i64c(static_cast<std::int64_t>(kPtrKindVoid));
+    f.i64Eq();
+    f.if_();
+    emitFailStatic(f, sLoadNeeds);
+    f.end();
+    f.lget(header);
+    f.i64Load(kPtrLengthOffset);
+    f.lset(length);
+    f.lget(at);
+    f.i64c(0);
+    f.i64LtS();
+    f.lget(at);
+    f.lget(length);
+    f.i64GeS();
+    f.i32Or();
+    f.if_();
+    f.i32c(static_cast<std::int32_t>(sLoadRangePrefix));
+    f.lget(at);
+    f.call(fmtInt);
+    f.call(concat);
+    f.lset(msg);
+    f.lget(msg);
+    f.i32c(static_cast<std::int32_t>(sLoadRangeSuffix));
+    f.call(concat);
+    f.lset(msg);
+    f.lget(msg);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(msg);
+    f.i64Load(0);
+    f.i32WrapI64();
+    f.call(fail);
+    f.unreachable();
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.lget(header);
+    f.i64Load(kPtrDataOffset);
+    f.i32WrapI64();
+    f.lget(at);
+    f.i32WrapI64();
+    f.i32Add();
+    f.i32Load8u(0);
+    f.i64ExtendI32U();
+    return index;
+  }
+
+  if (name == "storeByte") {
+    arityMsg(3, sStoreArgc);
+    argTag(0);
+    f.i64c(static_cast<std::int64_t>(kPtr));
+    f.i64Eq();
+    f.if_();
+    f.else_();
+    emitFailStatic(f, sStoreType);
+    f.end();
+    std::uint32_t header = f.addLocal(kI32), kind = f.addLocal(kI64),
+                  at = f.addLocal(kI64), length = f.addLocal(kI64),
+                  byte = f.addLocal(kI64), msg = f.addLocal(kI32);
+    argPayload(0);
+    f.i32WrapI64();
+    f.lset(header);
+    f.lget(header);
+    f.i64Load(kPtrReleasedOffset);
+    f.i64c(0);
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sStoreFreed);
+    f.end();
+    argTag(1);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64Eq();
+    f.if_();
+    f.else_();
+    emitFailStatic(f, sStoreIndexType);
+    f.end();
+    argTag(2);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64Eq();
+    f.if_();
+    f.else_();
+    emitFailStatic(f, sStoreByteType);
+    f.end();
+    argPayload(1);
+    f.lset(at);
+    argPayload(2);
+    f.lset(byte);
+    f.lget(header);
+    f.i64Load(kPtrKindOffset);
+    f.lset(kind);
+    f.lget(kind);
+    f.i64c(static_cast<std::int64_t>(kPtrKindBuffer));
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sStoreNeeds);
+    f.end();
+    f.lget(header);
+    f.i64Load(kPtrLengthOffset);
+    f.lset(length);
+    f.lget(at);
+    f.i64c(0);
+    f.i64LtS();
+    f.lget(at);
+    f.lget(length);
+    f.i64GeS();
+    f.i32Or();
+    f.if_();
+    f.i32c(static_cast<std::int32_t>(sStoreRangePrefix));
+    f.lget(at);
+    f.call(fmtInt);
+    f.call(concat);
+    f.lset(msg);
+    f.lget(msg);
+    f.i32c(static_cast<std::int32_t>(sStoreRangeSuffix));
+    f.call(concat);
+    f.lset(msg);
+    f.lget(msg);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(msg);
+    f.i64Load(0);
+    f.i32WrapI64();
+    f.call(fail);
+    f.unreachable();
+    f.end();
+    f.lget(byte);
+    f.i64c(0);
+    f.i64LtS();
+    f.lget(byte);
+    f.i64c(255);
+    f.i64GtS();
+    f.i32Or();
+    f.if_();
+    emitFailStatic(f, sStoreByteRange);
+    f.end();
+    f.lget(header);
+    f.i64Load(kPtrDataOffset);
+    f.i32WrapI64();
+    f.lget(at);
+    f.i32WrapI64();
+    f.i32Add();
+    f.lget(byte);
+    f.i32WrapI64();
+    f.i32Store8(0);
+    retNil();
+    return index;
+  }
+
+  if (name == "intToPtr") {
+    arityMsg(1, sIntToPtrArgc);
+    argTag(0);
+    f.i64c(static_cast<std::int64_t>(kInt));
+    f.i64Eq();
+    f.if_();
+    f.else_();
+    emitFailStatic(f, sIntToPtrType);
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kPtrKindVoid));
+    argPayload(0);
+    f.i64c(0);
+    f.call(newPtr);
+    return index;
+  }
+
+  if (name == "ptrToInt") {
+    arityMsg(1, sPtrToIntArgc);
+    argTag(0);
+    f.i64c(static_cast<std::int64_t>(kPtr));
+    f.i64Eq();
+    f.if_();
+    f.else_();
+    emitFailStatic(f, sPtrToIntType);
+    f.end();
+    std::uint32_t header = f.addLocal(kI32);
+    argPayload(0);
+    f.i32WrapI64();
+    f.lset(header);
+    f.lget(header);
+    f.i64Load(kPtrReleasedOffset);
+    f.i64c(0);
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sPtrToIntFreed);
+    f.end();
+    f.i64c(static_cast<std::int64_t>(kInt));
+    // Only a `void *` carries a token. A `cstring`/`buffer` owns its bytes,
+    // so its address is not a token the VM would hand back.
+    f.lget(header);
+    f.i64Load(kPtrKindOffset);
+    f.i64c(static_cast<std::int64_t>(kPtrKindVoid));
+    f.i64Eq();
+    f.ifResult(kI64);
+    f.lget(header);
+    f.i64Load(kPtrDataOffset);
+    f.else_();
+    f.i64c(0);
+    f.end();
+    return index;
+  }
+
+  if (name == "free") {
+    arityMsg(1, sFreeArgc);
+    argTag(0);
+    f.i64c(static_cast<std::int64_t>(kPtr));
+    f.i64Eq();
+    f.if_();
+    f.else_();
+    emitFailStatic(f, sFreeType);
+    f.end();
+    std::uint32_t header = f.addLocal(kI32);
+    argPayload(0);
+    f.i32WrapI64();
+    f.lset(header);
+    f.lget(header);
+    f.i64Load(kPtrReleasedOffset);
+    f.i64c(0);
+    f.i64Ne();
+    f.if_();
+    emitFailStatic(f, sFreeFreed);
+    f.end();
+    f.lget(header);
+    f.i64c(1);
+    f.i64Store(kPtrReleasedOffset);
+    f.lget(header);
+    f.i64c(0);
+    f.i64Store(kPtrLengthOffset);
+    retNil();
+    return index;
+  }
+
   // A name in the supported list that reached here is an emitter bug.
   emitFailStatic(f, sUnknown);
   return index;
@@ -13706,6 +14449,8 @@ const std::unordered_set<std::string>& supportedBuiltins() {
       "round", "sqrt", "assert", "assertEq", "panic", "error", "isError",
       "$isError", "$nonNull", "$range", "range", "exit", "$slice",
       "time", "clock", "platform", "arch", "random", "seed",
+      "cstring", "buffer", "cstr", "byteLen", "loadByte", "storeByte",
+      "intToPtr", "ptrToInt", "free",
   };
   return names;
 }

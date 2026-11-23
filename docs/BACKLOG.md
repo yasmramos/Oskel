@@ -254,11 +254,33 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    program.
 10. **[P1]** `emitIterNext` for `str` allocates a string per character — same
     as item 7.
-11. **[P1]** `collectGlobals` does not detect name-resolution cycles: a
+11. ~~**[P1]** `collectGlobals` does not detect name-resolution cycles: a
     `GETGLOBAL` of a name assigned only inside a never-called function is
-    accepted and reads nil at run time. Report it.
-12. **[P1]** `collectGlobals` pre-assigns builtin slots in first-read order; a
-    `var print` then overwrites the builtin. Make the precedence explicit.
+    accepted and reads nil at run time. Report it.~~ **Done**: the read is
+    reported, and as the hosted engine reports it — at run time with
+    "undefined variable '<name>'" and exit 70, not by reading the zeroed slot
+    as `nil`. `checkedGlobalReads` runs a forward "may be unset" dataflow over
+    each proto's instruction graph, with the candidate set computed across the
+    whole program, so an assignment that only lives in a never-called function
+    still leaves the top-level read checked (21bb9f3). Fixtures:
+    `tests/native_build_unset_global.oskl` (read before the assignment) and
+    `tests/native_build_unset_global_fn.oskl` (the assignment is in a function
+    the program never calls); `tests/native_build_global_nil.oskl` is the
+    passing counterpart, so a regression that checked every read would fail.
+12. ~~**[P1]** `collectGlobals` pre-assigns builtin slots in first-read order; a
+    `var print` then overwrites the builtin. Make the precedence explicit.~~
+    **Done**: the precedence is intentional and now documented at the site. A
+    builtin is an ordinary global (`addNative` is `defineGlobal`), so the
+    pre-assignment pass runs *first* and the user's `SETGLOBAL` reuses the same
+    slot: the builtin is shadowed, not duplicated, matching the hosted engine's
+    "install, then run" order and language.md §4.2. This is the behaviour of
+    every dynamic language the language is modelled on, and the standard
+    library depends on it (`std.sys` re-exports `time`, `clock`, `arch`,
+    `platform` and `exit` with `let time = time;`), so it is specified rather
+    than warned about. Pinned by `tests/native_build_builtin_shadow.oskl`
+    (slot reuse: the value read back is the user's) and
+    `tests/native_build_builtin_shadow_error.oskl` (calling a shadowed builtin
+    fails at run time, exit 70, like the VM).
 13. **[P2]** `emitArith`'s float path depends on `emitToDouble` not clobbering
     `Rdi`/`Rdx`; a change there breaks it. Document the invariant and assert.
 14. **[P2]** `emitCompare`'s `orderMixed` uses `cg.ucomisd(1, 0)` with magic
@@ -470,34 +492,49 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     is not a value, so `try`/`catch` cannot see it) and still compares line for
     line with the VM.
 
-    One divergence remains and is deliberate: a builtin's *runtime* error
-    message that ends in a dynamic tail keeps only its fixed prefix in AOT
-    (`free() expects a pointer` against `free() expects a pointer, got 'int'`;
-    likewise `expects an integer index, got '...'`, `index 7 is out of
-    range` and `the struct returned by a callback is missing field 'x'`),
-    because the AOT sink writes one fixed message blob and does not
-    format values into it. The function name and the condition are identical in
-    both engines, which is what a program can branch on; assembling the tail
-    would mean a per-message builder in the runtime and is not worth it until a
-    program is shown to depend on the text. `ord`/`len`/`chr` set this
-    convention before the pointer builtins did.
+    A runtime error message with a dynamic tail is now assembled too, not
+    truncated at its fixed prefix. Three helpers share the arena builder: the
+    `, got '<type>'` tail (`emitFailGotType`), the ` '<type>'` tail
+    (`emitTypeQuoteFail`, for a prefix that already names the condition) and
+    the two-value `type '<t>' has no member '<name>'` form
+    (`emitNoMemberFail`). The type name comes from the same table `type()`
+    reads, so a pointer handle reports `cstring` or `ptr` exactly like the VM.
+    This closed every argument-type tail a program can observe through
+    `pcall`: `free() expects a pointer, got 'int'`, `insert() expects an
+    integer index, got 'string'`, `"a".padStart(3, 1)` reports
+    `padStart() expects a string fill, got 'int'`, and the `contains`/
+    `startsWith`/`endsWith`/`indexOf`/`split`/`replace`/`replaceFirst`/
+    `substr`/`repeat`/`slice` argument tails, the map `has`/`get`/`set`/
+    `delete` key tail, `ord`, `chr`, `error`, `exit`, `seed`, `random`,
+    `sqrt`, `exp`, `log`, `pow`, `sin`, `cos`, `tan`, `floor`, `ceil`,
+    `round`, `cstring`, `buffer`, `intToPtr`, the file builtins, the
+    `$slice`/`len`/call/member/index/iteration messages and
+    `unsupported unary operator for type 'int'` all print the same sentence as
+    the VM. The two-operand tails quote both operands too: `cannot compare
+    'int' with 'string'` and `operator 'in' is not supported for 'int' and
+    'int'` share `emitTwoTypeFail`. `>` and `<=` reverse the two names, because
+    the VM lowers them to `lessThan(b, a)`, so `1 > "a"` reports
+    `cannot compare 'string' with 'int'` in both engines. The six callback
+    methods (`map`, `filter`, `each`, `find`, `any`, `all`) and `reduce` report
+    `map() must be a function, got 'int'` from a guard at the call, not at
+    entry, so an empty receiver still returns without reporting. The arithmetic,
+    bitwise, shift and power operators quote themselves and both operand types
+    -- `unsupported operand types for '+': 'int' and 'string'` -- from the
+    selector the helper already carries, and a shift by a non-integer reports
+    that pair instead of the count range. One tail is still truncated: the FFI
+    struct-field name (`the struct returned by a callback is missing field`),
+    which names a C layout field rather than a runtime value; its field names
+    are static, so the fix is a pre-built message per field, not a builder.
 
-    The collection and operator messages follow the same rule, and the ones
-    without a tail were aligned word for word: `string index must be an
-    integer`, `map keys must be strings`, `map membership requires a string
-    key`, `string membership requires a string operand` and `range membership
-    requires an integer` used to reach AOT as `array index must be an integer`,
-    `map key must be a string` and the generic `unsupported operands for 'in'`.
-    The messages that quote a value keep the VM's fixed words but stop before
-    the type or member name: `cannot iterate over a value of type`, `cannot
-    index a value of type`, `cannot assign to an index of a value of type`,
-    `cannot set a field on a value of type`, `cannot call a value of type`,
-    `cannot slice a value of type`, `len() is not defined for values of type`,
-    `unsupported unary operator for type`, `unsupported operand types for`,
-    `operator 'in' is not supported for` and `type ... has no member`. The file
-    builtins name the function too (`fsRead() expects a file handle`,
-    `fsClose() used a closed file handle`), and `$slice` checks the receiver
-    before the bounds so `5[1:2]` names the receiver in both engines.
+    The collection and operator messages without a tail were aligned word for
+    word: `string index must be an integer`, `map keys must be strings`,
+    `map membership requires a string key`, `string membership requires a
+    string operand` and `range membership requires an integer` used to reach
+    AOT as `array index must be an integer`, `map key must be a string` and
+    the generic `unsupported operands for 'in'`. The file builtins name the
+    function too (`fsRead() expects a file handle`, `fsClose() used a closed
+    file handle`), and `$slice` checks the receiver before the bounds so
+    `5[1:2]` names the receiver in both engines.
     `tests/native_build_runtime_error_messages.oskl` pins both halves through
     `pcall`, so a program that inspects `error.message` sees the same words in
     both engines.
@@ -542,15 +579,30 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     - A builtin with no WASM body is seeded as a trapping closure: declaring it
       is harmless, calling it reports the gap. The unbound names are the
       complement of `supportedBuiltins()`; the transcendental `pow`, `sin`,
-      `cos`, `tan`, `log` and `exp`, plus `input`, `pcall`, `args`, `memSize`,
-      the file builtins and the pointer builtins are in that set today.
+      `cos`, `tan`, `log` and `exp`, plus `input`, `pcall`, `args`, `memSize`
+      and the file builtins are in that set today.
+    - The pointer builtins (`cstring`, `buffer`, `cstr`, `byteLen`, `loadByte`,
+      `storeByte`, `intToPtr`, `ptrToInt`, `free`) are bound since PHASE 9.6.
+      A handle is the `AotPtr` layout in linear memory
+      (`{kind, data, length, released}`); `type()` reports `cstring` for a
+      CString handle, `str`/`repr` render a `cstring` as its text (quoted for
+      `repr`) and every other handle as `<ptr>`, and `free` marks the handle
+      released without reclaiming the arena. `tests/native_build_wasm_pointers.oskl`
+      covers the happy paths; the error paths stay in the AOT fixture because
+      `pcall` is VM-only. A `buffer` size is bounded by the 32-bit address
+      space: a larger request fails with `buffer() size is too large`, and
+      `alloc` reports `out of memory` on a wrapped cursor or a failed
+      `memory.grow`. The VM has no such cap, so it is a WASM-only bound.
+      `ptrToInt` returns the token only for a `void *`; a buffer or cstring
+      returns `0`, as in the VM.
     - A used `extern "C"` or `native fn` symbol with no builtin stub is a build
       error, mirroring the AOT backend's message.
     Each gap fails cleanly (build error 65 or a runtime error), never a
     mis-compiled module. `tests/native_build_wasm.oskl`,
     `tests/native_build_datetime.oskl`, `tests/native_build_collections.oskl`,
     `tests/native_build_math.oskl`,
-    `tests/native_build_wasm_range_methods.oskl` and
+    `tests/native_build_wasm_range_methods.oskl`,
+    `tests/native_build_wasm_pointers.oskl` and
     `tests/native_build_double_format.oskl` pin the supported surface against
     the VM byte for byte.
 27. **[P1] [done]** A callback that C stores for a later call worked in AOT but
@@ -599,10 +651,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     records the SONAME (`libSDL3.so.0`).
     The Windows own linker (PHASE 10.3a) closes COFF objects into a PE32+
     image with a dynamic import table (`kernel32.dll`/`ucrtbase.dll`) and a
-    generated `_start`. The `-r` COFF link (PHASE 10.3b.1) and MSVC `.lib`
-    archives (PHASE 10.3b.2) are done; remaining Windows work is `args()`
-    (`GetCommandLineA`), `.pdata`/`.xdata` exception data and TLS. The macOS
-    Mach-O container is PHASE 10.3d.
+    generated `_start`. The `-r` COFF link (PHASE 10.3b.1), MSVC `.lib`
+    archives (PHASE 10.3b.2) and `args()` (PHASE 10.3b.3, `__getmainargs`) are
+    done; a `.pdata`/`.xdata` or `.tls` input is rejected with a dedicated
+    message (PHASE 10.3b.4): the AOT object emits no unwind data and the image
+    defines no TLS variables, so the PE exception and TLS directories stay
+    zero. Emitting unwind data is future container work. The macOS own linker
+    (PHASE 10.3d) closes a hosted `MH_OBJECT` into a non-PIE `MH_EXECUTE` with
+    libSystem imports; a data import, the `-r` Mach-O link, the ad-hoc
+    signature and ARM64 remain for the rest of 10.3d.
 
 31. **[P0] [done]** VM/AOT divergence in reading a global before it is assigned:
     the VM fails with `runtime error: undefined variable '<name>'` and exit 70,
@@ -624,6 +681,24 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     unreached function) and `tests/native_build_global_nil.oskl` (the `nil` case
     and a read after assignment) pin it. A global with *no* assignment anywhere is
     still a lowering error (exit 65), which is a different, compile-time case.
+
+32. **[P1]** `async`/`await` (PHASE 11.1) is the language surface without a
+    scheduler. An `async fn` body runs eagerly when called, so the future is
+    already `"fulfilled"` (or carries an error value in `value`) by the time the
+    caller sees it; `await` reads the map and never suspends. The `"pending"`
+    and `"rejected"` states are reserved in the representation but no API
+    creates them, and `await` on a pending future raises "await on a pending
+    Future is not supported yet". There is no event loop, no `then`/`catch`
+    chaining, no `spawn`/`join`, no async lambda and no async `init`. The future
+    is a plain map, so `type(future)` is `"map"` and a future can be passed to
+    code expecting a map; a dedicated runtime tag would be a new value kind in
+    all three engines. A scheduler that suspends a call and resumes it would
+    need a coroutine/continuation representation, which is a larger change than
+    this phase: it would turn the bytecode into a resumable frame and make the
+    AOT/WASM backends carry a state machine, so it stays out of scope here.
+    `tests/65_async.oskl`, `tests/65_async_modules.oskl` and the
+    `oskel.build_binary_async`/`oskel.build_wasm_async` fixtures pin the current
+    surface.
 
 ---
 
@@ -1046,15 +1121,30 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     satisfies the manifest. A network registry is still a separate decision: it
     needs HTTP/TLS, which the standard library does not carry, plus checksums
     and signatures.
-12. **[P1] [done]** `oskelp`: `add`, `remove`, `publish` and `update` landed.
-    `add` and `remove` use an in-place editor that preserves comments, blank
-    lines and CRLF; a failed add resolves the graph before it writes, so the
-    manifest is never left half-edited. `add` without `--path` writes a registry
-    requirement, `publish` copies a package into `$OSKEL_REGISTRY`, and
-    `update [<name>]` moves the lockfile pin and prints each change.
+12. **[P1] [done]** `oskelp`: `add`, `remove`, `publish`, `update` and
+    `outdated` landed. `add` and `remove` use an in-place editor that preserves
+    comments, blank lines and CRLF; a failed add resolves the graph before it
+    writes, so the manifest is never left half-edited. `add` without `--path`
+    writes a registry requirement; without `--version` it takes the highest
+    published release and writes a caret requirement (a prerelease-only package
+    needs an explicit version). `publish` copies a package into
+    `$OSKEL_REGISTRY`, `update [<name>]` moves the lockfile pin and prints each
+    change, `update --precise <version>` pins one registry version and refuses
+    a missing or out-of-range one, and `outdated` prints the compatible and
+    latest versions without writing the lockfile.
 13. **[P2]** `oskelp`: add build profiles. `target/<name>` is the only output
     today because the AOT backend has no optimization level to select; a
     `--release` that changes nothing would be a cosmetic lie.
 14. **[P2]** `oskelp`: add workspaces (several packages sharing one lockfile)
     and a `@Test` attribute, so a test file is not limited to a whole program
     that exits `0`.
+15. **[P2] [done]** `oskelint`: the linter (`docs/oskelint.md`) landed as a
+    fifth binary, with the `builtin-shadow` rule. Shadowing a builtin is legal
+    and the standard library re-exports its own builtins, so the check belongs
+    in a tool rather than in the compiler; the tool reads the builtin names from
+    the engine (`VM::globals()` after `registerBuiltins`) instead of keeping a
+    second list that would drift. `oskelint` links `oskel_lib` and never runs a
+    program, so `oskelc` stays interpreter-free (`nm build/oskel | grep
+    oskelint` is empty). Pending: more rules (an unused declaration, a `var`
+    that is never reassigned, a `@MustUse` value discarded), a `--fix` mode and
+    a config file.

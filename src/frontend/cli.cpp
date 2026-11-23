@@ -5,7 +5,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -155,14 +158,77 @@ ModuleResolver resolverFor(const std::string &name, const std::string &argv0) {
   return ModuleResolver(projectDir, standardLibraryDir(argv0), packagesDir());
 }
 
+namespace {
+
+// Parses a module once and returns the enums it declares. The parser needs the
+// names before the compiler loads the module (so an imported enum is a valid
+// annotation and switch label), which is why this lives beside the import
+// loader rather than in the compiler. `visiting_` breaks import cycles; a
+// module that cannot be parsed here is reported by the compiler later.
+class EnumScannerImpl {
+ public:
+  explicit EnumScannerImpl(ModuleResolver resolver) : resolver_(std::move(resolver)) {}
+
+  std::unordered_map<std::string, std::vector<EnumMember>> scan(const std::string &path) {
+    auto cached = cache_.find(path);
+    if (cached != cache_.end()) return cached->second;
+    if (!visiting_.insert(path).second) return {};
+    std::unordered_map<std::string, std::vector<EnumMember>> result;
+    std::string file;
+    std::string message;
+    if (resolver_.resolve(path, file, message)) {
+      std::string source;
+      if (readSourceFile(file, source)) {
+        try {
+          Parser parser(lex(source), file);
+          parser.setEnumScanner([this](const std::string &nested) { return scan(nested); });
+          StmtPtr program = parser.parseProgram();
+          if (const auto *block =
+                  program ? std::get_if<BlockStmt>(&program->node) : nullptr) {
+            for (const auto &child : block->stmts) {
+              if (!child) continue;
+              if (const auto *decl = std::get_if<EnumDeclStmt>(&child->node)) {
+                result[decl->name] = decl->members;
+              }
+            }
+          }
+        } catch (const CompileError &) {
+          // The compiler reports the module's real error when it loads it.
+        }
+      }
+    }
+    visiting_.erase(path);
+    cache_[path] = result;
+    return result;
+  }
+
+ private:
+  ModuleResolver resolver_;
+  std::unordered_map<std::string,
+                     std::unordered_map<std::string, std::vector<EnumMember>>>
+      cache_;
+  std::unordered_set<std::string> visiting_;
+};
+
+}  // namespace
+
+Parser::EnumScanner makeEnumScanner(ModuleResolver resolver) {
+  auto scanner = std::make_shared<EnumScannerImpl>(std::move(resolver));
+  return [scanner](const std::string &path) { return scanner->scan(path); };
+}
+
 // Builds the module loader the compiler uses for `import` declarations. It
 // resolves the dotted path to a file, reads and parses it, and returns the
 // program. A path that cannot be resolved becomes the compile error
 // "module 'X' not found"; a parse error inside the module is reported with the
 // module's own file name in the message.
 Compiler::ImportLoader makeImportLoader(ModuleResolver resolver) {
-  // The loader owns its resolver: it outlives the statement that built it.
-  return [resolver](const std::string &path, int line, int col) -> StmtPtr {
+  // The loader owns its resolver: it outlives the statement that built it. The
+  // same resolver backs the parser's enum scanner, so a module's own imports
+  // make their enums visible before the compiler compiles the module.
+  auto enumScanner = makeEnumScanner(resolver);
+  return [resolver, enumScanner](const std::string &path, int line,
+                                 int col) -> StmtPtr {
     std::string file;
     std::string message;
     if (!resolver.resolve(path, file, message)) {
@@ -174,6 +240,7 @@ Compiler::ImportLoader makeImportLoader(ModuleResolver resolver) {
     }
     try {
       Parser parser(lex(moduleSource), file);
+      parser.setEnumScanner(enumScanner);
       StmtPtr program = parser.parseProgram();
       for (const Warning &warning : parser.warnings())
         printCompileWarning(file, moduleSource, warning, platformPosix());
@@ -782,8 +849,11 @@ int buildBinary(const std::string &source, const std::string &name,
 
   StmtPtr program;
   std::vector<Warning> warnings;
+  ModuleResolver resolver = resolverFor(name, argv0);
+  auto enumScanner = makeEnumScanner(resolver);
   try {
     Parser parser(std::move(tokens), name);
+    parser.setEnumScanner(enumScanner);
     program = parser.parseProgram();
     warnings = parser.warnings();
   } catch (const CompileError &error) {
@@ -801,8 +871,9 @@ int buildBinary(const std::string &source, const std::string &name,
   // capabilities would reject a class-MEMORY struct that the backend marshals
   // correctly, on any engine without a host FFI library.
   compiler.setAbiCapabilities(ffi::kAotAbiCapabilities);
+  compiler.setEnumScanner(enumScanner);
   try {
-    compiler.setImportLoader(makeImportLoader(resolverFor(name, argv0)));
+    compiler.setImportLoader(makeImportLoader(resolver));
     bytecode = compiler.compile(program);
   } catch (const CompileError &error) {
     printCompileError(name, source, error, platformPosix());
@@ -927,8 +998,11 @@ int emitBytecodeFile(const std::string &source, const std::string &name,
 
   StmtPtr program;
   std::vector<Warning> warnings;
+  ModuleResolver resolver = resolverFor(name, argv0);
+  auto enumScanner = makeEnumScanner(resolver);
   try {
     Parser parser(std::move(tokens), name);
+    parser.setEnumScanner(enumScanner);
     program = parser.parseProgram();
     warnings = parser.warnings();
   } catch (const CompileError &error) {
@@ -942,8 +1016,9 @@ int emitBytecodeFile(const std::string &source, const std::string &name,
   Bytecode bytecode;
   Compiler compiler;
   compiler.setAbiCapabilities(ffi::kAotAbiCapabilities);
+  compiler.setEnumScanner(enumScanner);
   try {
-    compiler.setImportLoader(makeImportLoader(resolverFor(name, argv0)));
+    compiler.setImportLoader(makeImportLoader(resolver));
     bytecode = compiler.compile(program);
   } catch (const CompileError &error) {
     printCompileError(name, source, error, platformPosix());

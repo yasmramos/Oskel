@@ -7,9 +7,10 @@
 // argument with a space in it, which a naive tokeniser would split in two.
 //
 // Only the targets whose entry receives an argument vector can back this
-// builtin: Linux freestanding and hosted. Windows (the loader calls the entry
-// with no arguments) and bare metal reject it by name, which is what
-// `tests/native_build_args_error.oskl` pins.
+// builtin: every hosted target (the Windows `main` wrapper moves the CRT's
+// rcx/rdx, and the own linker's `_start` reads `__getmainargs`) and freestanding
+// Linux. A freestanding Windows image and bare metal reject it by name, which
+// is what `tests/native_build_args_error.oskl` pins.
 
 var rest = args();
 print("args type", type(rest));

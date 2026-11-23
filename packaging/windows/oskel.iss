@@ -73,6 +73,7 @@ Source: "{#StageDir}\bin\oskelc.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "{#StageDir}\bin\oskelld.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "{#StageDir}\bin\oskelp.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "{#StageDir}\bin\bindgen.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "{#StageDir}\bin\oskelint.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "{#StageDir}\share\oskel\std\*"; DestDir: "{app}\share\oskel\std"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#StageDir}\lib\oskel\ui\*"; DestDir: "{app}\lib\oskel\ui"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion

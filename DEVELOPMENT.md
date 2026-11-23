@@ -117,6 +117,13 @@ code; it drives `oskel`/`oskelc` as child processes. It owns the manifest
 `OSKEL_MODULE_ROOT`: `resolverFor` honours it so a package's `src/` is the
 module root, and both engines resolve imports identically.
 
+A fifth binary is `oskelint`, the linter (`docs/oskelint.md`). It lives under
+`tools/` too, but unlike the other two it links `oskel_lib`: its first rule
+(`builtin-shadow`) asks the engine which names `registerBuiltins` installs, so
+the rule cannot drift from the standard library. It never runs a program, so the
+boundary rule below is untouched and `nm build/oskel | grep oskelint` stays
+empty.
+
 Boundary rule: no source in `src/frontend/` may include `vm.h`, `jit/jit.h`,
 `builtins.h`, `ops.h`, `ffi_marshal.h` or a host FFI library, and `src/frontend/compiler.*`
 plus `src/frontend/native/*` must also stay clear of `interpreter.h`. Enforced
@@ -552,6 +559,16 @@ previous one.
   so the VM, `oskel build` and WebAssembly agree. No new runtime type, opcode
   or builtin. See `docs/language.md` §12.17, `tests/67_std_bytes.oskl` and the
   AOT/WASM fixture `tests/native_build_bytes.oskl`.
+- **Standard library: `std.decimal`** — **done**: Java-style arbitrary-precision
+  `BigDecimal` as a pure-Oskel class. An arbitrary-precision signed unscaled
+  integer plus an `int` scale gives exact `add`/`subtract`/`multiply`, exact
+  terminating `divide`, `divide(divisor, scale, mode)` with the Java rounding
+  modes, `setScale`, `compareTo`, scale-sensitive `equals`,
+  `stripTrailingZeros`, `pow` and the conversion methods. The class module is
+  `std.decimal.BigDecimal`; the facade exposes `decimal(value)`. No runtime
+  type, opcode or builtin is added, so the VM, `oskel build` and WebAssembly
+  agree exactly. See `docs/language.md` §12.18, `tests/68_std_decimal.oskl`
+  and the AOT/WASM fixture `tests/native_build_decimal.oskl`.
 - **Standard library: `std.io`** — **done**: in-memory text streams built on
   classes. `StringReader` walks a string by code point (`readLine`, `read`,
   `readChar`, `readToken`, `readWhile`, `lines`, ...); `StringWriter`
@@ -909,6 +926,70 @@ Tested by `tests/58_classes.oskl` (VM), the `tests/errors/class_*.oskl` cases
 `tests/native_build_classes.oskl` (the AOT parity
 fixture, registered as `oskel.build_binary_classes`, which asserts the native
 binary prints byte for byte what the VM prints).
+
+### PHASE 6.9 — `enum` (compile-time integer constants) ✅
+- `enum Name { A, B = 5, C }` declares a scoped set of integer constants. The
+  declaration is **compile-time metadata**: it emits no bytecode, adds no
+  opcode and needs no VM or AOT change. Each member is folded by the parser to
+  an `int64_t`, and a use compiles to a `LOADK` of that value.
+- **Numbering** starts at `0` and continues from the previous member. An
+  explicit `= <constant>` restarts the sequence; the next member follows it.
+  The value is folded by the parser's `foldConstant`, so it may be an integer
+  literal, a unary/binary constant expression, an earlier top-level `const`, or an
+  earlier member (`B = A + 1`). A float, a string, a call or a cycle is
+  rejected. Auto-numbering past `INT64_MAX` is an error, never a wrap-around.
+- **Member access** is `Color.RED`. The compiler records the enum's members
+  (`enumMembers_`) and resolves the qualified form to a constant; an unknown
+  member is a compile error that names the enum and the member. The value is an
+  ordinary `int` at run time, so `Color.RED + 1`, `int(Color.RED)` and
+  comparisons work.
+- **Bare members** are accepted in two places: a `case` label (`case RED: { ... }`)
+  and a constant initializer (`const X = RED;`). Anywhere else the qualified
+  form is required, because a bare member is not a runtime binding. A bare
+  member is allowed only when exactly one enum declares it; otherwise the
+  compiler reports the ambiguity and names the qualified choices. A declared
+  binding (`let`, `var`, `const`, `fn`, an import) of the same name shadows the
+  member, and a mutable binding in a `case` label is rejected as before.
+- **The enum name is a namespace**, not a value binding: `let Color = ...`,
+  `fn Color()`, a parameter named `Color`, a `struct`/`class` named `Color`, and
+  an import that would bind `Color` are all rejected. A member name may repeat
+  across enums (`Color.RED` and `Shape.RED`); only the bare form is ambiguous.
+- **`enum` is a type annotation.** `let c: Color = Color.RED;` is checked, and
+  `Color` is assignable only to `Color` (or to `any`/an untyped slot). Mixing
+  two enums, or an enum and an `int`, is rejected with a message that points at
+  `int(...)` for an explicit conversion; a nullable `Color?` accepts `nil` and
+  a `Color` value, and a `Color?` does not fit a non-nullable slot.
+- **Scope**: `enum` is top-level only, like `struct` and `class`. A module
+  **exports** its own enums as compile-time metadata, not as a value in its
+  module table. An importer names one with a qualified path (`geom.Color`), a
+  selective import (`import { Color } from geom;`) or a wildcard import
+  (`import geom.*;`); a dotted path also exposes its short last segment, and a
+  `switch` over the imported enum is exhaustive against its members. An
+  imported enum is not a value: `geom.Color` alone is an error.
+- **Imports**: the parser pre-scans imports (`prescanImportedEnums`) and the
+  compiler registers the imported enums before hoisting
+  (`registerImportedEnums`), both through a resolver-backed, cached
+  `EnumScanner`. The compiler reads a module's enum metadata without loading
+  it, so a module imported only for its enum still runs at its `import`
+  statement and the chunk that names the module binds its `$module$...` global.
+  `importModule` carries a module's own declarations in `ImportedModule::enums`;
+  an enum the module imported is not re-exported.
+- The parser pre-scans enum names (`enumNames_`) so an annotation, a qualified
+  access or a `case` label may appear before the declaration; the compiler
+  pre-registers the members (`registerEnumDecls`) before hoisting functions, so
+  a hoisted function that reads `Color.RED` sees them. The REPL seeds the
+  parser with the session's enum names and folded values, and `:clear` forgets
+  them.
+- Tested by `tests/62_enum.oskl` (VM and the `oskel.build_binary_enum` AOT
+  parity fixture, which also runs on WASM), the cross-module fixtures
+  `tests/63_enum_switch.oskl`, `tests/63_enum_import.oskl` and
+  `tests/64_enum_wildcard.oskl` (with `tests/modules/enum_geom.oskl`; the
+  import forms also run as `oskel.build_binary_enum_import` and
+  `oskel.build_binary_enum_wildcard`), and the `tests/errors/enum_*.oskl`
+  cases (nested, duplicate, duplicate member, unknown member, non-constant,
+  float, int assignment, different enum types, member assignment, shadowing,
+  ambiguity, overflow, plus the import mismatch, unknown member and
+  non-exhaustive cases).
 
 ### PHASE 7 — Bytecode → native backend (AOT, freestanding) 🔶 in progress
 - New module `src/frontend/native/` + `include/native/`: lowering of every opcode to
@@ -2144,8 +2225,10 @@ negative steps, Python clamping), variadic functions (`rest...` is packed into
 an array), and the builtins `print`, `write`, `eprint`, `len`, `type`, `str`,
 `$str`, `repr`, `int`, `float`, `double`, `bool`, `chr`, `ord`, `floor`,
 `ceil`, `round`, `sqrt`, `assert`, `assertEq`, `panic`, `error`, `isError`,
-`$isError`, `$nonNull`, `range`, `$range`, `$slice`, `time`, `clock` and
-`exit`. Every array method is bound as a receiver-capturing closure:
+`$isError`, `$nonNull`, `range`, `$range`, `$slice`, `time`, `clock`,
+`exit`, `cstring`, `buffer`, `cstr`, `byteLen`, `loadByte`, `storeByte`,
+`intToPtr`, `ptrToInt` and `free`. Every array method is bound as a
+receiver-capturing closure:
 `push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`, `contains`, `indexOf`,
 `clear`, `slice`, `concat`, `reversed`, `clone`, `sum`, `join`, `map`,
 `filter`, `each`, `find`, `any`, `all`, `reduce`, `sort` and `sorted`. The
@@ -2158,8 +2241,16 @@ operators. The string methods (`upper`, `lower`, `trim`, `trimStart`,
 `trimEnd`, `split`, `lines`, `replace`, `replaceFirst`, `startsWith`,
 `endsWith`, `contains`, `indexOf`, `substr`, `chars`, `repeat`, `reversed`,
 `padStart`, `padEnd`) and the range methods (`toArray`, `contains`) are bound
-the same way; a range's `.length` saturates at INT64_MAX. The
-standard-library modules stay on the portable primitive surface: `std/json`,
+the same way; a range's `.length` saturates at INT64_MAX. Pointer handles
+(`cstring`, `buffer`, `cstr`, `byteLen`, `loadByte`, `storeByte`, `intToPtr`,
+`ptrToInt`, `free`) use the `AotPtr` layout in linear memory
+(`{kind, data, length, released}`); `type()` reports `cstring` for a CString
+handle and `ptr` otherwise, `str`/`repr` render a `cstring` as its text and
+every other handle as `<ptr>`, and `free` only marks the handle released
+because the arena never reclaims. `tests/native_build_wasm_pointers.oskl`
+covers the happy paths; the error paths stay in the AOT fixture because
+`pcall` is VM-only. The standard-library modules stay on the portable
+primitive surface: `std/json`,
 `std/datetime`, `std/collections`, `std/path` and the bound half of `std.math`
 build and agree with the VM byte for byte; the host clock is what lets
 `std/datetime` read `time()`/`clock()`.
@@ -2290,11 +2381,84 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
   uses it. MSVC `.lib` archives are handled by `expandCoffArchives`: the first
   and second linker members are skipped, `//` long names and `/N` references
   are resolved, and a short import object is rejected with a dedicated
-  message. `args()` via `GetCommandLineA` and the `.pdata`/`.xdata` exception
-  data remain; TLS is unsupported.
-- **10.3d (future)** — the macOS Mach-O/dyld container. It is a separate
+  message. `args()` is handled too: the generated `_start` calls
+  `msvcrt.dll`'s `__getmainargs` and passes `(argc, argv)` to the Windows
+  `main` wrapper, which moves `rcx`/`rdx` to the chunk's `rdi`/`rsi`; the
+  hosted `cl` path uses the same wrapper. A `.pdata`/`.xdata` input is rejected
+  with a dedicated message: the AOT object emits no unwind data, so the PE
+  exception directory stays zero and a C++ exception must not cross an Oskel
+  frame. A `.tls` input is rejected too; the image defines no TLS variables, so
+  the PE TLS directory stays zero. Emitting unwind data is a future container
+  feature.
+- **10.3d (first slice) — the macOS Mach-O/dyld container.** It is a separate
   linker, not a generic abstraction: the object format, the loader contract
-  and the entry prelude differ.
+  and the entry prelude differ. `linkMachOExecutable` closes the `MH_OBJECT`
+  into a non-PIE `MH_EXECUTE`: `__TEXT`/`__DATA`/`__LINKEDIT`, `LC_MAIN`,
+  `LC_LOAD_DYLINKER`, `LC_LOAD_DYLIB` (libSystem), `LC_SYMTAB`, `LC_DYSYMTAB`
+  and `LC_DYLD_INFO_ONLY`; a call import becomes a `__stubs` entry and a
+  non-lazy `__got` bind, and `__const` is carried through. The slice takes one
+  object and supports external calls; a data import is rejected, and the `-r`
+  Mach-O link, the ad-hoc code signature and ARM64 are later. The container is
+  pinned by `link_macho_test` on every host; `oskel.build_hosted_own_macos`
+  runs on `macos-15-intel` (x86-64) and only checks the `file` type on the arm64
+  runner.
+
+### PHASE 11 — `async` / `await` 🔶 in progress
+
+- **11.1 (done) — `async fn`, `await` and `Future`.** An `async fn` is a
+  function whose call returns a `Future`; the declared return type is the
+  payload, so `async fn f(): int` returns `Future<int>` at the type level and
+  `await f()` is an `int`. The body runs eagerly when the function is called,
+  so this phase is the language surface, not a scheduler: a future is already
+  settled by the time the caller sees it.
+- **Representation.** A future is an ordinary map built with the opcodes the
+  language already has: `{ state: "fulfilled", value: <payload>, error: nil }`.
+  `compileMakeFuture` emits `NEWTABLE`, `SETTABLE` and `LOADK`; `compileAwait`
+  reads it with `GETTABLE`/`EQ`/`JMP_IF_FALSE`/`JMP` and raises the carried
+  error through a `panic` helper call. No opcode, no builtin and no runtime
+  tag is added, so the VM, the AOT backend and the WASM backend share one
+  implementation by construction. `state` and `error` reserve the shape for a
+  scheduler: `"rejected"` carries the error in `error`, and `"pending"` is the
+  state a future would hold before it settles. There is no API that creates a
+  pending future in this phase, so `await` on one is a runtime error
+  ("await on a pending Future is not supported yet") rather than a silent nil.
+- **Typing.** `Future` joins the built-in type vocabulary. A call to an async
+  function returns `Future`, so `let f: Future = f();` type-checks and
+  `let n: int = await f();` checks the payload. `await` outside an `async fn`
+  is a parser error, and a lambda does not inherit the enclosing function's
+  async context (`() => await x` is rejected): it is not an `async fn`. There
+  is no top-level `await`; the chunk is not an async function.
+- **Methods and values.** An `async fn` method is a closure in the instance
+  map like any other method, so `await obj.m()` works. The method signature
+  records its asyncness and a replacement lambda must match it, or `await`
+  would read a payload instead of a future. An async function is an ordinary
+  value: `let g = f; await g()` returns the same payload. `async fn init` is
+  rejected, because the constructor is called without `await`.
+- **The seven-point checklist.**
+  - Lexer: two keywords, `async` and `await`.
+  - AST: `AwaitExpr`; `FnDeclStmt::isAsync`, `LambdaExpr::isAsync`,
+    `ClassMethodSig::isAsync`; `Future` in `isKnownTypeName`.
+  - Parser: `async` before a top-level function, a class method or a lambda;
+    `await` as a prefix expression in `parseUnary`, guarded by `asyncDepth_`
+    so it cannot cross a function boundary; `async init` is rejected.
+  - Bytecode: **no new opcode**. A future is `NEWTABLE`/`SETTABLE`, `await` is
+    `GETTABLE`/`EQ`/`JMP_IF_FALSE`/`JMP` plus the existing `CALL` to `panic`.
+  - VM: no new logic; the map operations and `panic` already exist.
+  - Compiler: `asyncReturnTypes_` tracks the payload type per function;
+    `compileFunctionProto` wraps every return in `compileMakeFuture` when
+    `currentIsAsync_`; `inferExprType` unwraps an `AwaitExpr` over a direct
+    async call; the module session snapshot carries `asyncReturnTypes_`.
+  - AOT/WASM: no backend change. The fixture `tests/65_async.oskl` is compared
+    with the VM byte for byte by `oskel.build_binary_async` and
+    `oskel.build_wasm_async`; `tests/65_async_modules.oskl` does the same for
+    an imported async function.
+- **Known limits (BACKLOG §6 item 32).** The body is eager, so a future is
+  never pending and `await` does not suspend the caller; there is no event
+  loop, no promise chaining (`then`) and no async lambda. `type(future)` says
+  `"map"`, because the representation is a map and the type checker erases
+  `Future`; a future can therefore be passed to code expecting a map, which is
+  the deliberate trade-off of not adding a runtime tag. A scheduler, a
+  `spawn`/`join` surface and a `Future`-specific runtime type are later slices.
 
 ### Post-1.0 — UI library
 
@@ -2358,9 +2522,11 @@ Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotatio
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
+Phase 6.9: ✅ completed (`enum`: a scoped set of integer constants, folded by the parser; no opcode, no engine code, and identical on the VM, the AOT backend and WASM)
+Phase 11: 🔶 in progress (11.1 `async fn`/`await`/`Future` done: a future is a plain map, so no opcode and no builtin is added; eager bodies, no scheduler yet)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.11 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY), callbacks (including a struct return) and a stored callback resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
-Phase 10: 🔶 in progress (10.1, 10.2, 10.2b and 10.3a done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar`, `-r`, `.data`/`.bss`, the common x86-64 ELF relocations, and the Windows COFF→PE32+ path with UCRT/kernel32 imports. 10.3b `-r` COFF and `.lib` done, `args` pending, and 10.3d Mach-O pending)
+Phase 10: 🔶 in progress (10.1, 10.2, 10.2b and 10.3a done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar`, `-r`, `.data`/`.bss`, the common x86-64 ELF relocations, and the Windows COFF→PE32+ path with UCRT/kernel32 imports. 10.3b `-r` COFF, `.lib`, `args` and the `.pdata`/TLS rejection done, and 10.3d first slice done (`-r`, ad-hoc signature and ARM64 pending))
 Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending
 2.0: ⬜ future (static with `@Dynamic`)
 

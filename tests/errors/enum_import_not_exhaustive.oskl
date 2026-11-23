@@ -1,0 +1,6 @@
+// expect-exit: 65
+import modules.enum_geom;
+let c: modules.enum_geom.Color = modules.enum_geom.Color.RED;
+switch (c) {
+  case modules.enum_geom.Color.RED: { print("r"); }
+}

@@ -1,0 +1,8 @@
+// expect-exit: 65
+// A bare member is only allowed when exactly one enum declares it; the
+// qualified form disambiguates.
+enum Color { RED }
+enum Shape { RED }
+switch (1) {
+  case RED: { print("x"); }
+}

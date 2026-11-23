@@ -6,6 +6,13 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
 
 ## Delivery
 
+- **Bring the remote changes before starting any work.** Run
+  `git fetch origin` and merge (or reset the base to) the current
+  `origin/develop` **before** creating the work branch. Do it again before
+  opening the PR and after any other PR lands. Starting from a stale tree is
+  what turns a clean PR into a conflict: `develop` moves while the branch is
+  being written, and a later PR that touches the same lines makes the branch
+  `dirty` without any push to it.
 - **Every finished task ends with a pull request against `develop`.** Do not
   wait to be asked. `develop` is the base branch (CONVENTIONS.md).
 - Branch naming: `feat/phase-X.Y.Z-<slug>`, `fix/<slug>`, `docs/<slug>`.
@@ -99,15 +106,17 @@ it as a caveat:
   (`array index must be an integer`, `string index must be an integer`,
   `map keys must be strings`, `map membership requires a string key`,
   `string membership requires a string operand`, `range membership requires an
-  integer`); the ones that quote a type or member name keep the fixed words and
-  stop before the tail (`cannot iterate over a value of type`, `cannot index a
-  value of type`, `cannot assign to an index of a value of type`, `cannot set a
-  field on a value of type`, `cannot call a value of type`, `cannot slice a
-  value of type`, `len() is not defined for values of type`, `unsupported unary
-  operator for type`, `unsupported operand types for`, `operator 'in' is not
-  supported for`, `type ... has no member`). The file builtins name the function
-  too (`fsRead() expects a file handle`), and `$slice` checks the receiver
-  before the bounds so `5[1:2]` names the receiver in both engines.
+  integer`), and the ones that quote a type, member, operator or method name
+  carry the same tail: `, got '<type>'` for a builtin argument, ` '<type>'` for
+  an index or a member (`cannot index a value of type 'int'`, `type 'string'
+  has no member 'nope'`), the two-operand form (`cannot compare 'int' with
+  'string'`, `operator 'in' is not supported for 'int' and 'int'`,
+  `unsupported operand types for '+': 'int' and 'string'`) and the callback
+  method's own name (`map() must be a function, got 'int'`). The only tail
+  still missing is the FFI struct-field name (BACKLOG §6 item 25). The file
+  builtins name the function too (`fsRead() expects a file handle`), and
+  `$slice` checks the receiver before the bounds so `5[1:2]` names the receiver
+  in both engines.
   `tests/native_build_runtime_error_messages.oskl` pins both halves. A new
   index or operator message starts from the VM's text, never from a new
   wording, and `emitIn`'s range branch uses `msgRangeIntType` rather than the
@@ -345,8 +354,33 @@ it as a caveat:
   when variadic), and `tests/native_build_builtin_arity.oskl` drives every
   wrong-count call through `pcall`, because a raised runtime error is not a value
   and `try`/`catch` never sees it. The fixture prints the message text, not just
-  the fact of failing (PHASE 7c.5b.6). Other dynamic tails — a type name, an
-  index or a callback-return field name — still keep only their fixed prefix
+  the fact of failing (PHASE 7c.5b.6).
+- A runtime error that quotes a value assembles the tail instead of stopping at
+  the fixed prefix. `emitTypeTailFail` writes `, got '<type>'`,
+  `emitTypeQuoteFail` writes ` '<type>'` for a prefix that already names the
+  condition, and `emitNoMemberFail` builds `type '<t>' has no member '<name>'`;
+  the type name comes from the same table `type()` reads, so a pointer handle
+  reports `cstring`/`ptr`. `emitFailGotType` is the shared body, and a prefix
+  blob must not carry its own `, got '` — the helper writes it, and a blob that
+  did shipped a truncated message with no type and no closing quote. Every
+  argument-type tail is converted: the builtins (`ord`, `chr`, `error`, `exit`,
+  `seed`, `random`, the numeric ones, the pointer and file families), the array,
+  string and map methods, and the `$slice`/`len`/call/member/index/iteration
+  operator messages. `tests/native_build_runtime_error_messages.oskl` asserts
+  the exact text on both engines through `pcall`, so a new message gets a line
+  there rather than a prefix-only assertion. The two-operand tails quote both
+  operands through `emitTwoTypeFail` (`cannot compare 'int' with 'string'`,
+  `operator 'in' is not supported for 'int' and 'int'`); `>` and `<=` swap the
+  two names, because the VM lowers them to `lessThan(b, a)`. The callback
+  methods (`map`, `filter`, `each`, `find`, `any`, `all`, `reduce`) guard the
+  callback at the call site, not at entry, so `[].map(1)` returns `[]` like the
+  VM while `[1].map(1)` reports `map() must be a function, got 'int'`. The
+  arithmetic, bitwise, shift and power helpers name the operator from the
+  selector they already receive (`unsupported operand types for '+': 'int' and
+  'string'`), and a shift by a non-integer reports that pair rather than the
+  count range. One tail is still truncated: the FFI struct-field name (`the
+  struct returned by a callback is missing field`), which names a C layout
+  field; its names are static, so the fix is a pre-built message per field
   (BACKLOG §6 item 25).
 - A *direct* call to a user function is checked at compile time — arity and
   argument types against the annotations — by `Compiler::checkUserCall`, using
@@ -635,8 +669,28 @@ it as a caveat:
   trailing `/` is stripped; a short import object (`0x00 0xFF`) is rejected
   with a dedicated message. The archive test builds a `.lib` with a long member
   name and links the member through both `linkHostedExecutable` and `-r`.
-- `args()` and `.pdata`/`.xdata`/TLS remain 10.3b; the macOS Mach-O container
-  is 10.3d.
+- `args()` is handled on Windows (PHASE 10.3b.3). The generated `_start`
+  imports `__getmainargs` from `msvcrt.dll` (the UCRT does not export it),
+  builds the CRT's `argc`/`argv`, and calls `main` with them in `rcx`/`rdx`;
+  the Windows hosted runtime exports a two-instruction `main` wrapper
+  (`mov rdi, rcx; mov rsi, rdx; jmp chunk`) so the chunk's `rdi`/`rsi` entry
+  reads the same vector under `--linker cl` and the own linker.
+  `oskel.build_hosted_own_windows_args` runs `args()` with an argument
+  containing a space.
+- A `.pdata`/`.xdata` input is rejected in `parseCoffObject` with a dedicated
+  message: the AOT object emits no unwind data, so the PE exception directory
+  stays zero and a C++ exception must not cross an Oskel frame. A `.tls` input
+  is rejected too; the image defines no TLS variables, so the PE TLS directory
+  stays zero. Emitting `.pdata`/`.xdata` is future container work.
+- The macOS own linker (PHASE 10.3d) closes the `MH_OBJECT` into a non-PIE
+  `MH_EXECUTE`: `__TEXT`/`__DATA`/`__LINKEDIT`, `LC_MAIN`/`LC_LOAD_DYLINKER`/
+  `LC_LOAD_DYLIB` (libSystem)/`LC_SYMTAB`/`LC_DYSYMTAB`/`LC_DYLD_INFO_ONLY`,
+  `__const`, and a `__stubs` + non-lazy `__got` bind per call import. The first
+  slice takes one object and rejects a data import; the `-r` Mach-O link, an
+  ad-hoc signature (the `macos-15-intel` e2e runs `codesign -s -` first) and
+  ARM64 are later. `link_macho_test` is structural on all hosts;
+  `oskel.build_hosted_own_macos` runs on `macos-15-intel` and only checks the
+  `file` type on the arm64 runner.
 - The multi-object e2e helper is an `OBJECT` library compiled with
   `-fno-sanitize=all` when the build is sanitized: the object is linked into a
   plain emitted binary that does not carry the ASan runtime. The archive test
@@ -720,6 +774,25 @@ it as a caveat:
   the old signed `select` wrapped a span wider than INT64_MAX to a negative
   length. `tests/native_build_wasm_range_methods.oskl` is the WASM fixture;
   the error cases stay in the AOT fixture because `pcall` is VM-only.
+- The pointer builtins (`cstring`, `buffer`, `cstr`, `byteLen`, `loadByte`,
+  `storeByte`, `intToPtr`, `ptrToInt`, `free`) keep an `AotPtr` in linear
+  memory: `{kind, data, length, released}`, with `data` owning the bytes for a
+  `cstring`/`buffer` and holding the opaque token for a `void *`. `type()` must
+  inspect the kind and report `cstring` for a CString handle, not `ptr`; `str`
+  renders a `cstring` as its text and every other handle as `<ptr>`, and `repr`
+  quotes the text but not `<ptr>`. `free` only sets `released`, because the
+  arena never reclaims, and every read checks it first. The error paths use the
+  AOT prefixes; the WASM fixture covers the happy paths because `pcall` is
+  VM-only. **`emitBuiltin`'s `index` is the function index.** A branch that
+  declares a local named `index` (the byte offset) shadows it, so `return
+  index` returns the WASM local number: `loadByte`/`storeByte` shipped that way
+  and their table slots pointed at function 5, which trapped on first use. Name
+  a byte offset `at`, never `index`. The bounds follow the VM, not the address:
+  `buffer` rejects a size above `0xFFFFFFFF` before the `i32` narrowing, `alloc`
+  reports `out of memory` on a wrapped cursor or a failed `memory.grow`, `cstr`
+  skips `memory.copy` for a zero length (a `void *` token can point past linear
+  memory), and `ptrToInt` returns a token only for `kPtrKindVoid`, because the
+  VM returns `0` for a buffer or a cstring.
 - A construct the backend cannot lower yet must fail cleanly, never emit a
   mis-compiled module: an unbound builtin is seeded as a trapping closure, and
   a used `extern "C"`/`native fn` symbol with no stub is a build error (exit
@@ -839,6 +912,48 @@ it as a caveat:
   SDL window, with no `LD_PRELOAD`, `LD_LIBRARY_PATH` or `--link-lib`. The
   `cxxbind.end_to_end` fixture is the other guard: a non-UI binding whose
   symbols share the Skia names must stay a freestanding build.
+
+## `async` / `await` (PHASE 11.1)
+
+- `async fn` declares an **eager** function whose call returns a `Future`; the
+  annotation is the payload, so `async fn f(): int` returns `Future<int>` at the
+  type level. `await` is a prefix expression, valid only inside an `async fn`
+  body. There is no scheduler: the body runs when called and the future is
+  already settled when the caller sees it.
+- A future is a **plain map**, not a value tag: `compileMakeFuture` emits
+  `NEWTABLE` + `SETTABLE` for `{state: "fulfilled", value: <payload>, error:
+  nil}`, and `compileAwait` reads it with `GETTABLE`/`EQ`/`JMP_IF_FALSE`/`JMP`
+  plus the existing `panic` call. No opcode, no builtin and no backend change is
+  involved, which is why the VM, `oskel build` and WASM agree by construction.
+  `type(future)` is `"map"`, and a future can be passed to map code; that is the
+  deliberate trade-off of not adding a runtime tag (BACKLOG §6 item 32).
+- `compileAwait` must leave its result in the **operand's own register**, like
+  `a!!`, and free only the registers above it. Allocating a fresh result
+  register makes a call argument list non-contiguous and fails with "internal
+  compiler error: call arguments are not contiguous" as soon as `print(await f())`
+  is compiled.
+- The parser tracks `asyncDepth_`: an async function body increments it and a
+  lambda **resets it to zero**, so `() => await x` is rejected even inside an
+  async function. There is no top-level `await`, and `async fn init` is rejected
+  because the constructor is called without `await`.
+- `asyncReturnTypes_` holds the payload type of every async function in scope.
+  `compileFnDecl` puts `Future` in `functionReturnTypes_` (the call-site type)
+  and the annotation in `asyncReturnTypes_`; `inferExprType` uses the latter to
+  type `await f()` for a direct call. The table is part of `SessionSnapshot` and
+  is saved/restored around `importModule`, like `functionReturnTypes_`.
+- `currentIsAsync_` wraps every `return` value and the implicit nil epilogue in
+  a future. It is saved/restored by `compileFunctionProto` for the same reason
+  `currentReturnType_` is, so a nested lambda compiled inside an async body does
+  not inherit the wrapping.
+- `ClassMethodSig::isAsync` makes a replacement match the method's asyncness; a
+  non-async lambda for an async method is a compile error, because `await
+  obj.m()` would otherwise await a payload.
+- Tests: `tests/65_async.oskl` (payloads, recursion, values, methods, error
+  values) and `tests/65_async_modules.oskl` (imported async functions) run on
+  the VM and are compared byte for byte by `oskel.build_binary_async`,
+  `oskel.build_binary_async_modules`, `oskel.build_wasm_async` and
+  `oskel.build_wasm_async_modules`. The diagnostics live in
+  `tests/errors/async_*.oskl`.
 
 ## The VS Code extension
 
@@ -1096,7 +1211,16 @@ it as a caveat:
   rewriting the manifest: comments, blank lines and CRLF survive, a duplicate
   add is a no-op (a new `--version` for the same path updates the entry), and a
   failed add leaves the file untouched because the graph is resolved before
-  the write. `add` without `--path` writes a registry requirement.
+  the write. `add` without `--path` writes a registry requirement; without
+  `--version` it takes the highest **release** and writes a caret requirement,
+  and a prerelease-only package needs an explicit version. `oskelp outdated`
+  reads the lockfile and the registry without writing either and prints the
+  highest version still allowed by a direct requirement, plus a note when the
+  newest one needs a manifest change. `oskelp update <name> --precise
+  <version>` pins one registry version through the resolver's `forced` map:
+  the forced branch checks that the version exists and then that it satisfies
+  the requirement (so a missing version is not reported as an unsatisfied
+  one), and a path dependency is rejected before resolution.
   `remove` refuses an entry that spans multiple lines instead of deleting a
   partial one. `oskelp publish [--registry <dir>]` copies the manifest and
   `src/` into the registry and refuses to overwrite a version or publish a
@@ -1108,8 +1232,9 @@ it as a caveat:
   `oskelc` (falling back to `oskel build`), `oskelp run` uses the VM unless
   `--native` is given, and `oskelp test` runs every `tests/**/*.oskl` and exits
   101 when one fails. `tests/run_oskelp_case.cmake` drives the real binary
-  through the whole workflow, including publish/consume/update/`--locked`, so a
-  change to the manifest, the lockfile or a command must keep that test green.
+  through the whole workflow, including publish/consume, `add` without
+  `--version`, `outdated`, `update --precise` and `--locked`, so a change to
+  the manifest, the lockfile or a command must keep that test green.
 
 ## Commit authorship
 

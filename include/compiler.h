@@ -14,6 +14,7 @@
 #include "core/errors.h"
 #include "ffi_types.h"
 #include "frontend/ast.h"
+#include "frontend/parser.h"
 
 // Signature of a `native fn`/`extern "C"` declaration (PHASE 6.5), keyed by
 // name. A native declaration emits no call to the compiler: it only records the
@@ -68,6 +69,10 @@ struct ImportedModule {
   // qualified call be checked at compile time — arity and argument types —
   // exactly like the direct form (`pow(2.0)`), instead of failing at run time.
   std::unordered_map<std::string, NativeSig> nativeSigs;
+  // The enums the module declares, keyed by enum name (PHASE 6.9 across
+  // modules). A module's enums are compile-time metadata, not values in the
+  // module table, so they travel beside `symbols` instead of inside it.
+  std::unordered_map<std::string, std::vector<EnumMember>> enums;
 };
 
 // AST to bytecode compiler (PHASE 2-5).
@@ -139,6 +144,24 @@ class Compiler {
   // only learns the name denotes a type if the REPL seeds it (see
   // Parser::seedClassNames).
   const std::unordered_set<std::string>& classNames() const { return classNames_; }
+
+  // The `enum` names declared so far in the session (PHASE 6.9). The REPL hands
+  // them to the next entry's parser (see Parser::seedEnumNames) so `Color.RED`
+  // and a bare member keep resolving after the entry that declared the enum.
+  const std::unordered_set<std::string>& enumNames() const { return enumNames_; }
+
+  // The folded value of every enum member in the session, keyed by its
+  // qualified name (`Color.RED`), and the bare-member index. The REPL hands
+  // both to the next entry's parser so a `const` initializer keeps folding.
+  std::unordered_map<std::string, Value> enumValues() const;
+  const std::unordered_map<std::string, std::vector<std::string>>& enumMemberOwners() const {
+    return enumMemberOwners_;
+  }
+
+  // Supplies the cached module-enum scanner the parser already uses, so
+  // `registerImportedEnums` parses each module at most once per session. The
+  // scanner returns a module's own enum declarations, keyed by enum name.
+  void setEnumScanner(Parser::EnumScanner scanner) { enumScanner_ = std::move(scanner); }
 
   // The warnings collected by the last compilation (PHASE 6.7.5). Warnings are
   // non-fatal: the program still runs. The CLI prints them to stderr; tests
@@ -327,6 +350,25 @@ class Compiler {
   // entry and is cleared only by `clearSession`.
   std::unordered_set<std::string> classNames_;
 
+  // `enum` declarations (PHASE 6.9), keyed by enum name. The declaration emits
+  // no bytecode: each member is resolved to a `LOADK` of its integer at every
+  // use. Session state, like `classNames_`: it survives a REPL entry and is
+  // cleared only by `clearSession`.
+  std::unordered_set<std::string> enumNames_;
+  std::unordered_map<std::string, std::vector<EnumMember>> enumMembers_;
+  // Every enum that declares a given bare member name, keyed by that name. A
+  // bare `RED` resolves only when exactly one enum owns it; otherwise the
+  // qualified `Color.RED` is required.
+  std::unordered_map<std::string, std::vector<std::string>> enumMemberOwners_;
+  // The cached module-enum scanner the parser uses, so an imported enum is
+  // parsed once per session and not again when `registerImportedEnums` runs.
+  Parser::EnumScanner enumScanner_;
+  // Top-level binding names (`let`/`var`/`const`/`fn`/import alias) of the
+  // chunk being compiled, collected before anything is emitted. A declared
+  // binding shadows a bare enum member, whatever the declaration order, so the
+  // resolution of `RED` is deterministic.
+  std::unordered_set<std::string> declaredGlobals_;
+
   // Declared fields of every class, keyed by class name (PHASE 6.8). A class is
   // erased to a constructor `fn`, but its field annotations still describe the
   // instance, so the compiler keeps them to check `self.field = value` inside a
@@ -409,6 +451,12 @@ class Compiler {
   // function clears the entry, exactly like `nativeSigs_`.
   std::unordered_map<std::string, TypeRef> functionReturnTypes_;
 
+  // The inner payload type of every `async fn` in scope, keyed by name
+  // (PHASE 11.1). The declared annotation on an async function is the payload
+  // `T`; a call returns `Future`, and `await f()` recovers `T` from this table
+  // without a generic `Future<T>` in the syntax.
+  std::unordered_map<std::string, TypeRef> asyncReturnTypes_;
+
   // Declared parameters of the user functions in scope, keyed by name, so a
   // direct call is checked — arity and argument types — exactly like a `native
   // fn` call. Without it the annotation on a parameter was erased without ever
@@ -428,9 +476,34 @@ class Compiler {
   // The declared fields of a struct or class, or null when `name` is neither.
   const std::vector<StructField>* lookupAggregateFields(const std::string& name) const;
 
+  // The member `member` of enum `enumName`, or null when the enum or the member
+  // does not exist (PHASE 6.9). The declaration emits no bytecode: the caller
+  // emits a `LOADK` of the returned value.
+  const EnumMember* lookupEnumMember(const std::string& enumName,
+                                     const std::string& member) const;
+  // Every member of `enumName`, or null when the enum is not declared. Used by
+  // the exhaustive-`switch` check, which needs the full set at once.
+  const std::vector<EnumMember>* lookupEnumMembers(const std::string& enumName) const;
+  // Resolves a member chain `Enum.MEMBER` (local or imported) to its constant.
+  // `enumName` receives the visible enum type even when the member is missing,
+  // so the caller can report the right diagnostic; it stays empty when the
+  // chain does not name an enum at all.
+  const EnumMember* resolveEnumMemberPath(const MemberExpr& member,
+                                          std::string& enumName) const;
+  // Resolves a bare enum member name. Returns null and leaves `reason` empty
+  // when no enum declares it; returns null and sets `reason` when several do
+  // (the name is ambiguous). `reason` is otherwise cleared.
+  const EnumMember* lookupBareEnumMember(const std::string& name, std::string& reason) const;
+  // True when `name` is a declared enum type (PHASE 6.9).
+  bool isEnumTypeName(const std::string& name) const;
+
   // Declared return type of the function currently being compiled, checked
   // against every `return` value. Empty means "unannotated".
   TypeRef currentReturnType_;
+  // True while compiling an `async fn` body (PHASE 11.1). Every `return` and
+  // the implicit epilogue wrap their value in a future map, so the function's
+  // call-site value is a `Future` while its annotation describes the payload.
+  bool currentIsAsync_ = false;
 
   // Infers the static type of an expression when it is evident from its shape
   // (a literal, or a variable whose type is known). Returns an empty TypeRef
@@ -505,8 +578,11 @@ class Compiler {
   // Checks a `case` label that is a bare name (PHASE 6.5): it must resolve to
   // an immutable binding in the current frame (a `const`/`let` local) or to a
   // top-level `const`, so the label is a fixed value. A `var`, an unknown name
-  // or a captured binding is rejected. See `compileSwitch`.
-  void checkCaseLabelName(const std::string& name, int line, int col);
+  // or a captured binding is rejected. A bare enum member (PHASE 6.9) is also
+  // accepted and returned, so `compileSwitch` emits its constant directly; an
+  // ambiguous bare member is rejected with a message naming the qualified form.
+  // See `compileSwitch`.
+  const EnumMember* checkCaseLabelName(const std::string& name, int line, int col);
 
   // Type annotations (PHASE 6.5). Types are compile-time metadata: they are
   // inferred from literals, checked against annotations, and then erased, so
@@ -630,6 +706,14 @@ class Compiler {
   int compileRange(const RangeExpr& range, int line, int col);
   int compileSlice(const SliceExpr& slice, int line, int col);
   int compileInterpolation(const InterpExpr& interpolation, int line, int col);
+  // `await expr` (PHASE 11.1): reads the future's state and yields its payload,
+  // or raises the carried error. It is a few existing opcodes, not an opcode of
+  // its own, so the VM, AOT and WASM share one implementation.
+  int compileAwait(const AwaitExpr& awaited, int line, int col);
+  // Builds the future map an `async fn` returns: `{ state: "fulfilled", value:
+  // value, error: nil }`. The map is the portable representation; no runtime
+  // tag or builtin is added.
+  int compileMakeFuture(int value, int line, int col);
   // Converts `source` to a string through the compiler's private runtime
   // helper and returns the register holding the result.
   int compileToString(int source, int line, int col);
@@ -647,6 +731,22 @@ class Compiler {
   // the shape even when the declaration appears later in the file.
   void registerStructDecls(const BlockStmt& block);
   void compileStructDecl(const StructDeclStmt& decl, int line, int col);
+  // Registers every `enum` declared directly in `block` before anything else in
+  // it is compiled, so a hoisted function that uses `Color.RED` (or a bare
+  // member) resolves it whatever the declaration order. Metadata only: it
+  // emits nothing.
+  void registerEnumDecls(const BlockStmt& block);
+  // Registers the enums the block's imports make visible (PHASE 6.9 across
+  // modules). A selective or wildcard import binds each enum by its own name;
+  // a qualified import binds it as `<path>.Enum` (and, for a dotted path, by
+  // the short last segment too). The module is parsed through the cached enum
+  // scanner, not loaded, so a hoisted function can use `geom.Color.RED` before
+  // the `import` statement is reached; the module body is still materialized
+  // at its import statement.
+  void registerImportedEnums(const BlockStmt& block);
+  // Collects the top-level binding names of `block` before anything is emitted,
+  // so a bare enum member never shadows a global declared later in the file.
+  void registerDeclaredGlobals(const BlockStmt& block);
   // Registers the fields of every `class` declared directly in `block`, so a
   // hoisted method body (compiled before the constructor's own declaration is
   // reached) already knows the shape it assigns into. Like `registerStructDecls`
@@ -720,7 +820,11 @@ class Compiler {
     std::unordered_set<std::string> classNames;
     std::unordered_map<std::string, std::vector<StructField>> classDefs;
     std::unordered_map<std::string, std::vector<ClassMethodSig>> classMethodDefs;
+    std::unordered_set<std::string> enumNames;
+    std::unordered_map<std::string, std::vector<EnumMember>> enumMembers;
+    std::unordered_map<std::string, std::vector<std::string>> enumMemberOwners;
     std::unordered_map<std::string, TypeRef> functionReturnTypes;
+    std::unordered_map<std::string, TypeRef> asyncReturnTypes;
     std::unordered_map<std::string, std::vector<Param>> functionParams;
     std::unordered_map<std::string, NativeSig> nativeSigs;
     std::unordered_map<std::string, std::string> externSignatures;
@@ -754,7 +858,8 @@ class Compiler {
   // inside it; empty for an ordinary function.
   int compileFunctionProto(const std::string& name, const std::vector<Param>& params,
                            const StmtPtr& body, int line, int col, const TypeRef& returnType,
-                           const std::string& ownerClass = std::string());
+                           const std::string& ownerClass = std::string(),
+                           bool isAsync = false);
 
   // Compiles a module's top-level statements into `bc_` (bindings stay
   // frame-local) and returns its public surface as a table. Called by

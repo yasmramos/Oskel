@@ -6,6 +6,7 @@
 #include "bytecode_io.h"
 #include "compiler.h"
 #include "frontend/module_resolver.h"
+#include "frontend/parser.h"
 #include "native/target.h"
 
 // Shared plumbing for the two entry points of the toolchain.
@@ -35,6 +36,13 @@ ModuleResolver resolverFor(const std::string& name, const std::string& argv0);
 
 // The module loader the compiler uses for `import` declarations.
 Compiler::ImportLoader makeImportLoader(ModuleResolver resolver);
+
+// Builds the scanner the parser uses to make a module's enums visible at parse
+// time (PHASE 6.9 across modules). It resolves and parses each module once,
+// caching the result, so `import { Color } from geom;` and `geom.Color.RED`
+// are recognized before the compiler loads the module. A module that cannot be
+// read here is reported by the compiler with its own diagnostic.
+Parser::EnumScanner makeEnumScanner(ModuleResolver resolver);
 
 // The AOT target `--target` names, and the host's own target.
 bool parseTargetName(const std::string& name, Target& out);

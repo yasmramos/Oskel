@@ -1,0 +1,23 @@
+// Arbitrary-precision decimal arithmetic.
+//
+// `std.decimal` is the facade over the class module `std.decimal.BigDecimal`.
+// The class follows Java's `java.math.BigDecimal`: an arbitrary-precision
+// unscaled integer plus a scale, exact addition/subtraction/multiplication,
+// exact division when it terminates, and division/setScale with a Java
+// rounding mode.
+//
+//   import std.decimal;
+//   let price = std.decimal.decimal("19.99");
+//   print(price.add("0.01").toPlainString());
+//
+// The module is pure Oskel, so the same values are produced by the VM,
+// `oskel build` and WebAssembly.
+import std.decimal.BigDecimal as big;
+
+let BigDecimal = big;
+
+// The short constructor form. `decimal("19.99")` is exactly
+// `BigDecimal("19.99")`.
+fn decimal(value) {
+  return BigDecimal(value);
+}

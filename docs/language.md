@@ -11,7 +11,8 @@ The language surface this reference documents is implemented on the development 
 | Area | Development engine (`oskel`) | AOT backend (`oskelc` / `oskel build`) |
 | --- | --- | --- |
 | Language core: functions, closures, control flow, collections | ✅ | ✅ (subset the lowerer covers) |
-| Types, nullability, `struct`, `class`, variadics, `import`, `switch`, `defer` (PHASE 6.5/6.8) | ✅ | ✅ (all are compile-time; `struct`/`class` are erased, `switch`/`defer` lower to existing opcodes) |
+| Types, nullability, `struct`, `class`, `enum`, variadics, `import`, `switch`, `defer` (PHASE 6.5/6.8/6.9) | ✅ | ✅ (all are compile-time; `struct`/`class` are erased, `enum` members fold to `LOADK`, `switch`/`defer` lower to existing opcodes) |
+| `async fn` / `await` (PHASE 11.1) | ✅ | ✅ (a future is a map built with existing opcodes; no backend change) |
 | `native fn` (PHASE 6.5) | ✅ | 🔶 only for the curated stubs the backend seeds; anything else fails the build (PHASE 7f) |
 | FFI with C (PHASE 6.6) | ✅ | 🔶 scalar `extern "C"` in `--mode hosted` only; FFI is hosted-only by design (PHASE 7f, §4.5) |
 | Error values, `pcall`, `try`/`catch`, unions, `@MustUse` (PHASE 6.7) | ✅ | ✅ `error` values, `try`/`catch` and `pcall` (PHASE 7c.5c/7c.5d); a raised error with no active `pcall` exits 70 |
@@ -26,6 +27,8 @@ The language surface this reference documents is implemented on the development 
    - [4.6 Type annotations](#46-type-annotations)
    - [4.7 `struct`](#47-struct)
    - [4.8 `class`](#48-class)
+   - [4.9 `enum`](#49-enum)
+   - [4.10 `async fn` and `await`](#410-async-fn-and-await)
 5. [Operators](#5-operators)
 6. [Statements](#6-statements)
 7. [Functions and closures](#7-functions-and-closures)
@@ -90,8 +93,8 @@ Identifiers start with an ASCII letter or `_`, and continue with ASCII letters, 
 Reserved words:
 
 ```text
-break  case   catch  class  const  continue  default  defer  do     else  false  fn  for  if
-import in     let    native nil       return   struct switch true  try  var
+async  await  break  case   catch  class  const  continue  default  defer  do     else  enum  false  fn
+for    if     import in     let    native   nil      return struct switch true  try   var
 while
 ```
 
@@ -304,6 +307,40 @@ print(x);      // 1
 ```
 
 Redeclaring a name in the same block replaces the previous definition.
+
+**Builtins are globals.** A builtin is not a keyword and lives in no separate
+namespace: `print`, `len`, `str` and the rest are globals the engine installs
+before the program runs, each holding a native function. They therefore follow
+the rule above — a declaration with a builtin's name replaces it for the rest of
+the scope:
+
+```oskel
+var len = 3;
+print(len);      // 3, not the builtin
+
+var print = 5;
+print("hi");     // runtime error: cannot call a value of type 'int'
+```
+
+The failure is the same one any non-function callee produces, raised at the
+point of use rather than at the declaration: the language has no way to tell
+`var print = 5;` apart from an ordinary redeclaration, so it does not special-case
+the name. This matches the dynamic languages the language is modelled on (Python,
+Lua and JavaScript all accept `len = 5` and fail only on the call). A compiler
+warning is deliberately *not* emitted: the standard library itself re-exports
+builtins this way, and `double`, `int` and `type` are natural variable names. A
+lint rule is the right place for that check, not the compiler.
+
+**Re-exporting a builtin.** Because a declaration's initializer is evaluated
+before the new binding exists, a builtin can be re-exported under its own name.
+This is how `std.sys` surfaces `time`, `clock`, `arch`, `platform` and `exit`:
+
+```oskel
+let time = time;   // reads the builtin, then binds the name to it
+```
+
+The same idiom works for a value (`var print = print;`), which keeps the builtin
+reachable after a later reassignment.
 
 ### 4.3 Assignment
 
@@ -1120,6 +1157,157 @@ instead when it wants to keep the class itself private.
 `class` is a **reserved word** from 0.1.0 on: a variable or function named
 `class` no longer parses.
 
+### 4.9 `enum`
+
+An `enum` declares a **scoped set of integer constants**. The declaration is
+compile-time metadata: it emits no bytecode, adds no opcode, and each use folds
+to the integer it names, so the VM, the AOT backend and WASM run it identically.
+
+```oskel
+enum Color { RED, GREEN, BLUE }
+enum Status { OK = 200, NOT_FOUND = 404, SERVER_ERROR }
+
+print(Color.RED);        // 0
+print(Color.BLUE);       // 2
+print(Status.NOT_FOUND); // 404
+print(Status.SERVER_ERROR); // 405
+```
+
+**Numbering.** Members start at `0` and continue from the previous one. An
+explicit `= <constant>` restarts the sequence; the next member follows it. The
+value is a constant expression, so it may use literals, arithmetic, an earlier
+member, or an earlier top-level `const`:
+
+```oskel
+enum Flags { NONE = 0, READ = 1, WRITE = 2, ALL = READ | WRITE }
+enum Signed { A = -1, B, C = A + 10 }
+```
+
+A float, a string, a call or a forward reference is rejected at parse time, and
+auto-numbering past `INT64_MAX` is an error rather than a wrap-around.
+
+**A member is an `int` value at run time.** `Color.RED + 1` is `1`,
+`int(Color.RED)` is `0`, and `Color.RED == 0` is `true`. The enum name exists
+only in the type checker, which keeps the annotation meaningful and rejects
+mixing unrelated enums.
+
+**`enum` is a type.** The name annotates a binding, a parameter or a return
+type, and only the same enum (or `any`/an untyped slot) accepts its value:
+
+```oskel
+fn paint(c: Color): string {
+  if (c == Color.RED) { return "red"; }
+  return "other";
+}
+
+let c: Color = Color.GREEN;   // ok
+let n: int = Color.GREEN;     // error: an enum value is not an int
+let m: int = int(Color.GREEN); // ok: explicit conversion
+```
+
+A nullable `Color?` accepts `nil` and a `Color`; a non-nullable `Color` rejects
+`nil`. Two different enums are different types even though both are integers at
+run time.
+
+**`switch` labels.** A `switch` accepts the qualified form and, when exactly one
+enum declares the name, the bare form:
+
+```oskel
+fn name(c: Color): string {
+  switch (c) {
+    case Color.RED: { return "red"; }
+    case GREEN:     { return "green"; }   // bare member, one enum owns it
+    case BLUE:      { return "blue"; }
+  }
+  return "?";
+}
+```
+
+A bare member is also allowed in a constant initializer
+(`const FAVORITE = Status.NOT_FOUND;`). Anywhere else the qualified form is
+required: a bare member is not a runtime binding. If two enums declare the same
+member name, a bare use is an error and the message names the qualified
+choices. A declared binding (`let`, `var`, `const`, `fn`, an import alias) with
+the same name shadows the member; a mutable binding is not a fixed `case` label.
+
+**Naming.** The enum name is a **namespace**, not a value: `let Color = ...`,
+`fn Color()`, a parameter named `Color`, and a `struct`/`class` named `Color` are
+rejected. A member name may repeat across enums (`Color.RED`, `Shape.RED`); only
+the bare form is ambiguous. `Color` alone (without `.MEMBER`) is an error.
+
+**Scope.** `enum` is top-level only, like `struct` and `class`. A module may
+declare and use its own enums, and it **exports** them as compile-time
+metadata (not as a value in its module table). An importer names one with a
+qualified path, a selective import or a wildcard import:
+
+```oskel
+import geom;                  // geom.Color.RED
+import geom as g;             // g.Color.RED
+import { Color } from geom;   // Color.RED, and bare RED
+import geom.*;                // Color.RED, and bare RED
+let c: geom.Color = geom.Color.RED;
+```
+
+A dotted module path also exposes its short last segment (`import pkg.geom;`
+makes `geom.Color` valid beside `pkg.geom.Color`), exactly like the module
+binding. An imported enum keeps its own type across the boundary: `geom.Color`
+and a local `Color` are different types, and a `switch` over the imported enum
+is exhaustive against its members. An imported enum is not a value: `geom.Color`
+alone is an error, and a selective or wildcard import binds the enum as a type,
+not as a runtime global.
+
+`enum` is a **reserved word** from 0.1.0 on.
+
+---
+
+### 4.10 `async fn` and `await`
+
+An `async fn` is a function whose call returns a `Future`; the declared return
+type is the payload type. `await` consumes a future and yields its payload, and
+is only valid inside an `async fn`:
+
+```oskel
+async fn fetchName(id: int): string {
+  return "user-" + str(id);
+}
+
+async fn greet(id: int): string {
+  let name: string = await fetchName(id);
+  return "hello, " + name;
+}
+
+async fn main(): void {
+  print(await greet(7));   // hello, user-7
+}
+
+main();
+```
+
+- The body runs **eagerly** when the function is called. `await` reads a future
+  that is already settled; it does not suspend the caller. There is no event
+  loop and no scheduler in this phase (PHASE 11.1).
+- `Future` is a built-in type. `let f: Future = fetchName(1);` is valid, and the
+  same future may be awaited more than once.
+- A call to an async function returns `Future`, so `let n: int = await f();`
+  checks the payload. `await` on a value whose static type is neither `Future`
+  nor unknown is a compile error.
+- `await` is rejected outside an `async fn`, including inside a lambda: a lambda
+  is not an async function. There is no top-level `await`.
+- An async method is declared with `async fn` inside a class and awaited like
+  any other call: `await obj.m()`. A method replacement must match its
+  asyncness.
+- `async fn init` is rejected: the constructor is called without `await`.
+- At run time a future is a map with the fields `state` (`"fulfilled"`,
+  `"rejected"` or `"pending"`), `value` and `error`; `type(future)` is `"map"`.
+  A `"pending"` future is not produced by this phase, and awaiting one raises a
+  runtime error. `"rejected"` is reserved for a future that carries an error.
+- The feature adds **no opcode and no builtin**: `NEWTABLE`/`SETTABLE`/
+  `GETTABLE` and the existing `panic` implement it, so the VM, the AOT backend
+  and WASM agree by construction.
+
+A future is not a promise with `then`/`catch`; an error value crosses the
+boundary as the payload and can be inspected with `isError`.
+
 ---
 
 ## 5. Operators
@@ -1597,7 +1785,7 @@ switch (value) {
 }
 ```
 
-A `switch` evaluates its subject **exactly once** and compares it against the case labels in order. A label is a **literal** (`nil`, `true`, `false`, a number or a string, optionally signed as in `-1`), an **integer range** (`10..20`, `10..=20`), or a **`const` name** (a top-level `const`, or a local `const`/`let` in the same frame) whose value is used as the label. A literal matches by equality; a range matches by membership, exactly like `value in 10..=20`; a `const` name matches by equality against its value. A name that is not an immutable binding (a `var`, an unknown name, or a captured binding) is a compile error, so a label is always a fixed value.
+A `switch` evaluates its subject **exactly once** and compares it against the case labels in order. A label is a **literal** (`nil`, `true`, `false`, a number or a string, optionally signed as in `-1`), an **integer range** (`10..20`, `10..=20`), a **`const` name** (a top-level `const`, or a local `const`/`let` in the same frame) whose value is used as the label, or an **enum member** (`Color.RED`, or a bare `RED` when exactly one enum declares it). A literal matches by equality; a range matches by membership, exactly like `value in 10..=20`; a `const` name or an enum member matches by equality against its value. A name that is not an immutable binding or a unique enum member (a `var`, an unknown name, a captured binding, or an ambiguous member) is a compile error, so a label is always a fixed value.
 
 The first matching case runs and then control leaves the switch. **There is no fallthrough**: unlike C or Java, the body of the next case does not run after a match, so a forgotten `break` cannot cause a bug. Several labels may share one body (`case 2: case 3:`), and a `default` clause (at most one) runs only when nothing matched; it is optional, so a switch with no match simply does nothing.
 
@@ -2941,6 +3129,78 @@ declared width are runtime errors.
 The module is pure Oskel over indexing, slicing, `len`, `ord`/`chr`, `str`,
 `type`, `panic`, `for ... in` and closures, so it behaves identically on the
 development VM, under `oskel build` and on WebAssembly.
+
+### 12.18 Exact decimals
+
+`std.decimal` provides `BigDecimal`, an arbitrary-precision decimal in the
+spirit of Java's `java.math.BigDecimal`. It is a **class**, not a primitive: a
+value is a Java-style object with an arbitrary-precision unscaled integer and a
+32-bit scale, so `type(value)` reports `"map"`, exactly as every Oskel class
+does. Use its methods; `print(value)` prints the object map, so print
+`value.toPlainString()` when the text matters.
+
+```oskl
+import std.decimal;
+
+let price = decimal("19.99");
+let tax = decimal("0.21");
+print(price.multiply(tax).toPlainString());  // "4.1979"
+print(price.add(tax).toPlainString());       // "20.20"
+```
+
+| Import | Binds |
+| --- | --- |
+| `import std.decimal;` | The facade (`std.decimal.decimal`, `std.decimal.BigDecimal`). |
+| `import std.decimal.*;` | `decimal` and `BigDecimal` directly. |
+| `import std.decimal.BigDecimal;` | The class module, as `BigDecimal(...)`. |
+
+The value is `unscaled * 10^-scale`. The unscaled value has arbitrary precision
+and the scale is an `int`; a negative scale represents trailing zeros
+(`decimal("1E+3")` has scale `-3` and prints `"1000"`). Addition, subtraction
+and multiplication are exact; the result keeps the Java scales (`1.20 * 2.0`
+is `2.400`).
+
+| Member | Meaning |
+| --- | --- |
+| `add`, `subtract`, `multiply` | Exact arithmetic. |
+| `divide(divisor)` | Exact quotient; raises when the expansion does not terminate. |
+| `divide(divisor, scale, mode)` | Quotient rounded to `scale` with a Java rounding mode. |
+| `divide(divisor, mode)` | Uses this value's scale and the given mode. |
+| `divideToIntegralValue`, `remainder` | Truncating integral quotient with Java's preferred scale, and exact remainder. |
+| `setScale(scale)` / `setScale(scale, mode)` | Rescales; the one-argument form raises if digits would be lost. |
+| `round(scale, mode)` | Alias for the two-argument `setScale`. |
+| `compareTo`, `equals` | Numeric comparison; `equals` also compares the scale. |
+| `scale`, `precision`, `signum` | Decimal scale, significant digits and sign. |
+| `negate`, `abs`, `pow`, `stripTrailingZeros` | Derived values. |
+| `toPlainString`, `toString` | Exact text; `toString` uses Java's scientific form for a negative adjusted exponent or a negative scale. |
+| `intValue`, `doubleValue` | Truncating integer and nearest binary64 value. |
+
+Rounding modes are the Java names: `UP`, `DOWN`, `CEILING`, `FLOOR`,
+`HALF_UP`, `HALF_DOWN`, `HALF_EVEN` and `UNNECESSARY`. `UNNECESSARY` raises
+when a digit would be discarded. The default division/setScale forms raise on
+a non-terminating expansion or on discarded digits, matching Java's
+`divide(BigDecimal)` and `setScale(int)`.
+
+```oskl
+let third = decimal("1").divide(decimal("3"), 5, "HALF_EVEN");
+print(third.toPlainString());                 // "0.33333"
+
+let cents = decimal("1.235").setScale(2, "HALF_UP");
+print(cents.toPlainString());                 // "1.24"
+
+print(decimal("1.0").compareTo(decimal("1.00"))); // 0
+print(decimal("1.0").equals(decimal("1.00")));    // false
+```
+
+`BigDecimal("...")` is the exact constructor and is the recommended form.
+`BigDecimal(int)` is exact; `BigDecimal(double)` uses the shortest
+round-tripping decimal text, the same idea as `BigDecimal.valueOf(double)`,
+rather than the exact binary expansion of `new BigDecimal(double)`. There is
+no decimal literal suffix: use `decimal("19.99")` or `BigDecimal("19.99")`.
+
+A `BigDecimal` has no C representation, so it is rejected at the FFI boundary.
+The module is pure Oskel over arrays, strings, loops and closures, so the VM,
+`oskel build` and WebAssembly produce the same exact strings.
 
 ---
 

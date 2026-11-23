@@ -1,0 +1,53 @@
+// Fixture for `oskel build` (tests/build_binary.cmake) and WebAssembly
+// (tests/wasm_case.cmake): `std.decimal` on a compiled target.
+//
+// The module is pure Oskel over arrays, strings, loops and closures, so the
+// native binary and the WebAssembly module must agree with the development VM
+// byte for byte. Every line is deterministic and prints a string value. The
+// expectations were cross-checked against OpenJDK 21's java.math.BigDecimal.
+
+import std.decimal;
+import std.decimal.*;
+import std.decimal as d;
+import { decimal } from std.decimal;
+import std.decimal.BigDecimal;
+
+fn show(label, value) {
+  print(label, value.toPlainString(), value.scale(), value.precision());
+}
+
+show("parse", decimal("1.2300"));
+show("exponent", decimal("1E+3"));
+show("negative", decimal("-0.001"));
+show("add", decimal("1.23").add(decimal("2.0")));
+show("sub", decimal("1.23").subtract(decimal("2.0")));
+show("mul", decimal("1.23").multiply(decimal("2.0")));
+show("bigAdd", decimal("999999999999999999999999999999").add(decimal("1")));
+show("bigMul", decimal("12345678901234567890").multiply(decimal("2")));
+print("compare", decimal("1.0").compareTo(decimal("1.00")),
+  decimal("1.0").equals(decimal("1.00")));
+print("exactDivide", decimal("1").divide(decimal("8")).toPlainString());
+print("exactDivide2", decimal("100").divide(decimal("8")).toPlainString());
+print("exactDivide3", decimal("3").divide(decimal("6")).toPlainString());
+print("scaledDivide", decimal("1").divide(decimal("3"), 5, "HALF_EVEN").toPlainString());
+print("halfUp", decimal("2").divide(decimal("3"), 2, "HALF_UP").toPlainString());
+print("halfEven", decimal("1").divide(decimal("8"), 2, "HALF_EVEN").toPlainString());
+print("ceiling", decimal("-1").divide(decimal("3"), 2, "CEILING").toPlainString());
+print("floor", decimal("-1").divide(decimal("3"), 2, "FLOOR").toPlainString());
+show("setScaleUp", decimal("1.23").setScale(4));
+show("setScaleDown", decimal("1.235").setScale(2, "HALF_UP"));
+show("setScaleNegative", decimal("1234").setScale(-2, "HALF_UP"));
+show("strip", decimal("1.2300").stripTrailingZeros());
+show("stripInteger", decimal("1000").stripTrailingZeros());
+show("integral", decimal("10.5").divideToIntegralValue(decimal("3")));
+show("integralNegativeScale", decimal("10.5").divideToIntegralValue(decimal("0.03")));
+print("remainder", decimal("10.5").remainder(decimal("3")).toPlainString());
+print("remainderNeg", decimal("-10.5").remainder(decimal("3")).toPlainString());
+show("pow", decimal("1.20").pow(2));
+print("intValue", decimal("-12.9").intValue());
+print("doubleValue", decimal("1.5").doubleValue());
+print("facade", std.decimal.decimal("1.25").toPlainString(),
+  d.decimal("1.25").toPlainString());
+print("class", BigDecimal("1.25").toPlainString());
+print("javaToString", decimal("1E+3").toString(), decimal("1E-7").toString(),
+  decimal("0.00").toString(), decimal("1000").stripTrailingZeros().toString());

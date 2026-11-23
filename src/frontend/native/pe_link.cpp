@@ -57,7 +57,7 @@ constexpr std::uint16_t kCharacteristicsRelocsStripped = 0x0001;
 constexpr std::uint16_t kCharacteristicsLargeAddressAware = 0x0020;
 constexpr std::uint16_t kDllCharacteristicsNxCompat = 0x0100;
 
-constexpr std::uint32_t kStartSize = 22;
+constexpr std::uint32_t kStartSize = 88;
 
 enum class SectionKind { Text, Rodata, Data, Bss, Ignored };
 
@@ -364,6 +364,15 @@ CoffObject parseCoffObject(const std::vector<std::uint8_t>& bytes,
     section.relocCount = reader.u16(base + 32);
     section.characteristics = reader.u32(base + 36);
     section.kind = classifySection(section.name);
+    if (nameHasPrefix(section.name, ".pdata") ||
+        nameHasPrefix(section.name, ".xdata")) {
+      throw LinkError("'" + name + "' has a " + section.name +
+                      " section; the own linker does not emit PE exception data");
+    }
+    if (nameHasPrefix(section.name, ".tls")) {
+      throw LinkError("'" + name +
+                      "' has a .tls section; the own linker does not support TLS");
+    }
     if (section.kind == SectionKind::Ignored) continue;
     if (section.kind == SectionKind::Bss) {
       const std::uint32_t size =
@@ -506,7 +515,11 @@ const char* dllForImport(const std::string& name) {
       "qsort", "sqrt", "pow", "sin", "cos", "tan", "log", "exp", "floor",
       "ceil", "round", "fabs", "rand", "srand", "system", "remove", "rename",
       "perror"};
+  // The UCRT does not export the legacy `__getmainargs`; the compatibility
+  // `msvcrt.dll` does, and it parses the process command line the same way.
+  static const std::unordered_set<std::string> msvcrt = {"__getmainargs"};
   if (kernel.count(name) != 0) return "kernel32.dll";
+  if (msvcrt.count(name) != 0) return "msvcrt.dll";
   if (ucrt.count(name) != 0) return "ucrtbase.dll";
   if (!name.empty() && name[0] == '_') return "ucrtbase.dll";
   throw LinkError("undefined symbol '" + name + "' has no known import DLL");
@@ -745,6 +758,13 @@ std::vector<std::string> resolvePatches(
     importIndex.emplace("ExitProcess", static_cast<std::uint32_t>(imports.size()));
     imports.push_back("ExitProcess");
   }
+  // The generated `_start` parses the process command line with
+  // `msvcrt.dll`'s `__getmainargs` (the UCRT does not export it), so `args()`
+  // sees the same vector as the VM.
+  if (importIndex.count("__getmainargs") == 0) {
+    importIndex.emplace("__getmainargs", static_cast<std::uint32_t>(imports.size()));
+    imports.push_back("__getmainargs");
+  }
   return imports;
 }
 
@@ -921,6 +941,10 @@ std::vector<std::uint8_t> linkWindowsExecutable(
   }
   const auto exitIat = importIat.find("ExitProcess");
   if (exitIat == importIat.end()) throw LinkError("internal: ExitProcess import missing");
+  const auto getmainargsIat = importIat.find("__getmainargs");
+  if (getmainargsIat == importIat.end()) {
+    throw LinkError("internal: __getmainargs import missing");
+  }
 
   const std::uint64_t thunkBase = textSize;
   const std::uint64_t startOffset =
@@ -1087,26 +1111,49 @@ std::vector<std::uint8_t> linkWindowsExecutable(
 
   const std::uint64_t startRva = textRva + startOffset;
   const std::uint64_t mainRva = textRva + mainDefinition->second.offset;
-  textSection[startOffset + 0] = 0x48;  // sub rsp, 8
-  textSection[startOffset + 1] = 0x83;
-  textSection[startOffset + 2] = 0xEC;
-  textSection[startOffset + 3] = 0x08;
-  textSection[startOffset + 4] = 0x31;  // xor ecx, ecx
-  textSection[startOffset + 5] = 0xC9;
-  textSection[startOffset + 6] = 0x31;  // xor edx, edx
-  textSection[startOffset + 7] = 0xD2;
-  textSection[startOffset + 8] = 0xE8;  // call main
-  put32(textSection, startOffset + 9,
-        static_cast<std::uint32_t>(static_cast<std::int64_t>(mainRva) -
-                                   static_cast<std::int64_t>(startRva + 13)));
-  textSection[startOffset + 13] = 0x89;  // mov ecx, eax
-  textSection[startOffset + 14] = 0xC1;
-  textSection[startOffset + 15] = 0xFF;  // call [rip + ExitProcess IAT]
-  textSection[startOffset + 16] = 0x15;
-  put32(textSection, startOffset + 17,
-        static_cast<std::uint32_t>(static_cast<std::int64_t>(exitIat->second) -
-                                   static_cast<std::int64_t>(startRva + 21)));
-  textSection[startOffset + 21] = 0xF4;  // hlt
+  const auto emitIatCall = [&](std::uint64_t at, std::uint32_t slot) {
+    textSection[at] = 0xFF;
+    textSection[at + 1] = 0x15;
+    put32(textSection, at + 2,
+          static_cast<std::uint32_t>(
+              static_cast<std::int64_t>(slot) -
+              static_cast<std::int64_t>(textRva + at + 6)));
+  };
+  std::uint64_t at = startOffset;
+  const auto emitByte = [&](std::uint8_t value) { textSection[at++] = value; };
+  emitByte(0x48); emitByte(0x83); emitByte(0xEC); emitByte(0x08);  // sub rsp, 8
+  emitByte(0x48); emitByte(0x83); emitByte(0xEC); emitByte(0x60);  // sub rsp, 96
+  emitByte(0x31); emitByte(0xC0);                                  // xor eax, eax
+  for (std::uint8_t offset : {std::uint8_t{40}, std::uint8_t{48},
+                              std::uint8_t{56}, std::uint8_t{64}}) {
+    emitByte(0x48); emitByte(0x89); emitByte(0x44); emitByte(0x24);
+    emitByte(offset);
+  }
+  // __getmainargs(&argc, &argv, &envp, 0, &startupInfo)
+  emitByte(0x48); emitByte(0x8D); emitByte(0x4C); emitByte(0x24); emitByte(0x28);
+  emitByte(0x48); emitByte(0x8D); emitByte(0x54); emitByte(0x24); emitByte(0x30);
+  emitByte(0x4C); emitByte(0x8D); emitByte(0x44); emitByte(0x24); emitByte(0x38);
+  emitByte(0x45); emitByte(0x31); emitByte(0xC9);                  // xor r9d, r9d
+  emitByte(0x48); emitByte(0x8D); emitByte(0x44); emitByte(0x24); emitByte(0x40);
+  emitByte(0x48); emitByte(0x89); emitByte(0x44); emitByte(0x24); emitByte(0x20);
+  emitIatCall(at, getmainargsIat->second);
+  at += 6;
+  // main(argc, argv): the wrapper moves rcx/rdx to the chunk's rdi/rsi.
+  emitByte(0x48); emitByte(0x8B); emitByte(0x4C); emitByte(0x24); emitByte(0x28);
+  emitByte(0x48); emitByte(0x8B); emitByte(0x54); emitByte(0x24); emitByte(0x30);
+  emitByte(0xE8);
+  put32(textSection, at,
+        static_cast<std::uint32_t>(
+            static_cast<std::int64_t>(mainRva) -
+            static_cast<std::int64_t>(textRva + at + 4)));
+  at += 4;
+  emitByte(0x89); emitByte(0xC1);                                  // mov ecx, eax
+  emitIatCall(at, exitIat->second);
+  at += 6;
+  emitByte(0xF4);                                                  // hlt
+  if (at - startOffset != kStartSize) {
+    throw LinkError("internal: _start size mismatch");
+  }
 
   std::vector<std::uint8_t> out(static_cast<std::size_t>(fileSize), 0);
   out[0] = 'M';
