@@ -11,6 +11,17 @@ may change between minor versions.
 
 ### Added
 
+- **`std.ui` buttons react to the pointer.** A button now carries `hover` and
+  `pressed`, and `pointerMove`/`pointerDown`/`pointerUp` update them; a release
+  runs `onClick` only when it lands on the pressed button, so releasing outside
+  cancels the click. `button` uses distinct blue shades, `buttonStates` exposes
+  all three fills, and `buttonStyle` keeps one fill for compatibility.
+  `std.ui.window` routes SDL mouse motion, press and release through the same
+  primitives, and clears both states when the pointer leaves the window or the
+  window loses focus. `ui.click` remains the headless press/release helper.
+  `tests/native_build_ui.oskl` pins the state transitions on the VM and under
+  `oskel build`.
+
 - **VM/AOT parity for callbacks (PHASE 7f.11).** A callback may now return a
   struct by value under `oskel build`: the AOT body stages the returned map's
   fields into the C bytes and loads them into the System V return registers

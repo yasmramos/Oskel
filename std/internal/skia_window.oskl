@@ -45,16 +45,11 @@ fn frame(root, width, height, surface, canvas, pixels, texture, renderer): bool 
   return sdl.present(renderer);
 }
 
-// Dispatch a click at window coordinates to the deepest button. Returns true
-// when a handler ran, so the caller can lay the tree out again.
+// Dispatch a complete press/release at window coordinates to the deepest
+// button. Returns true when a handler ran, so the caller can lay the tree out
+// again.
 fn click(root, x, y): bool {
-  let hit = ui.hitTest(root, x, y);
-  if (hit == nil) {
-    return false;
-  }
-  let handler = hit.onClick;
-  handler();
-  return true;
+  return ui.click(root, x, y);
 }
 
 fn run(title, root, width, height, maxFrames): int {
@@ -116,10 +111,20 @@ fn run(title, root, width, height, maxFrames): int {
           sdl.keyCode(event) == sdl.SDLK_ESCAPE) {
         running = false;
       }
+      if (kind == sdl.SDL_EVENT_WINDOW_MOUSE_LEAVE ||
+          kind == sdl.SDL_EVENT_WINDOW_FOCUS_LOST) {
+        _ = ui.pointerCancel(root);
+      }
+      if (kind == sdl.SDL_EVENT_MOUSE_MOTION) {
+        _ = ui.pointerMove(root, int(sdl.mouseX(event)), int(sdl.mouseY(event)));
+      }
       if (kind == sdl.SDL_EVENT_MOUSE_BUTTON_DOWN &&
-          sdl.mouseButton(event) == sdl.SDL_BUTTON_LEFT &&
-          sdl.mouseButtonDown(event)) {
-        if (click(root, int(sdl.mouseX(event)), int(sdl.mouseY(event)))) {
+          sdl.mouseButton(event) == sdl.SDL_BUTTON_LEFT) {
+        _ = ui.pointerDown(root, int(sdl.mouseX(event)), int(sdl.mouseY(event)));
+      }
+      if (kind == sdl.SDL_EVENT_MOUSE_BUTTON_UP &&
+          sdl.mouseButton(event) == sdl.SDL_BUTTON_LEFT) {
+        if (ui.pointerUp(root, int(sdl.mouseX(event)), int(sdl.mouseY(event)))) {
           ui.layoutWith(root, width, height, measure);
         }
       }
