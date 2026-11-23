@@ -397,9 +397,10 @@ if(OSKEL_SKIA_FOUND)
   elseif(UNIX)
     target_link_options(skia_shim PRIVATE "-Wl,-rpath,$ORIGIN")
   endif()
-  if(UNIX AND CMAKE_BUILD_TYPE MATCHES "^(Release|MinSizeRel|RelWithDebInfo)$")
+  if(UNIX AND NOT APPLE AND CMAKE_BUILD_TYPE MATCHES "^(Release|MinSizeRel|RelWithDebInfo)$")
     # Static Skia carries its object debug information into the shared bridge;
-    # the shipped file is the machine code only.
+    # the shipped file is the machine code only. Apple's strip rejects a dylib
+    # whose static archive references symbols through an indirect symbol table.
     add_custom_command(TARGET skia_shim POST_BUILD
       COMMAND "${CMAKE_STRIP}" "$<TARGET_FILE:skia_shim>"
       VERBATIM)
