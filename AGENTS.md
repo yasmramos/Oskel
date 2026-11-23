@@ -361,7 +361,8 @@ it as a caveat:
   the exact text on both engines through `pcall`, so a new message gets a line
   there rather than a prefix-only assertion. The two-operand tails quote both
   operands through `emitTwoTypeFail` (`cannot compare 'int' with 'string'`,
-  `operator 'in' is not supported for 'int' and 'int'`). Two tails are still
+  `operator 'in' is not supported for 'int' and 'int'`); `>` and `<=` swap the
+  two names, because the VM lowers them to `lessThan(b, a)`. Two tails are still
   truncated: the arithmetic/bitwise `unsupported operand types for '<op>':
   '<t1>' and '<t2>'`, because the shared helper receives the opcode at run
   time and never the symbol, and the FFI struct-field name (`the struct

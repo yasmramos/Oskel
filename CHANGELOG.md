@@ -557,7 +557,9 @@ may change between minor versions.
   `replaceFirst`/`substr`/`repeat` tails, the map `has`/`get`/`set`/`delete`
   key tail, and `unsupported unary operator for type 'int'`. The two-operand
   tails quote both operands too: `cannot compare 'int' with 'string'` and
-  `operator 'in' is not supported for 'int' and 'int'`. Two tails still stop
+  `operator 'in' is not supported for 'int' and 'int'`; `>` and `<=` swap the
+  names, because the VM lowers them to `lessThan(b, a)` and its message is the
+  one a program sees. Two tails still stop
   at the prefix: the arithmetic/bitwise `unsupported operand types for '<op>':
   '<t1>' and '<t2>'`, which needs the operator symbol threaded through the
   shared helper, and the FFI struct-field name, which names a C layout field
