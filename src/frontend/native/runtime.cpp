@@ -3146,7 +3146,8 @@ constexpr std::int64_t kResultSlot = -144;
 // loop state lives in a stack slot and is reloaded after each call, because a
 // call clobbers every caller-saved register.
 void emitArrayCallbackMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
-                             const DataBlob& msgArgc, CallbackKind kind) {
+                             const DataBlob& msgArgc, const DataBlob& msgNotFunction,
+                             CallbackKind kind) {
   // The two pushes leave rsp 0 mod 16; a 128-byte frame keeps it there and
   // reaches the lowest slot at -144.
   constexpr std::int32_t kFrameSize = 128;
@@ -3211,6 +3212,14 @@ void emitArrayCallbackMethod(CodeGen& cg, CodeGen::Label label, const Collection
   // result = call(callback, 1, &window)
   cg.movFromMem(Rdi, Rbp, kCallbackTagSlot);        // callback tag
   cg.movFromMem(Rsi, Rbp, kCallbackPayloadSlot);    // callback payload
+  // The VM names the method when the callback is not a function. The check
+  // sits at the call, not at entry, because the VM validates only what it
+  // invokes: an empty receiver never reports it.
+  CodeGen::Label callable = cg.newLabel();
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagFunc));
+  cg.jcc(Jcc::Eq, callable);
+  emitTypeTailFail(cg, msgNotFunction, Rdi, Rsi);
+  cg.bind(callable);
   cg.movImm(Rdx, 1);
   cg.leaMem(Rcx, Rbp, kWindowSlot);
   cg.callLabel(env.call);
@@ -3337,7 +3346,8 @@ void emitArrayCallbackMethod(CodeGen& cg, CodeGen::Label label, const Collection
 // only saved registers, r13/r14 are the arena cursor and must be left advanced
 // by whatever the callback allocated, and every loop value lives in a slot.
 void emitArrayReduceMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
-                           const DataBlob& msgArgc, const DataBlob& msgEmpty) {
+                           const DataBlob& msgArgc, const DataBlob& msgEmpty,
+                           const DataBlob& msgNotFunction) {
   // Slots below the two saved registers: -48 receiver, -64/-56 accumulator
   // tag/payload, -72 length, -80 index, -96/-88 callback tag/payload, -112 the
   // argument window. A callee reads `args[i]` at `args - 16*i` (the register
@@ -3424,6 +3434,13 @@ void emitArrayReduceMethod(CodeGen& cg, CodeGen::Label label, const CollectionEn
 
   cg.movFromMem(Rdi, Rbp, kCbTag);
   cg.movFromMem(Rsi, Rbp, kCbPayload);
+  // Same guard as the other callback methods: the VM reports the name, and
+  // only once it actually invokes.
+  CodeGen::Label callable = cg.newLabel();
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagFunc));
+  cg.jcc(Jcc::Eq, callable);
+  emitTypeTailFail(cg, msgNotFunction, Rdi, Rsi);
+  cg.bind(callable);
   cg.movImm(Rdx, 2);
   cg.leaMem(Rcx, Rbp, kWindow);
   cg.callLabel(env.call);
@@ -17234,6 +17251,13 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgAnyArgc = addText("any() expects 1 argument");
   DataBlob msgAllArgc = addText("all() expects 1 argument");
   DataBlob msgReduceArgc = addText("reduce() expects between 1 and 2 arguments");
+  DataBlob msgMapNotFunction = addText("map() must be a function");
+  DataBlob msgFilterNotFunction = addText("filter() must be a function");
+  DataBlob msgEachNotFunction = addText("each() must be a function");
+  DataBlob msgFindNotFunction = addText("find() must be a function");
+  DataBlob msgAnyNotFunction = addText("any() must be a function");
+  DataBlob msgAllNotFunction = addText("all() must be a function");
+  DataBlob msgReduceNotFunction = addText("reduce() must be a function");
   DataBlob msgReduceEmpty =
       addText("reduce() of an empty array needs an initial value");
   DataBlob msgSumArgc = addText("sum() expects 0 arguments");
@@ -18005,14 +18029,20 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitArrayConcatMethod(cg, handles.arrayConcatMethod, env, msgConcatArgc, msgConcatType);
   emitArrayReversedMethod(cg, handles.arrayReversedMethod, env, msgReversedArgc);
   emitArrayCloneMethod(cg, handles.arrayCloneMethod, env, msgCloneArgc);
-  emitArrayCallbackMethod(cg, handles.arrayMapMethod, env, msgMapArgc, CallbackKind::Map);
+  emitArrayCallbackMethod(cg, handles.arrayMapMethod, env, msgMapArgc, msgMapNotFunction,
+                          CallbackKind::Map);
   emitArrayCallbackMethod(cg, handles.arrayFilterMethod, env, msgFilterArgc,
-                          CallbackKind::Filter);
-  emitArrayCallbackMethod(cg, handles.arrayEachMethod, env, msgEachArgc, CallbackKind::Each);
-  emitArrayCallbackMethod(cg, handles.arrayFindMethod, env, msgFindArgc, CallbackKind::Find);
-  emitArrayCallbackMethod(cg, handles.arrayAnyMethod, env, msgAnyArgc, CallbackKind::Any);
-  emitArrayCallbackMethod(cg, handles.arrayAllMethod, env, msgAllArgc, CallbackKind::All);
-  emitArrayReduceMethod(cg, handles.arrayReduceMethod, env, msgReduceArgc, msgReduceEmpty);
+                          msgFilterNotFunction, CallbackKind::Filter);
+  emitArrayCallbackMethod(cg, handles.arrayEachMethod, env, msgEachArgc, msgEachNotFunction,
+                          CallbackKind::Each);
+  emitArrayCallbackMethod(cg, handles.arrayFindMethod, env, msgFindArgc, msgFindNotFunction,
+                          CallbackKind::Find);
+  emitArrayCallbackMethod(cg, handles.arrayAnyMethod, env, msgAnyArgc, msgAnyNotFunction,
+                          CallbackKind::Any);
+  emitArrayCallbackMethod(cg, handles.arrayAllMethod, env, msgAllArgc, msgAllNotFunction,
+                          CallbackKind::All);
+  emitArrayReduceMethod(cg, handles.arrayReduceMethod, env, msgReduceArgc, msgReduceEmpty,
+                        msgReduceNotFunction);
   emitArraySumMethod(cg, handles.arraySumMethod, env, msgSumArgc, msgSumType);
   emitArrayJoinMethod(cg, handles.arrayJoinMethod, env, msgJoinArgc);
   emitArraySortMethod(cg, handles.arraySortMethod, env, msgSortArgc, msgSortCmp);

@@ -514,7 +514,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     'int' with 'string'` and `operator 'in' is not supported for 'int' and
     'int'` share `emitTwoTypeFail`. `>` and `<=` reverse the two names, because
     the VM lowers them to `lessThan(b, a)`, so `1 > "a"` reports
-    `cannot compare 'string' with 'int'` in both engines. Two tails are still truncated: the
+    `cannot compare 'string' with 'int'` in both engines. The six callback
+    methods (`map`, `filter`, `each`, `find`, `any`, `all`) and `reduce` report
+    `map() must be a function, got 'int'` from a guard at the call, not at
+    entry, so an empty receiver still returns without reporting. Two tails are still truncated: the
     arithmetic/bitwise `unsupported operand types for '<op>': '<t1>' and
     '<t2>'`, which needs the operator symbol threaded through the shared
     helper (the helper receives the opcode at run time, not the symbol), and
