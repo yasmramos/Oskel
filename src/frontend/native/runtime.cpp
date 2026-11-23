@@ -1017,8 +1017,10 @@ void emitWriteInt(CodeGen& cg, CodeGen::Label label, CodeGen::Label writeLabel) 
 // `Add` on two arrays concatenates (7c.3b); `%` on floats uses x87 `fprem`
 // (7c.1d.1).
 void emitArith(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
-               const DataBlob& msgTypes, const DataBlob& msgDivZero,
-               CodeGen::Label concatLabel, CodeGen::Label arrayConcatLabel) {
+               const DataBlob& msgTypes, const DataBlob& separator,
+               const std::vector<const DataBlob*>& opMessages,
+               const DataBlob& msgDivZero, CodeGen::Label concatLabel,
+               CodeGen::Label arrayConcatLabel) {
   CodeGen::Label bad = cg.newLabel();
   CodeGen::Label strConcat = cg.newLabel();
   CodeGen::Label arrConcat = cg.newLabel();
@@ -1246,7 +1248,27 @@ void emitArith(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   epilogue(cg);
 
   cg.bind(bad);
-  emitFailCall(cg, fail, msgTypes);
+  // The VM names the operator, so the selector picks the prefix; the operands
+  // are untouched here (the number-flag test only writes rax).
+  {
+    // The selectors in declaration order, so the message list stays parallel to
+    // `AotArithOp` rather than to its numeric values.
+    constexpr AotArithOp kOps[] = {AotArithOp::Add, AotArithOp::Sub, AotArithOp::Mul,
+                                   AotArithOp::Div, AotArithOp::Mod};
+    constexpr std::size_t kOpCount = sizeof kOps / sizeof kOps[0];
+    static_assert(kOpCount == 5);
+    std::vector<CodeGen::Label> named;
+    for (std::size_t i = 0; i < kOpCount && i < opMessages.size(); ++i) {
+      named.push_back(cg.newLabel());
+      cg.cmpImm32(R8, static_cast<std::int32_t>(kOps[i]));
+      cg.jcc(Jcc::Eq, named.back());
+    }
+    emitFailCall(cg, fail, msgTypes);  // an unknown selector keeps the bare text
+    for (std::size_t i = 0; i < named.size(); ++i) {
+      cg.bind(named[i]);
+      emitTwoTypeFail(cg, *opMessages[i], separator, Rdi, Rsi, Rdx, Rcx);
+    }
+  }
 }
 
 // `AotValue oskel_pow(AotValue a, AotValue b)`: `**` with the int/float/double
@@ -1257,7 +1279,7 @@ void emitArith(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
 // binary32 exactly like the hosted `makeNumeric`. A non-number operand is the
 // unsupported-operand error.
 void emitPow(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
-             const DataBlob& msgPow, CodeGen::Label mathPow) {
+             const DataBlob& msgPow, const DataBlob& separator, CodeGen::Label mathPow) {
   CodeGen::Label bad = cg.newLabel();
   CodeGen::Label floatPath = cg.newLabel();
   CodeGen::Label floatFloat = cg.newLabel();
@@ -1334,24 +1356,28 @@ void emitPow(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   epilogue(cg);
 
   cg.bind(bad);
-  emitFailCall(cg, fail, msgPow);
+  emitTwoTypeFail(cg, msgPow, separator, Rdi, Rsi, Rdx, Rcx);
 }
 
 // `AotValue oskel_shift(AotValue a, AotValue b, long op)`: integer `<<`/`>>`.
 // The count must be an int in 0..63 (the hosted range check); `>>` is
 // arithmetic, so it preserves the sign.
 void emitShift(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
-               const DataBlob& msgShift) {
+               const DataBlob& msgShift, const DataBlob& msgLeft,
+               const DataBlob& msgRight, const DataBlob& separator) {
   CodeGen::Label bad = cg.newLabel();
+  CodeGen::Label badOperand = cg.newLabel();
   CodeGen::Label doShl = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
 
   cg.bind(label);
   prologue(cg);
+  // A non-int operand is the VM's operand message, which names the direction;
+  // only an out-of-range integer count reports the count range.
   cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagInt));
-  cg.jcc(Jcc::Ne, bad);
+  cg.jcc(Jcc::Ne, badOperand);
   cg.cmpImm32(Rdx, static_cast<std::int32_t>(kTagInt));
-  cg.jcc(Jcc::Ne, bad);
+  cg.jcc(Jcc::Ne, badOperand);
   cg.testReg(Rcx);
   cg.jcc(Jcc::S, bad);  // negative count
   cg.cmpImm32(Rcx, 63);
@@ -1370,12 +1396,22 @@ void emitShift(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
 
   cg.bind(bad);
   emitFailCall(cg, fail, msgShift);
+  cg.bind(badOperand);
+  {
+    CodeGen::Label leftName = cg.newLabel();
+    cg.cmpImm32(R8, static_cast<std::int32_t>(AotShiftOp::Shl));
+    cg.jcc(Jcc::Eq, leftName);
+    emitTwoTypeFail(cg, msgRight, separator, Rdi, Rsi, Rdx, Rcx);
+    cg.bind(leftName);
+    emitTwoTypeFail(cg, msgLeft, separator, Rdi, Rsi, Rdx, Rcx);
+  }
 }
 
 // `AotValue oskel_bitwise(AotValue a, AotValue b, long op)`: int-only `&`, `|`
 // and `^`, selected by `op` in r8.
 void emitBitwise(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
-                 const DataBlob& message) {
+                 const DataBlob& message, const DataBlob& msgAnd, const DataBlob& msgOr,
+                 const DataBlob& msgXor, const DataBlob& separator) {
   CodeGen::Label bad = cg.newLabel();
   CodeGen::Label isAnd = cg.newLabel();
   CodeGen::Label isOr = cg.newLabel();
@@ -1402,7 +1438,24 @@ void emitBitwise(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   cg.movReg(Rdx, Rsi);
   epilogue(cg);
   cg.bind(bad);
-  emitFailCall(cg, fail, message);
+  {
+    CodeGen::Label andName = cg.newLabel();
+    CodeGen::Label orName = cg.newLabel();
+    CodeGen::Label xorName = cg.newLabel();
+    cg.cmpImm32(R8, static_cast<std::int32_t>(AotBitwiseOp::And));
+    cg.jcc(Jcc::Eq, andName);
+    cg.cmpImm32(R8, static_cast<std::int32_t>(AotBitwiseOp::Or));
+    cg.jcc(Jcc::Eq, orName);
+    cg.cmpImm32(R8, static_cast<std::int32_t>(AotBitwiseOp::Xor));
+    cg.jcc(Jcc::Eq, xorName);
+    emitFailCall(cg, fail, message);  // an unknown selector keeps the bare text
+    cg.bind(andName);
+    emitTwoTypeFail(cg, msgAnd, separator, Rdi, Rsi, Rdx, Rcx);
+    cg.bind(orName);
+    emitTwoTypeFail(cg, msgOr, separator, Rdi, Rsi, Rdx, Rcx);
+    cg.bind(xorName);
+    emitTwoTypeFail(cg, msgXor, separator, Rdi, Rsi, Rdx, Rcx);
+  }
 }
 
 // `AotValue oskel_negate(AotValue a)`: arithmetic negation of an int (wrapping)
@@ -1667,7 +1720,17 @@ void emitCompare(CodeGen& cg, CodeGen::Label label, const DataBlob& message,
   epilogue(cg);
 
   cg.bind(badCompare);
+  // The VM lowers `a > b` to `lessThan(b, a)` and `a <= b` to `!lessThan(b, a)`,
+  // so its message quotes those two operators' operands reversed. Match it:
+  // `error.message` is observable.
+  CodeGen::Label badReversed = cg.newLabel();
+  cg.cmpImm32(R8, static_cast<std::int32_t>(AotCompareOp::Gt));
+  cg.jcc(Jcc::Eq, badReversed);
+  cg.cmpImm32(R8, static_cast<std::int32_t>(AotCompareOp::Le));
+  cg.jcc(Jcc::Eq, badReversed);
   emitTwoTypeFail(cg, message, *gMsgText.textWith, Rdi, Rsi, Rdx, Rcx);
+  cg.bind(badReversed);
+  emitTwoTypeFail(cg, message, *gMsgText.textWith, Rdx, Rcx, Rdi, Rsi);
 
   // --- internal subroutine: rax = (a == b) ---
   // Not reached by fall-through: every branch above ends in `ret` or a call to
@@ -3136,7 +3199,8 @@ constexpr std::int64_t kResultSlot = -144;
 // loop state lives in a stack slot and is reloaded after each call, because a
 // call clobbers every caller-saved register.
 void emitArrayCallbackMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
-                             const DataBlob& msgArgc, CallbackKind kind) {
+                             const DataBlob& msgArgc, const DataBlob& msgNotFunction,
+                             CallbackKind kind) {
   // The two pushes leave rsp 0 mod 16; a 128-byte frame keeps it there and
   // reaches the lowest slot at -144.
   constexpr std::int32_t kFrameSize = 128;
@@ -3201,6 +3265,14 @@ void emitArrayCallbackMethod(CodeGen& cg, CodeGen::Label label, const Collection
   // result = call(callback, 1, &window)
   cg.movFromMem(Rdi, Rbp, kCallbackTagSlot);        // callback tag
   cg.movFromMem(Rsi, Rbp, kCallbackPayloadSlot);    // callback payload
+  // The VM names the method when the callback is not a function. The check
+  // sits at the call, not at entry, because the VM validates only what it
+  // invokes: an empty receiver never reports it.
+  CodeGen::Label callable = cg.newLabel();
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagFunc));
+  cg.jcc(Jcc::Eq, callable);
+  emitTypeTailFail(cg, msgNotFunction, Rdi, Rsi);
+  cg.bind(callable);
   cg.movImm(Rdx, 1);
   cg.leaMem(Rcx, Rbp, kWindowSlot);
   cg.callLabel(env.call);
@@ -3327,7 +3399,8 @@ void emitArrayCallbackMethod(CodeGen& cg, CodeGen::Label label, const Collection
 // only saved registers, r13/r14 are the arena cursor and must be left advanced
 // by whatever the callback allocated, and every loop value lives in a slot.
 void emitArrayReduceMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
-                           const DataBlob& msgArgc, const DataBlob& msgEmpty) {
+                           const DataBlob& msgArgc, const DataBlob& msgEmpty,
+                           const DataBlob& msgNotFunction) {
   // Slots below the two saved registers: -48 receiver, -64/-56 accumulator
   // tag/payload, -72 length, -80 index, -96/-88 callback tag/payload, -112 the
   // argument window. A callee reads `args[i]` at `args - 16*i` (the register
@@ -3414,6 +3487,13 @@ void emitArrayReduceMethod(CodeGen& cg, CodeGen::Label label, const CollectionEn
 
   cg.movFromMem(Rdi, Rbp, kCbTag);
   cg.movFromMem(Rsi, Rbp, kCbPayload);
+  // Same guard as the other callback methods: the VM reports the name, and
+  // only once it actually invokes.
+  CodeGen::Label callable = cg.newLabel();
+  cg.cmpImm32(Rdi, static_cast<std::int32_t>(kTagFunc));
+  cg.jcc(Jcc::Eq, callable);
+  emitTypeTailFail(cg, msgNotFunction, Rdi, Rsi);
+  cg.bind(callable);
   cg.movImm(Rdx, 2);
   cg.leaMem(Rcx, Rbp, kWindow);
   cg.callLabel(env.call);
@@ -17183,10 +17263,21 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   // Copy the blobs out so later `data.push_back` reallocations cannot
   // invalidate a reference held by an emit helper below.
   DataBlob msgTypes = addText("unsupported operand types");
-  DataBlob msgPow = addText("unsupported operand types for '**'");
+  DataBlob msgPow = addText("unsupported operand types for '**':");
   DataBlob msgDivZero = addText("division by zero");
   DataBlob msgShift = addText("shift count must be between 0 and 63");
   DataBlob msgBit = addText("unsupported operand types for");
+  DataBlob msgAnd = addText(" and");
+  DataBlob msgArithAdd = addText("unsupported operand types for '+':");
+  DataBlob msgArithSub = addText("unsupported operand types for '-':");
+  DataBlob msgArithMul = addText("unsupported operand types for '*':");
+  DataBlob msgArithDiv = addText("unsupported operand types for '/':");
+  DataBlob msgArithMod = addText("unsupported operand types for '%':");
+  DataBlob msgBitAnd = addText("unsupported operand types for '&':");
+  DataBlob msgBitOr = addText("unsupported operand types for '|':");
+  DataBlob msgBitXor = addText("unsupported operand types for '^':");
+  DataBlob msgShiftLeft = addText("unsupported operand types for '<<':");
+  DataBlob msgShiftRight = addText("unsupported operand types for '>>':");
   DataBlob msgNeg = addText("unsupported unary operator for type");
   DataBlob msgBitNot = addText("unsupported unary operator for type");
   DataBlob msgCompare = addText("cannot compare");
@@ -17224,6 +17315,13 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgAnyArgc = addText("any() expects 1 argument");
   DataBlob msgAllArgc = addText("all() expects 1 argument");
   DataBlob msgReduceArgc = addText("reduce() expects between 1 and 2 arguments");
+  DataBlob msgMapNotFunction = addText("map() must be a function");
+  DataBlob msgFilterNotFunction = addText("filter() must be a function");
+  DataBlob msgEachNotFunction = addText("each() must be a function");
+  DataBlob msgFindNotFunction = addText("find() must be a function");
+  DataBlob msgAnyNotFunction = addText("any() must be a function");
+  DataBlob msgAllNotFunction = addText("all() must be a function");
+  DataBlob msgReduceNotFunction = addText("reduce() must be a function");
   DataBlob msgReduceEmpty =
       addText("reduce() of an empty array needs an initial value");
   DataBlob msgSumArgc = addText("sum() expects 0 arguments");
@@ -17995,14 +18093,20 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitArrayConcatMethod(cg, handles.arrayConcatMethod, env, msgConcatArgc, msgConcatType);
   emitArrayReversedMethod(cg, handles.arrayReversedMethod, env, msgReversedArgc);
   emitArrayCloneMethod(cg, handles.arrayCloneMethod, env, msgCloneArgc);
-  emitArrayCallbackMethod(cg, handles.arrayMapMethod, env, msgMapArgc, CallbackKind::Map);
+  emitArrayCallbackMethod(cg, handles.arrayMapMethod, env, msgMapArgc, msgMapNotFunction,
+                          CallbackKind::Map);
   emitArrayCallbackMethod(cg, handles.arrayFilterMethod, env, msgFilterArgc,
-                          CallbackKind::Filter);
-  emitArrayCallbackMethod(cg, handles.arrayEachMethod, env, msgEachArgc, CallbackKind::Each);
-  emitArrayCallbackMethod(cg, handles.arrayFindMethod, env, msgFindArgc, CallbackKind::Find);
-  emitArrayCallbackMethod(cg, handles.arrayAnyMethod, env, msgAnyArgc, CallbackKind::Any);
-  emitArrayCallbackMethod(cg, handles.arrayAllMethod, env, msgAllArgc, CallbackKind::All);
-  emitArrayReduceMethod(cg, handles.arrayReduceMethod, env, msgReduceArgc, msgReduceEmpty);
+                          msgFilterNotFunction, CallbackKind::Filter);
+  emitArrayCallbackMethod(cg, handles.arrayEachMethod, env, msgEachArgc, msgEachNotFunction,
+                          CallbackKind::Each);
+  emitArrayCallbackMethod(cg, handles.arrayFindMethod, env, msgFindArgc, msgFindNotFunction,
+                          CallbackKind::Find);
+  emitArrayCallbackMethod(cg, handles.arrayAnyMethod, env, msgAnyArgc, msgAnyNotFunction,
+                          CallbackKind::Any);
+  emitArrayCallbackMethod(cg, handles.arrayAllMethod, env, msgAllArgc, msgAllNotFunction,
+                          CallbackKind::All);
+  emitArrayReduceMethod(cg, handles.arrayReduceMethod, env, msgReduceArgc, msgReduceEmpty,
+                        msgReduceNotFunction);
   emitArraySumMethod(cg, handles.arraySumMethod, env, msgSumArgc, msgSumType);
   emitArrayJoinMethod(cg, handles.arrayJoinMethod, env, msgJoinArgc);
   emitArraySortMethod(cg, handles.arraySortMethod, env, msgSortArgc, msgSortCmp);
@@ -18190,10 +18294,12 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitPrintBuiltin(cg, handles.eprintBuiltin, handles.printValueErrRaw, entry.write,
                    textSpace, textNewline, /*fd=*/2, /*newline=*/true);
   emitTruthy(cg, handles.truthy);
-  emitArith(cg, handles.arithValues, fail, msgTypes, msgDivZero, handles.concat,
+  emitArith(cg, handles.arithValues, fail, msgTypes, msgAnd,
+            {&msgArithAdd, &msgArithSub, &msgArithMul, &msgArithDiv, &msgArithMod}, msgDivZero,
+            handles.concat,
             handles.arrayConcat);
-  emitShift(cg, handles.shiftValues, fail, msgShift);
-  emitBitwise(cg, handles.bitwiseValues, fail, msgBit);
+  emitShift(cg, handles.shiftValues, fail, msgShift, msgShiftLeft, msgShiftRight, msgAnd);
+  emitBitwise(cg, handles.bitwiseValues, fail, msgBit, msgBitAnd, msgBitOr, msgBitXor, msgAnd);
   emitNegate(cg, handles.negateValue, msgNeg);
   emitBitNot(cg, handles.bitNotValue, msgBitNot);
   emitNot(cg, handles.notValue);
@@ -18345,7 +18451,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   mathlib::MathHandles math = mathlib::newMathHandles(cg);
   mathlib::emitMathLib(cg, math);
   // `**` shares the embedded `pow` with the `pow` builtin.
-  emitPow(cg, handles.powValues, fail, msgPow, math.pow);
+  emitPow(cg, handles.powValues, fail, msgPow, msgAnd, math.pow);
   emitTranscendentalBuiltin(cg, handles.expBuiltin, fail, math.exp, msgExpType,
                             msgExpArgc, false, msgLogNonPositive);
   emitTranscendentalBuiltin(cg, handles.logBuiltin, fail, math.log, msgLogType,

@@ -6,6 +6,13 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
 
 ## Delivery
 
+- **Bring the remote changes before starting any work.** Run
+  `git fetch origin` and merge (or reset the base to) the current
+  `origin/develop` **before** creating the work branch. Do it again before
+  opening the PR and after any other PR lands. Starting from a stale tree is
+  what turns a clean PR into a conflict: `develop` moves while the branch is
+  being written, and a later PR that touches the same lines makes the branch
+  `dirty` without any push to it.
 - **Every finished task ends with a pull request against `develop`.** Do not
   wait to be asked. `develop` is the base branch (CONVENTIONS.md).
 - Branch naming: `feat/phase-X.Y.Z-<slug>`, `fix/<slug>`, `docs/<slug>`.
@@ -92,15 +99,17 @@ it as a caveat:
   (`array index must be an integer`, `string index must be an integer`,
   `map keys must be strings`, `map membership requires a string key`,
   `string membership requires a string operand`, `range membership requires an
-  integer`); the ones that quote a type or member name keep the fixed words and
-  stop before the tail (`cannot iterate over a value of type`, `cannot index a
-  value of type`, `cannot assign to an index of a value of type`, `cannot set a
-  field on a value of type`, `cannot call a value of type`, `cannot slice a
-  value of type`, `len() is not defined for values of type`, `unsupported unary
-  operator for type`, `unsupported operand types for`, `operator 'in' is not
-  supported for`, `type ... has no member`). The file builtins name the function
-  too (`fsRead() expects a file handle`), and `$slice` checks the receiver
-  before the bounds so `5[1:2]` names the receiver in both engines.
+  integer`), and the ones that quote a type, member, operator or method name
+  carry the same tail: `, got '<type>'` for a builtin argument, ` '<type>'` for
+  an index or a member (`cannot index a value of type 'int'`, `type 'string'
+  has no member 'nope'`), the two-operand form (`cannot compare 'int' with
+  'string'`, `operator 'in' is not supported for 'int' and 'int'`,
+  `unsupported operand types for '+': 'int' and 'string'`) and the callback
+  method's own name (`map() must be a function, got 'int'`). The only tail
+  still missing is the FFI struct-field name (BACKLOG §6 item 25). The file
+  builtins name the function too (`fsRead() expects a file handle`), and
+  `$slice` checks the receiver before the bounds so `5[1:2]` names the receiver
+  in both engines.
   `tests/native_build_runtime_error_messages.oskl` pins both halves. A new
   index or operator message starts from the VM's text, never from a new
   wording, and `emitIn`'s range branch uses `msgRangeIntType` rather than the
@@ -354,11 +363,17 @@ it as a caveat:
   the exact text on both engines through `pcall`, so a new message gets a line
   there rather than a prefix-only assertion. The two-operand tails quote both
   operands through `emitTwoTypeFail` (`cannot compare 'int' with 'string'`,
-  `operator 'in' is not supported for 'int' and 'int'`). Two tails are still
-  truncated: the arithmetic/bitwise `unsupported operand types for '<op>':
-  '<t1>' and '<t2>'`, because the shared helper receives the opcode at run
-  time and never the symbol, and the FFI struct-field name (`the struct
-  returned by a callback is missing field`), which names a C layout field
+  `operator 'in' is not supported for 'int' and 'int'`); `>` and `<=` swap the
+  two names, because the VM lowers them to `lessThan(b, a)`. The callback
+  methods (`map`, `filter`, `each`, `find`, `any`, `all`, `reduce`) guard the
+  callback at the call site, not at entry, so `[].map(1)` returns `[]` like the
+  VM while `[1].map(1)` reports `map() must be a function, got 'int'`. The
+  arithmetic, bitwise, shift and power helpers name the operator from the
+  selector they already receive (`unsupported operand types for '+': 'int' and
+  'string'`), and a shift by a non-integer reports that pair rather than the
+  count range. One tail is still truncated: the FFI struct-field name (`the
+  struct returned by a callback is missing field`), which names a C layout
+  field; its names are static, so the fix is a pre-built message per field
   (BACKLOG §6 item 25).
 - A *direct* call to a user function is checked at compile time — arity and
   argument types against the annotations — by `Compiler::checkUserCall`, using
@@ -660,7 +675,15 @@ it as a caveat:
   stays zero and a C++ exception must not cross an Oskel frame. A `.tls` input
   is rejected too; the image defines no TLS variables, so the PE TLS directory
   stays zero. Emitting `.pdata`/`.xdata` is future container work.
-- The macOS Mach-O container is 10.3d.
+- The macOS own linker (PHASE 10.3d) closes the `MH_OBJECT` into a non-PIE
+  `MH_EXECUTE`: `__TEXT`/`__DATA`/`__LINKEDIT`, `LC_MAIN`/`LC_LOAD_DYLINKER`/
+  `LC_LOAD_DYLIB` (libSystem)/`LC_SYMTAB`/`LC_DYSYMTAB`/`LC_DYLD_INFO_ONLY`,
+  `__const`, and a `__stubs` + non-lazy `__got` bind per call import. The first
+  slice takes one object and rejects a data import; the `-r` Mach-O link, an
+  ad-hoc signature (the `macos-15-intel` e2e runs `codesign -s -` first) and
+  ARM64 are later. `link_macho_test` is structural on all hosts;
+  `oskel.build_hosted_own_macos` runs on `macos-15-intel` and only checks the
+  `file` type on the arm64 runner.
 - The multi-object e2e helper is an `OBJECT` library compiled with
   `-fno-sanitize=all` when the build is sanitized: the object is linked into a
   plain emitted binary that does not carry the ASan runtime. The archive test
@@ -882,6 +905,48 @@ it as a caveat:
   SDL window, with no `LD_PRELOAD`, `LD_LIBRARY_PATH` or `--link-lib`. The
   `cxxbind.end_to_end` fixture is the other guard: a non-UI binding whose
   symbols share the Skia names must stay a freestanding build.
+
+## `async` / `await` (PHASE 11.1)
+
+- `async fn` declares an **eager** function whose call returns a `Future`; the
+  annotation is the payload, so `async fn f(): int` returns `Future<int>` at the
+  type level. `await` is a prefix expression, valid only inside an `async fn`
+  body. There is no scheduler: the body runs when called and the future is
+  already settled when the caller sees it.
+- A future is a **plain map**, not a value tag: `compileMakeFuture` emits
+  `NEWTABLE` + `SETTABLE` for `{state: "fulfilled", value: <payload>, error:
+  nil}`, and `compileAwait` reads it with `GETTABLE`/`EQ`/`JMP_IF_FALSE`/`JMP`
+  plus the existing `panic` call. No opcode, no builtin and no backend change is
+  involved, which is why the VM, `oskel build` and WASM agree by construction.
+  `type(future)` is `"map"`, and a future can be passed to map code; that is the
+  deliberate trade-off of not adding a runtime tag (BACKLOG §6 item 32).
+- `compileAwait` must leave its result in the **operand's own register**, like
+  `a!!`, and free only the registers above it. Allocating a fresh result
+  register makes a call argument list non-contiguous and fails with "internal
+  compiler error: call arguments are not contiguous" as soon as `print(await f())`
+  is compiled.
+- The parser tracks `asyncDepth_`: an async function body increments it and a
+  lambda **resets it to zero**, so `() => await x` is rejected even inside an
+  async function. There is no top-level `await`, and `async fn init` is rejected
+  because the constructor is called without `await`.
+- `asyncReturnTypes_` holds the payload type of every async function in scope.
+  `compileFnDecl` puts `Future` in `functionReturnTypes_` (the call-site type)
+  and the annotation in `asyncReturnTypes_`; `inferExprType` uses the latter to
+  type `await f()` for a direct call. The table is part of `SessionSnapshot` and
+  is saved/restored around `importModule`, like `functionReturnTypes_`.
+- `currentIsAsync_` wraps every `return` value and the implicit nil epilogue in
+  a future. It is saved/restored by `compileFunctionProto` for the same reason
+  `currentReturnType_` is, so a nested lambda compiled inside an async body does
+  not inherit the wrapping.
+- `ClassMethodSig::isAsync` makes a replacement match the method's asyncness; a
+  non-async lambda for an async method is a compile error, because `await
+  obj.m()` would otherwise await a payload.
+- Tests: `tests/65_async.oskl` (payloads, recursion, values, methods, error
+  values) and `tests/65_async_modules.oskl` (imported async functions) run on
+  the VM and are compared byte for byte by `oskel.build_binary_async`,
+  `oskel.build_binary_async_modules`, `oskel.build_wasm_async` and
+  `oskel.build_wasm_async_modules`. The diagnostics live in
+  `tests/errors/async_*.oskl`.
 
 ## The VS Code extension
 

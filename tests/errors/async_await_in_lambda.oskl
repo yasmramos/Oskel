@@ -1,0 +1,5 @@
+// expect-exit: 65
+// A lambda is not an async function: `await` cannot cross its boundary.
+async fn f() {
+  let g = () => await 1;
+}

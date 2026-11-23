@@ -23,6 +23,27 @@ may change between minor versions.
   at load time. `tests/oskelp_test.cpp` and `tests/run_oskelp_case.cmake` cover
   the loader, the resolver and the CLI.
 
+- **`async fn`, `await` and `Future` (PHASE 11.1).** A call to an async function
+  returns a `Future`; `await` yields its payload, and the declared return type
+  is the payload type (`async fn f(): int` returns `Future<int>`). `await` is
+  only valid inside an `async fn` (a lambda and the top level are rejected), an
+  `async fn init` is rejected, and a replacement for an async method must be
+  async too. The body runs eagerly in this phase: a future is a plain map
+  `{state, value, error}`, so the feature adds no opcode and no builtin and the
+  VM, the AOT backend and the WASM backend agree by construction. A pending
+  future has no producer yet, and awaiting one is a runtime error. Covered by
+  `tests/65_async.oskl`, `tests/65_async_modules.oskl`, the `oskel.build_binary_async`
+  and `oskel.build_wasm_async` fixtures and the `tests/errors/async_*.oskl`
+  diagnostics.
+- **The macOS own linker closes a hosted Mach-O executable (PHASE 10.3d).**
+  `linkMachOExecutable` parses the `MH_OBJECT` and emits a non-PIE
+  `MH_EXECUTE` with `__TEXT`/`__DATA`/`__LINKEDIT`, `LC_MAIN`,
+  `LC_LOAD_DYLINKER`, `LC_LOAD_DYLIB` (libSystem), `LC_SYMTAB`,
+  `LC_DYSYMTAB` and `LC_DYLD_INFO_ONLY`. A call import becomes a `__stubs`
+  entry and a non-lazy `__got` bind; `__const` is carried through.
+  `link_macho_test` pins the container on every host and
+  `oskel.build_hosted_own_macos` runs the image on `macos-15-intel` (x86-64); the
+  arm64 runner checks the `file` type only.
 - **`oskelp` resolves the latest release and inspects registry updates.**
   `oskelp add <name>` without `--version` writes a caret requirement for the
   highest published release (a prerelease-only package needs an explicit
@@ -30,6 +51,16 @@ may change between minor versions.
   versions, and `oskelp update <name> --precise <version>` pins one registry
   version, failing when it is missing or outside the manifest requirement.
   `tests/oskelp_test.cpp` and `tests/run_oskelp_case.cmake` pin the behavior.
+- **`oskelint`, the linter.** A fifth binary reports suspicious but legal code.
+  The first rule, `builtin-shadow`, warns when a declaration (`var`, `let`,
+  `const`, `fn`, `struct`, a parameter, a lambda parameter or a `for ... in`
+  variable) replaces a builtin. Shadowing is legal — the standard library
+  re-exports its own builtins with `let time = time;` — so the check belongs in
+  a tool and not in the compiler, which must accept every program the language
+  defines and must stay clear of the builtin names. The re-export idiom is
+  deliberately silent, and the rule reads the builtin names from the engine
+  (`VM::globals()` after `registerBuiltins`) instead of keeping a second list
+  that would drift. A lint warning exits 0. See `docs/oskelint.md`.
 
 - **`oskelp yank` withdraws a published version without deleting it.**
   `oskelp yank <name> --version <version>` writes a `.yanked` marker in the
@@ -73,7 +104,6 @@ may change between minor versions.
   to its destination instead of truncating it, and `dir.walk` returns every
   entry below a path, sorted, built in Oskel over `listDir`/`isDir` so it runs
   unchanged under `oskel build`.
-
 - **`bindgen --abi` selects the destination ABI.** A generated module must not
   emit a shape the destination cannot marshal: `--abi system-v` emits
   struct-by-value, callbacks and variadics; `--abi win64` emits only the
@@ -566,11 +596,17 @@ may change between minor versions.
   `replaceFirst`/`substr`/`repeat` tails, the map `has`/`get`/`set`/`delete`
   key tail, and `unsupported unary operator for type 'int'`. The two-operand
   tails quote both operands too: `cannot compare 'int' with 'string'` and
-  `operator 'in' is not supported for 'int' and 'int'`. Two tails still stop
-  at the prefix: the arithmetic/bitwise `unsupported operand types for '<op>':
-  '<t1>' and '<t2>'`, which needs the operator symbol threaded through the
-  shared helper, and the FFI struct-field name, which names a C layout field
-  rather than a runtime value.
+  `operator 'in' is not supported for 'int' and 'int'`; `>` and `<=` swap the
+  names, because the VM lowers them to `lessThan(b, a)` and its message is the
+  one a program sees. The callback methods name themselves too -- `map() must
+  be a function, got 'int'`, and the same for `filter`, `each`, `find`, `any`,
+  `all` and `reduce` -- and only at the call, so an empty receiver still
+  returns without reporting, as in the VM. The arithmetic, bitwise, shift and
+  power operators name themselves too, from the selector the helper already
+  receives: `unsupported operand types for '+': 'int' and 'string'`. A shift by
+  a non-integer now reports that operand pair instead of the count range, which
+  is what the VM does. One tail still stops at the prefix: the FFI
+  struct-field name, which names a C layout field rather than a runtime value.
   `tests/native_build_runtime_error_messages.oskl` pins both halves through
   `pcall` and compares the binary's output with the VM's.
 

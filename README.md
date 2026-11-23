@@ -23,6 +23,7 @@ for language in languages {
 - Optional types and nullability: annotations (`let x: int = 5`), local inference, nullable `T?`, unions (`T | E`) and the null-safe expressions `?.`, `??` and `!!`.
 - `struct` declarations (data only, no methods) checked against their literal at compile time.
 - `class` declarations (fields plus methods): instantiating is calling the class name (`Point(3, 4)`, no `new`), `self` is explicit and there is no inheritance. A class is parser sugar over a map plus closures, so it runs identically on the VM and under `oskel build`. Field and method annotations are checked at compile time.
+- `async fn` / `await` (PHASE 11.1): a call returns a `Future`, `await` yields its payload and the declared return type is the payload. The body runs eagerly (no scheduler yet); a future is a map, so it behaves identically on the VM, `oskel build` and WASM.
 - String interpolation with `"${expression}"` and UTF-8 support.
 - Ordered arrays and maps that preserve insertion order, with `for k, v in map` key/value iteration.
 - Ascending and descending ranges: `1..5`, `0..=10`, `5..0`.
@@ -226,6 +227,21 @@ one `oskel.lock`, one `.oskel/deps` and one `target/` across its members;
 [docs/oskelp.md](docs/oskelp.md) for the project layout, the manifest, the
 dependency model, workspaces, the registry layout and every command.
 
+### oskelint (the linter)
+
+`oskelint` reports suspicious but legal code. The first rule, `builtin-shadow`,
+warns when a declaration replaces a builtin — legal, and the standard library
+relies on it, which is why the check lives in a tool instead of the compiler:
+
+```sh
+./build/oskelint mylib.oskl      # report the diagnostics on stdout
+./build/oskelint --list-rules    # the rule names
+```
+
+A lint warning exits 0; it never fails a build. See
+[docs/oskelint.md](docs/oskelint.md) for the rule and where the builtin names
+come from.
+
 ## Usage
 
 ```text
@@ -396,7 +412,7 @@ behave differently — under AOT. This is the exact split in 0.3.0.
 
 - Arithmetic, comparisons, logical and bitwise operators, control flow
   (`if`/`while`/`for`/`for-in`/`switch`), functions, closures, `defer`,
-  `struct`, `class`, ranges, slicing, string interpolation.
+  `struct`, `class`, `async fn`/`await`, ranges, slicing, string interpolation.
 - Arrays and maps (literals, indexing, `in`, `for-in`, printing, and `+` to
   concatenate two arrays).
 - The array methods `push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`,

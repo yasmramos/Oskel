@@ -1,6 +1,7 @@
 #!/usr/bin/env sh
 # Builds the development engine into build/oskel, the host compiler into
-# build/oskelc and the binding generator into build/bindgen.
+# build/oskelc, the binding generator into build/bindgen and the linter into
+# build/oskelint.
 # Usage: ./build.sh
 #   CXX=clang++ ./build.sh
 #   CXXFLAGS="-O0 -g" ./build.sh
@@ -86,3 +87,11 @@ echo "Built build/bindgen"
 # code.
 "$CXX" -std=c++17 $CXXFLAGS -Wall -Wextra -Iinclude -Isrc -o build/oskelp tools/oskelp.cpp tools/oskelp_main.cpp
 echo "Built build/oskelp"
+
+# The linter. Unlike the two tools above it links the engine, because its rule
+# asks `registerBuiltins` which names are builtins instead of keeping a second
+# list. It never runs a program, so `oskelc` stays interpreter-free.
+# shellcheck disable=SC2086
+"$CXX" -std=c++17 $CXXFLAGS -Wall -Wextra -Iinclude -Isrc -o build/oskelint \
+    tools/oskelint.cpp tools/oskelint_main.cpp $FRONTEND_SOURCES $RUNTIME_SOURCES $SDL3_LIBS
+echo "Built build/oskelint"

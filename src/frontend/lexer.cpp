@@ -19,7 +19,7 @@ struct Keyword {
 
 const Keyword kKeywords[] = {
     {"let", Tok::Let},       {"var", Tok::Var},        {"const", Tok::Const},
-    {"fn", Tok::Fn},
+    {"fn", Tok::Fn},         {"async", Tok::Async},    {"await", Tok::Await},
     {"if", Tok::If},         {"else", Tok::Else},       {"while", Tok::While},
     {"do", Tok::Do},         {"for", Tok::For},         {"in", Tok::In},
     {"break", Tok::Break},

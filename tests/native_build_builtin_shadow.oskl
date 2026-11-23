@@ -1,0 +1,15 @@
+// A builtin is an ordinary global whose initial value is a native function
+// (`addNative` is `defineGlobal`), so declaring a global with a builtin's name
+// replaces it (language.md §4.2). `collectGlobals` pre-assigns the builtin slots
+// before it walks the program, so the user's `SETGLOBAL` reuses that slot: the
+// builtin is shadowed, not duplicated, and both engines agree.
+//
+// The value is read back to prove the slot was reused. A backend that gave the
+// user binding a *new* slot would leave the builtin reachable and print the
+// builtin's value instead, which is the divergence this fixture pins. The
+// `len` forms cover the two shapes a shadow can take: a plain value and a
+// function that is then called through the shadowing name.
+var len = 3;
+print(len);
+var len = (x) => 42;
+print(len(1));

@@ -117,6 +117,13 @@ code; it drives `oskel`/`oskelc` as child processes. It owns the manifest
 `OSKEL_MODULE_ROOT`: `resolverFor` honours it so a package's `src/` is the
 module root, and both engines resolve imports identically.
 
+A fifth binary is `oskelint`, the linter (`docs/oskelint.md`). It lives under
+`tools/` too, but unlike the other two it links `oskel_lib`: its first rule
+(`builtin-shadow`) asks the engine which names `registerBuiltins` installs, so
+the rule cannot drift from the standard library. It never runs a program, so the
+boundary rule below is untouched and `nm build/oskel | grep oskelint` stays
+empty.
+
 Boundary rule: no source in `src/frontend/` may include `vm.h`, `jit/jit.h`,
 `builtins.h`, `ops.h`, `ffi_marshal.h` or a host FFI library, and `src/frontend/compiler.*`
 plus `src/frontend/native/*` must also stay clear of `interpreter.h`. Enforced
@@ -2383,9 +2390,75 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
   frame. A `.tls` input is rejected too; the image defines no TLS variables, so
   the PE TLS directory stays zero. Emitting unwind data is a future container
   feature.
-- **10.3d (future)** — the macOS Mach-O/dyld container. It is a separate
+- **10.3d (first slice) — the macOS Mach-O/dyld container.** It is a separate
   linker, not a generic abstraction: the object format, the loader contract
-  and the entry prelude differ.
+  and the entry prelude differ. `linkMachOExecutable` closes the `MH_OBJECT`
+  into a non-PIE `MH_EXECUTE`: `__TEXT`/`__DATA`/`__LINKEDIT`, `LC_MAIN`,
+  `LC_LOAD_DYLINKER`, `LC_LOAD_DYLIB` (libSystem), `LC_SYMTAB`, `LC_DYSYMTAB`
+  and `LC_DYLD_INFO_ONLY`; a call import becomes a `__stubs` entry and a
+  non-lazy `__got` bind, and `__const` is carried through. The slice takes one
+  object and supports external calls; a data import is rejected, and the `-r`
+  Mach-O link, the ad-hoc code signature and ARM64 are later. The container is
+  pinned by `link_macho_test` on every host; `oskel.build_hosted_own_macos`
+  runs on `macos-15-intel` (x86-64) and only checks the `file` type on the arm64
+  runner.
+
+### PHASE 11 — `async` / `await` 🔶 in progress
+
+- **11.1 (done) — `async fn`, `await` and `Future`.** An `async fn` is a
+  function whose call returns a `Future`; the declared return type is the
+  payload, so `async fn f(): int` returns `Future<int>` at the type level and
+  `await f()` is an `int`. The body runs eagerly when the function is called,
+  so this phase is the language surface, not a scheduler: a future is already
+  settled by the time the caller sees it.
+- **Representation.** A future is an ordinary map built with the opcodes the
+  language already has: `{ state: "fulfilled", value: <payload>, error: nil }`.
+  `compileMakeFuture` emits `NEWTABLE`, `SETTABLE` and `LOADK`; `compileAwait`
+  reads it with `GETTABLE`/`EQ`/`JMP_IF_FALSE`/`JMP` and raises the carried
+  error through a `panic` helper call. No opcode, no builtin and no runtime
+  tag is added, so the VM, the AOT backend and the WASM backend share one
+  implementation by construction. `state` and `error` reserve the shape for a
+  scheduler: `"rejected"` carries the error in `error`, and `"pending"` is the
+  state a future would hold before it settles. There is no API that creates a
+  pending future in this phase, so `await` on one is a runtime error
+  ("await on a pending Future is not supported yet") rather than a silent nil.
+- **Typing.** `Future` joins the built-in type vocabulary. A call to an async
+  function returns `Future`, so `let f: Future = f();` type-checks and
+  `let n: int = await f();` checks the payload. `await` outside an `async fn`
+  is a parser error, and a lambda does not inherit the enclosing function's
+  async context (`() => await x` is rejected): it is not an `async fn`. There
+  is no top-level `await`; the chunk is not an async function.
+- **Methods and values.** An `async fn` method is a closure in the instance
+  map like any other method, so `await obj.m()` works. The method signature
+  records its asyncness and a replacement lambda must match it, or `await`
+  would read a payload instead of a future. An async function is an ordinary
+  value: `let g = f; await g()` returns the same payload. `async fn init` is
+  rejected, because the constructor is called without `await`.
+- **The seven-point checklist.**
+  - Lexer: two keywords, `async` and `await`.
+  - AST: `AwaitExpr`; `FnDeclStmt::isAsync`, `LambdaExpr::isAsync`,
+    `ClassMethodSig::isAsync`; `Future` in `isKnownTypeName`.
+  - Parser: `async` before a top-level function, a class method or a lambda;
+    `await` as a prefix expression in `parseUnary`, guarded by `asyncDepth_`
+    so it cannot cross a function boundary; `async init` is rejected.
+  - Bytecode: **no new opcode**. A future is `NEWTABLE`/`SETTABLE`, `await` is
+    `GETTABLE`/`EQ`/`JMP_IF_FALSE`/`JMP` plus the existing `CALL` to `panic`.
+  - VM: no new logic; the map operations and `panic` already exist.
+  - Compiler: `asyncReturnTypes_` tracks the payload type per function;
+    `compileFunctionProto` wraps every return in `compileMakeFuture` when
+    `currentIsAsync_`; `inferExprType` unwraps an `AwaitExpr` over a direct
+    async call; the module session snapshot carries `asyncReturnTypes_`.
+  - AOT/WASM: no backend change. The fixture `tests/65_async.oskl` is compared
+    with the VM byte for byte by `oskel.build_binary_async` and
+    `oskel.build_wasm_async`; `tests/65_async_modules.oskl` does the same for
+    an imported async function.
+- **Known limits (BACKLOG §6 item 32).** The body is eager, so a future is
+  never pending and `await` does not suspend the caller; there is no event
+  loop, no promise chaining (`then`) and no async lambda. `type(future)` says
+  `"map"`, because the representation is a map and the type checker erases
+  `Future`; a future can therefore be passed to code expecting a map, which is
+  the deliberate trade-off of not adding a runtime tag. A scheduler, a
+  `spawn`/`join` surface and a `Future`-specific runtime type are later slices.
 
 ### Post-1.0 — UI library
 
@@ -2451,9 +2524,10 @@ Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalli
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
 Phase 6.9: ✅ completed (`enum`: a scoped set of integer constants, folded by the parser; no opcode, no engine code, and identical on the VM, the AOT backend and WASM)
+Phase 11: 🔶 in progress (11.1 `async fn`/`await`/`Future` done: a future is a plain map, so no opcode and no builtin is added; eager bodies, no scheduler yet)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.11 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY), callbacks (including a struct return) and a stored callback resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
-Phase 10: 🔶 in progress (10.1, 10.2, 10.2b and 10.3a done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar`, `-r`, `.data`/`.bss`, the common x86-64 ELF relocations, and the Windows COFF→PE32+ path with UCRT/kernel32 imports. 10.3b `-r` COFF, `.lib`, `args` and the `.pdata`/TLS rejection done, and 10.3d Mach-O pending)
+Phase 10: 🔶 in progress (10.1, 10.2, 10.2b and 10.3a done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar`, `-r`, `.data`/`.bss`, the common x86-64 ELF relocations, and the Windows COFF→PE32+ path with UCRT/kernel32 imports. 10.3b `-r` COFF, `.lib`, `args` and the `.pdata`/TLS rejection done, and 10.3d first slice done (`-r`, ad-hoc signature and ARM64 pending))
 Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending
 2.0: ⬜ future (static with `@Dynamic`)
 

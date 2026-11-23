@@ -1,0 +1,3 @@
+// expect-exit: 65
+// `async` must be followed by `fn`.
+async g() {}

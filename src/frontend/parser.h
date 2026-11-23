@@ -193,6 +193,10 @@ class Parser {
   // at depth 0 (a program's top level), so an import nested in a block or a
   // function body is rejected at parse time.
   int nestingDepth_ = 0;
+  // Number of enclosing `async fn` bodies being parsed. `await` is only valid
+  // while it is positive; a lambda resets it to zero, so a lambda written inside
+  // an async function cannot await (a user lambda has no async form).
+  int asyncDepth_ = 0;
   // Current recursion depth of the expression/statement/type walk. The
   // recursive-descent parser consumes one C++ frame per nested construct, so a
   // deeply nested source (e.g. thousands of `(` or `[`) would otherwise
@@ -218,6 +222,22 @@ class Parser {
     const Parser& parser_;
   };
 
+  // Sets `asyncDepth_` for the duration of a function body and restores the
+  // previous value on every exit path, including a `CompileError`. An async
+  // function body enters with the current depth plus one; a lambda enters with
+  // zero, because `await` cannot cross a lambda boundary.
+  class AsyncScope {
+   public:
+    AsyncScope(int& depth, int value) : depth_(depth), saved_(depth) { depth_ = value; }
+    ~AsyncScope() { depth_ = saved_; }
+    AsyncScope(const AsyncScope&) = delete;
+    AsyncScope& operator=(const AsyncScope&) = delete;
+
+   private:
+    int& depth_;
+    int saved_;
+  };
+
   bool foldConstant(const Expr& expr, Value& out, std::string& reason) const;
 
   const Token& peek(size_t ahead = 0) const;
@@ -234,7 +254,7 @@ class Parser {
   // `@MustUse fn f() ...` (PHASE 6.7.5): `mustUse` is true when an attribute
   // was parsed before the declaration. Attributes are metadata, so they are
   // stored on the node and never reach the bytecode.
-  StmtPtr parseFnDecl(bool mustUse = false);
+  StmtPtr parseFnDecl(bool mustUse = false, bool isAsync = false);
   // `native fn name(params): ret;` (PHASE 6.5): a bodyless declaration that
   // binds a name to a host-registered native function.
   StmtPtr parseNativeDecl(bool mustUse = false);

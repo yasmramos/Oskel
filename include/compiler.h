@@ -451,6 +451,12 @@ class Compiler {
   // function clears the entry, exactly like `nativeSigs_`.
   std::unordered_map<std::string, TypeRef> functionReturnTypes_;
 
+  // The inner payload type of every `async fn` in scope, keyed by name
+  // (PHASE 11.1). The declared annotation on an async function is the payload
+  // `T`; a call returns `Future`, and `await f()` recovers `T` from this table
+  // without a generic `Future<T>` in the syntax.
+  std::unordered_map<std::string, TypeRef> asyncReturnTypes_;
+
   // Declared parameters of the user functions in scope, keyed by name, so a
   // direct call is checked — arity and argument types — exactly like a `native
   // fn` call. Without it the annotation on a parameter was erased without ever
@@ -494,6 +500,10 @@ class Compiler {
   // Declared return type of the function currently being compiled, checked
   // against every `return` value. Empty means "unannotated".
   TypeRef currentReturnType_;
+  // True while compiling an `async fn` body (PHASE 11.1). Every `return` and
+  // the implicit epilogue wrap their value in a future map, so the function's
+  // call-site value is a `Future` while its annotation describes the payload.
+  bool currentIsAsync_ = false;
 
   // Infers the static type of an expression when it is evident from its shape
   // (a literal, or a variable whose type is known). Returns an empty TypeRef
@@ -696,6 +706,14 @@ class Compiler {
   int compileRange(const RangeExpr& range, int line, int col);
   int compileSlice(const SliceExpr& slice, int line, int col);
   int compileInterpolation(const InterpExpr& interpolation, int line, int col);
+  // `await expr` (PHASE 11.1): reads the future's state and yields its payload,
+  // or raises the carried error. It is a few existing opcodes, not an opcode of
+  // its own, so the VM, AOT and WASM share one implementation.
+  int compileAwait(const AwaitExpr& awaited, int line, int col);
+  // Builds the future map an `async fn` returns: `{ state: "fulfilled", value:
+  // value, error: nil }`. The map is the portable representation; no runtime
+  // tag or builtin is added.
+  int compileMakeFuture(int value, int line, int col);
   // Converts `source` to a string through the compiler's private runtime
   // helper and returns the register holding the result.
   int compileToString(int source, int line, int col);
@@ -806,6 +824,7 @@ class Compiler {
     std::unordered_map<std::string, std::vector<EnumMember>> enumMembers;
     std::unordered_map<std::string, std::vector<std::string>> enumMemberOwners;
     std::unordered_map<std::string, TypeRef> functionReturnTypes;
+    std::unordered_map<std::string, TypeRef> asyncReturnTypes;
     std::unordered_map<std::string, std::vector<Param>> functionParams;
     std::unordered_map<std::string, NativeSig> nativeSigs;
     std::unordered_map<std::string, std::string> externSignatures;
@@ -839,7 +858,8 @@ class Compiler {
   // inside it; empty for an ordinary function.
   int compileFunctionProto(const std::string& name, const std::vector<Param>& params,
                            const StmtPtr& body, int line, int col, const TypeRef& returnType,
-                           const std::string& ownerClass = std::string());
+                           const std::string& ownerClass = std::string(),
+                           bool isAsync = false);
 
   // Compiles a module's top-level statements into `bc_` (bindings stay
   // frame-local) and returns its public surface as a table. Called by
