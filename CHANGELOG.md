@@ -23,6 +23,15 @@ may change between minor versions.
   `tests/65_async.oskl`, `tests/65_async_modules.oskl`, the `oskel.build_binary_async`
   and `oskel.build_wasm_async` fixtures and the `tests/errors/async_*.oskl`
   diagnostics.
+- **The macOS own linker closes a hosted Mach-O executable (PHASE 10.3d).**
+  `linkMachOExecutable` parses the `MH_OBJECT` and emits a non-PIE
+  `MH_EXECUTE` with `__TEXT`/`__DATA`/`__LINKEDIT`, `LC_MAIN`,
+  `LC_LOAD_DYLINKER`, `LC_LOAD_DYLIB` (libSystem), `LC_SYMTAB`,
+  `LC_DYSYMTAB` and `LC_DYLD_INFO_ONLY`. A call import becomes a `__stubs`
+  entry and a non-lazy `__got` bind; `__const` is carried through.
+  `link_macho_test` pins the container on every host and
+  `oskel.build_hosted_own_macos` runs the image on `macos-15-intel` (x86-64); the
+  arm64 runner checks the `file` type only.
 - **`oskelp` resolves the latest release and inspects registry updates.**
   `oskelp add <name>` without `--version` writes a caret requirement for the
   highest published release (a prerelease-only package needs an explicit
@@ -64,7 +73,6 @@ may change between minor versions.
   to its destination instead of truncating it, and `dir.walk` returns every
   entry below a path, sorted, built in Oskel over `listDir`/`isDir` so it runs
   unchanged under `oskel build`.
-
 - **`bindgen --abi` selects the destination ABI.** A generated module must not
   emit a shape the destination cannot marshal: `--abi system-v` emits
   struct-by-value, callbacks and variadics; `--abi win64` emits only the
@@ -559,11 +567,15 @@ may change between minor versions.
   tails quote both operands too: `cannot compare 'int' with 'string'` and
   `operator 'in' is not supported for 'int' and 'int'`; `>` and `<=` swap the
   names, because the VM lowers them to `lessThan(b, a)` and its message is the
-  one a program sees. Two tails still stop
-  at the prefix: the arithmetic/bitwise `unsupported operand types for '<op>':
-  '<t1>' and '<t2>'`, which needs the operator symbol threaded through the
-  shared helper, and the FFI struct-field name, which names a C layout field
-  rather than a runtime value.
+  one a program sees. The callback methods name themselves too -- `map() must
+  be a function, got 'int'`, and the same for `filter`, `each`, `find`, `any`,
+  `all` and `reduce` -- and only at the call, so an empty receiver still
+  returns without reporting, as in the VM. The arithmetic, bitwise, shift and
+  power operators name themselves too, from the selector the helper already
+  receives: `unsupported operand types for '+': 'int' and 'string'`. A shift by
+  a non-integer now reports that operand pair instead of the count range, which
+  is what the VM does. One tail still stops at the prefix: the FFI
+  struct-field name, which names a C layout field rather than a runtime value.
   `tests/native_build_runtime_error_messages.oskl` pins both halves through
   `pcall` and compares the binary's output with the VM's.
 

@@ -2383,9 +2383,18 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
   frame. A `.tls` input is rejected too; the image defines no TLS variables, so
   the PE TLS directory stays zero. Emitting unwind data is a future container
   feature.
-- **10.3d (future)** — the macOS Mach-O/dyld container. It is a separate
+- **10.3d (first slice) — the macOS Mach-O/dyld container.** It is a separate
   linker, not a generic abstraction: the object format, the loader contract
-  and the entry prelude differ.
+  and the entry prelude differ. `linkMachOExecutable` closes the `MH_OBJECT`
+  into a non-PIE `MH_EXECUTE`: `__TEXT`/`__DATA`/`__LINKEDIT`, `LC_MAIN`,
+  `LC_LOAD_DYLINKER`, `LC_LOAD_DYLIB` (libSystem), `LC_SYMTAB`, `LC_DYSYMTAB`
+  and `LC_DYLD_INFO_ONLY`; a call import becomes a `__stubs` entry and a
+  non-lazy `__got` bind, and `__const` is carried through. The slice takes one
+  object and supports external calls; a data import is rejected, and the `-r`
+  Mach-O link, the ad-hoc code signature and ARM64 are later. The container is
+  pinned by `link_macho_test` on every host; `oskel.build_hosted_own_macos`
+  runs on `macos-15-intel` (x86-64) and only checks the `file` type on the arm64
+  runner.
 
 ### PHASE 11 — `async` / `await` 🔶 in progress
 
@@ -2510,7 +2519,7 @@ Phase 6.9: ✅ completed (`enum`: a scoped set of integer constants, folded by t
 Phase 11: 🔶 in progress (11.1 `async fn`/`await`/`Future` done: a future is a plain map, so no opcode and no builtin is added; eager bodies, no scheduler yet)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.11 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY), callbacks (including a struct return) and a stored callback resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
-Phase 10: 🔶 in progress (10.1, 10.2, 10.2b and 10.3a done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar`, `-r`, `.data`/`.bss`, the common x86-64 ELF relocations, and the Windows COFF→PE32+ path with UCRT/kernel32 imports. 10.3b `-r` COFF, `.lib`, `args` and the `.pdata`/TLS rejection done, and 10.3d Mach-O pending)
+Phase 10: 🔶 in progress (10.1, 10.2, 10.2b and 10.3a done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar`, `-r`, `.data`/`.bss`, the common x86-64 ELF relocations, and the Windows COFF→PE32+ path with UCRT/kernel32 imports. 10.3b `-r` COFF, `.lib`, `args` and the `.pdata`/TLS rejection done, and 10.3d first slice done (`-r`, ad-hoc signature and ARM64 pending))
 Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending
 2.0: ⬜ future (static with `@Dynamic`)
 

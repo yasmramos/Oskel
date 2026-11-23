@@ -99,15 +99,17 @@ it as a caveat:
   (`array index must be an integer`, `string index must be an integer`,
   `map keys must be strings`, `map membership requires a string key`,
   `string membership requires a string operand`, `range membership requires an
-  integer`); the ones that quote a type or member name keep the fixed words and
-  stop before the tail (`cannot iterate over a value of type`, `cannot index a
-  value of type`, `cannot assign to an index of a value of type`, `cannot set a
-  field on a value of type`, `cannot call a value of type`, `cannot slice a
-  value of type`, `len() is not defined for values of type`, `unsupported unary
-  operator for type`, `unsupported operand types for`, `operator 'in' is not
-  supported for`, `type ... has no member`). The file builtins name the function
-  too (`fsRead() expects a file handle`), and `$slice` checks the receiver
-  before the bounds so `5[1:2]` names the receiver in both engines.
+  integer`), and the ones that quote a type, member, operator or method name
+  carry the same tail: `, got '<type>'` for a builtin argument, ` '<type>'` for
+  an index or a member (`cannot index a value of type 'int'`, `type 'string'
+  has no member 'nope'`), the two-operand form (`cannot compare 'int' with
+  'string'`, `operator 'in' is not supported for 'int' and 'int'`,
+  `unsupported operand types for '+': 'int' and 'string'`) and the callback
+  method's own name (`map() must be a function, got 'int'`). The only tail
+  still missing is the FFI struct-field name (BACKLOG §6 item 25). The file
+  builtins name the function too (`fsRead() expects a file handle`), and
+  `$slice` checks the receiver before the bounds so `5[1:2]` names the receiver
+  in both engines.
   `tests/native_build_runtime_error_messages.oskl` pins both halves. A new
   index or operator message starts from the VM's text, never from a new
   wording, and `emitIn`'s range branch uses `msgRangeIntType` rather than the
@@ -362,11 +364,16 @@ it as a caveat:
   there rather than a prefix-only assertion. The two-operand tails quote both
   operands through `emitTwoTypeFail` (`cannot compare 'int' with 'string'`,
   `operator 'in' is not supported for 'int' and 'int'`); `>` and `<=` swap the
-  two names, because the VM lowers them to `lessThan(b, a)`. Two tails are still
-  truncated: the arithmetic/bitwise `unsupported operand types for '<op>':
-  '<t1>' and '<t2>'`, because the shared helper receives the opcode at run
-  time and never the symbol, and the FFI struct-field name (`the struct
-  returned by a callback is missing field`), which names a C layout field
+  two names, because the VM lowers them to `lessThan(b, a)`. The callback
+  methods (`map`, `filter`, `each`, `find`, `any`, `all`, `reduce`) guard the
+  callback at the call site, not at entry, so `[].map(1)` returns `[]` like the
+  VM while `[1].map(1)` reports `map() must be a function, got 'int'`. The
+  arithmetic, bitwise, shift and power helpers name the operator from the
+  selector they already receive (`unsupported operand types for '+': 'int' and
+  'string'`), and a shift by a non-integer reports that pair rather than the
+  count range. One tail is still truncated: the FFI struct-field name (`the
+  struct returned by a callback is missing field`), which names a C layout
+  field; its names are static, so the fix is a pre-built message per field
   (BACKLOG §6 item 25).
 - A *direct* call to a user function is checked at compile time — arity and
   argument types against the annotations — by `Compiler::checkUserCall`, using
@@ -668,7 +675,15 @@ it as a caveat:
   stays zero and a C++ exception must not cross an Oskel frame. A `.tls` input
   is rejected too; the image defines no TLS variables, so the PE TLS directory
   stays zero. Emitting `.pdata`/`.xdata` is future container work.
-- The macOS Mach-O container is 10.3d.
+- The macOS own linker (PHASE 10.3d) closes the `MH_OBJECT` into a non-PIE
+  `MH_EXECUTE`: `__TEXT`/`__DATA`/`__LINKEDIT`, `LC_MAIN`/`LC_LOAD_DYLINKER`/
+  `LC_LOAD_DYLIB` (libSystem)/`LC_SYMTAB`/`LC_DYSYMTAB`/`LC_DYLD_INFO_ONLY`,
+  `__const`, and a `__stubs` + non-lazy `__got` bind per call import. The first
+  slice takes one object and rejects a data import; the `-r` Mach-O link, an
+  ad-hoc signature (the `macos-15-intel` e2e runs `codesign -s -` first) and
+  ARM64 are later. `link_macho_test` is structural on all hosts;
+  `oskel.build_hosted_own_macos` runs on `macos-15-intel` and only checks the
+  `file` type on the arm64 runner.
 - The multi-object e2e helper is an `OBJECT` library compiled with
   `-fno-sanitize=all` when the build is sanitized: the object is linked into a
   plain emitted binary that does not carry the ASan runtime. The archive test
