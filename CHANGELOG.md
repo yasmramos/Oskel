@@ -11,6 +11,14 @@ may change between minor versions.
 
 ### Added
 
+- **`oskelp` resolves the latest release and inspects registry updates.**
+  `oskelp add <name>` without `--version` writes a caret requirement for the
+  highest published release (a prerelease-only package needs an explicit
+  version), `oskelp outdated` prints the compatible and latest registry
+  versions, and `oskelp update <name> --precise <version>` pins one registry
+  version, failing when it is missing or outside the manifest requirement.
+  `tests/oskelp_test.cpp` and `tests/run_oskelp_case.cmake` pin the behavior.
+
 - **`bindgen --abi` selects the destination ABI.** A generated module must not
   emit a shape the destination cannot marshal: `--abi system-v` emits
   struct-by-value, callbacks and variadics; `--abi win64` emits only the

@@ -483,6 +483,112 @@ static void testRegistryResolution() {
   fs::remove_all(root);
 }
 
+static void testLatestRegistryVersion() {
+  fs::path root = makeTempDir();
+  fs::path registry = root / "registry";
+  makeRegistryPackage(registry, "utils", "0.1.0");
+  makeRegistryPackage(registry, "utils", "0.2.0");
+  makeRegistryPackage(registry, "utils", "0.2.1-beta.1");
+  makeRegistryPackage(registry, "utils", "1.0.0");
+  makeRegistryPackage(registry, "pre", "0.1.0-beta.1");
+
+  const char* previous = std::getenv("OSKEL_REGISTRY");
+  std::string saved = previous == nullptr ? std::string() : previous;
+  bool hadRegistry = previous != nullptr;
+
+  clearRegistry();
+  std::string version;
+  std::string error;
+  check(!oskelp::latestRegistryVersion("utils", version, false, error),
+        "latest: an unset registry fails");
+  check(contains(error, "OSKEL_REGISTRY"),
+        "latest: the error names OSKEL_REGISTRY");
+
+  setRegistry(registry.string());
+  check(oskelp::latestRegistryVersion("utils", version, false, error),
+        "latest: reads the highest release");
+  check(version == "1.0.0", "latest: prereleases do not hide a release");
+  check(oskelp::latestRegistryVersion("utils", version, true, error),
+        "latest: includePrerelease still picks the highest release");
+  check(version == "1.0.0", "latest: a release outranks a prerelease");
+
+  check(!oskelp::latestRegistryVersion("pre", version, false, error),
+        "latest: a prerelease-only package needs an explicit version");
+  check(contains(error, "prerelease"),
+        "latest: the error names the prerelease");
+  check(oskelp::latestRegistryVersion("pre", version, true, error),
+        "latest: a prerelease is visible when allowed");
+  check(version == "0.1.0-beta.1",
+        "latest: includePrerelease returns the prerelease");
+
+  check(!oskelp::latestRegistryVersion("missing", version, false, error),
+        "latest: an unknown package fails");
+  check(contains(error, "has no package 'missing'"),
+        "latest: the error names the missing package");
+
+  if (hadRegistry) setRegistry(saved);
+  else clearRegistry();
+  fs::remove_all(root);
+}
+
+static void testForcedResolution() {
+  fs::path root = makeTempDir();
+  fs::path registry = root / "registry";
+  fs::path appDir = root / "app";
+  makePackage(appDir, "app");
+  makeRegistryPackage(registry, "utils", "0.1.0");
+  makeRegistryPackage(registry, "utils", "0.2.0");
+  makeRegistryPackage(registry, "utils", "0.2.1");
+  makeRegistryPackage(registry, "utils", "0.3.0");
+
+  oskelp::Manifest app;
+  std::string error;
+  check(oskelp::loadManifest((appDir / "oskel.toml").string(), app, error),
+        "forced: loads the app");
+  oskelp::Dependency utils;
+  utils.name = "utils";
+  app.package.dependencies["utils"] = utils;
+
+  const char* previous = std::getenv("OSKEL_REGISTRY");
+  std::string saved = previous == nullptr ? std::string() : previous;
+  bool hadRegistry = previous != nullptr;
+  setRegistry(registry.string());
+
+  auto resolve = [&](const std::string& requirement,
+                     const std::map<std::string, std::string>& forced) {
+    app.package.dependencies["utils"].requirement = requirement;
+    oskelp::Resolution resolution;
+    error.clear();
+    bool ok = oskelp::resolveDependencies(app, resolution, error, {}, forced);
+    return std::make_pair(ok, resolution);
+  };
+
+  auto picked = resolve("^0.2.0", {{"utils", "0.2.0"}});
+  check(picked.first, "forced: pins an existing satisfying version");
+  const oskelp::ResolvedPackage* selected = picked.second.find("utils");
+  check(selected != nullptr && selected->version == "0.2.0",
+        "forced: the forced version wins over the highest");
+
+  picked = resolve("^0.2.0", {{"utils", "0.1.0"}});
+  check(!picked.first, "forced: a version outside the requirement fails");
+  check(contains(error, "does not satisfy '^0.2.0'"),
+        "forced: the error names the requirement");
+
+  picked = resolve("^0.2.0", {{"utils", "0.2.9"}});
+  check(!picked.first, "forced: a missing version fails");
+  check(contains(error, "has no 'utils' version '0.2.9'"),
+        "forced: the error names the missing version");
+
+  picked = resolve("^0.2.0", {{"utils", "not-a-version"}});
+  check(!picked.first, "forced: an invalid version fails");
+  check(contains(error, "is not a semantic version"),
+        "forced: the error names the invalid version");
+
+  if (hadRegistry) setRegistry(saved);
+  else clearRegistry();
+  fs::remove_all(root);
+}
+
 static void testCycle() {
   fs::path root = makeTempDir();
   makePackage(root / "a", "a", {{"b", "../b"}});
@@ -801,6 +907,8 @@ int main() {
   testFindManifest();
   testResolution();
   testRegistryResolution();
+  testLatestRegistryVersion();
+  testForcedResolution();
   testCycle();
   testCycleFromInMemoryRoot();
   testDuplicateLocation();

@@ -1115,7 +1115,16 @@ it as a caveat:
   rewriting the manifest: comments, blank lines and CRLF survive, a duplicate
   add is a no-op (a new `--version` for the same path updates the entry), and a
   failed add leaves the file untouched because the graph is resolved before
-  the write. `add` without `--path` writes a registry requirement.
+  the write. `add` without `--path` writes a registry requirement; without
+  `--version` it takes the highest **release** and writes a caret requirement,
+  and a prerelease-only package needs an explicit version. `oskelp outdated`
+  reads the lockfile and the registry without writing either and prints the
+  highest version still allowed by a direct requirement, plus a note when the
+  newest one needs a manifest change. `oskelp update <name> --precise
+  <version>` pins one registry version through the resolver's `forced` map:
+  the forced branch checks that the version exists and then that it satisfies
+  the requirement (so a missing version is not reported as an unsatisfied
+  one), and a path dependency is rejected before resolution.
   `remove` refuses an entry that spans multiple lines instead of deleting a
   partial one. `oskelp publish [--registry <dir>]` copies the manifest and
   `src/` into the registry and refuses to overwrite a version or publish a
@@ -1127,8 +1136,9 @@ it as a caveat:
   `oskelc` (falling back to `oskel build`), `oskelp run` uses the VM unless
   `--native` is given, and `oskelp test` runs every `tests/**/*.oskl` and exits
   101 when one fails. `tests/run_oskelp_case.cmake` drives the real binary
-  through the whole workflow, including publish/consume/update/`--locked`, so a
-  change to the manifest, the lockfile or a command must keep that test green.
+  through the whole workflow, including publish/consume, `add` without
+  `--version`, `outdated`, `update --precise` and `--locked`, so a change to
+  the manifest, the lockfile or a command must keep that test green.
 
 ## Commit authorship
 

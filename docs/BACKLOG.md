@@ -1062,12 +1062,17 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     satisfies the manifest. A network registry is still a separate decision: it
     needs HTTP/TLS, which the standard library does not carry, plus checksums
     and signatures.
-12. **[P1] [done]** `oskelp`: `add`, `remove`, `publish` and `update` landed.
-    `add` and `remove` use an in-place editor that preserves comments, blank
-    lines and CRLF; a failed add resolves the graph before it writes, so the
-    manifest is never left half-edited. `add` without `--path` writes a registry
-    requirement, `publish` copies a package into `$OSKEL_REGISTRY`, and
-    `update [<name>]` moves the lockfile pin and prints each change.
+12. **[P1] [done]** `oskelp`: `add`, `remove`, `publish`, `update` and
+    `outdated` landed. `add` and `remove` use an in-place editor that preserves
+    comments, blank lines and CRLF; a failed add resolves the graph before it
+    writes, so the manifest is never left half-edited. `add` without `--path`
+    writes a registry requirement; without `--version` it takes the highest
+    published release and writes a caret requirement (a prerelease-only package
+    needs an explicit version). `publish` copies a package into
+    `$OSKEL_REGISTRY`, `update [<name>]` moves the lockfile pin and prints each
+    change, `update --precise <version>` pins one registry version and refuses
+    a missing or out-of-range one, and `outdated` prints the compatible and
+    latest versions without writing the lockfile.
 13. **[P2]** `oskelp`: add build profiles. `target/<name>` is the only output
     today because the AOT backend has no optimization level to select; a
     `--release` that changes nothing would be a cosmetic lie.

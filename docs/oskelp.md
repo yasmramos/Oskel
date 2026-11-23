@@ -9,10 +9,11 @@ processes. The language, the bytecode, the VM and the AOT backend are untouched.
 ```text
 oskelp new <dir>        scaffold a project
 oskelp init [dir]       add a manifest to an existing directory
-oskelp add <name>       add a dependency to the manifest
+oskelp add <name>       add a dependency (latest release without --version)
 oskelp remove <name>    remove a dependency from the manifest
 oskelp publish          copy the package into the local registry
 oskelp update [<name>]  move the lockfile to newer registry versions
+oskelp outdated         show the registry updates that are available
 oskelp build            compile the entry point to target/<name>
 oskelp run              run the entry point on the VM (--native: build and run)
 oskelp check            compile without running
@@ -123,9 +124,13 @@ a dependency that is already present is a no-op; passing a different
 Without `--path`, `--version` names a **registry requirement**:
 `oskelp add utils --version "^0.1.0"` writes `utils = "^0.1.0"`, resolves it
 from `$OSKEL_REGISTRY` and refreshes the lockfile and `.oskel/deps`. A
-registry add needs a name (there is no path manifest to derive it from) and a
-requirement; an unsatisfiable requirement fails before the manifest is
-written.
+registry add needs a name (there is no path manifest to derive it from); an
+unsatisfiable requirement fails before the manifest is written. When
+`--version` is omitted, `add` reads the registry, takes the highest
+**release** and writes a caret requirement (`^0.2.0`). A package that has only
+prereleases is not picked implicitly: pass the exact prerelease version
+(`--version 0.2.0-beta.1`), because a caret requirement over a prerelease is
+ambiguous.
 
 `.oskel/deps` is regenerated on every build, so a dependency that changes on
 disk is picked up. It is generated output and belongs in `.gitignore`.
@@ -180,7 +185,20 @@ depend on its version first. A package that depends on itself is refused too.
 every package when no name is given, writes `oskel.lock` and refreshes
 `.oskel/deps`. It prints `updated utils 0.1.0 -> 0.2.0` (or
 `everything is up to date`). A named package must be a direct dependency or
-already present in the lockfile.
+already present in the lockfile. `--precise <version>` pins that package to
+exactly one published registry version (a downgrade inside the requirement is
+allowed) and fails when the version is missing, is not a registry dependency,
+or falls outside the manifest requirement; it never silently falls back to
+another version. `oskelp outdated` reads the lockfile, compares each registry
+package with the registry, and prints the highest version still allowed by a
+direct requirement plus a note when a newer version needs a manifest change:
+
+```text
+utils 0.2.0 -> 0.2.1 (^0.2.0); latest 0.3.0 needs a new requirement
+```
+
+It exits `0` whether or not updates exist; a script that wants to fail on an
+outdated lock should inspect the output.
 
 ## The lockfile: `oskel.lock`
 
@@ -224,7 +242,7 @@ existing `oskel.toml` and leaves existing source files alone.
 
 ### `oskelp add <name> --path <path> [--version <v>]`
 
-### `oskelp add <name> --version <requirement>`
+### `oskelp add <name> [--version <requirement>]`
 
 Adds a dependency to `[dependencies]`, creating the section when the manifest
 has none. With `--path`, the name may be omitted
@@ -232,7 +250,11 @@ has none. With `--path`, the name may be omitted
 `oskel.toml`; `--version` asserts the dependency's exact version. Without
 `--path`, `--version` is a registry requirement (`^0.1.0`, `~1.2.3`,
 `>=1.0.0 <2.0.0`, `1.2.*`, …) and the package is resolved from
-`$OSKEL_REGISTRY`. The command resolves the new graph before it writes, then
+`$OSKEL_REGISTRY`. Without `--version`, the latest published release becomes
+the requirement (`utils = "^0.2.0"`); a prerelease-only package needs an
+explicit version. Adding a registry dependency that is already present
+refreshes its requirement to the latest release, as `cargo add` does. The
+command resolves the new graph before it writes, then
 refreshes `oskel.lock` and `.oskel/deps`; a name mismatch, a self-dependency,
 a cycle, a missing manifest or an unsatisfiable requirement fails without
 touching `oskel.toml`.
@@ -253,13 +275,35 @@ package with a path dependency, a package that depends on itself, and a
 missing entry or `src/<name>/` directory. The registry directory is created
 on demand.
 
-### `oskelp update [<name>]`
+### `oskelp update [<name>] [--precise <version>]`
 
 Re-resolves the graph without the lockfile pin for `<name>`, or without any
 pin when no name is given, then rewrites `oskel.lock` and refreshes
 `.oskel/deps`. It prints each change (`updated utils 0.1.0 -> 0.2.0`) or
 `everything is up to date`. `<name>` must be a direct dependency or already
-present in the lockfile.
+present in the lockfile. `--precise <version>` requires `<name>` and pins it
+to exactly that published registry version; the version must exist and satisfy
+the manifest requirement, and a path dependency is rejected because it has no
+registry version. `--precise` never falls back to another version, so a typo
+or an out-of-range version fails instead of silently picking the newest one.
+
+### `oskelp outdated [--manifest-path <file>]`
+
+Compares the lockfile with `$OSKEL_REGISTRY` and prints every registry
+dependency that can move. A direct dependency shows the highest version still
+allowed by its requirement, plus the newest version when that one needs a
+manifest change:
+
+```text
+utils 0.2.0 -> 0.2.1 (^0.2.0); latest 0.3.0 needs a new requirement
+helper 1.0.0 -> 1.1.0
+```
+
+A transitive dependency has no requirement in the root manifest, so it shows
+the registry's latest version. When everything is current it prints
+`All registry dependencies are up to date.` The command only reads the
+manifest and the registry; it does not write the lockfile. It exits `0` in
+both cases.
 
 ### `oskelp build`
 
@@ -324,7 +368,7 @@ oskelp build --manifest-path ../hello/oskel.toml
 | `OSKELC` | Path to the `oskelc` binary (same rule). |
 | `OSKEL_MODULE_ROOT` | Overrides the module root for `oskel`/`oskelc`; `oskelp` sets it to `<project>/src`. |
 | `OSKEL_PACKAGES` | The installed-packages root; `oskelp` sets it to `<project>/.oskel/deps`. |
-| `OSKEL_REGISTRY` | The local registry root: `<root>/<name>/<version>/`. Required by a registry dependency and by `publish` unless `--registry` is given. |
+| `OSKEL_REGISTRY` | The local registry root: `<root>/<name>/<version>/`. Required by a registry dependency, by `add` without `--version`, by `outdated`, by `update --precise`, and by `publish` unless `--registry` is given. |
 
 `OSKEL_MODULE_ROOT` is the only compiler-side hook the tool relies on. Both
 engines go through `resolverFor`, so the VM and the AOT backend resolve

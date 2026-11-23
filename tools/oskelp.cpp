@@ -1328,11 +1328,43 @@ std::string registryRoot() {
   return value == nullptr ? std::string() : std::string(value);
 }
 
-// Picks the version a registry dependency resolves to: the lockfile's pin when
-// it still satisfies the requirement and exists, otherwise the highest
-// published version that satisfies it.
+// Every valid version directory under `<registry>/<name>`, sorted by version.
+// The directory name is the version string, so build metadata is not preserved
+// (the manifest ignores it too).
+bool registryVersions(const std::string& name, const std::string& root,
+                      std::vector<std::pair<SemVer, std::string>>& versions,
+                      std::string& error) {
+  fs::path packageDir = fs::path(root) / name;
+  std::error_code ec;
+  if (!fs::is_directory(packageDir, ec)) {
+    error = "the registry at '" + root + "' has no package '" + name + "'";
+    return false;
+  }
+  for (fs::directory_iterator it(packageDir, ec), end; !ec && it != end;
+       it.increment(ec)) {
+    if (!it->is_directory()) continue;
+    std::string candidate = it->path().filename().string();
+    SemVer parsed;
+    if (!parseSemVer(candidate, parsed)) continue;
+    versions.emplace_back(parsed, candidate);
+  }
+  if (ec) {
+    error = "cannot read '" + packageDir.string() + "': " + ec.message();
+    return false;
+  }
+  std::sort(versions.begin(), versions.end(), [](const auto& a, const auto& b) {
+    return compareSemVer(a.first, b.first) < 0;
+  });
+  return true;
+}
+
+// Picks the version a registry dependency resolves to: a `forced` version when
+// the caller pinned one (and it must exist and satisfy the requirement), the
+// lockfile's pin when it still satisfies the requirement and exists, otherwise
+// the highest published version that satisfies it.
 bool selectRegistryVersion(const Dependency& dependency,
                            const std::map<std::string, std::string>& preferred,
+                           const std::map<std::string, std::string>& forced,
                            std::string& version, fs::path& directory,
                            std::string& error) {
   std::string root = registryRoot();
@@ -1343,36 +1375,50 @@ bool selectRegistryVersion(const Dependency& dependency,
     return false;
   }
   fs::path packageDir = fs::path(root) / dependency.name;
-  std::error_code ec;
-  if (!fs::is_directory(packageDir, ec)) {
-    error = "the registry at '" + root + "' has no package '" +
-            dependency.name + "'";
-    return false;
+  std::vector<std::pair<SemVer, std::string>> versions;
+  if (!registryVersions(dependency.name, root, versions, error)) return false;
+
+  auto explicitVersion = forced.find(dependency.name);
+  if (explicitVersion != forced.end()) {
+    SemVer parsed;
+    if (!parseSemVer(explicitVersion->second, parsed)) {
+      error = "version '" + explicitVersion->second + "' for '" +
+              dependency.name + "' is not a semantic version";
+      return false;
+    }
+    std::error_code entryError;
+    if (!fs::is_directory(packageDir / explicitVersion->second, entryError)) {
+      error = "the registry at '" + root + "' has no '" + dependency.name +
+              "' version '" + explicitVersion->second + "'";
+      return false;
+    }
+    if (!satisfiesRequirement(dependency.requirement, parsed)) {
+      error = "package '" + dependency.name + "' version '" +
+              explicitVersion->second + "' does not satisfy '" +
+              dependency.requirement + "'";
+      return false;
+    }
+    version = explicitVersion->second;
+    fs::path chosenDir = packageDir / version;
+    std::error_code canonicalError;
+    directory = fs::weakly_canonical(chosenDir, canonicalError);
+    if (canonicalError) directory = chosenDir.lexically_normal();
+    return true;
   }
 
   std::vector<std::pair<SemVer, std::string>> candidates;
-  std::vector<std::string> published;
-  for (fs::directory_iterator it(packageDir, ec), end; !ec && it != end;
-       it.increment(ec)) {
-    if (!it->is_directory()) continue;
-    std::string candidate = it->path().filename().string();
-    SemVer parsed;
-    if (!parseSemVer(candidate, parsed)) continue;
-    published.push_back(candidate);
-    if (satisfiesRequirement(dependency.requirement, parsed)) {
-      candidates.emplace_back(parsed, candidate);
+  std::string published;
+  for (const auto& entry : versions) {
+    if (!published.empty()) published += ", ";
+    published += entry.second;
+    if (satisfiesRequirement(dependency.requirement, entry.first)) {
+      candidates.push_back(entry);
     }
   }
-  std::sort(published.begin(), published.end());
   if (candidates.empty()) {
-    std::string available;
-    for (const std::string& candidate : published) {
-      if (!available.empty()) available += ", ";
-      available += candidate;
-    }
     error = "no version of '" + dependency.name + "' satisfies '" +
             dependency.requirement + "' in '" + root + "'";
-    if (!available.empty()) error += " (published: " + available + ")";
+    if (!published.empty()) error += " (published: " + published + ")";
     return false;
   }
 
@@ -1387,14 +1433,7 @@ bool selectRegistryVersion(const Dependency& dependency,
       chosen = pinned->second;
     }
   }
-  if (chosen.empty()) {
-    auto best = std::max_element(
-        candidates.begin(), candidates.end(),
-        [](const auto& a, const auto& b) {
-          return compareSemVer(a.first, b.first) < 0;
-        });
-    chosen = best->second;
-  }
+  if (chosen.empty()) chosen = candidates.back().second;
 
   fs::path chosenDir = packageDir / chosen;
   std::error_code canonicalError;
@@ -1424,9 +1463,33 @@ bool loadPreferredVersions(const Manifest& manifest,
 
 }  // namespace
 
+bool latestRegistryVersion(const std::string& name, std::string& version,
+                           bool includePrerelease, std::string& error) {
+  std::string root = registryRoot();
+  if (root.empty()) {
+    error = "OSKEL_REGISTRY is not set; set it to the registry directory";
+    return false;
+  }
+  std::vector<std::pair<SemVer, std::string>> versions;
+  if (!registryVersions(name, root, versions, error)) return false;
+  for (auto it = versions.rbegin(); it != versions.rend(); ++it) {
+    if (!includePrerelease && !it->first.prerelease.empty()) continue;
+    version = it->second;
+    return true;
+  }
+  if (versions.empty()) {
+    error = "the registry at '" + root + "' has no versions of '" + name + "'";
+  } else {
+    error = "the registry at '" + root + "' has only prerelease versions of '" +
+            name + "'; pass an explicit version";
+  }
+  return false;
+}
+
 bool resolveDependencies(
     const Manifest& root, Resolution& out, std::string& error,
-    const std::map<std::string, std::string>& preferred) {
+    const std::map<std::string, std::string>& preferred,
+    const std::map<std::string, std::string>& forced) {
   out.packages.clear();
   std::map<std::string, int> state;  // 1 = visiting, 2 = done
   std::map<std::string, ResolvedPackage> resolved;
@@ -1449,8 +1512,8 @@ bool resolveDependencies(
       std::string source;
       std::string selectedVersion;
       if (dependency.isRegistry()) {
-        if (!selectRegistryVersion(dependency, preferred, selectedVersion,
-                                   canonical, error)) {
+        if (!selectRegistryVersion(dependency, preferred, forced,
+                                   selectedVersion, canonical, error)) {
           return false;
         }
         source = "registry+" + name + "@" + selectedVersion;
@@ -2245,21 +2308,26 @@ int commandAdd(const std::string& manifestPath, const std::string& name,
       reportError("'" + name + "' is not a valid dependency name");
       return kUsage;
     }
-    if (version.empty()) {
-      reportError("a registry dependency needs --version <requirement>");
-      return kUsage;
-    }
-    if (!isValidRequirement(version)) {
-      reportError("version requirement '" + version +
-                  "' is not supported; use a version, ^, ~, a comparator or "
-                  "a wildcard");
-      return kUsage;
-    }
     if (registryRoot().empty()) {
       reportError(
           "a registry dependency needs OSKEL_REGISTRY to name the registry "
           "directory");
       return kFailure;
+    }
+    std::string requirement = version;
+    if (requirement.empty()) {
+      std::string latest;
+      if (!latestRegistryVersion(name, latest, false, error)) {
+        reportError(error);
+        return kFailure;
+      }
+      requirement = "^" + latest;
+    }
+    if (!isValidRequirement(requirement)) {
+      reportError("version requirement '" + requirement +
+                  "' is not supported; use a version, ^, ~, a comparator or "
+                  "a wildcard");
+      return kUsage;
     }
     if (name == manifest.package.name) {
       reportError("a package cannot depend on itself");
@@ -2268,7 +2336,7 @@ int commandAdd(const std::string& manifestPath, const std::string& name,
 
     Dependency declaration;
     declaration.name = name;
-    declaration.requirement = version;
+    declaration.requirement = requirement;
 
     bool updating = false;
     auto existing = manifest.package.dependencies.find(name);
@@ -2616,9 +2684,18 @@ int commandPublish(const std::string& manifestPath,
   return kOk;
 }
 
-int commandUpdate(const std::string& manifestPath, const std::string& name) {
+int commandUpdate(const std::string& manifestPath, const std::string& name,
+                  const std::string& precise) {
   if (!name.empty() && !isIdentifier(name)) {
     reportError("'" + name + "' is not a valid dependency name");
+    return kUsage;
+  }
+  if (name.empty() && !precise.empty()) {
+    reportError("--precise needs a package name");
+    return kUsage;
+  }
+  if (!precise.empty() && !isSemver(precise)) {
+    reportError("version '" + precise + "' is not a semantic version");
     return kUsage;
   }
   Manifest manifest;
@@ -2644,21 +2721,50 @@ int commandUpdate(const std::string& manifestPath, const std::string& name) {
     }
   }
 
+  std::map<std::string, std::string> forced;
   if (!name.empty()) {
     if (manifest.package.dependencies.count(name) == 0 &&
         preferred.count(name) == 0) {
       reportError("package '" + name + "' is not in the dependency graph");
       return kFailure;
     }
-    preferred.erase(name);
+    if (!precise.empty()) {
+      auto direct = manifest.package.dependencies.find(name);
+      bool registryDependency = false;
+      if (direct != manifest.package.dependencies.end()) {
+        registryDependency = direct->second.isRegistry();
+      } else {
+        auto locked = previous.packages.find(name);
+        registryDependency = locked != previous.packages.end() &&
+                             locked->second.source.rfind("registry+", 0) == 0;
+      }
+      if (!registryDependency) {
+        reportError("package '" + name +
+                    "' is a path dependency; --precise only applies to a "
+                    "registry dependency");
+        return kFailure;
+      }
+      forced[name] = precise;
+    } else {
+      preferred.erase(name);
+    }
   } else {
     preferred.clear();
   }
 
   Resolution resolution;
-  if (!resolveDependencies(manifest, resolution, error, preferred)) {
+  if (!resolveDependencies(manifest, resolution, error, preferred, forced)) {
     reportError(error);
     return kFailure;
+  }
+  if (!precise.empty()) {
+    const ResolvedPackage* selected = resolution.find(name);
+    if (selected == nullptr || selected->version != precise ||
+        selected->source.rfind("registry+", 0) != 0) {
+      reportError("package '" + name +
+                  "' did not resolve to registry version '" + precise + "'");
+      return kFailure;
+    }
   }
   if (!writeLockfile(manifest, resolution, error) ||
       !materializeDependencies(manifest, resolution, error)) {
@@ -2688,6 +2794,85 @@ int commandUpdate(const std::string& manifestPath, const std::string& name) {
     }
   }
   if (!changed) std::cout << "everything is up to date\n";
+  return kOk;
+}
+
+int commandOutdated(const std::string& manifestPath) {
+  Manifest manifest;
+  std::string error;
+  if (!loadManifest(manifestPath, manifest, error)) {
+    reportError(error);
+    return kIoError;
+  }
+  printWarnings(manifest);
+
+  std::map<std::string, std::string> preferred;
+  if (!loadPreferredVersions(manifest, preferred, error)) {
+    reportError(error);
+    return kIoError;
+  }
+  Resolution resolution;
+  if (!resolveDependencies(manifest, resolution, error, preferred)) {
+    reportError(error);
+    return kFailure;
+  }
+
+  bool any = false;
+  for (const ResolvedPackage& package : resolution.packages) {
+    if (package.root || package.source.rfind("registry+", 0) != 0) continue;
+    SemVer current;
+    if (!parseSemVer(package.version, current)) continue;
+
+    std::string latestText;
+    if (!latestRegistryVersion(package.name, latestText,
+                               !current.prerelease.empty(), error)) {
+      reportError(error);
+      return kFailure;
+    }
+    SemVer latest;
+    if (!parseSemVer(latestText, latest)) continue;
+
+    const auto direct = manifest.package.dependencies.find(package.name);
+    const bool isDirect = direct != manifest.package.dependencies.end() &&
+                          direct->second.isRegistry();
+    std::string targetText = latestText;
+    std::string note;
+    if (isDirect) {
+      std::string compatibleText;
+      fs::path ignored;
+      if (!selectRegistryVersion(direct->second, {}, {}, compatibleText,
+                                 ignored, error)) {
+        reportError(error);
+        return kFailure;
+      }
+      targetText = compatibleText;
+      SemVer compatible;
+      parseSemVer(compatibleText, compatible);
+      if (compareSemVer(compatible, latest) < 0) {
+        note = "; latest " + latestText + " needs a new requirement";
+      }
+    }
+
+    SemVer target;
+    parseSemVer(targetText, target);
+    if (compareSemVer(target, current) > 0) {
+      any = true;
+      std::cout << package.name << " " << package.version << " -> "
+                << targetText;
+      if (isDirect) std::cout << " (" << direct->second.requirement << ")";
+      std::cout << note << "\n";
+    } else if (compareSemVer(latest, current) > 0) {
+      any = true;
+      std::cout << package.name << " " << package.version << " (latest "
+                << latestText;
+      if (isDirect) {
+        std::cout << " needs a new requirement, current "
+                  << direct->second.requirement;
+      }
+      std::cout << ")\n";
+    }
+  }
+  if (!any) std::cout << "All registry dependencies are up to date.\n";
   return kOk;
 }
 
