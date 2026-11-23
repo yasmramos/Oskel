@@ -1,0 +1,65 @@
+// Standard library: portable system primitives.
+//
+// Imported as `import std.sys;` (qualified: `std.sys.time`),
+// `import std.sys.*;` (unqualified: `time`), `import std.sys as sys;` or
+// `import { time, clock } from std.sys;`.
+//
+// `std.sys` is the target-independent half of the system surface: the wall
+// clock, the monotonic clock, the target names and the process exit. It uses
+// only builtins the VM and every AOT target seed, so it also builds for bare
+// metal. The process and filesystem half lives in `std.os`.
+//
+// `memSize()` is deliberately not re-exported: only the bare-metal AOT target
+// backs it, so a re-export would make this module fail to build on every
+// hosted target.
+
+// The host OS name: `"linux"`, `"windows"`, `"macos"` or `"freestanding"`.
+let platform = platform;
+
+// The host architecture name: `"x86_64"`, `"aarch64"` or `"wasm32"`.
+let arch = arch;
+
+// Seconds since the Unix epoch, UTC.
+let time = time;
+
+// Seconds elapsed since the process started (monotonic).
+let clock = clock;
+
+// Ends the process with `code`.
+let exit = exit;
+
+// The target's pointer width in bytes: 8 on x86-64 and AArch64, 4 on wasm32.
+@MustUse
+fn pointerSize(): int {
+  return arch() == "wasm32" ? 4 : 8;
+}
+
+// True when the target uses 64-bit pointers.
+@MustUse
+fn is64Bit(): bool {
+  return pointerSize() == 8;
+}
+
+// True when the target is Windows.
+@MustUse
+fn isWindows(): bool {
+  return platform() == "windows";
+}
+
+// True when the target is Linux.
+@MustUse
+fn isLinux(): bool {
+  return platform() == "linux";
+}
+
+// True when the target is macOS.
+@MustUse
+fn isMacOs(): bool {
+  return platform() == "macos";
+}
+
+// True when the target is a bare-metal image.
+@MustUse
+fn isBareMetal(): bool {
+  return platform() == "freestanding";
+}
