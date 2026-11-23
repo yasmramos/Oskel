@@ -2144,8 +2144,10 @@ negative steps, Python clamping), variadic functions (`rest...` is packed into
 an array), and the builtins `print`, `write`, `eprint`, `len`, `type`, `str`,
 `$str`, `repr`, `int`, `float`, `double`, `bool`, `chr`, `ord`, `floor`,
 `ceil`, `round`, `sqrt`, `assert`, `assertEq`, `panic`, `error`, `isError`,
-`$isError`, `$nonNull`, `range`, `$range`, `$slice`, `time`, `clock` and
-`exit`. Every array method is bound as a receiver-capturing closure:
+`$isError`, `$nonNull`, `range`, `$range`, `$slice`, `time`, `clock`,
+`exit`, `cstring`, `buffer`, `cstr`, `byteLen`, `loadByte`, `storeByte`,
+`intToPtr`, `ptrToInt` and `free`. Every array method is bound as a
+receiver-capturing closure:
 `push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`, `contains`, `indexOf`,
 `clear`, `slice`, `concat`, `reversed`, `clone`, `sum`, `join`, `map`,
 `filter`, `each`, `find`, `any`, `all`, `reduce`, `sort` and `sorted`. The
@@ -2158,8 +2160,16 @@ operators. The string methods (`upper`, `lower`, `trim`, `trimStart`,
 `trimEnd`, `split`, `lines`, `replace`, `replaceFirst`, `startsWith`,
 `endsWith`, `contains`, `indexOf`, `substr`, `chars`, `repeat`, `reversed`,
 `padStart`, `padEnd`) and the range methods (`toArray`, `contains`) are bound
-the same way; a range's `.length` saturates at INT64_MAX. The
-standard-library modules stay on the portable primitive surface: `std/json`,
+the same way; a range's `.length` saturates at INT64_MAX. Pointer handles
+(`cstring`, `buffer`, `cstr`, `byteLen`, `loadByte`, `storeByte`, `intToPtr`,
+`ptrToInt`, `free`) use the `AotPtr` layout in linear memory
+(`{kind, data, length, released}`); `type()` reports `cstring` for a CString
+handle and `ptr` otherwise, `str`/`repr` render a `cstring` as its text and
+every other handle as `<ptr>`, and `free` only marks the handle released
+because the arena never reclaims. `tests/native_build_wasm_pointers.oskl`
+covers the happy paths; the error paths stay in the AOT fixture because
+`pcall` is VM-only. The standard-library modules stay on the portable
+primitive surface: `std/json`,
 `std/datetime`, `std/collections`, `std/path` and the bound half of `std.math`
 build and agree with the VM byte for byte; the host clock is what lets
 `std/datetime` read `time()`/`clock()`.
