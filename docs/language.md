@@ -2782,6 +2782,7 @@ The streaming half is deliberately small and works on both engines:
 | `readText(path)` | Reads the whole file and closes it. |
 | `writeText(path, text)` | Creates or truncates `path` and writes `text`. |
 | `appendText(path, text)` | Creates `path` if needed and appends `text`. |
+| `copyFile(from, to)` | Copies in 64 KiB chunks; `to` is created or truncated. |
 | `exists(path)` | True when `path` can be opened for reading. |
 | `File.read(count)` | Up to `count` bytes; a negative count reads to the end. |
 | `File.readAll()` | The rest of the file. |
@@ -2806,9 +2807,12 @@ fn main() {
 ```
 
 `std.fs.dir` holds the operations that need a host directory API:
-`remove`, `rename`, `makeDir`, `removeDir`, `listDir`, `stat`, `exists`,
-`isDir`, `currentDir` and `changeDir`. `stat` returns
-`{size, modified, isFile, isDir}` with `modified` in epoch seconds.
+`remove`, `rename`, `makeDir`, `removeDir`, `listDir`, `walk`, `stat`,
+`exists`, `isDir`, `currentDir` and `changeDir`. `stat` returns
+`{size, modified, isFile, isDir}` with `modified` in epoch seconds. `walk`
+returns every entry below a directory, recursively, as paths joined to that
+directory (the root itself is not included); directories are included and the
+result is sorted.
 
 **Engine support.** Both surfaces are implemented by the VM and by
 `oskel build` on every target with a file system: freestanding Linux, Windows

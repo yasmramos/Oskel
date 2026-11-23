@@ -47,6 +47,54 @@ fn testFileClass() {
   reader.close();
 }
 
+fn testCopyFile() {
+  std.fs.writeText("copy-src.txt", "alpha\nbeta\n");
+  std.fs.copyFile("copy-src.txt", "copy-dst.txt");
+  assertEq(std.fs.readText("copy-dst.txt"), "alpha\nbeta\n");
+  assertEq(std.fs.readText("copy-src.txt"), "alpha\nbeta\n");
+
+  std.fs.writeText("empty-src.txt", "");
+  std.fs.copyFile("empty-src.txt", "empty-dst.txt");
+  assertEq(std.fs.readText("empty-dst.txt"), "");
+
+  let large = "0123456789abcdef".repeat(5000);
+  std.fs.writeText("large-src.txt", large);
+  std.fs.copyFile("large-src.txt", "large-dst.txt");
+  assertEq(len(std.fs.readText("large-dst.txt")), len(large));
+  assertEq(std.fs.readText("large-dst.txt"), large);
+
+  let same = pcall(() => std.fs.copyFile("copy-src.txt", "copy-src.txt"));
+  assert(!same.ok);
+  assert(same.error.message.contains("same path"));
+  assertEq(std.fs.readText("copy-src.txt"), "alpha\nbeta\n");
+
+  std.fs.dir.remove("copy-src.txt");
+  std.fs.dir.remove("copy-dst.txt");
+  std.fs.dir.remove("empty-src.txt");
+  std.fs.dir.remove("empty-dst.txt");
+  std.fs.dir.remove("large-src.txt");
+  std.fs.dir.remove("large-dst.txt");
+}
+
+fn testWalk() {
+  std.fs.dir.makeDir("walkdir");
+  std.fs.dir.makeDir("walkdir/sub");
+  std.fs.dir.makeDir("walkdir/empty");
+  std.fs.writeText("walkdir/a.txt", "a");
+  std.fs.writeText("walkdir/sub/b.txt", "b");
+
+  assertEq(std.fs.dir.walk("walkdir"),
+           ["walkdir/a.txt", "walkdir/empty", "walkdir/sub", "walkdir/sub/b.txt"]);
+  assertEq(std.fs.dir.walk("walkdir/sub"), ["walkdir/sub/b.txt"]);
+  assertEq(std.fs.dir.walk("walkdir/sub/"), ["walkdir/sub/b.txt"]);
+
+  std.fs.dir.remove("walkdir/a.txt");
+  std.fs.dir.remove("walkdir/sub/b.txt");
+  std.fs.dir.removeDir("walkdir/sub");
+  std.fs.dir.removeDir("walkdir/empty");
+  std.fs.dir.removeDir("walkdir");
+}
+
 fn testDirectories() {
   std.fs.writeText("a.txt", "one\ntwo\n");
   std.fs.appendText("a.txt", "three\n");
@@ -123,6 +171,8 @@ fn main() {
   assert(std.fs.dir.currentDir() != original);
 
   testFileClass();
+  testCopyFile();
+  testWalk();
   testDirectories();
   testErrors();
 
