@@ -602,11 +602,10 @@ AMD64, so Linux and x86-64 macOS; Windows and arm64 reject a callback
 declaration): the stub re-enters the VM with the C arguments boxed as Oskel
 values and writes the Oskel result back in the declared C type. The callback
 runs while the C function is on the stack, so the stub is alive for the whole
-call; storing the function pointer for a later call is out of scope in the
-development engine. The AOT
-backend's stub and context live in the arena, so a callback C stores for a later
-call -- including one invoked from an `atexit` handler after the chunk returns
--- works there (BACKLOG §6). The executable stub page is W^X (read+execute,
+call. The engine keeps the closure stub alive for the process lifetime, so a
+callback C stores for a later call -- including one invoked from an `atexit`
+handler after the chunk returns -- works in both the development engine and a
+compiled binary (BACKLOG §6). The executable stub page is W^X (read+execute,
 never writable and executable) and lives until the process exits. `nil` is the
 NULL function pointer.
 
@@ -621,11 +620,11 @@ argument. An error raised inside a callback cannot unwind
 through the C frame, so the extern call captures it and re-raises it once C
 returns: `pcall` catches it like any other runtime error. A struct the callback
 returns that does not match the declared shape (not a map, a missing field, a
-field of the wrong type) fails the same way. The AOT backend (PHASE 7f.8)
+field of the wrong type) fails the same way. The AOT backend (PHASE 7f.8/7f.11)
 lowers callbacks to generated stubs and never links a host FFI library; it
-supports every scalar parameter and return class, but rejects a callback that
-returns a struct by value and a callback with a struct parameter with a dedicated
-build error.
+supports every scalar parameter and return class and a struct return by value,
+in the return registers or through the hidden `sret` pointer. A callback with a
+struct parameter is rejected by both engines with a dedicated build error.
 
 **C variadics.** A trailing bare `...` declares a C variadic function: the named
 parameters are the fixed prefix and every extra argument is passed through the
@@ -3262,7 +3261,7 @@ features of this release.
 - No `++`, `--` or default parameters. A trailing `rest...` parameter makes a function variadic (see §7.1). `switch` on literals and ranges is supported (see §6.10), and so is the post-test loop `do { ... } while (cond);` (see §6.4).
 - Optional types and nullability are implemented for declarations and expressions (PHASE 6.5). Type annotations (`let x: int = 5`), local inference, the nullable `T?` annotation, and the null-safe expressions `?.`, `??` and `!!` are checked at compile time. `struct` is implemented (see §4.7) and so is `native fn` (see §7.6), the typed declaration of a host-provided function.
 - FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the host C ABI without a host FFI library for scalars and register structs; a class-MEMORY struct, a C variadic and a callback go through a small x86-64 descriptor/closure stub emitted by the engine. A `fn(P...): R` parameter is a callback: the development engine builds a closure stub that re-enters the VM (its `R` may be a scalar or a struct by value); it is available on x86-64 System V (Linux, x86-64 macOS), not on Windows or arm64. A trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...): int`), which applies the C default argument promotions and goes through the descriptor stub on either x86-64 ABI (System V AMD64 or Microsoft x64); it is rejected at compile time on a non-x86-64 host.
-- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.10 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux, Windows and macOS x86-64), where the program is linked against the host C library; the freestanding mode, which is the default on Linux and Windows, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — both register-class and class-MEMORY — are lowered on the System V targets (Linux and macOS, 7f.6, 7f.7); the Windows x86-64 backend supports the scalar, `cstring` and `ptr` classes and rejects a struct or a callback with a dedicated message. A C variadic is lowered on all three hosted targets: System V continues the independent GPR/SSE counters, Win64 continues the argument positions (a floating value in a register position goes in both its SSE and integer register, and position four onward spills to the outgoing stack area past the shadow space). `native fn` declarations the backend has no stub for fail the build with a dedicated message. Callbacks are lowered on System V (7f.8): a scalar parameter or return crosses through a generated stub; a struct return or a struct parameter is rejected with a dedicated message.
+- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.11 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux, Windows and macOS x86-64), where the program is linked against the host C library; the freestanding mode, which is the default on Linux and Windows, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — both register-class and class-MEMORY — are lowered on the System V targets (Linux and macOS, 7f.6, 7f.7); the Windows x86-64 backend supports the scalar, `cstring` and `ptr` classes and rejects a struct or a callback with a dedicated message. A C variadic is lowered on all three hosted targets: System V continues the independent GPR/SSE counters, Win64 continues the argument positions (a floating value in a register position goes in both its SSE and integer register, and position four onward spills to the outgoing stack area past the shadow space). `native fn` declarations the backend has no stub for fail the build with a dedicated message. Callbacks are lowered on System V (7f.8): a scalar parameter or return crosses through a generated stub, and a struct return by value is rebuilt into the C return registers or the hidden `sret` buffer (7f.11). A struct parameter is rejected by both engines with a dedicated message.
 - A function's text representation is the same on both engines: `<fn name>` for a named function, `<native fn name>` for a host binding (a builtin, a `native fn`, an `extern "C"` symbol or a bound collection method such as `<native fn array.map>`), and `<fn <anonymous>>` for a lambda. The AOT closure carries a `display` pointer to a static `AotString` with that exact text, so `print`, `repr`, `str` and string interpolation all agree byte for byte (BACKLOG §6.22, `tests/native_build_function_repr.oskl`).
 - The first UI layer is `std/ui.oskl` (`docs/ui.md`): a declarative widget
   tree, deterministic layout, a `rect`/`text` display list and button hit

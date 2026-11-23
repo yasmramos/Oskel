@@ -346,17 +346,36 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
 
   // The C side of a callback: its scalar parameters classified by the System V
   // ABI, and its return class. The body is a shared machine-code function, so
-  // two declarations of the same shape share one entry. A struct return is the
-  // one shape the AOT body does not build yet; reject it with a message rather
-  // than emitting a wrong callback.
+  // two declarations of the same shape share one entry. A struct return is
+  // supported too: the body rebuilds the map's fields into the C bytes and
+  // loads them into the return registers (or the hidden `sret` buffer).
   auto callbackIndex = [&](const ffi::TypeSpec& spec) -> int {
-    if (spec.callbackReturnsStruct) {
-      throw LoweringError(
-          "lowering: a callback returning a struct by value is not supported by the "
-          "AOT backend yet");
-    }
     AotCallbackSignature signature;
-    int gpr = 0;
+    if (spec.callbackReturnsStruct) {
+      std::string reason;
+      if (!ffi::buildStructLayout(spec.callbackReturnFields,
+                                  signature.returnStruct.layout, reason)) {
+        throw LoweringError("lowering: " + reason);
+      }
+      signature.returnsStruct = true;
+      signature.returnMemory = signature.returnStruct.layout.isMemory;
+      signature.returns = ffi::ReturnClass::Struct;
+      for (std::size_t f = 0; f < signature.returnStruct.layout.fields.size(); ++f) {
+        signature.returnStruct.fieldNameLabels.push_back(cg.newLabel());
+      }
+    } else {
+      signature.returnType = spec.callbackReturn;
+      if (spec.callbackReturn.empty() || spec.callbackReturn == "void") {
+        signature.returns = ffi::ReturnClass::Void;
+      } else if (!ffi::classifyReturn(spec.callbackReturn, signature.returns) ||
+                 signature.returns == ffi::ReturnClass::Struct) {
+        throw LoweringError("lowering: callback return type '" + spec.callbackReturn +
+                            "' cannot cross the C boundary");
+      }
+    }
+    // A class-MEMORY return takes `rdi` for the hidden `sret` pointer, so the
+    // first declared parameter starts in the next integer register.
+    int gpr = signature.returnMemory ? 1 : 0;
     int sse = 0;
     std::int64_t stack = 0;
     for (const std::string& declared : spec.callbackParams) {
@@ -384,16 +403,23 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
       }
       signature.params.push_back(std::move(param));
     }
-    signature.returnType = spec.callbackReturn;
-    if (spec.callbackReturn.empty() || spec.callbackReturn == "void") {
-      signature.returns = ffi::ReturnClass::Void;
-    } else if (!ffi::classifyReturn(spec.callbackReturn, signature.returns) ||
-               signature.returns == ffi::ReturnClass::Struct) {
-      throw LoweringError("lowering: callback return type '" + spec.callbackReturn +
-                          "' cannot cross the C boundary");
-    }
     for (std::size_t i = 0; i < callbacks.size(); ++i) {
+      if (callbacks[i].returnsStruct != signature.returnsStruct) continue;
+      if (callbacks[i].returns != signature.returns) continue;
       if (callbacks[i].returnType != signature.returnType) continue;
+      if (signature.returnsStruct) {
+        const ffi::StructLayout& a = callbacks[i].returnStruct.layout;
+        const ffi::StructLayout& b = signature.returnStruct.layout;
+        if (a.size != b.size || a.fields.size() != b.fields.size()) continue;
+        bool sameLayout = true;
+        for (std::size_t k = 0; k < a.fields.size(); ++k) {
+          if (a.fields[k].name != b.fields[k].name || a.fields[k].type != b.fields[k].type) {
+            sameLayout = false;
+            break;
+          }
+        }
+        if (!sameLayout) continue;
+      }
       if (callbacks[i].params.size() != signature.params.size()) continue;
       bool same = true;
       for (std::size_t k = 0; k < signature.params.size(); ++k) {
