@@ -24,6 +24,7 @@ const char* kUsage =
     "  oskelp add --path <path> [--version <v>] [--manifest-path <file>]\n"
     "  oskelp remove <name> [--manifest-path <file>]\n"
     "  oskelp publish [--registry <dir>] [--manifest-path <file>]\n"
+    "  oskelp yank <name> --version <version> [--undo] [--registry <dir>]\n"
     "  oskelp update [<name>] [--precise <version>]\n"
     "                [--manifest-path <file>]\n"
     "  oskelp outdated [--manifest-path <file>]\n"
@@ -46,7 +47,9 @@ const char* kUsage =
     "`--version <requirement>` for one from the registry named by\n"
     "OSKEL_REGISTRY; without `--version` it uses the latest published release\n"
     "and writes a caret requirement. `oskelp publish` copies the package to\n"
-    "that registry. `oskelp update` re-resolves every package, or only <name>,\n"
+    "that registry; `oskelp yank` hides a published version from new\n"
+    "selections without deleting it (an existing lockfile pin keeps working).\n"
+    "`oskelp update` re-resolves every package, or only <name>,\n"
     "and rewrites oskel.lock; `--precise <version>` pins that registry package\n"
     "to one version. `oskelp outdated` prints the available registry updates.\n"
     "`oskelp build` compiles the project's entry point to a native binary;\n"
@@ -251,6 +254,50 @@ int commandPublish(const std::vector<std::string>& arguments) {
   return oskelp::commandPublish(manifest, registry);
 }
 
+int commandYank(const std::vector<std::string>& arguments) {
+  std::string name;
+  std::string version;
+  std::string registry;
+  bool undo = false;
+  for (size_t i = 1; i < arguments.size(); ++i) {
+    const std::string& arg = arguments[i];
+    if (arg == "-h" || arg == "--help") {
+      std::cout << "oskelp " << OSKEL_VERSION << "\n\n" << kUsage;
+      return oskelp::kOk;
+    }
+    if (arg == "--version") {
+      if (!takeValue(arguments, i, arg, version)) return oskelp::kUsage;
+      continue;
+    }
+    if (arg == "--registry") {
+      if (!takeValue(arguments, i, arg, registry)) return oskelp::kUsage;
+      continue;
+    }
+    if (arg == "--undo") {
+      undo = true;
+      continue;
+    }
+    if (!arg.empty() && arg[0] == '-') {
+      std::cerr << "oskelp yank: unknown option '" << arg << "'\n";
+      return oskelp::kUsage;
+    }
+    if (!name.empty()) {
+      std::cerr << "oskelp yank: a single package name is expected\n";
+      return oskelp::kUsage;
+    }
+    name = arg;
+  }
+  if (name.empty()) {
+    std::cerr << "oskelp yank: a package name is required\n";
+    return oskelp::kUsage;
+  }
+  if (version.empty()) {
+    std::cerr << "oskelp yank: --version <version> is required\n";
+    return oskelp::kUsage;
+  }
+  return oskelp::commandYank(name, version, registry, undo);
+}
+
 int commandUpdate(const std::vector<std::string>& arguments) {
   std::string name;
   std::string precise;
@@ -398,6 +445,7 @@ int main(int argc, char** argv) {
   if (command == "add") return commandAdd(arguments);
   if (command == "remove") return commandRemove(arguments);
   if (command == "publish") return commandPublish(arguments);
+  if (command == "yank") return commandYank(arguments);
   if (command == "update") return commandUpdate(arguments);
   if (command == "outdated") return commandOutdated(arguments);
 

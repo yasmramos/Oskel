@@ -197,6 +197,13 @@ bool resolveDependencies(
 bool latestRegistryVersion(const std::string& name, std::string& version,
                            bool includePrerelease, std::string& error);
 
+// True when `<registry>/<name>/<version>/.yanked` exists. A yanked version is
+// hidden from new selections (`add`, `update`, `outdated`) but a lockfile pin
+// that already names it keeps working, so a build does not break when a
+// publisher withdraws a release.
+bool isRegistryVersionYanked(const std::string& name, const std::string& version,
+                             const std::string& registry);
+
 Lockfile buildLockfile(const Resolution& resolution);
 
 // Compares a loaded lockfile with a fresh resolution. On failure sets `error`
@@ -232,6 +239,12 @@ int commandRemove(const std::string& manifestPath, const std::string& name);
 // Copies `oskel.toml` and `src/` into `<registry>/<name>/<version>`. `registry`
 // is `--registry`, or `$OSKEL_REGISTRY` when empty.
 int commandPublish(const std::string& manifestPath, const std::string& registry);
+// Marks a published version as yanked (`--undo` clears the marker). `registry`
+// is `--registry`, or `$OSKEL_REGISTRY` when empty. Yanking an already yanked
+// version and un-yanking a live one are successful no-ops, so the command is
+// idempotent.
+int commandYank(const std::string& name, const std::string& version,
+                const std::string& registry, bool undo);
 // Re-resolves ignoring the lockfile pin for `name` (or for every package when
 // `name` is empty), writes the lockfile and materialises the new tree. A
 // non-empty `precise` pins `name` to exactly that registry version and fails

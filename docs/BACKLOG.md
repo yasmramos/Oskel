@@ -1082,7 +1082,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     `$OSKEL_REGISTRY`, `update [<name>]` moves the lockfile pin and prints each
     change, `update --precise <version>` pins one registry version and refuses
     a missing or out-of-range one, and `outdated` prints the compatible and
-    latest versions without writing the lockfile.
+    latest versions without writing the lockfile. `yank <name> --version <v>`
+    writes a `.yanked` marker that hides a published version from new
+    selections while a lockfile pin keeps working; `--undo` restores it.
 13. **[P2]** `oskelp`: add build profiles. `target/<name>` is the only output
     today because the AOT backend has no optimization level to select; a
     `--release` that changes nothing would be a cosmetic lie.

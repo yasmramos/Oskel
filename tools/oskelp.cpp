@@ -1392,6 +1392,13 @@ bool selectRegistryVersion(const Dependency& dependency,
               "' version '" + explicitVersion->second + "'";
       return false;
     }
+    if (isRegistryVersionYanked(dependency.name, explicitVersion->second,
+                                root)) {
+      error = "version '" + explicitVersion->second + "' of '" +
+              dependency.name +
+              "' is yanked; run `oskelp yank --undo` to restore it";
+      return false;
+    }
     if (!satisfiesRequirement(dependency.requirement, parsed)) {
       error = "package '" + dependency.name + "' version '" +
               explicitVersion->second + "' does not satisfy '" +
@@ -1409,9 +1416,11 @@ bool selectRegistryVersion(const Dependency& dependency,
   std::vector<std::pair<SemVer, std::string>> candidates;
   std::string published;
   for (const auto& entry : versions) {
+    bool yanked = isRegistryVersionYanked(dependency.name, entry.second, root);
     if (!published.empty()) published += ", ";
     published += entry.second;
-    if (satisfiesRequirement(dependency.requirement, entry.first)) {
+    if (yanked) published += " (yanked)";
+    if (!yanked && satisfiesRequirement(dependency.requirement, entry.first)) {
       candidates.push_back(entry);
     }
   }
@@ -1422,6 +1431,8 @@ bool selectRegistryVersion(const Dependency& dependency,
     return false;
   }
 
+  // A lockfile pin is honoured even when it is yanked: a publisher withdrawing
+  // a release must not break a project that already locked it.
   std::string chosen;
   auto pinned = preferred.find(dependency.name);
   if (pinned != preferred.end()) {
@@ -1463,6 +1474,14 @@ bool loadPreferredVersions(const Manifest& manifest,
 
 }  // namespace
 
+bool isRegistryVersionYanked(const std::string& name, const std::string& version,
+                             const std::string& registry) {
+  if (registry.empty()) return false;
+  std::error_code ec;
+  return fs::is_regular_file(
+      fs::path(registry) / name / version / ".yanked", ec);
+}
+
 bool latestRegistryVersion(const std::string& name, std::string& version,
                            bool includePrerelease, std::string& error) {
   std::string root = registryRoot();
@@ -1472,13 +1491,19 @@ bool latestRegistryVersion(const std::string& name, std::string& version,
   }
   std::vector<std::pair<SemVer, std::string>> versions;
   if (!registryVersions(name, root, versions, error)) return false;
+  bool sawUsable = false;
   for (auto it = versions.rbegin(); it != versions.rend(); ++it) {
+    if (isRegistryVersionYanked(name, it->second, root)) continue;
+    sawUsable = true;
     if (!includePrerelease && !it->first.prerelease.empty()) continue;
     version = it->second;
     return true;
   }
   if (versions.empty()) {
     error = "the registry at '" + root + "' has no versions of '" + name + "'";
+  } else if (!sawUsable) {
+    error = "the registry at '" + root + "' has only yanked versions of '" +
+            name + "'";
   } else {
     error = "the registry at '" + root + "' has only prerelease versions of '" +
             name + "'; pass an explicit version";
@@ -2684,6 +2709,73 @@ int commandPublish(const std::string& manifestPath,
   return kOk;
 }
 
+int commandYank(const std::string& name, const std::string& version,
+                const std::string& registry, bool undo) {
+  if (!isIdentifier(name)) {
+    reportError("'" + name + "' is not a valid package name");
+    return kUsage;
+  }
+  if (!isSemver(version)) {
+    reportError("version '" + version + "' is not a semantic version");
+    return kUsage;
+  }
+  std::string root = registry.empty() ? registryRoot() : registry;
+  if (root.empty()) {
+    reportError(
+        "yank needs a registry: set OSKEL_REGISTRY or pass --registry "
+        "<directory>");
+    return kFailure;
+  }
+
+  fs::path directory = fs::path(root) / name / version;
+  std::error_code ec;
+  if (!fs::is_directory(directory, ec)) {
+    reportError("the registry at '" + root + "' has no '" + name +
+                "' version '" + version + "'");
+    return kFailure;
+  }
+  Manifest published;
+  std::string error;
+  if (!loadManifest((directory / "oskel.toml").string(), published, error)) {
+    reportError("registry entry '" + name + "/" + version + "': " + error);
+    return kFailure;
+  }
+  if (published.package.name != name || published.package.version != version) {
+    reportError("registry entry '" + name + "/" + version +
+                "' declares '" + published.package.name + " " +
+                published.package.version + "'");
+    return kFailure;
+  }
+
+  fs::path marker = directory / ".yanked";
+  bool yanked = fs::is_regular_file(marker, ec);
+  if (undo) {
+    if (!yanked) {
+      std::cout << name << " " << version << " is not yanked\n";
+      return kOk;
+    }
+    ec.clear();
+    fs::remove(marker, ec);
+    if (ec) {
+      reportError("cannot remove '" + marker.string() + "': " + ec.message());
+      return kIoError;
+    }
+    std::cout << "unyanked " << name << " " << version << "\n";
+    return kOk;
+  }
+
+  if (yanked) {
+    std::cout << name << " " << version << " is already yanked\n";
+    return kOk;
+  }
+  if (!writeTextFile(marker, "", error)) {
+    reportError(error);
+    return kIoError;
+  }
+  std::cout << "yanked " << name << " " << version << "\n";
+  return kOk;
+}
+
 int commandUpdate(const std::string& manifestPath, const std::string& name,
                   const std::string& precise) {
   if (!name.empty() && !isIdentifier(name)) {
@@ -2823,18 +2915,36 @@ int commandOutdated(const std::string& manifestPath) {
     SemVer current;
     if (!parseSemVer(package.version, current)) continue;
 
+    const bool currentYanked = isRegistryVersionYanked(
+        package.name, package.version, registryRoot());
     std::string latestText;
-    if (!latestRegistryVersion(package.name, latestText,
-                               !current.prerelease.empty(), error)) {
+    bool haveLatest = latestRegistryVersion(
+        package.name, latestText, !current.prerelease.empty(), error);
+    if (!haveLatest && !currentYanked) {
       reportError(error);
       return kFailure;
     }
-    SemVer latest;
-    if (!parseSemVer(latestText, latest)) continue;
 
     const auto direct = manifest.package.dependencies.find(package.name);
     const bool isDirect = direct != manifest.package.dependencies.end() &&
                           direct->second.isRegistry();
+    if (currentYanked) {
+      any = true;
+      std::cout << package.name << " " << package.version << " (yanked";
+      if (haveLatest) {
+        SemVer latest;
+        parseSemVer(latestText, latest);
+        if (compareSemVer(latest, current) > 0) {
+          std::cout << "; latest " << latestText;
+          if (isDirect) std::cout << " needs a new requirement";
+        }
+      }
+      std::cout << ")\n";
+      continue;
+    }
+
+    SemVer latest;
+    if (!parseSemVer(latestText, latest)) continue;
     std::string targetText = latestText;
     std::string note;
     if (isDirect) {

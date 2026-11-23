@@ -580,6 +580,68 @@ require_success("oskelp add a prerelease with an exact version")
 require_file_contains("${WORK_DIR}/pre_app/oskel.toml"
                       "pre = \"0.1.0-beta.1\"")
 
+# A yanked release is hidden from new selections but an existing lockfile pin
+# keeps working; --undo restores it.
+run_oskelp("${WORK_DIR}" new yank_app)
+require_success("oskelp new yank_app")
+run_oskelp("${WORK_DIR}/yank_app" add utils --version "^0.2.0")
+require_success("oskelp add a version that will be yanked")
+require_file_contains("${WORK_DIR}/yank_app/oskel.lock"
+                      "source = \"registry+utils@0.2.1\"")
+
+run_oskelp("${WORK_DIR}/yank_app" yank utils --version 0.2.1)
+require_success("oskelp yank a published version")
+require_contains("oskelp yank a published version" "${run_out}"
+                 "yanked utils 0.2.1")
+run_oskelp("${WORK_DIR}/yank_app" yank utils --version 0.2.1)
+require_success("oskelp yank is idempotent")
+require_contains("oskelp yank is idempotent" "${run_out}"
+                 "already yanked")
+
+run_oskelp("${WORK_DIR}/yank_app" outdated)
+require_success("oskelp outdated reports a yanked pin")
+require_contains("oskelp outdated reports a yanked pin" "${run_out}"
+                 "utils 0.2.1 (yanked")
+require_contains("oskelp outdated reports a yanked pin" "${run_out}"
+                 "latest 0.3.0")
+
+run_oskelp("${WORK_DIR}/yank_app" update utils --precise 0.2.1)
+require_failure("oskelp update --precise a yanked version" "1")
+require_contains("oskelp update --precise a yanked version" "${run_err}"
+                 "is yanked")
+
+run_oskelp("${WORK_DIR}/yank_app" check --locked)
+require_success("oskelp check --locked keeps a yanked pin")
+
+run_oskelp("${WORK_DIR}" new yank_add)
+require_success("oskelp new yank_add")
+run_oskelp("${WORK_DIR}/yank_add" add utils --version "^0.2.0")
+require_success("oskelp add skips a yanked version")
+require_file_contains("${WORK_DIR}/yank_add/oskel.lock"
+                      "source = \"registry+utils@0.2.0\"")
+
+run_oskelp("${WORK_DIR}/yank_app" yank utils --version 0.2.1 --undo)
+require_success("oskelp yank --undo restores a version")
+require_contains("oskelp yank --undo restores a version" "${run_out}"
+                 "unyanked utils 0.2.1")
+run_oskelp("${WORK_DIR}/yank_app" update utils --precise 0.2.1)
+require_success("oskelp update --precise after --undo")
+
+run_oskelp("${WORK_DIR}/yank_app" yank utils --version 0.2.1 --undo)
+require_success("oskelp yank --undo is idempotent")
+require_contains("oskelp yank --undo is idempotent" "${run_out}"
+                 "is not yanked")
+
+run_oskelp("${WORK_DIR}/yank_app" yank utils --version 9.9.9)
+require_failure("oskelp yank a missing version" "1")
+require_contains("oskelp yank a missing version" "${run_err}"
+                 "has no 'utils' version '9.9.9'")
+
+run_oskelp("${WORK_DIR}/yank_app" yank utils)
+require_failure("oskelp yank without a version" "64")
+require_contains("oskelp yank without a version" "${run_err}"
+                 "--version <version> is required")
+
 run_oskelp("${WORK_DIR}/registry_app" update missing)
 require_failure("oskelp update an unknown package" "1")
 require_contains("oskelp update an unknown package" "${run_err}"

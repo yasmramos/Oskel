@@ -12,6 +12,7 @@ oskelp init [dir]       add a manifest to an existing directory
 oskelp add <name>       add a dependency (latest release without --version)
 oskelp remove <name>    remove a dependency from the manifest
 oskelp publish          copy the package into the local registry
+oskelp yank <name>      hide a published version from new selections
 oskelp update [<name>]  move the lockfile to newer registry versions
 oskelp outdated         show the registry updates that are available
 oskelp build            compile the entry point to target/<name>
@@ -180,6 +181,14 @@ relax the requirements.
 package with a **path** dependency cannot be published: the consumer would
 resolve that path relative to the registry copy. Publish the dependency and
 depend on its version first. A package that depends on itself is refused too.
+
+`oskelp yank` writes `<registry>/<name>/<version>/.yanked`, which hides that
+version from every new selection: `add`, `update` and `outdated` ignore it. The
+files are not deleted, and a lockfile that already pins the yanked version keeps
+building, so withdrawing a release does not break an existing project. A
+`--precise <version>` that names a yanked version fails instead of silently
+choosing another one. `--undo` removes the marker; both directions are
+idempotent, so repeating the command is safe.
 
 `oskelp update` re-resolves without the pin for the named package, or for
 every package when no name is given, writes `oskel.lock` and refreshes

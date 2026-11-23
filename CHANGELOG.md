@@ -19,6 +19,15 @@ may change between minor versions.
   version, failing when it is missing or outside the manifest requirement.
   `tests/oskelp_test.cpp` and `tests/run_oskelp_case.cmake` pin the behavior.
 
+- **`oskelp yank` withdraws a published version without deleting it.**
+  `oskelp yank <name> --version <version>` writes a `.yanked` marker in the
+  registry entry; `add`, `update` and `outdated` skip the version, while a
+  lockfile that already pins it keeps building. `--precise` refuses a yanked
+  version instead of silently choosing another, and `--undo` clears the marker.
+  Both directions are idempotent. `tests/oskelp_test.cpp` and
+  `tests/run_oskelp_case.cmake` cover the resolver, the lockfile exception and
+  the CLI.
+
 ### Changed
 
 ### Fixed

@@ -1152,7 +1152,13 @@ it as a caveat:
   `remove` refuses an entry that spans multiple lines instead of deleting a
   partial one. `oskelp publish [--registry <dir>]` copies the manifest and
   `src/` into the registry and refuses to overwrite a version or publish a
-  package that keeps a path dependency. A registry dependency has no `path`,
+  package that keeps a path dependency. `oskelp yank <name> --version <v>
+  [--undo]` writes or removes `<registry>/<name>/<version>/.yanked`: a fresh
+  selection (`add`, `update`, `outdated`) skips a yanked version, but a
+  lockfile pin that already names it is still honoured, so withdrawing a
+  release does not break an existing build; `--precise` on a yanked version
+  fails instead of choosing another. Both directions are idempotent. A
+  registry dependency has no `path`,
   so `oskelp tree` must load each child from the **resolution**
   (`ResolvedPackage::dir`), never from `manifest.dir / dependency.path`; the
   latter reads the root manifest again and prints a bogus `(cycle)`.
@@ -1161,8 +1167,9 @@ it as a caveat:
   `--native` is given, and `oskelp test` runs every `tests/**/*.oskl` and exits
   101 when one fails. `tests/run_oskelp_case.cmake` drives the real binary
   through the whole workflow, including publish/consume, `add` without
-  `--version`, `outdated`, `update --precise` and `--locked`, so a change to
-  the manifest, the lockfile or a command must keep that test green.
+  `--version`, `outdated`, `update --precise`, `yank`/`--undo` and `--locked`,
+  so a change to the manifest, the lockfile or a command must keep that test
+  green.
 
 ## Commit authorship
 
