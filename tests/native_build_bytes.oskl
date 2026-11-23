@@ -1,0 +1,46 @@
+// Fixture for `oskel build` (tests/build_binary.cmake) and WebAssembly
+// (tests/wasm_case.cmake): `std.bytes` on a compiled target.
+//
+// The module is pure Oskel over the portable primitive surface, so the native
+// binary and the WebAssembly module must agree with the development VM byte
+// for byte. Every line is deterministic and prints a value; the harness
+// compares stdout.
+
+import std.bytes;
+import std.bytes.*;
+import std.bytes as b;
+import { hexEncode, hexDecode } from std.bytes;
+
+print("utf8 =", fromString("hé€😀"));
+print("byteLength =", byteLength("aé€😀"));
+print("text =", toString([97, 195, 169, 226, 130, 172, 240, 159, 152, 128]));
+print("hex =", hexEncode([0, 1, 15, 16, 255]), hexDecode("00010f10ff"));
+print("hexCase =", hexDecode("aBcD"));
+
+print("base64 =", base64Encode(fromString("foobar")));
+print("base64Padded =", base64Encode([102]), base64Encode([102, 111]));
+print("unbase64 =", base64Decode("Zm9vYmFy"), base64Decode("Zg"));
+print("base64Url =", base64UrlEncode([251, 255]), base64UrlDecode("-_8="));
+
+print("u16 =", readU16LE([0x34, 0x12], 0), readU16BE([0x12, 0x34], 0));
+print("i16 =", readI16LE([0x00, 0x80], 0), readI16BE([0x80, 0x00], 0));
+print("u32 =", readU32LE([0x78, 0x56, 0x34, 0x12], 0));
+print("i32 =", readI32LE([0xFF, 0xFF, 0xFF, 0xFF], 0), readI32BE([0x80, 0, 0, 0], 0));
+print("write16 =", writeU16LE(0x1234), writeU16BE(0x1234));
+print("write32 =", writeU32LE(0x12345678), writeU32BE(0x12345678));
+print("writeSigned =", writeI16LE(-1), writeI32BE(-2147483648));
+
+print("concat =", concat([1, 2], [3, 4]));
+print("slice =", slice([0, 1, 2, 3, 4], 1, 4));
+print("indexOf =", indexOf([1, 2, 1, 2], [1, 2]), indexOf([1, 2, 3], [3, 2]));
+print("contains =", contains([1, 2, 3], [2, 3]), contains([1, 2, 3], []));
+print("startsWith =", startsWith([1, 2, 3], [1, 2]), startsWith([1, 2, 3], [2]));
+print("endsWith =", endsWith([1, 2, 3], [2, 3]), endsWith([1, 2, 3], [1]));
+print("equals =", equals([1, 2], [1, 2]), equals([1, 2], [1, 3]));
+print("compare =", compare([1, 2], [1, 3]), compare([1], [1, 0]));
+print("reversed =", reversed([1, 2, 3]));
+print("repeat =", repeat([1, 2], 3));
+print("isAscii =", isAscii([0, 127]), isAscii([0, 128]));
+
+print("qualified =", std.bytes.hexEncode([255]), b.hexEncode([255]));
+print("selective =", hexEncode([255]), hexDecode("ff"));

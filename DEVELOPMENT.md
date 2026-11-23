@@ -544,6 +544,14 @@ previous one.
   Unicode `upper`/`lower` methods. No new runtime type, opcode or builtin. See
   `docs/language.md` §12.13/§18, `tests/59_std_strings.oskl` and the AOT/WASM
   fixture `tests/native_build_strings.oskl`.
+- **Standard library: `std.bytes`** — **done**: byte strings as ordinary
+  arrays of `int` in `0..255`, with UTF-8 conversion, hexadecimal, standard and
+  URL-safe Base64, fixed-width little-/big-endian 8/16/32-bit codecs and the
+  sub-array helpers. Every public function validates its input; `isValid` is
+  the non-raising check. The module stays on the portable primitive surface,
+  so the VM, `oskel build` and WebAssembly agree. No new runtime type, opcode
+  or builtin. See `docs/language.md` §12.17, `tests/67_std_bytes.oskl` and the
+  AOT/WASM fixture `tests/native_build_bytes.oskl`.
 - **Standard library: `std.io`** — **done**: in-memory text streams built on
   classes. `StringReader` walks a string by code point (`readLine`, `read`,
   `readChar`, `readToken`, `readWhile`, `lines`, ...); `StringWriter`
