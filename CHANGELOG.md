@@ -555,11 +555,15 @@ may change between minor versions.
   tails quote both operands too: `cannot compare 'int' with 'string'` and
   `operator 'in' is not supported for 'int' and 'int'`; `>` and `<=` swap the
   names, because the VM lowers them to `lessThan(b, a)` and its message is the
-  one a program sees. Two tails still stop
-  at the prefix: the arithmetic/bitwise `unsupported operand types for '<op>':
-  '<t1>' and '<t2>'`, which needs the operator symbol threaded through the
-  shared helper, and the FFI struct-field name, which names a C layout field
-  rather than a runtime value.
+  one a program sees. The callback methods name themselves too -- `map() must
+  be a function, got 'int'`, and the same for `filter`, `each`, `find`, `any`,
+  `all` and `reduce` -- and only at the call, so an empty receiver still
+  returns without reporting, as in the VM. The arithmetic, bitwise, shift and
+  power operators name themselves too, from the selector the helper already
+  receives: `unsupported operand types for '+': 'int' and 'string'`. A shift by
+  a non-integer now reports that operand pair instead of the count range, which
+  is what the VM does. One tail still stops at the prefix: the FFI
+  struct-field name, which names a C layout field rather than a runtime value.
   `tests/native_build_runtime_error_messages.oskl` pins both halves through
   `pcall` and compares the binary's output with the VM's.
 
