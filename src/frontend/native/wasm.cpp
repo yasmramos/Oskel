@@ -13558,6 +13558,20 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
     return index;
   }
 
+  if (name == "platform") {
+    arity(0);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.i64c(static_cast<std::int64_t>(pool.addString("freestanding")));
+    return index;
+  }
+
+  if (name == "arch") {
+    arity(0);
+    f.i64c(static_cast<std::int64_t>(kStr));
+    f.i64c(static_cast<std::int64_t>(pool.addString("wasm32")));
+    return index;
+  }
+
   if (name == "seed") {
     f.lget(1);
     f.i32c(1);
@@ -13690,7 +13704,7 @@ const std::unordered_set<std::string>& supportedBuiltins() {
       "int", "float", "double", "bool", "chr", "ord", "floor", "ceil",
       "round", "sqrt", "assert", "assertEq", "panic", "error", "isError",
       "$isError", "$nonNull", "$range", "range", "exit", "$slice",
-      "time", "clock", "random", "seed",
+      "time", "clock", "platform", "arch", "random", "seed",
   };
   return names;
 }
@@ -13704,8 +13718,9 @@ const std::unordered_set<std::string>& vmBuiltinNames() {
       "print", "write", "eprint", "input", "len", "type", "str", "$str",
       "repr", "int", "float", "double", "bool", "chr", "ord", "floor",
       "ceil", "round", "sqrt", "pow", "sin", "cos", "tan", "log", "exp",
-      "random", "seed", "clock", "time", "memSize", "assert", "assertEq",
-            "panic", "pcall", "error", "isError", "$isError", "exit", "args",
+      "random", "seed", "clock", "time", "platform", "arch", "memSize",
+      "assert", "assertEq", "panic", "pcall", "error", "isError", "$isError",
+      "exit", "args",
       "readFile", "writeFile", "fileExists", "fsOpen", "fsRead", "fsWrite",
       "fsSeek", "fsClose", "fsRemove", "fsRename", "fsMkdir", "fsRmdir",
       "fsList", "fsStat", "fsCwd", "fsChdir", "range", "$range", "$nonNull",

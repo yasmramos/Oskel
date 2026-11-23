@@ -12009,6 +12009,25 @@ void emitTimeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label nowLabel,
   epilogue(cg);
 }
 
+// `AotValue oskel_builtin_platform(...)` and `oskel_builtin_arch(...)`: the
+// target names, as static `AotString`s emitted with the other data islands.
+// They take no argument; a wrong count goes through the shared arity failure.
+void emitConstStringBuiltin(CodeGen& cg, CodeGen::Label label,
+                            CodeGen::Label text, const DataBlob& msgArgc) {
+  CodeGen::Label ok = cg.newLabel();
+
+  cg.bind(label);
+  prologue(cg);
+  cg.testReg(Rsi);
+  cg.jcc(Jcc::Eq, ok);
+  emitArityFailCall(cg, msgArgc);
+
+  cg.bind(ok);
+  cg.movImm(Rax, kTagStr);
+  cg.leaRipLabel(Rdx, text);
+  epilogue(cg);
+}
+
 // `AotValue oskel_builtin_input(AotValue* args, long argc, AotClosure* self)`:
 // the public `input`. It takes an optional prompt, writes it to stdout and then
 // reads one line through the `entry.read` handle, returning the line as a
@@ -16952,6 +16971,19 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
     data.push_back(std::move(blob));
     return data.back();
   };
+  // A static `AotString`: an 8-byte length followed by the bytes, the layout a
+  // `Str` payload points at.
+  auto addAotString = [&](const char* text) {
+    std::string bytes(8, '\0');
+    const std::uint64_t length = std::strlen(text);
+    for (int i = 0; i < 8; ++i) {
+      bytes[i] = static_cast<char>((length >> (8 * i)) & 0xFF);
+    }
+    bytes.append(text);
+    DataBlob blob{cg.newLabel(), std::move(bytes)};
+    data.push_back(std::move(blob));
+    return data.back();
+  };
   // Every builtin guard below calls the one shared arity-fail body. The handle
   // is created with the rest of the runtime labels so a caller can reference it
   // before this function runs; the guards reach it through this file-scope copy
@@ -18111,6 +18143,21 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                       msgAssertEqDefault, textExpected, textGot, msgOom);
   emitExitBuiltin(cg, handles.exitBuiltin, entry.exit, fail, msgExitArgc, msgExitType);
   emitTimeBuiltin(cg, handles.timeBuiltin, entry.now, msgTimeArgc);
+  // `platform()`/`arch()`: the target names are compile-time constants, so the
+  // body only has to return a static `AotString`. They are seeded on every
+  // target, like `time()`.
+  {
+    DataBlob msgPlatformArgc = addText("platform() expects 0 arguments");
+    DataBlob msgArchArgc = addText("arch() expects 0 arguments");
+    DataBlob platformText = addAotString(extras.platformName != nullptr
+                                             ? extras.platformName
+                                             : "unknown");
+    DataBlob archText = addAotString(extras.archName != nullptr ? extras.archName
+                                                                : "unknown");
+    emitConstStringBuiltin(cg, handles.platformBuiltin, platformText.label,
+                           msgPlatformArgc);
+    emitConstStringBuiltin(cg, handles.archBuiltin, archText.label, msgArchArgc);
+  }
   // `input` is the bare-metal keyboard builtin: only the prelude that binds
   // `entry.read` may reference it (see `emitAotRuntime`'s `hasInput`).
   if (hasInput) {
