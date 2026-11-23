@@ -517,12 +517,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     `cannot compare 'string' with 'int'` in both engines. The six callback
     methods (`map`, `filter`, `each`, `find`, `any`, `all`) and `reduce` report
     `map() must be a function, got 'int'` from a guard at the call, not at
-    entry, so an empty receiver still returns without reporting. Two tails are still truncated: the
-    arithmetic/bitwise `unsupported operand types for '<op>': '<t1>' and
-    '<t2>'`, which needs the operator symbol threaded through the shared
-    helper (the helper receives the opcode at run time, not the symbol), and
-    the FFI struct-field name (`the struct returned by a callback is missing
-    field`), which names a C layout field rather than a runtime value.
+    entry, so an empty receiver still returns without reporting. The arithmetic,
+    bitwise, shift and power operators quote themselves and both operand types
+    -- `unsupported operand types for '+': 'int' and 'string'` -- from the
+    selector the helper already carries, and a shift by a non-integer reports
+    that pair instead of the count range. One tail is still truncated: the FFI
+    struct-field name (`the struct returned by a callback is missing field`),
+    which names a C layout field rather than a runtime value; its field names
+    are static, so the fix is a pre-built message per field, not a builder.
 
     The collection and operator messages without a tail were aligned word for
     word: `string index must be an integer`, `map keys must be strings`,

@@ -37,6 +37,22 @@ expectExact(() => [1].all(({})), "all() must be a function, got 'map'");
 expectExact(() => [1, 2].reduce(1), "reduce() must be a function, got 'int'");
 assertEq(str([].map(1)), "[]", "an empty receiver never calls the callback");
 
+// An operand pair the operator cannot take names the operator and both types,
+// so the selector the runtime already carries picks the prefix.
+expectExact(() => 1 + "a", "unsupported operand types for '+': 'int' and 'string'");
+expectExact(() => "a" + 1, "unsupported operand types for '+': 'string' and 'int'");
+expectExact(() => 1 - nil, "unsupported operand types for '-': 'int' and 'nil'");
+expectExact(() => 1 * [1], "unsupported operand types for '*': 'int' and 'array'");
+expectExact(() => 1 / (({})), "unsupported operand types for '/': 'int' and 'map'");
+expectExact(() => 1 % "a", "unsupported operand types for '%': 'int' and 'string'");
+expectExact(() => 1 & 1.5, "unsupported operand types for '&': 'int' and 'double'");
+expectExact(() => 1 | "a", "unsupported operand types for '|': 'int' and 'string'");
+expectExact(() => 1 ^ nil, "unsupported operand types for '^': 'int' and 'nil'");
+expectExact(() => 1 << "a", "unsupported operand types for '<<': 'int' and 'string'");
+expectExact(() => 1 >> nil, "unsupported operand types for '>>': 'int' and 'nil'");
+expectExact(() => 2 ** "a", "unsupported operand types for '**': 'int' and 'string'");
+expectExact(() => 1 << 64, "shift count must be between 0 and 63");
+
 let m = {"a": 1}; return m[1]; }, "map keys must be strings");
 expectExact(() => { let m = {"a": 1}; m[1] = 2; return 0; }, "map keys must be strings");
 expectExact(() => 1 in {"a": 1}, "map membership requires a string key");
