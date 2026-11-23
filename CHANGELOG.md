@@ -188,7 +188,13 @@ may change between minor versions.
   `!<arch>` inputs before parsing: it skips the first/second linker members,
   resolves `//` long names and `/N` references, strips the member's trailing
   `/`, and rejects a short import object with a dedicated message. A static
-  `.lib` member links through both the direct PE path and `-r`. `args()`
+  `.lib` member links through both the direct PE path and `-r`.
+- **`.pdata`/`.xdata` and TLS are rejected on the own linker (PHASE 10.3b.4).**
+  The COFF parser refuses a `.pdata`/`.xdata` input with a dedicated message,
+  because the AOT object emits no unwind data and a C++ exception must not
+  cross an Oskel frame; the PE exception directory stays zero. A `.tls` input
+  is rejected too, and the PE TLS directory stays zero. `link_pe_test` pins
+  both messages and both zero directories. `args()`
   remains 10.3b.
 
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
