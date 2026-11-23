@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include "ffi_types.h"
+
 // The C-header binding generator (the `bindgen` tool).
 //
 // It reads a C header and writes Oskel `extern "C"` declarations, so a C
@@ -20,16 +22,16 @@
 // cannot express is skipped with a `// skipped:` comment instead of emitting
 // something the compiler would reject.
 //
-// A declaration this *build* cannot marshal -- a C variadic, which needs the
-// x86-64 FFI trampoline, or a struct by value on an ABI whose register
-// thunks cannot express it -- is written commented out: the module compiles
-// everywhere and the real signature is there to uncomment on a build that
-// supports it. Both questions are put to the compiler's own
+// A declaration the selected destination cannot marshal -- a C variadic, which
+// needs a target with a variadic FFI path, or a struct by value on an ABI whose
+// register thunks cannot express it -- is written commented out: the module
+// compiles everywhere and the real signature is there to uncomment on a target
+// that supports it. Both questions are put to the compiler's own
 // `ffi::validateSignature`, asked once with every ABI capability on (is the
-// shape in the vocabulary at all?) and once with this build's (can this build
-// marshal it?), so the tool cannot drift from the compiler. A struct whose
-// layout `ffi::buildStructLayout` rejects is reported as skipped instead,
-// because no build could accept it.
+// shape in the vocabulary at all?) and once with the destination's (can it
+// marshal the shape?), so the tool cannot drift from the compiler. A struct
+// whose layout `ffi::buildStructLayout` rejects is reported as skipped instead,
+// because no target could accept it.
 namespace bindgen {
 
 // The C data model the header was written for. `long` and `wchar_t` are the
@@ -41,6 +43,10 @@ enum class Target { Lp64, Llp64 };
 
 struct Options {
   Target target = Target::Lp64;
+  // The destination ABI for the emitted declarations. `Build` (the default)
+  // uses the host's capabilities; `--target llp64` implies `Win64`, because
+  // that data model is Windows, and `--abi` overrides it for cross-generation.
+  ffi::FfiAbi abi = ffi::FfiAbi::Build;
 };
 
 // The generated module and a small tally the CLI reports on stderr.
@@ -53,13 +59,13 @@ struct Result {
   // `text`). A skipped declaration is not an error: it is a type outside the
   // FFI vocabulary, which the tool reports instead of mis-translating.
   int skipped = 0;
-  // Number of declarations emitted *commented out* because this build cannot
-  // marshal them: a C variadic needs the x86-64 FFI trampoline, and a struct
-  // by value needs the System V AMD64 ABI, so the compiler rejects the declaration
-  // outright on a build without them. The tool writes the real signature as a
-  // comment with the compiler's own reason: the module compiles everywhere, and
-  // the user uncomments it on a build that supports it. A declaration the
-  // *vocabulary* cannot express at all is counted as `skipped`, not here.
+  // Number of declarations emitted *commented out* because the selected
+  // destination cannot marshal them: a C variadic needs a target with a
+  // variadic FFI path, and a struct by value needs the System V AMD64 ABI. The
+  // tool writes the real signature as a comment with the compiler's own reason:
+  // the module compiles everywhere, and the user uncomments it on a target that
+  // supports it. A declaration the *vocabulary* cannot express at all is
+  // counted as `skipped`, not here.
   int commented = 0;
   // Number of `struct` declarations emitted before the `extern "C"` block.
   int structs = 0;

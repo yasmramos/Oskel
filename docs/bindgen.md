@@ -15,9 +15,19 @@ bindgen <header.h>                 # write the module to stdout
 bindgen <header.h> -o <out.oskl>   # write it to a file
 bindgen -                          # read the header from stdin
 bindgen --target llp64 <header.h>  # Windows data model (default: lp64)
+bindgen --abi win64 <header.h>     # destination ABI (default: this build)
 bindgen --cxx <bridge.oskelbind> --shim <dir> -o <out.oskl>
                                    # C++ bridge: module + C++ shim
 ```
+
+`--target` chooses the C data model (`long`, `wchar_t`); `--abi` chooses the
+FFI destination independently of the host that runs the tool: `build` (the
+default, this build's capabilities), `system-v` (x86-64 Linux and macOS),
+`win64` (Windows), `aapcs64` (arm64) or `wasm`. `--target llp64` implies
+`win64`, because that data model is Windows; pass `--abi` explicitly to
+override it. A shape the destination cannot marshal is written commented out,
+so a module generated on Linux for Windows never emits a struct-by-value or a
+callback that Windows rejects.
 
 `-h`/`--help` and `-v`/`--version` are also available. Exit codes follow the
 toolchain convention: `64` for a usage error, `66` for an unreadable input or an
@@ -280,11 +290,11 @@ extern "C" {
 }
 ```
 
-The same rule covers **a struct by value** on a build whose marshalling is not
-the System V AMD64 ABI (the Microsoft x64 ABI passes a struct through a hidden
-pointer, which the register thunks cannot express). The declaration is written
-commented out rather than skipped, because the shape *is* in the vocabulary —
-only this build cannot carry it:
+The same rule covers **a struct by value** on a destination whose marshalling is
+not the System V AMD64 ABI (the Microsoft x64 ABI passes a struct through a
+hidden pointer, which the register thunks cannot express). The declaration is
+written commented out rather than skipped, because the shape *is* in the
+vocabulary — only this destination cannot carry it:
 
 ```oskel
 extern "C" {
@@ -294,9 +304,9 @@ extern "C" {
 
 The reason after `//` is the compiler's own message, not a second guess: the
 tool asks `ffi::validateSignature` twice, once with every ABI capability on
-(is the shape in the vocabulary at all?) and once with this build's (can this
-build marshal it?). The first answer decides skipped versus commented out, so
-the tool cannot drift from the compiler it targets.
+(is the shape in the vocabulary at all?) and once with the destination's (can
+the destination marshal it?). The first answer decides skipped versus commented
+out, so the tool cannot drift from the compiler it targets.
 
 ## The preprocessor is not run
 
