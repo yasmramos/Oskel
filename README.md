@@ -618,6 +618,13 @@ ships beside it: it links the front end and the AOT backend without the VM or
 the JIT, so a compiled program carries no interpreter. Both call the same
 `buildBinary` pipeline, so they emit the same image.
 
+## Contributing
+
+The build, test and builtin-addition workflow lives in
+[`CONTRIBUTING.md`](CONTRIBUTING.md). The language specification and the
+development phases are in [`DEVELOPMENT.md`](DEVELOPMENT.md), and the git
+workflow and commit format are in [`CONVENTIONS.md`](CONVENTIONS.md).
+
 ## License
 
 Distributed under the **MIT** license. See [LICENSE](LICENSE).
