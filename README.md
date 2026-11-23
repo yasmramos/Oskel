@@ -51,7 +51,7 @@ for language in languages {
 
 ## Status
 
-Version **0.2.0**. The language is functional and covered by a test suite, but it is not yet considered stable or complete. See the [limitations](#limitations-and-roadmap) section and the [changelog](CHANGELOG.md) for what each release contains.
+Version **0.3.0**. The language is functional and covered by a test suite, but it is not yet considered stable or complete. See the [limitations](#limitations-and-roadmap) section and the [changelog](CHANGELOG.md) for what each release contains.
 
 ## Requirements
 
@@ -278,7 +278,7 @@ for name in args() {
 Running `oskel` with no arguments opens the REPL:
 
 ```text
-Oskel 0.2.0 - a small scripting language written in C++
+Oskel 0.3.0 - a small scripting language written in C++
 Type :help for help, :quit to exit.
 oskel> let x = 21
 oskel> x * 2
@@ -376,7 +376,7 @@ Oskel has two execution paths: the register-based **VM** (used by `oskel`,
 `oskel -e` and the REPL) and the **AOT backend** (used by `oskel build`, which
 emits a static native binary). The AOT backend covers the language core, not
 the whole runtime yet, so a program can run on the VM and fail to build — or
-behave differently — under AOT. This is the exact split in 0.2.0.
+behave differently — under AOT. This is the exact split in 0.3.0.
 
 **Available in both:**
 
@@ -563,7 +563,7 @@ Editor support: a VS Code syntax-highlighting extension lives in
 
 ## Releases
 
-**0.2.0 is the current release.** Prebuilt packages are published on the
+**0.3.0 is the current release.** Prebuilt packages are published on the
 [releases page](https://github.com/yasmramos/Oskel/releases):
 
 | Platform | Asset |

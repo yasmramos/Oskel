@@ -1,0 +1,8 @@
+// expect-exit: 65
+enum Color { RED }
+enum Shape { CIRCLE }
+let c: Color = Color.RED;
+switch (c) {
+  case Shape.CIRCLE: { print("x"); }
+  case Color.RED: { print("r"); }
+}

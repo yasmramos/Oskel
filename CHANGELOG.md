@@ -20,6 +20,40 @@ may change between minor versions.
   `link_macho_test` pins the container on every host and
   `oskel.build_hosted_own_macos` runs the image on `macos-15-intel` (x86-64); the
   arm64 runner checks the `file` type only.
+
+### Changed
+
+### Fixed
+
+## [0.3.0] - 2026-11-23
+
+### Added
+
+- **`std.os` and `std.sys`, the system surface in two halves.** `std.sys` is the
+  target-independent half (`time()`/`clock()`, the `platform()` and `arch()`
+  names, `exit`) and builds on every target, bare metal included. `std.os` is
+  the process and filesystem half (`cwd`, `chdir` over `std.fs.dir`, `exit`) and
+  is therefore not a bare-metal module. The split exists because a module built
+  over a builtin that only some targets seed fails `oskel build` on the rest:
+  `platform()`/`arch()` resolve to the compile-time target under `oskel build`
+  and to the host on the VM, and `memSize()` stays out of `std.sys` because only
+  the bare-metal target backs it. `args()` is not re-exported either, since a
+  Windows freestanding image has no argv.
+
+- **`oskelc -c` produces a portable `.oskc` bytecode image.** A compiled chunk
+  can now be written to disk and loaded back, so a program ships as bytecode
+  instead of source and runs on the VM or builds through the AOT backend without
+  a reparse. The format is versioned and verified on load, so a truncated or
+  stale image is rejected instead of executed, and `-pkg` (`.oskpkg`) is
+  refused with a dedicated message rather than written wrong.
+
+- **`std.fs` grows a streaming `File`, `copyFile` and `dir.walk`.**
+  `std.fs.File` is a class module over a streaming handle (read and write
+  incrementally instead of loading a whole file), owning the `ptr` the `fs*`
+  builtins return and closing it exactly once; `copyFile` refuses a source equal
+  to its destination instead of truncating it, and `dir.walk` returns every
+  entry below a path, sorted, built in Oskel over `listDir`/`isDir` so it runs
+  unchanged under `oskel build`.
 - **`bindgen --abi` selects the destination ABI.** A generated module must not
   emit a shape the destination cannot marshal: `--abi system-v` emits
   struct-by-value, callbacks and variadics; `--abi win64` emits only the
@@ -134,6 +168,17 @@ may change between minor versions.
   `tests/cxxbind/skia_window_test.oskl` cover the path on the VM and the hosted
   AOT binary.
 
+- **The UI backend bundle needs no flags.** The SDL3 and Skia libraries that a
+  UI program links ship under `lib/oskel/ui` and `oskel build` finds them from
+  the modules the compiler loaded, not from symbol names: it links them by
+  absolute path with an rpath on Linux and macOS and copies the DLLs beside a
+  Windows hosted image, so a user passes neither `--link-lib` nor
+  `LD_LIBRARY_PATH`. `ui_runtime.cpp` resolves the bundle from
+  `$OSKEL_UI_LIBDIR`, then the installed prefix, then the build tree, so a
+  packaged engine never keeps using its build directory. SDL3 is opened lazily,
+  only when a program asks for one of its symbols, so a non-UI program never
+  loads it.
+
 - **Class modules: a PascalCase module binds its class.** A module whose last
   path segment starts with an uppercase letter is a class module: it must
   export exactly one public name, the file name, and every other top-level
@@ -210,6 +255,13 @@ may change between minor versions.
   cross an Oskel frame; the PE exception directory stays zero. A `.tls` input
   is rejected too, and the PE TLS directory stays zero. `link_pe_test` pins
   both messages and both zero directories.
+
+- **The Windows linker refuses the sections it cannot represent (PHASE
+  10.3b.4).** An input carrying `.pdata`/`.xdata` (the PE exception directory)
+  or `.tls` is rejected with a dedicated message instead of being linked into a
+  zero-directory image: an Oskel frame has no unwind data, and the image
+  defines no TLS variables, so a C++ exception must not cross it. Emitting them
+  is future container work; `pcall`/`error` uses the runtime's own handler.
 
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,
@@ -1664,6 +1716,7 @@ dependencies beyond the C++ standard library.
 - The AOT backend targets `x86_64-linux-sysv`; on any other target `oskel
   build` reports the unsupported target instead of emitting bytes.
 
-[Unreleased]: https://github.com/yasmramos/Oskel/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/yasmramos/Oskel/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/yasmramos/Oskel/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/yasmramos/Oskel/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/yasmramos/Oskel/releases/tag/v0.1.0

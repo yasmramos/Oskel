@@ -6,8 +6,8 @@ upload step.
 
 ## 1. Version
 
-`0.2.0` is the single source of truth for the version in `include/version.h`
-(`OSKEL_VERSION`) and `CMakeLists.txt` (`project(oskel VERSION 0.2.0 ...)`).
+`0.3.0` is the single source of truth for the version in `include/version.h`
+(`OSKEL_VERSION`) and `CMakeLists.txt` (`project(oskel VERSION 0.3.0 ...)`).
 `src/main.cpp` reads the header, so the binary's `--version`, the installers and
 the package names can never drift. The CMake configure step **fails** when the
 two disagree, and the `version_consistency` test checks the built binary prints
@@ -22,7 +22,7 @@ grep '^project(' CMakeLists.txt
 
 The CI derives the version from the tag when releasing (`v0.1.0` → `0.1.0`) and
 from `CMakeLists.txt` on a branch push or pull request, so a branch build is
-packaged as `0.2.0` too.
+packaged as `0.3.0` too.
 
 ## 2. Pre-flight
 
@@ -54,8 +54,8 @@ git pull --rebase origin main
 git merge --no-ff develop        # or open and merge a release/x.y.z PR
 git push origin main
 
-git tag -a v0.2.0 -m "Oskel 0.2.0"
-git push origin v0.2.0
+git tag -a v0.3.0 -m "Oskel 0.3.0"
+git push origin v0.3.0
 ```
 
 The tag push triggers `.github/workflows/artifacts.yml`, which:
@@ -87,7 +87,7 @@ are correct.
   survives an upload and silently hides a final release from the "Latest" slot:
 
   ```sh
-  gh release view v0.2.0 --json isPrerelease,isDraft,assets \
+  gh release view v0.3.0 --json isPrerelease,isDraft,assets \
     -q '.isPrerelease, .isDraft, (.assets | length)'
   gh api repos/yasmramos/Oskel/releases/latest -q '.tag_name'
   ```
@@ -96,13 +96,13 @@ are correct.
 - Check the release assets:
 
   ```sh
-  gh release view v0.2.0
+  gh release view v0.3.0
   ```
 
 - Download and verify the checksums:
 
   ```sh
-  gh release download v0.2.0
+  gh release download v0.3.0
   sha256sum -c SHA256SUMS
   ```
 

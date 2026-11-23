@@ -1,0 +1,9 @@
+// expect-exit: 65
+// An enum is a compile-time declaration, so it lives at the top level of a
+// module like `struct` and `class`; a nested one would make `Color.RED`
+// resolve differently inside a block.
+fn f() {
+  enum Color { RED }
+  return Color.RED;
+}
+print(f());

@@ -1,0 +1,4 @@
+// expect-exit: 65
+fn value(): int { return 1; }
+enum E { A = value() }
+print(E.A);

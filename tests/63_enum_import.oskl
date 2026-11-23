@@ -1,0 +1,30 @@
+// PHASE 6.9 across modules: an imported enum is compile-time metadata.
+//
+// The enum is not a module table entry, so every form below is resolved by the
+// compiler: the qualified path, the short last segment, an alias, and a
+// selective import. The switch over the imported enum is exhaustive too.
+import modules.enum_geom;
+import modules.enum_geom as g;
+import { Shape } from modules.enum_geom;
+
+assertEq(modules.enum_geom.Color.RED, 0);
+assertEq(enum_geom.Color.GREEN, 1);
+assertEq(g.Color.BLUE, 2);
+assertEq(Shape.CIRCLE, 0);
+
+let c: modules.enum_geom.Color = modules.enum_geom.Color.GREEN;
+switch (c) {
+  case modules.enum_geom.Color.RED: { print("r"); }
+  case modules.enum_geom.Color.GREEN: { print("g"); }
+  case modules.enum_geom.Color.BLUE: { print("b"); }
+}
+
+let s: Shape = Shape.SQUARE;
+switch (s) {
+  case Shape.CIRCLE: { print("circle"); }
+  case Shape.SQUARE: { print("square"); }
+}
+
+assertEq(modules.enum_geom.pick(), 1);
+assertEq(modules.enum_geom.area(Shape.SQUARE), 4);
+print("enum import ok");

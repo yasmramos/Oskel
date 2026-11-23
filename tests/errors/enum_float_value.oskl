@@ -1,0 +1,3 @@
+// expect-exit: 65
+enum E { A = 1.5 }
+print(E.A);
