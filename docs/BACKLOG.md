@@ -287,6 +287,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 (fix: reject 'from' as a module name and path segment)
 7. **[P1]** VM/AOT divergence in string iteration: AOT allocates one
    `AotString` per character; a 1M-char string means 1M arena allocations.
+   Measured: `for c in s` over a 40 000-char string prints 40000 on the VM and
+   dies with `oskel: out of memory` in AOT. The per-character allocation is not
+   the whole story — the arena is a fixed 1 MiB that never reclaims, so any
+   loop that builds values exhausts it. Reusing one buffer across iterations is
+   *not* the fix: `for c in s { arr.push(c) }` would alias every entry to the
+   last character, which the VM does not. The fix is either a real allocator
+   with a free list in AOT, or a per-loop character buffer that is copied when
+   the value escapes. Both are PHASE 7g (arena growth).
 8. **[P1] [done]** `emitContains` for arrays uses `AotCompareOp::Eq`, which
    used to be identity for arrays/maps; now that equality is structural, `in`
    over an array of arrays matches the VM (fixed with item 2).
@@ -297,7 +305,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `padEnd`). `tests/native_build_string_methods.oskl` and
    `oskel.build_wasm_string_methods` pin the AOT and WASM paths against the VM.
 10. **[P1]** `emitIterNext` for `str` allocates a string per character — same
-    as item 7.
+    as item 7, and blocked on the same arena limit.
 11. ~~**[P1]** `collectGlobals` does not detect name-resolution cycles: a
     `GETGLOBAL` of a name assigned only inside a never-called function is
     accepted and reads nil at run time. Report it.~~ **Done**: the read is
