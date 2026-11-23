@@ -41,18 +41,30 @@ may change between minor versions.
   `tests/oskelp_test.cpp` and `tests/run_oskelp_case.cmake` pin the behavior.
 - **`oskelint`, the linter.** A fifth binary reports suspicious but legal code.
   The first rule, `builtin-shadow`, warns when a declaration (`var`, `let`,
-  `const`, `fn`, `struct`, a parameter, a lambda parameter or a `for ... in`
-  variable) replaces a builtin. Shadowing is legal — the standard library
-  re-exports its own builtins with `let time = time;` — so the check belongs in
-  a tool and not in the compiler, which must accept every program the language
-  defines and must stay clear of the builtin names. The re-export idiom is
-  deliberately silent, and the rule reads the builtin names from the engine
-  (`VM::globals()` after `registerBuiltins`) instead of keeping a second list
-  that would drift. A lint warning exits 0. See `docs/oskelint.md`.
+  `const`, `fn`, `struct`, `enum`, a parameter, a lambda parameter or a
+  `for ... in` variable) replaces a builtin; a bodyless declaration reports its
+  name but not its parameters, which bind nothing. Shadowing is legal — the
+  standard library re-exports its own builtins with `let time = time;` — so the
+  check belongs in a tool and not in the compiler, which must accept every
+  program the language defines and must stay clear of the builtin names. The
+  re-export idiom is deliberately silent, and the rule reads the builtin names
+  from the engine (`VM::globals()` after `registerBuiltins`) instead of keeping
+  a second list that would drift. A lint warning exits 0. See
+  `docs/oskelint.md`.
 
 ### Changed
 
 ### Fixed
+
+- **`oskelint` missed an `enum` shadow and reported a bodyless parameter.** An
+  `enum len { A, B }` binds a global named `len` — the compiler accepts it and
+  the builtin is replaced — but the walker never visited `EnumDeclStmt`, so the
+  diagnostic was lost. The same block read an `extern "C"` declaration
+  backwards: it reported the parameters, which are the C side's names and bind
+  nothing in Oskel, and stayed silent on the declaration's own name, which does
+  bind a global. A bodyless declaration (`extern "C"`, `native fn`) now reports
+  its name and skips its parameters. Four cases in `tests/oskelint_test.cpp`
+  pin the shapes.
 
 ## [0.3.0] - 2026-11-23
 

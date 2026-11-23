@@ -81,10 +81,24 @@ int main() {
                     {"builtin-shadow: 'ord' shadows the builtin 'ord'"});
   expectDiagnostics("struct", "struct type { x: int; }",
                     {"builtin-shadow: 'type' shadows the builtin 'type'"});
+  expectDiagnostics("enum", "enum len { A, B }",
+                    {"builtin-shadow: 'len' shadows the builtin 'len'"});
+  expectSilent("an enum member is not a name of its own", "enum kind { len, print }");
   expectDiagnostics("for-in variable", "for len in [1] { print(len); }",
                     {"builtin-shadow: 'len' shadows the builtin 'len'"});
   expectDiagnostics("for-in key and value", "for k, chr in {} { print(k); }",
                     {"builtin-shadow: 'chr' shadows the builtin 'chr'"});
+
+  // A bodyless declaration names its parameters for the signature only: an
+  // `extern "C"` parameter is the C side's, and a `native fn` parameter binds
+  // nothing. The declaration's own name, however, does bind a global, so it is
+  // a shadow exactly like a `fn`'s.
+  expectDiagnostics("extern declaration name", "extern \"C\" {\n  fn len(x: int): int;\n}",
+                    {"builtin-shadow: 'len' shadows the builtin 'len'"});
+  expectSilent("extern parameter", "extern \"C\" {\n  fn foo(len: int): int;\n}");
+  expectSilent("native fn parameter", "native fn foo(len: int): int;");
+  expectDiagnostics("native fn name", "native fn len(x: int): int;",
+                    {"builtin-shadow: 'len' shadows the builtin 'len'"});
 
   // Nesting: a declaration inside a block, an if, a loop, a switch, a lambda
   // body or a function body is still reached. A walker that forgot to descend
