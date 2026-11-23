@@ -15,9 +15,10 @@ namespace {
 // Walks a parsed program and reports a declaration whose name is a builtin.
 //
 // Only *declarations* are reported: a `LetStmt`, a `FnDeclStmt`, a
-// `StructDeclStmt` and a parameter all introduce a name. A `for ... in` loop
-// variable and a `catch` binding are declarations too, and they are the easiest
-// way to shadow a builtin by accident (`for len in xs`).
+// `StructDeclStmt`, an `EnumDeclStmt` and a parameter all introduce a name. A
+// `for ... in` loop variable is a declaration too, and the easiest way to shadow
+// a builtin by accident (`for len in xs`). `expr catch fallback` binds no name,
+// so it is not a declaration.
 //
 // The re-export idiom (`let time = time;`) reads the builtin in its own
 // initializer. That is not a shadow -- the builtin is being surfaced, not
@@ -60,9 +61,17 @@ class ShadowWalker {
             walkExpr(node.init);
           } else if constexpr (std::is_same_v<T, FnDeclStmt>) {
             report(node.name, stmt->line, stmt->col);
-            for (const Param& param : node.params) report(param.name, stmt->line, stmt->col);
+            // A bodyless declaration (`native fn`, `extern "C"`) names a
+            // parameter for the signature only; nothing is bound, so a
+            // parameter called `len` hides no builtin.
+            if (node.body) {
+              for (const Param& param : node.params) report(param.name, stmt->line, stmt->col);
+            }
             walkStmt(node.body);
-          } else if constexpr (std::is_same_v<T, StructDeclStmt>) {
+          } else if constexpr (std::is_same_v<T, StructDeclStmt> ||
+                               std::is_same_v<T, EnumDeclStmt>) {
+            // An enum binds its name like a struct does; its members live under
+            // it (`len.A`), so they cannot shadow a builtin on their own.
             report(node.name, stmt->line, stmt->col);
           } else if constexpr (std::is_same_v<T, BlockStmt>) {
             for (const StmtPtr& inner : node.stmts) walkStmt(inner);
@@ -100,8 +109,10 @@ class ShadowWalker {
           } else if constexpr (std::is_same_v<T, DeferStmt>) {
             walkStmt(node.body);
           } else if constexpr (std::is_same_v<T, ExternBlockStmt>) {
+            // Each declaration binds the C symbol's Oskel name; its parameters
+            // are the C side's, not names this program can refer to.
             for (const FnDeclStmt& decl : node.decls) {
-              for (const Param& param : decl.params) report(param.name, stmt->line, stmt->col);
+              report(decl.name, stmt->line, stmt->col);
             }
           }
           // BreakStmt, ContinueStmt and ImportStmt introduce no name.
