@@ -803,7 +803,7 @@ struct Runtime {
                 sTypePtr = 0, sUnknown = 0;
   std::uint32_t sDivZero = 0, sBadShift = 0, sNonIntegral = 0, sLargeDouble = 0,
                 sNotIterable = 0, sNotComparable = 0, sUnsupportedOperands = 0,
-                sBadPower = 0, sNotCallable = 0;
+                sUnsupportedUnary = 0, sBadPower = 0, sNotCallable = 0;
   std::uint32_t sFnOpen = 0, sNativeOpen = 0, sAngleClose = 0, sComma = 0,
                 sCloseParen = 0;
   std::uint32_t sBadArity = 0, sRangeBounds = 0, sChrRange = 0, sChrSurrogate = 0,
@@ -958,11 +958,12 @@ struct Runtime {
         "the WebAssembly backend cannot format a non-integral double yet (PHASE 9)");
     sLargeDouble = pool.addString(
         "the WebAssembly backend cannot format an out-of-range double yet (PHASE 9)");
-    sNotIterable = pool.addString("cannot iterate over this value");
+    sNotIterable = pool.addString("cannot iterate over a value of type");
     sNotComparable = pool.addString("cannot compare these values");
-    sUnsupportedOperands = pool.addString("unsupported operand types for operator");
+    sUnsupportedOperands = pool.addString("unsupported operand types for");
+    sUnsupportedUnary = pool.addString("unsupported unary operator for type");
     sBadPower = pool.addString("pow: unsupported exponent in the WebAssembly backend");
-    sNotCallable = pool.addString("attempt to call a non-function value");
+    sNotCallable = pool.addString("cannot call a value of type");
     sFnOpen = pool.addString("<fn ");
     sNativeOpen = pool.addString("<native fn ");
     sAngleClose = pool.addString(">");
@@ -985,11 +986,11 @@ struct Runtime {
     sAssertFailed = pool.addString("assertion failed");
     sPanic = pool.addString("panic");
     sNonNull = pool.addString("unexpected nil (non-null assertion '!!' failed)");
-    sLenType = pool.addString("len() is not defined for this value");
+    sLenType = pool.addString("len() is not defined for values of type");
     sMessage = pool.addString("message");
     sCode = pool.addString("code");
-    sNoMember = pool.addString("no such member on this value");
-    sCannotIndex = pool.addString("cannot index a value of this type");
+    sNoMember = pool.addString("type has no member");
+    sCannotIndex = pool.addString("cannot index a value of type");
     sStringImmutable = pool.addString("strings are immutable");
     sIndexRange = pool.addString("index out of range");
     sKeyValue = pool.addString(
@@ -1038,14 +1039,14 @@ struct Runtime {
     sSet = pool.addString("set");
     sDelete = pool.addString("delete");
     sMerge = pool.addString("merge");
-    sMapKey = pool.addString("map key must be a string");
+    sMapKey = pool.addString("map keys must be strings");
     sMergeMap = pool.addString("merge() expects a map");
     sInsertRange = pool.addString("insert() index out of range");
     sRemoveAtRange = pool.addString("removeAt() index out of range");
     sInsertIndex = pool.addString("insert() index must be an integer");
     sRemoveAtIndex = pool.addString("removeAt() index must be an integer");
-    sCannotSetField = pool.addString("cannot set a field on this value");
-    sCannotSlice = pool.addString("cannot slice a value of this type");
+    sCannotSetField = pool.addString("cannot set a field on a value of type");
+    sCannotSlice = pool.addString("cannot slice a value of type");
     sSliceStartInt = pool.addString("slice start must be an integer");
     sSliceEndInt = pool.addString("slice end must be an integer");
     sSliceStepInt = pool.addString("slice step must be an integer");
@@ -3910,7 +3911,7 @@ std::uint32_t Runtime::emitUnary(int op) {
     f.i64ReinterpretF64();
     f.ret();
     f.end();
-    emitFailStatic(f, sUnsupportedOperands);
+    emitFailStatic(f, sUnsupportedUnary);
     return index;
   }
   // bitwise not
@@ -3924,7 +3925,7 @@ std::uint32_t Runtime::emitUnary(int op) {
   f.i64Xor();
   f.ret();
   f.end();
-  emitFailStatic(f, sUnsupportedOperands);
+  emitFailStatic(f, sUnsupportedUnary);
   return index;
 }
 

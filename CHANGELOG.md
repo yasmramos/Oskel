@@ -353,6 +353,28 @@ may change between minor versions.
 
 ### Fixed
 
+- **Runtime error messages now match the VM across the AOT and WebAssembly
+  backends.** A program that inspects `pcall`'s `error.message` saw a different
+  sentence under `oskel build`: a string index reported `array index must be an
+  integer`, a map key reported `map key must be a string`, and a non-string
+  needle to `in` reported the generic `unsupported operands for 'in'` instead
+  of the map, string or range membership message. Those are now worded
+  identically (`string index must be an integer`, `map keys must be strings`,
+  `map membership requires a string key`, `string membership requires a string
+  operand`, `range membership requires an integer`), and the messages that
+  quote a type or member name keep the VM's fixed words instead of a separate
+  AOT wording: `cannot iterate over a value of type`, `cannot index a value of
+  type`, `cannot assign to an index of a value of type`, `cannot set a field on
+  a value of type`, `cannot call a value of type`, `cannot slice a value of
+  type`, `len() is not defined for values of type`, `unsupported unary operator
+  for type`, `unsupported operand types for`, `operator 'in' is not supported
+  for` and `type ... has no member`. The file builtins name the function too
+  (`fsRead() expects a file handle`, not `file handle expected`), and `$slice`
+  checks the receiver before the bounds so `5[1:2]` names the receiver in both
+  engines. The WebAssembly pool was aligned the same way.
+  `tests/native_build_runtime_error_messages.oskl` pins both halves through
+  `pcall` and compares the binary's output with the VM's.
+
 - **The standard-library docs no longer claim an AOT gap that does not exist.**
   `std/collections.oskl`, its two fixtures, `docs/language.md` §12.12 and
   `DEVELOPMENT.md` said `sort`/`sorted` and the string methods were not bound
