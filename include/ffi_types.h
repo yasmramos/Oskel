@@ -160,6 +160,32 @@ inline constexpr AbiCapabilities kAotAbiCapabilities{/*structByValue=*/true,
                                                      /*variadic=*/true,
                                                      /*callbacks=*/true};
 
+// The ABI a generated module is meant for. `bindgen` asks with the destination,
+// not with the host it happens to run on, so a module generated on Linux for
+// Windows does not emit a shape Windows cannot marshal. `Build` keeps the
+// host's capabilities, which is the default and the only answer when the
+// destination is not known.
+enum class FfiAbi { Build, SysVX86_64, Win64, Aapcs64, Wasm };
+
+inline constexpr AbiCapabilities capabilitiesForAbi(FfiAbi abi) {
+  switch (abi) {
+    case FfiAbi::Build:
+      return AbiCapabilities{};
+    case FfiAbi::SysVX86_64:
+      return kFullAbiCapabilities;
+    case FfiAbi::Win64:
+      // Scalars, pointers and a C variadic; a struct and a callback are
+      // rejected by the Microsoft x64 thunk.
+      return AbiCapabilities{/*structByValue=*/false, /*memoryStructs=*/false,
+                             /*variadic=*/true, /*callbacks=*/false};
+    case FfiAbi::Aapcs64:
+    case FfiAbi::Wasm:
+      return AbiCapabilities{/*structByValue=*/false, /*memoryStructs=*/false,
+                             /*variadic=*/false, /*callbacks=*/false};
+  }
+  return AbiCapabilities{};
+}
+
 // One field of a struct crossing the C boundary. `type` is an FFI scalar type
 // name (the same vocabulary as a parameter annotation); a nested struct is not
 // a scalar and is rejected by `buildStructLayout`.

@@ -1,0 +1,7 @@
+// expect-exit: 65
+// A parameter's annotation is enforced at the call site. Before this, the
+// annotation was erased without ever being compared to an argument, so the
+// call compiled and failed only when the body used `x`.
+fn takesInt(x: int): int { return x; }
+
+takesInt("not an int");

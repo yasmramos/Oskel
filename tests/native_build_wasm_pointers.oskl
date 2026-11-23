@@ -1,0 +1,47 @@
+// Pointer builtins in the WebAssembly backend (PHASE 9).
+//
+// `ptr`/`cstring` are opaque handles (PHASE 6.6). The VM keeps them in a
+// reference-counted `PtrObj`; a WASM module keeps an `AotPtr` in linear memory.
+// The two must agree on everything a program can observe: the byte count, the
+// text `cstr` reads back, a single byte loaded and stored, and the integer
+// token `intToPtr`/`ptrToInt` round-trip. The error paths need `pcall`, which
+// the WASM backend does not bind yet, so this fixture covers the happy paths.
+
+var s = cstring("hello");
+print("len", byteLen(s));
+print("text", cstr(s));
+print("bytes", loadByte(s, 0), loadByte(s, 1), loadByte(s, 4));
+print("type", type(s));
+print("nul", loadByte(s, 5) == 0);
+print("render", s);
+print("repr", repr(s));
+
+var b = buffer(4);
+print("zeroed", byteLen(b), loadByte(b, 0), loadByte(b, 3));
+// A buffer yields every byte to `cstr`, NULs included, so an untouched one is
+// four zero bytes rather than the empty string.
+print("raw", len(cstr(b)));
+storeByte(b, 0, 65);
+storeByte(b, 1, 66);
+storeByte(b, 3, 90);
+print("filled", byteLen(b), cstr(b));
+print("round", loadByte(b, 0), loadByte(b, 1), loadByte(b, 3));
+print("btype", type(b), b);
+print("brepr", repr(b));
+
+var p = intToPtr(123456789);
+print("token", ptrToInt(p), type(p), byteLen(p));
+print("prender", p);
+
+// A cstring with an embedded NUL keeps its full byte count but `cstr` stops at
+// the NUL, as C does.
+var embedded = cstring("a\x00b");
+print("embedded", byteLen(embedded), cstr(embedded));
+
+// Pointers compare by identity, not by their contents.
+print("identity", s == s, s == cstring("hello"));
+
+// `free` only marks the handle released; a live handle is still usable.
+var tmp = buffer(2);
+free(tmp);
+print("freed");

@@ -11,6 +11,16 @@ may change between minor versions.
 
 ### Added
 
+- **`bindgen --abi` selects the destination ABI.** A generated module must not
+  emit a shape the destination cannot marshal: `--abi system-v` emits
+  struct-by-value, callbacks and variadics; `--abi win64` emits only the
+  variadic; `--abi aapcs64`/`wasm` comment all three out. `--target llp64`
+  implies `win64`, because that data model is Windows, and `--abi` overrides it
+  when a header is generated on another host. The decision comes from
+  `ffi::capabilitiesForAbi`, not from the host running the tool, so a module
+  generated on Linux for Windows is correct. `tests/bindgen_test.cpp` and
+  `tests/run_bindgen_target.cmake` pin the matrix.
+
 - **`std.bytes`, the byte-string and binary-codec module.** A byte is an `int`
   in `0..255` and a byte string is an ordinary array, so no runtime type is
   added. The module provides UTF-8 `fromString`/`toString`/`byteLength`,
@@ -24,6 +34,17 @@ may change between minor versions.
   agree byte for byte. `tests/67_std_bytes.oskl` and
   `tests/native_build_bytes.oskl` pin the three engines.
 
+- **`std.ui` buttons react to the pointer.** A button now carries `hover` and
+  `pressed`, and `pointerMove`/`pointerDown`/`pointerUp` update them; a release
+  runs `onClick` only when it lands on the pressed button, so releasing outside
+  cancels the click. `button` uses distinct blue shades, `buttonStates` exposes
+  all three fills, and `buttonStyle` keeps one fill for compatibility.
+  `std.ui.window` routes SDL mouse motion, press and release through the same
+  primitives, and clears both states when the pointer leaves the window or the
+  window loses focus. `ui.click` remains the headless press/release helper.
+  `tests/native_build_ui.oskl` pins the state transitions on the VM and under
+  `oskel build`.
+
 - **VM/AOT parity for callbacks (PHASE 7f.11).** A callback may now return a
   struct by value under `oskel build`: the AOT body stages the returned map's
   fields into the C bytes and loads them into the System V return registers
@@ -36,6 +57,18 @@ may change between minor versions.
   mixed INTEGER/SSE and MEMORY shapes, and the stored/exit/struct fixtures run
   the VM with the helper preloaded and compare its output with the hosted
   binary.
+
+- **The WebAssembly backend binds the pointer builtins (PHASE 9.6).**
+  `cstring`, `buffer`, `cstr`, `byteLen`, `loadByte`, `storeByte`,
+  `intToPtr`, `ptrToInt` and `free` now work in a `.wasm` module. A handle is
+  the `AotPtr` layout in linear memory (`{kind, data, length, released}`), so
+  `type()` reports `cstring` for a `cstring` and `ptr` for a buffer or a
+  `void *`, `str`/`repr` render a `cstring` as its text (quoted for `repr`)
+  and every other handle as `<ptr>`, and `free` marks the handle released
+  without reclaiming the arena. The error paths use the AOT wording, but stay
+  in the AOT fixture because `pcall` is still VM-only.
+  `tests/native_build_wasm_pointers.oskl` is the parity fixture and
+  `oskel.build_wasm_pointers` runs it.
 
 - **The WebAssembly backend binds the range methods (PHASE 9.5).**
   `r.toArray()` materialises a range into an array (exclusive or inclusive,
@@ -138,6 +171,11 @@ may change between minor versions.
   offsets, uniquely renamed local symbols, section symbols with aux records,
   and section-symbol relocations retargeted to the output section symbol with
   the addend adjusted. The result links with `oskelld`/`--linker own`.
+- **MSVC `.lib` archives (PHASE 10.3b.2).** The Windows linker expands
+  `!<arch>` inputs before parsing: it skips the first/second linker members,
+  resolves `//` long names and `/N` references, strips the member's trailing
+  `/`, and rejects a short import object with a dedicated message. A static
+  `.lib` member links through both the direct PE path and `-r`.
 - **`args()` on the Windows own linker (PHASE 10.3b.3).** The generated
   `_start` calls the UCRT's `__getmainargs`, then hands `(argc, argv)` to a
   `main` wrapper that moves the Microsoft x64 `rcx`/`rdx` pair into the chunk's
@@ -370,6 +408,24 @@ may change between minor versions.
   pull in SDL3 or Skia.
 
 ### Fixed
+
+- **A direct call to a user function is checked at compile time.** A parameter
+  annotation used to be erased without ever being compared to an argument, so
+  `fn f(x: int) { return x; }` accepted `f("s")` and failed only when the body
+  touched `x` (`unsupported operand types for '+'`), or silently produced a
+  wrong value when it did not. The compiler now records each function's
+  parameter list and checks the arity and every argument against its annotation
+  at the call site, reusing the same assignability rule as a declaration and an
+  assignment (`int` widens to `float`/`double`, `nil` fits `int?`, `any` and an
+  unannotated parameter accept anything, a `...` variadic takes any number of
+  extras). The check is metadata only: the emitted bytecode is unchanged, so the
+  VM and `oskel build` agree byte for byte
+  (`tests/native_build_call_checks.oskl`). Because a function is a first-class
+  value, reassigning it (`f = (x, y) => x + y;`) or shadowing it with a local
+  drops the recorded signature and the call falls back to the run-time guard,
+  which is why an indirect call (`let g = f; g()`) is still checked at run time.
+  The diagnostics match the native-call form: `cannot assign 'string' to 'int'
+  in argument 1 of 'f'` and `f() expects 1 argument, got 0`.
 
 - **Runtime error messages now match the VM across the AOT and WebAssembly
   backends.** A program that inspects `pcall`'s `error.message` saw a different

@@ -2144,8 +2144,10 @@ negative steps, Python clamping), variadic functions (`rest...` is packed into
 an array), and the builtins `print`, `write`, `eprint`, `len`, `type`, `str`,
 `$str`, `repr`, `int`, `float`, `double`, `bool`, `chr`, `ord`, `floor`,
 `ceil`, `round`, `sqrt`, `assert`, `assertEq`, `panic`, `error`, `isError`,
-`$isError`, `$nonNull`, `range`, `$range`, `$slice`, `time`, `clock` and
-`exit`. Every array method is bound as a receiver-capturing closure:
+`$isError`, `$nonNull`, `range`, `$range`, `$slice`, `time`, `clock`,
+`exit`, `cstring`, `buffer`, `cstr`, `byteLen`, `loadByte`, `storeByte`,
+`intToPtr`, `ptrToInt` and `free`. Every array method is bound as a
+receiver-capturing closure:
 `push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`, `contains`, `indexOf`,
 `clear`, `slice`, `concat`, `reversed`, `clone`, `sum`, `join`, `map`,
 `filter`, `each`, `find`, `any`, `all`, `reduce`, `sort` and `sorted`. The
@@ -2158,8 +2160,16 @@ operators. The string methods (`upper`, `lower`, `trim`, `trimStart`,
 `trimEnd`, `split`, `lines`, `replace`, `replaceFirst`, `startsWith`,
 `endsWith`, `contains`, `indexOf`, `substr`, `chars`, `repeat`, `reversed`,
 `padStart`, `padEnd`) and the range methods (`toArray`, `contains`) are bound
-the same way; a range's `.length` saturates at INT64_MAX. The
-standard-library modules stay on the portable primitive surface: `std/json`,
+the same way; a range's `.length` saturates at INT64_MAX. Pointer handles
+(`cstring`, `buffer`, `cstr`, `byteLen`, `loadByte`, `storeByte`, `intToPtr`,
+`ptrToInt`, `free`) use the `AotPtr` layout in linear memory
+(`{kind, data, length, released}`); `type()` reports `cstring` for a CString
+handle and `ptr` otherwise, `str`/`repr` render a `cstring` as its text and
+every other handle as `<ptr>`, and `free` only marks the handle released
+because the arena never reclaims. `tests/native_build_wasm_pointers.oskl`
+covers the happy paths; the error paths stay in the AOT fixture because
+`pcall` is VM-only. The standard-library modules stay on the portable
+primitive surface: `std/json`,
 `std/datetime`, `std/collections`, `std/path` and the bound half of `std.math`
 build and agree with the VM byte for byte; the host clock is what lets
 `std/datetime` read `time()`/`clock()`.
@@ -2287,11 +2297,14 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
   symbols at their merged offsets, local symbols renamed uniquely, section
   symbols with their aux record, and section-symbol relocations retargeted to
   the output section symbol with the addend adjusted. `oskelld -r` on Windows
-  uses it. `args()` is handled: the generated `_start` calls the UCRT's
+  uses it. MSVC `.lib` archives are handled by `expandCoffArchives`: the first
+  and second linker members are skipped, `//` long names and `/N` references
+  are resolved, and a short import object is rejected with a dedicated
+  message. `args()` is handled too: the generated `_start` calls the UCRT's
   `__getmainargs` and passes `(argc, argv)` to the Windows `main` wrapper,
   which moves `rcx`/`rdx` to the chunk's `rdi`/`rsi`; the hosted `cl` path
-  uses the same wrapper. MSVC `.lib` archives and the `.pdata`/`.xdata`
-  exception data remain; TLS is unsupported.
+  uses the same wrapper. The `.pdata`/`.xdata` exception data remain; TLS is
+  unsupported.
 - **10.3d (future)** — the macOS Mach-O/dyld container. It is a separate
   linker, not a generic abstraction: the object format, the loader contract
   and the entry prelude differ.
@@ -2360,7 +2373,7 @@ Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.11 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY), callbacks (including a struct return) and a stored callback resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
-Phase 10: 🔶 in progress (10.1, 10.2, 10.2b and 10.3a done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar`, `-r`, `.data`/`.bss`, the common x86-64 ELF relocations, and the Windows COFF→PE32+ path with UCRT/kernel32 imports. 10.3b `-r` COFF and `args` done, `.lib` pending, and 10.3d Mach-O pending)
+Phase 10: 🔶 in progress (10.1, 10.2, 10.2b and 10.3a done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar`, `-r`, `.data`/`.bss`, the common x86-64 ELF relocations, and the Windows COFF→PE32+ path with UCRT/kernel32 imports. 10.3b `-r` COFF, `.lib` and `args` done, `.pdata`/TLS pending, and 10.3d Mach-O pending)
 Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending
 2.0: ⬜ future (static with `@Dynamic`)
 

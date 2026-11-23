@@ -33,6 +33,24 @@ function(run_bindgen target)
   set(generated_text "${text}" PARENT_SCOPE)
 endfunction()
 
+function(run_bindgen_abi target abi)
+  execute_process(
+    COMMAND "${BINDGEN_EXE}" --target "${target}" --abi "${abi}" "${BINDGEN_HEADER}" -o "${generated}"
+    RESULT_VARIABLE exit_code
+    OUTPUT_VARIABLE stdout_text
+    ERROR_VARIABLE stderr_text)
+  if(NOT exit_code EQUAL 0)
+    message(FATAL_ERROR
+      "bindgen --target ${target} --abi ${abi} exited ${exit_code}\n--- stdout ---\n${stdout_text}\n"
+      "--- stderr ---\n${stderr_text}")
+  endif()
+  if(NOT stdout_text STREQUAL "")
+    message(FATAL_ERROR "bindgen --abi ${abi} wrote to stdout despite -o")
+  endif()
+  file(READ "${generated}" text)
+  set(generated_text "${text}" PARENT_SCOPE)
+endfunction()
+
 function(expect_lines text)
   foreach(expected IN LISTS ARGN)
     string(FIND "${text}" "${expected}" found)
@@ -48,6 +66,21 @@ set(text "${generated_text}")
 expect_lines("${text}" "fn wide(): int32;" "fn uwide(): uint32;" "fn wider(): int64;"
              "fn uwider(): uint64;" "fn wide_char(): uint16;")
 
+run_bindgen(llp64)
+set(text "${generated_text}")
+expect_lines("${text}" "// fn pair(): Pair;" "// fn takes_cb(cb: fn(int32): int32): void;")
+
+# `--abi` selects the destination independently of the host that runs bindgen.
+# The System V module is inspected but not compiled: on Windows, `oskel -c`
+# would (correctly) reject a struct-by-value declaration.
+run_bindgen_abi(lp64 system-v)
+set(text "${generated_text}")
+expect_lines("${text}" "fn pair(): Pair;" "fn takes_cb(cb: fn(int32): int32): void;")
+
+run_bindgen_abi(lp64 aapcs64)
+set(text "${generated_text}")
+expect_lines("${text}" "// fn pair(): Pair;" "// fn takes_cb(cb: fn(int32): int32): void;")
+
 run_bindgen(lp64)
 set(text "${generated_text}")
 expect_lines("${text}" "fn wide(): int64;" "fn uwide(): uint64;" "fn wider(): int64;"
@@ -61,6 +94,16 @@ execute_process(
   ERROR_VARIABLE bad_stderr)
 if(NOT bad_exit EQUAL 64)
   message(FATAL_ERROR "an unknown --target exited ${bad_exit}, expected 64")
+endif()
+
+# The same for an unknown ABI.
+execute_process(
+  COMMAND "${BINDGEN_EXE}" --abi bogus "${BINDGEN_HEADER}"
+  RESULT_VARIABLE bad_abi_exit
+  OUTPUT_VARIABLE bad_abi_stdout
+  ERROR_VARIABLE bad_abi_stderr)
+if(NOT bad_abi_exit EQUAL 64)
+  message(FATAL_ERROR "an unknown --abi exited ${bad_abi_exit}, expected 64")
 endif()
 
 # The generated module compiles.

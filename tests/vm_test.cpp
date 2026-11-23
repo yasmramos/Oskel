@@ -1354,11 +1354,14 @@ void testVmCallIntoBytecodeFunction() {
 
 void testFunctionArityErrors() {
   TEST_SCOPE();
-  assert(runtimeError("fn f(a) { return a; }\nf();\n") ==
+  // A direct call is rejected by the compiler, so the run-time guard is
+  // exercised through an indirect one: the callee is a value of unknown type
+  // (`g`), which is exactly the case the VM still has to catch.
+  assert(runtimeError("fn f(a) { return a; }\nlet g = f;\ng();\n") ==
          "f() expects 1 argument, got 0");
-  assert(runtimeError("fn f(a) { return a; }\nf(1, 2);\n") ==
+  assert(runtimeError("fn f(a) { return a; }\nlet g = f;\ng(1, 2);\n") ==
          "f() expects 1 argument, got 2");
-  assert(runtimeError("fn f() { return nil; }\nf(1);\n") ==
+  assert(runtimeError("fn f() { return nil; }\nlet g = f;\ng(1);\n") ==
          "f() expects 0 arguments, got 1");
 }
 

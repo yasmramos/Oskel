@@ -754,6 +754,93 @@ std::vector<std::string> resolvePatches(
   return imports;
 }
 
+std::vector<LinkInput> expandCoffArchives(const std::vector<LinkInput>& inputs) {
+  std::vector<LinkInput> expanded;
+  for (const LinkInput& input : inputs) {
+    if (input.bytes.size() < 8 ||
+        std::memcmp(input.bytes.data(), "!<arch>\n", 8) != 0) {
+      expanded.push_back(input);
+      continue;
+    }
+    std::string longNames;
+    std::size_t offset = 8;
+    while (offset + 60 <= input.bytes.size()) {
+      const char* header =
+          reinterpret_cast<const char*>(input.bytes.data() + offset);
+      std::string name(header, 16);
+      while (!name.empty() && name.back() == ' ') name.pop_back();
+      std::uint64_t size = 0;
+      for (std::size_t i = 48; i < 58; ++i) {
+        const char c = header[i];
+        if (c == ' ') continue;
+        if (c < '0' || c > '9') {
+          throw LinkError("invalid member size in '" + input.name + "'");
+        }
+        size = size * 10 + static_cast<std::uint64_t>(c - '0');
+      }
+      if (header[58] != '`' || header[59] != '\n') {
+        throw LinkError("invalid archive header in '" + input.name + "'");
+      }
+      const std::size_t dataOffset = offset + 60;
+      if (size > input.bytes.size() - dataOffset) {
+        throw LinkError("truncated archive member in '" + input.name + "'");
+      }
+      const std::uint8_t* member = input.bytes.data() + dataOffset;
+      if (name == "/") {
+        // First (big-endian) and second (little-endian) linker members. The
+        // own linker walks every member, so the symbol index is redundant.
+      } else if (name == "//") {
+        longNames.assign(reinterpret_cast<const char*>(member),
+                         static_cast<std::size_t>(size));
+      } else {
+        std::string memberName = name;
+        if (!memberName.empty() && memberName[0] == '/') {
+          std::size_t longOffset = 0;
+          for (std::size_t i = 1; i < memberName.size(); ++i) {
+            const char c = memberName[i];
+            if (c < '0' || c > '9') {
+              throw LinkError("invalid long member name in '" + input.name + "'");
+            }
+            longOffset = longOffset * 10 + static_cast<std::size_t>(c - '0');
+          }
+          if (longOffset >= longNames.size()) {
+            throw LinkError("long member name out of range in '" + input.name + "'");
+          }
+          const std::size_t end = longNames.find('\0', longOffset);
+          memberName = longNames.substr(
+              longOffset, end == std::string::npos ? std::string::npos
+                                                   : end - longOffset);
+        } else if (!memberName.empty() && memberName.back() == '/') {
+          memberName.pop_back();
+        }
+        if (memberName.empty()) {
+          throw LinkError("archive member has no name in '" + input.name + "'");
+        }
+        const std::uint16_t machine =
+            size >= 2
+                ? static_cast<std::uint16_t>(member[0] |
+                                             (static_cast<std::uint16_t>(member[1]) << 8))
+                : 0;
+        if (size >= 20 && machine == kCoffMachineAmd64) {
+          expanded.push_back(LinkInput{
+              input.name + "(" + memberName + ")",
+              std::vector<std::uint8_t>(member, member + size)});
+        } else if (size >= 2 && member[0] == 0 && member[1] == 0xFF) {
+          throw LinkError("'" + memberName + "' in '" + input.name +
+                          "' is a short import object; import libraries are "
+                          "not supported yet");
+        } else {
+          throw LinkError("'" + memberName + "' in '" + input.name +
+                          "' is not an AMD64 COFF object");
+        }
+      }
+      offset = dataOffset + static_cast<std::size_t>(size);
+      if ((size & 1) != 0) ++offset;
+    }
+  }
+  return expanded;
+}
+
 }  // namespace
 
 std::vector<std::uint8_t> linkWindowsExecutable(
@@ -763,13 +850,9 @@ std::vector<std::uint8_t> linkWindowsExecutable(
     throw LinkError("the Windows linker supports x86_64-windows-win64 only");
   }
 
+  const std::vector<LinkInput> expanded = expandCoffArchives(inputs);
   std::vector<CoffObject> objects;
-  for (const LinkInput& input : inputs) {
-    if (input.bytes.size() >= 8 &&
-        std::memcmp(input.bytes.data(), "!<arch>\n", 8) == 0) {
-      throw LinkError("'" + input.name +
-                      "' is an archive; COFF archives are PHASE 10.3b");
-    }
+  for (const LinkInput& input : expanded) {
     if (input.bytes.size() >= 2 && input.bytes[0] == 'M' && input.bytes[1] == 'Z') {
       throw LinkError("'" + input.name + "' is a PE image, not a COFF object");
     }
@@ -1181,13 +1264,9 @@ std::vector<std::uint8_t> linkRelocatableCoff(
     throw LinkError("the Windows linker supports x86_64-windows-win64 only");
   }
 
+  const std::vector<LinkInput> expanded = expandCoffArchives(inputs);
   std::vector<CoffObject> objects;
-  for (const LinkInput& input : inputs) {
-    if (input.bytes.size() >= 8 &&
-        std::memcmp(input.bytes.data(), "!<arch>\n", 8) == 0) {
-      throw LinkError("'" + input.name +
-                      "' is an archive; MSVC .lib archives are PHASE 10.3b");
-    }
+  for (const LinkInput& input : expanded) {
     if (input.bytes.size() >= 2 && input.bytes[0] == 'M' && input.bytes[1] == 'Z') {
       throw LinkError("'" + input.name + "' is a PE image, not a COFF object");
     }

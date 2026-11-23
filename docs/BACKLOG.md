@@ -542,15 +542,25 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     - A builtin with no WASM body is seeded as a trapping closure: declaring it
       is harmless, calling it reports the gap. The unbound names are the
       complement of `supportedBuiltins()`; the transcendental `pow`, `sin`,
-      `cos`, `tan`, `log` and `exp`, plus `input`, `pcall`, `args`, `memSize`,
-      the file builtins and the pointer builtins are in that set today.
+      `cos`, `tan`, `log` and `exp`, plus `input`, `pcall`, `args`, `memSize`
+      and the file builtins are in that set today.
+    - The pointer builtins (`cstring`, `buffer`, `cstr`, `byteLen`, `loadByte`,
+      `storeByte`, `intToPtr`, `ptrToInt`, `free`) are bound since PHASE 9.6.
+      A handle is the `AotPtr` layout in linear memory
+      (`{kind, data, length, released}`); `type()` reports `cstring` for a
+      CString handle, `str`/`repr` render a `cstring` as its text (quoted for
+      `repr`) and every other handle as `<ptr>`, and `free` marks the handle
+      released without reclaiming the arena. `tests/native_build_wasm_pointers.oskl`
+      covers the happy paths; the error paths stay in the AOT fixture because
+      `pcall` is VM-only.
     - A used `extern "C"` or `native fn` symbol with no builtin stub is a build
       error, mirroring the AOT backend's message.
     Each gap fails cleanly (build error 65 or a runtime error), never a
     mis-compiled module. `tests/native_build_wasm.oskl`,
     `tests/native_build_datetime.oskl`, `tests/native_build_collections.oskl`,
     `tests/native_build_math.oskl`,
-    `tests/native_build_wasm_range_methods.oskl` and
+    `tests/native_build_wasm_range_methods.oskl`,
+    `tests/native_build_wasm_pointers.oskl` and
     `tests/native_build_double_format.oskl` pin the supported surface against
     the VM byte for byte.
 27. **[P1] [done]** A callback that C stores for a later call worked in AOT but
@@ -599,9 +609,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     records the SONAME (`libSDL3.so.0`).
     The Windows own linker (PHASE 10.3a) closes COFF objects into a PE32+
     image with a dynamic import table (`kernel32.dll`/`ucrtbase.dll`) and a
-    generated `_start`. The `-r` COFF link (PHASE 10.3b.1) and `args()`
-    (PHASE 10.3b.3, `__getmainargs`) are done; remaining Windows work is MSVC
-    `.lib` archives, `.pdata`/`.xdata` exception data and TLS. The macOS
+    generated `_start`. The `-r` COFF link (PHASE 10.3b.1), MSVC `.lib`
+    archives (PHASE 10.3b.2) and `args()` (PHASE 10.3b.3, `__getmainargs`) are
+    done; remaining Windows work is `.pdata`/`.xdata` exception data and TLS.
+    The macOS
     Mach-O container is PHASE 10.3d.
 
 31. **[P0] [done]** VM/AOT divergence in reading a global before it is assigned:

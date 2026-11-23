@@ -1,0 +1,46 @@
+// A direct call to a user function is checked at compile time against the
+// parameter list: arity, plus each argument against its annotation. This
+// fixture is the permissive side — every one of these calls must compile — so
+// the check cannot quietly grow a false positive.
+fn typed(a: int, b: string): string { return b; }
+fn unannotated(x) { return x; }
+fn loose(x: any) { return x; }
+fn unionParam(x: int | string) { return x; }
+fn nullableParam(x: int?) { return x; }
+fn variadic(first: int, rest...) { return first; }
+fn callbackParam(f: fn(int): int) { return f(1); }
+fn optionalNothing() { return 0; }
+
+// Exact types, and the widening the rest of the language allows.
+typed(1, "ok");
+typed(1, "ok");
+
+// `any` and no annotation accept anything.
+loose("text");
+loose(1);
+unannotated([1, 2]);
+unannotated(nil);
+
+// A union accepts any of its members; a nullable parameter accepts nil.
+unionParam(1);
+unionParam("text");
+nullableParam(nil);
+nullableParam(7);
+
+// A variadic parameter takes any number of extras, including none.
+variadic(1);
+variadic(1, 2, 3);
+
+// A callback parameter accepts any function value.
+callbackParam(x => x + 1);
+
+// A function with no parameters must be called with none.
+optionalNothing();
+
+// A call through a value of unknown type is not checked here: the callee is a
+// local, so the recorded signature does not apply.
+fn indirect(): int {
+  let g = typed;
+  return g(1, "ok");
+}
+indirect();

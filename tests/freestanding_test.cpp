@@ -1979,11 +1979,14 @@ static void test_variadic() {
 }
 
 // A variadic function called with fewer than its fixed parameters is an arity
-// error and exits 70, matching the VM's arity check.
+// error and exits 70, matching the VM's arity check. A direct call is caught by
+// the compiler, so the run-time guard is reached through an indirect one: the
+// callee is a value of unknown type.
 static void test_variadic_arity_error() {
   Bytecode proto = compileSource(
       "fn join(sep, parts...) { return len(parts); }\n"
-      "print(join());\n");
+      "let g = join;\n"
+      "print(g());\n");
   RunResult result = buildAndRun("/tmp/oskel_variadic_arity", proto);
   check(result.exitCode == 70, "a variadic call below the fixed arity exits 70");
   // The message names the function, its fixed arity and the actual count,

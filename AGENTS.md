@@ -341,6 +341,19 @@ it as a caveat:
   the fact of failing (PHASE 7c.5b.6). Other dynamic tails — a type name, an
   index or a callback-return field name — still keep only their fixed prefix
   (BACKLOG §6 item 25).
+- A *direct* call to a user function is checked at compile time — arity and
+  argument types against the annotations — by `Compiler::checkUserCall`, using
+  the parameter list `functionParams_` records at the declaration. It mirrors
+  `functionReturnTypes_`: a shadowing binding, a `native fn` of the same name, a
+  module boundary and `clearSession` all clear or save it, and **a reassignment
+  erases it** (`f = (x, y) => ...;`), because a function is a first-class value
+  and the recorded signature then describes a binding that no longer holds it.
+  `checkArgumentAssignable` is the one place a string argument is allowed
+  against a `cstring` parameter (the string stays alive for the call), shared
+  with `checkNativeCall` so the two cannot drift. An indirect call (`let g = f;
+  g()`) is still checked at run time, which is why the VM's arity guard and its
+  tests stay: those tests must reach it through a value of unknown type
+  (`let g = f; g()`), never through a direct `f()`, which no longer compiles.
 - `random`/`seed` are AOT-backed (PHASE 7g): `mt19937_64` is emitted as machine
   code, so a native binary reproduces the VM's stream after the same `seed(n)`.
   Three rules keep it correct, and each was a real bug first: only `rbx` and
@@ -609,6 +622,12 @@ it as a caveat:
   retargeted to the output section symbol with the input section's merged
   offset added to the field. The output is accepted by `linkWindowsExecutable`
   and by the two-object `link_pe_test` fixture.
+- MSVC `.lib` archives (`expandCoffArchives`, PHASE 10.3b.2) are handled. The
+  first and second linker members are skipped because the own linker walks
+  every member; `//` long names and `/N` references are resolved; the member's
+  trailing `/` is stripped; a short import object (`0x00 0xFF`) is rejected
+  with a dedicated message. The archive test builds a `.lib` with a long member
+  name and links the member through both `linkHostedExecutable` and `-r`.
 - `args()` is handled on Windows (PHASE 10.3b.3). The generated `_start`
   imports `__getmainargs`, builds the UCRT's `argc`/`argv`, and calls `main`
   with them in `rcx`/`rdx`; the Windows hosted runtime exports a two-instruction
@@ -616,8 +635,7 @@ it as a caveat:
   `rdi`/`rsi` entry reads the same vector under `--linker cl` and the own
   linker. `oskel.build_hosted_own_windows_args` runs `args()` with an argument
   containing a space.
-- MSVC `.lib` archives and `.pdata`/`.xdata`/TLS remain 10.3b; the macOS
-  Mach-O container is 10.3d.
+- `.pdata`/`.xdata`/TLS remain 10.3b; the macOS Mach-O container is 10.3d.
 - The multi-object e2e helper is an `OBJECT` library compiled with
   `-fno-sanitize=all` when the build is sanitized: the object is linked into a
   plain emitted binary that does not carry the ASan runtime. The archive test
@@ -701,6 +719,20 @@ it as a caveat:
   the old signed `select` wrapped a span wider than INT64_MAX to a negative
   length. `tests/native_build_wasm_range_methods.oskl` is the WASM fixture;
   the error cases stay in the AOT fixture because `pcall` is VM-only.
+- The pointer builtins (`cstring`, `buffer`, `cstr`, `byteLen`, `loadByte`,
+  `storeByte`, `intToPtr`, `ptrToInt`, `free`) keep an `AotPtr` in linear
+  memory: `{kind, data, length, released}`, with `data` owning the bytes for a
+  `cstring`/`buffer` and holding the opaque token for a `void *`. `type()` must
+  inspect the kind and report `cstring` for a CString handle, not `ptr`; `str`
+  renders a `cstring` as its text and every other handle as `<ptr>`, and `repr`
+  quotes the text but not `<ptr>`. `free` only sets `released`, because the
+  arena never reclaims, and every read checks it first. The error paths use the
+  AOT prefixes; the WASM fixture covers the happy paths because `pcall` is
+  VM-only. **`emitBuiltin`'s `index` is the function index.** A branch that
+  declares a local named `index` (the byte offset) shadows it, so `return
+  index` returns the WASM local number: `loadByte`/`storeByte` shipped that way
+  and their table slots pointed at function 5, which trapped on first use. Name
+  a byte offset `at`, never `index`.
 - A construct the backend cannot lower yet must fail cleanly, never emit a
   mis-compiled module: an unbound builtin is seeded as a trapping closure, and
   a used `extern "C"`/`native fn` symbol with no stub is a build error (exit
@@ -990,7 +1022,12 @@ it as a caveat:
   `isKnownTypeName`/`isIntegerTypeName` from `src/frontend/ast.h` so the vocabulary it
   emits cannot drift from the compiler's; keep that the single source of truth.
   It must never emit a declaration the compiler rejects — an unsupported type
-  becomes a `// skipped:` comment, and a C variadic is written commented out.
+  becomes a `// skipped:` comment, and a shape the *destination* ABI cannot
+  marshal is written commented out. `--target` selects the C data model and
+  `--abi` the destination ABI (`build`, `system-v`, `win64`, `aapcs64`, `wasm`);
+  `--target llp64` implies `win64`. The destination is asked through
+  `ffi::capabilitiesForAbi`, never through the host that runs the tool, so a
+  module generated on Linux for Windows does not emit a struct Windows rejects.
   Its stdout is byte for byte the same module as its `-o` file, so it is set to
   binary mode on Windows (`_setmode(_fileno(stdout), _O_BINARY)`); a text-mode
   stdout would turn every `\n` into `\r\n` and the piped module would differ
