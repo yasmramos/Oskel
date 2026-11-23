@@ -1,0 +1,3 @@
+// expect-exit: 65
+import modules.enum_geom;
+print(modules.enum_geom.Color.NOPE);

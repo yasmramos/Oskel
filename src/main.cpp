@@ -89,8 +89,11 @@ int runSource(const std::string &source, const std::string &name,
 
   StmtPtr program;
   std::vector<Warning> warnings;
+  ModuleResolver resolver = resolverFor(name, argv0);
+  auto enumScanner = makeEnumScanner(resolver);
   try {
     Parser parser(std::move(tokens), name);
+    parser.setEnumScanner(enumScanner);
     program = parser.parseProgram();
     warnings = parser.warnings();
   } catch (const CompileError &error) {
@@ -104,8 +107,9 @@ int runSource(const std::string &source, const std::string &name,
   // Imports are resolved during compilation, so `--check` validates them too.
   Bytecode bytecode;
   Compiler compiler;
+  compiler.setEnumScanner(enumScanner);
   try {
-    compiler.setImportLoader(makeImportLoader(resolverFor(name, argv0)));
+    compiler.setImportLoader(makeImportLoader(resolver));
     bytecode = compiler.compile(program);
   } catch (const CompileError &error) {
     printCompileError(name, source, error, platformPosix());
@@ -196,7 +200,7 @@ bool isStatementStart(const std::string &text) {
          word == "if" || word == "while" || word == "do" || word == "for" || word == "return" ||
          word == "break" || word == "continue" || word == "else" ||
          word == "import" || word == "switch" || word == "struct" ||
-         word == "native" || word == "extern";
+         word == "enum" || word == "native" || word == "extern";
 }
 
 void printReplHelp() {
@@ -210,7 +214,8 @@ void printReplHelp() {
 
 // Returns true when the REPL should exit.
 bool handleCommand(VM &vm, Compiler &compiler, const std::string &command,
-                   const std::string &argv0) {
+                   const std::string &argv0,
+                   const Parser::EnumScanner &replScanner) {
   if (command == ":quit" || command == ":q" || command == ":exit")
     return true;
 
@@ -266,13 +271,24 @@ bool handleCommand(VM &vm, Compiler &compiler, const std::string &command,
     // `:load` runs the file *in the current session*: it sees the session's
     // structs, types and imports, and its own definitions persist for later
     // entries. Its imports still resolve relative to the file, so the file's
-    // loader is used only for this call.
+    // loader and enum scanner are used only for this call.
     try {
+      ModuleResolver fileResolver = resolverFor(path, argv0);
+      auto fileEnumScanner = makeEnumScanner(fileResolver);
+      struct ScannerGuard {
+        Compiler &compiler;
+        Parser::EnumScanner saved;
+        ~ScannerGuard() { compiler.setEnumScanner(std::move(saved)); }
+      } guard{compiler, replScanner};
+      compiler.setEnumScanner(fileEnumScanner);
       Parser parser(lex(source), path);
+      parser.setEnumScanner(fileEnumScanner);
       parser.seedStructNames(compiler.structNames());
       parser.seedClassNames(compiler.classNames());
+      parser.seedEnumNames(compiler.enumNames());
+      parser.seedEnumValues(compiler.enumValues(), compiler.enumMemberOwners());
       Bytecode bytecode = compiler.compileLoaded(
-          parser.parseProgram(), makeImportLoader(resolverFor(path, argv0)), path);
+          parser.parseProgram(), makeImportLoader(fileResolver), path);
       for (const Warning &warning : parser.warnings())
         printCompileWarning(path, source, warning, platformPosix());
       for (const Warning &warning : compiler.warnings())
@@ -311,7 +327,10 @@ void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, 
   // One compiler for the whole session so a module imported in an earlier
   // entry is compiled once and reused by later entries.
   Compiler compiler;
-  compiler.setImportLoader(makeImportLoader(resolverFor("<repl>", argv0)));
+  ModuleResolver replResolver = resolverFor("<repl>", argv0);
+  auto enumScanner = makeEnumScanner(replResolver);
+  compiler.setImportLoader(makeImportLoader(replResolver));
+  compiler.setEnumScanner(enumScanner);
 
   std::cout << "Oskel " << kVersion
             << " - a small scripting language written in C++\n";
@@ -333,7 +352,7 @@ void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, 
       continue;
     }
     if (buffer.empty() && !trimmed.empty() && trimmed[0] == ':') {
-      if (handleCommand(vm, compiler, trimmed, argv0))
+      if (handleCommand(vm, compiler, trimmed, argv0, enumScanner))
         break;
       continue;
     }
@@ -364,8 +383,11 @@ void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, 
     if (!isStatementStart(trim(firstLineText))) {
       try {
         Parser expressionParser(tokens, "<repl>");
+        expressionParser.setEnumScanner(enumScanner);
         expressionParser.seedStructNames(compiler.structNames());
         expressionParser.seedClassNames(compiler.classNames());
+        expressionParser.seedEnumNames(compiler.enumNames());
+        expressionParser.seedEnumValues(compiler.enumValues(), compiler.enumMemberOwners());
         auto expr = expressionParser.parseFullExpression();
         Bytecode bytecode = compiler.compileExpression(expr);
         Value value = vm.run(bytecode);
@@ -385,8 +407,11 @@ void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, 
     std::vector<Warning> parseWarnings;
     try {
       Parser parser(tokens, "<repl>");
+      parser.setEnumScanner(enumScanner);
       parser.seedStructNames(compiler.structNames());
       parser.seedClassNames(compiler.classNames());
+      parser.seedEnumNames(compiler.enumNames());
+      parser.seedEnumValues(compiler.enumValues(), compiler.enumMemberOwners());
       program = parser.parseProgram();
       parseWarnings = parser.warnings();
     } catch (const CompileError &error) {
@@ -394,8 +419,11 @@ void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, 
         // Convenience: accept a missing ';' at the end of a REPL entry.
         try {
           Parser parser(lex(buffer + ";"), "<repl>");
+          parser.setEnumScanner(enumScanner);
           parser.seedStructNames(compiler.structNames());
           parser.seedClassNames(compiler.classNames());
+          parser.seedEnumNames(compiler.enumNames());
+          parser.seedEnumValues(compiler.enumValues(), compiler.enumMemberOwners());
           program = parser.parseProgram();
           parseWarnings = parser.warnings();
         } catch (const CompileError &retry) {
