@@ -1,0 +1,12 @@
+// Exercises the UI requirement the `.oskc` header records.
+//
+// Importing `std.ui.window` pulls in the SDL and Skia bindings, which use the
+// ambiguous `oskel_` prefix -- the chunk alone cannot say it needs the shim, so
+// the compiler's module list is the only signal and the image has to carry it.
+// `tests/oskc_ui_requirement.cmake` compares the source path with the image
+// path on this program: both must agree on the exit code and the diagnostic.
+//
+// The program never runs; it exists to make the compiler load the UI modules.
+import std.ui.window as window;
+
+print("ui");
