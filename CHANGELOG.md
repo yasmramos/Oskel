@@ -137,6 +137,17 @@ may change between minor versions.
   on Windows. Bare metal has no page allocator, so its `.bss` region stays the
   ceiling and the allocator keeps reporting `out of memory` there.
 
+- **The macOS own linker emitted a desynchronised dyld bind stream.** The
+  `LC_DYLD_INFO_ONLY` bind stream wrote `0x32` where dyld expects
+  `SET_SEGMENT_AND_OFFSET_ULEB` (`0x70` with the segment index in the low
+  nibble, so `0x72` for `__DATA`); `0x32` is `SET_DYLIB_SPECIAL_IMM`, which
+  consumes no ULEB. Every instruction after the first symbol was therefore
+  decoded from the wrong offset, so the image could not bind its libSystem
+  imports even though the symbol names were still present in the bytes.
+  `link_macho_test` now walks the bind stream opcode by opcode -- it must reach
+  `DONE` at the exact end with one `DO_BIND` per import -- so the container is
+  checked on every host, not only where a Mach-O image can run.
+
 - **`import { x } from from;` silently resolved a module named `from`.** A
   `from` keyword in the module-name or path-segment position of an `import` was
   accepted as an identifier, so `import { square } from from;` and

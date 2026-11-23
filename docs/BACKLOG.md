@@ -717,7 +717,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     zero. Emitting unwind data is future container work. The macOS own linker
     (PHASE 10.3d) closes a hosted `MH_OBJECT` into a non-PIE `MH_EXECUTE` with
     libSystem imports, and `-r` combines Mach-O objects into a new `MH_OBJECT`;
-    a data import, the ad-hoc signature and ARM64 remain for the rest of 10.3d.
+    the `LC_DYLD_INFO_ONLY` bind stream used `0x32` for
+    `SET_SEGMENT_AND_OFFSET_ULEB`, which is `SET_DYLIB_SPECIAL_IMM`; the low
+    nibble of `0x70|segment` carries the segment index, so the correct byte for
+    `__DATA` is `0x72`. The stream desynchronised after the first symbol and only
+    the symbol *names* (which a `memmem`-style check sees) survived.
+    `link_macho_test` walks the stream opcode by opcode and asserts it ends on
+    `DONE` with one `DO_BIND` per import, so the container is checked on every
+    host instead of only where a Mach-O image can run. Still open here: a data
+    import, the ad-hoc signature and ARM64.
 
 31. **[P0] [done]** VM/AOT divergence in reading a global before it is assigned:
     the VM fails with `runtime error: undefined variable '<name>'` and exit 70,

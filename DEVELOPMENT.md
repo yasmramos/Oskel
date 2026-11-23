@@ -2443,6 +2443,17 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
   pinned by `link_macho_test` on every host; `oskel.build_hosted_own_macos`
   runs on `macos-15-intel` (x86-64) and only checks the `file` type on the arm64
   runner.
+- **The bind stream is dyld opcodes, not a byte blob.** `LC_DYLD_INFO_ONLY`'s
+  bind stream is a sequence of `BIND_OPCODE_*` instructions, and
+  `SET_SEGMENT_AND_OFFSET_ULEB` is `0x70` with the segment index in the low
+  nibble -- `0x72` for `__DATA`, given `__PAGEZERO`/`__TEXT`/`__DATA`/
+  `__LINKEDIT`. Writing `0x32` there means `SET_DYLIB_SPECIAL_IMM`, which
+  consumes no ULEB and desynchronises every following instruction. The symbol
+  names stay in the bytes either way, so a test that only searches for `_write`
+  cannot see it: `link_macho_test` walks the stream the way dyld does and
+  requires it to reach `DONE` at the exact end with one `DO_BIND` per import.
+  That runs on every host, so the container is checked where a Mach-O image
+  cannot even run.
 
 ### PHASE 11 — `async` / `await` 🔶 in progress
 

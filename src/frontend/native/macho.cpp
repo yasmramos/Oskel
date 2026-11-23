@@ -347,8 +347,12 @@ std::vector<std::uint8_t> linkMachOExecutable(
       const std::string name = "_" + imports[i];
       bind.insert(bind.end(), name.begin(), name.end());
       bind.push_back(0);
-      bind.push_back(0x51);  // SET_TYPE_IMM, pointer
-      bind.push_back(0x32);  // SET_SEGMENT_AND_OFFSET_ULEB, __DATA
+      bind.push_back(0x51);  // SET_TYPE_IMM, BIND_TYPE_POINTER
+      // SET_SEGMENT_AND_OFFSET_ULEB with segment index 2 (__PAGEZERO, __TEXT,
+      // __DATA, __LINKEDIT -- see the segment() calls below). The opcode
+      // carries the index in its low nibble; 0x32 is SET_DYLIB_SPECIAL_IMM and
+      // would desynchronise the whole stream.
+      bind.push_back(0x72);
       std::uint64_t value = i * 8;
       do {
         std::uint8_t byte = static_cast<std::uint8_t>(value & 0x7F);

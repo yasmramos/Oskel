@@ -146,6 +146,52 @@ void testHello() {
     const std::uint32_t bindOffset = read32(pe, dyldInfo + 16);
     const std::uint32_t bindSize = read32(pe, dyldInfo + 20);
     check(contains(pe, bindOffset, bindSize, "_write"), "the bind names _write");
+
+    // Walk the bind stream the way dyld does. A wrong opcode (0x32 is
+    // SET_DYLIB_SPECIAL_IMM, not SET_SEGMENT_AND_OFFSET_ULEB) still leaves the
+    // symbol name in the bytes, so `contains` alone cannot catch it -- the
+    // stream has to parse to the end and bind every import into __DATA.
+    std::size_t cursor = bindOffset;
+    const std::size_t end = bindOffset + bindSize;
+    int bound = 0;
+    bool wellFormed = true;
+    while (cursor < end) {
+      const std::uint8_t opcode = pe[cursor++];
+      const std::uint8_t immediate = opcode & 0x0F;
+      switch (opcode & 0xF0) {
+        case 0x00:  // DONE
+          wellFormed = cursor == end;
+          cursor = end;
+          break;
+        case 0x10:  // SET_DYLIB_ORDINAL_IMM
+        case 0x30:  // SET_DYLIB_SPECIAL_IMM
+        case 0x50:  // SET_TYPE_IMM
+          break;
+        case 0x40:  // SET_SYMBOL_TRAILING_FLAGS_IMM
+          while (cursor < end && pe[cursor] != 0) ++cursor;
+          ++cursor;
+          break;
+        case 0x70:  // SET_SEGMENT_AND_OFFSET_ULEB
+          wellFormed = wellFormed && immediate == 2;  // __DATA
+          while (cursor < end && (pe[cursor] & 0x80) != 0) ++cursor;
+          ++cursor;
+          break;
+        case 0x90:  // DO_BIND
+          ++bound;
+          break;
+        default:
+          wellFormed = false;
+          cursor = end;
+          break;
+      }
+    }
+    check(wellFormed, "the bind stream is well formed to the end");
+    // One DO_BIND per import; LC_DYSYMTAB counts each twice (a stub and a GOT
+    // slot), so the import count is half its indirect count.
+    const std::size_t dysymtabForImports = findCommand(pe, 0xB);
+    const int imports =
+        dysymtabForImports == 0 ? 1 : static_cast<int>(read32(pe, dysymtabForImports + 60)) / 2;
+    check(bound == imports, "every import is bound into __DATA");
   }
   const std::size_t dysymtab = findCommand(pe, 0xB);
   check(dysymtab != 0 && read32(pe, dysymtab + 60) == 2, "two indirect symbols");
