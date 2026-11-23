@@ -11,6 +11,15 @@ may change between minor versions.
 
 ### Added
 
+- **The macOS own linker closes a hosted Mach-O executable (PHASE 10.3d).**
+  `linkMachOExecutable` parses the `MH_OBJECT` and emits a non-PIE
+  `MH_EXECUTE` with `__TEXT`/`__DATA`/`__LINKEDIT`, `LC_MAIN`,
+  `LC_LOAD_DYLINKER`, `LC_LOAD_DYLIB` (libSystem), `LC_SYMTAB`,
+  `LC_DYSYMTAB` and `LC_DYLD_INFO_ONLY`. A call import becomes a `__stubs`
+  entry and a non-lazy `__got` bind; `__const` is carried through.
+  `link_macho_test` pins the container on every host and
+  `oskel.build_hosted_own_macos` runs the image on `macos-15-intel` (x86-64); the
+  arm64 runner checks the `file` type only.
 - **`bindgen --abi` selects the destination ABI.** A generated module must not
   emit a shape the destination cannot marshal: `--abi system-v` emits
   struct-by-value, callbacks and variadics; `--abi win64` emits only the
