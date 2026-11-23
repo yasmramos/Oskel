@@ -102,7 +102,9 @@ def install(vcpkg: Path, root: Path, package: str, triplet: str, cache: Path | N
 
 
 def write_github_env(path: Path, prefixes: list[Path]) -> None:
-    value = ";".join(str(prefix) for prefix in prefixes)
+    # CMake reads the environment variable with the host's path separator; the
+    # cache variable (`-DCMAKE_PREFIX_PATH=...`) is always semicolon-separated.
+    value = os.pathsep.join(str(prefix) for prefix in prefixes)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(f"CMAKE_PREFIX_PATH={value}\n")
 
@@ -141,7 +143,7 @@ def main() -> int:
     prefixes = [sdl_dir, skia_dir]
     if args.github_env:
         write_github_env(args.github_env, prefixes)
-    print("CMAKE_PREFIX_PATH=" + ";".join(str(prefix) for prefix in prefixes))
+    print("CMAKE_PREFIX_PATH=" + os.pathsep.join(str(prefix) for prefix in prefixes))
     return 0
 
 
