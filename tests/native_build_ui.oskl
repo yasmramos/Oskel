@@ -30,6 +30,59 @@ assert(hit != nil);
 assertEq(hit.label, "OK");
 assert(ui.hitTest(root, 190, 110) == nil);
 
+// Pointer states: hover, press and release all repaint the same button.
+let button = root.child.children[1];
+assertEq(button.hover, false);
+assertEq(button.pressed, false);
+assert(ui.pointerMove(root, 10, 40));
+assertEq(button.hover, true);
+assertEq(ui.commands(root)[2].color, 0xFF1D4ED8);
+assert(!ui.pointerMove(root, 10, 40));
+assert(ui.pointerDown(root, 10, 40));
+assertEq(button.pressed, true);
+assertEq(ui.commands(root)[2].color, 0xFF1E40AF);
+assertEq(ui.pointerUp(root, 10, 40), true);
+assertEq(button.pressed, false);
+assertEq(button.hover, true);
+assertEq(ui.commands(root)[2].color, 0xFF1D4ED8);
+assert(ui.pointerMove(root, 190, 110));
+assertEq(button.hover, false);
+assertEq(ui.commands(root)[2].color, 0xFF2563EB);
+
+// A release outside the button cancels the press without running the handler.
+assert(ui.pointerDown(root, 10, 40));
+assertEq(ui.pointerUp(root, 190, 110), false);
+assertEq(button.pressed, false);
+
+// Leaving the window clears both states.
+_ = ui.pointerMove(root, 10, 40);
+_ = ui.pointerDown(root, 10, 40);
+assert(ui.pointerCancel(root));
+assertEq(button.hover, false);
+assertEq(button.pressed, false);
+assert(!ui.pointerCancel(root));
+
+// A complete click still works for headless callers.
+var clicks = 0;
+let clickable = ui.window("Click", 80, 30,
+  ui.button("Go", () => clicks = clicks + 1));
+ui.layout(clickable, 80, 30);
+assertEq(ui.click(clickable, 10, 10), true);
+assertEq(clicks, 1);
+
+// Explicit state colours.
+let custom = ui.window("Custom", 80, 30,
+  ui.buttonStates("X", () => nil, 0xFF111111, 0xFF222222, 0xFF333333,
+                  0xFFFFFFFF));
+ui.layout(custom, 80, 30);
+assertEq(ui.commands(custom)[1].color, 0xFF111111);
+_ = ui.pointerMove(custom, 10, 10);
+assertEq(ui.commands(custom)[1].color, 0xFF222222);
+_ = ui.pointerDown(custom, 10, 10);
+assertEq(ui.commands(custom)[1].color, 0xFF333333);
+_ = ui.pointerUp(custom, 10, 10);
+assertEq(ui.commands(custom)[1].color, 0xFF222222);
+
 // A row with a padded button and a spacer.
 let bar = ui.window("Bar", 100, 40,
   ui.row(4, [
@@ -70,6 +123,12 @@ ui.layout(styled, 60, 30);
 let styledCommands = ui.commands(styled);
 assertEq(styledCommands[1].color, 0xFF000000);
 assertEq(styledCommands[2].color, 0xFFFFFFFF);
+_ = ui.pointerMove(styled, 10, 10);
+assertEq(ui.commands(styled)[1].color, 0xFF000000);
+_ = ui.pointerDown(styled, 10, 10);
+assertEq(ui.commands(styled)[1].color, 0xFF000000);
+_ = ui.pointerUp(styled, 10, 10);
+assertEq(ui.commands(styled)[1].color, 0xFF000000);
 
 let tinted = ui.window("Tinted", 40, 20, ui.textColor("T", 10, 0xFF00FF00));
 ui.layout(tinted, 40, 20);

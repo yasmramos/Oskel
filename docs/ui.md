@@ -50,8 +50,9 @@ ui_window.run("Demo", root, 320, 200, 0);
 `run` returns the number of frames it presented. It lays the tree out, draws
 the display list into a raster Skia surface, copies the whole surface into one
 tightly packed BGRA buffer, uploads it to a streaming `SDL_Texture`, draws that
-texture and presents the renderer. A left click is dispatched through
-`ui.hitTest`, so a button's `onClick` runs and the tree is laid out again.
+texture and presents the renderer. Mouse motion updates the hovered button, a
+left press marks it pressed, and a release on the same button runs `onClick`
+and lays the tree out again. Releasing outside the button cancels the click.
 
 On the development engine, load the Skia shim and let SDL3 resolve from the
 linked library:
@@ -71,7 +72,18 @@ LD_LIBRARY_PATH=bindings/skia/build ./ui-window
 | Function | Meaning |
 | --- | --- |
 | `run(title, root, width, height, maxFrames)` | open a window and run the event loop |
-| `click(root, x, y)` | dispatch a click through `hitTest`; returns whether a handler ran |
+| `click(root, x, y)` | dispatch a press and release through `hitTest`; returns whether a handler ran |
+
+The widget layer also exposes the pointer primitives the window loop uses, so
+a headless test can drive the same state:
+
+| Function | Meaning |
+| --- | --- |
+| `pointerMove(root, x, y)` | mark the button under `(x, y)` hovered; returns whether the state changed |
+| `pointerDown(root, x, y)` | mark the button under `(x, y)` pressed; returns whether the state changed |
+| `pointerUp(root, x, y)` | release the press; runs the handler only if the release lands on the pressed button |
+| `pointerCancel(root)` | clear hover and pressed when the pointer leaves the window or focus is lost |
+| `click(root, x, y)` | a complete press and release at one point |
 
 `std.internal.sdl`, `std.internal.skia`, `std.internal.skia_ui` and
 `std.internal.skia_window` are implementation details. They are importable, but
@@ -88,12 +100,16 @@ they are not part of the public API and are not documented for users.
 | `spacer(height)` | empty vertical space |
 | `text(content, size)` | black text |
 | `textColor(content, size, color)` | text with an ARGB colour |
-| `button(label, onClick)` | blue button with white text |
-| `buttonStyle(label, onClick, background, color)` | button with explicit colours |
+| `button(label, onClick)` | blue button with white text and distinct hover/pressed shades |
+| `buttonStyle(label, onClick, background, color)` | button with explicit colours; hover and pressed reuse the background |
+| `buttonStates(label, onClick, background, hoverBackground, pressedBackground, color)` | button with explicit colours for each pointer state |
 
 A widget is a map with a `kind`, a frame (`x`, `y`, `w`, `h`) and the fields its
 kind needs. `layout` mutates the tree and attaches the frame; `commands` reads
-the frames and returns new maps, so drawing never mutates the tree.
+the frames and returns new maps, so drawing never mutates the tree. A button
+also carries `hover` and `pressed`, which the pointer primitives mutate; its
+fill comes from `background`, `hoverBackground` or `pressedBackground` in that
+precedence.
 
 ## Layout
 
@@ -149,7 +165,8 @@ only the C++ shim needs a Skia build.
   yet. `std.ui.window` uses Skia's real advance width through `layoutWith`;
   headless `layout` keeps the deterministic fixed advance.
 - `std.ui` itself has no event loop; `std.ui.window` owns it. A button stores
-  `onClick` and the window loop dispatches it after `hitTest`.
+  `onClick`, `hover` and `pressed`; the window loop updates the state from mouse
+  events and runs the handler on release over the pressed button.
 - The window loop redraws on every frame and sleeps 16 ms; it has no dirty-region
   optimisation, resize handling or keyboard focus yet.
 - `std.ui.window` is Linux x86-64 hosted AOT for now, because the native backend
