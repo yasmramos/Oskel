@@ -11,6 +11,18 @@ may change between minor versions.
 
 ### Added
 
+- **`oskelp` supports multi-member workspaces.** A root `oskel.toml` with a
+  `[workspace] members = [...]` table shares one `oskel.lock`, one
+  `.oskel/deps` and one `target/` across every member. `build`, `check` and
+  `test` cover all members at the virtual root; `run`, `add`, `remove` and
+  `publish` require one member and accept `--package`/`-p`, falling back to the
+  invoked member or the only member. Members may path-depend on each other, a
+  registry requirement that names a member is rejected, and members stay out of
+  the lockfile. A root package is itself a member and the default target.
+  Duplicate names, missing member manifests and nested workspaces are rejected
+  at load time. `tests/oskelp_test.cpp` and `tests/run_oskelp_case.cmake` cover
+  the loader, the resolver and the CLI.
+
 - **`async fn`, `await` and `Future` (PHASE 11.1).** A call to an async function
   returns a `Future`; `await` yields its payload, and the declared return type
   is the payload type (`async fn f(): int` returns `Future<int>`). `await` is
@@ -51,6 +63,15 @@ may change between minor versions.
   from the engine (`VM::globals()` after `registerBuiltins`) instead of keeping
   a second list that would drift. A lint warning exits 0. See
   `docs/oskelint.md`.
+
+- **`oskelp yank` withdraws a published version without deleting it.**
+  `oskelp yank <name> --version <version>` writes a `.yanked` marker in the
+  registry entry; `add`, `update` and `outdated` skip the version, while a
+  lockfile that already pins it keeps building. `--precise` refuses a yanked
+  version instead of silently choosing another, and `--undo` clears the marker.
+  Both directions are idempotent. `tests/oskelp_test.cpp` and
+  `tests/run_oskelp_case.cmake` cover the resolver, the lockfile exception and
+  the CLI.
 
 ### Changed
 

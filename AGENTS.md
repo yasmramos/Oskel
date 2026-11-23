@@ -1217,7 +1217,13 @@ it as a caveat:
   `remove` refuses an entry that spans multiple lines instead of deleting a
   partial one. `oskelp publish [--registry <dir>]` copies the manifest and
   `src/` into the registry and refuses to overwrite a version or publish a
-  package that keeps a path dependency. A registry dependency has no `path`,
+  package that keeps a path dependency. `oskelp yank <name> --version <v>
+  [--undo]` writes or removes `<registry>/<name>/<version>/.yanked`: a fresh
+  selection (`add`, `update`, `outdated`) skips a yanked version, but a
+  lockfile pin that already names it is still honoured, so withdrawing a
+  release does not break an existing build; `--precise` on a yanked version
+  fails instead of choosing another. Both directions are idempotent. A
+  registry dependency has no `path`,
   so `oskelp tree` must load each child from the **resolution**
   (`ResolvedPackage::dir`), never from `manifest.dir / dependency.path`; the
   latter reads the root manifest again and prints a bogus `(cycle)`.
@@ -1226,8 +1232,19 @@ it as a caveat:
   `--native` is given, and `oskelp test` runs every `tests/**/*.oskl` and exits
   101 when one fails. `tests/run_oskelp_case.cmake` drives the real binary
   through the whole workflow, including publish/consume, `add` without
-  `--version`, `outdated`, `update --precise` and `--locked`, so a change to
-  the manifest, the lockfile or a command must keep that test green.
+  `--version`, `outdated`, `update --precise`, `yank`/`--undo`, `--locked` and
+  a `[workspace]`, so a change to the manifest, the lockfile or a command must
+  keep that test green. A `[workspace]` root owns one `oskel.lock`,
+  `.oskel/deps` and `target/`; `Workspace::root` is a **synthetic** manifest
+  (`__oskelp_workspace__`) whose dependencies are the member paths, so the
+  existing resolver sees one graph and the members are flagged
+  `workspaceMember` to stay out of the lockfile. Path dependencies resolve
+  relative to the manifest that declares them (`manifest.dir`), not to the
+  workspace root, so a member's `../alpha` is correct as written. `build`,
+  `check` and `test` cover every member at the virtual root; `run`, `add`,
+  `remove` and `publish` call `selectOneMember` and need `--package`, the
+  invoked member, or the only member. A registry requirement that names a
+  member is rejected, because the workspace copy is the one the build uses.
 
 ## Commit authorship
 
