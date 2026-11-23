@@ -1,0 +1,20 @@
+// PHASE 6.9 across modules: a wildcard import binds the module's enums by
+// their own names, and their members work as bare `case` labels.
+import modules.enum_geom.*;
+
+let c: Color = Color.RED;
+switch (c) {
+  case RED: { print("r"); }
+  case GREEN: { print("g"); }
+  case BLUE: { print("b"); }
+}
+
+let s: Shape = Shape.CIRCLE;
+switch (s) {
+  case CIRCLE: { print("circle"); }
+  case SQUARE: { print("square"); }
+}
+
+assertEq(pick(), 1);
+assertEq(area(Shape.SQUARE), 4);
+print("enum wildcard ok");

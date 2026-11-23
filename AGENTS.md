@@ -338,8 +338,27 @@ it as a caveat:
   when variadic), and `tests/native_build_builtin_arity.oskl` drives every
   wrong-count call through `pcall`, because a raised runtime error is not a value
   and `try`/`catch` never sees it. The fixture prints the message text, not just
-  the fact of failing (PHASE 7c.5b.6). Other dynamic tails — a type name, an
-  index or a callback-return field name — still keep only their fixed prefix
+  the fact of failing (PHASE 7c.5b.6).
+- A runtime error that quotes a value assembles the tail instead of stopping at
+  the fixed prefix. `emitTypeTailFail` writes `, got '<type>'`,
+  `emitTypeQuoteFail` writes ` '<type>'` for a prefix that already names the
+  condition, and `emitNoMemberFail` builds `type '<t>' has no member '<name>'`;
+  the type name comes from the same table `type()` reads, so a pointer handle
+  reports `cstring`/`ptr`. `emitFailGotType` is the shared body, and a prefix
+  blob must not carry its own `, got '` — the helper writes it, and a blob that
+  did shipped a truncated message with no type and no closing quote. Every
+  argument-type tail is converted: the builtins (`ord`, `chr`, `error`, `exit`,
+  `seed`, `random`, the numeric ones, the pointer and file families), the array,
+  string and map methods, and the `$slice`/`len`/call/member/index/iteration
+  operator messages. `tests/native_build_runtime_error_messages.oskl` asserts
+  the exact text on both engines through `pcall`, so a new message gets a line
+  there rather than a prefix-only assertion. The two-operand tails quote both
+  operands through `emitTwoTypeFail` (`cannot compare 'int' with 'string'`,
+  `operator 'in' is not supported for 'int' and 'int'`). Two tails are still
+  truncated: the arithmetic/bitwise `unsupported operand types for '<op>':
+  '<t1>' and '<t2>'`, because the shared helper receives the opcode at run
+  time and never the symbol, and the FFI struct-field name (`the struct
+  returned by a callback is missing field`), which names a C layout field
   (BACKLOG §6 item 25).
 - A *direct* call to a user function is checked at compile time — arity and
   argument types against the annotations — by `Compiler::checkUserCall`, using

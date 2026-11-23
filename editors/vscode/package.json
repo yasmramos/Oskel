@@ -2,7 +2,7 @@
   "name": "oskel",
   "displayName": "Oskel",
   "description": "Oskel language support for VS Code: syntax highlighting, editor configuration, snippets and compiler diagnostics (.oskl).",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "oskel-lang",
   "license": "MIT",
   "repository": {

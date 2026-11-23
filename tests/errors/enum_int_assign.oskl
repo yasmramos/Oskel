@@ -1,0 +1,5 @@
+// expect-exit: 65
+// An enum is its own type: a plain int does not fit without `int(...)`.
+enum Color { RED }
+let x: int = Color.RED;
+print(x);

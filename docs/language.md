@@ -11,7 +11,7 @@ The language surface this reference documents is implemented on the development 
 | Area | Development engine (`oskel`) | AOT backend (`oskelc` / `oskel build`) |
 | --- | --- | --- |
 | Language core: functions, closures, control flow, collections | ✅ | ✅ (subset the lowerer covers) |
-| Types, nullability, `struct`, `class`, variadics, `import`, `switch`, `defer` (PHASE 6.5/6.8) | ✅ | ✅ (all are compile-time; `struct`/`class` are erased, `switch`/`defer` lower to existing opcodes) |
+| Types, nullability, `struct`, `class`, `enum`, variadics, `import`, `switch`, `defer` (PHASE 6.5/6.8/6.9) | ✅ | ✅ (all are compile-time; `struct`/`class` are erased, `enum` members fold to `LOADK`, `switch`/`defer` lower to existing opcodes) |
 | `native fn` (PHASE 6.5) | ✅ | 🔶 only for the curated stubs the backend seeds; anything else fails the build (PHASE 7f) |
 | FFI with C (PHASE 6.6) | ✅ | 🔶 scalar `extern "C"` in `--mode hosted` only; FFI is hosted-only by design (PHASE 7f, §4.5) |
 | Error values, `pcall`, `try`/`catch`, unions, `@MustUse` (PHASE 6.7) | ✅ | ✅ `error` values, `try`/`catch` and `pcall` (PHASE 7c.5c/7c.5d); a raised error with no active `pcall` exits 70 |
@@ -26,6 +26,7 @@ The language surface this reference documents is implemented on the development 
    - [4.6 Type annotations](#46-type-annotations)
    - [4.7 `struct`](#47-struct)
    - [4.8 `class`](#48-class)
+   - [4.9 `enum`](#49-enum)
 5. [Operators](#5-operators)
 6. [Statements](#6-statements)
 7. [Functions and closures](#7-functions-and-closures)
@@ -90,8 +91,8 @@ Identifiers start with an ASCII letter or `_`, and continue with ASCII letters, 
 Reserved words:
 
 ```text
-break  case   catch  class  const  continue  default  defer  do     else  false  fn  for  if
-import in     let    native nil       return   struct switch true  try  var
+break  case   catch  class  const  continue  default  defer  do     else  enum  false  fn
+for    if     import in     let    native   nil      return struct switch true  try   var
 while
 ```
 
@@ -1120,6 +1121,107 @@ instead when it wants to keep the class itself private.
 `class` is a **reserved word** from 0.1.0 on: a variable or function named
 `class` no longer parses.
 
+### 4.9 `enum`
+
+An `enum` declares a **scoped set of integer constants**. The declaration is
+compile-time metadata: it emits no bytecode, adds no opcode, and each use folds
+to the integer it names, so the VM, the AOT backend and WASM run it identically.
+
+```oskel
+enum Color { RED, GREEN, BLUE }
+enum Status { OK = 200, NOT_FOUND = 404, SERVER_ERROR }
+
+print(Color.RED);        // 0
+print(Color.BLUE);       // 2
+print(Status.NOT_FOUND); // 404
+print(Status.SERVER_ERROR); // 405
+```
+
+**Numbering.** Members start at `0` and continue from the previous one. An
+explicit `= <constant>` restarts the sequence; the next member follows it. The
+value is a constant expression, so it may use literals, arithmetic, an earlier
+member, or an earlier top-level `const`:
+
+```oskel
+enum Flags { NONE = 0, READ = 1, WRITE = 2, ALL = READ | WRITE }
+enum Signed { A = -1, B, C = A + 10 }
+```
+
+A float, a string, a call or a forward reference is rejected at parse time, and
+auto-numbering past `INT64_MAX` is an error rather than a wrap-around.
+
+**A member is an `int` value at run time.** `Color.RED + 1` is `1`,
+`int(Color.RED)` is `0`, and `Color.RED == 0` is `true`. The enum name exists
+only in the type checker, which keeps the annotation meaningful and rejects
+mixing unrelated enums.
+
+**`enum` is a type.** The name annotates a binding, a parameter or a return
+type, and only the same enum (or `any`/an untyped slot) accepts its value:
+
+```oskel
+fn paint(c: Color): string {
+  if (c == Color.RED) { return "red"; }
+  return "other";
+}
+
+let c: Color = Color.GREEN;   // ok
+let n: int = Color.GREEN;     // error: an enum value is not an int
+let m: int = int(Color.GREEN); // ok: explicit conversion
+```
+
+A nullable `Color?` accepts `nil` and a `Color`; a non-nullable `Color` rejects
+`nil`. Two different enums are different types even though both are integers at
+run time.
+
+**`switch` labels.** A `switch` accepts the qualified form and, when exactly one
+enum declares the name, the bare form:
+
+```oskel
+fn name(c: Color): string {
+  switch (c) {
+    case Color.RED: { return "red"; }
+    case GREEN:     { return "green"; }   // bare member, one enum owns it
+    case BLUE:      { return "blue"; }
+  }
+  return "?";
+}
+```
+
+A bare member is also allowed in a constant initializer
+(`const FAVORITE = Status.NOT_FOUND;`). Anywhere else the qualified form is
+required: a bare member is not a runtime binding. If two enums declare the same
+member name, a bare use is an error and the message names the qualified
+choices. A declared binding (`let`, `var`, `const`, `fn`, an import alias) with
+the same name shadows the member; a mutable binding is not a fixed `case` label.
+
+**Naming.** The enum name is a **namespace**, not a value: `let Color = ...`,
+`fn Color()`, a parameter named `Color`, and a `struct`/`class` named `Color` are
+rejected. A member name may repeat across enums (`Color.RED`, `Shape.RED`); only
+the bare form is ambiguous. `Color` alone (without `.MEMBER`) is an error.
+
+**Scope.** `enum` is top-level only, like `struct` and `class`. A module may
+declare and use its own enums, and it **exports** them as compile-time
+metadata (not as a value in its module table). An importer names one with a
+qualified path, a selective import or a wildcard import:
+
+```oskel
+import geom;                  // geom.Color.RED
+import geom as g;             // g.Color.RED
+import { Color } from geom;   // Color.RED, and bare RED
+import geom.*;                // Color.RED, and bare RED
+let c: geom.Color = geom.Color.RED;
+```
+
+A dotted module path also exposes its short last segment (`import pkg.geom;`
+makes `geom.Color` valid beside `pkg.geom.Color`), exactly like the module
+binding. An imported enum keeps its own type across the boundary: `geom.Color`
+and a local `Color` are different types, and a `switch` over the imported enum
+is exhaustive against its members. An imported enum is not a value: `geom.Color`
+alone is an error, and a selective or wildcard import binds the enum as a type,
+not as a runtime global.
+
+`enum` is a **reserved word** from 0.1.0 on.
+
 ---
 
 ## 5. Operators
@@ -1597,7 +1699,7 @@ switch (value) {
 }
 ```
 
-A `switch` evaluates its subject **exactly once** and compares it against the case labels in order. A label is a **literal** (`nil`, `true`, `false`, a number or a string, optionally signed as in `-1`), an **integer range** (`10..20`, `10..=20`), or a **`const` name** (a top-level `const`, or a local `const`/`let` in the same frame) whose value is used as the label. A literal matches by equality; a range matches by membership, exactly like `value in 10..=20`; a `const` name matches by equality against its value. A name that is not an immutable binding (a `var`, an unknown name, or a captured binding) is a compile error, so a label is always a fixed value.
+A `switch` evaluates its subject **exactly once** and compares it against the case labels in order. A label is a **literal** (`nil`, `true`, `false`, a number or a string, optionally signed as in `-1`), an **integer range** (`10..20`, `10..=20`), a **`const` name** (a top-level `const`, or a local `const`/`let` in the same frame) whose value is used as the label, or an **enum member** (`Color.RED`, or a bare `RED` when exactly one enum declares it). A literal matches by equality; a range matches by membership, exactly like `value in 10..=20`; a `const` name or an enum member matches by equality against its value. A name that is not an immutable binding or a unique enum member (a `var`, an unknown name, a captured binding, or an ambiguous member) is a compile error, so a label is always a fixed value.
 
 The first matching case runs and then control leaves the switch. **There is no fallthrough**: unlike C or Java, the body of the next case does not run after a match, so a forgotten `break` cannot cause a bug. Several labels may share one body (`case 2: case 3:`), and a `default` clause (at most one) runs only when nothing matched; it is optional, so a switch with no match simply does nothing.
 

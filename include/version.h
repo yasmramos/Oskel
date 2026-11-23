@@ -7,6 +7,6 @@
 // `--version`, the package names and the release tag can never drift. The
 // direct build scripts (`build.sh`, `build.bat`) read this header too, which a
 // CMake-generated header could not: the project builds with or without CMake.
-#define OSKEL_VERSION "0.2.0"
+#define OSKEL_VERSION "0.3.0"
 
 #endif // OSKEL_VERSION_H
