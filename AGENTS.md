@@ -87,6 +87,24 @@ it as a caveat:
   dedicated message (exit 65); a genuine self-read (`var x = x;`) keeps the
   generic "global 'N' is read but never assigned". `sqrt`, `floor`, `ceil` and
   `round` are the curated stubs (`sqrtsd` and the SSE rounding are exact).
+- A runtime error message is observable through `pcall`, so the AOT wording
+  must start with the VM's. The messages without a dynamic tail are identical
+  (`array index must be an integer`, `string index must be an integer`,
+  `map keys must be strings`, `map membership requires a string key`,
+  `string membership requires a string operand`, `range membership requires an
+  integer`); the ones that quote a type or member name keep the fixed words and
+  stop before the tail (`cannot iterate over a value of type`, `cannot index a
+  value of type`, `cannot assign to an index of a value of type`, `cannot set a
+  field on a value of type`, `cannot call a value of type`, `cannot slice a
+  value of type`, `len() is not defined for values of type`, `unsupported unary
+  operator for type`, `unsupported operand types for`, `operator 'in' is not
+  supported for`, `type ... has no member`). The file builtins name the function
+  too (`fsRead() expects a file handle`), and `$slice` checks the receiver
+  before the bounds so `5[1:2]` names the receiver in both engines.
+  `tests/native_build_runtime_error_messages.oskl` pins both halves. A new
+  index or operator message starts from the VM's text, never from a new
+  wording, and `emitIn`'s range branch uses `msgRangeIntType` rather than the
+  generic `msgBadIn` -- the WASM backend already did.
 - The compiler validates an `extern "C"` declaration against the **destination**,
   not against how the engine was built: `oskel build` passes
   `ffi::kAotAbiCapabilities` (struct-by-value and class-MEMORY on, variadic off)

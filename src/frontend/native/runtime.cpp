@@ -407,6 +407,7 @@ struct CollectionEnv {
   CodeGen::Label codeConst;      // data: the string "code"
   const DataBlob* msgOom;
   const DataBlob* msgArrayIndexType;
+  const DataBlob* msgStringIndexType;
   const DataBlob* msgArrayIndexKind;
   const DataBlob* msgStringIndexKind;
   const DataBlob* msgIndexOutOfRange;
@@ -418,7 +419,10 @@ struct CollectionEnv {
   const DataBlob* msgBadAssign;
   const DataBlob* msgBadField;
   const DataBlob* msgBadIn;
+  const DataBlob* msgMapMembershipKey;
+  const DataBlob* msgStringMembershipOperand;
   const DataBlob* msgMapValue;
+  const DataBlob* msgNotIterable;
   const DataBlob* textTrue;
   const DataBlob* textFalse;
   const DataBlob* textNil;
@@ -7113,7 +7117,7 @@ void emitMapMemberGet(CodeGen& cg, const CollectionEnv& env, CodeGen::Label memb
 
 // `AotValue oskel_member_get(AotValue obj, AotValue name)`: the constant-name
 // form `obj.name`. Arrays, maps, strings, ranges and errors each answer their
-// own members; anything else is "value has no such member".
+// own members; anything else is "type has no member".
 void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   CodeGen::Label map = cg.newLabel();
   CodeGen::Label arr = cg.newLabel();
@@ -7196,8 +7200,8 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.jmp(failMember);
 
   // An error has two members: `message` (the message string) and `code` (the
-  // integer code). Any other name is "value has no such member", matching the
-  // hosted `memberGet`.
+  // integer code). Any other name is "type has no member", the fixed prefix of
+  // the hosted `memberGet`.
   cg.bind(error);
   cg.movFromMem(Rdi, Rbp, -24);
   cg.leaRipLabel(Rsi, env.messageConst);
@@ -7460,7 +7464,7 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
 
   // A string method: the twelve bound names, tried in selector order. Each
   // comparison goes through `strEq`; a match binds the closure and the call
-  // site invokes it. An unknown name still reports "value has no such member".
+  // site invokes it. An unknown name still reports "type has no member".
   cg.bind(strMethods);
   for (std::size_t i = 0; i < kStringMethodConsts.size(); ++i) {
     cg.movFromMem(Rdi, Rbp, -24);
@@ -8016,7 +8020,7 @@ void emitTableGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.bind(failArrayType);
   emitFailCall(cg, env.fail, *env.msgArrayIndexType);
   cg.bind(failStrType);
-  emitFailCall(cg, env.fail, *env.msgArrayIndexType);
+  emitFailCall(cg, env.fail, *env.msgStringIndexType);
   cg.bind(failMapType);
   emitFailCall(cg, env.fail, *env.msgMapKeyType);
   cg.bind(failArrRange);
@@ -8284,6 +8288,9 @@ void emitContains(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   CodeGen::Label falseDone = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
   CodeGen::Label failType = cg.newLabel();
+  CodeGen::Label failRangeType = cg.newLabel();
+  CodeGen::Label failMapKey = cg.newLabel();
+  CodeGen::Label failStrOperand = cg.newLabel();
 
   cg.bind(label);
   prologue(cg);
@@ -8334,7 +8341,7 @@ void emitContains(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
 
   cg.bind(map);
   cg.cmpImm32(Rbx, static_cast<std::int32_t>(kTagStr));
-  cg.jcc(Jcc::Ne, failType);
+  cg.jcc(Jcc::Ne, failMapKey);
   cg.movFromMem(Rdi, Rbp, -32);
   cg.movReg(Rsi, R12);
   cg.callLabel(env.mapFind);
@@ -8344,7 +8351,7 @@ void emitContains(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
 
   cg.bind(str);
   cg.cmpImm32(Rbx, static_cast<std::int32_t>(kTagStr));
-  cg.jcc(Jcc::Ne, failType);
+  cg.jcc(Jcc::Ne, failStrOperand);
   // Substring search: for each start in the haystack where the needle's first
   // byte matches, compare the following bytes.
   cg.movFromMem(R8, Rbp, -32);       // haystack AotString*
@@ -8409,7 +8416,7 @@ void emitContains(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   // matches neither bound (`5 in 5..0` is false), matching `ops::inRange`.
   cg.bind(range);
   cg.cmpImm32(Rbx, static_cast<std::int32_t>(kTagInt));
-  cg.jcc(Jcc::Ne, failType);
+  cg.jcc(Jcc::Ne, failRangeType);
   cg.movFromMem(R11, Rbp, -32);        // range header
   cg.movFromMem(R10, R11, kRangeStartOffset);
   cg.movFromMem(R9, R11, kRangeEndOffset);
@@ -8459,6 +8466,12 @@ void emitContains(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   epilogue(cg);
   cg.bind(failType);
   emitFailCall(cg, env.fail, *env.msgBadIn);
+  cg.bind(failRangeType);
+  emitFailCall(cg, env.fail, *env.msgRangeIntType);
+  cg.bind(failMapKey);
+  emitFailCall(cg, env.fail, *env.msgMapMembershipKey);
+  cg.bind(failStrOperand);
+  emitFailCall(cg, env.fail, *env.msgStringMembershipOperand);
 }
 
 // `AotValue oskel_iter_next(AotValue* cursor, AotValue iterable, AotValue* valueOut)`:
@@ -8632,9 +8645,9 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.bind(failKeyValue);
   emitFailCall(cg, env.fail, *env.msgMapValue);
   cg.bind(failType);
-  emitFailCall(cg, env.fail, *env.msgBadIn);
+  emitFailCall(cg, env.fail, *env.msgNotIterable);
   cg.bind(failState);
-  emitFailCall(cg, env.fail, *env.msgBadIn);
+  emitFailCall(cg, env.fail, *env.msgNotIterable);
   cg.bind(oom);
   emitFailCall(cg, env.fail, *env.msgOom);
 }
@@ -9230,6 +9243,7 @@ void emitSliceBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& en
   CodeGen::Label failType = cg.newLabel();
   CodeGen::Label oom = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
+  CodeGen::Label objectOk = cg.newLabel();
 
   // Stack slots (rbp-relative). r13/r14/r15 are the allocator's own state (the
   // arena cursor/end and the global base), so this helper keeps every value it
@@ -9350,7 +9364,20 @@ void emitSliceBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& en
   cg.subRegImm32(Rsp, 176);
   cg.movReg(Rbx, Rdi);  // args
 
+  // The receiver type is checked first, as in the hosted `$slice`: a value that
+  // cannot be sliced is the primary error, so `n["a":"b"]` on an int names the
+  // receiver rather than the bound.
+  cg.movFromMem(Rax, Rbx, 0);
+  cg.movToMem(Rbp, kObjTag, Rax);
+  cg.movFromMem(R12, Rbx, 8);  // object payload
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagArray));
+  cg.jcc(Jcc::Eq, objectOk);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, objectOk);
+  cg.jmp(failType);
+
   // Bounds: start = args[1], end = args[2], step = args[3] (nil = absent).
+  cg.bind(objectOk);
   parseBound(-16, kStart, kStartPresent, failStart);
   parseBound(-32, kEnd, kEndPresent, failEnd);
   parseBound(-48, kStep, kStepPresent, failStepType);
@@ -9363,14 +9390,10 @@ void emitSliceBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& en
   cg.testReg(Rax);
   cg.jcc(Jcc::Eq, failStep);
 
-  cg.movFromMem(Rax, Rbx, 0);
-  cg.movToMem(Rbp, kObjTag, Rax);
-  cg.movFromMem(R12, Rbx, 8);  // object payload
+  cg.movFromMem(Rax, Rbp, kObjTag);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagArray));
   cg.jcc(Jcc::Eq, sliceArray);
-  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
-  cg.jcc(Jcc::Eq, sliceStr);
-  cg.jmp(failType);
+  cg.jmp(sliceStr);
 
   cg.bind(sliceArray);
   cg.movFromMem(Rax, R12, kTableLengthOffset);
@@ -16963,18 +16986,19 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgPow = addText("unsupported operand types for '**'");
   DataBlob msgDivZero = addText("division by zero");
   DataBlob msgShift = addText("shift count must be between 0 and 63");
-  DataBlob msgBit = addText("unsupported operand types for a bitwise operator");
-  DataBlob msgNeg = addText("unsupported operand type for unary '-'");
-  DataBlob msgBitNot = addText("unsupported operand type for unary '~'");
+  DataBlob msgBit = addText("unsupported operand types for");
+  DataBlob msgNeg = addText("unsupported unary operator for type");
+  DataBlob msgBitNot = addText("unsupported unary operator for type");
   DataBlob msgCompare = addText("cannot compare these values");
   DataBlob msgPrint = addText("cannot print this value");
   DataBlob msgOom = addText("out of memory");
-  DataBlob msgCallNonFunc = addText("cannot call a non-function value");
+  DataBlob msgCallNonFunc = addText("cannot call a value of type");
   DataBlob msgArity = addText("wrong number of arguments");
   DataBlob msgArrayIndexType = addText("array index must be an integer");
-  DataBlob msgMapKeyType = addText("map key must be a string");
-  DataBlob msgBadIndex = addText("value is not indexable");
-  DataBlob msgNoMember = addText("value has no such member");
+  DataBlob msgStringIndexType = addText("string index must be an integer");
+  DataBlob msgMapKeyType = addText("map keys must be strings");
+  DataBlob msgBadIndex = addText("cannot index a value of type");
+  DataBlob msgNoMember = addText("type has no member");
   DataBlob msgImmutable = addText("strings are immutable");
   DataBlob msgPopArgc = addText("pop() expects 0 arguments");
   DataBlob msgShiftArgc = addText("shift() expects 0 arguments");
@@ -17070,10 +17094,13 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgToArrayArgc = addText("toArray() expects 0 arguments");
   DataBlob msgToArrayTooLarge = addText("range is too large to convert to an array");
   DataBlob msgRangeIntType = addText("range membership requires an integer");
-  DataBlob msgBadAssign = addText("cannot assign to this value");
-  DataBlob msgBadField = addText("cannot assign a field on this value");
-  DataBlob msgBadIn = addText("unsupported operands for 'in'");
+  DataBlob msgBadAssign = addText("cannot assign to an index of a value of type");
+  DataBlob msgBadField = addText("cannot set a field on a value of type");
+  DataBlob msgBadIn = addText("operator 'in' is not supported for");
+  DataBlob msgMapMembershipKey = addText("map membership requires a string key");
+  DataBlob msgStringMembershipOperand = addText("string membership requires a string operand");
   DataBlob msgMapValue = addText("key/value iteration ('for k, v in ...') requires a map");
+  DataBlob msgNotIterable = addText("cannot iterate over a value of type");
   DataBlob msgNonNull = addText("unexpected nil (non-null assertion '!!' failed)");
   DataBlob msgStrBad = addText("cannot render this value to a string");
   DataBlob textTrue = addText("true");
@@ -17096,7 +17123,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgSliceStart = addText("slice start must be an integer");
   DataBlob msgSliceEnd = addText("slice end must be an integer");
   DataBlob msgSliceStep = addText("slice step must not be zero");
-  DataBlob msgSliceType = addText("value is not sliceable");
+  DataBlob msgSliceType = addText("cannot slice a value of type");
   DataBlob textQuote = addText("\"");
   DataBlob textEscQuote = addText("\\\"");
   DataBlob textEscBackslash = addText("\\\\");
@@ -17126,7 +17153,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob textError = addText("error(");
   DataBlob textCloseParen = addText(")");
   DataBlob textOskelPrefix = addText("oskel: ");
-  DataBlob msgLenType = addText("len() is not defined for this type");
+  DataBlob msgLenType = addText("len() is not defined for values of type");
   // The arity guard every fixed-arity builtin now has: without it a call with
   // the wrong count read a window that was never written (or ignored the extra
   // argument) while the VM raised "expects 1 argument". The count is appended by
@@ -17278,8 +17305,14 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgFsOpenModeType = addText("fsOpen() expects a string mode");
   DataBlob msgFsOpenModeBad = addText("fsOpen() mode must be 'r', 'w' or 'a'");
   DataBlob msgFsOpenFailed = addText("cannot open file");
-  DataBlob msgFsHandleType = addText("file handle expected");
-  DataBlob msgFsHandleFreed = addText("file handle is closed");
+  DataBlob msgFsReadHandleType = addText("fsRead() expects a file handle");
+  DataBlob msgFsReadHandleFreed = addText("fsRead() used a closed file handle");
+  DataBlob msgFsWriteHandleType = addText("fsWrite() expects a file handle");
+  DataBlob msgFsWriteHandleFreed = addText("fsWrite() used a closed file handle");
+  DataBlob msgFsSeekHandleType = addText("fsSeek() expects a file handle");
+  DataBlob msgFsSeekHandleFreed = addText("fsSeek() used a closed file handle");
+  DataBlob msgFsCloseHandleType = addText("fsClose() expects a file handle");
+  DataBlob msgFsCloseHandleFreed = addText("fsClose() used a closed file handle");
   DataBlob msgFsReadArgc = addText("fsRead() expects 2 arguments");
   DataBlob msgFsReadCountType = addText("fsRead() expects an integer count");
   DataBlob msgFsWriteArgc = addText("fsWrite() expects 2 arguments");
@@ -17671,6 +17704,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   env.codeConst = cg.newLabel();
   env.msgOom = &msgOom;
   env.msgArrayIndexType = &msgArrayIndexType;
+  env.msgStringIndexType = &msgStringIndexType;
   env.msgArrayIndexKind = &msgArrayIndexKind;
   env.msgStringIndexKind = &msgStringIndexKind;
   env.msgIndexOutOfRange = &msgIndexOutOfRange;
@@ -17682,7 +17716,10 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   env.msgBadAssign = &msgBadAssign;
   env.msgBadField = &msgBadField;
   env.msgBadIn = &msgBadIn;
+  env.msgMapMembershipKey = &msgMapMembershipKey;
+  env.msgStringMembershipOperand = &msgStringMembershipOperand;
   env.msgMapValue = &msgMapValue;
+  env.msgNotIterable = &msgNotIterable;
   env.textTrue = &textTrue;
   env.textFalse = &textFalse;
   env.textNil = &textNil;
@@ -18021,16 +18058,17 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                       msgFsOpenPathType, msgFsOpenModeType, msgFsOpenModeBad,
                       msgFsOpenFailed, msgFsNul);
     emitFsReadBuiltin(cg, handles.fsReadBuiltin, env, entry, sbNew, sbAppend,
-                      msgFsReadArgc, msgFsHandleType, msgFsHandleFreed,
+                      msgFsReadArgc, msgFsReadHandleType, msgFsReadHandleFreed,
                       msgFsReadCountType);
     emitFsWriteBuiltin(cg, handles.fsWriteBuiltin, env, entry, msgFsWriteArgc,
-                       msgFsHandleType, msgFsHandleFreed, msgFsWriteTextType,
-                       msgFsWriteFailed);
+                       msgFsWriteHandleType, msgFsWriteHandleFreed,
+                       msgFsWriteTextType, msgFsWriteFailed);
     emitFsSeekBuiltin(cg, handles.fsSeekBuiltin, env, entry, msgFsSeekArgc,
-                      msgFsHandleType, msgFsHandleFreed, msgFsSeekOffsetType,
-                      msgFsSeekOriginType, msgFsSeekOriginBad, msgFsSeekFailed);
+                      msgFsSeekHandleType, msgFsSeekHandleFreed,
+                      msgFsSeekOffsetType, msgFsSeekOriginType, msgFsSeekOriginBad,
+                      msgFsSeekFailed);
     emitFsCloseBuiltin(cg, handles.fsCloseBuiltin, env, entry, msgFsCloseArgc,
-                       msgFsHandleType, msgFsHandleFreed);
+                       msgFsCloseHandleType, msgFsCloseHandleFreed);
     emitFsPathOpBuiltin(cg, handles.fsRemoveBuiltin, env, entry.removePath,
                         msgFsRemoveArgc, msgFsDirPathType, msgFsNul,
                         msgFsRemoveFailed);

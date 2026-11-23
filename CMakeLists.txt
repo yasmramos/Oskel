@@ -1009,6 +1009,18 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_error.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # A runtime error message is observable through `pcall`, so the two engines
+    # must word it the same way. This pins the messages without a dynamic tail
+    # exactly (`string index must be an integer`, `map keys must be strings`,
+    # `range membership requires an integer`) and the fixed prefix of the ones
+    # that quote a type or member name (BACKLOG §6 item 25).
+    add_test(NAME oskel.build_binary_runtime_error_messages
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_runtime_error_messages"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_runtime_error_messages.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `switch`, `defer` and `struct` lower in AOT but no earlier fixture
     # exercised them: `switch` on an int, a string and a range, `defer` in LIFO
     # order across nested scopes, and `struct` with typed/untyped fields,
