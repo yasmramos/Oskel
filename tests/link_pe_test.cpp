@@ -69,6 +69,45 @@ std::size_t findSection(const std::vector<std::uint8_t>& pe, const char* name) {
   return 0;
 }
 
+
+std::vector<std::uint8_t> buildMinimalCoff(const char* sectionName) {
+  std::vector<std::uint8_t> object(20 + 40 + 4, 0);
+  object[0] = 0x64;  // AMD64
+  object[1] = 0x86;
+  object[2] = 1;     // one section
+  std::memcpy(object.data() + 20, sectionName,
+              std::min<std::size_t>(std::strlen(sectionName), 8));
+  object[20 + 16] = 4;   // raw size
+  object[20 + 20] = 60;  // raw offset
+  object[20 + 36] = 0x40;  // read/write initialized data
+  object[20 + 38] = 0x00;
+  object[20 + 39] = 0xC0;
+  return object;
+}
+
+void testUnwindAndTlsRejected() {
+  LinkOptions options;
+  options.target = Target::winX64();
+  bool pdata = false;
+  try {
+    linkHostedExecutable(
+        std::vector<LinkInput>{{"pdata.obj", buildMinimalCoff(".pdata")}},
+        options);
+  } catch (const LinkError& error) {
+    pdata = std::string(error.what()).find("exception data") != std::string::npos;
+  }
+  check(pdata, ".pdata input is rejected with a dedicated message");
+  bool tls = false;
+  try {
+    linkHostedExecutable(
+        std::vector<LinkInput>{{"tls.obj", buildMinimalCoff(".tls")}},
+        options);
+  } catch (const LinkError& error) {
+    tls = std::string(error.what()).find("TLS") != std::string::npos;
+  }
+  check(tls, ".tls input is rejected with a dedicated message");
+}
+
 void testRelocatable() {
   // main: call helper; ret. The call field is at offset 1.
   const std::vector<std::uint8_t> mainText = {0xE8, 0x00, 0x00, 0x00,
@@ -287,7 +326,14 @@ int main() {
     }
   }
   check(exitCall, "_start calls ExitProcess through the IAT");
+  check(read32(pe, 0x58 + 112 + 12 * 3) == 0 &&
+            read32(pe, 0x58 + 112 + 12 * 3 + 4) == 0,
+        "the AOT image has no exception directory");
+  check(read32(pe, 0x58 + 112 + 12 * 9) == 0 &&
+            read32(pe, 0x58 + 112 + 12 * 9 + 4) == 0,
+        "the AOT image has no TLS directory");
 
+  testUnwindAndTlsRejected();
   testRelocatable();
   testArchive();
   return failures == 0 ? 0 : 1;
