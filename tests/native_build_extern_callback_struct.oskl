@@ -1,0 +1,53 @@
+// A callback may return a struct by value (PHASE 7f.11). The C side receives
+// the eightbytes in the System V return registers (a struct of 16 bytes or
+// fewer) or writes through the hidden `sret` pointer (class MEMORY). The map
+// the Oskel closure returns is rebuilt field by field, exactly like the VM's
+// closure stub.
+struct Point {
+  x: int32;
+  y: int32;
+}
+
+struct Big {
+  a: int64;
+  b: int64;
+  c: int64;
+}
+
+struct Mixed {
+  a: int32;
+  b: double;
+}
+
+extern "C" {
+  fn call_point(cb: fn(): Point): Point;
+  fn call_big(cb: fn(): Big): Big;
+  fn call_mixed(cb: fn(): Mixed): Mixed;
+}
+
+fn point(): Point {
+  return Point { x: 3, y: 4 };
+}
+
+fn big(): Big {
+  return Big { a: 10, b: 20, c: 30 };
+}
+
+fn mixed(): Mixed {
+  return Mixed { a: 7, b: 3.5 };
+}
+
+let p = call_point(point);
+assertEq(p.x, 3);
+assertEq(p.y, 4);
+
+let b = call_big(big);
+assertEq(b.a, 10);
+assertEq(b.b, 20);
+assertEq(b.c, 30);
+
+let m = call_mixed(mixed);
+assertEq(m.a, 7);
+assertEq(m.b, 3.5);
+
+print("callback struct return ok");

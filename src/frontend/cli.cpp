@@ -382,6 +382,22 @@ struct UiRequirements {
   bool skia = false;
 
   bool any() const { return sdl || skia; }
+
+  // The requirement bitset a `.oskc` header records. The mapping lives here so
+  // the writer and the reader cannot disagree about which bit means what.
+  std::uint32_t bits() const {
+    std::uint32_t value = 0;
+    if (sdl) value |= kOskcNeedsSdl;
+    if (skia) value |= kOskcNeedsSkia;
+    return value;
+  }
+
+  static UiRequirements fromBits(std::uint32_t value) {
+    UiRequirements needs;
+    needs.sdl = (value & kOskcNeedsSdl) != 0;
+    needs.skia = (value & kOskcNeedsSkia) != 0;
+    return needs;
+  }
 };
 
 // The UI backend is reached through a module import, not through a symbol
@@ -559,67 +575,50 @@ int linkHostedObject(const std::string &objectPath, const std::string &output,
 // `linkLibs` names the libraries the hosted link resolves `extern "C"` symbols
 // from (`SDL3` becomes `-lSDL3`); it is empty in freestanding mode.
 //
-// `autoHostedForUi` lets a program that imports `std.ui` build with no flags:
-// the UI backend needs a host, so an unspecified mode becomes `hosted` and the
-// bundled libraries are added to the link. An explicit `--mode freestanding`
+// Emits the native image for an already compiled chunk.
+//
+// This is the shared half of `buildBinary` and of `buildBinaryFromBytecode`:
+// once a `Bytecode` exists, lowering it does not care whether it came from the
+// parser or from a `.oskc` file. Keeping it in one place is what makes
+// "compile once, use anywhere" true: the AOT output of a `.oskc` is produced by
+// the same code that produced it from source, so the two cannot drift.
+//
+// `target` selects the executable format: Linux gets a static ELF, Windows a
+// static PE32+ (PHASE 7e). Both share the lowering and the runtime; only the
+// entry prelude and the container differ.
+//
+// `mode` selects how the image is closed (PHASE 7f.3). `Freestanding` (the
+// default) is the self-contained image. `Hosted` links against the host C
+// library so an `extern "C"` symbol resolves to the real C function; it needs a
+// C toolchain at build time and is the mode that makes FFI work.
+//
+// `autoHostedForUi` lets a program that needs the UI backend build with no
+// flags: that backend needs a host, so an unspecified mode becomes `hosted` and
+// the bundled libraries are added to the link. An explicit `--mode freestanding`
 // still wins, with a diagnostic that names the requirement.
 //
-// Returns 0 on success, 65 for compile errors and 74 for a write failure.
-int buildBinary(const std::string &source, const std::string &name,
-                const std::string &output, const std::string &argv0,
-                const Target &target, LinkMode mode, Linker linker,
-                bool emitObject, bool autoHostedForUi,
-                const std::vector<std::string> &linkLibs,
-                const std::vector<std::string> &libraryPaths,
-                const std::vector<std::string> &linkObjects,
-                const std::string &tool) {
-  std::vector<Token> tokens;
-  try {
-    tokens = lex(source);
-  } catch (const CompileError &error) {
-    printCompileError(name, source, error, platformPosix());
-    return 65;
-  }
-
-  StmtPtr program;
-  std::vector<Warning> warnings;
-  try {
-    Parser parser(std::move(tokens), name);
-    program = parser.parseProgram();
-    warnings = parser.warnings();
-  } catch (const CompileError &error) {
-    printCompileError(name, source, error, platformPosix());
-    return 65;
-  }
-  for (const Warning &warning : warnings) {
-    printCompileWarning(name, source, warning, platformPosix());
-  }
-
-  Bytecode bytecode;
-  Compiler compiler;
-  // The backend emits its own `extern "C"` thunks, so the shapes it can honour
-  // do not depend on how this engine was built. Validating against the build's
-  // capabilities would reject a class-MEMORY struct that the backend marshals
-  // correctly, on any engine without a host FFI library.
-  compiler.setAbiCapabilities(ffi::kAotAbiCapabilities);
-  try {
-    compiler.setImportLoader(makeImportLoader(resolverFor(name, argv0)));
-    bytecode = compiler.compile(program);
-  } catch (const CompileError &error) {
-    printCompileError(name, source, error, platformPosix());
-    return 65;
-  }
-  for (const Warning &warning : compiler.warnings()) {
-    printCompileWarning(name, source, warning, platformPosix());
-  }
-
-  const UiRequirements ui =
-      uiRequirements(compiler.loadedModulePaths(), bytecode);
+// `ui` is what the chunk needs from the UI backend. It is a parameter rather
+// than something derived here because the two callers learn it differently: the
+// source path reads the modules the compiler loaded, and the `.oskc` path reads
+// the requirement bits the writer recorded. Both then run the same code, so a
+// program that imports `std.ui` links the same way whichever path built it.
+//
+// `tool` names the binary in diagnostics (`oskel build` or `oskelc`).
+//
+// Returns 0 on success, 65 for a lowering error and 74 for a write failure.
+int emitNativeImage(const Bytecode &bytecode, const std::string &output,
+                    const Target &target, LinkMode mode, Linker linker,
+                    bool emitObject, bool autoHostedForUi,
+                    const UiRequirements &ui,
+                    const std::vector<std::string> &linkLibs,
+                    const std::vector<std::string> &libraryPaths,
+                    const std::vector<std::string> &linkObjects,
+                    const std::string &tool) {
+  std::vector<std::uint8_t> image;
   const bool usesUi = ui.any() && !isWasmTarget(target);
   std::vector<std::string> effectiveLinkLibs = linkLibs;
   std::vector<std::string> effectiveLibraryPaths = libraryPaths;
   std::vector<std::string> runPaths;
-  std::vector<std::uint8_t> image;
   try {
     if (usesUi) {
       if (autoHostedForUi && mode == LinkMode::Freestanding) mode = LinkMode::Hosted;
@@ -753,6 +752,267 @@ int buildBinary(const std::string &source, const std::string &name,
   ::chmod(output.c_str(), 0755);
 #endif
   return 0;
+}
+
+// Compiles `source` (resolving imports) and writes a native binary to `output`.
+// The whole pipeline is the compiler's: lex, parse, compile to bytecode, then
+// lower the bytecode to machine code and wrap it in a static executable. The
+// emitted binary embeds only the AOT runtime, never the compiler, so it cannot
+// `eval` (DEVELOPMENT.md §3, the GraalVM pitfall).
+//
+// The lowering half is `emitNativeImage`, shared with the `.oskc` path, so a
+// binary built from a chunk is the same binary the source would have produced.
+//
+// Returns 0 on success, 65 for compile errors and 74 for a write failure.
+int buildBinary(const std::string &source, const std::string &name,
+                const std::string &output, const std::string &argv0,
+                const Target &target, LinkMode mode, Linker linker,
+                bool emitObject, bool autoHostedForUi,
+                const std::vector<std::string> &linkLibs,
+                const std::vector<std::string> &libraryPaths,
+                const std::vector<std::string> &linkObjects,
+                const std::string &tool) {
+  std::vector<Token> tokens;
+  try {
+    tokens = lex(source);
+  } catch (const CompileError &error) {
+    printCompileError(name, source, error, platformPosix());
+    return 65;
+  }
+
+  StmtPtr program;
+  std::vector<Warning> warnings;
+  try {
+    Parser parser(std::move(tokens), name);
+    program = parser.parseProgram();
+    warnings = parser.warnings();
+  } catch (const CompileError &error) {
+    printCompileError(name, source, error, platformPosix());
+    return 65;
+  }
+  for (const Warning &warning : warnings) {
+    printCompileWarning(name, source, warning, platformPosix());
+  }
+
+  Bytecode bytecode;
+  Compiler compiler;
+  // The backend emits its own `extern "C"` thunks, so the shapes it can honour
+  // do not depend on how this engine was built. Validating against the build's
+  // capabilities would reject a class-MEMORY struct that the backend marshals
+  // correctly, on any engine without a host FFI library.
+  compiler.setAbiCapabilities(ffi::kAotAbiCapabilities);
+  try {
+    compiler.setImportLoader(makeImportLoader(resolverFor(name, argv0)));
+    bytecode = compiler.compile(program);
+  } catch (const CompileError &error) {
+    printCompileError(name, source, error, platformPosix());
+    return 65;
+  }
+  for (const Warning &warning : compiler.warnings()) {
+    printCompileWarning(name, source, warning, platformPosix());
+  }
+
+  return emitNativeImage(
+      bytecode, output, target, mode, linker, emitObject, autoHostedForUi,
+      uiRequirements(compiler.loadedModulePaths(), bytecode), linkLibs,
+      libraryPaths, linkObjects, tool);
+}
+
+// Reads a `.oskc` image and prepares it for a destination.
+//
+// The file records the FFI capabilities it was validated against. Checking them
+// against the destination *here*, before any lowering, is what keeps the format
+// portable without lying: a chunk that marshals a struct by value travels in
+// one file to every platform, and a target whose ABI cannot carry it says so
+// once, with a message, instead of failing halfway through codegen or -- worse
+// -- emitting a binary that mis-marshals. `destination` is `kAotAbiCapabilities`
+// for the AOT backend and the full set for the VM, which has the host to fall
+// back on.
+//
+// Returns true and fills `chunk` on success; prints a diagnostic and returns
+// false otherwise.
+bool loadBytecodeImage(const std::string &path, const ffi::AbiCapabilities &destination,
+                       Bytecode &chunk, std::uint32_t &needs,
+                       const std::string &tool) {
+  std::string bytes;
+  if (!readSourceFile(path, bytes)) {
+    std::cerr << tool << ": cannot read file '" << path << "'\n";
+    return false;
+  }
+  const std::vector<std::uint8_t> image(bytes.begin(), bytes.end());
+
+  std::uint32_t recordedAbi = 0;
+  try {
+    recordedAbi = readBytecodeImageAbi(image);
+  } catch (const BytecodeIoError &error) {
+    std::cerr << tool << ": " << path << ": " << error.what() << '\n';
+    return false;
+  }
+
+  const ffi::AbiCapabilities required = decodeAbiCapabilities(recordedAbi);
+  if (!abiSatisfies(destination, required)) {
+    std::string missing;
+    const auto add = [&missing](const char *name) {
+      if (!missing.empty()) missing += ", ";
+      missing += name;
+    };
+    if (required.structByValue && !destination.structByValue) add("structs by value");
+    if (required.memoryStructs && !destination.memoryStructs) add("class-MEMORY structs");
+    if (required.variadic && !destination.variadic) add("C variadics");
+    if (required.callbacks && !destination.callbacks) add("callbacks");
+    std::cerr << tool << ": " << path
+              << ": the bytecode needs FFI support this target lacks: " << missing
+              << '\n';
+    return false;
+  }
+
+  try {
+    chunk = readBytecodeImage(image);
+    needs = readBytecodeImageNeeds(image);
+  } catch (const BytecodeIoError &error) {
+    std::cerr << tool << ": " << path << ": " << error.what() << '\n';
+    return false;
+  }
+  return true;
+}
+
+// Compiles an already loaded chunk to a native image.
+//
+// The chunk comes from a `.oskc` file, so the front end (lex, parse, compile)
+// already ran -- possibly on another machine, in another OS. Everything from
+// here on is `emitNativeImage`, the same code the source path uses, which is
+// what makes the two outputs identical.
+//
+// Returns 0 on success, 65 for a lowering error, 66 for an unreadable or
+// malformed file and 74 for a write failure.
+int buildBinaryFromBytecode(const std::string &path, const std::string &output,
+                            const Target &target, LinkMode mode, Linker linker,
+                            bool emitObject,
+                            const std::vector<std::string> &linkLibs,
+                            const std::vector<std::string> &libraryPaths,
+                            const std::vector<std::string> &linkObjects,
+                            const std::string &tool) {
+  Bytecode chunk;
+  std::uint32_t needs = 0;
+  if (!loadBytecodeImage(path, targetAbiCapabilities(target), chunk, needs, tool))
+    return 66;
+  return emitNativeImage(chunk, output, target, mode, linker, emitObject,
+                         /*autoHostedForUi=*/true,
+                         UiRequirements::fromBits(needs), linkLibs,
+                         libraryPaths, linkObjects, tool);
+}
+
+// Compiles `source` to a `.oskc` image and writes it to `output`.
+//
+// The FFI surface is validated against `kAotAbiCapabilities`, not against the
+// host's macros. That is the whole point of the format: a `.oskc` must be the
+// same file whichever machine wrote it, so the validation cannot consult
+// `kStructByValueSupported` (a compile-time property of the *writing* host).
+// Pinning the superset means a chunk that mentions a struct by value is written
+// everywhere, and a destination whose ABI cannot carry it refuses it at load
+// time with a message (`buildBinaryFromBytecode`), which is where the decision
+// belongs.
+//
+// Returns 0 on success, 65 for a compile error and 74 for a write failure.
+int emitBytecodeFile(const std::string &source, const std::string &name,
+                     const std::string &output, const std::string &argv0,
+                     const std::string &tool) {
+  std::vector<Token> tokens;
+  try {
+    tokens = lex(source);
+  } catch (const CompileError &error) {
+    printCompileError(name, source, error, platformPosix());
+    return 65;
+  }
+
+  StmtPtr program;
+  std::vector<Warning> warnings;
+  try {
+    Parser parser(std::move(tokens), name);
+    program = parser.parseProgram();
+    warnings = parser.warnings();
+  } catch (const CompileError &error) {
+    printCompileError(name, source, error, platformPosix());
+    return 65;
+  }
+  for (const Warning &warning : warnings) {
+    printCompileWarning(name, source, warning, platformPosix());
+  }
+
+  Bytecode bytecode;
+  Compiler compiler;
+  compiler.setAbiCapabilities(ffi::kAotAbiCapabilities);
+  try {
+    compiler.setImportLoader(makeImportLoader(resolverFor(name, argv0)));
+    bytecode = compiler.compile(program);
+  } catch (const CompileError &error) {
+    printCompileError(name, source, error, platformPosix());
+    return 65;
+  }
+  for (const Warning &warning : compiler.warnings()) {
+    printCompileWarning(name, source, warning, platformPosix());
+  }
+
+  std::vector<std::uint8_t> image;
+  try {
+    image = writeBytecodeImage(
+        bytecode, uiRequirements(compiler.loadedModulePaths(), bytecode).bits());
+  } catch (const BytecodeIoError &error) {
+    std::string message = tool + ": " + error.what() + "\n";
+    platformPosix().writeErr(message.data(), message.size());
+    return 65;
+  }
+
+  if (!writeBinaryFile(output, image)) {
+    std::string message = tool + ": cannot write '" + output + "'\n";
+    platformPosix().writeErr(message.data(), message.size());
+    return 74;
+  }
+  return 0;
+}
+
+// Parses `<file.oskl> [-o <out>]` and writes a `.oskc` image. The default output
+// replaces the source extension with `.oskc`, so `oskelc -c app.oskl` writes
+// `app.oskc` beside it.
+int runBytecodeCommand(const std::vector<std::string> &arguments,
+                       const std::string &argv0, const std::string &tool,
+                       const std::string &usage) {
+  std::string file;
+  std::string output;
+  for (size_t i = 0; i < arguments.size(); ++i) {
+    const std::string &arg = arguments[i];
+    if (arg == "-o" || arg == "--output") {
+      if (i + 1 >= arguments.size()) {
+        std::cerr << tool << ": option '" << arg << "' needs an argument\n";
+        return 64;
+      }
+      output = arguments[++i];
+      continue;
+    }
+    if (arg == "-c" || arg == "--check" || arg == "--bytecode") continue;
+    if (!arg.empty() && arg[0] == '-') {
+      std::cerr << tool << ": unknown option '" << arg << "'\n" << usage;
+      return 64;
+    }
+    if (!file.empty()) {
+      std::cerr << tool << ": more than one input file\n" << usage;
+      return 64;
+    }
+    file = arg;
+  }
+  if (file.empty()) {
+    std::cerr << tool << ": no input file\n" << usage;
+    return 64;
+  }
+  if (output.empty()) {
+    output = stripExtension(file) + ".oskc";
+  }
+  std::string source;
+  if (!readSourceFile(file, source)) {
+    std::cerr << tool << ": cannot read file '" << file << "'\n";
+    return 66;
+  }
+  return emitBytecodeFile(source, file, output, argv0, tool);
 }
 
 // Parses `<file.oskl> [-o <out>] [--target T] [--mode M] [--link-lib L]` and
@@ -948,6 +1208,15 @@ int runBuildCommand(const std::vector<std::string> &arguments,
     // The output name follows the target: a Windows image is an `.exe`.
     if (buildTarget.os == Os::Windows) buildOutput += ".exe";
     if (isWasmTarget(buildTarget)) buildOutput += ".wasm";
+  }
+  // A `.oskc` argument skips the front end entirely: the file is the compiled
+  // form of a program, so `oskel build app.oskc` and `oskelc app.oskc` lower it
+  // exactly as the source would have been lowered. This is the "compile once,
+  // use anywhere" path -- the file written on one machine builds on another.
+  if (isBytecodeImagePath(buildFile)) {
+    return buildBinaryFromBytecode(buildFile, buildOutput, buildTarget, buildMode,
+                                   buildLinker, buildEmitObject, buildLinkLibs,
+                                   buildLibraryPaths, buildLinkObjects, tool);
   }
   std::string buildSource;
   if (!readSourceFile(buildFile, buildSource)) {

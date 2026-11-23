@@ -19,11 +19,15 @@ namespace {
 const char *kUsage =
     "usage:\n"
     "  oskelc <file.oskl> [-o <out>]   compile to a native binary (AOT)\n"
+    "  oskelc -c <file.oskl> [-o <out>]  compile to a portable .oskc image\n"
+    "  oskelc <file.oskc> [-o <out>]   build a native binary from a .oskc image\n"
     "\n"
     "options:\n"
     "  -h, --help                show this help\n"
     "  -v, --version             show the version\n"
-    "  -o, --output <file>       output path (default: the script's base name)\n"
+    "  -c, --bytecode            write a .oskc bytecode image instead of a binary\n"
+    "  -o, --output <file>       output path (default: the script's base name,\n"
+    "                            or its base name plus .oskc under -c)\n"
     "  --target <name>           build target (default: the host);\n"
     "                            x86_64-linux-sysv, x86_64-windows-win64,\n"
     "                            x86_64-freestanding-sysv (bare metal) or\n"
@@ -50,11 +54,20 @@ int main(int argc, char **argv) {
       std::cout << "Oskel " << kVersion << '\n';
       return 0;
     }
-    // `-c` (a bytecode image) and `-pkg` (a package) are planned and have no
-    // serializer yet, so they are refused by name instead of as a typo.
-    if (arg == "-c" || arg == "--check" || arg == "-pkg") {
+  }
+
+  // `-c` selects the bytecode image: the front end runs and the image is
+  // written, with no lowering. It is the "compile once" half of the format;
+  // `oskelc <file.oskc>` is the "use anywhere" half.
+  for (const std::string &arg : arguments) {
+    if (arg == "-c" || arg == "--bytecode") {
+      return runBytecodeCommand(arguments, argv[0], "oskelc", kUsage);
+    }
+    // `-pkg` (a package) still has no serializer, so it is refused by name
+    // instead of being read as a typo.
+    if (arg == "-pkg" || arg == "--package") {
       std::cerr << "oskelc: '" << arg
-                << "' is not implemented yet; this compiler emits native binaries\n";
+                << "' is not implemented yet\n";
       return 64;
     }
   }

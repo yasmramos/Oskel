@@ -17,6 +17,7 @@
 #include <windows.h>
 #endif
 
+#include "bytecode_io.h"
 #include "compiler.h"
 #include "core/util.h"
 #include "frontend/ast.h"
@@ -62,6 +63,17 @@ const char *kUsage =
     "`oskelld <object.o>... [-o <out>]` links objects and ar archives;\n"
     "`oskelld -r <object.o>...` combines them into a new relocatable object.\n";
 
+// Runs a compiled chunk on the VM. Shared by the source path and by
+// `oskel app.oskc`, so a chunk behaves the same however it was produced.
+//
+// A runtime error is reported with the chunk's own name and source text. A
+// `.oskc` file carries no source, so `source` is empty there and the printer
+// falls back to the message alone -- the positions in the chunk still point at
+// the original program, which is why they travel in the file.
+int runChunk(const Bytecode &bytecode, const std::string &name,
+             const std::string &source,
+             const std::vector<std::string> &scriptArgs, bool useJit);
+
 // Compiles `source` (resolving any imports) and, unless `checkOnly`, runs it.
 // Returns 0 on success, 65 for compile errors, 70 for runtime errors.
 int runSource(const std::string &source, const std::string &name,
@@ -105,7 +117,25 @@ int runSource(const std::string &source, const std::string &name,
 
   if (checkOnly) return 0;
 
-  VM vm;
+  return runChunk(bytecode, name, source, scriptArgs, useJit);
+}
+
+// Runs a compiled chunk on the VM. Shared by the source path and by
+// `oskel app.oskc`, so a chunk behaves the same however it was produced.
+//
+// A runtime error is reported with the chunk's own name and source text. A
+// `.oskc` file carries no source, so `source` is empty there and the printer
+// falls back to the message alone -- the positions in the chunk still point at
+// the original program, which is why they travel in the file.
+int runChunk(const Bytecode &bytecode, const std::string &name,
+             const std::string &source,
+             const std::vector<std::string> &scriptArgs, bool useJit) {
+  // A C callback may be stored and invoked after the chunk returns (an
+  // `atexit` handler), so the engine outlives this function for the whole
+  // process, exactly like the AOT image's runtime (BACKLOG §6 item 27). The
+  // static pointer keeps it reachable, so a leak checker does not report it.
+  static VM *const processVm = new VM();
+  VM &vm = *processVm;
   vm.sourceName = name;
   vm.scriptArgs = scriptArgs;
   vm.setJitEnabled(useJit);
@@ -117,6 +147,39 @@ int runSource(const std::string &source, const std::string &name,
     return 70;
   }
   return 0;
+}
+
+// Runs a `.oskc` image (`oskel app.oskc`).
+//
+// The chunk is validated and checked against the VM's FFI surface before it
+// runs, so a file written by a newer engine or a corrupt one is a clean error.
+// Returns 0 on success, 65 for an unreadable or incompatible file and 70 for a
+// runtime error.
+int runBytecodeFile(const std::string &path,
+                    const std::vector<std::string> &scriptArgs,
+                    const std::string &argv0, bool useJit) {
+  (void)argv0;
+  std::string bytes;
+  if (!readSourceFile(path, bytes)) {
+    std::cerr << "oskel: cannot read file '" << path << "'\n";
+    return 66;
+  }
+  const std::vector<std::uint8_t> image(bytes.begin(), bytes.end());
+  Bytecode bytecode;
+  try {
+    const ffi::AbiCapabilities required =
+        decodeAbiCapabilities(readBytecodeImageAbi(image));
+    if (!abiSatisfies(ffi::kAotAbiCapabilities, required)) {
+      std::cerr << "oskel: " << path
+                << ": the bytecode needs FFI support this engine cannot run\n";
+      return 65;
+    }
+    bytecode = readBytecodeImage(image);
+  } catch (const BytecodeIoError &error) {
+    std::cerr << "oskel: " << path << ": " << error.what() << '\n';
+    return 65;
+  }
+  return runChunk(bytecode, path, std::string(), scriptArgs, useJit);
 }
 
 bool isStatementStart(const std::string &text) {
@@ -236,7 +299,10 @@ void publishReplValue(VM &vm, const Value &value) {
 }
 
 void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, bool useJit) {
-  VM vm;
+  // Same process-lifetime reason as the script engine: a stored callback may
+  // run from an `atexit` handler after the REPL exits.
+  static VM *const processVm = new VM();
+  VM &vm = *processVm;
   vm.sourceName = "<repl>";
   vm.scriptArgs = scriptArgs;
   vm.setJitEnabled(useJit);
@@ -461,6 +527,13 @@ int main(int argc, char **argv) {
     return runSource(evalCode, "<eval>", scriptArgs, checkOnly, argv[0], useJit);
 
   if (!file.empty()) {
+    // A `.oskc` argument is the compiled form of a program: the VM runs the
+    // chunk directly, without lexing or parsing. `--check` has nothing to check
+    // in a file that already compiled, so it is accepted and does nothing.
+    if (isBytecodeImagePath(file)) {
+      if (checkOnly) return 0;
+      return runBytecodeFile(file, scriptArgs, argv[0], useJit);
+    }
     std::string source;
     if (!readSourceFile(file, source)) {
       std::cerr << "oskel: cannot read file '" << file << "'\n";

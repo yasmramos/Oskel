@@ -64,7 +64,15 @@ if(NOT run_stdout STREQUAL vm_stdout)
     "the generated binary disagrees with the VM on stdout\n"
     "--- vm ---\n${vm_stdout}\n--- binary ---\n${run_stdout}")
 endif()
-if(NOT run_stderr MATCHES "chr\\(\\) code point is a surrogate")
+# The expected wording is the caller's: a fixture pins its own message, so one
+# harness serves every runtime error and a new fixture never has to fork it.
+if(DEFINED OSKEL_EXPECTED_MESSAGE)
+  set(expected_message "${OSKEL_EXPECTED_MESSAGE}")
+else()
+  set(expected_message "chr\\(\\) code point is a surrogate")
+endif()
+if(NOT run_stderr MATCHES "${expected_message}")
   message(FATAL_ERROR
-    "the generated binary does not report the surrogate error:\n--- stderr ---\n${run_stderr}")
+    "the generated binary does not report the expected error:\n"
+    "--- expected (regex) ---\n${expected_message}\n--- stderr ---\n${run_stderr}")
 endif()

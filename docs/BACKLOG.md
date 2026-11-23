@@ -473,8 +473,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     One divergence remains and is deliberate: a builtin's *runtime* error
     message that ends in a dynamic tail keeps only its fixed prefix in AOT
     (`free() expects a pointer` against `free() expects a pointer, got 'int'`;
-    likewise `expects an integer index, got '...'` and `index 7 is out of
-    range`), because the AOT sink writes one fixed message blob and does not
+    likewise `expects an integer index, got '...'`, `index 7 is out of
+    range` and `the struct returned by a callback is missing field 'x'`),
+    because the AOT sink writes one fixed message blob and does not
     format values into it. The function name and the condition are identical in
     both engines, which is what a program can branch on; assembling the tail
     would mean a per-message builder in the runtime and is not worth it until a
@@ -532,18 +533,26 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     `tests/native_build_wasm_range_methods.oskl` and
     `tests/native_build_double_format.oskl` pin the supported surface against
     the VM byte for byte.
-27. **[P1]** A callback that C stores for a later call works in AOT but not in
-    the VM: the development engine's `CallbackObj` is released when the
-    `extern "C"` call returns, while the AOT stub and its context live in the
-    arena. The AOT-only fixtures `tests/native_build_extern_callback_stored.oskl`
-    and `..._exit.oskl` (an `atexit` handler after the chunk returns) cover it;
-    keeping the VM closure alive would close the gap.
-28. **[P1]** A callback returning a struct by value is supported by the VM
-    (the descriptor/closure stub) and rejected by the AOT backend with a dedicated message; the AOT
-    callback body does not rebuild the returned registers into a map. A struct
-    *parameter* is rejected by both. `tests/errors/callback_struct_{return,param}.oskl`
-    pin the AOT rejection.
-28. **[P2]** A callback stub is one `mmap` page per registration and lives
+27. **[P1] [done]** A callback that C stores for a later call worked in AOT but
+    not in the VM: the development engine's `CallbackObj` was released when the
+    `extern "C"` call returned, so a stored pointer dangled. `Runtime` now owns
+    a retained host object (`retainHostObject`), the extern call moves every
+    callback into it instead of dropping it, and the CLI's `VM` is
+    process-lifetime, because an `atexit` handler runs after the chunk returns.
+    The AOT stub was already process-lifetime. Both `tests/native_build_extern_callback_stored.oskl`
+    and `..._exit.oskl` now run the VM with the helper preloaded and compare its
+    output with the hosted binary.
+28. **[P1] [done]** A callback returning a struct by value was supported by the
+    VM (the descriptor/closure stub) and rejected by the AOT backend. The AOT
+    callback body now rebuilds the returned map into the C bytes and loads them
+    into the System V return registers (`rax`/`rdx`, `xmm0`/`xmm1`) or copies
+    them through the hidden `sret` pointer for class MEMORY; a MEMORY return
+    also shifts the declared parameters one integer register along.
+    `tests/native_build_extern_callback_struct.oskl` pins the 8-byte INTEGER,
+    the INTEGER+SSE and the 24-byte MEMORY shapes on both engines. A struct
+    *parameter* is still rejected by both, so it is a shared limitation, not a
+    divergence (`tests/errors/callback_struct_param.oskl`).
+29. **[P2]** A callback stub is one `mmap` page per registration and lives
     until the process exits. Freeing it when the extern call returns is not
     safe: C may store the function pointer (a stored callback, including an
     `atexit` handler), and Oskel has no reference count for the C side. A pool
@@ -551,9 +560,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     would bound the memory of a long-running program. The page is W^X today:
     read+write while the stub is written, then `mprotect`ed to read+execute;
     `tests/native_build_extern_callback_wx.oskl` asserts the final mapping is
-    not writable.
+    not writable. The VM retains the same objects for the same reason.
 
-29. **[P1]** The own linker (PHASE 10.1/10.2/10.2b) closes one or more x86-64
+30. **[P1]** The own linker (PHASE 10.1/10.2/10.2b) closes one or more x86-64
     Linux objects (and System V/GNU `ar` archives) into a dynamic ELF, and `-r`
     combines them into a new `ET_REL`. It loads `.text*`, `.rodata*`, `.data*`
     and `.bss*` and supports `R_X86_64_64/32/32S/PLT32/PC32/GOTPCREL*`.
@@ -570,9 +579,31 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     records the SONAME (`libSDL3.so.0`).
     The Windows own linker (PHASE 10.3a) closes COFF objects into a PE32+
     image with a dynamic import table (`kernel32.dll`/`ucrtbase.dll`) and a
-    generated `_start`. Remaining Windows work: `-r` COFF, MSVC `.lib`
-    archives, `args()` (`GetCommandLineA`), `.pdata`/`.xdata` exception data
-    and TLS. The macOS Mach-O container is PHASE 10.3d.
+    generated `_start`. The `-r` COFF link (PHASE 10.3b.1) is done; remaining
+    Windows work is MSVC `.lib` archives, `args()` (`GetCommandLineA`),
+    `.pdata`/`.xdata` exception data and TLS. The macOS Mach-O container is
+    PHASE 10.3d.
+
+31. **[P0] [done]** VM/AOT divergence in reading a global before it is assigned:
+    the VM fails with `runtime error: undefined variable '<name>'` and exit 70,
+    while the AOT binary read the slot as `nil` and carried on. `oskel_init_globals`
+    now seeds every slot with a dedicated `Unset` tag (12) instead of `Nil`, so a
+    slot nobody assigned is distinguishable from one assigned `nil` (`var g = nil`
+    is legal). `oskel_global_get_checked` reports the hosted wording and exits 70
+    on an `Unset` slot; the plain `oskel_global_get` still returns the raw slot and
+    stays the default. Which reads get the check is decided by a forward "may"
+    dataflow per proto (`checkedGlobalReads` in `lower.cpp`): a read is checked
+    unless every path from the entry has already executed a `SETGLOBAL` of the
+    same name, or the chunk seeds the slot (`globals.seeded`: builtins, resolved
+    `extern "C"` thunks, the hidden runtime slots). The candidate set is computed
+    across all protos, because a name assigned only inside a never-called function
+    is still unset at a top-level read. The helper and its message are emitted only
+    when a read needs them, so a program with no such read keeps its image byte for
+    byte. `tests/native_build_unset_global.oskl` (top-level read before the
+    assignment), `tests/native_build_unset_global_fn.oskl` (assignment only in an
+    unreached function) and `tests/native_build_global_nil.oskl` (the `nil` case
+    and a read after assignment) pin it. A global with *no* assignment anywhere is
+    still a lowering error (exit 65), which is a different, compile-time case.
 
 ---
 

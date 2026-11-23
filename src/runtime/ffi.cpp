@@ -348,7 +348,10 @@ struct CallbackArgSlot {
 
 // The state behind one Oskel function passed to C as a callback. The closure
 // stub embeds a pointer to this object; the object owns the executable page,
-// so the C function pointer stays valid for the whole extern call.
+// so the C function pointer stays valid for the process lifetime. C may store
+// the pointer and invoke it after the extern call returns (an `atexit`
+// handler), so the engine retains the object instead of releasing it with the
+// call (BACKLOG §6 item 27).
 struct CallbackObj : RefCounted {
   Runtime* runtime = nullptr;
   Value function;
@@ -829,10 +832,15 @@ Value callDynamic(Runtime& rt, const std::string& name, void* address,
     rt.fail("cannot allocate the extern \"C\" call trampoline");
   }
   stub(&descriptor);
-  for (const Ref<CallbackObj>& callback : callbacks) {
+  for (Ref<CallbackObj>& callback : callbacks) {
     if (callback->hasPendingError) {
       rt.fail(callback->pendingMessage, callback->pendingLine, callback->pendingCol);
     }
+    // C may keep the function pointer and call it after this extern call
+    // returns, so the stub outlives the call. The engine owns it for the
+    // process lifetime, exactly like the AOT backend's stub page
+    // (BACKLOG §6 item 27).
+    rt.retainHostObject(std::move(callback));
   }
 
   if (returnType.isStruct) {
@@ -1085,10 +1093,13 @@ Value makeExternNative(Runtime& rt, const std::string& name, void* address,
 #if OSKEL_FFI_TRAMPOLINE
     // A Oskel error raised inside a callback could not unwind through the C
     // frame; re-raise it now that C has returned.
-    for (const Ref<CallbackObj>& callback : callbacks) {
+    for (Ref<CallbackObj>& callback : callbacks) {
       if (callback->hasPendingError) {
         in.fail(callback->pendingMessage, callback->pendingLine, callback->pendingCol);
       }
+      // A callback C stores for a later call must stay valid past this call,
+      // matching the AOT backend's process-lifetime stub (BACKLOG §6 item 27).
+      in.retainHostObject(std::move(callback));
     }
 #endif
     return result;

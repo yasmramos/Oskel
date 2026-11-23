@@ -1587,7 +1587,7 @@ std::vector<std::uint8_t> linkHostedExecutable(
 std::vector<std::uint8_t> linkRelocatable(
     const std::vector<LinkInput>& inputs, const LinkOptions& options) {
   if (options.target.os == Os::Windows) {
-    throw LinkError("relocatable COFF links are PHASE 10.3b");
+    return linkRelocatableCoff(inputs, options);
   }
   if (!isOwnLinkerTarget(options.target)) {
     throw LinkError(

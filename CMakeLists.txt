@@ -488,6 +488,7 @@ if(BUILD_TESTING)
   endif()
   oskel_add_cpp_test(pe_test)
   oskel_add_cpp_test(lower_test)
+  oskel_add_cpp_test(bytecode_io_test)
   oskel_add_cpp_test(freestanding_test)
   oskel_add_cpp_test(bare_metal_test)
 
@@ -769,6 +770,42 @@ if(BUILD_TESTING)
         "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/oskelc_parity.cmake")
+
+    # The `.oskc` image is lossless: a program written to an image, run on the
+    # VM and lowered to a binary must agree with the source on both. The two
+    # binaries are compared byte for byte, which is what proves the image kept
+    # everything the lowerer reads.
+    add_test(NAME oskelc.oskc_parity
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskelc.oskc_parity"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_oskc_parity.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/oskc_parity.cmake")
+
+    # The same round trip on a real program: closures, collections and string
+    # formatting, so a field the format carries but the small fixture never
+    # exercises (an upvalue, a map constant) cannot break silently.
+    add_test(NAME oskelc.oskc_parity_full
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskelc.oskc_parity_full"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_oskc_full.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/oskc_parity.cmake")
+
+    # The UI requirement must survive the round trip too. A program that imports
+    # `std.ui.window` records SDL and Skia in the image header, and both paths
+    # must then agree: build, or refuse with exit 65 and the same message. A
+    # regression that dropped the bits would let the image path emit a
+    # freestanding binary that cannot open a window while the source path
+    # refused it.
+    add_test(NAME oskelc.oskc_ui_requirement
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_oskc_ui.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/oskc_ui_requirement.cmake")
 
     # The flagship example must also build and agree with the VM, so the AOT
     # backend is exercised by a real program (a lexer, a parser and an
@@ -1243,6 +1280,7 @@ if(BUILD_TESTING)
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_callback_stored.oskl"
           "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_helper.c"
           "-DOSKEL_EXPECTED_OUTPUT=stored callback ok"
+          "-DOSKEL_VM_PRELOAD=ON"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
       # Seven arguments fill the six GPRs and the first stack slot; eight reach
       # the second. The body reads both from its caller's frame.
@@ -1272,6 +1310,7 @@ if(BUILD_TESTING)
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_callback_exit.oskl"
           "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_exit_helper.c"
           "-DOSKEL_EXPECTED_OUTPUT=late callback 1"
+          "-DOSKEL_VM_PRELOAD=ON"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
       # Every scalar return class the marshalling supports, including a
       # `cstring` (a copy in the arena) and an opaque `ptr`.
@@ -1283,16 +1322,20 @@ if(BUILD_TESTING)
           "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_returns_helper.c"
           "-DOSKEL_EXPECTED_OUTPUT=callback returns ok"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
-      # The shapes the AOT callback body cannot build yet must fail the hosted
-      # build with the dedicated message, never emit a binary.
-      add_test(NAME oskel.build_hosted_callback_struct_return_error
+      # A callback may return a struct by value: the register class (8- and
+      # 16-byte structs, INTEGER and SSE eightbytes) and class MEMORY (through
+      # the hidden `sret` pointer). The fixture links its own C helper and also
+      # runs the VM with that helper preloaded, so the two engines are compared
+      # on the same input (BACKLOG §6 item 28).
+      add_test(NAME oskel.build_hosted_extern_callback_struct
         COMMAND ${CMAKE_COMMAND}
-          "-DOSKEL_TEST_NAME=oskel.build_hosted_callback_struct_return_error"
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_callback_struct"
           "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/errors/callback_struct_return.oskl"
-          "-DOSKEL_BUILD_MODE=hosted"
-          "-DEXPECTED_MESSAGE=a callback returning a struct by value is not supported"
-          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_callback_struct.oskl"
+          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_struct_helper.c"
+          "-DOSKEL_EXPECTED_OUTPUT=callback struct return ok"
+          "-DOSKEL_VM_PRELOAD=ON"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
       add_test(NAME oskel.build_hosted_callback_struct_param_error
         COMMAND ${CMAKE_COMMAND}
           "-DOSKEL_TEST_NAME=oskel.build_hosted_callback_struct_param_error"
@@ -1755,6 +1798,42 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.oskl"
         "-DOSKEL_EXPECTED_EXIT=70"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.cmake")
+
+    # A read of a global before the assignment that fills it must fail at run
+    # time with the hosted engine's wording and exit 70, not read the seeded slot
+    # as `nil` (BACKLOG §6 item 30). The fixture's assignment exists, so the
+    # program compiles and the failure is the runtime one the VM raises.
+    add_test(NAME oskel.build_unset_global
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_unset_global"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_unset_global.oskl"
+        "-DOSKEL_EXPECTED_EXIT=70"
+        "-DOSKEL_EXPECTED_MESSAGE=undefined variable 'first'"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.cmake")
+
+    # The same read whose only assignment sits in a function that is never
+    # called: the assignment exists in the program, so the read still compiles,
+    # and the slot is unset at run time. This is why the analysis runs across
+    # every proto and not just the root chunk.
+    add_test(NAME oskel.build_unset_global_unreached
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_unset_global_unreached"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_unset_global_fn.oskl"
+        "-DOSKEL_EXPECTED_EXIT=70"
+        "-DOSKEL_EXPECTED_MESSAGE=undefined variable 'later'"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.cmake")
+
+    # The other side of the check: `nil` is an assignable value, and a read after
+    # an assignment reads the value. Both keep the unchecked `globalGet`; a
+    # regression that checked every read would fail the first case.
+    add_test(NAME oskel.build_global_nil
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_global_nil"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_global_nil.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
   endif()
 
   # --- WebAssembly backend (PHASE 9) ---
@@ -2012,6 +2091,13 @@ if(BUILD_TESTING)
     if(name STREQUAL "native_build_sdl_freestanding")
       continue()
     endif()
+    # `native_build_oskc_ui` imports `std.ui.window` only to make the compiler
+    # load the UI modules, so the `.oskc` header records their requirement. It
+    # is driven by `tests/oskc_ui_requirement.cmake`, which compares the source
+    # and image paths; running it on the VM would need SDL3 and a video driver.
+    if(name STREQUAL "native_build_oskc_ui")
+      continue()
+    endif()
     # FFI callbacks need the x86-64 closure stub; skip the callback test when
     # this build does not emit one (the feature reports a clear error then).
     if(name STREQUAL "32_ffi_callback" AND NOT OSKEL_FFI_CALLBACKS)
@@ -2055,13 +2141,15 @@ if(BUILD_TESTING)
     if(name STREQUAL "native_build_link_data")
       continue()
     endif()
-    # The stored/many-args/returns callback fixtures bind helpers the VM cannot
-    # resolve; their hosted tests are the coverage.
+    # The stored/many-args/returns/struct callback fixtures bind helpers the VM
+    # cannot resolve on its own; their hosted tests are the coverage, and the
+    # stored, exit and struct ones also run the VM with the helper preloaded.
     if(name STREQUAL "native_build_extern_callback_stored" OR
        name STREQUAL "native_build_extern_callback_exit" OR
        name STREQUAL "native_build_extern_callback_wx" OR
        name STREQUAL "native_build_extern_callback_many_args" OR
-       name STREQUAL "native_build_extern_callback_returns")
+       name STREQUAL "native_build_extern_callback_returns" OR
+       name STREQUAL "native_build_extern_callback_struct")
       continue()
     endif()
     # The qsort callback fixture needs the x86-64 closure stub in the
@@ -2104,6 +2192,13 @@ if(BUILD_TESTING)
     # Win32 `extern "C"` symbols live in kernel32.dll, which only exists on
     # Windows; elsewhere `lookupSymbol` cannot resolve them, so skip.
     if(name STREQUAL "54_ffi_win32" AND NOT WIN32)
+      continue()
+    endif()
+    # The unset-global fixtures are inputs for the AOT runtime-error harness:
+    # they exit 70 by design, so the VM glob (which expects 0) must skip them.
+    # `native_build_global_nil` is the passing counterpart and stays in the glob.
+    if(name STREQUAL "native_build_unset_global" OR
+       name STREQUAL "native_build_unset_global_fn")
       continue()
     endif()
     oskel_add_script_test("oskel.${name}" "${script}")
@@ -2156,11 +2251,10 @@ if(BUILD_TESTING)
     if(name STREQUAL "extern_struct_too_large" AND OSKEL_FFI_MEMORY_STRUCTS)
       continue()
     endif()
-    # These two are `oskel build --mode hosted` rejection inputs, not VM
-    # scripts: the struct-param declaration does not compile and the struct
-    # return binds a symbol the VM's host registry does not have. Their coverage
-    # is `oskel.build_hosted_callback_struct_{param,return}_error`.
-    if(name STREQUAL "callback_struct_param" OR name STREQUAL "callback_struct_return")
+    # This one is a `oskel build --mode hosted` rejection input, not a VM
+    # script: the struct-param declaration does not compile. Its coverage is
+    # `oskel.build_hosted_callback_struct_param_error`.
+    if(name STREQUAL "callback_struct_param")
       continue()
     endif()
     oskel_add_script_test("oskel.errors.${name}" "${script}")

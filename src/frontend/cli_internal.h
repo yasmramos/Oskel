@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "bytecode_io.h"
 #include "compiler.h"
 #include "frontend/module_resolver.h"
 #include "native/target.h"
@@ -87,6 +88,42 @@ int buildBinary(const std::string& source, const std::string& name,
                 const std::vector<std::string>& libraryPaths,
                 const std::vector<std::string>& linkObjects,
                 const std::string& tool);
+
+// Compiles a `.oskc` file (the already-compiled form of a program) to a native
+// binary. The file carries the FFI capabilities it was validated against, and
+// this path checks them against the destination before lowering, so a chunk
+// written on one machine builds on another or fails with a message -- never a
+// mis-compiled binary. Returns 0 on success, 65 for a lowering error, 66 for an
+// unreadable or malformed file and 74 for a write failure.
+int buildBinaryFromBytecode(const std::string& path, const std::string& output,
+                            const Target& target, LinkMode mode, Linker linker,
+                            bool emitObject, const std::vector<std::string>& linkLibs,
+                            const std::vector<std::string>& libraryPaths,
+                            const std::vector<std::string>& linkObjects,
+                            const std::string& tool);
+
+// Reads a `.oskc` image, checks its FFI capabilities against `destination` and
+// rebuilds the chunk. `needs` receives the requirement bitset the header
+// records (`kOskcNeedsSdl`, `kOskcNeedsSkia`), so the AOT path can link the same
+// UI backend the source path would. Returns true on success; prints a
+// diagnostic and returns false otherwise.
+bool loadBytecodeImage(const std::string& path,
+                       const ffi::AbiCapabilities& destination, Bytecode& chunk,
+                       std::uint32_t& needs, const std::string& tool);
+
+// Compiles `source` to a `.oskc` image at `output` (`oskelc -c`). Validates the
+// FFI surface against `kAotAbiCapabilities`, the fixed surface the format
+// records, so the file does not depend on how the writing engine was built.
+// Returns 0 on success, 65 for a compile error and 74 for a write failure.
+int emitBytecodeFile(const std::string& source, const std::string& name,
+                     const std::string& output, const std::string& argv0,
+                     const std::string& tool);
+
+// Parses the `.oskc` command line (`<file.oskl> [-o <out>]`) and writes the
+// image. Drives `oskelc -c`.
+int runBytecodeCommand(const std::vector<std::string>& arguments,
+                       const std::string& argv0, const std::string& tool,
+                       const std::string& usage);
 
 // Parses the AOT command line
 // (`<file.oskl> [-o <out>] [--target T] [--mode M] [--link-lib L]`) and writes

@@ -44,6 +44,12 @@ enum class AotTag : std::uint64_t {
   Range = 9,   // payload is the address of an `AotRange`
   Error = 10,  // payload is the address of an `AotError`
   Ptr = 11,    // payload is the address of an `AotPtr`
+  // A global slot nobody has assigned yet. It is distinct from `Nil` because
+  // `nil` is a value a program can assign (`var g = nil`), so a cleared slot
+  // cannot use `Nil` to mean "unset" without making the two indistinguishable.
+  // `oskel_init_globals` seeds every slot with this tag and `GETGLOBAL` fails
+  // on it with the hosted engine's "undefined variable '<name>'" (exit 70).
+  Unset = 12,
 };
 
 // On-image layout of a string: an 8-byte length followed by the bytes. The

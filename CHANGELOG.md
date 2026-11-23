@@ -11,6 +11,19 @@ may change between minor versions.
 
 ### Added
 
+- **VM/AOT parity for callbacks (PHASE 7f.11).** A callback may now return a
+  struct by value under `oskel build`: the AOT body stages the returned map's
+  fields into the C bytes and loads them into the System V return registers
+  (`rax`/`rdx`/`xmm0`/`xmm1`), or copies them through the hidden `sret` pointer
+  for a struct over 16 bytes, which also shifts the declared parameters one
+  integer register along. A stored callback now works on the VM too: `Runtime`
+  retains the `CallbackObj` and the CLI's `VM` lives until the process exits, so
+  an `atexit` handler runs after the chunk returns just as it does in a native
+  binary. `tests/native_build_extern_callback_struct.oskl` covers the register,
+  mixed INTEGER/SSE and MEMORY shapes, and the stored/exit/struct fixtures run
+  the VM with the helper preloaded and compare its output with the hosted
+  binary.
+
 - **The WebAssembly backend binds the range methods (PHASE 9.5).**
   `r.toArray()` materialises a range into an array (exclusive or inclusive,
   ascending or descending), `r.contains(x)` is the method form of `x in r`, and
@@ -106,8 +119,13 @@ may change between minor versions.
   resolves the common x86-64 COFF relocations and builds the import table for
   the runtime's UCRT (`ucrtbase.dll`) and Windows API (`kernel32.dll`) calls.
   A generated `_start` calls `main` and `ExitProcess`; `oskelld --target
-  x86_64-windows-win64` shares the path. Windows `-r`, MSVC `.lib` archives and
-  `args()` are 10.3b; macOS Mach-O is 10.3d.
+  x86_64-windows-win64` shares the path. macOS Mach-O is 10.3d.
+- **Relocatable COFF links on Windows (PHASE 10.3b.1).** `oskelld -r` merges
+  COFF objects into a new COFF object: defined symbols at their merged
+  offsets, uniquely renamed local symbols, section symbols with aux records,
+  and section-symbol relocations retargeted to the output section symbol with
+  the addend adjusted. The result links with `oskelld`/`--linker own`. MSVC
+  `.lib` archives and `args()` remain 10.3b.
 
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,

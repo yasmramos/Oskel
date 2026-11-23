@@ -294,8 +294,8 @@ it as a caveat:
   covers the register class and `tests/native_build_extern_memory_struct.oskl`
   the MEMORY class (the latter links `tests/hosted/memory_struct_helper.c`,
   because no libc symbol exercises that shape). A struct passed to a callback
-  or through a C variadic is still PHASE 7f work (BACKLOG §6 items 26/27); the
-  callback and variadic surfaces themselves are done.
+  is rejected by both engines, and a struct through a C variadic is still
+  PHASE 7f work; the callback and variadic surfaces themselves are done.
 - A builtin whose argument window the AOT backend walks by hand has to read
   `args[i]` **downward**: `slotOffset` is `-16 * (index + 1)`, so `args[1]` sits
   16 bytes *below* `args[0]` (`-16` tag, `-8` payload), not at `+16`/`+24`. A
@@ -320,8 +320,9 @@ it as a caveat:
   when variadic), and `tests/native_build_builtin_arity.oskl` drives every
   wrong-count call through `pcall`, because a raised runtime error is not a value
   and `try`/`catch` never sees it. The fixture prints the message text, not just
-  the fact of failing (PHASE 7c.5b.6). Other dynamic tails — a type name or an
-  index — still keep only their fixed prefix (BACKLOG §6 item 25).
+  the fact of failing (PHASE 7c.5b.6). Other dynamic tails — a type name, an
+  index or a callback-return field name — still keep only their fixed prefix
+  (BACKLOG §6 item 25).
 - `random`/`seed` are AOT-backed (PHASE 7g): `mt19937_64` is emitted as machine
   code, so a native binary reproduces the VM's stream after the same `seed(n)`.
   Three rules keep it correct, and each was a real bug first: only `rbx` and
@@ -375,17 +376,24 @@ it as a caveat:
   from the program's current arena. The global table is an array of 16-byte
   `AotValue` slots, so the state pointer lives at `16 * slot + 8`; using
   `8 * slot` read the wrong slot and crashed. A callback returning a struct by
-  value and a callback with a struct parameter are rejected with dedicated
-  messages; a stored callback works in AOT but not in the VM (the VM frees the
-  closure stub when the extern call returns), and both are BACKLOG §6 items
-  26/27. The stub page is process-lifetime: C may store the pointer (a stored
-  callback, including an `atexit` handler), so freeing it when the extern call
-  returns would break that contract; BACKLOG §6 item 28 tracks a pool or an
-  explicit release contract. Tests: `tests/native_build_extern_callback.oskl`
-  (`qsort`, VM parity) and
+  value is supported too: the body stages the returned map's fields into the C
+  bytes with `oskel_member_get` and loads them into `rax`/`rdx`/`xmm0`/`xmm1`,
+  or copies them through the hidden `sret` pointer for class MEMORY, which also
+  shifts the declared parameters one integer register along. The VM and the AOT
+  backend both keep a callback alive past the extern call now: `Runtime`
+  retains the `CallbackObj` and the CLI's `VM` is process-lifetime, because an
+  `atexit` handler runs after the chunk returns (BACKLOG §6 item 27). A struct
+  passed to a callback is rejected by both engines with a dedicated message, a
+  shared limitation rather than a divergence. The stub page is
+  process-lifetime: C may store the pointer (a stored callback, including an
+  `atexit` handler), so freeing it when the extern call returns would break
+  that contract; BACKLOG §6 item 29 tracks a pool or an explicit release
+  contract. Tests: `tests/native_build_extern_callback.oskl` (`qsort`, VM
+  parity), `tests/native_build_extern_callback_struct.oskl` (register and
+  MEMORY returns, VM parity through the preloaded helper),
   `tests/native_build_extern_callback_{stored,exit,wx,many_args,returns}.oskl`
-  (AOT-only, `tests/hosted/*_helper.c`), plus
-  `tests/errors/callback_struct_{return,param}.oskl`.
+  (`tests/hosted/*_helper.c`; stored, exit and struct also compare the VM) and
+  `tests/errors/callback_struct_param.oskl`.
 - An `extern "C"` return class has a *box* per class, and adding one means
   adding its box: the thunk calls a helper that turns the raw register contents
   into an `AotValue`. `cstring` had one (`emitCStringBox`) and `ptr` did not, so
@@ -576,7 +584,14 @@ it as a caveat:
   sections, imports, thunks and `_start`. `oskel.build_hosted_own_windows`
   (Windows only) runs a real `print` binary end to end; the `windows-latest`
   runner is the execution gate, since the Linux development host has no Wine.
-- `-r` COFF, MSVC `.lib` archives, `.pdata`/`.xdata` and TLS are 10.3b; the
+- `-r` COFF (`linkRelocatableCoff`, PHASE 10.3b.1) is implemented. It emits a
+  normal COFF object: section symbols with their aux record, defined globals
+  deduplicated, local symbols renamed `name$object.index` (the second link
+  resolves locals by index, not by name), and section-symbol relocations
+  retargeted to the output section symbol with the input section's merged
+  offset added to the field. The output is accepted by `linkWindowsExecutable`
+  and by the two-object `link_pe_test` fixture.
+- MSVC `.lib` archives, `args()` and `.pdata`/`.xdata`/TLS remain 10.3b; the
   macOS Mach-O container is 10.3d.
 - The multi-object e2e helper is an `OBJECT` library compiled with
   `-fno-sanitize=all` when the build is sanitized: the object is linked into a

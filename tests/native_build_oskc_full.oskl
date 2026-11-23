@@ -1,0 +1,56 @@
+// Fixture for the `.oskc` round trip (tests/oskc_parity.cmake).
+//
+// Exercises the fields the image carries that a trivial program does not: a
+// closure (a child proto with an upvalue), collections and their constants, a
+// variadic function, a range, a slice, string interpolation and float
+// arithmetic. Every construct here is lowered by the AOT backend, so the
+// source-built and image-built binaries must be identical and agree with the
+// VM.
+
+fn makeCounter(start) {
+  var count = start;
+  fn bump(step) {
+    count = count + step;
+    return count;
+  }
+  return bump;
+}
+
+var counter = makeCounter(10);
+print("counter =", counter(1), counter(2), counter(3));
+
+fn vsum(first, rest...) {
+  var sum = first;
+  for x in rest {
+    sum = sum + x;
+  }
+  return sum;
+}
+print("variadic =", vsum(1), vsum(1, 2, 3, 4, 5));
+
+var squares = [1, 4, 9, 16];
+print("squares =", squares);
+print("slice =", squares[1:3]);
+print("reverse =", squares[::-1]);
+print("9 in squares =", 9 in squares);
+
+var ages = {"ada": 36, "alan": 41};
+var ageSum = 0;
+for name, age in ages {
+  ageSum = ageSum + age;
+}
+print("age sum =", ageSum);
+print("ages text = ${ages}");
+
+var ratio = 1.0 / 3.0;
+print("ratio = ${ratio}");
+print("range sum =", (0..=4).length);
+
+fn fib(n) {
+  if (n < 2) { return n; }
+  return fib(n - 1) + fib(n - 2);
+}
+print("fib(12) =", fib(12));
+
+print("len =", len("hello"), len(squares), len(ages));
+print("type =", type(nil), type(1.5), type("x"), type(squares), type(ages));

@@ -72,6 +72,12 @@ struct AotRuntimeHandles {
   CodeGen::Label initGlobals;    // void oskel_init_globals(long count)
   CodeGen::Label globalSet;      // void oskel_global_set(long slot, AotValue v)
   CodeGen::Label globalGet;      // AotValue oskel_global_get(long slot)
+  // `AotValue oskel_global_get_checked(long slot, const AotString* msg)`:
+  // `globalGet` plus the hosted engine's "undefined variable" check, for a read
+  // that can reach a slot nothing has assigned. Emitted only when some read
+  // needs it, so a program that assigns before it reads keeps its image byte
+  // for byte.
+  CodeGen::Label globalGetChecked;
   // Closures and calls (PHASE 7c.2c.1). `closure` allocates an `AotClosure` in
   // the arena for a proto's code address (rdi), arity (rsi) and captured-cell
   // count (rdx), and returns it as a `Func` value in rax:rdx. The lowering
@@ -555,6 +561,12 @@ struct AotCallbackSignature {
   std::vector<AotCallbackParam> params;
   std::string returnType;              // Oskel FFI name, "void" for none
   ffi::ReturnClass returns = ffi::ReturnClass::Int;
+  // A struct returned by value. `returnMemory` means the C caller passes the
+  // hidden `sret` pointer in `rdi`, which also shifts the first declared
+  // parameter one register along (System V AMD64).
+  bool returnsStruct = false;
+  bool returnMemory = false;
+  AotStructLayout returnStruct;
   CodeGen::Label body;                 // bound by `emitAotRuntime`
 };
 
@@ -668,6 +680,10 @@ struct AotRuntimeExtras {
   // `emitAotRuntime` caller without a target gets.
   const char* platformName = nullptr;
   const char* archName = nullptr;
+  // Emit `oskel_global_get_checked` (the "undefined variable" guard). Set only
+  // when some `GETGLOBAL` can reach a slot nothing has assigned, so a program
+  // that assigns before it reads keeps its image byte for byte.
+  bool needsGlobalGetChecked = false;
 };
 
 void emitAotRuntime(CodeGen& code, const AotRuntimeHandles& handles,

@@ -48,6 +48,26 @@ fn appendText(path: string, text: string) {
   file.write(text);
 }
 
+// Copies `from` to `to` in 64 KiB chunks. `to` is created or truncated. A
+// source and destination that name the same path are rejected before `to` is
+// opened, so a copy never truncates its input.
+fn copyFile(from: string, to: string) {
+  if (from == to) {
+    panic("copyFile: source and destination are the same path");
+  }
+  let source = File(from, "r");
+  defer { source.close(); }
+  let target = File(to, "w");
+  defer { target.close(); }
+  while (true) {
+    let chunk = source.read(65536);
+    if (chunk == "") {
+      break;
+    }
+    target.write(chunk);
+  }
+}
+
 // True when `path` can be opened for reading. Use
 // `std.fs.dir.stat(path).isFile` to require a regular file; this predicate
 // stays on the streaming surface so it works in every AOT image.
