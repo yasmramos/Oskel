@@ -1,0 +1,86 @@
+// PHASE 11.1: `async fn` / `await`.
+//
+// A future is an ordinary map at run time, but the compiler keeps it behind the
+// `Future` type: an async function's annotation describes the payload, a call
+// yields a `Future`, and `await` recovers the payload. The body runs eagerly in
+// this phase, so the observable behaviour matches a plain call once awaited.
+
+async fn double(x: int): int {
+  return x * 2;
+}
+
+async fn add(a: int, b: int): int {
+  let x: int = await double(a);
+  let y: int = await double(b);
+  return x + y;
+}
+
+async fn fact(n: int): int {
+  if (n <= 1) {
+    return 1;
+  }
+  return n * await fact(n - 1);
+}
+
+async fn greeting(name: string): string {
+  return "hello, " + name;
+}
+
+async fn pair(): array {
+  return [1, 2, 3];
+}
+
+async fn noop(): void {
+  return;
+}
+
+async fn fail(): error {
+  return error("boom");
+}
+
+class Counter {
+  value: int = 0;
+
+  async fn bump(by: int): int {
+    self.value = self.value + by;
+    return self.value;
+  }
+
+  async fn bumpTwice(by: int): int {
+    await self.bump(by);
+    return await self.bump(by);
+  }
+}
+
+async fn main(): void {
+  // A future can be held and awaited later; the value is stable.
+  let f: Future = double(21);
+  assertEq(await f, 42);
+  assertEq(await f, 42);
+
+  // Awaiting a direct call and chaining async calls.
+  assertEq(await double(5), 10);
+  assertEq(await add(2, 3), 10);
+  assertEq(await fact(5), 120);
+  assertEq(await greeting("oskel"), "hello, oskel");
+  assertEq(await pair(), [1, 2, 3]);
+  await noop();
+
+  // An async function is a value like any other: calling it through a variable
+  // still returns a future.
+  let g = double;
+  assertEq(await g(7), 14);
+
+  // Async methods return futures too.
+  let c = Counter();
+  assertEq(await c.bump(5), 5);
+  assertEq(await c.bumpTwice(3), 11);
+
+  // An error value crosses the future boundary unchanged: the payload is the
+  // error, so `isError` sees it after the await.
+  assertEq(isError(await fail()), true);
+
+  print("async ok");
+}
+
+main();

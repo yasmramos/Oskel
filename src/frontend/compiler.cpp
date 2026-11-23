@@ -970,6 +970,11 @@ void Compiler::checkMethodReassign(const std::string& className, const ClassMeth
   // known even though its type is not, and a method body reads its parameters
   // positionally.
   if (const auto* lambda = std::get_if<LambdaExpr>(&assign.value->node)) {
+    if (lambda->isAsync != method.isAsync) {
+      fail("cannot replace " + context + " with a " +
+               (lambda->isAsync ? "async" : "non-async") + " function",
+           assign.value->line, assign.value->col);
+    }
     checkMethodArity(method, lambda->params, assign.value->line, assign.value->col, context);
     for (size_t i = 0; i < lambda->params.size() && i < method.params.size(); ++i) {
       if (!method.params[i].type.isPresent() || !lambda->params[i].type.isPresent()) continue;
@@ -1039,6 +1044,18 @@ TypeRef Compiler::inferExprType(const Expr& expr) const {
     TypeRef inner = inferExprType(*assertion->operand);
     inner.nullable = false;
     return inner;
+  }
+  // `await f()` (PHASE 11.1): the payload of an async function, recovered from
+  // the declaration table. A `Future`-typed operand or an unknown one yields no
+  // static type; `compileAwait` is where a non-Future operand is rejected.
+  if (const auto* awaited = std::get_if<AwaitExpr>(&expr.node)) {
+    if (const auto* call = std::get_if<CallExpr>(&awaited->operand->node)) {
+      if (const auto* callee = std::get_if<VariableExpr>(&call->callee->node)) {
+        auto found = asyncReturnTypes_.find(callee->name);
+        if (found != asyncReturnTypes_.end()) return found->second;
+      }
+    }
+    return TypeRef{};
   }
   // `a ?? b`: when `a` is a nullable `T?`, the result is `b`'s type (or a
   // non-null `T`); otherwise it is `a`'s type unchanged.
@@ -1202,6 +1219,7 @@ void Compiler::resetChunk(const std::string& name) {
   predeclaredLetSlots_.clear();
   predeclaredFnSlots_.clear();
   inFunction_ = false;
+  currentIsAsync_ = false;
   currentLine_ = 1;
   currentCol_ = 1;
   moduleBody_ = false;
@@ -1226,6 +1244,7 @@ void Compiler::clearSession() {
   enumMemberOwners_.clear();
   nativeSigs_.clear();
   functionReturnTypes_.clear();
+  asyncReturnTypes_.clear();
   functionParams_.clear();
   externSignatures_.clear();
   mustUseGlobals_.clear();
@@ -1362,6 +1381,7 @@ Compiler::SessionSnapshot Compiler::snapshotSession() const {
   snapshot.enumMembers = enumMembers_;
   snapshot.enumMemberOwners = enumMemberOwners_;
   snapshot.functionReturnTypes = functionReturnTypes_;
+  snapshot.asyncReturnTypes = asyncReturnTypes_;
   snapshot.functionParams = functionParams_;
   snapshot.nativeSigs = nativeSigs_;
   snapshot.externSignatures = externSignatures_;
@@ -1386,6 +1406,7 @@ void Compiler::restoreSession(SessionSnapshot snapshot) {
   enumMembers_ = std::move(snapshot.enumMembers);
   enumMemberOwners_ = std::move(snapshot.enumMemberOwners);
   functionReturnTypes_ = std::move(snapshot.functionReturnTypes);
+  asyncReturnTypes_ = std::move(snapshot.asyncReturnTypes);
   functionParams_ = std::move(snapshot.functionParams);
   nativeSigs_ = std::move(snapshot.nativeSigs);
   externSignatures_ = std::move(snapshot.externSignatures);
@@ -1786,6 +1807,7 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   auto savedClassDefs = std::move(classDefs_);
   auto savedClassMethodDefs = std::move(classMethodDefs_);
   auto savedFunctionReturnTypes = std::move(functionReturnTypes_);
+  auto savedAsyncReturnTypes = std::move(asyncReturnTypes_);
   auto savedFunctionParams = std::move(functionParams_);
   auto savedNativeSigs = std::move(nativeSigs_);
   auto savedMustUseGlobals = std::move(mustUseGlobals_);
@@ -1828,6 +1850,7 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   structDefs_.clear();
   nativeSigs_.clear();
   functionReturnTypes_.clear();
+  asyncReturnTypes_.clear();
   functionParams_.clear();
   mustUseGlobals_.clear();
   namespaces_.clear();
@@ -1918,6 +1941,7 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   classDefs_ = std::move(savedClassDefs);
   classMethodDefs_ = std::move(savedClassMethodDefs);
   functionReturnTypes_ = std::move(savedFunctionReturnTypes);
+  asyncReturnTypes_ = std::move(savedAsyncReturnTypes);
   functionParams_ = std::move(savedFunctionParams);
   nativeSigs_ = std::move(savedNativeSigs);
   mustUseGlobals_ = std::move(savedMustUseGlobals);
@@ -2488,7 +2512,8 @@ void Compiler::compileFnDecl(const FnDeclStmt& fn, int line, int col) {
     bc_.nativeFns.push_back(fn.name);
     emit(OpCode::GETGLOBAL, reg, addString(fn.name));
   } else {
-    int child = compileFunctionProto(fn.name, fn.params, fn.body, line, col, fn.returnType);
+    int child = compileFunctionProto(fn.name, fn.params, fn.body, line, col, fn.returnType,
+                                     std::string(), fn.isAsync);
     emit(OpCode::CLOSURE, reg, child);
   }
 
@@ -2512,12 +2537,21 @@ void Compiler::compileFnDecl(const FnDeclStmt& fn, int line, int col) {
       // A native's type is its declared signature; the call path above already
       // covers it, so the user-function table must not shadow that.
       functionReturnTypes_.erase(fn.name);
+      asyncReturnTypes_.erase(fn.name);
       functionParams_.erase(fn.name);
     } else {
-      if (fn.returnType.isPresent()) {
-        functionReturnTypes_[fn.name] = fn.returnType;
+      if (fn.isAsync) {
+        // An async function returns `Future` at the call site; its annotation
+        // is the payload, kept for `await f()`.
+        functionReturnTypes_[fn.name] = TypeRef{"Future", false};
+        asyncReturnTypes_[fn.name] = fn.returnType;
       } else {
-        functionReturnTypes_.erase(fn.name);
+        asyncReturnTypes_.erase(fn.name);
+        if (fn.returnType.isPresent()) {
+          functionReturnTypes_[fn.name] = fn.returnType;
+        } else {
+          functionReturnTypes_.erase(fn.name);
+        }
       }
       // The parameters are recorded even when none carries an annotation: the
       // arity check needs the count, and `checkUserCall` skips an unannotated
@@ -2952,6 +2986,10 @@ void Compiler::compileReturn(const ReturnStmt& stmt) {
   // the deferred blocks cannot change what the function returns. This is also
   // why `defer` needs no opcode and no VM support: the blocks are inlined here.
   emitDeferredBlocks(1);
+  // An `async fn` returns a future, not the payload: wrap the value after the
+  // deferred blocks so they cannot change what the future carries. The wrap is
+  // ordinary map construction, so the VM, AOT and WASM agree by construction.
+  if (currentIsAsync_) reg = compileMakeFuture(reg, currentLine_, currentCol_);
   // A `return` at the top level of a function body is followed by the
   // implicit epilogue emitted in `compileFunctionProto`. Skipping the second
   // RETURN when the last instruction already returns keeps the frame stack
@@ -2966,7 +3004,7 @@ void Compiler::compileReturn(const ReturnStmt& stmt) {
 int Compiler::compileFunctionProto(const std::string& name,
                                    const std::vector<Param>& params, const StmtPtr& body,
                                    int line, int col, const TypeRef& returnType,
-                                   const std::string& ownerClass) {
+                                   const std::string& ownerClass, bool isAsync) {
   // Save the parent chunk and its compilation state. Functions are compiled
   // into their own proto with fresh registers, locals, scopes and loops.
   Bytecode parent = std::move(bc_);
@@ -2982,6 +3020,7 @@ int Compiler::compileFunctionProto(const std::string& name,
   const int parentCol = currentCol_;
   const bool parentInFunction = inFunction_;
   const TypeRef parentReturnType = currentReturnType_;
+  const bool parentIsAsync = currentIsAsync_;
   const std::string parentOwnerClass = std::move(currentOwnerClass_);
 
   bc_ = Bytecode{};
@@ -3031,6 +3070,7 @@ int Compiler::compileFunctionProto(const std::string& name,
     declareLocal(param.name, false, bindingType);
   }
   currentReturnType_ = returnType;
+  currentIsAsync_ = isAsync;
   currentOwnerClass_ = ownerClass;
 
   // Incoming arguments already sit in R0 .. R(n-1), so the prologue only has
@@ -3058,6 +3098,7 @@ int Compiler::compileFunctionProto(const std::string& name,
   // Falling off the end of a function returns nil, like the interpreter.
   int nilReg = allocReg();
   emit(OpCode::LOADK, nilReg, addConstant(Value()));
+  if (currentIsAsync_) nilReg = compileMakeFuture(nilReg, line, col);
   emit(OpCode::RETURN, nilReg);
 
   bc_.numRegisters = maxReg_;
@@ -3081,6 +3122,7 @@ int Compiler::compileFunctionProto(const std::string& name,
   currentCol_ = savedParent.col;
   inFunction_ = savedParent.inFunction;
   currentReturnType_ = parentReturnType;
+  currentIsAsync_ = parentIsAsync;
   currentOwnerClass_ = std::move(parentOwnerClass);
 
   int index = static_cast<int>(bc_.children.size());
@@ -3104,7 +3146,8 @@ int Compiler::compileLambda(const LambdaExpr& lambda, int line, int col) {
   // frame, which would dangle a reference into it.
   const std::string owner = lambda.ownerClass.empty() ? currentOwnerClass_ : lambda.ownerClass;
   int child = compileFunctionProto(lambda.name.empty() ? "<anonymous>" : lambda.name, lambda.params,
-                                   lambda.body, line, col, lambda.returnType, owner);
+                                   lambda.body, line, col, lambda.returnType, owner,
+                                   lambda.isAsync);
   int reg = allocReg();
   emit(OpCode::CLOSURE, reg, child);
   return reg;
@@ -4034,6 +4077,74 @@ int Compiler::compileSlice(const SliceExpr& slice, int line, int col) {
   return object;
 }
 
+// Builds the map an `async fn` returns. A future is deliberately a plain map:
+// the VM, the AOT backend and the WASM backend all already construct and read
+// maps, so async needs no runtime tag, no builtin and no opcode. The keys are
+// the private protocol `await` reads (`state`, `value`, `error`); user code can
+// see them, but the type checker keeps a `Future` away from ordinary map code.
+int Compiler::compileMakeFuture(int value, int line, int col) {
+  currentLine_ = line;
+  currentCol_ = col;
+  int map = allocReg();
+  emit(OpCode::NEWTABLE, map, 0, 1);
+  int state = allocReg();
+  emit(OpCode::LOADK, state, addConstant(Value("fulfilled")));
+  emit(OpCode::SETTABLE, state, map, -addString("state") - 1);
+  freeReg();
+  emit(OpCode::SETTABLE, value, map, -addString("value") - 1);
+  int nil = allocReg();
+  emit(OpCode::LOADK, nil, addConstant(Value()));
+  emit(OpCode::SETTABLE, nil, map, -addString("error") - 1);
+  freeReg();
+  return map;
+}
+
+// `await expr` (PHASE 11.1): read the future's state and yield its payload, or
+// raise the carried error. Every path is an existing opcode or a `panic` call,
+// so the three engines behave identically. A pending future has no scheduler in
+// this phase; it is a runtime error rather than a silent nil.
+int Compiler::compileAwait(const AwaitExpr& awaited, int line, int col) {
+  TypeRef operandType = inferExprType(*awaited.operand);
+  if (operandType.isPresent() && operandType.name != "Future" && operandType.name != "any") {
+    fail("'await' expects a Future, found '" + describeType(operandType) + "'", line, col);
+  }
+  currentLine_ = line;
+  currentCol_ = col;
+  int future = compileExpr(*awaited.operand);
+  // The operand's own register is the result, like `a!!`: the caller (a call
+  // argument list, an assignment) expects the expression to leave its value in
+  // the register it reserved, and reusing it keeps the arguments contiguous.
+  int state = allocReg();
+  emit(OpCode::GETTABLE, state, future, -addString("state") - 1);
+  int fulfilled = allocReg();
+  emit(OpCode::LOADK, fulfilled, addConstant(Value("fulfilled")));
+  int isFulfilled = allocReg();
+  emit(OpCode::EQ, isFulfilled, state, fulfilled);
+  int rejected = allocReg();
+  emit(OpCode::LOADK, rejected, addConstant(Value("rejected")));
+  int isRejected = allocReg();
+  emit(OpCode::EQ, isRejected, state, rejected);
+  int checkRejected = emitJump(OpCode::JMP_IF_FALSE, isFulfilled);
+  // The map is dead on this path after the read, so the payload replaces it in
+  // place; the rejected path below still sees the map.
+  emit(OpCode::GETTABLE, future, future, -addString("value") - 1);
+  int endJump = emitJump(OpCode::JMP);
+  patchJump(checkRejected, currentOffset());
+  int pending = emitJump(OpCode::JMP_IF_FALSE, isRejected);
+  int error = allocReg();
+  emit(OpCode::GETTABLE, error, future, -addString("error") - 1);
+  emit(OpCode::LOADK, future, addConstant(Value()));
+  compileHelperCall("panic", {error}, line, col);
+  patchJump(pending, currentOffset());
+  emit(OpCode::LOADK, future, addConstant(Value()));
+  int message = allocReg();
+  emit(OpCode::LOADK, message, addConstant(Value("await on a pending Future is not supported yet")));
+  compileHelperCall("panic", {message}, line, col);
+  patchJump(endJump, currentOffset());
+  freeReg(nextReg_ - future - 1);
+  return future;
+}
+
 int Compiler::compileInterpolation(const InterpExpr& interpolation, int /*line*/, int /*col*/) {
   int result = allocReg();
   emit(OpCode::LOADK, result, addConstant(Value(std::string())));
@@ -4238,6 +4349,9 @@ int Compiler::compileExpr(const Expr& expr) {
             emit(OpCode::MOVE, operand, result);
             freeReg(nextReg_ - operand - 1);
             return operand;
+          },
+          [&](const AwaitExpr& awaited) -> int {
+            return compileAwait(awaited, expr.line, expr.col);
           },
           [&](const RangeExpr& range) -> int {
             return compileRange(range, expr.line, expr.col);

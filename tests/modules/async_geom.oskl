@@ -1,0 +1,10 @@
+// PHASE 11.1: async functions cross a module boundary like any other closure.
+// The future is a map, so the importer's `await` reads it without any
+// module-specific machinery.
+async fn double(x: int): int {
+  return x * 2;
+}
+
+async fn label(x: int): string {
+  return "v=" + str(x);
+}

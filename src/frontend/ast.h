@@ -79,7 +79,7 @@ inline bool isKnownTypeName(const std::string& name) {
   return name == "nil" || name == "bool" || name == "int" || name == "float" ||
          name == "double" || name == "string" || name == "error" || name == "array" ||
          name == "map" || name == "function" || name == "range" || name == "void" ||
-         name == "any" ||
+         name == "any" || name == "Future" ||
          // FFI scalar vocabulary (PHASE 6.6, compile-time only): pointers and
          // fixed-width/unsigned integers, so a C signature can be spelled the
          // way C spells it (`native fn strlen(s: cstring): size_t;`). They are
@@ -285,6 +285,15 @@ struct NonNullExpr {
   ExprPtr operand;
 };
 
+// `await expr` (PHASE 11.1): unwrap the value a `Future` carries. It is only
+// valid inside an `async fn`; the parser enforces that, so the compiler never
+// sees a top-level or lambda `await`. A future is an ordinary map at run time
+// (see `Compiler::compileMakeFuture`), so the expression lowers to a few
+// existing opcodes and adds no opcode of its own.
+struct AwaitExpr {
+  ExprPtr operand;
+};
+
 struct RangeExpr {
   // A range is a lazy Value (Range{start, end, inclusive}); it never
   // materializes its elements. Iteration cost depends on the consumer:
@@ -336,12 +345,16 @@ struct LambdaExpr {
   // to `self.field` is checked against the field's annotation. Compile-time
   // metadata only; never reaches the bytecode.
   std::string ownerClass;
+  // `async fn` method of a class (PHASE 11.1): the lambda returns a `Future`
+  // and its body may `await`. A user-written lambda cannot be async, so this is
+  // only set by the class desugaring.
+  bool isAsync = false;
 };
 
 using ExprNode =
     std::variant<LiteralExpr, InterpExpr, VariableExpr, ArrayExpr, MapExpr, StructLitExpr,
                  UnaryExpr, BinaryExpr, AssignExpr, TernaryExpr, CallExpr, IndexExpr, SliceExpr,
-                 MemberExpr, NonNullExpr, RangeExpr, TryExpr, CatchExpr, LambdaExpr>;
+                 MemberExpr, NonNullExpr, AwaitExpr, RangeExpr, TryExpr, CatchExpr, LambdaExpr>;
 
 struct Expr {
   // Position convention: every Expr/Stmt carries the line/col of the token
@@ -389,6 +402,9 @@ struct ClassMethodSig {
   std::string name;
   std::vector<Param> params;
   TypeRef returnType;
+  // `async fn` method (PHASE 11.1): a replacement must be async too, or
+  // `await obj.m()` would await a payload instead of a future.
+  bool isAsync = false;
 };
 
 struct FnDeclStmt {
@@ -434,6 +450,11 @@ struct FnDeclStmt {
   // closure, so without this an assignment could replace it with any value and
   // the method would vanish without a diagnostic (PHASE 6.8.1).
   std::vector<ClassMethodSig> classMethods{};
+  // `async fn f(): T` (PHASE 11.1): the declaration returns a `Future` whose
+  // payload is `T`, and its body may `await`. The annotation stays `T`; the
+  // compiler stores `Future` in the call-site type table and wraps each
+  // returned value in a future map.
+  bool isAsync = false;
 };
 
 // `struct Point { x: int; y: int; }` (PHASE 6.5). A data-only type: no
@@ -657,6 +678,8 @@ inline void collectExprChildren(Expr& expr, std::vector<ExprPtr>& exprs,
         } else if constexpr (std::is_same_v<T, MemberExpr>) {
           pushChild(exprs, node.object);
         } else if constexpr (std::is_same_v<T, NonNullExpr>) {
+          pushChild(exprs, node.operand);
+        } else if constexpr (std::is_same_v<T, AwaitExpr>) {
           pushChild(exprs, node.operand);
         } else if constexpr (std::is_same_v<T, RangeExpr>) {
           pushChild(exprs, node.start);

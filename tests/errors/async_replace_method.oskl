@@ -1,0 +1,9 @@
+// expect-exit: 65
+// An async method must be replaced by an async function, or `await obj.m()`
+// would await a payload instead of a future.
+class C {
+  async fn m(): int { return 1; }
+}
+
+let c = C();
+c.m = () => 1;

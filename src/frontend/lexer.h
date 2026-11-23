@@ -19,6 +19,8 @@ enum class Tok {
   Let,
   Const,
   Fn,
+  Async,
+  Await,
   If,
   Else,
   While,

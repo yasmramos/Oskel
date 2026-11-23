@@ -1,0 +1,13 @@
+// PHASE 11.1 across modules: an imported async function returns a future and
+// the importer awaits it, both qualified and through an alias.
+import modules.async_geom;
+import modules.async_geom as ag;
+
+async fn main(): void {
+  assertEq(await modules.async_geom.double(4), 8);
+  assertEq(await ag.double(5), 10);
+  assertEq(await ag.label(3), "v=3");
+  print("async modules ok");
+}
+
+main();

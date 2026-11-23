@@ -37,6 +37,11 @@
     "body": ["fn ${1:name}(${2})${3: : ${4:int}} {", "\t$0", "}"],
     "description": "A method inside a class body."
   },
+  "Async function": {
+    "prefix": ["async"],
+    "body": ["async fn ${1:name}(${2}): ${3:int} {", "\treturn ${0:0};", "}"],
+    "description": "An async function. Its body may await; a call returns a Future."
+  },
   "Variable declaration": {
     "prefix": ["let", "var"],
     "body": ["let ${1:name} = ${2:value};"],
