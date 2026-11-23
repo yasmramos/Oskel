@@ -12,7 +12,7 @@ architecture rules and the development phases.
 |-------|-------|
 | **Name** | Oskel |
 | **Extension** | `.oskl` |
-| **Philosophy** | Simple like Python, structured like Java, fast like Lua, safe like Kotlin |
+| **Philosophy** | Simple like Python, fast like Lua, compiles to native, no runtime to install |
 | **Implementation** | C++17 (standard library only; no host FFI library) |
 | **Initial platform** | Linux x86-64 (musl static), then Windows/macOS |
 | **Architecture** | Register-based bytecode + VM (dev engine) + AOT backend (production) |
@@ -2508,7 +2508,12 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
 ### Future — Static with `@Dynamic` (2.0)
 
 - Static by default, `@Dynamic` for dynamic parts.
-- Type inference, monomorphization.
+- Type inference, and monomorphization of **concrete, annotated types only**:
+  the compiler specializes a call site against the types written or inferred
+  there. There are **no user-defined generics**; a generic container is
+  specialized over the concrete element type at the call site. This is the
+  single direction: `generics` stays in the "out of scope" table (§6), and 2.0
+  does not change that.
 - Requires: types (6.5), FFI (6.6), AOT (7).
 
 ### Current status
@@ -2590,7 +2595,7 @@ and is no longer in the tree.
 | Superinstructions | Violate the 40-opcode ceiling |
 | Inline caching | Changes the bytecode contract |
 | Runtime specialization | Changes the bytecode contract |
-| `async`/`await`, generics, full pattern matching, generators, transactions | Out of scope |
+| `async`/`await`, generics, full pattern matching, generators, transactions | Out of scope (2.0 monomorphizes concrete, annotated types only; no user-defined generics) |
 
 **Note**: there is **no** host FFI dependency. The development engine emits its
 own x86-64 descriptor/closure stubs; the machine-code emitter, the static
