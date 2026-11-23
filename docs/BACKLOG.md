@@ -1120,3 +1120,13 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 14. **[P2]** `oskelp`: add workspaces (several packages sharing one lockfile)
     and a `@Test` attribute, so a test file is not limited to a whole program
     that exits `0`.
+15. **[P2] [done]** `oskelint`: the linter (`docs/oskelint.md`) landed as a
+    fifth binary, with the `builtin-shadow` rule. Shadowing a builtin is legal
+    and the standard library re-exports its own builtins, so the check belongs
+    in a tool rather than in the compiler; the tool reads the builtin names from
+    the engine (`VM::globals()` after `registerBuiltins`) instead of keeping a
+    second list that would drift. `oskelint` links `oskel_lib` and never runs a
+    program, so `oskelc` stays interpreter-free (`nm build/oskel | grep
+    oskelint` is empty). Pending: more rules (an unused declaration, a `var`
+    that is never reassigned, a `@MustUse` value discarded), a `--fix` mode and
+    a config file.

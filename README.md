@@ -220,6 +220,21 @@ registry, so another project can depend on its version. See
 [docs/oskelp.md](docs/oskelp.md) for the project layout, the manifest, the
 dependency model, the registry layout and every command.
 
+### oskelint (the linter)
+
+`oskelint` reports suspicious but legal code. The first rule, `builtin-shadow`,
+warns when a declaration replaces a builtin — legal, and the standard library
+relies on it, which is why the check lives in a tool instead of the compiler:
+
+```sh
+./build/oskelint mylib.oskl      # report the diagnostics on stdout
+./build/oskelint --list-rules    # the rule names
+```
+
+A lint warning exits 0; it never fails a build. See
+[docs/oskelint.md](docs/oskelint.md) for the rule and where the builtin names
+come from.
+
 ## Usage
 
 ```text

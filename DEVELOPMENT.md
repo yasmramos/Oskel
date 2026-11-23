@@ -117,6 +117,13 @@ code; it drives `oskel`/`oskelc` as child processes. It owns the manifest
 `OSKEL_MODULE_ROOT`: `resolverFor` honours it so a package's `src/` is the
 module root, and both engines resolve imports identically.
 
+A fifth binary is `oskelint`, the linter (`docs/oskelint.md`). It lives under
+`tools/` too, but unlike the other two it links `oskel_lib`: its first rule
+(`builtin-shadow`) asks the engine which names `registerBuiltins` installs, so
+the rule cannot drift from the standard library. It never runs a program, so the
+boundary rule below is untouched and `nm build/oskel | grep oskelint` stays
+empty.
+
 Boundary rule: no source in `src/frontend/` may include `vm.h`, `jit/jit.h`,
 `builtins.h`, `ops.h`, `ffi_marshal.h` or a host FFI library, and `src/frontend/compiler.*`
 plus `src/frontend/native/*` must also stay clear of `interpreter.h`. Enforced

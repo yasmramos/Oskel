@@ -418,6 +418,24 @@ endif()
 
 install(TARGETS oskelp RUNTIME DESTINATION bin)
 
+# --------------------------------------------------------------------------- oskelint
+# The linter. Unlike `bindgen` and `oskelp` it links the engine, but only for one
+# question: `builtinNames()` constructs a `VM` and reads `globals()`, so the rule
+# uses the names `registerBuiltins` actually installs instead of a second list
+# that would drift. It never runs a program, so `oskelc` (which must not carry
+# the interpreter) is untouched. Its sources live under `tools/`, outside the
+# `src/*.cpp` glob, so it is never pulled into `oskel` or `oskelc`.
+add_library(oskelint_lib STATIC "${CMAKE_CURRENT_SOURCE_DIR}/tools/oskelint.cpp")
+target_include_directories(oskelint_lib PUBLIC include src)
+target_link_libraries(oskelint_lib PUBLIC oskel_lib)
+target_compile_options(oskelint_lib PRIVATE ${OSKEL_WARNINGS})
+
+add_executable(oskelint "${CMAKE_CURRENT_SOURCE_DIR}/tools/oskelint_main.cpp")
+target_link_libraries(oskelint PRIVATE oskelint_lib)
+target_compile_options(oskelint PRIVATE ${OSKEL_WARNINGS})
+
+install(TARGETS oskelint RUNTIME DESTINATION bin)
+
 # The standard library ships next to the binary: `standardLibraryDir` looks for
 # `../share/oskel/std` relative to the executable, so `import std.math` resolves
 # after `make install` and not only when running from the source tree.
@@ -532,6 +550,22 @@ if(BUILD_TESTING)
   target_compile_options(bindgen_test PRIVATE ${OSKEL_WARNINGS})
   add_test(NAME bindgen_test COMMAND bindgen_test
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+  # The linter's unit test links `oskelint_lib`, which pulls the engine for
+  # `builtinNames()` (a `VM` is built and its globals read; no program runs).
+  add_executable(oskelint_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/oskelint_test.cpp")
+  target_link_libraries(oskelint_test PRIVATE oskelint_lib)
+  target_compile_options(oskelint_test PRIVATE ${OSKEL_WARNINGS})
+  add_test(NAME oskelint_test COMMAND oskelint_test
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+  # End-to-end: the tool itself on a real file, so the CLI wiring (argument
+  # parsing, the exit codes, the formatted line) is covered too.
+  add_test(NAME oskelint.cli
+    COMMAND ${CMAKE_COMMAND}
+      "-DOSKELINT_EXE=$<TARGET_FILE:oskelint>"
+      "-DOSKELINT_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_builtin_shadow.oskl"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_oskelint_cli.cmake")
 
   # End-to-end: run the `bindgen` binary on a header, then feed the generated
   # module back to `oskel -c`, so the tool and the compiler cannot drift apart.
