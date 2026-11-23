@@ -87,6 +87,49 @@ self-test instead of the interactive loop, so `examples.tui_editor` verifies it
 without needing a tty. The test is registered on UNIX only, because the editor
 drives the terminal through POSIX C functions.
 
+## Desktop UI (`examples/ui/`, `examples/sdl/`)
+
+These demos open a real window, so they need SDL3 and the Skia shim. The
+widget layer itself is pure Oskel and stays testable without a display; only
+the presentation path needs the libraries.
+
+### `ui/todo.oskl` — a task list with buttons
+
+The flagship desktop demo: `std.ui` builds the widget tree and
+`std.ui.window` runs the event loop. Each row has a `Toggle` and a `Remove`
+button, and the toolbar adds a sample task or clears the finished ones. The
+tree is rebuilt in place, so the window reflects every click.
+
+```sh
+LD_PRELOAD=bindings/skia/build/libskia_shim.so oskel examples/ui/todo.oskl
+```
+
+A numeric argument bounds the run and drives one pointer click headlessly, so
+the same file can be exercised without a device:
+
+```sh
+LD_PRELOAD=bindings/skia/build/libskia_shim.so oskel examples/ui/todo.oskl 2
+```
+
+The native form needs the hosted link mode:
+
+```sh
+LIBRARY_PATH=bindings/skia/build oskel build examples/ui/todo.oskl \
+  --mode hosted --link-lib SDL3 --link-lib skia_shim -o oskel-todo
+LD_LIBRARY_PATH=bindings/skia/build ./oskel-todo
+```
+
+### `ui/window.oskl` — the minimal window
+
+A counter with one button, the smallest complete `std.ui` + `std.ui.window`
+program. Start here when reading the widget API.
+
+### `sdl/window.oskl` — raw SDL3
+
+A moving rectangle drawn with the low-level `std.internal.sdl` bindings, the
+layer the UI backend sits on. User code normally imports `std.ui` and
+`std.ui.window` instead.
+
 ## Feature demos
 
 Smaller programs, each focused on one area.
@@ -112,7 +155,12 @@ Smaller programs, each focused on one area.
 ## How the examples are tested
 
 `CMakeLists.txt` globs `examples/*.oskl` and runs each one as a CTest script
-test (`examples.<name>`), so every example must exit cleanly. The programs that
-build with the AOT backend are additionally compiled and run by
+test (`examples.<name>`), so every top-level example must exit cleanly. The
+programs that build with the AOT backend are additionally compiled and run by
 `oskel.build_binary_calc` and `oskel.build_binary_mandelbrot`, which compare the
 native output against the VM.
+
+The demos under `examples/ui/` and `examples/sdl/` are not part of that glob:
+they need SDL3 and the Skia shim, which a plain checkout does not have. The
+widget half is covered by `tests/native_build_ui.oskl`, and the window half by
+`tests/run_skia_case.cmake` when those libraries are present.

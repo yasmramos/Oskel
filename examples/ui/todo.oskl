@@ -1,0 +1,166 @@
+// Oskel Todo — a small desktop task list built on the declarative UI layer.
+//
+// Widgets come from `std.ui`; the window and the event loop come from
+// `std.ui.window`. Neither SDL3 nor Skia is named here.
+//
+// The window path needs SDL3 and the Skia shim. On the development engine:
+//
+//   LD_PRELOAD=bindings/skia/build/libskia_shim.so \
+//     oskel examples/ui/todo.oskl
+//
+// or as a native binary (Linux x86-64, hosted link mode):
+//
+//   LIBRARY_PATH=bindings/skia/build oskel build examples/ui/todo.oskl \
+//     --mode hosted --link-lib SDL3 --link-lib skia_shim -o oskel-todo
+//   LD_LIBRARY_PATH=bindings/skia/build ./oskel-todo
+//
+// Pass a frame budget to bound a headless run. The bounded mode also drives
+// the pointer handlers directly, so the model changes without a real device:
+//
+//   LD_PRELOAD=bindings/skia/build/libskia_shim.so \
+//     oskel examples/ui/todo.oskl 2
+
+import std.ui as ui;
+import std.ui.window as ui_window;
+
+const WIDTH = 460;
+const HEIGHT = 380;
+
+let SAMPLES = [
+  "Try the AOT backend",
+  "Add a std.ui widget",
+  "Write a parity fixture",
+];
+
+var tasks = [
+  { text: "Read docs/ui.md", done: true },
+  { text: "Build a widget tree", done: true },
+  { text: "Ship a native binary", done: false },
+];
+var nextSample = 0;
+
+// The two widgets that `refresh` mutates in place. `ui_window.run` keeps the
+// root it is handed, so the tree is rebuilt by replacing `tasksColumn.children`
+// instead of replacing the root.
+var tasksColumn = ui.column(6, []);
+var statusText = ui.text("", 14);
+
+fn pendingCount(): int {
+  var pending = 0;
+  for task in tasks {
+    if (task.done == false) {
+      pending = pending + 1;
+    }
+  }
+  return pending;
+}
+
+fn addTask() {
+  tasks.push({ text: SAMPLES[nextSample], done: false });
+  nextSample = (nextSample + 1) % len(SAMPLES);
+}
+
+fn removeTask(index) {
+  tasks.removeAt(index);
+}
+
+fn clearDone() {
+  var remaining = [];
+  for task in tasks {
+    if (task.done == false) {
+      remaining.push(task);
+    }
+  }
+  tasks = remaining;
+}
+
+fn clearAll() {
+  tasks = [];
+}
+
+fn taskRow(task, index) {
+  let label = task.done ? "✓ " + task.text : "• " + task.text;
+  let color = task.done ? 0xFF16A34A : 0xFF111827;
+  return ui.row(8, [
+    ui.textColor(label, 16, color),
+    ui.button("Toggle", () => {
+      task.done = task.done == false;
+      refresh();
+    }),
+    ui.button("Remove", () => {
+      removeTask(index);
+      refresh();
+    }),
+  ]);
+}
+
+fn refresh() {
+  var rows = [];
+  for i in 0..len(tasks) {
+    rows.push(taskRow(tasks[i], i));
+  }
+  if (len(rows) == 0) {
+    rows.push(ui.text("No tasks. Add one below.", 16));
+  }
+  tasksColumn.children = rows;
+  statusText.content = "${pendingCount()} of ${len(tasks)} tasks pending";
+}
+
+// The first button in paint order, for the bounded headless run.
+fn firstButton(node) {
+  if (node.kind == "button") {
+    return node;
+  }
+  if (node.kind == "window" || node.kind == "padding") {
+    return firstButton(node.child);
+  }
+  if (node.kind == "column" || node.kind == "row") {
+    for child in node.children {
+      let found = firstButton(child);
+      if (found != nil) {
+        return found;
+      }
+    }
+  }
+  return nil;
+}
+
+let root = ui.window("Oskel Todo", WIDTH, HEIGHT,
+  ui.column(12, [
+    ui.text("Oskel Todo", 28),
+    ui.text("A task list built with std.ui and std.ui.window.", 14),
+    tasksColumn,
+    ui.row(8, [
+      ui.button("Add task", () => {
+        addTask();
+        refresh();
+      }),
+      ui.button("Clear done", () => {
+        clearDone();
+        refresh();
+      }),
+      ui.button("Clear all", () => {
+        clearAll();
+        refresh();
+      }),
+    ]),
+    statusText,
+  ]));
+
+refresh();
+
+let argv = args();
+var maxFrames = 0;
+if (len(argv) > 0) {
+  maxFrames = int(argv[0]);
+  ui.layout(root, WIDTH, HEIGHT);
+  let target = firstButton(root);
+  if (target != nil) {
+    _ = ui_window.click(root, target.x + target.w / 2,
+                        target.y + target.h / 2);
+  }
+  print("headless: ${pendingCount()} of ${len(tasks)} tasks pending");
+}
+
+let presented = ui_window.run("Oskel Todo", root, WIDTH, HEIGHT, maxFrames);
+print("todo: presented ${presented} frame(s)");
