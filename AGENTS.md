@@ -6,6 +6,13 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
 
 ## Delivery
 
+- **Bring the remote changes before starting any work.** Run
+  `git fetch origin` and merge (or reset the base to) the current
+  `origin/develop` **before** creating the work branch. Do it again before
+  opening the PR and after any other PR lands. Starting from a stale tree is
+  what turns a clean PR into a conflict: `develop` moves while the branch is
+  being written, and a later PR that touches the same lines makes the branch
+  `dirty` without any push to it.
 - **Every finished task ends with a pull request against `develop`.** Do not
   wait to be asked. `develop` is the base branch (CONVENTIONS.md).
 - Branch naming: `feat/phase-X.Y.Z-<slug>`, `fix/<slug>`, `docs/<slug>`.
