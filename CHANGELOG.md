@@ -11,6 +11,18 @@ may change between minor versions.
 
 ### Added
 
+- **`async fn`, `await` and `Future` (PHASE 11.1).** A call to an async function
+  returns a `Future`; `await` yields its payload, and the declared return type
+  is the payload type (`async fn f(): int` returns `Future<int>`). `await` is
+  only valid inside an `async fn` (a lambda and the top level are rejected), an
+  `async fn init` is rejected, and a replacement for an async method must be
+  async too. The body runs eagerly in this phase: a future is a plain map
+  `{state, value, error}`, so the feature adds no opcode and no builtin and the
+  VM, the AOT backend and the WASM backend agree by construction. A pending
+  future has no producer yet, and awaiting one is a runtime error. Covered by
+  `tests/65_async.oskl`, `tests/65_async_modules.oskl`, the `oskel.build_binary_async`
+  and `oskel.build_wasm_async` fixtures and the `tests/errors/async_*.oskl`
+  diagnostics.
 - **`oskelp` resolves the latest release and inspects registry updates.**
   `oskelp add <name>` without `--version` writes a caret requirement for the
   highest published release (a prerelease-only package needs an explicit
