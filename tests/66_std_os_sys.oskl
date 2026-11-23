@@ -1,0 +1,44 @@
+// `std.os` is the process/OS facade; `std.sys` is the portable system
+// primitive surface. Both are namespaces (lowercase module names), so the
+// functions are reached through the module table.
+import std.os;
+import std.sys;
+import std.fs.dir;
+
+fn testPlatform() {
+  let p = std.os.platform();
+  assert(p == "linux" || p == "windows" || p == "macos" || p == "freestanding");
+  assert(std.sys.platform() == p);
+  assert(std.os.isWindows() == (p == "windows"));
+  assert(std.os.isLinux() == (p == "linux"));
+  assert(std.os.isMacOs() == (p == "macos"));
+  assert(std.sys.isWindows() == (p == "windows"));
+  assert(std.sys.isLinux() == (p == "linux"));
+  assert(std.sys.isMacOs() == (p == "macos"));
+  assert(std.sys.isBareMetal() == (p == "freestanding"));
+}
+
+fn testArchitecture() {
+  let a = std.os.arch();
+  assert(a == "x86_64" || a == "aarch64" || a == "wasm32");
+  assert(std.sys.arch() == a);
+  assertEq(std.sys.pointerSize(), a == "wasm32" ? 4 : 8);
+  assert(std.sys.is64Bit() == (std.sys.pointerSize() == 8));
+}
+
+fn testProcess() {
+  assert(std.sys.time() > 0);
+  assert(std.sys.clock() >= 0);
+  assertEq(type(std.os.exit), "function");
+  assertEq(type(std.sys.exit), "function");
+  assertEq(std.os.cwd(), std.fs.dir.currentDir());
+}
+
+fn main() {
+  testPlatform();
+  testArchitecture();
+  testProcess();
+  print("std.os/std.sys ok");
+}
+
+main();

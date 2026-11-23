@@ -482,6 +482,26 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     program is shown to depend on the text. `ord`/`len`/`chr` set this
     convention before the pointer builtins did.
 
+    The collection and operator messages follow the same rule, and the ones
+    without a tail were aligned word for word: `string index must be an
+    integer`, `map keys must be strings`, `map membership requires a string
+    key`, `string membership requires a string operand` and `range membership
+    requires an integer` used to reach AOT as `array index must be an integer`,
+    `map key must be a string` and the generic `unsupported operands for 'in'`.
+    The messages that quote a value keep the VM's fixed words but stop before
+    the type or member name: `cannot iterate over a value of type`, `cannot
+    index a value of type`, `cannot assign to an index of a value of type`,
+    `cannot set a field on a value of type`, `cannot call a value of type`,
+    `cannot slice a value of type`, `len() is not defined for values of type`,
+    `unsupported unary operator for type`, `unsupported operand types for`,
+    `operator 'in' is not supported for` and `type ... has no member`. The file
+    builtins name the function too (`fsRead() expects a file handle`,
+    `fsClose() used a closed file handle`), and `$slice` checks the receiver
+    before the bounds so `5[1:2]` names the receiver in both engines.
+    `tests/native_build_runtime_error_messages.oskl` pins both halves through
+    `pcall`, so a program that inspects `error.message` sees the same words in
+    both engines.
+
     **A wrong argument count is now worded identically on both engines**
     (PHASE 7c.5b.6). The guards used to stop at the fixed prefix, so the VM said
     `len() expects 1 argument, got 0` where the binary said

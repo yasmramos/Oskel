@@ -1,0 +1,213 @@
+// std.bytes: UTF-8, hexadecimal, Base64 and fixed-width binary codecs.
+//
+// The module is pure Oskel over the portable primitive surface, so every
+// expected value here must hold on the development VM, under `oskel build`
+// and on WebAssembly (see `tests/native_build_bytes.oskl`).
+
+import std.bytes;
+import std.bytes.*;
+import std.bytes as b;
+import { hexEncode, hexDecode } from std.bytes;
+
+// --- UTF-8 ------------------------------------------------------------------
+
+assertEq(fromString(""), []);
+assertEq(fromString("ABC"), [65, 66, 67]);
+assertEq(fromString("é"), [195, 169]);
+assertEq(fromString("€"), [226, 130, 172]);
+assertEq(fromString("😀"), [240, 159, 152, 128]);
+assertEq(fromString("\u0000"), [0]);
+assertEq(fromString("\u007F"), [0x7F]);
+assertEq(fromString("\u0080"), [0xC2, 0x80]);
+assertEq(fromString("\u07FF"), [0xDF, 0xBF]);
+assertEq(fromString("\u0800"), [0xE0, 0xA0, 0x80]);
+assertEq(fromString("\uD7FF"), [0xED, 0x9F, 0xBF]);
+assertEq(fromString("\uE000"), [0xEE, 0x80, 0x80]);
+assertEq(fromString("\uFFFF"), [0xEF, 0xBF, 0xBF]);
+assertEq(fromString(chr(0x10000)), [0xF0, 0x90, 0x80, 0x80]);
+assertEq(fromString(chr(0x10FFFF)), [0xF4, 0x8F, 0xBF, 0xBF]);
+
+assertEq(byteLength(""), 0);
+assertEq(byteLength("ABC"), 3);
+assertEq(byteLength("hé"), 3);
+assertEq(byteLength("€"), 3);
+assertEq(byteLength("😀"), 4);
+assertEq(byteLength("aé€😀"), 10);
+
+assertEq(toString([]), "");
+assertEq(toString([65, 66, 67]), "ABC");
+assertEq(toString([195, 169]), "é");
+assertEq(toString([226, 130, 172]), "€");
+assertEq(toString([240, 159, 152, 128]), "😀");
+assertEq(toString(fromString("aé€😀")), "aé€😀");
+
+// --- validation -------------------------------------------------------------
+
+assertEq(isValid([]), true);
+assertEq(isValid([0, 127, 255]), true);
+assertEq(isValid([-1]), false);
+assertEq(isValid([256]), false);
+assertEq(isValid([1.5]), false);
+assertEq(isValid(["a"]), false);
+assertEq(isValid("abc"), false);
+assertEq(isValid(nil), false);
+
+// --- hexadecimal ------------------------------------------------------------
+
+assertEq(hexEncode([]), "");
+assertEq(hexEncode([0, 1, 15, 16, 255]), "00010f10ff");
+assertEq(hexEncode([171, 205]), "abcd");
+assertEq(hexDecode(""), []);
+assertEq(hexDecode("00010f10ff"), [0, 1, 15, 16, 255]);
+assertEq(hexDecode("ABCD"), [171, 205]);
+assertEq(hexDecode("aBcD"), [171, 205]);
+assertEq(hexDecode(hexEncode([0, 42, 255])), [0, 42, 255]);
+
+// --- Base64 -----------------------------------------------------------------
+
+assertEq(base64Encode([]), "");
+assertEq(base64Encode([102]), "Zg==");
+assertEq(base64Encode([102, 111]), "Zm8=");
+assertEq(base64Encode([102, 111, 111]), "Zm9v");
+assertEq(base64Encode([102, 111, 111, 98]), "Zm9vYg==");
+assertEq(base64Encode([102, 111, 111, 98, 97]), "Zm9vYmE=");
+assertEq(base64Encode([102, 111, 111, 98, 97, 114]), "Zm9vYmFy");
+
+assertEq(base64Decode(""), []);
+assertEq(base64Decode("Zg=="), [102]);
+assertEq(base64Decode("Zm8="), [102, 111]);
+assertEq(base64Decode("Zm9v"), [102, 111, 111]);
+assertEq(base64Decode("Zm9vYg=="), [102, 111, 111, 98]);
+assertEq(base64Decode("Zm9vYmE="), [102, 111, 111, 98, 97]);
+assertEq(base64Decode("Zm9vYmFy"), [102, 111, 111, 98, 97, 114]);
+// Unpadded input is accepted too.
+assertEq(base64Decode("Zg"), [102]);
+assertEq(base64Decode("Zm8"), [102, 111]);
+assertEq(base64Decode(base64Encode(fromString("hello, bytes"))), fromString("hello, bytes"));
+
+assertEq(base64UrlEncode([251, 255]), "-_8");
+assertEq(base64UrlDecode("-_8"), [251, 255]);
+assertEq(base64UrlDecode("-_8="), [251, 255]);
+assertEq(base64UrlDecode(base64UrlEncode(fromString("a?b/c"))), fromString("a?b/c"));
+
+// --- fixed-width integers ---------------------------------------------------
+
+assertEq(readU8([0, 255], 1), 255);
+assertEq(readI8([255], 0), -1);
+assertEq(readI8([127], 0), 127);
+assertEq(readI8([128], 0), -128);
+assertEq(writeU8(255), [255]);
+assertEq(writeI8(-1), [255]);
+assertEq(writeI8(-128), [128]);
+
+assertEq(readU16LE([0x34, 0x12], 0), 0x1234);
+assertEq(readU16BE([0x12, 0x34], 0), 0x1234);
+assertEq(readI16LE([0xFF, 0xFF], 0), -1);
+assertEq(readI16BE([0xFF, 0xFF], 0), -1);
+assertEq(readI16LE([0x00, 0x80], 0), -32768);
+assertEq(readI16BE([0x80, 0x00], 0), -32768);
+assertEq(writeU16LE(0x1234), [0x34, 0x12]);
+assertEq(writeU16BE(0x1234), [0x12, 0x34]);
+assertEq(writeI16LE(-1), [0xFF, 0xFF]);
+assertEq(writeI16BE(-32768), [0x80, 0x00]);
+
+assertEq(readU32LE([0x78, 0x56, 0x34, 0x12], 0), 0x12345678);
+assertEq(readU32BE([0x12, 0x34, 0x56, 0x78], 0), 0x12345678);
+assertEq(readI32LE([0xFF, 0xFF, 0xFF, 0xFF], 0), -1);
+assertEq(readI32BE([0xFF, 0xFF, 0xFF, 0xFF], 0), -1);
+assertEq(readI32LE([0x00, 0x00, 0x00, 0x80], 0), -2147483648);
+assertEq(readI32BE([0x80, 0x00, 0x00, 0x00], 0), -2147483648);
+assertEq(writeU32LE(0x12345678), [0x78, 0x56, 0x34, 0x12]);
+assertEq(writeU32BE(0x12345678), [0x12, 0x34, 0x56, 0x78]);
+assertEq(writeI32LE(-1), [0xFF, 0xFF, 0xFF, 0xFF]);
+assertEq(writeI32BE(-2147483648), [0x80, 0x00, 0x00, 0x00]);
+
+// A read at an offset into a larger frame.
+let frame = [0xAA, 0x34, 0x12, 0xBB];
+assertEq(readU16LE(frame, 1), 0x1234);
+assertEq(readU16BE(frame, 1), 0x3412);
+
+// --- array helpers ----------------------------------------------------------
+
+assertEq(concat([], []), []);
+assertEq(concat([1, 2], [3, 4]), [1, 2, 3, 4]);
+assertEq(slice([0, 1, 2, 3, 4], 1, 4), [1, 2, 3]);
+assertEq(slice([0, 1, 2], 1, 1), []);
+assertEq(slice([0, 1, 2], 0, 3), [0, 1, 2]);
+
+assertEq(indexOf([], []), 0);
+assertEq(indexOf([1, 2, 3], []), 0);
+assertEq(indexOf([1, 2, 3], [2]), 1);
+assertEq(indexOf([1, 2, 3], [2, 3]), 1);
+assertEq(indexOf([1, 2, 3], [3, 2]), -1);
+assertEq(indexOf([1, 2, 1, 2], [1, 2]), 0);
+assertEq(indexOf([1], [1, 2]), -1);
+
+assertEq(contains([1, 2, 3], [2, 3]), true);
+assertEq(contains([1, 2, 3], []), true);
+assertEq(contains([1, 2, 3], [4]), false);
+assertEq(startsWith([1, 2, 3], [1, 2]), true);
+assertEq(startsWith([1, 2, 3], []), true);
+assertEq(startsWith([1, 2, 3], [2]), false);
+assertEq(startsWith([1], [1, 2]), false);
+assertEq(endsWith([1, 2, 3], [2, 3]), true);
+assertEq(endsWith([1, 2, 3], []), true);
+assertEq(endsWith([1, 2, 3], [1]), false);
+assertEq(endsWith([1], [1, 2]), false);
+
+assertEq(equals([], []), true);
+assertEq(equals([1, 2], [1, 2]), true);
+assertEq(equals([1, 2], [1, 2, 3]), false);
+assertEq(equals([1, 2], [1, 3]), false);
+
+assertEq(compare([], []), 0);
+assertEq(compare([1, 2], [1, 2]), 0);
+assertEq(compare([1, 2], [1, 3]), -1);
+assertEq(compare([1, 3], [1, 2]), 1);
+assertEq(compare([1], [1, 0]), -1);
+assertEq(compare([1, 0], [1]), 1);
+
+assertEq(reversed([]), []);
+assertEq(reversed([1, 2, 3]), [3, 2, 1]);
+assertEq(repeat([1, 2], 0), []);
+assertEq(repeat([1, 2], 3), [1, 2, 1, 2, 1, 2]);
+assertEq(isAscii([]), true);
+assertEq(isAscii([0, 127]), true);
+assertEq(isAscii([0, 128]), false);
+
+// --- runtime errors ---------------------------------------------------------
+
+assertEq(pcall(() => toString([0x80])).ok, false);
+assertEq(pcall(() => toString([0xC0, 0x80])).ok, false);
+assertEq(pcall(() => toString([0xE2, 0x82])).ok, false);
+assertEq(pcall(() => toString([0xED, 0xA0, 0x80])).ok, false);
+assertEq(pcall(() => toString([0xF4, 0x90, 0x80, 0x80])).ok, false);
+assertEq(pcall(() => toString([0xFF])).ok, false);
+assertEq(pcall(() => hexDecode("abc")).ok, false);
+assertEq(pcall(() => hexDecode("zz")).ok, false);
+assertEq(pcall(() => base64Decode("a")).ok, false);
+assertEq(pcall(() => base64Decode("Zg=")).ok, false);
+assertEq(pcall(() => base64Decode("Z===")).ok, false);
+assertEq(pcall(() => base64Decode("Z!")).ok, false);
+assertEq(pcall(() => readU8([0], 1)).ok, false);
+assertEq(pcall(() => readU16LE([0], 0)).ok, false);
+assertEq(pcall(() => writeU8(256)).ok, false);
+assertEq(pcall(() => writeI16LE(32768)).ok, false);
+assertEq(pcall(() => writeU32LE(0x100000000)).ok, false);
+assertEq(pcall(() => slice([0, 1], 1, 0)).ok, false);
+assertEq(pcall(() => repeat([0], -1)).ok, false);
+
+// --- import forms -----------------------------------------------------------
+
+assertEq(std.bytes.hexEncode([255]), "ff");
+assertEq(b.hexEncode([255]), "ff");
+assertEq(hexEncode([255]), "ff");
+assertEq(hexDecode("ff"), [255]);
+
+// The validation and encoding helpers are private.
+assertEq(std.bytes._isByte, nil);
+assertEq(std.bytes._checkBytes, nil);
+assertEq(std.bytes._utf8Bytes, nil);
+assertEq(std.bytes._b64Value, nil);
+
+print("std.bytes ok");

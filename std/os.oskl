@@ -1,0 +1,56 @@
+// Standard library: process and host operating system.
+//
+// Imported as `import std.os;` (qualified: `std.os.cwd`),
+// `import std.os.*;` (unqualified: `cwd`), `import std.os as os;` or
+// `import { cwd, chdir } from std.os;`.
+//
+// This module is the high-level OS facade. `platform()` and `arch()` are the
+// names of the engine that is running the program (the host on the VM, the
+// compile-time target under `oskel build`); `cwd`/`chdir` sit on top of
+// `std.fs.dir`, and `exit` is the process exit builtin. The lower-level,
+// target-independent primitives live in `std.sys`.
+//
+// `std.os` needs a process and a file system, so it is not a bare-metal
+// module. `std.sys` is the portable one. The command line stays the `args()`
+// builtin rather than a re-export: a Windows freestanding image has no argv,
+// so a re-export would make every import of this module fail there.
+
+import std.fs.dir as _dir;
+
+// The host OS name: `"linux"`, `"windows"`, `"macos"` or `"freestanding"`.
+let platform = platform;
+
+// The host architecture name: `"x86_64"`, `"aarch64"` or `"wasm32"`.
+let arch = arch;
+
+// Ends the process with `code`.
+let exit = exit;
+
+// The current working directory.
+@MustUse
+fn cwd(): string {
+  return _dir.currentDir();
+}
+
+// Changes the current working directory.
+fn chdir(path: string) {
+  _dir.changeDir(path);
+}
+
+// True when the program is running on Windows.
+@MustUse
+fn isWindows(): bool {
+  return platform() == "windows";
+}
+
+// True when the program is running on Linux.
+@MustUse
+fn isLinux(): bool {
+  return platform() == "linux";
+}
+
+// True when the program is running on macOS.
+@MustUse
+fn isMacOs(): bool {
+  return platform() == "macos";
+}

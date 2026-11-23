@@ -11,6 +11,19 @@ may change between minor versions.
 
 ### Added
 
+- **`std.bytes`, the byte-string and binary-codec module.** A byte is an `int`
+  in `0..255` and a byte string is an ordinary array, so no runtime type is
+  added. The module provides UTF-8 `fromString`/`toString`/`byteLength`,
+  `hexEncode`/`hexDecode`, standard and URL-safe Base64, fixed-width
+  little-/big-endian readers and writers for 8/16/32-bit signed and unsigned
+  integers, and the `concat`/`slice`/`indexOf`/`contains`/`startsWith`/
+  `endsWith`/`equals`/`compare`/`reversed`/`repeat`/`isAscii` array helpers.
+  Every public function validates its input and raises on an invalid byte,
+  offset, digit or width; `isValid` checks without raising. The module stays on
+  the portable primitive surface, so the VM, `oskel build` and WebAssembly
+  agree byte for byte. `tests/67_std_bytes.oskl` and
+  `tests/native_build_bytes.oskl` pin the three engines.
+
 - **VM/AOT parity for callbacks (PHASE 7f.11).** A callback may now return a
   struct by value under `oskel build`: the AOT body stages the returned map's
   fields into the C bytes and loads them into the System V return registers
@@ -370,6 +383,28 @@ may change between minor versions.
   which is why an indirect call (`let g = f; g()`) is still checked at run time.
   The diagnostics match the native-call form: `cannot assign 'string' to 'int'
   in argument 1 of 'f'` and `f() expects 1 argument, got 0`.
+
+- **Runtime error messages now match the VM across the AOT and WebAssembly
+  backends.** A program that inspects `pcall`'s `error.message` saw a different
+  sentence under `oskel build`: a string index reported `array index must be an
+  integer`, a map key reported `map key must be a string`, and a non-string
+  needle to `in` reported the generic `unsupported operands for 'in'` instead
+  of the map, string or range membership message. Those are now worded
+  identically (`string index must be an integer`, `map keys must be strings`,
+  `map membership requires a string key`, `string membership requires a string
+  operand`, `range membership requires an integer`), and the messages that
+  quote a type or member name keep the VM's fixed words instead of a separate
+  AOT wording: `cannot iterate over a value of type`, `cannot index a value of
+  type`, `cannot assign to an index of a value of type`, `cannot set a field on
+  a value of type`, `cannot call a value of type`, `cannot slice a value of
+  type`, `len() is not defined for values of type`, `unsupported unary operator
+  for type`, `unsupported operand types for`, `operator 'in' is not supported
+  for` and `type ... has no member`. The file builtins name the function too
+  (`fsRead() expects a file handle`, not `file handle expected`), and `$slice`
+  checks the receiver before the bounds so `5[1:2]` names the receiver in both
+  engines. The WebAssembly pool was aligned the same way.
+  `tests/native_build_runtime_error_messages.oskl` pins both halves through
+  `pcall` and compares the binary's output with the VM's.
 
 - **The standard-library docs no longer claim an AOT gap that does not exist.**
   `std/collections.oskl`, its two fixtures, `docs/language.md` §12.12 and

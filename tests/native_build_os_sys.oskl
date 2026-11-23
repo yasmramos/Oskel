@@ -1,0 +1,30 @@
+// VM/AOT parity for `std.os` and `std.sys` (PHASE 10).
+//
+// `platform()` and `arch()` are host names on the VM and compile-time target
+// names in a native image. The fixture prints both, plus the predicates and
+// the portable clock/exit surface, so a mismatch between the two engines is a
+// byte-for-byte failure rather than a silent divergence.
+import std.os;
+import std.sys;
+import std.fs.dir;
+
+fn main() {
+  print(std.os.platform());
+  print(std.os.arch());
+  print(std.os.isLinux());
+  print(std.os.isWindows());
+  print(std.os.isMacOs());
+  print(std.sys.isBareMetal());
+
+  print(std.sys.platform());
+  print(std.sys.arch());
+  print(std.sys.pointerSize());
+  print(std.sys.is64Bit());
+  print(std.sys.time() > 0);
+  print(std.sys.clock() >= 0);
+  print(std.os.cwd() == std.fs.dir.currentDir());
+  print(type(std.os.exit));
+  print(type(std.sys.exit));
+}
+
+main();

@@ -930,7 +930,7 @@ static void test_slice_helper_errors() {
       "print(5[1:2]);\n");
   RunResult value = buildAndRun("/tmp/oskel_slice_not_sliceable", notSliceable);
   check(value.exitCode == 70, "slicing a non-collection exits 70");
-  check(value.output.find("not sliceable") != std::string::npos,
+  check(value.output.find("cannot slice a value of type") != std::string::npos,
         "the failed slice names the non-sliceable operand");
 }
 
@@ -1660,7 +1660,7 @@ static void test_boxed_runtime_call_non_function() {
                              {Value(static_cast<int64_t>(5)), Value(static_cast<int64_t>(7))}, 2);
   RunResult result = buildAndRun("/tmp/oskel_boxed_call_nonfunc", proto);
   check(result.exitCode == 70, "calling a non-function exits 70");
-  check(result.output.find("non-function") != std::string::npos,
+  check(result.output.find("cannot call a value of type") != std::string::npos,
         "the runtime error names the non-function call");
 }
 

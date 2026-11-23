@@ -231,6 +231,13 @@ struct AotRuntimeHandles {
   // outside world for a *value* rather than output, so it reads the `entry.now`
   // handle the target's prelude binds (syscall, libc, kernel32 or the CMOS RTC).
   CodeGen::Label timeBuiltin;      // AotValue oskel_builtin_time(AotValue* args, long argc, AotClosure* self)
+  // `platform()` and `arch()`: the target's OS and architecture names as
+  // strings. The image has no host introspection, so the values are the
+  // compile-time `Target` fields (`linux`, `windows`, `macos`,
+  // `freestanding`; `x86_64`, `aarch64`, `wasm32`). They are seeded on every
+  // target, like `time()`.
+  CodeGen::Label platformBuiltin;  // AotValue oskel_builtin_platform(AotValue* args, long argc, AotClosure* self)
+  CodeGen::Label archBuiltin;      // AotValue oskel_builtin_arch(AotValue* args, long argc, AotClosure* self)
   // `input([prompt])`: reads one line from the keyboard and returns it as a
   // string (nil on end of input). It reads through the `entry.read` handle,
   // which only the bare-metal prelude binds -- the keyboard slice gives the
@@ -668,6 +675,11 @@ struct AotRuntimeExtras {
   // Windows hosted image gets the Microsoft x64 register file and 32 bytes of
   // shadow space. The default keeps every existing caller on System V.
   Abi abi = Abi::SysV;
+  // The compile-time target names `platform()` and `arch()` return. A null
+  // field keeps the builtin's string `"unknown"`, which is what a direct
+  // `emitAotRuntime` caller without a target gets.
+  const char* platformName = nullptr;
+  const char* archName = nullptr;
   // Emit `oskel_global_get_checked` (the "undefined variable" guard). Set only
   // when some `GETGLOBAL` can reach a slot nothing has assigned, so a program
   // that assigns before it reads keeps its image byte for byte.

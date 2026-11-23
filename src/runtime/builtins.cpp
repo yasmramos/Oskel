@@ -23,6 +23,31 @@ void trackNativeCapture(const Value& fn, const Ref<T>& capture) {
   fn.func().capturedGcNodes.push_back(pinGcNode(capture));
 }
 
+// The host names `platform()` and `arch()` report. They describe the engine
+// that is running the program, not the target a native build would emit; the
+// AOT backend supplies its own compile-time `Target` names.
+const char* hostPlatformName() {
+#if defined(_WIN32)
+  return "windows";
+#elif defined(__APPLE__)
+  return "macos";
+#elif defined(__linux__)
+  return "linux";
+#else
+  return "unknown";
+#endif
+}
+
+const char* hostArchName() {
+#if defined(__x86_64__) || defined(_M_X64)
+  return "x86_64";
+#elif defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)
+  return "aarch64";
+#else
+  return "unknown";
+#endif
+}
+
 // ------------------------------------------------------------ arg checking
 
 [[noreturn]] void arityError(Runtime& in, const std::string& fn, size_t expected, Args args) {
@@ -1316,6 +1341,19 @@ void registerBuiltins(Runtime& in) {
                           now.time_since_epoch())
                           .count();
     return Value(seconds);
+  });
+
+  // The host OS and architecture the development engine runs on. A native
+  // build returns the compile-time target names instead, so a program can
+  // branch on the platform without an FFI call.
+  in.addNative("platform", [](Runtime& in, Args args) -> Value {
+    need(in, "platform", args, 0);
+    return Value(hostPlatformName());
+  });
+
+  in.addNative("arch", [](Runtime& in, Args args) -> Value {
+    need(in, "arch", args, 0);
+    return Value(hostArchName());
   });
 
   // Total physical memory of the machine, in bytes. Like `time()`, it is a
