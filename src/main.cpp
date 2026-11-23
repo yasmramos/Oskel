@@ -105,7 +105,12 @@ int runSource(const std::string &source, const std::string &name,
 
   if (checkOnly) return 0;
 
-  VM vm;
+  // A C callback may be stored and invoked after the chunk returns (an
+  // `atexit` handler), so the engine outlives this function for the whole
+  // process, exactly like the AOT image's runtime (BACKLOG §6 item 27). The
+  // static pointer keeps it reachable, so a leak checker does not report it.
+  static VM *const processVm = new VM();
+  VM &vm = *processVm;
   vm.sourceName = name;
   vm.scriptArgs = scriptArgs;
   vm.setJitEnabled(useJit);
@@ -236,7 +241,10 @@ void publishReplValue(VM &vm, const Value &value) {
 }
 
 void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, bool useJit) {
-  VM vm;
+  // Same process-lifetime reason as the script engine: a stored callback may
+  // run from an `atexit` handler after the REPL exits.
+  static VM *const processVm = new VM();
+  VM &vm = *processVm;
   vm.sourceName = "<repl>";
   vm.scriptArgs = scriptArgs;
   vm.setJitEnabled(useJit);

@@ -1243,6 +1243,7 @@ if(BUILD_TESTING)
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_callback_stored.oskl"
           "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_helper.c"
           "-DOSKEL_EXPECTED_OUTPUT=stored callback ok"
+          "-DOSKEL_VM_PRELOAD=ON"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
       # Seven arguments fill the six GPRs and the first stack slot; eight reach
       # the second. The body reads both from its caller's frame.
@@ -1272,6 +1273,7 @@ if(BUILD_TESTING)
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_callback_exit.oskl"
           "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_exit_helper.c"
           "-DOSKEL_EXPECTED_OUTPUT=late callback 1"
+          "-DOSKEL_VM_PRELOAD=ON"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
       # Every scalar return class the marshalling supports, including a
       # `cstring` (a copy in the arena) and an opaque `ptr`.
@@ -1283,16 +1285,20 @@ if(BUILD_TESTING)
           "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_returns_helper.c"
           "-DOSKEL_EXPECTED_OUTPUT=callback returns ok"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
-      # The shapes the AOT callback body cannot build yet must fail the hosted
-      # build with the dedicated message, never emit a binary.
-      add_test(NAME oskel.build_hosted_callback_struct_return_error
+      # A callback may return a struct by value: the register class (8- and
+      # 16-byte structs, INTEGER and SSE eightbytes) and class MEMORY (through
+      # the hidden `sret` pointer). The fixture links its own C helper and also
+      # runs the VM with that helper preloaded, so the two engines are compared
+      # on the same input (BACKLOG §6 item 28).
+      add_test(NAME oskel.build_hosted_extern_callback_struct
         COMMAND ${CMAKE_COMMAND}
-          "-DOSKEL_TEST_NAME=oskel.build_hosted_callback_struct_return_error"
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_callback_struct"
           "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
-          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/errors/callback_struct_return.oskl"
-          "-DOSKEL_BUILD_MODE=hosted"
-          "-DEXPECTED_MESSAGE=a callback returning a struct by value is not supported"
-          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_callback_struct.oskl"
+          "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/callback_struct_helper.c"
+          "-DOSKEL_EXPECTED_OUTPUT=callback struct return ok"
+          "-DOSKEL_VM_PRELOAD=ON"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
       add_test(NAME oskel.build_hosted_callback_struct_param_error
         COMMAND ${CMAKE_COMMAND}
           "-DOSKEL_TEST_NAME=oskel.build_hosted_callback_struct_param_error"
@@ -2080,13 +2086,15 @@ if(BUILD_TESTING)
     if(name STREQUAL "native_build_link_data")
       continue()
     endif()
-    # The stored/many-args/returns callback fixtures bind helpers the VM cannot
-    # resolve; their hosted tests are the coverage.
+    # The stored/many-args/returns/struct callback fixtures bind helpers the VM
+    # cannot resolve on its own; their hosted tests are the coverage, and the
+    # stored, exit and struct ones also run the VM with the helper preloaded.
     if(name STREQUAL "native_build_extern_callback_stored" OR
        name STREQUAL "native_build_extern_callback_exit" OR
        name STREQUAL "native_build_extern_callback_wx" OR
        name STREQUAL "native_build_extern_callback_many_args" OR
-       name STREQUAL "native_build_extern_callback_returns")
+       name STREQUAL "native_build_extern_callback_returns" OR
+       name STREQUAL "native_build_extern_callback_struct")
       continue()
     endif()
     # The qsort callback fixture needs the x86-64 closure stub in the
@@ -2188,11 +2196,10 @@ if(BUILD_TESTING)
     if(name STREQUAL "extern_struct_too_large" AND OSKEL_FFI_MEMORY_STRUCTS)
       continue()
     endif()
-    # These two are `oskel build --mode hosted` rejection inputs, not VM
-    # scripts: the struct-param declaration does not compile and the struct
-    # return binds a symbol the VM's host registry does not have. Their coverage
-    # is `oskel.build_hosted_callback_struct_{param,return}_error`.
-    if(name STREQUAL "callback_struct_param" OR name STREQUAL "callback_struct_return")
+    # This one is a `oskel build --mode hosted` rejection input, not a VM
+    # script: the struct-param declaration does not compile. Its coverage is
+    # `oskel.build_hosted_callback_struct_param_error`.
+    if(name STREQUAL "callback_struct_param")
       continue()
     endif()
     oskel_add_script_test("oskel.errors.${name}" "${script}")

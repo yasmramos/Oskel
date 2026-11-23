@@ -14810,7 +14810,7 @@ void emitCallbackCreate(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocL
   // pointer for a later call (a stored callback, including an `atexit`
   // handler), and Oskel has no way to learn when C is done with it; freeing
   // it here would break that contract. The OS reclaims the mapping at exit.
-  // BACKLOG §6 item 28 tracks pooling or an explicit release contract.
+  // BACKLOG §6 item 29 tracks pooling or an explicit release contract.
   cg.movReg(Rax, Rbx);
   cg.addImm32(Rsp, 32);
   cg.pop(R12);
@@ -14843,9 +14843,10 @@ void emitCallbackCreate(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocL
 // they are never touched.
 void emitCallbackBody(CodeGen& cg, const AotCallbackSignature& sig,
                       CodeGen::Label call, CodeGen::Label allocLabel,
-                      CodeGen::Label voidPtrBox, CodeGen::Label fail,
-                      const DataBlob& msgOom, const DataBlob& msgType,
-                      const DataBlob& msgCStringTooLong) {
+                      CodeGen::Label memberGet, CodeGen::Label voidPtrBox,
+                      CodeGen::Label fail, const DataBlob& msgOom,
+                      const DataBlob& msgType, const DataBlob& msgCStringTooLong,
+                      const DataBlob& msgStructReturn, const DataBlob& msgStructField) {
   constexpr std::int32_t kStageBytes = (6 + 8) * 8;  // six GPRs and eight SSE slots
   // Five callee-saved registers are pushed (rbx, r12-r15), then the stage and
   // the window live below them. The stage base must clear the saved r15 at
@@ -14854,7 +14855,21 @@ void emitCallbackBody(CodeGen& cg, const AotCallbackSignature& sig,
   constexpr std::int64_t kStageBase = -(kSavedBytes + 8 + kStageBytes);
   constexpr std::int64_t kArgs = kStageBase - 16;    // window[0]
   const std::int32_t arity = static_cast<std::int32_t>(sig.params.size());
-  const std::int32_t frameBytes = kStageBytes + 16 * arity;
+  // A struct return needs room below the argument window for the returned map
+  // value, the C bytes staged from its fields, the hidden `sret` pointer and
+  // the closure context (the field staging helper uses r12 as a scratch).
+  const std::int64_t structSpan =
+      sig.returnsStruct
+          ? (static_cast<std::int64_t>(sig.returnStruct.layout.size) + 7) / 8 * 8
+          : 0;
+  const std::int64_t kStructValue = kStageBase - 16LL * arity - 16;
+  const std::int64_t kSretSlot = kStructValue - 8;
+  const std::int64_t kStructBuf = kSretSlot - structSpan;
+  const std::int64_t kContextSlot = kStructBuf - 8;
+  const std::int64_t extra =
+      sig.returnsStruct ? ((32 + structSpan + 15) / 16) * 16 : 0;
+  const std::int32_t frameBytes =
+      kStageBytes + 16 * arity + static_cast<std::int32_t>(extra);
   CodeGen::Label oom = cg.newLabel();
   CodeGen::Label bad = cg.newLabel();
 
@@ -15072,6 +15087,58 @@ void emitCallbackBody(CodeGen& cg, const AotCallbackSignature& sig,
       cg.bind(isPtr);
       cg.movFromMem(Rax, Rdx, kPtrDataOffset);
       cg.bind(done);
+      break;
+    }
+    case ffi::ReturnClass::Struct: {
+      // The closure returns the struct as a map. Stage its C bytes from the
+      // fields, then load the eightbytes into the return registers or copy the
+      // buffer through the hidden `sret` pointer. A non-map result is the VM's
+      // error, worded the same.
+      CodeGen::Label isMap = cg.newLabel();
+      cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagMap));
+      cg.jcc(Jcc::Eq, isMap);
+      emitFailCall(cg, fail, msgStructReturn);
+      cg.bind(isMap);
+      cg.movToMem(Rbp, kStructValue, Rax);
+      cg.movToMem(Rbp, kStructValue + 8, Rdx);
+      if (sig.returnMemory) {
+        // rdi held the hidden `sret` pointer on entry; the argument stage kept
+        // it at the first GPR slot.
+        cg.movFromMem(R11, Rbp, kStageBase);
+        cg.movToMem(Rbp, kSretSlot, R11);
+      }
+      // The field staging helper uses r12 as a scratch for a `cstring` field,
+      // so park the closure context and reload it afterwards.
+      cg.movToMem(Rbp, kContextSlot, R12);
+      cg.movReg(Rbx, Rbp);
+      emitStructArgBytes(cg, sig.returnStruct, kStructValue, Rbp, kStructBuf,
+                         memberGet, oom, allocLabel, fail, msgStructField);
+      cg.movFromMem(R12, Rbp, kContextSlot);
+      if (sig.returnMemory) {
+        cg.movFromMem(Rdi, Rbp, kSretSlot);
+        cg.leaMem(Rsi, Rbp, kStructBuf);
+        cg.movImm(Rcx, static_cast<std::int64_t>(sig.returnStruct.layout.size));
+        cg.cld();
+        cg.repMovsb();
+        cg.movFromMem(Rax, Rbp, kSretSlot);  // System V also returns the buffer
+      } else {
+        int intReg = 0;
+        int sseReg = 0;
+        for (int e = 0; e < sig.returnStruct.layout.eightbyteCount; ++e) {
+          cg.movFromMem(R11, Rbp, kStructBuf + 8LL * e);
+          if (sig.returnStruct.layout.eightbyte[e] == 'S') {
+            cg.movqToXmm(kXmmBase + sseReg, R11);
+            ++sseReg;
+          } else {
+            if (intReg == 0) {
+              cg.movReg(Rax, R11);
+            } else {
+              cg.movReg(Rdx, R11);
+            }
+            ++intReg;
+          }
+        }
+      }
       break;
     }
     default:
@@ -17301,6 +17368,15 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   if (externThunks != nullptr) {
     msgCallback = addText("could not allocate a callback trampoline");
   }
+  // A callback that returns a struct by value must produce a struct (a map).
+  // The hosted engine words the two failures with the field name appended; the
+  // AOT sink keeps the fixed prefix, like every other dynamic tail.
+  DataBlob msgCallbackStruct;
+  DataBlob msgCallbackField;
+  if (externThunks != nullptr) {
+    msgCallbackStruct = addText("a callback returning a struct must return a struct value");
+    msgCallbackField = addText("the struct returned by a callback is missing field");
+  }
   CodeGen::Label fail = cg.newLabel();
   CodeGen::Label failDynamic = cg.newLabel();
   CodeGen::Label writeInt = cg.newLabel();
@@ -17798,8 +17874,9 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
       emitCallbackCreate(cg, callbackCreate, handles.alloc, fail, msgOom, msgCallback,
                          extras.callbackStateSlot);
       for (const AotCallbackSignature& signature : *callbacks) {
-        emitCallbackBody(cg, signature, handles.call, handles.alloc, voidPtrBox, fail,
-                         msgOom, msgExternType, msgCStringTooLong);
+        emitCallbackBody(cg, signature, handles.call, handles.alloc, handles.memberGet,
+                         voidPtrBox, fail, msgOom, msgExternType, msgCStringTooLong,
+                         msgCallbackStruct, msgCallbackField);
       }
     }
     for (const AotExternThunk& thunk : *externThunks) {
@@ -18254,6 +18331,21 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
           cg.emitBytes(reinterpret_cast<const std::uint8_t*>(layout.layout.fields[k].name.data()),
                        layout.layout.fields[k].name.size());
         }
+      }
+    }
+  }
+  // The same name islands for a struct returned by a callback: the body reads
+  // each field out of the returned map with `oskel_member_get`.
+  if (callbacks != nullptr) {
+    for (const AotCallbackSignature& signature : *callbacks) {
+      if (!signature.returnsStruct) continue;
+      const AotStructLayout& layout = signature.returnStruct;
+      for (std::size_t k = 0; k < layout.fieldNameLabels.size(); ++k) {
+        cg.bind(layout.fieldNameLabels[k]);
+        const std::uint64_t length = layout.layout.fields[k].name.size();
+        cg.emitBytes(reinterpret_cast<const std::uint8_t*>(&length), sizeof length);
+        cg.emitBytes(reinterpret_cast<const std::uint8_t*>(layout.layout.fields[k].name.data()),
+                     layout.layout.fields[k].name.size());
       }
     }
   }
