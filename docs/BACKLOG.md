@@ -470,34 +470,42 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     is not a value, so `try`/`catch` cannot see it) and still compares line for
     line with the VM.
 
-    One divergence remains and is deliberate: a builtin's *runtime* error
-    message that ends in a dynamic tail keeps only its fixed prefix in AOT
-    (`free() expects a pointer` against `free() expects a pointer, got 'int'`;
-    likewise `expects an integer index, got '...'`, `index 7 is out of
-    range` and `the struct returned by a callback is missing field 'x'`),
-    because the AOT sink writes one fixed message blob and does not
-    format values into it. The function name and the condition are identical in
-    both engines, which is what a program can branch on; assembling the tail
-    would mean a per-message builder in the runtime and is not worth it until a
-    program is shown to depend on the text. `ord`/`len`/`chr` set this
-    convention before the pointer builtins did.
+    A runtime error message with a dynamic tail is now assembled too, not
+    truncated at its fixed prefix. Three helpers share the arena builder: the
+    `, got '<type>'` tail (`emitFailGotType`), the ` '<type>'` tail
+    (`emitTypeQuoteFail`, for a prefix that already names the condition) and
+    the two-value `type '<t>' has no member '<name>'` form
+    (`emitNoMemberFail`). The type name comes from the same table `type()`
+    reads, so a pointer handle reports `cstring` or `ptr` exactly like the VM.
+    This closed every argument-type tail a program can observe through
+    `pcall`: `free() expects a pointer, got 'int'`, `insert() expects an
+    integer index, got 'string'`, `"a".padStart(3, 1)` reports
+    `padStart() expects a string fill, got 'int'`, and the `contains`/
+    `startsWith`/`endsWith`/`indexOf`/`split`/`replace`/`replaceFirst`/
+    `substr`/`repeat`/`slice` argument tails, the map `has`/`get`/`set`/
+    `delete` key tail, `ord`, `chr`, `error`, `exit`, `seed`, `random`,
+    `sqrt`, `exp`, `log`, `pow`, `sin`, `cos`, `tan`, `floor`, `ceil`,
+    `round`, `cstring`, `buffer`, `intToPtr`, the file builtins, the
+    `$slice`/`len`/call/member/index/iteration messages and
+    `unsupported unary operator for type 'int'` all print the same sentence as
+    the VM. The two-operand tails quote both operands too: `cannot compare
+    'int' with 'string'` and `operator 'in' is not supported for 'int' and
+    'int'` share `emitTwoTypeFail`. Two tails are still truncated: the
+    arithmetic/bitwise `unsupported operand types for '<op>': '<t1>' and
+    '<t2>'`, which needs the operator symbol threaded through the shared
+    helper (the helper receives the opcode at run time, not the symbol), and
+    the FFI struct-field name (`the struct returned by a callback is missing
+    field`), which names a C layout field rather than a runtime value.
 
-    The collection and operator messages follow the same rule, and the ones
-    without a tail were aligned word for word: `string index must be an
-    integer`, `map keys must be strings`, `map membership requires a string
-    key`, `string membership requires a string operand` and `range membership
-    requires an integer` used to reach AOT as `array index must be an integer`,
-    `map key must be a string` and the generic `unsupported operands for 'in'`.
-    The messages that quote a value keep the VM's fixed words but stop before
-    the type or member name: `cannot iterate over a value of type`, `cannot
-    index a value of type`, `cannot assign to an index of a value of type`,
-    `cannot set a field on a value of type`, `cannot call a value of type`,
-    `cannot slice a value of type`, `len() is not defined for values of type`,
-    `unsupported unary operator for type`, `unsupported operand types for`,
-    `operator 'in' is not supported for` and `type ... has no member`. The file
-    builtins name the function too (`fsRead() expects a file handle`,
-    `fsClose() used a closed file handle`), and `$slice` checks the receiver
-    before the bounds so `5[1:2]` names the receiver in both engines.
+    The collection and operator messages without a tail were aligned word for
+    word: `string index must be an integer`, `map keys must be strings`,
+    `map membership requires a string key`, `string membership requires a
+    string operand` and `range membership requires an integer` used to reach
+    AOT as `array index must be an integer`, `map key must be a string` and
+    the generic `unsupported operands for 'in'`. The file builtins name the
+    function too (`fsRead() expects a file handle`, `fsClose() used a closed
+    file handle`), and `$slice` checks the receiver before the bounds so
+    `5[1:2]` names the receiver in both engines.
     `tests/native_build_runtime_error_messages.oskl` pins both halves through
     `pcall`, so a program that inspects `error.message` sees the same words in
     both engines.
