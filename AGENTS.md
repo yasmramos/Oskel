@@ -694,6 +694,20 @@ it as a caveat:
   the old signed `select` wrapped a span wider than INT64_MAX to a negative
   length. `tests/native_build_wasm_range_methods.oskl` is the WASM fixture;
   the error cases stay in the AOT fixture because `pcall` is VM-only.
+- The pointer builtins (`cstring`, `buffer`, `cstr`, `byteLen`, `loadByte`,
+  `storeByte`, `intToPtr`, `ptrToInt`, `free`) keep an `AotPtr` in linear
+  memory: `{kind, data, length, released}`, with `data` owning the bytes for a
+  `cstring`/`buffer` and holding the opaque token for a `void *`. `type()` must
+  inspect the kind and report `cstring` for a CString handle, not `ptr`; `str`
+  renders a `cstring` as its text and every other handle as `<ptr>`, and `repr`
+  quotes the text but not `<ptr>`. `free` only sets `released`, because the
+  arena never reclaims, and every read checks it first. The error paths use the
+  AOT prefixes; the WASM fixture covers the happy paths because `pcall` is
+  VM-only. **`emitBuiltin`'s `index` is the function index.** A branch that
+  declares a local named `index` (the byte offset) shadows it, so `return
+  index` returns the WASM local number: `loadByte`/`storeByte` shipped that way
+  and their table slots pointed at function 5, which trapped on first use. Name
+  a byte offset `at`, never `index`.
 - A construct the backend cannot lower yet must fail cleanly, never emit a
   mis-compiled module: an unbound builtin is seeded as a trapping closure, and
   a used `extern "C"`/`native fn` symbol with no stub is a build error (exit
