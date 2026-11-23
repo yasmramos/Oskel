@@ -552,7 +552,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
       `repr`) and every other handle as `<ptr>`, and `free` marks the handle
       released without reclaiming the arena. `tests/native_build_wasm_pointers.oskl`
       covers the happy paths; the error paths stay in the AOT fixture because
-      `pcall` is VM-only.
+      `pcall` is VM-only. A `buffer` size is bounded by the 32-bit address
+      space: a larger request fails with `buffer() size is too large`, and
+      `alloc` reports `out of memory` on a wrapped cursor or a failed
+      `memory.grow`. The VM has no such cap, so it is a WASM-only bound.
+      `ptrToInt` returns the token only for a `void *`; a buffer or cstring
+      returns `0`, as in the VM.
     - A used `extern "C"` or `native fn` symbol with no builtin stub is a build
       error, mirroring the AOT backend's message.
     Each gap fails cleanly (build error 65 or a runtime error), never a

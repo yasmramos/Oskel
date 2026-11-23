@@ -733,7 +733,12 @@ it as a caveat:
   declares a local named `index` (the byte offset) shadows it, so `return
   index` returns the WASM local number: `loadByte`/`storeByte` shipped that way
   and their table slots pointed at function 5, which trapped on first use. Name
-  a byte offset `at`, never `index`.
+  a byte offset `at`, never `index`. The bounds follow the VM, not the address:
+  `buffer` rejects a size above `0xFFFFFFFF` before the `i32` narrowing, `alloc`
+  reports `out of memory` on a wrapped cursor or a failed `memory.grow`, `cstr`
+  skips `memory.copy` for a zero length (a `void *` token can point past linear
+  memory), and `ptrToInt` returns a token only for `kPtrKindVoid`, because the
+  VM returns `0` for a buffer or a cstring.
 - A construct the backend cannot lower yet must fail cleanly, never emit a
   mis-compiled module: an unbound builtin is seeded as a trapping closure, and
   a used `extern "C"`/`native fn` symbol with no stub is a build error (exit
