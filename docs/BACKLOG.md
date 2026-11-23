@@ -570,9 +570,31 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     records the SONAME (`libSDL3.so.0`).
     The Windows own linker (PHASE 10.3a) closes COFF objects into a PE32+
     image with a dynamic import table (`kernel32.dll`/`ucrtbase.dll`) and a
-    generated `_start`. Remaining Windows work: `-r` COFF, MSVC `.lib`
-    archives, `args()` (`GetCommandLineA`), `.pdata`/`.xdata` exception data
-    and TLS. The macOS Mach-O container is PHASE 10.3d.
+    generated `_start`. The `-r` COFF link (PHASE 10.3b.1) is done; remaining
+    Windows work is MSVC `.lib` archives, `args()` (`GetCommandLineA`),
+    `.pdata`/`.xdata` exception data and TLS. The macOS Mach-O container is
+    PHASE 10.3d.
+
+30. **[P0] [done]** VM/AOT divergence in reading a global before it is assigned:
+    the VM fails with `runtime error: undefined variable '<name>'` and exit 70,
+    while the AOT binary read the slot as `nil` and carried on. `oskel_init_globals`
+    now seeds every slot with a dedicated `Unset` tag (12) instead of `Nil`, so a
+    slot nobody assigned is distinguishable from one assigned `nil` (`var g = nil`
+    is legal). `oskel_global_get_checked` reports the hosted wording and exits 70
+    on an `Unset` slot; the plain `oskel_global_get` still returns the raw slot and
+    stays the default. Which reads get the check is decided by a forward "may"
+    dataflow per proto (`checkedGlobalReads` in `lower.cpp`): a read is checked
+    unless every path from the entry has already executed a `SETGLOBAL` of the
+    same name, or the chunk seeds the slot (`globals.seeded`: builtins, resolved
+    `extern "C"` thunks, the hidden runtime slots). The candidate set is computed
+    across all protos, because a name assigned only inside a never-called function
+    is still unset at a top-level read. The helper and its message are emitted only
+    when a read needs them, so a program with no such read keeps its image byte for
+    byte. `tests/native_build_unset_global.oskl` (top-level read before the
+    assignment), `tests/native_build_unset_global_fn.oskl` (assignment only in an
+    unreached function) and `tests/native_build_global_nil.oskl` (the `nil` case
+    and a read after assignment) pin it. A global with *no* assignment anywhere is
+    still a lowering error (exit 65), which is a different, compile-time case.
 
 ---
 

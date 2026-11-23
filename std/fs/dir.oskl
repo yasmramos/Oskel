@@ -40,6 +40,37 @@ fn listDir(path: string): array {
   return names;
 }
 
+// Every entry below `path`, recursively, as paths joined to `path`. The
+// directories themselves are included; the root is not. The result is sorted.
+@MustUse
+fn walk(path: string): array {
+  let entries = [];
+  _walkInto(path, entries);
+  entries.sort();
+  return entries;
+}
+
+fn _walkInto(path: string, entries: array) {
+  for name in listDir(path) {
+    let child = _join(path, name);
+    entries.push(child);
+    if (isDir(child)) {
+      _walkInto(child, entries);
+    }
+  }
+}
+
+fn _join(path: string, name: string): string {
+  if (path == "" || path == ".") {
+    return name;
+  }
+  let last = path[len(path) - 1];
+  if (last == "/" || last == "\\") {
+    return path + name;
+  }
+  return path + "/" + name;
+}
+
 // Metadata for `path`: `{size, modified, isFile, isDir}`. `modified` is epoch
 // seconds, the same unit as `time()`.
 @MustUse

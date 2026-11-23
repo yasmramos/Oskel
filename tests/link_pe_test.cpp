@@ -69,6 +69,41 @@ std::size_t findSection(const std::vector<std::uint8_t>& pe, const char* name) {
   return 0;
 }
 
+void testRelocatable() {
+  // main: call helper; ret. The call field is at offset 1.
+  const std::vector<std::uint8_t> mainText = {0xE8, 0x00, 0x00, 0x00,
+                                              0x00, 0xC3};
+  const std::vector<std::uint8_t> helperText = {0xB8, 42, 0x00, 0x00,
+                                                0x00, 0xC3};
+  const std::vector<std::uint8_t> mainObject = buildRelocatableObject(
+      Target::winX64(), mainText, {}, {{1, "helper", true}}, {{"main", 0}});
+  const std::vector<std::uint8_t> helperObject = buildRelocatableObject(
+      Target::winX64(), helperText, {}, {}, {{"helper", 0}});
+
+  LinkOptions options;
+  options.target = Target::winX64();
+  const std::vector<std::uint8_t> combined = linkRelocatable(
+      std::vector<LinkInput>{{"main.obj", mainObject},
+                             {"helper.obj", helperObject}},
+      options);
+  check(combined.size() > 20, "-r produced a COFF object");
+  check(read16(combined, 0) == 0x8664, "-r machine is AMD64");
+  check(read16(combined, 2) >= 1, "-r has sections");
+
+  const std::vector<std::uint8_t> pe = linkHostedExecutable(
+      std::vector<LinkInput>{{"combined.obj", combined}}, options);
+  const std::size_t textSection = findSection(pe, ".text");
+  check(textSection != 0, "the -r output links into a PE");
+  if (textSection == 0) return;
+  const std::uint32_t textOffset = read32(pe, textSection + 20);
+  const std::int32_t displacement =
+      static_cast<std::int32_t>(read32(pe, textOffset + 1));
+  check(displacement == 11,
+        "the -r output preserves the call relocation to helper");
+  check(pe[textOffset + 16] == 0xB8 && pe[textOffset + 17] == 42,
+        "the helper body is at its merged offset");
+}
+
 }  // namespace
 
 int main() {
@@ -148,5 +183,6 @@ int main() {
   check(static_cast<std::int64_t>(startOffset + 13) + mainDisplacement == 0,
         "the _start call lands on main");
 
+  testRelocatable();
   return failures == 0 ? 0 : 1;
 }

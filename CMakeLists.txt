@@ -1744,6 +1744,42 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.oskl"
         "-DOSKEL_EXPECTED_EXIT=70"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.cmake")
+
+    # A read of a global before the assignment that fills it must fail at run
+    # time with the hosted engine's wording and exit 70, not read the seeded slot
+    # as `nil` (BACKLOG §6 item 30). The fixture's assignment exists, so the
+    # program compiles and the failure is the runtime one the VM raises.
+    add_test(NAME oskel.build_unset_global
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_unset_global"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_unset_global.oskl"
+        "-DOSKEL_EXPECTED_EXIT=70"
+        "-DOSKEL_EXPECTED_MESSAGE=undefined variable 'first'"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.cmake")
+
+    # The same read whose only assignment sits in a function that is never
+    # called: the assignment exists in the program, so the read still compiles,
+    # and the slot is unset at run time. This is why the analysis runs across
+    # every proto and not just the root chunk.
+    add_test(NAME oskel.build_unset_global_unreached
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_unset_global_unreached"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_unset_global_fn.oskl"
+        "-DOSKEL_EXPECTED_EXIT=70"
+        "-DOSKEL_EXPECTED_MESSAGE=undefined variable 'later'"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.cmake")
+
+    # The other side of the check: `nil` is an assignable value, and a read after
+    # an assignment reads the value. Both keep the unchecked `globalGet`; a
+    # regression that checked every read would fail the first case.
+    add_test(NAME oskel.build_global_nil
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_global_nil"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_global_nil.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
   endif()
 
   # --- WebAssembly backend (PHASE 9) ---
@@ -2093,6 +2129,13 @@ if(BUILD_TESTING)
     # Win32 `extern "C"` symbols live in kernel32.dll, which only exists on
     # Windows; elsewhere `lookupSymbol` cannot resolve them, so skip.
     if(name STREQUAL "54_ffi_win32" AND NOT WIN32)
+      continue()
+    endif()
+    # The unset-global fixtures are inputs for the AOT runtime-error harness:
+    # they exit 70 by design, so the VM glob (which expects 0) must skip them.
+    # `native_build_global_nil` is the passing counterpart and stays in the glob.
+    if(name STREQUAL "native_build_unset_global" OR
+       name STREQUAL "native_build_unset_global_fn")
       continue()
     endif()
     oskel_add_script_test("oskel.${name}" "${script}")

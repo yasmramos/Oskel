@@ -1,0 +1,10 @@
+// The same unset read as `native_build_unset_global.oskl`, but the only
+// assignment to `later` sits in a function the program never calls. The name is
+// assigned *somewhere*, so the compiler accepts the program and the slot is
+// unset at run time: the binary must fail with "undefined variable 'later'" and
+// exit 70, exactly like the hosted engine.
+//
+// This is the case a per-proto analysis would miss: the assignment is in another
+// proto, so the top-level read has to be judged against the whole program.
+fn never() { later = 5; }
+print(later);

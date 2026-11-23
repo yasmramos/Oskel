@@ -267,6 +267,15 @@ void loadMemberName(CodeGen& cg, const Bytecode& proto, int c, X64Reg tag, X64Re
 struct GlobalSlots {
   std::unordered_map<std::string, int> slotOfName;
   int count = 0;
+  // Names whose slot the chunk fills before the program runs: a builtin with a
+  // stub, a resolved `extern "C"` thunk, and the hidden runtime slots. A read
+  // of one of these can never observe `Unset`, so it needs no check.
+  std::unordered_set<std::string> seeded;
+  // The names the chunk declares as host bindings (`native fn`, `extern "C"`).
+  // A declaration compiles to `GETGLOBAL N; SETGLOBAL N`; the read is the
+  // compiler's shape for "resolve the host binding", not a use of the value, so
+  // it must not trip the unset check when the binding has no stub (PHASE 7f.1).
+  std::unordered_set<std::string> hostBindings;
 };
 
 // The name of the hidden global that holds the `mt19937_64` state for
@@ -616,6 +625,7 @@ GlobalSlots collectGlobals(const std::vector<const Bytecode*>& protos,
     }
     for (const std::string& name : proto->nativeFns) hostBindings.insert(name);
   }
+  globals.hostBindings = hostBindings;
   auto nameOf = [](const Bytecode& proto, int index) -> const std::string& {
     const Value& name = proto.constants.at(static_cast<std::size_t>(index));
     if (!name.isStr()) {
@@ -788,13 +798,130 @@ std::unordered_set<int> capturedLocalSlots(const Bytecode& proto) {
   return captured;
 }
 
-void lowerInstruction(const Instruction& instr, const Bytecode& proto, CodeGen& cg,
+// The `GETGLOBAL` indices of `proto` whose read can observe a slot nothing has
+// assigned, so the lowering must route them through `oskel_global_get_checked`.
+//
+// A read is safe when every path from the proto's entry to it has already
+// executed a `SETGLOBAL` of the same name, or when the chunk seeds the slot
+// before the program runs (`globals.seeded`). Anything else -- a read before the
+// first assignment, a read reachable through a branch that skips the assignment,
+// or a read of a name assigned only in another proto -- can see `Unset` at run
+// time and must be checked, because the hosted engine fails it with "undefined
+// variable '<name>'" and exit 70.
+//
+// The analysis is a forward "may" dataflow over the instruction graph: a name is
+// in `mayUnset[i]` when *some* path from the entry to `i` leaves it unassigned.
+// Joins therefore union (the conservative direction for a "may" property), and
+// the entry starts with every candidate. A `SETGLOBAL` removes its name from the
+// state only when it really assigns; the compiler spells a host binding as
+// `GETGLOBAL N; SETGLOBAL N`, which stores a value it just read, so that shape
+// leaves the name alone and a later read of an unresolvable binding still gets
+// the check (a used one fails the build earlier, in `collectGlobals`).
+//
+// `candidates` is computed across the whole program, not per proto: a name
+// assigned only inside a never-called function is still unset at the top-level
+// read, and a per-proto candidate set would miss it.
+std::unordered_set<std::size_t> checkedGlobalReads(
+    const Bytecode& proto, const GlobalSlots& globals,
+    const std::unordered_set<std::string>& candidates) {
+  std::unordered_set<std::size_t> checked;
+  const std::size_t size = proto.code.size();
+  if (size == 0) return checked;
+  auto nameOf = [&](int index) -> const std::string& {
+    const Value& name = proto.constants.at(static_cast<std::size_t>(index));
+    if (!name.isStr()) {
+      throw LoweringError("lowering: global name is not a string constant");
+    }
+    return name.asStr();
+  };
+  // `GETGLOBAL N; SETGLOBAL N` -- the compiler's shape for "resolve the host
+  // binding" (`native fn`, `extern "C"`) and for a self-referential declaration
+  // (`var x = x;`). Only a host binding resolves to something; for `var x = x;`
+  // the read is a genuine read of an unset global, so it keeps the check.
+  auto isHostBindingDeclaration = [&](std::size_t i) {
+    if (i + 1 >= size) return false;
+    if (proto.code[i].op != OpCode::GETGLOBAL) return false;
+    if (proto.code[i + 1].op != OpCode::SETGLOBAL) return false;
+    const std::string& name = nameOf(proto.code[i].b);
+    return nameOf(proto.code[i + 1].b) == name &&
+           globals.hostBindings.count(name) != 0;
+  };
+
+  std::vector<std::unordered_set<std::string>> mayUnset(size);
+  std::vector<bool> reachable(size, false);
+  std::vector<bool> queued(size, false);
+  std::vector<std::size_t> work;
+
+  reachable[0] = true;
+  mayUnset[0] = candidates;
+  work.push_back(0);
+  queued[0] = true;
+  auto pushSuccessor = [&](std::size_t target, const std::unordered_set<std::string>& out) {
+    if (target >= size) return;
+    if (!reachable[target]) {
+      reachable[target] = true;
+      mayUnset[target] = out;
+      if (!queued[target]) { queued[target] = true; work.push_back(target); }
+      return;
+    }
+    // Union: a name stays "may be unset" when any incoming path leaves it so.
+    bool grew = false;
+    for (const std::string& name : out) {
+      if (mayUnset[target].insert(name).second) grew = true;
+    }
+    if (grew && !queued[target]) { queued[target] = true; work.push_back(target); }
+  };
+
+  while (!work.empty()) {
+    const std::size_t i = work.back();
+    work.pop_back();
+    queued[i] = false;
+    const Instruction& instr = proto.code[i];
+    std::unordered_set<std::string> out = mayUnset[i];
+    // A `SETGLOBAL` assigns, except when it stores the value its own preceding
+    // `GETGLOBAL` just read: that is the compiler's host-binding resolution,
+    // which assigns nothing the program can rely on.
+    const bool resolvesHostBinding =
+        i > 0 && isHostBindingDeclaration(i - 1);
+    if (instr.op == OpCode::SETGLOBAL && !resolvesHostBinding) {
+      out.erase(nameOf(instr.b));
+    }
+    switch (instr.op) {
+      case OpCode::JMP:
+        pushSuccessor(static_cast<std::size_t>(instr.jump), out);
+        break;
+      case OpCode::JMP_IF_FALSE:
+      case OpCode::JMP_IF_TRUE:
+        pushSuccessor(static_cast<std::size_t>(instr.jump), out);
+        if (i + 1 < size) pushSuccessor(i + 1, out);
+        break;
+      case OpCode::HALT:
+      case OpCode::RETURN:
+        break;
+      default:
+        if (i + 1 < size) pushSuccessor(i + 1, out);
+        break;
+    }
+  }
+
+  for (std::size_t i = 0; i < size; ++i) {
+    if (!reachable[i]) continue;
+    if (proto.code[i].op != OpCode::GETGLOBAL) continue;
+    if (isHostBindingDeclaration(i)) continue;
+    if (mayUnset[i].count(nameOf(proto.code[i].b)) != 0) checked.insert(i);
+  }
+  return checked;
+}
+
+void lowerInstruction(std::size_t index, const Instruction& instr, const Bytecode& proto,
+                      CodeGen& cg,
                       const std::vector<CodeGen::Label>& labels,
                       const AotRuntimeHandles& rt, const GlobalSlots& globals,
                       const FrameInfo& frame,
                       const std::unordered_map<const Bytecode*, CodeGen::Label>& protoEntry,
                       const std::unordered_map<const Bytecode*, CodeGen::Label>& displayOf,
-                      std::vector<StringConstant>& stringConstants) {
+                      std::vector<StringConstant>& stringConstants,
+                      const std::unordered_set<std::size_t>& checkedReads) {
   const int fileRegisters = frame.fileRegisters;
   switch (instr.op) {
     case OpCode::LOADK: {
@@ -953,7 +1080,18 @@ void lowerInstruction(const Instruction& instr, const Bytecode& proto, CodeGen& 
       const std::string& name = proto.constants.at(static_cast<std::size_t>(instr.b)).asStr();
       const int slot = globals.slotOfName.at(name);
       cg.movImm(X64Reg::Rdi, slot);
-      cg.callLabel(rt.globalGet);
+      if (checkedReads.count(index) == 0) {
+        cg.callLabel(rt.globalGet);
+      } else {
+        // The hosted engine fails this read with `undefined variable '<name>'`
+        // (exit 70); the check reproduces it. The message is built here, where
+        // the name is known, so the image carries the exact wording.
+        StringConstant message{cg.newLabel(),
+                               "undefined variable '" + name + "'"};
+        cg.leaRipLabel(X64Reg::Rsi, message.label);
+        stringConstants.push_back(std::move(message));
+        cg.callLabel(rt.globalGetChecked);
+      }
       storeValue(cg, instr.a, X64Reg::Rax, X64Reg::Rdx);
       break;
     }
@@ -1434,6 +1572,18 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
 
   GlobalSlots globals = collectGlobals(protos, builtins, resolvedExterns);
 
+  // The slots the chunk fills before the program runs: a builtin with a stub, a
+  // resolved `extern "C"` thunk, and (below) the hidden runtime slots. A read of
+  // one of these never observes `Unset`, so the unset check skips it.
+  for (const auto& builtin : builtins) globals.seeded.insert(builtin.first);
+  for (const std::string& name : resolvedExterns) globals.seeded.insert(name);
+  for (const AotExternThunk& thunk : externThunks) globals.seeded.insert(thunk.symbol);
+  // A host binding with no stub is never seeded, so a read of one stays a
+  // candidate: `collectGlobals` already rejected the used ones, and a later read
+  // of a *declared but unused* one still fails cleanly at run time rather than
+  // reading a zeroed slot. Names seeded here are the only ones the chunk writes
+  // before `main` runs; everything else is the program's own assignment.
+
   // `random()`/`seed()` keep their generator state in a hidden global (PHASE
   // 7c.5b.6): the image has no writable data segment, and the state is 2504
   // bytes, too large to thread through registers. `collectGlobals` pre-assigns a
@@ -1485,6 +1635,32 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     callbackStateSlot = globals.count++;
     globals.slotOfName[kAotCallbackStateGlobal] = callbackStateSlot;
   }
+
+  // The hidden runtime slots are seeded by the chunk entry too.
+  for (const char* name : {kAotRandomStateGlobal, kAotPcallHandlerGlobal,
+                           kAotClockOriginGlobal, kAotArgsGlobal,
+                           kAotCallbackStateGlobal}) {
+    if (globals.slotOfName.count(name) != 0) globals.seeded.insert(name);
+  }
+
+  // Every global the program assigns somewhere, minus the seeded ones: the
+  // names a read can find unset. Computed across the whole program because a
+  // name assigned only inside a never-called function is still unset at a
+  // top-level read.
+  std::unordered_set<std::string> unsetCandidates;
+  for (const Bytecode* p : protos) {
+    for (const Instruction& instr : p->code) {
+      if (instr.op != OpCode::SETGLOBAL) continue;
+      const Value& name = p->constants.at(static_cast<std::size_t>(instr.b));
+      if (!name.isStr()) continue;
+      if (globals.seeded.count(name.asStr()) != 0) continue;
+      unsetCandidates.insert(name.asStr());
+    }
+  }
+  // Set while emitting: whether any proto needs `oskel_global_get_checked`. A
+  // program with no such read keeps the smaller runtime and its image byte for
+  // byte.
+  bool needsGlobalGetChecked = false;
 
   const std::uint64_t chunkOffset = cg.offset();
 
@@ -1587,10 +1763,13 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     std::vector<CodeGen::Label> labels;
     labels.reserve(proto.code.size());
     for (std::size_t i = 0; i < proto.code.size(); ++i) labels.push_back(cg.newLabel());
+    const std::unordered_set<std::size_t> checked =
+        checkedGlobalReads(proto, globals, unsetCandidates);
+    if (!checked.empty()) needsGlobalGetChecked = true;
     for (std::size_t i = 0; i < proto.code.size(); ++i) {
       cg.bind(labels[i]);
-      lowerInstruction(proto.code[i], proto, cg, labels, rt, globals, frame,
-                       protoEntry, displayOf, stringConstants);
+      lowerInstruction(i, proto.code[i], proto, cg, labels, rt, globals, frame,
+                       protoEntry, displayOf, stringConstants, checked);
     }
   }
 
@@ -1677,10 +1856,13 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     std::vector<CodeGen::Label> labels;
     labels.reserve(fn.code.size());
     for (std::size_t i = 0; i < fn.code.size(); ++i) labels.push_back(cg.newLabel());
+    const std::unordered_set<std::size_t> checked =
+        checkedGlobalReads(fn, globals, unsetCandidates);
+    if (!checked.empty()) needsGlobalGetChecked = true;
     for (std::size_t i = 0; i < fn.code.size(); ++i) {
       cg.bind(labels[i]);
-      lowerInstruction(fn.code[i], fn, cg, labels, rt, globals, frame,
-                       protoEntry, displayOf, stringConstants);
+      lowerInstruction(i, fn.code[i], fn, cg, labels, rt, globals, frame,
+                       protoEntry, displayOf, stringConstants, checked);
     }
   }
 
@@ -1737,6 +1919,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   extras.hasFiles = hasFiles;
   extras.callbackStateSlot = callbackStateSlot;
   extras.abi = target.abi;
+  extras.needsGlobalGetChecked = needsGlobalGetChecked;
   emitAotRuntime(cg, rt, entry, externThunks.empty() ? nullptr : &externThunks,
                  mode == LinkMode::Hosted, hasInput,
                  target.os == Os::Freestanding, randomStateSlot, pcallHandlerSlot,

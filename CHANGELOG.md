@@ -106,8 +106,13 @@ may change between minor versions.
   resolves the common x86-64 COFF relocations and builds the import table for
   the runtime's UCRT (`ucrtbase.dll`) and Windows API (`kernel32.dll`) calls.
   A generated `_start` calls `main` and `ExitProcess`; `oskelld --target
-  x86_64-windows-win64` shares the path. Windows `-r`, MSVC `.lib` archives and
-  `args()` are 10.3b; macOS Mach-O is 10.3d.
+  x86_64-windows-win64` shares the path. macOS Mach-O is 10.3d.
+- **Relocatable COFF links on Windows (PHASE 10.3b.1).** `oskelld -r` merges
+  COFF objects into a new COFF object: defined symbols at their merged
+  offsets, uniquely renamed local symbols, section symbols with aux records,
+  and section-symbol relocations retargeted to the output section symbol with
+  the addend adjusted. The result links with `oskelld`/`--linker own`. MSVC
+  `.lib` archives and `args()` remain 10.3b.
 
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,

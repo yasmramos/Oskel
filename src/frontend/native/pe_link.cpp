@@ -1129,3 +1129,495 @@ std::vector<std::uint8_t> linkWindowsExecutable(
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// PHASE 10.3b: relocatable COFF link (`oskelld -r` on Windows).
+//
+// The output is a normal COFF object: defined symbols are placed at their
+// merged section offsets, local symbols are renamed (`name$object.index`) so a
+// second link cannot confuse two statics with the same name, section symbols
+// carry their aux record, and every relocation keeps its type and addend. A
+// relocation against an input section symbol is retargeted to the output
+// section symbol and its addend absorbs the input section's offset inside the
+// merged section.
+// ---------------------------------------------------------------------------
+std::vector<std::uint8_t> linkRelocatableCoff(
+    const std::vector<LinkInput>& inputs, const LinkOptions& options) {
+  if (options.target.arch != Arch::X86_64 || options.target.os != Os::Windows ||
+      options.target.abi != Abi::Win64) {
+    throw LinkError("the Windows linker supports x86_64-windows-win64 only");
+  }
+
+  std::vector<CoffObject> objects;
+  for (const LinkInput& input : inputs) {
+    if (input.bytes.size() >= 8 &&
+        std::memcmp(input.bytes.data(), "!<arch>\n", 8) == 0) {
+      throw LinkError("'" + input.name +
+                      "' is an archive; MSVC .lib archives are PHASE 10.3b");
+    }
+    if (input.bytes.size() >= 2 && input.bytes[0] == 'M' && input.bytes[1] == 'Z') {
+      throw LinkError("'" + input.name + "' is a PE image, not a COFF object");
+    }
+    objects.push_back(parseCoffObject(input.bytes, input.name));
+  }
+  if (objects.empty()) throw LinkError("no input objects");
+
+  std::uint64_t textSize = 0;
+  std::uint64_t rodataSize = 0;
+  std::uint64_t dataSize = 0;
+  std::uint64_t bssSize = 0;
+  for (CoffObject& object : objects) {
+    object.textOffset = alignUp(textSize, 16);
+    textSize = object.textOffset + object.text.size();
+    object.rodataOffset = alignUp(rodataSize, 16);
+    rodataSize = object.rodataOffset + object.rodata.size();
+    object.dataOffset = alignUp(dataSize, 16);
+    dataSize = object.dataOffset + object.data.size();
+    object.bssOffset = alignUp(bssSize, 8);
+    bssSize = object.bssOffset + object.bssSize;
+  }
+
+  struct OutSection {
+    struct Relocation {
+      std::uint32_t offset = 0;
+      std::uint32_t symbol = 0;
+      std::uint16_t type = 0;
+    };
+    SectionKind kind = SectionKind::Text;
+    std::string name;
+    std::uint64_t size = 0;
+    std::uint32_t index = 0;
+    std::vector<std::uint8_t> bytes;
+    std::vector<Relocation> relocations;
+    std::uint32_t rawOffset = 0;
+    std::uint32_t relocOffset = 0;
+  };
+  struct OutSymbol {
+    std::string name;
+    std::uint32_t value = 0;
+    std::int16_t section = 0;
+    std::uint16_t type = 0;
+    std::uint8_t storage = 0;
+    std::uint8_t aux = 0;
+  };
+
+  std::vector<std::uint8_t> text(static_cast<std::size_t>(textSize), 0);
+  std::vector<std::uint8_t> rodata(static_cast<std::size_t>(rodataSize), 0);
+  std::vector<std::uint8_t> data(static_cast<std::size_t>(dataSize), 0);
+  for (const CoffObject& object : objects) {
+    if (!object.text.empty()) {
+      std::memcpy(text.data() + object.textOffset, object.text.data(),
+                  object.text.size());
+    }
+    if (!object.rodata.empty()) {
+      std::memcpy(rodata.data() + object.rodataOffset, object.rodata.data(),
+                  object.rodata.size());
+    }
+    if (!object.data.empty()) {
+      std::memcpy(data.data() + object.dataOffset, object.data.data(),
+                  object.data.size());
+    }
+  }
+
+  std::vector<OutSection> outSections;
+  const auto addOutSection = [&](SectionKind kind, const char* name,
+                                 std::uint64_t size,
+                                 std::vector<std::uint8_t> bytes) {
+    OutSection section;
+    section.kind = kind;
+    section.name = name;
+    section.size = size;
+    section.index = static_cast<std::uint32_t>(outSections.size() + 1);
+    section.bytes = std::move(bytes);
+    outSections.push_back(std::move(section));
+  };
+  if (textSize != 0) addOutSection(SectionKind::Text, ".text", textSize, std::move(text));
+  if (rodataSize != 0) addOutSection(SectionKind::Rodata, ".rdata", rodataSize, std::move(rodata));
+  if (dataSize != 0) addOutSection(SectionKind::Data, ".data", dataSize, std::move(data));
+  if (bssSize != 0) addOutSection(SectionKind::Bss, ".bss", bssSize, {});
+  if (outSections.empty()) throw LinkError("the inputs have no loadable sections");
+
+  const auto outSection = [&](SectionKind kind) -> OutSection* {
+    for (OutSection& section : outSections) {
+      if (section.kind == kind) return &section;
+    }
+    return nullptr;
+  };
+  const auto outSectionIndex = [&](SectionKind kind) -> std::uint32_t {
+    for (const OutSection& section : outSections) {
+      if (section.kind == kind) return section.index;
+    }
+    return 0;
+  };
+  const auto kindIndex = [](SectionKind kind) -> std::size_t {
+    return static_cast<std::size_t>(kind);
+  };
+  constexpr std::uint32_t kNoSymbol32 = std::numeric_limits<std::uint32_t>::max();
+
+  std::vector<OutSymbol> symbols;
+  std::vector<std::uint32_t> sectionSymbol(4, kNoSymbol32);
+  for (const OutSection& section : outSections) {
+    sectionSymbol[kindIndex(section.kind)] = static_cast<std::uint32_t>(symbols.size());
+    OutSymbol symbol;
+    symbol.name = section.name;
+    symbol.value = 0;
+    symbol.section = static_cast<std::int16_t>(section.index);
+    symbol.type = 0;
+    symbol.storage = kCoffSymClassStatic;
+    symbol.aux = 1;
+    symbols.push_back(std::move(symbol));
+  }
+
+  std::unordered_map<std::string, std::uint32_t> globalOut;
+  std::vector<std::vector<std::uint32_t>> localOut(objects.size());
+  for (std::size_t o = 0; o < objects.size(); ++o) {
+    localOut[o].assign(objects[o].symbols.size(), kNoSymbol32);
+  }
+
+  // Defined globals first: a later undefined reference to the same name uses
+  // the definition instead of creating an undefined duplicate.
+  for (std::size_t o = 0; o < objects.size(); ++o) {
+    const CoffObject& object = objects[o];
+    for (const CoffSymbol& symbol : object.symbols) {
+      if (symbol.name.empty() || symbol.section <= 0) continue;
+      if (symbol.storageClass == kCoffSymClassFile) continue;
+      if (static_cast<std::size_t>(symbol.section) > object.sections.size()) {
+        throw LinkError("symbol '" + symbol.name + "' has an invalid section index");
+      }
+      const CoffSection& section =
+          object.sections[static_cast<std::size_t>(symbol.section - 1)];
+      if (section.kind == SectionKind::Ignored || isSectionSymbol(symbol, section)) {
+        continue;
+      }
+      const bool global = symbol.storageClass == kCoffSymClassExternal ||
+                          symbol.storageClass == kCoffSymClassWeakExternal;
+      if (!global) continue;
+      const std::uint32_t index = outSectionIndex(section.kind);
+      if (index == 0) throw LinkError("global '" + symbol.name + "' is in an unsupported section");
+      OutSymbol out;
+      out.name = symbol.name;
+      out.value = static_cast<std::uint32_t>(
+          sectionOffsetOf(object, section.kind) + section.outputOffset + symbol.value);
+      out.section = static_cast<std::int16_t>(index);
+      out.type = symbol.type;
+      out.storage = kCoffSymClassExternal;
+      const auto inserted =
+          globalOut.emplace(symbol.name, static_cast<std::uint32_t>(symbols.size()));
+      if (!inserted.second) {
+        throw LinkError("duplicate global symbol '" + symbol.name + "'");
+      }
+      symbols.push_back(std::move(out));
+    }
+  }
+
+  // Defined locals. The suffix is not cosmetic: a relocatable output can hold
+  // two statics with the same source name, and the second link resolves them
+  // by symbol index, not by name.
+  for (std::size_t o = 0; o < objects.size(); ++o) {
+    const CoffObject& object = objects[o];
+    for (std::size_t s = 0; s < object.symbols.size(); ++s) {
+      const CoffSymbol& symbol = object.symbols[s];
+      if (symbol.name.empty() || symbol.section <= 0) continue;
+      if (symbol.storageClass == kCoffSymClassFile) continue;
+      if (static_cast<std::size_t>(symbol.section) > object.sections.size()) {
+        throw LinkError("symbol '" + symbol.name + "' has an invalid section index");
+      }
+      const CoffSection& section =
+          object.sections[static_cast<std::size_t>(symbol.section - 1)];
+      if (section.kind == SectionKind::Ignored || isSectionSymbol(symbol, section)) {
+        continue;
+      }
+      const bool global = symbol.storageClass == kCoffSymClassExternal ||
+                          symbol.storageClass == kCoffSymClassWeakExternal;
+      if (global) continue;
+      const std::uint32_t index = outSectionIndex(section.kind);
+      if (index == 0) throw LinkError("local '" + symbol.name + "' is in an unsupported section");
+      OutSymbol out;
+      out.name = symbol.name + "$" + std::to_string(o) + "." +
+                 std::to_string(symbol.rawIndex);
+      out.value = static_cast<std::uint32_t>(
+          sectionOffsetOf(object, section.kind) + section.outputOffset + symbol.value);
+      out.section = static_cast<std::int16_t>(index);
+      out.type = symbol.type;
+      out.storage = kCoffSymClassStatic;
+      localOut[o][s] = static_cast<std::uint32_t>(symbols.size());
+      symbols.push_back(std::move(out));
+    }
+  }
+
+  std::unordered_map<std::string, std::uint32_t> undefinedOut;
+  for (const CoffObject& object : objects) {
+    for (const CoffSymbol& symbol : object.symbols) {
+      if (symbol.name.empty() || symbol.section != 0) continue;
+      if (symbol.storageClass == kCoffSymClassFile) continue;
+      if (globalOut.count(symbol.name) != 0 || undefinedOut.count(symbol.name) != 0) {
+        continue;
+      }
+      OutSymbol out;
+      out.name = symbol.name;
+      out.value = 0;
+      out.section = 0;
+      out.type = symbol.type;
+      out.storage = kCoffSymClassExternal;
+      undefinedOut.emplace(symbol.name, static_cast<std::uint32_t>(symbols.size()));
+      symbols.push_back(std::move(out));
+    }
+  }
+
+  std::vector<std::uint32_t> rawIndex(symbols.size(), 0);
+  std::uint32_t totalSymbols = 0;
+  for (std::size_t i = 0; i < symbols.size(); ++i) {
+    rawIndex[i] = totalSymbols;
+    totalSymbols += 1 + symbols[i].aux;
+  }
+
+  const auto addFieldAddend = [&](SectionKind sourceKind, std::uint64_t offset,
+                                  std::uint16_t type, std::uint64_t base) {
+    OutSection* source = outSection(sourceKind);
+    if (source == nullptr) throw LinkError("internal: missing source section");
+    std::size_t width = 0;
+    switch (type) {
+      case kCoffRelAmd64Addr64:
+        width = 8;
+        break;
+      case kCoffRelAmd64Addr32:
+      case kCoffRelAmd64Addr32Nb:
+      case kCoffRelAmd64Rel32:
+      case kCoffRelAmd64Rel32_1:
+      case 6:
+      case 7:
+      case 8:
+      case kCoffRelAmd64Rel32_5:
+        width = 4;
+        break;
+      default:
+        throw LinkError("unsupported COFF relocation type " +
+                        std::to_string(type));
+    }
+    if (offset > source->bytes.size() ||
+        width > source->bytes.size() - offset) {
+      throw LinkError("relocation lies outside its section");
+    }
+    std::uint64_t value = 0;
+    for (std::size_t i = 0; i < width; ++i) {
+      value |= static_cast<std::uint64_t>(source->bytes[offset + i]) << (8 * i);
+    }
+    value += base;
+    for (std::size_t i = 0; i < width; ++i) {
+      source->bytes[offset + i] =
+          static_cast<std::uint8_t>((value >> (8 * i)) & 0xFF);
+    }
+  };
+
+  for (std::size_t o = 0; o < objects.size(); ++o) {
+    const CoffObject& object = objects[o];
+    for (const CoffRelocation& rel : object.relocations) {
+      if (rel.symbolIndex >= object.symbolByRawIndex.size()) {
+        throw LinkError("relocation in '" + object.name +
+                        "' names an out-of-range symbol");
+      }
+      const std::size_t symbolIndex = object.symbolByRawIndex[rel.symbolIndex];
+      if (symbolIndex == kNoSymbol) {
+        throw LinkError("relocation in '" + object.name +
+                        "' names an auxiliary symbol");
+      }
+      const CoffSymbol& symbol = object.symbols[symbolIndex];
+      const CoffSection& source = object.sections[rel.sectionIndex];
+      if (source.kind == SectionKind::Ignored || source.kind == SectionKind::Bss) {
+        throw LinkError("relocation in an unsupported section of '" + object.name + "'");
+      }
+      OutSection* sourceOut = outSection(source.kind);
+      if (sourceOut == nullptr) throw LinkError("internal: missing source section");
+      const std::uint64_t fieldOffset =
+          sectionOffsetOf(object, source.kind) + source.outputOffset + rel.offset;
+      std::uint32_t outputSymbol = 0;
+      if (symbol.section > 0) {
+        if (static_cast<std::size_t>(symbol.section) > object.sections.size()) {
+          throw LinkError("symbol '" + symbol.name + "' has an invalid section index");
+        }
+        const CoffSection& target =
+            object.sections[static_cast<std::size_t>(symbol.section - 1)];
+        if (isSectionSymbol(symbol, target)) {
+          const std::uint32_t targetIndex = outSectionIndex(target.kind);
+          if (targetIndex == 0) {
+            throw LinkError("relocation targets an unsupported section in '" +
+                            object.name + "'");
+          }
+          const std::uint32_t sectionOut = sectionSymbol[kindIndex(target.kind)];
+          if (sectionOut == kNoSymbol32) {
+            throw LinkError("internal: missing section symbol");
+          }
+          outputSymbol = rawIndex[sectionOut];
+          addFieldAddend(source.kind, fieldOffset, rel.type,
+                         sectionOffsetOf(object, target.kind) + target.outputOffset);
+        } else {
+          const bool global = symbol.storageClass == kCoffSymClassExternal ||
+                              symbol.storageClass == kCoffSymClassWeakExternal;
+          std::uint32_t outIndex = kNoSymbol32;
+          if (global) {
+            const auto found = globalOut.find(symbol.name);
+            if (found != globalOut.end()) outIndex = found->second;
+          } else {
+            outIndex = localOut[o][symbolIndex];
+          }
+          if (outIndex == kNoSymbol32) {
+            throw LinkError("symbol '" + symbol.name + "' was not placed");
+          }
+          outputSymbol = rawIndex[outIndex];
+        }
+      } else if (symbol.section == 0) {
+        const auto defined = globalOut.find(symbol.name);
+        if (defined != globalOut.end()) {
+          outputSymbol = rawIndex[defined->second];
+        } else {
+          const auto undefined = undefinedOut.find(symbol.name);
+          if (undefined == undefinedOut.end()) {
+            throw LinkError("undefined symbol '" + symbol.name + "' was not placed");
+          }
+          outputSymbol = rawIndex[undefined->second];
+        }
+      } else {
+        throw LinkError("relocation names an absolute or debug symbol");
+      }
+      OutSection::Relocation out;
+      out.offset = static_cast<std::uint32_t>(fieldOffset);
+      out.symbol = outputSymbol;
+      out.type = rel.type;
+      sourceOut->relocations.push_back(out);
+    }
+  }
+
+  for (const OutSection& section : outSections) {
+    if (section.relocations.size() >
+        static_cast<std::size_t>(std::numeric_limits<std::uint16_t>::max())) {
+      throw LinkError("too many relocations in section '" + section.name + "'");
+    }
+  }
+
+  const std::uint64_t sectionCount = outSections.size();
+  const std::uint64_t headersSize = 20 + sectionCount * 40;
+  std::uint64_t cursor = alignUp(headersSize, 16);
+  for (OutSection& section : outSections) {
+    if (section.kind == SectionKind::Bss) {
+      section.rawOffset = 0;
+      continue;
+    }
+    section.rawOffset = static_cast<std::uint32_t>(cursor);
+    cursor = alignUp(cursor + section.bytes.size(), 16);
+  }
+  std::uint64_t relocCursor = alignUp(cursor, 4);
+  for (OutSection& section : outSections) {
+    if (section.relocations.empty()) {
+      section.relocOffset = 0;
+      continue;
+    }
+    section.relocOffset = static_cast<std::uint32_t>(relocCursor);
+    relocCursor += static_cast<std::uint64_t>(section.relocations.size()) * 10;
+  }
+  const std::uint64_t symtabOffset = alignUp(relocCursor, 4);
+
+  std::string strtab(4, '\0');
+  std::vector<std::uint32_t> nameOffset(symbols.size(), 0);
+  for (std::size_t i = 0; i < symbols.size(); ++i) {
+    if (symbols[i].name.size() <= 8) continue;
+    nameOffset[i] = static_cast<std::uint32_t>(strtab.size());
+    strtab += symbols[i].name;
+    strtab += '\0';
+  }
+  const std::uint32_t strtabSize = static_cast<std::uint32_t>(strtab.size());
+  for (int i = 0; i < 4; ++i) {
+    strtab[static_cast<std::size_t>(i)] =
+        static_cast<char>((strtabSize >> (8 * i)) & 0xFF);
+  }
+  const std::uint64_t symtabSize = static_cast<std::uint64_t>(totalSymbols) * 18;
+  const std::uint64_t fileSize = symtabOffset + symtabSize + strtab.size();
+  std::vector<std::uint8_t> out(static_cast<std::size_t>(fileSize), 0);
+
+  put16(out, 0, kCoffMachineAmd64);
+  put16(out, 2, static_cast<std::uint16_t>(sectionCount));
+  put32(out, 4, 0);
+  put32(out, 8, static_cast<std::uint32_t>(symtabOffset));
+  put32(out, 12, totalSymbols);
+  put16(out, 16, 0);
+  put16(out, 18, 0);
+
+  std::uint64_t sectionHeader = 20;
+  for (const OutSection& section : outSections) {
+    std::memset(out.data() + sectionHeader, 0, 40);
+    std::memcpy(out.data() + sectionHeader, section.name.data(),
+                std::min<std::size_t>(section.name.size(), 8));
+    put32(out, sectionHeader + 8,
+          section.kind == SectionKind::Bss ? static_cast<std::uint32_t>(section.size) : 0);
+    put32(out, sectionHeader + 12, 0);
+    put32(out, sectionHeader + 16,
+          section.kind == SectionKind::Bss ? 0
+                                           : static_cast<std::uint32_t>(section.bytes.size()));
+    put32(out, sectionHeader + 20, section.rawOffset);
+    put32(out, sectionHeader + 24, section.relocOffset);
+    put32(out, sectionHeader + 28, 0);
+    put16(out, sectionHeader + 32,
+          static_cast<std::uint16_t>(section.relocations.size()));
+    put16(out, sectionHeader + 34, 0);
+    std::uint32_t characteristics = 0;
+    switch (section.kind) {
+      case SectionKind::Text: characteristics = 0x60000020; break;
+      case SectionKind::Rodata: characteristics = 0x40000040; break;
+      case SectionKind::Data: characteristics = 0xC0000040; break;
+      case SectionKind::Bss: characteristics = 0xC0000080; break;
+      default: break;
+    }
+    put32(out, sectionHeader + 36, characteristics);
+    sectionHeader += 40;
+  }
+
+  for (const OutSection& section : outSections) {
+    if (section.kind == SectionKind::Bss || section.bytes.empty()) continue;
+    std::memcpy(out.data() + section.rawOffset, section.bytes.data(),
+                section.bytes.size());
+  }
+  for (const OutSection& section : outSections) {
+    std::uint64_t offset = section.relocOffset;
+    for (const OutSection::Relocation& rel : section.relocations) {
+      put32(out, offset, rel.offset);
+      put32(out, offset + 4, rel.symbol);
+      put16(out, offset + 8, rel.type);
+      offset += 10;
+    }
+  }
+
+  std::uint64_t symbolOffset = symtabOffset;
+  for (std::size_t i = 0; i < symbols.size(); ++i) {
+    const OutSymbol& symbol = symbols[i];
+    if (symbol.name.size() <= 8) {
+      std::memset(out.data() + symbolOffset, 0, 8);
+      std::memcpy(out.data() + symbolOffset, symbol.name.data(),
+                  symbol.name.size());
+    } else {
+      put32(out, symbolOffset, 0);
+      put32(out, symbolOffset + 4, nameOffset[i]);
+    }
+    put32(out, symbolOffset + 8, symbol.value);
+    put16(out, symbolOffset + 12, static_cast<std::uint16_t>(symbol.section));
+    put16(out, symbolOffset + 14, symbol.type);
+    put8(out, symbolOffset + 16, symbol.storage);
+    put8(out, symbolOffset + 17, symbol.aux);
+    symbolOffset += 18;
+    if (symbol.aux != 0) {
+      if (symbol.section <= 0 ||
+          static_cast<std::size_t>(symbol.section) > outSections.size()) {
+        throw LinkError("internal: section symbol has no section");
+      }
+      const OutSection& section = outSections[static_cast<std::size_t>(symbol.section - 1)];
+      put32(out, symbolOffset + 0, static_cast<std::uint32_t>(section.size));
+      put16(out, symbolOffset + 4,
+            static_cast<std::uint16_t>(section.relocations.size()));
+      put16(out, symbolOffset + 6, 0);
+      put32(out, symbolOffset + 8, 0);
+      put16(out, symbolOffset + 12, 0);
+      put8(out, symbolOffset + 14, 0);
+      symbolOffset += 18;
+    }
+  }
+  std::memcpy(out.data() + symtabOffset + symtabSize, strtab.data(), strtab.size());
+  return out;
+}
