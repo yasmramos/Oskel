@@ -11,6 +11,18 @@ may change between minor versions.
 
 ### Added
 
+- **`oskelp` supports multi-member workspaces.** A root `oskel.toml` with a
+  `[workspace] members = [...]` table shares one `oskel.lock`, one
+  `.oskel/deps` and one `target/` across every member. `build`, `check` and
+  `test` cover all members at the virtual root; `run`, `add`, `remove` and
+  `publish` require one member and accept `--package`/`-p`, falling back to the
+  invoked member or the only member. Members may path-depend on each other, a
+  registry requirement that names a member is rejected, and members stay out of
+  the lockfile. A root package is itself a member and the default target.
+  Duplicate names, missing member manifests and nested workspaces are rejected
+  at load time. `tests/oskelp_test.cpp` and `tests/run_oskelp_case.cmake` cover
+  the loader, the resolver and the CLI.
+
 - **`oskelp` resolves the latest release and inspects registry updates.**
   `oskelp add <name>` without `--version` writes a caret requirement for the
   highest published release (a prerelease-only package needs an explicit

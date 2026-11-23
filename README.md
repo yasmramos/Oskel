@@ -219,9 +219,12 @@ cd hello
 `oskelp publish --registry <dir>` copies the current package into a local
 registry, so another project can depend on its version; `oskelp yank` hides a
 published version without deleting it (an existing lockfile pin keeps working,
-and `--undo` restores it). See
+and `--undo` restores it). A `[workspace]` manifest in the project root shares
+one `oskel.lock`, one `.oskel/deps` and one `target/` across its members;
+`oskelp build`, `check` and `test` cover every member at the root, and
+`--package`/`-p <name>` selects one. See
 [docs/oskelp.md](docs/oskelp.md) for the project layout, the manifest, the
-dependency model, the registry layout and every command.
+dependency model, workspaces, the registry layout and every command.
 
 ## Usage
 
@@ -242,6 +245,7 @@ oskelp update [<name>]     moves registry pins to newer versions
 oskelp update <name> --precise <version>  pins one registry version
 oskelp outdated            shows registry updates available to the lockfile
 oskelp build               builds the project to target/<name>
+oskelp build -p <member>   builds one member of a [workspace]
 oskelp run                 runs the project (--native for the AOT binary)
 oskelp test                runs every tests/**/*.oskl
 ```

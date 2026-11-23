@@ -2426,8 +2426,9 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
 - **Extended stdlib**: JSON, dates, bytes, regex, networking.
 - **Package manager** (`oskelp`, the Cargo-style project layer): the MVP landed
   with `oskel.toml`, `oskel.lock`, path dependencies and
-  `new`/`init`/`build`/`run`/`check`/`test`/`clean`/`tree`; a local registry,
-  `add`/`remove`/`update`/`publish` and a network registry are still pending.
+  `new`/`init`/`build`/`run`/`check`/`test`/`clean`/`tree`. The local registry,
+  `add`/`remove`/`update`/`publish`/`yank`/`outdated` and multi-member
+  workspaces landed; a network registry is still pending.
 - **Windows and macOS** (1.2+).
 - **Embedded VM** (`--embed-vm`): AOT binary + VM for plugins, hot reload.
 

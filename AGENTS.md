@@ -1167,9 +1167,19 @@ it as a caveat:
   `--native` is given, and `oskelp test` runs every `tests/**/*.oskl` and exits
   101 when one fails. `tests/run_oskelp_case.cmake` drives the real binary
   through the whole workflow, including publish/consume, `add` without
-  `--version`, `outdated`, `update --precise`, `yank`/`--undo` and `--locked`,
-  so a change to the manifest, the lockfile or a command must keep that test
-  green.
+  `--version`, `outdated`, `update --precise`, `yank`/`--undo`, `--locked` and
+  a `[workspace]`, so a change to the manifest, the lockfile or a command must
+  keep that test green. A `[workspace]` root owns one `oskel.lock`,
+  `.oskel/deps` and `target/`; `Workspace::root` is a **synthetic** manifest
+  (`__oskelp_workspace__`) whose dependencies are the member paths, so the
+  existing resolver sees one graph and the members are flagged
+  `workspaceMember` to stay out of the lockfile. Path dependencies resolve
+  relative to the manifest that declares them (`manifest.dir`), not to the
+  workspace root, so a member's `../alpha` is correct as written. `build`,
+  `check` and `test` cover every member at the virtual root; `run`, `add`,
+  `remove` and `publish` call `selectOneMember` and need `--package`, the
+  invoked member, or the only member. A registry requirement that names a
+  member is rejected, because the workspace copy is the one the build uses.
 
 ## Commit authorship
 

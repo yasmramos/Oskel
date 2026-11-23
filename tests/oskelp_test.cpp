@@ -483,6 +483,137 @@ static void testRegistryResolution() {
   fs::remove_all(root);
 }
 
+static void testWorkspaces() {
+  fs::path root = makeTempDir();
+  makePackage(root / "a", "a", {{"b", "../b"}});
+  makePackage(root / "b", "b");
+  writeFile(root / "oskel.toml", "[workspace]\nmembers = [\"a\", \"b\"]\n");
+
+  std::string error;
+  oskelp::Workspace workspace;
+  check(oskelp::loadWorkspace((root / "oskel.toml").string(), workspace, error),
+        "workspace: loads a virtual workspace");
+  check(workspace.isWorkspace, "workspace: isWorkspace is set");
+  check(workspace.members.size() == 2, "workspace: both members are loaded");
+  check(workspace.memberNames.count("a") == 1 &&
+            workspace.memberNames.count("b") == 1,
+        "workspace: member names are recorded");
+  check(workspace.root.package.name == "__oskelp_workspace__",
+        "workspace: the root manifest is synthetic");
+  check(workspace.root.package.dependencies.count("a") == 1 &&
+            workspace.root.package.dependencies.count("b") == 1,
+        "workspace: the synthetic root depends on every member");
+  check(workspace.invokedMember.empty(),
+        "workspace: a root invocation selects no member");
+
+  oskelp::Workspace member;
+  check(oskelp::loadWorkspace((root / "a" / "oskel.toml").string(), member,
+                              error),
+        "workspace: a member manifest follows its enclosing workspace");
+  check(member.isWorkspace && member.invokedMember == "a",
+        "workspace: the invoked member is recorded");
+
+  oskelp::Resolution resolution;
+  check(oskelp::resolveDependencies(workspace.root, resolution, error, {}, {},
+                                    workspace.rootDir,
+                                    workspace.memberNames),
+        "workspace: resolves the synthetic root");
+  const oskelp::ResolvedPackage* a = resolution.find("a");
+  const oskelp::ResolvedPackage* b = resolution.find("b");
+  check(a != nullptr && a->workspaceMember,
+        "workspace: a member is flagged in the graph");
+  check(b != nullptr && b->workspaceMember,
+        "workspace: every member is flagged in the graph");
+  oskelp::Lockfile lock = oskelp::buildLockfile(resolution);
+  check(lock.packages.empty(),
+        "workspace: members stay out of the lockfile");
+
+  fs::path duplicateRoot = makeTempDir();
+  makePackage(duplicateRoot / "a", "same");
+  makePackage(duplicateRoot / "b", "same");
+  writeFile(duplicateRoot / "oskel.toml",
+            "[workspace]\nmembers = [\"a\", \"b\"]\n");
+  oskelp::Workspace duplicate;
+  check(!oskelp::loadWorkspace((duplicateRoot / "oskel.toml").string(),
+                               duplicate, error),
+        "workspace: duplicate member names are rejected");
+  check(contains(error, "duplicated"),
+        "workspace: the duplicate error names the problem");
+
+  fs::path nestedRoot = makeTempDir();
+  makePackage(nestedRoot / "a", "a");
+  writeFile(nestedRoot / "oskel.toml", "[workspace]\nmembers = [\"a\"]\n");
+  writeFile(nestedRoot / "a" / "oskel.toml",
+            "[workspace]\nmembers = [\"..\"]\n");
+  oskelp::Workspace nested;
+  check(!oskelp::loadWorkspace((nestedRoot / "oskel.toml").string(), nested,
+                               error),
+        "workspace: a nested workspace is rejected");
+  check(contains(error, "cannot itself be a workspace"),
+        "workspace: the nested error names the problem");
+
+  fs::path registryRoot = makeTempDir();
+  makePackage(registryRoot / "a", "a");
+  makePackage(registryRoot / "b", "b");
+  writeFile(registryRoot / "a" / "oskel.toml",
+            "[package]\nname = \"a\"\nversion = \"0.1.0\"\n"
+            "entry = \"src/a/main.oskl\"\n\n[dependencies]\n"
+            "b = \"^0.1.0\"\n");
+  writeFile(registryRoot / "oskel.toml",
+            "[workspace]\nmembers = [\"a\", \"b\"]\n");
+  oskelp::Workspace registryWorkspace;
+  check(oskelp::loadWorkspace((registryRoot / "oskel.toml").string(),
+                              registryWorkspace, error),
+        "workspace: loads a workspace with a registry requirement");
+  oskelp::Resolution rejected;
+  check(!oskelp::resolveDependencies(registryWorkspace.root, rejected, error,
+                                     {}, {}, registryWorkspace.rootDir,
+                                     registryWorkspace.memberNames),
+        "workspace: a registry requirement on a member is rejected");
+  check(contains(error, "workspace member"),
+        "workspace: the rejection names the member");
+
+  fs::path overrideRoot = makeTempDir();
+  makePackage(overrideRoot / "a", "a");
+  makePackage(overrideRoot / "b", "b");
+  writeFile(overrideRoot / "oskel.toml",
+            "[workspace]\nmembers = [\"a\", \"b\"]\n");
+  fs::path registry = overrideRoot / "registry";
+  makeRegistryPackage(registry, "utils", "0.1.0");
+  const char* previous = std::getenv("OSKEL_REGISTRY");
+  std::string saved = previous == nullptr ? std::string() : previous;
+  setRegistry(registry.string());
+
+  oskelp::Workspace overrideWorkspace;
+  check(oskelp::loadWorkspace((overrideRoot / "oskel.toml").string(),
+                              overrideWorkspace, error),
+        "workspace: loads before an in-memory edit");
+  oskelp::Manifest edited = overrideWorkspace.members.front();
+  oskelp::Dependency utils;
+  utils.name = "utils";
+  utils.requirement = "^0.1.0";
+  edited.package.dependencies["utils"] = utils;
+  oskelp::Resolution overridden;
+  check(oskelp::resolveDependencies(
+            overrideWorkspace.root, overridden, error, {}, {},
+            overrideWorkspace.rootDir, overrideWorkspace.memberNames,
+            {{edited.package.name, edited}}),
+        "workspace: an in-memory member edit resolves");
+  check(overridden.find("utils") != nullptr,
+        "workspace: the edited member's registry dependency is resolved");
+  oskelp::Lockfile overriddenLock = oskelp::buildLockfile(overridden);
+  check(overriddenLock.packages.count("utils") == 1,
+        "workspace: an external dependency reaches the lockfile");
+
+  if (saved.empty()) {
+    clearRegistry();
+  } else {
+    setRegistry(saved);
+  }
+  fs::remove_all(registry);
+}
+
+
 static void testLatestRegistryVersion() {
   fs::path root = makeTempDir();
   fs::path registry = root / "registry";
@@ -1018,6 +1149,7 @@ int main() {
   testFindManifest();
   testResolution();
   testRegistryResolution();
+  testWorkspaces();
   testLatestRegistryVersion();
   testForcedResolution();
   testYank();

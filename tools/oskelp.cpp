@@ -960,7 +960,7 @@ bool loadManifest(const std::string& path, Manifest& out, std::string& error) {
 
   for (const auto& [key, value] : document.values) {
     (void)value;
-    if (key != "package" && key != "dependencies") {
+    if (key != "package" && key != "dependencies" && key != "workspace") {
       out.warnings.push_back("unknown section '" + key + "'");
     }
   }
@@ -983,6 +983,217 @@ bool findManifest(const std::string& startDir, std::string& manifestPath) {
     dir = parent;
   }
   return false;
+}
+
+namespace {
+
+bool workspaceMemberPaths(const TomlValue& workspace,
+                          std::vector<std::string>& paths,
+                          std::string& error) {
+  auto members = workspace.table.find("members");
+  if (members == workspace.table.end() || !members->second.isArray() ||
+      members->second.array.empty()) {
+    error = "[workspace] needs a non-empty 'members' array";
+    return false;
+  }
+  for (const TomlValue& member : members->second.array) {
+    if (!member.isString() || member.text.empty()) {
+      error = "[workspace] 'members' must be an array of non-empty strings";
+      return false;
+    }
+    paths.push_back(member.text);
+  }
+  return true;
+}
+
+bool workspaceIncludesMember(const TomlDocument& document,
+                             const fs::path& rootDir,
+                             const fs::path& memberDir) {
+  auto workspace = document.values.find("workspace");
+  if (workspace == document.values.end() || !workspace->second.isTable()) {
+    return false;
+  }
+  auto members = workspace->second.table.find("members");
+  if (members == workspace->second.table.end() ||
+      !members->second.isArray()) {
+    return false;
+  }
+  for (const TomlValue& value : members->second.array) {
+    if (!value.isString() || value.text.empty()) continue;
+    fs::path candidate = rootDir / value.text;
+    std::error_code ec;
+    fs::path canonical = fs::weakly_canonical(candidate, ec);
+    if (ec) canonical = candidate.lexically_normal();
+    if (samePath(canonical, memberDir)) return true;
+  }
+  return document.values.count("package") != 0 && samePath(rootDir, memberDir);
+}
+
+// Walks up from a member directory looking for an `oskel.toml` that declares a
+// `[workspace]` containing it. A malformed parent is skipped here; loading the
+// workspace itself reports the real error.
+bool findEnclosingWorkspace(const fs::path& memberDir, std::string& path) {
+  fs::path dir = memberDir;
+  while (true) {
+    fs::path parent = dir.parent_path();
+    if (parent.empty() || parent == dir) break;
+    dir = parent;
+    fs::path candidate = dir / "oskel.toml";
+    std::error_code ec;
+    if (!fs::is_regular_file(candidate, ec)) continue;
+    std::string source;
+    if (!readSourceFile(candidate.string(), source)) continue;
+    TomlDocument document;
+    std::string parseError;
+    if (!parseToml(source, document, parseError)) continue;
+    if (workspaceIncludesMember(document, dir, memberDir)) {
+      path = candidate.string();
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+bool loadWorkspace(const std::string& manifestPath, Workspace& out,
+                   std::string& error) {
+  out = Workspace{};
+  std::string absoluteManifest = absolutePath(manifestPath);
+  std::string source;
+  if (!readSourceFile(absoluteManifest, source)) {
+    error = "cannot read '" + absoluteManifest + "'";
+    return false;
+  }
+  TomlDocument document;
+  std::string parseError;
+  if (!parseToml(source, document, parseError)) {
+    error = absoluteManifest + ":" + parseError;
+    return false;
+  }
+
+  auto workspace = document.values.find("workspace");
+  if (workspace == document.values.end()) {
+    Manifest manifest;
+    if (!loadManifest(absoluteManifest, manifest, error)) return false;
+
+    std::string enclosing;
+    if (findEnclosingWorkspace(fs::path(manifest.dir), enclosing)) {
+      Workspace parent;
+      if (!loadWorkspace(enclosing, parent, error)) return false;
+      parent.invokedMember = manifest.package.name;
+      out = std::move(parent);
+      return true;
+    }
+
+    out.isWorkspace = false;
+    out.rootDir = manifest.dir;
+    out.manifestPath = manifest.path;
+    out.members.push_back(manifest);
+    out.memberNames.insert(manifest.package.name);
+    out.root = manifest;
+    return true;
+  }
+
+  if (!workspace->second.isTable()) {
+    error = "[workspace] must be a table";
+    return false;
+  }
+  for (const auto& [key, value] : workspace->second.table) {
+    (void)value;
+    if (key != "members") {
+      error = "[workspace] unknown key '" + key + "'";
+      return false;
+    }
+  }
+  std::vector<std::string> memberPaths;
+  if (!workspaceMemberPaths(workspace->second, memberPaths, error)) {
+    return false;
+  }
+
+  out.isWorkspace = true;
+  out.manifestPath = absoluteManifest;
+  out.rootDir = fs::path(absoluteManifest).parent_path().string();
+
+  auto addMember = [&](Manifest member) -> bool {
+    if (member.package.name == "__oskelp_workspace__") {
+      error = "'" + member.package.name + "' is reserved for the workspace root";
+      return false;
+    }
+    for (const Manifest& existing : out.members) {
+      if (samePath(existing.dir, member.dir)) return true;
+    }
+    if (!out.memberNames.insert(member.package.name).second) {
+      error = "workspace member name '" + member.package.name +
+              "' is duplicated";
+      return false;
+    }
+    out.members.push_back(std::move(member));
+    return true;
+  };
+
+  if (document.values.count("package") != 0) {
+    Manifest rootMember;
+    if (!loadManifest(absoluteManifest, rootMember, error)) return false;
+    if (!addMember(std::move(rootMember))) return false;
+  }
+
+  for (const std::string& memberPath : memberPaths) {
+    fs::path directory = fs::path(out.rootDir) / memberPath;
+    std::error_code ec;
+    fs::path canonical = fs::weakly_canonical(directory, ec);
+    if (ec) canonical = directory.lexically_normal();
+    fs::path memberManifest = canonical / "oskel.toml";
+    ec.clear();
+    if (!fs::is_regular_file(memberManifest, ec)) {
+      error = "workspace member '" + memberPath + "' has no oskel.toml";
+      return false;
+    }
+    std::string memberSource;
+    TomlDocument memberDocument;
+    std::string memberParseError;
+    if (!readSourceFile(memberManifest.string(), memberSource) ||
+        !parseToml(memberSource, memberDocument, memberParseError)) {
+      error = "workspace member '" + memberPath + "': cannot parse oskel.toml";
+      return false;
+    }
+    if (memberDocument.values.count("workspace") != 0) {
+      error = "workspace member '" + memberPath +
+              "' cannot itself be a workspace";
+      return false;
+    }
+    Manifest member;
+    if (!loadManifest(memberManifest.string(), member, error)) return false;
+    if (!addMember(std::move(member))) return false;
+  }
+  if (out.members.empty()) {
+    error = "[workspace] needs at least one member";
+    return false;
+  }
+
+  out.root.path = out.manifestPath;
+  out.root.dir = out.rootDir;
+  out.root.package.name = "__oskelp_workspace__";
+  out.root.package.version = "0.0.0";
+  out.root.package.entry = "";
+  for (const Manifest& member : out.members) {
+    Dependency dependency;
+    dependency.name = member.package.name;
+    std::error_code ec;
+    fs::path relative = fs::relative(member.dir, out.rootDir, ec);
+    dependency.path =
+        (ec || relative.empty()) ? normalizeSlashes(member.dir)
+                                 : normalizeSlashes(relative.generic_string());
+    out.root.package.dependencies[dependency.name] = dependency;
+  }
+
+  for (const Manifest& member : out.members) {
+    if (samePath(member.path, absoluteManifest)) {
+      out.invokedMember = member.package.name;
+      break;
+    }
+  }
+  return true;
 }
 
 std::string renderManifest(const Package& package) {
@@ -1456,8 +1667,10 @@ bool selectRegistryVersion(const Dependency& dependency,
 
 bool loadPreferredVersions(const Manifest& manifest,
                            std::map<std::string, std::string>& preferred,
-                           std::string& error) {
-  fs::path lockPath = fs::path(manifest.dir) / "oskel.lock";
+                           std::string& error,
+                           const std::string& rootDir = "") {
+  fs::path lockPath =
+      fs::path(rootDir.empty() ? manifest.dir : rootDir) / "oskel.lock";
   std::string source;
   if (!readSourceFile(lockPath.string(), source)) return true;
   Lockfile lock;
@@ -1514,11 +1727,16 @@ bool latestRegistryVersion(const std::string& name, std::string& version,
 bool resolveDependencies(
     const Manifest& root, Resolution& out, std::string& error,
     const std::map<std::string, std::string>& preferred,
-    const std::map<std::string, std::string>& forced) {
+    const std::map<std::string, std::string>& forced,
+    const std::string& sourceRoot,
+    const std::set<std::string>& workspaceMembers,
+    const std::map<std::string, Manifest>& overrides) {
   out.packages.clear();
   std::map<std::string, int> state;  // 1 = visiting, 2 = done
   std::map<std::string, ResolvedPackage> resolved;
   std::vector<std::string> stack;
+  fs::path sourceRootDir =
+      sourceRoot.empty() ? fs::path(root.dir) : fs::path(sourceRoot);
 
   // Seed the root so a dependency that leads back to it is a cycle even when
   // the root's in-memory manifest is newer than the one on disk (`oskelp add`
@@ -1537,6 +1755,12 @@ bool resolveDependencies(
       std::string source;
       std::string selectedVersion;
       if (dependency.isRegistry()) {
+        if (workspaceMembers.count(name) != 0) {
+          error = "package '" + name +
+                  "' is a workspace member; depend on it with a path "
+                  "dependency, not a registry requirement";
+          return false;
+        }
         if (!selectRegistryVersion(dependency, preferred, forced,
                                    selectedVersion, canonical, error)) {
           return false;
@@ -1547,7 +1771,8 @@ bool resolveDependencies(
         std::error_code ec;
         canonical = fs::weakly_canonical(directory, ec);
         if (ec) canonical = directory.lexically_normal();
-        source = "path+" + normalizeSlashes(dependency.path);
+        source = "path+" + normalizeSlashes(relativeDisplay(sourceRootDir,
+                                                            canonical));
       }
 
       auto known = resolved.find(name);
@@ -1588,7 +1813,35 @@ bool resolveDependencies(
 
       Manifest dependencyManifest;
       std::string loadError;
-      if (dependency.isRegistry()) {
+      auto overrideIt = overrides.find(name);
+      if (overrideIt != overrides.end()) {
+        dependencyManifest = overrideIt->second;
+        if (!samePath(dependencyManifest.dir, canonical)) {
+          error = "the in-memory manifest for '" + name + "' is at '" +
+                  dependencyManifest.dir + "', not '" + canonical.string() +
+                  "'";
+          return false;
+        }
+        if (dependencyManifest.package.name != name) {
+          error = "dependency '" + name + "' points to a package named '" +
+                  dependencyManifest.package.name + "'";
+          return false;
+        }
+        if (!dependency.version.empty() &&
+            dependencyManifest.package.version != dependency.version) {
+          error = "dependency '" + name + "' requires version '" +
+                  dependency.version + "' but the package is '" +
+                  dependencyManifest.package.version + "'";
+          return false;
+        }
+        if (dependency.isRegistry() &&
+            dependencyManifest.package.version != selectedVersion) {
+          error = "registry entry '" + name + "/" + selectedVersion +
+                  "' declares version '" +
+                  dependencyManifest.package.version + "'";
+          return false;
+        }
+      } else if (dependency.isRegistry()) {
         if (!loadManifest((canonical / "oskel.toml").string(),
                           dependencyManifest, loadError)) {
           error = "dependency '" + name + "': " + loadError;
@@ -1619,6 +1872,7 @@ bool resolveDependencies(
       package.version = dependencyManifest.package.version;
       package.source = source;
       package.dir = canonical.string();
+      package.workspaceMember = workspaceMembers.count(name) != 0;
       resolved[name] = package;
       out.packages.push_back(package);
       status = 2;
@@ -1642,7 +1896,7 @@ bool resolveDependencies(
 Lockfile buildLockfile(const Resolution& resolution) {
   Lockfile lock;
   for (const ResolvedPackage& package : resolution.packages) {
-    if (package.root) continue;
+    if (package.root || package.workspaceMember) continue;
     LockedPackage locked;
     locked.name = package.name;
     locked.version = package.version;
@@ -1971,10 +2225,13 @@ int runProcess(const std::vector<std::string>& argv,
 namespace {
 
 std::vector<std::pair<std::string, std::string>> projectEnvironment(
-    const Manifest& manifest) {
+    const Manifest& manifest, const std::string& depsDir = "") {
+  fs::path packages =
+      depsDir.empty() ? fs::path(manifest.dir) / ".oskel" / "deps"
+                      : fs::path(depsDir);
   return {
       {"OSKEL_MODULE_ROOT", (fs::path(manifest.dir) / "src").string()},
-      {"OSKEL_PACKAGES", (fs::path(manifest.dir) / ".oskel" / "deps").string()},
+      {"OSKEL_PACKAGES", packages.string()},
   };
 }
 
@@ -1985,8 +2242,10 @@ void printWarnings(const Manifest& manifest) {
 }
 
 bool materializeDependencies(const Manifest& root, const Resolution& resolution,
-                             std::string& error) {
-  fs::path dependenciesDir = fs::path(root.dir) / ".oskel" / "deps";
+                             std::string& error,
+                             const std::string& rootDir = "") {
+  fs::path dependenciesDir =
+      fs::path(rootDir.empty() ? root.dir : rootDir) / ".oskel" / "deps";
   std::error_code ec;
   fs::remove_all(dependenciesDir, ec);
   if (ec) {
@@ -2025,29 +2284,34 @@ bool materializeDependencies(const Manifest& root, const Resolution& resolution,
 }
 
 bool writeLockfile(const Manifest& manifest, const Resolution& resolution,
-                   std::string& error) {
+                   std::string& error, const std::string& rootDir = "") {
   Lockfile lock = buildLockfile(resolution);
-  return writeTextFile(fs::path(manifest.dir) / "oskel.lock",
-                       renderLockfile(lock), error);
+  return writeTextFile(
+      fs::path(rootDir.empty() ? manifest.dir : rootDir) / "oskel.lock",
+      renderLockfile(lock), error);
 }
 
-// Loads the manifest, resolves the graph, checks or writes the lockfile and
-// materialises the dependencies. Returns an exit code; `error` is set on
+// Loads the workspace, resolves the graph, checks or writes the root lockfile
+// and materialises the dependencies. Returns an exit code; `error` is set on
 // failure.
 int prepareProject(const std::string& manifestPath, const BuildOptions& options,
-                   Manifest& manifest, Resolution& resolution,
+                   Workspace& workspace, Resolution& resolution,
                    std::string& error) {
-  if (!loadManifest(manifestPath, manifest, error)) return kIoError;
-  printWarnings(manifest);
+  if (!loadWorkspace(manifestPath, workspace, error)) return kIoError;
+  for (const Manifest& member : workspace.members) printWarnings(member);
 
   std::map<std::string, std::string> preferred;
-  if (!loadPreferredVersions(manifest, preferred, error)) return kIoError;
-  if (!resolveDependencies(manifest, resolution, error, preferred)) {
+  if (!loadPreferredVersions(workspace.root, preferred, error,
+                             workspace.rootDir)) {
+    return kIoError;
+  }
+  if (!resolveDependencies(workspace.root, resolution, error, preferred, {},
+                           workspace.rootDir, workspace.memberNames)) {
     return kFailure;
   }
 
+  fs::path lockPath = fs::path(workspace.rootDir) / "oskel.lock";
   if (options.locked) {
-    fs::path lockPath = fs::path(manifest.dir) / "oskel.lock";
     std::string source;
     if (!readSourceFile(lockPath.string(), source)) {
       error = "--locked requires oskel.lock; run `oskelp build` once without it";
@@ -2059,13 +2323,77 @@ int prepareProject(const std::string& manifestPath, const BuildOptions& options,
       error = "oskel.lock:" + lockError;
       return kIoError;
     }
-    if (!verifyLockfile(manifest, resolution, lock, error)) return kFailure;
-  } else if (!writeLockfile(manifest, resolution, error)) {
+    if (!verifyLockfile(workspace.root, resolution, lock, error)) {
+      return kFailure;
+    }
+  } else if (!writeLockfile(workspace.root, resolution, error,
+                            workspace.rootDir)) {
     return kIoError;
   }
 
-  if (!materializeDependencies(manifest, resolution, error)) return kFailure;
+  if (!materializeDependencies(workspace.root, resolution, error,
+                               workspace.rootDir)) {
+    return kFailure;
+  }
   return kOk;
+}
+
+const Manifest* findMember(const Workspace& workspace,
+                           const std::string& name) {
+  for (const Manifest& member : workspace.members) {
+    if (member.package.name == name) return &member;
+  }
+  return nullptr;
+}
+
+// `build`/`check`/`test`: a named member wins, otherwise the member the
+// command was invoked from, otherwise every member.
+std::vector<const Manifest*> selectMembers(const Workspace& workspace,
+                                           const std::string& requested,
+                                           std::string& error) {
+  std::vector<const Manifest*> selected;
+  if (!requested.empty()) {
+    const Manifest* member = findMember(workspace, requested);
+    if (member == nullptr) {
+      error = "the workspace has no member named '" + requested + "'";
+      return selected;
+    }
+    selected.push_back(member);
+    return selected;
+  }
+  if (!workspace.invokedMember.empty()) {
+    const Manifest* member = findMember(workspace, workspace.invokedMember);
+    if (member != nullptr) {
+      selected.push_back(member);
+      return selected;
+    }
+  }
+  for (const Manifest& member : workspace.members) selected.push_back(&member);
+  return selected;
+}
+
+// `run`/`add`/`remove`/`publish`: one member. An explicit `--package` wins,
+// then the invoked member, then the only member; an ambiguous workspace is an
+// error instead of an arbitrary pick.
+const Manifest* selectOneMember(const Workspace& workspace,
+                                const std::string& requested,
+                                std::string& error) {
+  if (!requested.empty()) {
+    const Manifest* member = findMember(workspace, requested);
+    if (member == nullptr) {
+      error = "the workspace has no member named '" + requested + "'";
+    }
+    return member;
+  }
+  if (!workspace.invokedMember.empty()) {
+    const Manifest* member = findMember(workspace, workspace.invokedMember);
+    if (member != nullptr) return member;
+  }
+  if (workspace.members.size() == 1) return &workspace.members.front();
+  error =
+      "this workspace has several members; pass `--package <name>` to choose "
+      "one";
+  return nullptr;
 }
 
 bool executableIsWindows(const std::string& target) {
@@ -2099,14 +2427,16 @@ bool compilerInvocation(const std::string& argv0, std::string& executable,
   return false;
 }
 
-std::string targetBinary(const Manifest& manifest, const BuildOptions& options) {
-  return (fs::path(manifest.dir) / "target" /
-          executableName(manifest.package.name, options.target))
+std::string targetBinary(const Manifest& manifest, const BuildOptions& options,
+                         const std::string& targetRoot = "") {
+  fs::path directory = targetRoot.empty() ? fs::path(manifest.dir) / "target"
+                                          : fs::path(targetRoot);
+  return (directory / executableName(manifest.package.name, options.target))
       .string();
 }
 
 int buildProject(const Manifest& manifest, const BuildOptions& options,
-                 const std::string& argv0) {
+                 const std::string& argv0, const std::string& rootDir = "") {
   std::string error;
   std::string compiler;
   std::vector<std::string> prefix;
@@ -2115,7 +2445,9 @@ int buildProject(const Manifest& manifest, const BuildOptions& options,
     return kFailure;
   }
 
-  fs::path output = targetBinary(manifest, options);
+  fs::path targetRoot = rootDir.empty() ? fs::path(manifest.dir) / "target"
+                                        : fs::path(rootDir) / "target";
+  fs::path output = targetBinary(manifest, options, targetRoot.string());
   std::error_code ec;
   fs::create_directories(output.parent_path(), ec);
   if (ec) {
@@ -2137,12 +2469,18 @@ int buildProject(const Manifest& manifest, const BuildOptions& options,
     argv.push_back(options.mode);
   }
 
-  int child = runProcess(argv, projectEnvironment(manifest), manifest.dir);
+  std::string depsDir =
+      rootDir.empty() ? std::string()
+                      : (fs::path(rootDir) / ".oskel" / "deps").string();
+  int child =
+      runProcess(argv, projectEnvironment(manifest, depsDir), manifest.dir);
   if (child != 0) {
     reportError("the compiler exited with status " + std::to_string(child));
     return child;
   }
-  std::cout << "built " << relativeDisplay(manifest.dir, output) << "\n";
+  std::cout << "built "
+            << relativeDisplay(rootDir.empty() ? manifest.dir : rootDir, output)
+            << "\n";
   return kOk;
 }
 
@@ -2312,15 +2650,48 @@ int commandInit(const std::string& directory, const std::string& name,
   return kOk;
 }
 
-int commandAdd(const std::string& manifestPath, const std::string& name,
-               const std::string& path, const std::string& version) {
-  Manifest manifest;
+int commandAdd(const std::string& manifestPath, const std::string& package,
+               const std::string& name, const std::string& path,
+               const std::string& version) {
+  Workspace workspace;
   std::string error;
-  if (!loadManifest(manifestPath, manifest, error)) {
+  if (!loadWorkspace(manifestPath, workspace, error)) {
     reportError(error);
     return kIoError;
   }
-  printWarnings(manifest);
+  for (const Manifest& member : workspace.members) printWarnings(member);
+  const Manifest* selected = selectOneMember(workspace, package, error);
+  if (selected == nullptr) {
+    reportError(error);
+    return kFailure;
+  }
+  Manifest manifest = *selected;
+
+  auto commit = [&](const Manifest& updated, const std::string& edited,
+                    std::string& commitError) -> int {
+    Resolution resolution;
+    std::map<std::string, std::string> preferred;
+    if (!loadPreferredVersions(workspace.root, preferred, commitError,
+                               workspace.rootDir)) {
+      return kIoError;
+    }
+    Manifest rootManifest = workspace.isWorkspace ? workspace.root : updated;
+    std::map<std::string, Manifest> overrides;
+    if (workspace.isWorkspace) overrides[updated.package.name] = updated;
+    if (!resolveDependencies(rootManifest, resolution, commitError, preferred,
+                             {}, workspace.rootDir, workspace.memberNames,
+                             overrides)) {
+      return kFailure;
+    }
+    if (!writeTextFile(updated.path, edited, commitError) ||
+        !writeLockfile(workspace.root, resolution, commitError,
+                       workspace.rootDir) ||
+        !materializeDependencies(workspace.root, resolution, commitError,
+                                 workspace.rootDir)) {
+      return kIoError;
+    }
+    return kOk;
+  };
 
   if (path.empty()) {
     if (name.empty()) {
@@ -2332,6 +2703,12 @@ int commandAdd(const std::string& manifestPath, const std::string& name,
     if (!isIdentifier(name)) {
       reportError("'" + name + "' is not a valid dependency name");
       return kUsage;
+    }
+    if (name != manifest.package.name &&
+        workspace.memberNames.count(name) != 0) {
+      reportError("package '" + name +
+                  "' is a workspace member; add it with --path <dir>");
+      return kFailure;
     }
     if (registryRoot().empty()) {
       reportError(
@@ -2402,22 +2779,10 @@ int commandAdd(const std::string& manifestPath, const std::string& name,
 
     Manifest updated = manifest;
     updated.package.dependencies[name] = declaration;
-    Resolution resolution;
-    std::map<std::string, std::string> preferred;
-    if (!loadPreferredVersions(updated, preferred, error)) {
+    int status = commit(updated, edited, error);
+    if (status != kOk) {
       reportError(error);
-      return kIoError;
-    }
-    if (!resolveDependencies(updated, resolution, error, preferred)) {
-      reportError(error);
-      return kFailure;
-    }
-
-    if (!writeTextFile(manifest.path, edited, error) ||
-        !writeLockfile(updated, resolution, error) ||
-        !materializeDependencies(updated, resolution, error)) {
-      reportError(error);
-      return kIoError;
+      return status;
     }
 
     std::cout << (updating ? "updated '" : "added '") << name << "' ("
@@ -2536,22 +2901,10 @@ int commandAdd(const std::string& manifestPath, const std::string& name,
 
   Manifest updated = manifest;
   updated.package.dependencies[dependencyName] = declaration;
-  Resolution resolution;
-  std::map<std::string, std::string> preferred;
-  if (!loadPreferredVersions(updated, preferred, error)) {
+  int status = commit(updated, edited, error);
+  if (status != kOk) {
     reportError(error);
-    return kIoError;
-  }
-  if (!resolveDependencies(updated, resolution, error, preferred)) {
-    reportError(error);
-    return kFailure;
-  }
-
-  if (!writeTextFile(manifest.path, edited, error) ||
-      !writeLockfile(updated, resolution, error) ||
-      !materializeDependencies(updated, resolution, error)) {
-    reportError(error);
-    return kIoError;
+    return status;
   }
 
   std::cout << (updating ? "updated '" : "added '") << dependencyName
@@ -2559,18 +2912,25 @@ int commandAdd(const std::string& manifestPath, const std::string& name,
   return kOk;
 }
 
-int commandRemove(const std::string& manifestPath, const std::string& name) {
+int commandRemove(const std::string& manifestPath, const std::string& package,
+                  const std::string& name) {
   if (!isIdentifier(name)) {
     reportError("'" + name + "' is not a valid dependency name");
     return kUsage;
   }
-  Manifest manifest;
+  Workspace workspace;
   std::string error;
-  if (!loadManifest(manifestPath, manifest, error)) {
+  if (!loadWorkspace(manifestPath, workspace, error)) {
     reportError(error);
     return kIoError;
   }
-  printWarnings(manifest);
+  for (const Manifest& member : workspace.members) printWarnings(member);
+  const Manifest* selected = selectOneMember(workspace, package, error);
+  if (selected == nullptr) {
+    reportError(error);
+    return kFailure;
+  }
+  Manifest manifest = *selected;
 
   if (manifest.package.dependencies.find(name) ==
       manifest.package.dependencies.end()) {
@@ -2593,18 +2953,25 @@ int commandRemove(const std::string& manifestPath, const std::string& name) {
   updated.package.dependencies.erase(name);
   Resolution resolution;
   std::map<std::string, std::string> preferred;
-  if (!loadPreferredVersions(updated, preferred, error)) {
+  if (!loadPreferredVersions(workspace.root, preferred, error,
+                             workspace.rootDir)) {
     reportError(error);
     return kIoError;
   }
-  if (!resolveDependencies(updated, resolution, error, preferred)) {
+  Manifest rootManifest = workspace.isWorkspace ? workspace.root : updated;
+  std::map<std::string, Manifest> overrides;
+  if (workspace.isWorkspace) overrides[updated.package.name] = updated;
+  if (!resolveDependencies(rootManifest, resolution, error, preferred, {},
+                           workspace.rootDir, workspace.memberNames,
+                           overrides)) {
     reportError(error);
     return kFailure;
   }
 
   if (!writeTextFile(manifest.path, edited, error) ||
-      !writeLockfile(updated, resolution, error) ||
-      !materializeDependencies(updated, resolution, error)) {
+      !writeLockfile(workspace.root, resolution, error, workspace.rootDir) ||
+      !materializeDependencies(workspace.root, resolution, error,
+                               workspace.rootDir)) {
     reportError(error);
     return kIoError;
   }
@@ -2613,15 +2980,21 @@ int commandRemove(const std::string& manifestPath, const std::string& name) {
   return kOk;
 }
 
-int commandPublish(const std::string& manifestPath,
+int commandPublish(const std::string& manifestPath, const std::string& package,
                    const std::string& registry) {
-  Manifest manifest;
+  Workspace workspace;
   std::string error;
-  if (!loadManifest(manifestPath, manifest, error)) {
+  if (!loadWorkspace(manifestPath, workspace, error)) {
     reportError(error);
     return kIoError;
   }
-  printWarnings(manifest);
+  for (const Manifest& member : workspace.members) printWarnings(member);
+  const Manifest* selected = selectOneMember(workspace, package, error);
+  if (selected == nullptr) {
+    reportError(error);
+    return kFailure;
+  }
+  Manifest manifest = *selected;
 
   std::string root = registry.empty() ? registryRoot() : registry;
   if (root.empty()) {
@@ -2790,17 +3163,17 @@ int commandUpdate(const std::string& manifestPath, const std::string& name,
     reportError("version '" + precise + "' is not a semantic version");
     return kUsage;
   }
-  Manifest manifest;
+  Workspace workspace;
   std::string error;
-  if (!loadManifest(manifestPath, manifest, error)) {
+  if (!loadWorkspace(manifestPath, workspace, error)) {
     reportError(error);
     return kIoError;
   }
-  printWarnings(manifest);
+  for (const Manifest& member : workspace.members) printWarnings(member);
 
   Lockfile previous;
   std::map<std::string, std::string> preferred;
-  fs::path lockPath = fs::path(manifest.dir) / "oskel.lock";
+  fs::path lockPath = fs::path(workspace.rootDir) / "oskel.lock";
   std::string source;
   if (readSourceFile(lockPath.string(), source)) {
     std::string lockError;
@@ -2813,19 +3186,24 @@ int commandUpdate(const std::string& manifestPath, const std::string& name,
     }
   }
 
+  bool declared = false;
+  bool pathDependency = false;
+  for (const Manifest& member : workspace.members) {
+    auto direct = member.package.dependencies.find(name);
+    if (direct == member.package.dependencies.end()) continue;
+    declared = true;
+    if (!direct->second.isRegistry()) pathDependency = true;
+  }
+
   std::map<std::string, std::string> forced;
   if (!name.empty()) {
-    if (manifest.package.dependencies.count(name) == 0 &&
-        preferred.count(name) == 0) {
+    if (!declared && preferred.count(name) == 0) {
       reportError("package '" + name + "' is not in the dependency graph");
       return kFailure;
     }
     if (!precise.empty()) {
-      auto direct = manifest.package.dependencies.find(name);
-      bool registryDependency = false;
-      if (direct != manifest.package.dependencies.end()) {
-        registryDependency = direct->second.isRegistry();
-      } else {
+      bool registryDependency = declared ? !pathDependency : false;
+      if (!declared) {
         auto locked = previous.packages.find(name);
         registryDependency = locked != previous.packages.end() &&
                              locked->second.source.rfind("registry+", 0) == 0;
@@ -2845,7 +3223,9 @@ int commandUpdate(const std::string& manifestPath, const std::string& name,
   }
 
   Resolution resolution;
-  if (!resolveDependencies(manifest, resolution, error, preferred, forced)) {
+  if (!resolveDependencies(workspace.root, resolution, error, preferred,
+                           forced, workspace.rootDir,
+                           workspace.memberNames)) {
     reportError(error);
     return kFailure;
   }
@@ -2858,8 +3238,9 @@ int commandUpdate(const std::string& manifestPath, const std::string& name,
       return kFailure;
     }
   }
-  if (!writeLockfile(manifest, resolution, error) ||
-      !materializeDependencies(manifest, resolution, error)) {
+  if (!writeLockfile(workspace.root, resolution, error, workspace.rootDir) ||
+      !materializeDependencies(workspace.root, resolution, error,
+                               workspace.rootDir)) {
     reportError(error);
     return kIoError;
   }
@@ -2890,24 +3271,46 @@ int commandUpdate(const std::string& manifestPath, const std::string& name,
 }
 
 int commandOutdated(const std::string& manifestPath) {
-  Manifest manifest;
+  Workspace workspace;
   std::string error;
-  if (!loadManifest(manifestPath, manifest, error)) {
+  if (!loadWorkspace(manifestPath, workspace, error)) {
     reportError(error);
     return kIoError;
   }
-  printWarnings(manifest);
+  for (const Manifest& member : workspace.members) printWarnings(member);
 
   std::map<std::string, std::string> preferred;
-  if (!loadPreferredVersions(manifest, preferred, error)) {
+  if (!loadPreferredVersions(workspace.root, preferred, error,
+                             workspace.rootDir)) {
     reportError(error);
     return kIoError;
   }
   Resolution resolution;
-  if (!resolveDependencies(manifest, resolution, error, preferred)) {
+  if (!resolveDependencies(workspace.root, resolution, error, preferred, {},
+                           workspace.rootDir, workspace.memberNames)) {
     reportError(error);
     return kFailure;
   }
+
+  std::map<std::string, std::vector<std::string>> directRequirements;
+  for (const Manifest& member : workspace.members) {
+    for (const auto& [name, dependency] : member.package.dependencies) {
+      if (dependency.isRegistry()) {
+        directRequirements[name].push_back(dependency.requirement);
+      }
+    }
+  }
+
+  auto joinRequirements = [](const std::vector<std::string>& requirements) {
+    std::set<std::string> seen;
+    std::string joined;
+    for (const std::string& requirement : requirements) {
+      if (!seen.insert(requirement).second) continue;
+      if (!joined.empty()) joined += ", ";
+      joined += requirement;
+    }
+    return joined;
+  };
 
   bool any = false;
   for (const ResolvedPackage& package : resolution.packages) {
@@ -2925,9 +3328,10 @@ int commandOutdated(const std::string& manifestPath) {
       return kFailure;
     }
 
-    const auto direct = manifest.package.dependencies.find(package.name);
-    const bool isDirect = direct != manifest.package.dependencies.end() &&
-                          direct->second.isRegistry();
+    const auto direct = directRequirements.find(package.name);
+    const bool isDirect = direct != directRequirements.end();
+    const std::string requirement =
+        isDirect ? joinRequirements(direct->second) : std::string();
     if (currentYanked) {
       any = true;
       std::cout << package.name << " " << package.version << " (yanked";
@@ -2948,9 +3352,12 @@ int commandOutdated(const std::string& manifestPath) {
     std::string targetText = latestText;
     std::string note;
     if (isDirect) {
+      Dependency directDependency;
+      directDependency.name = package.name;
+      directDependency.requirement = requirement;
       std::string compatibleText;
       fs::path ignored;
-      if (!selectRegistryVersion(direct->second, {}, {}, compatibleText,
+      if (!selectRegistryVersion(directDependency, {}, {}, compatibleText,
                                  ignored, error)) {
         reportError(error);
         return kFailure;
@@ -2969,7 +3376,7 @@ int commandOutdated(const std::string& manifestPath) {
       any = true;
       std::cout << package.name << " " << package.version << " -> "
                 << targetText;
-      if (isDirect) std::cout << " (" << direct->second.requirement << ")";
+      if (isDirect) std::cout << " (" << requirement << ")";
       std::cout << note << "\n";
     } else if (compareSemVer(latest, current) > 0) {
       any = true;
@@ -2977,7 +3384,7 @@ int commandOutdated(const std::string& manifestPath) {
                 << latestText;
       if (isDirect) {
         std::cout << " needs a new requirement, current "
-                  << direct->second.requirement;
+                  << requirement;
       }
       std::cout << ")\n";
     }
@@ -2988,37 +3395,56 @@ int commandOutdated(const std::string& manifestPath) {
 
 int commandBuild(const std::string& manifestPath, const BuildOptions& options,
                  const std::string& argv0) {
-  Manifest manifest;
+  Workspace workspace;
   Resolution resolution;
   std::string error;
   int status =
-      prepareProject(manifestPath, options, manifest, resolution, error);
+      prepareProject(manifestPath, options, workspace, resolution, error);
   if (status != kOk) {
     reportError(error);
     return status;
   }
-  return buildProject(manifest, options, argv0);
+  std::vector<const Manifest*> members =
+      selectMembers(workspace, options.package, error);
+  if (members.empty()) {
+    reportError(error);
+    return kFailure;
+  }
+  for (const Manifest* member : members) {
+    status = buildProject(*member, options, argv0, workspace.rootDir);
+    if (status != kOk) return status;
+  }
+  return kOk;
 }
 
 int commandRun(const std::string& manifestPath, const BuildOptions& options,
                bool native, const std::vector<std::string>& args,
                const std::string& argv0) {
-  Manifest manifest;
+  Workspace workspace;
   Resolution resolution;
   std::string error;
   int status =
-      prepareProject(manifestPath, options, manifest, resolution, error);
+      prepareProject(manifestPath, options, workspace, resolution, error);
   if (status != kOk) {
     reportError(error);
     return status;
   }
+  const Manifest* member = selectOneMember(workspace, options.package, error);
+  if (member == nullptr) {
+    reportError(error);
+    return kFailure;
+  }
+  std::string depsDir =
+      (fs::path(workspace.rootDir) / ".oskel" / "deps").string();
 
   if (native) {
-    status = buildProject(manifest, options, argv0);
+    status = buildProject(*member, options, argv0, workspace.rootDir);
     if (status != kOk) return status;
-    std::vector<std::string> argv = {targetBinary(manifest, options)};
+    std::string targetRoot = (fs::path(workspace.rootDir) / "target").string();
+    std::vector<std::string> argv = {
+        targetBinary(*member, options, targetRoot)};
     argv.insert(argv.end(), args.begin(), args.end());
-    return runProcess(argv, projectEnvironment(manifest), manifest.dir);
+    return runProcess(argv, projectEnvironment(*member, depsDir), member->dir);
   }
 
   std::string oskel;
@@ -3026,21 +3452,27 @@ int commandRun(const std::string& manifestPath, const BuildOptions& options,
     reportError("cannot find 'oskel'; set $OSKEL");
     return kFailure;
   }
-  std::vector<std::string> argv = {oskel, manifest.package.entry};
+  std::vector<std::string> argv = {oskel, member->package.entry};
   argv.insert(argv.end(), args.begin(), args.end());
-  return runProcess(argv, projectEnvironment(manifest), manifest.dir);
+  return runProcess(argv, projectEnvironment(*member, depsDir), member->dir);
 }
 
 int commandCheck(const std::string& manifestPath, const BuildOptions& options,
                  const std::string& argv0) {
-  Manifest manifest;
+  Workspace workspace;
   Resolution resolution;
   std::string error;
   int status =
-      prepareProject(manifestPath, options, manifest, resolution, error);
+      prepareProject(manifestPath, options, workspace, resolution, error);
   if (status != kOk) {
     reportError(error);
     return status;
+  }
+  std::vector<const Manifest*> members =
+      selectMembers(workspace, options.package, error);
+  if (members.empty()) {
+    reportError(error);
+    return kFailure;
   }
 
   std::string oskel;
@@ -3048,32 +3480,35 @@ int commandCheck(const std::string& manifestPath, const BuildOptions& options,
     reportError("cannot find 'oskel'; set $OSKEL");
     return kFailure;
   }
-  int child = runProcess({oskel, "-c", manifest.package.entry},
-                         projectEnvironment(manifest), manifest.dir);
-  if (child == 0) {
-    std::cout << "checked " << manifest.package.entry << "\n";
+  std::string depsDir =
+      (fs::path(workspace.rootDir) / ".oskel" / "deps").string();
+  for (const Manifest* member : members) {
+    int child = runProcess({oskel, "-c", member->package.entry},
+                           projectEnvironment(*member, depsDir), member->dir);
+    if (child != 0) return child;
+    std::cout << "checked ";
+    if (workspace.isWorkspace) std::cout << member->package.name << ": ";
+    std::cout << member->package.entry << "\n";
   }
-  return child;
+  return kOk;
 }
 
 int commandTest(const std::string& manifestPath, const BuildOptions& options,
                 bool native, const std::string& argv0) {
-  Manifest manifest;
+  Workspace workspace;
   Resolution resolution;
   std::string error;
   int status =
-      prepareProject(manifestPath, options, manifest, resolution, error);
+      prepareProject(manifestPath, options, workspace, resolution, error);
   if (status != kOk) {
     reportError(error);
     return status;
   }
-
-  fs::path testsDir = fs::path(manifest.dir) / "tests";
-  std::vector<std::string> files = listSourceFiles(testsDir.string());
-  if (files.empty()) {
-    std::cout << "no tests found under "
-              << relativeDisplay(manifest.dir, testsDir) << "\n";
-    return kOk;
+  std::vector<const Manifest*> members =
+      selectMembers(workspace, options.package, error);
+  if (members.empty()) {
+    reportError(error);
+    return kFailure;
   }
 
   std::string oskel;
@@ -3085,69 +3520,94 @@ int commandTest(const std::string& manifestPath, const BuildOptions& options,
       return kFailure;
     }
   } else if (!findTool(argv0, "oskel", oskel)) {
-    reportError("cannot find 'oskel'; set $OSKEL");
+    reportError(error);
     return kFailure;
   }
 
-  fs::path binaryDir = fs::path(manifest.dir) / "target" / "tests";
-  if (native) {
-    std::error_code ec;
-    fs::create_directories(binaryDir, ec);
-    if (ec) {
-      reportError("cannot create '" + binaryDir.string() + "'");
-      return kIoError;
-    }
-  }
-
+  std::string depsDir =
+      (fs::path(workspace.rootDir) / ".oskel" / "deps").string();
   int passed = 0;
   int failed = 0;
-  for (const std::string& file : files) {
-    std::string display = relativeDisplay(manifest.dir, file);
-    std::cout << "test " << display << " ... " << std::flush;
-    int child = 0;
-    if (native) {
-      std::string binaryName;
-      for (char c : relativeDisplay(testsDir, file)) {
-        if (c == '/' || c == '\\' || c == '.') {
-          binaryName += '_';
-        } else {
-          binaryName += c;
-        }
+  bool anyTests = false;
+  for (const Manifest* member : members) {
+    fs::path testsDir = fs::path(member->dir) / "tests";
+    std::vector<std::string> files = listSourceFiles(testsDir.string());
+    if (files.empty()) {
+      if (!workspace.isWorkspace) {
+        std::cout << "no tests found under "
+                  << relativeDisplay(member->dir, testsDir) << "\n";
+        return kOk;
       }
-      fs::path binary =
-          binaryDir /
-          (binaryName + (executableIsWindows(options.target) ? ".exe" : ""));
-      std::vector<std::string> argv = {compiler};
-      argv.insert(argv.end(), prefix.begin(), prefix.end());
-      argv.push_back(file);
-      argv.push_back("-o");
-      argv.push_back(binary.string());
-      if (!options.target.empty()) {
-        argv.push_back("--target");
-        argv.push_back(options.target);
-      }
-      if (!options.mode.empty()) {
-        argv.push_back("--mode");
-        argv.push_back(options.mode);
-      }
-      child = runProcess(argv, projectEnvironment(manifest), manifest.dir);
-      if (child == 0) {
-        child = runProcess({binary.string()}, projectEnvironment(manifest),
-                           manifest.dir);
-      }
-    } else {
-      child = runProcess({oskel, file}, projectEnvironment(manifest),
-                         manifest.dir);
+      std::cout << "no tests found under " << member->package.name
+                << "/tests\n";
+      continue;
     }
-    if (child == 0) {
-      std::cout << "ok\n";
-      ++passed;
-    } else {
-      std::cout << "FAILED (exit " << child << ")\n";
-      ++failed;
+    anyTests = true;
+
+    fs::path binaryDir = workspace.isWorkspace
+                             ? fs::path(workspace.rootDir) / "target" /
+                                   "tests" / member->package.name
+                             : fs::path(member->dir) / "target" / "tests";
+    if (native) {
+      std::error_code ec;
+      fs::create_directories(binaryDir, ec);
+      if (ec) {
+        reportError("cannot create '" + binaryDir.string() + "'");
+        return kIoError;
+      }
+    }
+
+    for (const std::string& file : files) {
+      std::string display = relativeDisplay(member->dir, file);
+      if (workspace.isWorkspace) display = member->package.name + "/" + display;
+      std::cout << "test " << display << " ... " << std::flush;
+      int child = 0;
+      if (native) {
+        std::string binaryName;
+        for (char c : relativeDisplay(testsDir, file)) {
+          if (c == '/' || c == '\\' || c == '.') {
+            binaryName += '_';
+          } else {
+            binaryName += c;
+          }
+        }
+        fs::path binary =
+            binaryDir /
+            (binaryName + (executableIsWindows(options.target) ? ".exe" : ""));
+        std::vector<std::string> argv = {compiler};
+        argv.insert(argv.end(), prefix.begin(), prefix.end());
+        argv.push_back(file);
+        argv.push_back("-o");
+        argv.push_back(binary.string());
+        if (!options.target.empty()) {
+          argv.push_back("--target");
+          argv.push_back(options.target);
+        }
+        if (!options.mode.empty()) {
+          argv.push_back("--mode");
+          argv.push_back(options.mode);
+        }
+        child =
+            runProcess(argv, projectEnvironment(*member, depsDir), member->dir);
+        if (child == 0) {
+          child = runProcess({binary.string()},
+                             projectEnvironment(*member, depsDir), member->dir);
+        }
+      } else {
+        child = runProcess({oskel, file}, projectEnvironment(*member, depsDir),
+                           member->dir);
+      }
+      if (child == 0) {
+        std::cout << "ok\n";
+        ++passed;
+      } else {
+        std::cout << "FAILED (exit " << child << ")\n";
+        ++failed;
+      }
     }
   }
 
+  if (!anyTests) return kOk;
   std::cout << "\ntest result: " << (failed == 0 ? "ok" : "FAILED") << ". "
             << passed << " passed; " << failed << " failed\n";
   return failed == 0 ? kOk : kTestsFailed;
@@ -3155,24 +3615,24 @@ int commandTest(const std::string& manifestPath, const BuildOptions& options,
 
 int commandClean(const std::string& manifestPath, const std::string& argv0) {
   (void)argv0;
-  Manifest manifest;
+  Workspace workspace;
   std::string error;
-  if (!loadManifest(manifestPath, manifest, error)) {
+  if (!loadWorkspace(manifestPath, workspace, error)) {
     reportError(error);
     return kIoError;
   }
   std::error_code ec;
-  fs::remove_all(fs::path(manifest.dir) / "target", ec);
+  fs::remove_all(fs::path(workspace.rootDir) / "target", ec);
   if (ec) {
     reportError("cannot remove '" +
-                (fs::path(manifest.dir) / "target").string() + "': " +
+                (fs::path(workspace.rootDir) / "target").string() + "': " +
                 ec.message());
     return kIoError;
   }
-  fs::remove_all(fs::path(manifest.dir) / ".oskel", ec);
+  fs::remove_all(fs::path(workspace.rootDir) / ".oskel", ec);
   if (ec) {
     reportError("cannot remove '" +
-                (fs::path(manifest.dir) / ".oskel").string() + "': " +
+                (fs::path(workspace.rootDir) / ".oskel").string() + "': " +
                 ec.message());
     return kIoError;
   }
@@ -3222,27 +3682,41 @@ void printTreeNode(const Manifest& manifest, const Resolution& resolution,
 
 }  // namespace
 
-int commandTree(const std::string& manifestPath, const std::string& argv0) {
+int commandTree(const std::string& manifestPath, const std::string& package,
+                const std::string& argv0) {
   (void)argv0;
-  Manifest manifest;
+  Workspace workspace;
   std::string error;
-  if (!loadManifest(manifestPath, manifest, error)) {
+  if (!loadWorkspace(manifestPath, workspace, error)) {
     reportError(error);
     return kIoError;
   }
   Resolution resolution;
   std::map<std::string, std::string> preferred;
-  if (!loadPreferredVersions(manifest, preferred, error)) {
+  if (!loadPreferredVersions(workspace.root, preferred, error,
+                             workspace.rootDir)) {
     reportError(error);
     return kIoError;
   }
-  if (!resolveDependencies(manifest, resolution, error, preferred)) {
+  if (!resolveDependencies(workspace.root, resolution, error, preferred, {},
+                           workspace.rootDir, workspace.memberNames)) {
     reportError(error);
     return kFailure;
   }
-  std::set<std::string> visiting;
-  visiting.insert(manifest.package.name);
-  printTreeNode(manifest, resolution, std::string(), true, true, visiting);
+  std::vector<const Manifest*> members =
+      selectMembers(workspace, package, error);
+  if (members.empty()) {
+    reportError(error);
+    return kFailure;
+  }
+  if (members.size() > 1) {
+    std::cout << "workspace " << workspace.rootDir << "\n";
+  }
+  for (const Manifest* member : members) {
+    std::set<std::string> visiting;
+    visiting.insert(member->package.name);
+    printTreeNode(*member, resolution, std::string(), true, true, visiting);
+  }
   return kOk;
 }
 

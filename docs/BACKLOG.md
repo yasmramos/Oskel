@@ -1088,6 +1088,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 13. **[P2]** `oskelp`: add build profiles. `target/<name>` is the only output
     today because the AOT backend has no optimization level to select; a
     `--release` that changes nothing would be a cosmetic lie.
-14. **[P2]** `oskelp`: add workspaces (several packages sharing one lockfile)
-    and a `@Test` attribute, so a test file is not limited to a whole program
-    that exits `0`.
+14. **[P2] [done]** `oskelp`: multi-member workspaces landed. A root
+    `[workspace]` shares one `oskel.lock`, one `.oskel/deps` and one `target/`
+    across its members; `--package` selects one, and `build`, `check` and
+    `test` cover every member at the virtual root. Members may path-depend on
+    each other, a registry requirement that names a member is rejected, and
+    members stay out of the lockfile.
+15. **[P2]** `oskelp`: add a `@Test` attribute, so a test file is not limited
+    to a whole program that exits `0`.
