@@ -11,6 +11,19 @@ may change between minor versions.
 
 ### Added
 
+- **`std.bytes`, the byte-string and binary-codec module.** A byte is an `int`
+  in `0..255` and a byte string is an ordinary array, so no runtime type is
+  added. The module provides UTF-8 `fromString`/`toString`/`byteLength`,
+  `hexEncode`/`hexDecode`, standard and URL-safe Base64, fixed-width
+  little-/big-endian readers and writers for 8/16/32-bit signed and unsigned
+  integers, and the `concat`/`slice`/`indexOf`/`contains`/`startsWith`/
+  `endsWith`/`equals`/`compare`/`reversed`/`repeat`/`isAscii` array helpers.
+  Every public function validates its input and raises on an invalid byte,
+  offset, digit or width; `isValid` checks without raising. The module stays on
+  the portable primitive surface, so the VM, `oskel build` and WebAssembly
+  agree byte for byte. `tests/67_std_bytes.oskl` and
+  `tests/native_build_bytes.oskl` pin the three engines.
+
 - **VM/AOT parity for callbacks (PHASE 7f.11).** A callback may now return a
   struct by value under `oskel build`: the AOT body stages the returned map's
   fields into the C bytes and loads them into the System V return registers
