@@ -3543,7 +3543,7 @@ oskelc app.oskc -o app             # lower the image to a native binary
 oskel build app.oskc -o app        # the same, through the alias
 ```
 
-**Header** (16 bytes, all integers little-endian, fixed width):
+**Header** (20 bytes, all integers little-endian, fixed width):
 
 | Offset | Size | Field |
 |--------|------|-------|
@@ -3551,6 +3551,7 @@ oskel build app.oskc -o app        # the same, through the alias
 | 4 | 4 | Format version (`kOskcVersion`, currently 1) |
 | 8 | 4 | Reserved flags, must be 0 |
 | 12 | 4 | FFI capability bits the chunk needs (see below) |
+| 16 | 4 | Requirement bits (see below) |
 
 The version is checked on load: an unknown version is refused with exit 65
 rather than misread. Adding an opcode, a constant kind or a field changes the
@@ -3585,6 +3586,16 @@ That is what makes an image portable in a meaningful sense: a chunk built on
 Linux that marshals a struct by value is refused by the Windows build, because
 the Microsoft x64 thunk does not carry a struct — instead of being lowered into
 code that would marshal the wrong registers.
+
+**Requirement bits**: bit 0 needs SDL3, bit 1 needs the Skia shim. They record
+what the chunk needs from the UI backend, which the chunk alone cannot say: the
+Skia bindings use the ambiguous `oskel_` prefix, so scanning `externs` would miss
+them. The writer derives the bits from the modules the compiler loaded, so a
+program that imports `std.ui.window` records both and a plain one records 0.
+The AOT path reads them back and links the same libraries the source path would,
+then runs the same code; a program whose runtime is missing fails with the same
+message and exit 65 on either path instead of producing a binary that cannot
+open a window.
 
 **Validation on load.** The loader is a verifier, not a `memcpy`: it rejects a
 bad magic, an unknown version, non-zero reserved flags, a truncated image, a
