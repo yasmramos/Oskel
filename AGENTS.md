@@ -1108,6 +1108,20 @@ it as a caveat:
   allowed. When you move a file, grep for its old path across `tests/`,
   `CMakeLists.txt`, the build scripts and the workflows, then plant a violation
   and watch the check fail before trusting it.
+- `oskelint` (the linter, `docs/oskelint.md`) is a sixth executable, and the
+  one tool that *does* link the engine: it constructs a `VM` to read
+  `globals()` after `registerBuiltins`, so `builtin-shadow` has no second list
+  of builtin names to drift. It never runs a program, so `oskelc` stays
+  interpreter-free. The walker is the part that rots: it must visit every
+  variant of `StmtNode` and `ExprNode`, and a variant that binds a name must be
+  reported. Two gaps shipped in #420 and were fixed in #422 — `EnumDeclStmt`
+  was never visited (an `enum len { A, B }` shadowed `len` silently), and an
+  `extern "C"` block reported its *parameters* (the C side's names, binding
+  nothing) while staying silent on the declaration's own name. A bodyless
+  declaration (`extern "C"`, `native fn`) reports its name and skips its
+  parameters. When you touch the walker, check it by running `oskelint` on a
+  program per node kind rather than by reading it: both gaps survived a review
+  and only showed up under execution.
 - `bindgen` (the C binding generator, `docs/bindgen.md`) is a second executable
   shipped beside `oskel`. It is standalone — it links no engine code — and its
   sources live under `tools/`, outside the three `src/` globs, so it is never
