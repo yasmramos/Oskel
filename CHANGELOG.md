@@ -11,6 +11,17 @@ may change between minor versions.
 
 ### Added
 
+- **The release SDK bundles SDL3 and Skia.** `std.ui` and `std.ui.window` no
+  longer depend on libraries the user installs. The artifacts workflow builds a
+  shared SDL3 and a static Skia with vcpkg, links the static archive into
+  `libskia_shim`, and every archive, `.deb`/`.rpm`, `.pkg`/`.dmg` and Windows
+  installer ships both under `lib/oskel/ui`. The installed engine finds them
+  through its executable-relative lookup, so `import std.ui.window` works with
+  no `OSKEL_UI_LIBDIR`, `LD_PRELOAD` or `--link-lib`. A source build gets the
+  same pair with `tools/prepare_ui_deps.py`; the `install_stdlib` test runs the
+  real shim from the installed tree. The Windows and macOS artifacts now build
+  the UI backend instead of silently omitting it.
+
 - **`bindgen --abi` selects the destination ABI.** A generated module must not
   emit a shape the destination cannot marshal: `--abi system-v` emits
   struct-by-value, callbacks and variadics; `--abi win64` emits only the

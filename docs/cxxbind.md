@@ -280,13 +280,17 @@ from `SkSurface::MakeRasterN32Premul` in milestone 115), the `drawString` call
 Everything else is generated.
 
 ```sh
-cd bindings/skia
-SKIA_DIR=/path/to/skia ./build.sh
+python3 tools/prepare_ui_deps.py
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
 ```
 
-The generated module is checked in at `std/internal/skia.oskl`; the shim stays
-in `bindings/skia/build/libskia_shim.so`. `oskel -c` accepts the module without
-Skia installed. Compiling the shim needs Skia's headers and `libskia`.
+That builds `skia_shim` from the vcpkg `unofficial::skia::skia` target into
+`build/ui`. A hand-built Skia still works with
+`SKIA_DIR=/path/to/skia ./bindings/skia/build.sh`. The generated module is checked in at
+`std/internal/skia.oskl`; the shim stays in `build/ui/libskia_shim.so`.
+`oskel -c` accepts the module without Skia installed. Compiling the shim needs
+Skia's headers and `libskia`.
 `std/internal/skia_ui.oskl` is the backend for `std/ui`'s display list, and
 `std.ui.window` wires it to SDL3; `docs/ui.md` describes the public widget and
 window API. SDL3 owns the window and events, Skia owns the pixels.
@@ -297,7 +301,7 @@ window API. SDL3 owns the window and events, Skia owns the pixels.
 | --- | --- |
 | `cxxbind.generate` | The counter, factory and Skia descriptors generate the module, header and shim; `oskel -c` accepts the modules; unknown types and every ownership mistake exit 65. Runs on every platform. |
 | `cxxbind.end_to_end` | The counter and factory shims compile with the host `c++`; the VM (via `LD_PRELOAD`) and the hosted AOT binary both print `cxx bridge ok` / `cxx factory ok`. Linux only, like every hosted AOT test. |
-| `cxxbind.skia` | Optional: the real Skia shim compiles against a Skia build; `skia_test.oskl` clears, draws and reads pixels back in bulk, `skia_ui_test.oskl` renders a `std.ui` tree, and `skia_window_test.oskl` presents it through an SDL3 dummy window. All agree on the VM and the hosted AOT binary. Registered only with `OSKEL_SKIA_DIR`/`OSKEL_SKIA_LIB`; the window half also needs SDL3. See `bindings/skia/README.md`. |
+| `cxxbind.skia` | The real Skia shim builds from the bundled `unofficial::skia::skia` target; `skia_test.oskl` clears, draws and reads pixels back in bulk, `skia_ui_test.oskl` renders a `std.ui` tree, and `skia_window_test.oskl` presents it through an SDL3 dummy window. All agree on the VM and the hosted AOT binary. Registered when CMake finds Skia; the window half also needs SDL3. See `bindings/skia/README.md`. |
 
 Fixtures: `tests/cxxbind/counter.*` (constructor/destructor and a free
 function), `tests/cxxbind/factory.*` (factory objects, `sp`/`value`/`borrow`/

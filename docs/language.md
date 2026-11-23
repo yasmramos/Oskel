@@ -3299,16 +3299,19 @@ compiles either way):
 oskel build app.oskl                       # freestanding on Linux/Windows
 oskel build app.oskl --mode freestanding   # the same on Linux/Windows
 oskel build app.oskl --mode hosted         # links libc (FFI; PHASE 7f.4)
-oskel build app.oskl --mode hosted --link-lib SDL3 -o app   # links SDL3 too
+oskel build app.oskl -o app                # std.ui: hosted + bundled SDL3/Skia
+oskel build app.oskl --mode hosted --link-lib SDL3 -o app   # custom SDL3
 ```
 
 `--link-lib <name>` adds a library to the hosted link as `-l<name>`, which is
 how an `extern "C"` symbol that lives in a third-party library resolves. It is
 repeatable, it is only meaningful with `--mode hosted` (the freestanding image
 has no linker), and the name is restricted to letters, digits, `_`, `+`, `-`
-and `.` so it cannot smuggle a shell metacharacter into the `$CC` command. The
-development engine does not use it: it links the library itself (CMake finds
-SDL3, for example) and resolves the symbol through `Platform::lookupSymbol`.
+and `.` so it cannot smuggle a shell metacharacter into the `$CC` command. A
+program that imports `std.ui` does not need it: the compiler records the
+requirement and adds the bundled SDL3 and Skia shim itself. The development
+engine does not use it either: it loads the bundled libraries and resolves the
+symbol through `Platform::lookupSymbol`.
 
 The backend targets `x86_64-linux-sysv`, `x86_64-windows-win64`,
 `x86_64-macos-sysv` and the bare-metal `x86_64-freestanding-sysv`; on any other

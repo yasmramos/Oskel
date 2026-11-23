@@ -5,6 +5,10 @@ widgets, measures and places it, and emits a **display list** of rectangles and
 text. It does not open a window and does not call a graphics API: SDL3 owns the
 window and the events, and Skia consumes the display list.
 
+The release SDK bundles both native libraries under `lib/oskel/ui`, next to the
+engine. Importing `std.ui.window` is enough: the engine finds SDL3 and the Skia
+shim there, with no package to install and no environment variable to set.
+
 The widget module is plain Oskel over the portable primitive surface, so the
 tree, layout, display list and hit testing behave identically on the development
 VM and under `oskel build` (`tests/native_build_ui.oskl`).
@@ -54,20 +58,23 @@ texture and presents the renderer. Mouse motion updates the hovered button, a
 left press marks it pressed, and a release on the same button runs `onClick`
 and lays the tree out again. Releasing outside the button cancels the click.
 
-On the development engine, load the Skia shim and let SDL3 resolve from the
-linked library:
+On an installed SDK the engine loads the bundled libraries itself:
 
 ```sh
-LD_PRELOAD=bindings/skia/build/libskia_shim.so oskel examples/ui/window.oskl
+oskel examples/ui/window.oskl
 ```
 
-A native binary needs the hosted link mode and both libraries:
+A native binary is just as direct. The compiler sees the `std.ui.window` import,
+selects the hosted link mode, and adds the bundled SDL3 and Skia shim:
 
 ```sh
-LIBRARY_PATH=bindings/skia/build oskel build examples/ui/window.oskl \
-  --mode hosted --link-lib SDL3 --link-lib skia_shim -o ui-window
-LD_LIBRARY_PATH=bindings/skia/build ./ui-window
+oskel build examples/ui/window.oskl -o ui-window
+./ui-window
 ```
+
+A source checkout that has not built the bundle can point at a directory with
+the same files through `OSKEL_UI_LIBDIR`; `--link-lib` remains available for a
+custom pair of libraries.
 
 | Function | Meaning |
 | --- | --- |
@@ -153,11 +160,13 @@ let root = ui.window("Demo", 320, 200,
 ui_window.run("Demo", root, 320, 200, 0);
 ```
 
-Build the Skia bridge first (`bindings/skia/README.md`). The internal backend
-creates and closes the `Paint`/`Font` objects it needs; the `Canvas` remains
-borrowed from the `Surface`. The bridge module is checked in at
-`std/internal/skia.oskl`, so `std.ui.window` type-checks in a clean checkout;
-only the C++ shim needs a Skia build.
+The release SDK ships the bridge. A source build produces the same file with
+`python3 tools/prepare_ui_deps.py` and a normal CMake build; `bindings/skia/README.md`
+describes the manual Skia-root path. The internal backend creates and closes the
+`Paint`/`Font` objects it needs; the `Canvas` remains borrowed from the
+`Surface`. The bridge module is checked in at `std/internal/skia.oskl`, so
+`std.ui.window` type-checks in a clean checkout; only the C++ shim needs a Skia
+build.
 
 ## Limits
 
@@ -170,8 +179,8 @@ only the C++ shim needs a Skia build.
 - The window loop redraws on every frame and sleeps 16 ms; it has no dirty-region
   optimisation, resize handling or keyboard focus yet.
 - `std.ui.window` is Linux x86-64 hosted AOT for now, because the native backend
-  is hosted-only on that target; the VM path works wherever SDL3 and the Skia
-  shim are available.
+  is hosted-only on that target; the VM path works wherever the installed SDK
+  ships the bundled SDL3 and Skia shim.
 
 ## Tests
 
@@ -179,4 +188,5 @@ only the C++ shim needs a Skia build.
 | --- | --- |
 | `oskel.native_build_ui` | The widget tree, layout, display list and hit test run on the VM. |
 | `oskel.build_binary_ui` | The same fixture builds with `oskel build` and prints exactly the VM's output. |
-| `cxxbind.skia` | Optional real-Skia test: the generated bridge renders the display list to a raster surface, checks pixels in the VM and the hosted AOT binary, runs `skia_ui_test.oskl`, and drives `skia_window_test.oskl` through the SDL dummy driver. Registered only when `OSKEL_SKIA_DIR`/`OSKEL_SKIA_LIB` point at a Skia build; the window half also needs SDL3. |
+| `install_stdlib` | The installed tree contains `lib/oskel/ui`, and the installed engine runs `skia_ui_test.oskl` with no `OSKEL_UI_LIBDIR`. |
+| `cxxbind.skia` | Real-Skia test: the bundled bridge renders the display list to a raster surface, checks pixels in the VM and the hosted AOT binary, runs `skia_ui_test.oskl`, and drives `skia_window_test.oskl` through the SDL dummy driver. Registered when CMake finds Skia (the bundled target or `OSKEL_SKIA_DIR`); the window half also needs SDL3. |
