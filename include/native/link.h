@@ -30,7 +30,8 @@
 // System V/GNU `ar` (not thin archives). On Windows, COFF `.text`/`.rdata`/
 // `.data`/`.bss` are loaded and the undefined runtime symbols become imports
 // (PHASE 10.3a); relocatable COFF links are PHASE 10.3b.1; MSVC `.lib`
-// archives are later.
+// archives are handled by expandCoffArchives (PHASE 10.3b.2); short import
+// objects are not.
 // The macOS Mach-O container is PHASE 10.3d; an input this module does not
 // understand is reported, never mis-linked.
 struct LinkError : std::exception {

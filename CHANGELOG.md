@@ -147,8 +147,13 @@ may change between minor versions.
   COFF objects into a new COFF object: defined symbols at their merged
   offsets, uniquely renamed local symbols, section symbols with aux records,
   and section-symbol relocations retargeted to the output section symbol with
-  the addend adjusted. The result links with `oskelld`/`--linker own`. MSVC
-  `.lib` archives and `args()` remain 10.3b.
+  the addend adjusted. The result links with `oskelld`/`--linker own`.
+- **MSVC `.lib` archives (PHASE 10.3b.2).** The Windows linker expands
+  `!<arch>` inputs before parsing: it skips the first/second linker members,
+  resolves `//` long names and `/N` references, strips the member's trailing
+  `/`, and rejects a short import object with a dedicated message. A static
+  `.lib` member links through both the direct PE path and `-r`. `args()`
+  remains 10.3b.
 
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,
