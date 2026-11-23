@@ -630,13 +630,18 @@ it as a caveat:
   name and links the member through both `linkHostedExecutable` and `-r`.
 - `args()` is handled on Windows (PHASE 10.3b.3). The generated `_start`
   imports `__getmainargs` from `msvcrt.dll` (the UCRT does not export it),
-  builds the CRT's `argc`/`argv`, and calls `main`
-  with them in `rcx`/`rdx`; the Windows hosted runtime exports a two-instruction
-  `main` wrapper (`mov rdi, rcx; mov rsi, rdx; jmp chunk`) so the chunk's
-  `rdi`/`rsi` entry reads the same vector under `--linker cl` and the own
-  linker. `oskel.build_hosted_own_windows_args` runs `args()` with an argument
+  builds the CRT's `argc`/`argv`, and calls `main` with them in `rcx`/`rdx`;
+  the Windows hosted runtime exports a two-instruction `main` wrapper
+  (`mov rdi, rcx; mov rsi, rdx; jmp chunk`) so the chunk's `rdi`/`rsi` entry
+  reads the same vector under `--linker cl` and the own linker.
+  `oskel.build_hosted_own_windows_args` runs `args()` with an argument
   containing a space.
-- `.pdata`/`.xdata`/TLS remain 10.3b; the macOS Mach-O container is 10.3d.
+- A `.pdata`/`.xdata` input is rejected in `parseCoffObject` with a dedicated
+  message: the AOT object emits no unwind data, so the PE exception directory
+  stays zero and a C++ exception must not cross an Oskel frame. A `.tls` input
+  is rejected too; the image defines no TLS variables, so the PE TLS directory
+  stays zero. Emitting `.pdata`/`.xdata` is future container work.
+- The macOS Mach-O container is 10.3d.
 - The multi-object e2e helper is an `OBJECT` library compiled with
   `-fno-sanitize=all` when the build is sanitized: the object is linked into a
   plain emitted binary that does not carry the ASan runtime. The archive test
