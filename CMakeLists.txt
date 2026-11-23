@@ -1684,6 +1684,17 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_arity.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # The operator edge cases BACKLOG §13 items 1-3 ask about: `-INT64_MIN`
+    # wrapping, `2 ** -1` yielding a double, and a shift count outside 0..63
+    # raising. Reached through function values so the compiler cannot fold the
+    # operands, and wrapped in `pcall` so the message is compared too.
+    add_test(NAME oskel.build_binary_operators
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_operators"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_operators.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `std.json` is plain Oskel over the portable primitive surface, so it must
     # build to a native binary and agree with the VM. The fixture is the guard
     # that keeps the module off the collection/string methods and

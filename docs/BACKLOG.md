@@ -1018,16 +1018,20 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    the compiler's const folding warns; the runtime does not warn. **Decided**:
    the language spec says integer arithmetic wraps, and the warning is a
    compile-time diagnostic for constant expressions only; the runtime has no
-   warning channel, and both engines return the same bit pattern. Pinned by
-   `tests/native_build_compound_ops.oskl`.
+   warning channel, and both engines return the same bit pattern
+   (`-(-9223372036854775808)` is `-9223372036854775808`). Pinned by
+   `tests/native_build_compound_ops.oskl` and, through a function value so the
+   constant folder never runs, by `tests/native_build_operators.oskl`.
 2. **[P1] [done]** `binary` `StarStar` with an int base and a negative exponent
    falls to `std::pow` and yields a double, not an int. **Decided**: the rank
    is the widest operand's, so a negative int exponent yields a double in both
-   engines. Pinned by `tests/native_build_compound_ops.oskl`.
+   engines, and `2 ** -1` is `0.5` on both. `tests/native_build_operators.oskl`
+   pins `2^3` as the int `8`, `2^-1` as the double `0.5` and `2^0` as `1`.
 3. **[P1] [done]** `binary` `Shl`/`Shr` reject `b < 0 || b > 63`; the AOT
-   `emitShift` checks the same range before emitting `shl`/`sar`. Pinned by
-   `tests/native_build_compound_ops.oskl`, which drives `-1` and `64` through
-   `pcall` on both engines.
+   `emitShift` applies the same rule and raises the same message (`shift count
+   must be between 0 and 63`), verified for `b = -1`, `64` and the in-range
+   `0`/`63` boundaries on both `<<` and `>>`. Pinned by
+   `tests/native_build_compound_ops.oskl` and `tests/native_build_operators.oskl`.
 4. **[P2]** `indexGet` for a map with a missing key returns `nil` (JS-style)
    while Python raises; decide the language rule and keep VM/AOT in step.
 5. **[P2]** `indexSet` for an array with `index == length` pushes (Lua-style);
