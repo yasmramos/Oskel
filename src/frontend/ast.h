@@ -446,6 +446,25 @@ struct StructDeclStmt {
   std::vector<StructField> fields;
 };
 
+// One member of an `enum` declaration. `value` is the folded integer value:
+// members without an explicit `= expr` continue from the previous value, as in
+// C. The declaration is compile-time metadata (it emits no bytecode), so a
+// member is resolved to a `LOADK` of this value at every use.
+struct EnumMember {
+  std::string name;
+  int64_t value = 0;
+  int line = 1;
+  int col = 1;
+};
+
+// `enum Color { RED, GREEN = 5, BLUE }` (PHASE 6.9). A scoped set of integer
+// constants. `Color.RED` and a bare `RED` (when exactly one enum declares it)
+// both compile to the integer; no runtime value or global is created.
+struct EnumDeclStmt {
+  std::string name;
+  std::vector<EnumMember> members;
+};
+
 struct BlockStmt {
   std::vector<StmtPtr> stmts;
 };
@@ -569,9 +588,10 @@ struct ExternBlockStmt {
   std::vector<FnDeclStmt> decls;   // each `fn ...;`, all `isNative`
 };
 
-using StmtNode = std::variant<ExprStmt, LetStmt, FnDeclStmt, StructDeclStmt, BlockStmt, IfStmt,
-                              WhileStmt, DoWhileStmt, ForStmt, ForInStmt, BreakStmt, ContinueStmt,
-                              ReturnStmt, ImportStmt, SwitchStmt, DeferStmt, ExternBlockStmt>;
+using StmtNode = std::variant<ExprStmt, LetStmt, FnDeclStmt, StructDeclStmt, EnumDeclStmt,
+                              BlockStmt, IfStmt, WhileStmt, DoWhileStmt, ForStmt, ForInStmt,
+                              BreakStmt, ContinueStmt, ReturnStmt, ImportStmt, SwitchStmt,
+                              DeferStmt, ExternBlockStmt>;
 
 struct Stmt {
   StmtNode node;

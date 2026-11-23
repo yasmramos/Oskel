@@ -1,0 +1,6 @@
+// expect-exit: 65
+// The enum name is a namespace for its members, so it cannot also name a
+// variable.
+enum Color { RED }
+let Color = 1;
+print(Color);

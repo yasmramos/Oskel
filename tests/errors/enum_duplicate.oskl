@@ -1,0 +1,4 @@
+// expect-exit: 65
+enum Color { RED }
+enum Color { BLUE }
+print(Color.RED);

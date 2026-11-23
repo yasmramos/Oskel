@@ -1,0 +1,5 @@
+// expect-exit: 65
+// A member is a compile-time constant, not a storage location.
+enum Color { RED }
+Color.RED = 5;
+print(Color.RED);

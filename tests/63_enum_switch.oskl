@@ -1,0 +1,52 @@
+// PHASE 6.9: a switch over an enum is exhaustive.
+//
+// Every member must have a case (or a `default`), and a nullable enum also
+// needs `case nil`. A switch over a constant member has one reachable case, so
+// it is exempt from the rule.
+enum Color { RED, GREEN, BLUE }
+
+fn describe(c: Color): string {
+  switch (c) {
+    case Color.RED: { return "red"; }
+    case Color.GREEN: { return "green"; }
+    case Color.BLUE: { return "blue"; }
+  }
+  return "?";
+}
+assertEq(describe(Color.RED), "red");
+assertEq(describe(Color.GREEN), "green");
+assertEq(describe(Color.BLUE), "blue");
+
+fn nullable(c: Color?): string {
+  switch (c) {
+    case Color.RED: { return "red"; }
+    case Color.GREEN: { return "green"; }
+    case Color.BLUE: { return "blue"; }
+    case nil: { return "none"; }
+  }
+  return "?";
+}
+assertEq(nullable(nil), "none");
+assertEq(nullable(Color.GREEN), "green");
+
+// The subject is a constant, so only its own member is reachable.
+fn constant(): string {
+  switch (Color.RED) {
+    case Color.RED: { return "red"; }
+  }
+  return "?";
+}
+assertEq(constant(), "red");
+
+// A `default` covers whatever the labels do not, so the switch is exhaustive.
+fn withDefault(c: Color): string {
+  switch (c) {
+    case RED: { return "red"; }
+    default: { return "other"; }
+  }
+  return "?";
+}
+assertEq(withDefault(Color.RED), "red");
+assertEq(withDefault(Color.BLUE), "other");
+
+print("enum switch ok");
