@@ -2978,7 +2978,7 @@ is `2.400`).
 | `divide(divisor)` | Exact quotient; raises when the expansion does not terminate. |
 | `divide(divisor, scale, mode)` | Quotient rounded to `scale` with a Java rounding mode. |
 | `divide(divisor, mode)` | Uses this value's scale and the given mode. |
-| `divideToIntegralValue`, `remainder` | Truncating integral quotient and exact remainder. |
+| `divideToIntegralValue`, `remainder` | Truncating integral quotient with Java's preferred scale, and exact remainder. |
 | `setScale(scale)` / `setScale(scale, mode)` | Rescales; the one-argument form raises if digits would be lost. |
 | `round(scale, mode)` | Alias for the two-argument `setScale`. |
 | `compareTo`, `equals` | Numeric comparison; `equals` also compares the scale. |

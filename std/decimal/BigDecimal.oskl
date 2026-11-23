@@ -135,7 +135,22 @@ class BigDecimal {
     } else {
       denominator = _shiftUp(denominator, -shift);
     }
-    return _make(_divMod(numerator, denominator).q, 0);
+    let quotient = _divMod(numerator, denominator).q;
+    let preferredScale = self._scale - rhs._scale;
+    if (preferredScale >= 0) {
+      return _make(_shiftUp(quotient, preferredScale), preferredScale);
+    }
+    // A negative preferred scale is only usable when the integer quotient has
+    // enough trailing zeros; otherwise Java reduces the scale toward zero.
+    var scale = preferredScale;
+    while (scale < 0) {
+      let division = _divMod(quotient, _pow10(-scale));
+      if (_isZero(division.r)) {
+        return _make(_fromLittle(quotient.sign, division.q.digits), scale);
+      }
+      scale = scale + 1;
+    }
+    return _make(quotient, 0);
   }
 
   // The exact remainder `self - divideToIntegralValue(divisor) * divisor`.

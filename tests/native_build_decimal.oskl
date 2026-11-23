@@ -3,7 +3,8 @@
 //
 // The module is pure Oskel over arrays, strings, loops and closures, so the
 // native binary and the WebAssembly module must agree with the development VM
-// byte for byte. Every line is deterministic and prints a string value.
+// byte for byte. Every line is deterministic and prints a string value. The
+// expectations were cross-checked against OpenJDK 21's java.math.BigDecimal.
 
 import std.decimal;
 import std.decimal.*;
@@ -38,7 +39,8 @@ show("setScaleDown", decimal("1.235").setScale(2, "HALF_UP"));
 show("setScaleNegative", decimal("1234").setScale(-2, "HALF_UP"));
 show("strip", decimal("1.2300").stripTrailingZeros());
 show("stripInteger", decimal("1000").stripTrailingZeros());
-print("integral", decimal("10.5").divideToIntegralValue(decimal("3")).toPlainString());
+show("integral", decimal("10.5").divideToIntegralValue(decimal("3")));
+show("integralNegativeScale", decimal("10.5").divideToIntegralValue(decimal("0.03")));
 print("remainder", decimal("10.5").remainder(decimal("3")).toPlainString());
 print("remainderNeg", decimal("-10.5").remainder(decimal("3")).toPlainString());
 show("pow", decimal("1.20").pow(2));

@@ -2,7 +2,9 @@
 //
 // The module is pure Oskel over arrays, strings, loops and closures, so every
 // expected value here must hold on the VM, under `oskel build` and on
-// WebAssembly (see `tests/native_build_decimal.oskl`).
+// WebAssembly (see `tests/native_build_decimal.oskl`). The expected values
+// were cross-checked against OpenJDK 21's java.math.BigDecimal and against
+// Python's decimal module for the exact arithmetic and rounding cases.
 
 import std.decimal;
 import std.decimal.*;
@@ -113,7 +115,15 @@ assertEq(decimal("0.00").stripTrailingZeros().scale(), 0);
 
 // --- integral division and remainder ---------------------------------------
 
-assertEq(decimal("10.5").divideToIntegralValue(decimal("3")).toPlainString(), "3");
+assertEq(decimal("10.5").divideToIntegralValue(decimal("3")).toPlainString(), "3.0");
+assertEq(decimal("10.5").divideToIntegralValue(decimal("3")).scale(), 1);
+assertEq(decimal("10.5").divideToIntegralValue(decimal("3.0")).toPlainString(), "3");
+assertEq(decimal("1E+3").divideToIntegralValue(decimal("3")).toPlainString(), "333");
+assertEq(decimal("1").divideToIntegralValue(decimal("1E+3")).toPlainString(), "0.000");
+assertEq(decimal("10.5").divideToIntegralValue(decimal("0.03")).toPlainString(), "350");
+assertEq(decimal("10.5").divideToIntegralValue(decimal("0.03")).scale(), -1);
+assertEq(decimal("1.23E+4").divideToIntegralValue(decimal("1")).toPlainString(), "12300");
+assertEq(decimal("1.23E+4").divideToIntegralValue(decimal("1")).scale(), -2);
 assertEq(decimal("10.5").remainder(decimal("3")).toPlainString(), "1.5");
 assertEq(decimal("-10.5").remainder(decimal("3")).toPlainString(), "-1.5");
 assertEq(decimal("10.5").remainder(decimal("3.0")).toPlainString(), "1.5");
