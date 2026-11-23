@@ -422,6 +422,13 @@ may change between minor versions.
 
 ### Fixed
 
+- **`std.decimal` integral division keeps Java's preferred scale.**
+  `divideToIntegralValue` now returns `10.5 / 3` as `3.0` (scale 1) and
+  `10.5 / 3.0` as `3` (scale 0), matching `java.math.BigDecimal`; a negative
+  preferred scale is reduced toward zero only when the integer quotient cannot
+  carry it. The values were cross-checked against OpenJDK 21 and the regression
+  cases are in `tests/68_std_decimal.oskl` and the AOT/WASM fixture.
+
 - **A direct call to a user function is checked at compile time.** A parameter
   annotation used to be erased without ever being compared to an argument, so
   `fn f(x: int) { return x; }` accepted `f("s")` and failed only when the body
