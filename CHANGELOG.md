@@ -39,6 +39,16 @@ may change between minor versions.
   versions, and `oskelp update <name> --precise <version>` pins one registry
   version, failing when it is missing or outside the manifest requirement.
   `tests/oskelp_test.cpp` and `tests/run_oskelp_case.cmake` pin the behavior.
+- **`oskelint`, the linter.** A fifth binary reports suspicious but legal code.
+  The first rule, `builtin-shadow`, warns when a declaration (`var`, `let`,
+  `const`, `fn`, `struct`, a parameter, a lambda parameter or a `for ... in`
+  variable) replaces a builtin. Shadowing is legal — the standard library
+  re-exports its own builtins with `let time = time;` — so the check belongs in
+  a tool and not in the compiler, which must accept every program the language
+  defines and must stay clear of the builtin names. The re-export idiom is
+  deliberately silent, and the rule reads the builtin names from the engine
+  (`VM::globals()` after `registerBuiltins`) instead of keeping a second list
+  that would drift. A lint warning exits 0. See `docs/oskelint.md`.
 
 ### Changed
 

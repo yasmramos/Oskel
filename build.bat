@@ -89,4 +89,17 @@ if errorlevel 1 (
 )
 
 echo Built build\oskelp.exe
+
+rem The linter. It links the engine (unlike bindgen and oskelp) because its rule
+rem asks registerBuiltins which names are builtins, so it compiles the engine
+rem source lists too. It never runs a program.
+g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build\oskelint.exe tools\oskelint.cpp tools\oskelint_main.cpp !FRONTEND_SOURCES! %RUNTIME_SOURCES%
+
+if errorlevel 1 (
+    echo.
+    echo Build failed.
+    exit /b 1
+)
+
+echo Built build\oskelint.exe
 endlocal
