@@ -109,7 +109,12 @@ expectExact(() => fsOpen(1, "r"), "fsOpen() expects a string path, got 'int'");
 // The two-type tails quote both operands. `&` still keeps only its prefix: the
 // arithmetic/bitwise helper is shared by every operator and does not receive
 // the symbol, so that message has no operator to name.
+// `>` and `<=` are lowered to `lessThan(b, a)` in the VM, so its message
+// quotes the operands reversed; the AOT backend matches that.
 expectExact(() => 1 < "a", "cannot compare 'int' with 'string'");
+expectExact(() => 1 <= "a", "cannot compare 'string' with 'int'");
+expectExact(() => 1 > "a", "cannot compare 'string' with 'int'");
+expectExact(() => 1 >= "a", "cannot compare 'int' with 'string'");
 expectExact(() => 1 in 2, "operator 'in' is not supported for 'int' and 'int'");
 expectPrefix(() => "a" & 1, "unsupported operand types for");
 

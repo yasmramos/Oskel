@@ -490,7 +490,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     `unsupported unary operator for type 'int'` all print the same sentence as
     the VM. The two-operand tails quote both operands too: `cannot compare
     'int' with 'string'` and `operator 'in' is not supported for 'int' and
-    'int'` share `emitTwoTypeFail`. Two tails are still truncated: the
+    'int'` share `emitTwoTypeFail`. `>` and `<=` reverse the two names, because
+    the VM lowers them to `lessThan(b, a)`, so `1 > "a"` reports
+    `cannot compare 'string' with 'int'` in both engines. Two tails are still truncated: the
     arithmetic/bitwise `unsupported operand types for '<op>': '<t1>' and
     '<t2>'`, which needs the operator symbol threaded through the shared
     helper (the helper receives the opcode at run time, not the symbol), and
