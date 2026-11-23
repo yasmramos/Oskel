@@ -61,6 +61,15 @@ class Runtime {
     defineGlobal(name, makeNative(name, std::move(fn)));
   }
 
+  // Keeps a host object alive for the engine's lifetime. A C callback stub can
+  // be stored by C and invoked later (an `atexit` handler), so it must not be
+  // released when the `extern "C"` call that registered it returns
+  // (BACKLOG §6 item 27).
+  template <typename T>
+  void retainHostObject(Ref<T> object) {
+    hostObjects_.push_back(Ref<RefCounted>::retaining(object.get()));
+  }
+
   std::string sourceName;
   std::vector<std::string> scriptArgs;
   std::vector<Frame> stack;
@@ -76,4 +85,5 @@ class Runtime {
 
  private:
   Platform* platform_ = nullptr;
+  std::vector<Ref<RefCounted>> hostObjects_;
 };

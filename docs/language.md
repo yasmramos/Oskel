@@ -602,11 +602,10 @@ AMD64, so Linux and x86-64 macOS; Windows and arm64 reject a callback
 declaration): the stub re-enters the VM with the C arguments boxed as Oskel
 values and writes the Oskel result back in the declared C type. The callback
 runs while the C function is on the stack, so the stub is alive for the whole
-call; storing the function pointer for a later call is out of scope in the
-development engine. The AOT
-backend's stub and context live in the arena, so a callback C stores for a later
-call -- including one invoked from an `atexit` handler after the chunk returns
--- works there (BACKLOG §6). The executable stub page is W^X (read+execute,
+call. The engine keeps the closure stub alive for the process lifetime, so a
+callback C stores for a later call -- including one invoked from an `atexit`
+handler after the chunk returns -- works in both the development engine and a
+compiled binary (BACKLOG §6). The executable stub page is W^X (read+execute,
 never writable and executable) and lives until the process exits. `nil` is the
 NULL function pointer.
 
@@ -621,11 +620,11 @@ argument. An error raised inside a callback cannot unwind
 through the C frame, so the extern call captures it and re-raises it once C
 returns: `pcall` catches it like any other runtime error. A struct the callback
 returns that does not match the declared shape (not a map, a missing field, a
-field of the wrong type) fails the same way. The AOT backend (PHASE 7f.8)
+field of the wrong type) fails the same way. The AOT backend (PHASE 7f.8/7f.11)
 lowers callbacks to generated stubs and never links a host FFI library; it
-supports every scalar parameter and return class, but rejects a callback that
-returns a struct by value and a callback with a struct parameter with a dedicated
-build error.
+supports every scalar parameter and return class and a struct return by value,
+in the return registers or through the hidden `sret` pointer. A callback with a
+struct parameter is rejected by both engines with a dedicated build error.
 
 **C variadics.** A trailing bare `...` declares a C variadic function: the named
 parameters are the fixed prefix and every extra argument is passed through the
@@ -3239,16 +3238,15 @@ working and the two cannot drift:
 oskel build app.oskl -o app                # the same binary as `oskelc`
 ```
 
-**Planned (a later release)**:
+**Bytecode and packaging**:
 
 ```sh
-oskelc <file.oskl> -c          compiles to bytecode (.oskc)
-oskelc -pkg ... -o app.oskpkg  packages a .oskpkg
+oskelc <file.oskl> -c -o <file.oskc>   compiles to bytecode
+oskelc <file.oskc> -o app              lowers the bytecode to a binary
 ```
 
-There is no `.oskc` serializer in the tree yet, so `-c` and `-pkg` are refused
-by name with exit 64 rather than read as a typo. They are future work, not
-features of this release.
+`-pkg` is still refused by name with exit 64 rather than read as a typo: it is
+future work. `-c` is implemented; the `.oskc` format is specified in §19.1.
 
 ---
 
@@ -3262,7 +3260,7 @@ features of this release.
 - No `++`, `--` or default parameters. A trailing `rest...` parameter makes a function variadic (see §7.1). `switch` on literals and ranges is supported (see §6.10), and so is the post-test loop `do { ... } while (cond);` (see §6.4).
 - Optional types and nullability are implemented for declarations and expressions (PHASE 6.5). Type annotations (`let x: int = 5`), local inference, the nullable `T?` annotation, and the null-safe expressions `?.`, `??` and `!!` are checked at compile time. `struct` is implemented (see §4.7) and so is `native fn` (see §7.6), the typed declaration of a host-provided function.
 - FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the host C ABI without a host FFI library for scalars and register structs; a class-MEMORY struct, a C variadic and a callback go through a small x86-64 descriptor/closure stub emitted by the engine. A `fn(P...): R` parameter is a callback: the development engine builds a closure stub that re-enters the VM (its `R` may be a scalar or a struct by value); it is available on x86-64 System V (Linux, x86-64 macOS), not on Windows or arm64. A trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...): int`), which applies the C default argument promotions and goes through the descriptor stub on either x86-64 ABI (System V AMD64 or Microsoft x64); it is rejected at compile time on a non-x86-64 host.
-- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.10 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux, Windows and macOS x86-64), where the program is linked against the host C library; the freestanding mode, which is the default on Linux and Windows, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — both register-class and class-MEMORY — are lowered on the System V targets (Linux and macOS, 7f.6, 7f.7); the Windows x86-64 backend supports the scalar, `cstring` and `ptr` classes and rejects a struct or a callback with a dedicated message. A C variadic is lowered on all three hosted targets: System V continues the independent GPR/SSE counters, Win64 continues the argument positions (a floating value in a register position goes in both its SSE and integer register, and position four onward spills to the outgoing stack area past the shadow space). `native fn` declarations the backend has no stub for fail the build with a dedicated message. Callbacks are lowered on System V (7f.8): a scalar parameter or return crosses through a generated stub; a struct return or a struct parameter is rejected with a dedicated message.
+- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.11 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux, Windows and macOS x86-64), where the program is linked against the host C library; the freestanding mode, which is the default on Linux and Windows, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — both register-class and class-MEMORY — are lowered on the System V targets (Linux and macOS, 7f.6, 7f.7); the Windows x86-64 backend supports the scalar, `cstring` and `ptr` classes and rejects a struct or a callback with a dedicated message. A C variadic is lowered on all three hosted targets: System V continues the independent GPR/SSE counters, Win64 continues the argument positions (a floating value in a register position goes in both its SSE and integer register, and position four onward spills to the outgoing stack area past the shadow space). `native fn` declarations the backend has no stub for fail the build with a dedicated message. Callbacks are lowered on System V (7f.8): a scalar parameter or return crosses through a generated stub, and a struct return by value is rebuilt into the C return registers or the hidden `sret` buffer (7f.11). A struct parameter is rejected by both engines with a dedicated message.
 - A function's text representation is the same on both engines: `<fn name>` for a named function, `<native fn name>` for a host binding (a builtin, a `native fn`, an `extern "C"` symbol or a bound collection method such as `<native fn array.map>`), and `<fn <anonymous>>` for a lambda. The AOT closure carries a `display` pointer to a static `AotString` with that exact text, so `print`, `repr`, `str` and string interpolation all agree byte for byte (BACKLOG §6.22, `tests/native_build_function_repr.oskl`).
 - The first UI layer is `std/ui.oskl` (`docs/ui.md`): a declarative widget
   tree, deterministic layout, a `rect`/`text` display list and button hit
@@ -3501,14 +3499,14 @@ helper (`_helper`) stays reachable from the class methods but is never exported.
 
 ## 19. File extensions
 
-Only `.oskl` (source) and the native binary exist in 0.1.0. The rest of the
-table is the target naming, not something the compiler writes today: there is no
-bytecode serializer, no package reader and no native-library loader yet.
+Only `.oskl` (source), `.oskc` (bytecode) and the native binary exist today. The
+rest of the table is the target naming, not something the compiler writes yet:
+there is no package reader and no native-library loader.
 
 | Extension | What it is | Java analog | Status |
 |-----------|------------|-------------|--------|
 | `.oskl` | Source code | `.java` | ✅ |
-| `.oskc` | Bytecode | `.class` | planned |
+| `.oskc` | Bytecode | `.class` | ✅ |
 | `.oskpkg` | Package (ZIP) | `.jar` | planned |
 | `.osklib` | Native library | `.dll` / `.so` / `.dylib` | planned |
 | `.oskdoc` | Documentation | `.javadoc` | planned |
@@ -3526,7 +3524,86 @@ myapp.oskpkg
 └── README.md
 ```
 
-The `.oskc` bytecode layout, its checksum and the Level 1/Level 2 verification
-steps are specified in `DEVELOPMENT.md` §8; all of it is planned, since nothing
-serializes a `Bytecode` to disk yet — the compiler keeps it in memory and the
-AOT backend lowers it directly.
+The `.oskc` bytecode layout is documented in §19.1. Its Level 1/Level 2
+verification steps are still specified in `DEVELOPMENT.md` §8; the loader
+implements Level 1 (structure, indices, jump targets) and the format is versioned
+so a later level can be added without ambiguity.
+
+### 19.1 The `.oskc` image
+
+A `.oskc` file is a compiled program: the same `Bytecode` tree the compiler
+builds in memory, written to disk. It is the input to two front ends — the VM
+runs it, and the AOT backend lowers it — so it carries everything either needs
+and nothing that belongs to a particular host.
+
+```sh
+oskelc -c app.oskl -o app.oskc     # compile source to an image
+oskel app.oskc                     # run the image on the VM
+oskelc app.oskc -o app             # lower the image to a native binary
+oskel build app.oskc -o app        # the same, through the alias
+```
+
+**Header** (20 bytes, all integers little-endian, fixed width):
+
+| Offset | Size | Field |
+|--------|------|-------|
+| 0 | 4 | Magic `OSKC` |
+| 4 | 4 | Format version (`kOskcVersion`, currently 1) |
+| 8 | 4 | Reserved flags, must be 0 |
+| 12 | 4 | FFI capability bits the chunk needs (see below) |
+| 16 | 4 | Requirement bits (see below) |
+
+The version is checked on load: an unknown version is refused with exit 65
+rather than misread. Adding an opcode, a constant kind or a field changes the
+layout and therefore the version.
+
+**Body**: the root proto, recursively. Each proto writes its name (a `u32`
+length and its bytes), its frame counts, its variadic flag, its instruction
+stream, its constant pool, its child protos, its upvalue descriptors, its
+`extern "C"` declarations and its compiler bookkeeping (`nativeFns`,
+`nativeUses`, `usedMethods`). Every instruction records its source line and
+column, so a runtime error in a program loaded from an image still names the
+place in the original source. The source text itself is not stored; the name is,
+which is what the diagnostics print.
+
+A constant is tagged by kind — `nil`, `bool`, `int`, `float`, `double`, `str` —
+and the writer refuses a value `LOADK` could not rebuild (an array, a map), so a
+file never contains a constant the loader cannot restore.
+
+**FFI capability bits**: bit 0 structs by value, bit 1 class-MEMORY structs,
+bit 2 C variadics, bit 3 callbacks. These record what the chunk *needs*, derived
+from its `extern "C"` signatures, not the superset the compiler supports. A
+program with no FFI writes 0 and loads on every target. The loader compares the
+bits against the destination's own capabilities — the engine's for a VM run,
+`targetAbiCapabilities` for a build — and refuses a file that needs a capability
+the destination lacks, naming it:
+
+```text
+oskelc: app.oskc: the bytecode needs FFI support this target lacks: structs by value
+```
+
+That is what makes an image portable in a meaningful sense: a chunk built on
+Linux that marshals a struct by value is refused by the Windows build, because
+the Microsoft x64 thunk does not carry a struct — instead of being lowered into
+code that would marshal the wrong registers.
+
+**Requirement bits**: bit 0 needs SDL3, bit 1 needs the Skia shim. They record
+what the chunk needs from the UI backend, which the chunk alone cannot say: the
+Skia bindings use the ambiguous `oskel_` prefix, so scanning `externs` would miss
+them. The writer derives the bits from the modules the compiler loaded, so a
+program that imports `std.ui.window` records both and a plain one records 0.
+The AOT path reads them back and links the same libraries the source path would,
+then runs the same code; a program whose runtime is missing fails with the same
+message and exit 65 on either path instead of producing a binary that cannot
+open a window.
+
+**Validation on load.** The loader is a verifier, not a `memcpy`: it rejects a
+bad magic, an unknown version, non-zero reserved flags, a truncated image, a
+trailing byte, an unknown opcode, a register outside the frame, a constant index
+past the pool, a jump target past the end of the code and a nesting depth over
+`kOskcMaxDepth`. Every one is a `BytecodeIoError` naming the field, never a
+crash — a `.oskc` is untrusted input, since it can be produced by any tool or
+hand-edited.
+
+**Determinism**: writing the same chunk twice produces the same bytes, so an
+image can be compared or cached by content (`tests/bytecode_io_test.cpp`).

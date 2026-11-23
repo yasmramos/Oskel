@@ -554,6 +554,12 @@ struct AotCallbackSignature {
   std::vector<AotCallbackParam> params;
   std::string returnType;              // Oskel FFI name, "void" for none
   ffi::ReturnClass returns = ffi::ReturnClass::Int;
+  // A struct returned by value. `returnMemory` means the C caller passes the
+  // hidden `sret` pointer in `rdi`, which also shifts the first declared
+  // parameter one register along (System V AMD64).
+  bool returnsStruct = false;
+  bool returnMemory = false;
+  AotStructLayout returnStruct;
   CodeGen::Label body;                 // bound by `emitAotRuntime`
 };
 

@@ -11,6 +11,19 @@ may change between minor versions.
 
 ### Added
 
+- **VM/AOT parity for callbacks (PHASE 7f.11).** A callback may now return a
+  struct by value under `oskel build`: the AOT body stages the returned map's
+  fields into the C bytes and loads them into the System V return registers
+  (`rax`/`rdx`/`xmm0`/`xmm1`), or copies them through the hidden `sret` pointer
+  for a struct over 16 bytes, which also shifts the declared parameters one
+  integer register along. A stored callback now works on the VM too: `Runtime`
+  retains the `CallbackObj` and the CLI's `VM` lives until the process exits, so
+  an `atexit` handler runs after the chunk returns just as it does in a native
+  binary. `tests/native_build_extern_callback_struct.oskl` covers the register,
+  mixed INTEGER/SSE and MEMORY shapes, and the stored/exit/struct fixtures run
+  the VM with the helper preloaded and compare its output with the hosted
+  binary.
+
 - **The WebAssembly backend binds the range methods (PHASE 9.5).**
   `r.toArray()` materialises a range into an array (exclusive or inclusive,
   ascending or descending), `r.contains(x)` is the method form of `x in r`, and
