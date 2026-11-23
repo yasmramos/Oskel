@@ -31,7 +31,7 @@
 // `.data`/`.bss` are loaded and the undefined runtime symbols become imports
 // (PHASE 10.3a); relocatable COFF links are PHASE 10.3b.1; MSVC `.lib`
 // archives are handled by expandCoffArchives (PHASE 10.3b.2); short import
-// objects are not.
+// objects, `.pdata`/`.xdata` and `.tls` sections are rejected (PHASE 10.3b.4).
 // The macOS Mach-O container is PHASE 10.3d: the first slice links a hosted
 // `MH_EXECUTE` from one `MH_OBJECT`; the `-r` Mach-O link, the ad-hoc
 // signature and ARM64 remain. An input this module does not understand is

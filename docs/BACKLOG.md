@@ -616,10 +616,13 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     image with a dynamic import table (`kernel32.dll`/`ucrtbase.dll`) and a
     generated `_start`. The `-r` COFF link (PHASE 10.3b.1), MSVC `.lib`
     archives (PHASE 10.3b.2) and `args()` (PHASE 10.3b.3, `__getmainargs`) are
-    done; remaining Windows work is `.pdata`/`.xdata` exception data and TLS.
-    The macOS own linker (PHASE 10.3d) closes a hosted `MH_OBJECT` into a
-    non-PIE `MH_EXECUTE` with libSystem imports; a data import, the `-r` Mach-O
-    link, the ad-hoc signature and ARM64 remain for the rest of 10.3d.
+    done; a `.pdata`/`.xdata` or `.tls` input is rejected with a dedicated
+    message (PHASE 10.3b.4): the AOT object emits no unwind data and the image
+    defines no TLS variables, so the PE exception and TLS directories stay
+    zero. Emitting unwind data is future container work. The macOS own linker
+    (PHASE 10.3d) closes a hosted `MH_OBJECT` into a non-PIE `MH_EXECUTE` with
+    libSystem imports; a data import, the `-r` Mach-O link, the ad-hoc
+    signature and ARM64 remain for the rest of 10.3d.
 
 31. **[P0] [done]** VM/AOT divergence in reading a global before it is assigned:
     the VM fails with `runtime error: undefined variable '<name>'` and exit 70,
