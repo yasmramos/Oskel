@@ -189,13 +189,18 @@ may change between minor versions.
   resolves `//` long names and `/N` references, strips the member's trailing
   `/`, and rejects a short import object with a dedicated message. A static
   `.lib` member links through both the direct PE path and `-r`.
+- **`args()` on the Windows own linker (PHASE 10.3b.3).** The generated
+  `_start` calls `msvcrt.dll`'s `__getmainargs`, then hands `(argc, argv)` to a
+  `main` wrapper that moves the Microsoft x64 `rcx`/`rdx` pair into the chunk's
+  `rdi`/`rsi`. The hosted `cl` path shares the wrapper, so `args()` matches the
+  VM under both linkers; an argument containing a space survives as one
+  element. The freestanding Windows image still rejects `args()` by name.
 - **`.pdata`/`.xdata` and TLS are rejected on the own linker (PHASE 10.3b.4).**
   The COFF parser refuses a `.pdata`/`.xdata` input with a dedicated message,
   because the AOT object emits no unwind data and a C++ exception must not
   cross an Oskel frame; the PE exception directory stays zero. A `.tls` input
   is rejected too, and the PE TLS directory stays zero. `link_pe_test` pins
-  both messages and both zero directories. `args()`
-  remains 10.3b.
+  both messages and both zero directories.
 
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,
@@ -422,6 +427,13 @@ may change between minor versions.
   pull in SDL3 or Skia.
 
 ### Fixed
+
+- **`std.decimal` integral division keeps Java's preferred scale.**
+  `divideToIntegralValue` now returns `10.5 / 3` as `3.0` (scale 1) and
+  `10.5 / 3.0` as `3` (scale 0), matching `java.math.BigDecimal`; a negative
+  preferred scale is reduced toward zero only when the integer quotient cannot
+  carry it. The values were cross-checked against OpenJDK 21 and the regression
+  cases are in `tests/68_std_decimal.oskl` and the AOT/WASM fixture.
 
 - **A direct call to a user function is checked at compile time.** A parameter
   annotation used to be erased without ever being compared to an argument, so

@@ -32,6 +32,10 @@ print("brepr", repr(b));
 var p = intToPtr(123456789);
 print("token", ptrToInt(p), type(p), byteLen(p));
 print("prender", p);
+// A `void *` owns no bytes: `cstr` is empty even though the token points past
+// linear memory, and only the token-carrying kind returns a non-zero int.
+print("ptext", cstr(p));
+print("tokens", ptrToInt(b), ptrToInt(s), ptrToInt(p));
 
 // A cstring with an embedded NUL keeps its full byte count but `cstr` stops at
 // the NUL, as C does.

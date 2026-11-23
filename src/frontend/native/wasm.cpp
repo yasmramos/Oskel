@@ -845,7 +845,8 @@ struct Runtime {
                 sStoreRangeSuffix = 0, sStoreByteRange = 0,
                 sIntToPtrArgc = 0, sIntToPtrType = 0, sPtrToIntArgc = 0,
                 sPtrToIntType = 0, sPtrToIntFreed = 0, sFreeArgc = 0,
-                sFreeType = 0, sFreeFreed = 0;
+                sFreeType = 0, sFreeFreed = 0, sBufferTooLarge = 0,
+                sOutOfMemory = 0;
   std::uint32_t sMessage = 0, sCode = 0, sNoMember = 0, sCannotIndex = 0,
                 sStringImmutable = 0, sIndexRange = 0, sKeyValue = 0;
   std::uint32_t sInsertRange = 0, sRemoveAtRange = 0, sInsertIndex = 0,
@@ -1045,6 +1046,8 @@ struct Runtime {
     sFreeArgc = pool.addString("free() expects 1 argument");
     sFreeType = pool.addString("free() expects a pointer");
     sFreeFreed = pool.addString("free() used a pointer after it was freed");
+    sBufferTooLarge = pool.addString("buffer() size is too large");
+    sOutOfMemory = pool.addString("out of memory");
     sChrRange = pool.addString("chr() code point out of range");
     sChrSurrogate = pool.addString("chr() code point is a surrogate");
     sOrdSingle = pool.addString("ord() expects a single character");
@@ -1287,6 +1290,13 @@ std::uint32_t Runtime::emitAlloc() {
   f.lget(0);
   f.i32Add();
   f.lset(need);
+  // `need` wrapped past the 32-bit address space: the allocation cannot fit.
+  f.lget(need);
+  f.lget(cur);
+  f.i32LtU();
+  f.if_();
+  emitFailStatic(f, sOutOfMemory);
+  f.end();
   f.memorySize();
   f.i32c(65536);
   f.i32Mul();
@@ -1303,7 +1313,11 @@ std::uint32_t Runtime::emitAlloc() {
   f.i32c(65536);
   f.i32DivU();
   f.memoryGrow();
-  f.drop();
+  f.i32c(-1);
+  f.i32Eq();
+  f.if_();
+  emitFailStatic(f, sOutOfMemory);
+  f.end();
   f.end();
   f.lget(need);
   f.gset(0);
@@ -12441,9 +12455,9 @@ std::uint32_t Runtime::emitParseDoubleStr() {
 }
 
 void Runtime::emitCore() {
-  alloc = emitAlloc();
   writeStr = emitWriteStr();
   fail = emitFail();
+  alloc = emitAlloc();
   utf8Len = emitUtf8Len();
   newStr = emitNewStr();
   concat = emitConcat();
@@ -14015,6 +14029,14 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
     f.if_();
     emitFailStatic(f, sBufferNegative);
     f.end();
+    // WASM addresses are 32-bit: a larger request would truncate the
+    // allocation while the header kept the original length.
+    f.lget(size);
+    f.i64c(0xFFFFFFFF);
+    f.i64GtU();
+    f.if_();
+    emitFailStatic(f, sBufferTooLarge);
+    f.end();
     f.lget(size);
     f.i32WrapI64();
     f.call(alloc);
@@ -14060,6 +14082,12 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
     f.i32WrapI64();
     f.call(newStr);
     f.lset(out);
+    // A `void *` owns no bytes, so its token may point past linear memory.
+    // `memory.copy` validates the source even for a zero length, so skip it.
+    f.lget(length);
+    f.i64c(0);
+    f.i64GtS();
+    f.if_();
     f.lget(out);
     f.i32c(8);
     f.i32Add();
@@ -14069,6 +14097,7 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
     f.lget(length);
     f.i32WrapI64();
     f.memoryCopy();
+    f.end();
     f.i64c(static_cast<std::int64_t>(kStr));
     f.lget(out);
     f.i64ExtendI32U();
@@ -14360,8 +14389,18 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
     emitFailStatic(f, sPtrToIntFreed);
     f.end();
     f.i64c(static_cast<std::int64_t>(kInt));
+    // Only a `void *` carries a token. A `cstring`/`buffer` owns its bytes,
+    // so its address is not a token the VM would hand back.
+    f.lget(header);
+    f.i64Load(kPtrKindOffset);
+    f.i64c(static_cast<std::int64_t>(kPtrKindVoid));
+    f.i64Eq();
+    f.ifResult(kI64);
     f.lget(header);
     f.i64Load(kPtrDataOffset);
+    f.else_();
+    f.i64c(0);
+    f.end();
     return index;
   }
 

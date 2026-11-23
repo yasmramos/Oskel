@@ -127,15 +127,16 @@ static bool loweringThrowsOn(const Target& target, const Bytecode& proto,
 
 static void testBackingTargetGates() {
   // `args()` needs the `(argc, argv)` the process entry hands `main`. The Linux
-  // freestanding `_start` and the hosted C runtime both pass one, so it lowers
-  // there; Windows calls the entry with no arguments and bare metal has no
-  // command line, so on those the lowerer names the limitation instead of the
-  // generic "read but never assigned" a typo produces.
+  // freestanding `_start` and the hosted runtime (the Windows `main` wrapper
+  // and the own linker's `__getmainargs`) pass one, so it lowers there; a
+  // freestanding Windows image and bare metal have no command line, so on those
+  // the lowerer names the limitation instead of the generic "read but never
+  // assigned" a typo produces.
   auto argsProto = makeProto({instr(OpCode::GETGLOBAL, 0, 0), instr(OpCode::HALT)},
                              {Value(std::string("args"))}, 1);
   check(!lower(argsProto).code.empty(), "args() lowers on the Linux target");
   check(loweringThrowsOn(Target::winX64(), argsProto, "args() needs a process argument vector"),
-        "args() on Windows names the missing argument vector");
+        "args() on a freestanding Windows image names the missing argument vector");
   check(loweringThrowsOn(Target::bareMetalX64(), argsProto, "args() needs a process argument vector"),
         "args() on bare metal names the missing argument vector");
 

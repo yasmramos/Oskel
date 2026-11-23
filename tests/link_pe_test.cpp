@@ -277,30 +277,55 @@ int main() {
   check(contains(pe, idataOffset, idataSize, "_write"), "imports _write");
   check(contains(pe, idataOffset, idataSize, "ExitProcess"),
         "imports ExitProcess");
+  check(contains(pe, idataOffset, idataSize, "__getmainargs"),
+        "imports __getmainargs");
   check(contains(pe, idataOffset, idataSize, "ucrtbase.dll"),
         "imports ucrtbase.dll");
   check(contains(pe, idataOffset, idataSize, "kernel32.dll"),
         "imports kernel32.dll");
+  check(contains(pe, idataOffset, idataSize, "msvcrt.dll"),
+        "imports msvcrt.dll");
 
   // The first thunk follows the 14-byte program text.
-  check(textSize >= 14 + 6 * 2 + 22, ".text holds the thunks and _start");
+  check(textSize >= 14 + 6 * 3 + 88, ".text holds the thunks and _start");
   check(pe[textOffset + 14] == 0xFF && pe[textOffset + 15] == 0x25,
         "the first import thunk is jmp [rip + IAT]");
 
   const std::uint32_t startOffset = entry - textRva;
-  check(startOffset + 22 <= textSize, "_start lies inside .text");
+  check(startOffset + 88 <= textSize, "_start lies inside .text");
   check(pe[textOffset + startOffset] == 0x48 &&
             pe[textOffset + startOffset + 1] == 0x83 &&
             pe[textOffset + startOffset + 2] == 0xEC,
         "_start aligns the stack");
-  check(pe[textOffset + startOffset + 8] == 0xE8, "_start calls main");
-  check(pe[textOffset + startOffset + 15] == 0xFF &&
-            pe[textOffset + startOffset + 16] == 0x15,
-        "_start calls ExitProcess through the IAT");
-  const std::int32_t mainDisplacement = static_cast<std::int32_t>(
-      read32(pe, textOffset + startOffset + 9));
-  check(static_cast<std::int64_t>(startOffset + 13) + mainDisplacement == 0,
+  check(pe[textOffset + startOffset + 4] == 0x48 &&
+            pe[textOffset + startOffset + 5] == 0x83 &&
+            pe[textOffset + startOffset + 6] == 0xEC,
+        "_start reserves the argument frame");
+  std::size_t mainCall = 0;
+  for (std::size_t i = startOffset; i + 5 <= textSize; ++i) {
+    if (pe[textOffset + i] != 0xE8) continue;
+    const std::int64_t target = static_cast<std::int64_t>(i) + 5 +
+        static_cast<std::int32_t>(read32(pe, textOffset + i + 1));
+    if (target == 0) {
+      mainCall = i;
+      break;
+    }
+  }
+  check(mainCall != 0, "_start calls main");
+  check(mainCall != 0 &&
+            static_cast<std::int64_t>(mainCall) + 5 +
+                static_cast<std::int32_t>(read32(pe, textOffset + mainCall + 1)) == 0,
         "the _start call lands on main");
+  bool exitCall = false;
+  if (mainCall != 0) {
+    for (std::size_t i = mainCall + 5; i + 6 <= textSize && i < mainCall + 24; ++i) {
+      if (pe[textOffset + i] == 0xFF && pe[textOffset + i + 1] == 0x15) {
+        exitCall = true;
+        break;
+      }
+    }
+  }
+  check(exitCall, "_start calls ExitProcess through the IAT");
   check(read32(pe, 0x58 + 112 + 12 * 3) == 0 &&
             read32(pe, 0x58 + 112 + 12 * 3 + 4) == 0,
         "the AOT image has no exception directory");
@@ -308,6 +333,7 @@ int main() {
             read32(pe, 0x58 + 112 + 12 * 9 + 4) == 0,
         "the AOT image has no TLS directory");
 
+  testUnwindAndTlsRejected();
   testRelocatable();
   testArchive();
   return failures == 0 ? 0 : 1;

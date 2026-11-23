@@ -1,6 +1,6 @@
 // A target whose entry point receives no argument vector must reject `args()`
-// by name (BACKLOG §6 item 25). Windows calls the entry with no arguments and
-// bare metal has no command line, so `oskel build` fails with a message that
+// by name (BACKLOG §6 item 25). A freestanding Windows image has no command
+// line and bare metal has none, so `oskel build` fails with a message that
 // names the missing capability instead of the generic "global 'args' is read
 // but never assigned" a typo produces -- and writes no binary.
 //
