@@ -1023,21 +1023,32 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `tests/native_build_compound_ops.oskl` and, through a function value so the
    constant folder never runs, by `tests/native_build_operators.oskl`.
 2. **[P1] [done]** `binary` `StarStar` with an int base and a negative exponent
-   falls to `std::pow` and yields a double, not an int. **Decided**: the rank
-   is the widest operand's, so a negative int exponent yields a double in both
-   engines, and `2 ** -1` is `0.5` on both. `tests/native_build_operators.oskl`
-   pins `2^3` as the int `8`, `2^-1` as the double `0.5` and `2^0` as `1`.
-3. **[P1] [done]** `binary` `Shl`/`Shr` reject `b < 0 || b > 63`; the AOT
-   `emitShift` applies the same rule and raises the same message (`shift count
-   must be between 0 and 63`), verified for `b = -1`, `64` and the in-range
-   `0`/`63` boundaries on both `<<` and `>>`. Pinned by
-   `tests/native_build_compound_ops.oskl` and `tests/native_build_operators.oskl`.
-4. **[P2]** `indexGet` for a map with a missing key returns `nil` (JS-style)
-   while Python raises; decide the language rule and keep VM/AOT in step.
-5. **[P2]** `indexSet` for an array with `index == length` pushes (Lua-style);
-   decide and test.
-6. **[P2]** `memberGet` for a map with a missing non-method member returns
-   `nil`; verify the AOT path matches.
+   falls to `std::pow` and yields a double, not an int. The type rule is
+   documented and implemented in both engines (PHASE 7c.1d.2): rank is the
+   widest operand's, so a negative int exponent yields a double. Keeping it is
+   the decision: an int result would need a separate rule for `2 ** -1` (which
+   has no integer answer), and `2 ** -1` is `0.5` on both engines today. Pinned
+   by `tests/native_build_operators.oskl` (`2^3` is the int `8`, `2^-1` is the
+   double `0.5`, `2^0` is `1`).
+3. **[P1] [done]** `binary` `Shl`/`Shr` reject `b < 0 || b > 63`; the AOT path
+   applies the same rule and raises the same message (`shift count must be
+   between 0 and 63`), verified for `b = -1`, `64` and the in-range `0`/`63`
+   boundaries on both `<<` and `>>`. `tests/native_build_operators.oskl` pins it
+   against the VM.
+4. **[P2] [done]** `indexGet` for a map with a missing key returns `nil`
+   (JS-style) while Python raises; the language rule is now settled: a *map*
+   read of a missing key is `nil`, never an error, and an *array* index out of
+   range still raises (`array index 5 out of range (length 2)`). Both engines
+   already agreed, and `tests/native_build_map_access.oskl` pins it.
+5. **[P2] [done]** `indexSet` for an array with `index == length` pushes
+   (Lua-style); the rule is kept and pinned: `a[len] = v` appends, anything
+   beyond raises (`array index 10 out of range (length 4)`). A negative index
+   is an ordinary write from the end, not a push (`a[-1] = 9` replaces the last
+   element). Both engines agree (`tests/native_build_map_access.oskl`).
+6. **[P2] [done]** `memberGet` for a map with a missing non-method member
+   returns `nil`; the AOT path matches, and so does writing through a member
+   (`m.c = 3` adds the key). Same fixture:
+   `tests/native_build_map_access.oskl`.
 7. **[P2]** `binary` `Plus` on two arrays concatenates; done in PHASE 7c.3b
    (`oskel_array_concat`); the VM is the reference and the AOT path matches it.
 8. **[P3] [done]** `lessThan` for bool (`!left && right`) is correct but
@@ -1182,9 +1193,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    byte identical to the VM (`oskel.build_binary_arity`).
 4. **[P1] [done]** Add `map`/`filter`/`reduce` tests with a VM closure callback.
    **Done**: `tests/native_build_array_callbacks.oskl` covers `map`, `filter`,
-   `each`, `find`, `any` and `all` with lambdas and named functions, and
-   `tests/native_build_array_folds.oskl` covers `reduce`, `sum` and `join`.
-   Both are registered for AOT and WASM and compared with the VM.
+   `each`, `find`, `any` and `all` with a lambda, a named function used as a
+   value, a callback that captures a local and one that recurses, and
+   `tests/native_build_array_folds.oskl` covers `reduce` with and without a
+   seed, `sum` and `join`. Both are registered for AOT and WASM and diffed
+   against the VM byte for byte.
 5. **[P1] [done]** Add an `ITER`-over-a-non-iterable test.
    `tests/errors/for_in_not_iterable.oskl` pins that `for x in 5` is a runtime
    error naming the type (`cannot iterate over a value of type 'int'`), and
