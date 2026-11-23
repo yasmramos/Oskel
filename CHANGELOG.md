@@ -188,8 +188,13 @@ may change between minor versions.
   `!<arch>` inputs before parsing: it skips the first/second linker members,
   resolves `//` long names and `/N` references, strips the member's trailing
   `/`, and rejects a short import object with a dedicated message. A static
-  `.lib` member links through both the direct PE path and `-r`. `args()`
-  remains 10.3b.
+  `.lib` member links through both the direct PE path and `-r`.
+- **`args()` on the Windows own linker (PHASE 10.3b.3).** The generated
+  `_start` calls `msvcrt.dll`'s `__getmainargs`, then hands `(argc, argv)` to a
+  `main` wrapper that moves the Microsoft x64 `rcx`/`rdx` pair into the chunk's
+  `rdi`/`rsi`. The hosted `cl` path shares the wrapper, so `args()` matches the
+  VM under both linkers; an argument containing a space survives as one
+  element. The freestanding Windows image still rejects `args()` by name.
 
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,

@@ -609,9 +609,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     records the SONAME (`libSDL3.so.0`).
     The Windows own linker (PHASE 10.3a) closes COFF objects into a PE32+
     image with a dynamic import table (`kernel32.dll`/`ucrtbase.dll`) and a
-    generated `_start`. The `-r` COFF link (PHASE 10.3b.1) and MSVC `.lib`
-    archives (PHASE 10.3b.2) are done; remaining Windows work is `args()`
-    (`GetCommandLineA`), `.pdata`/`.xdata` exception data and TLS. The macOS
+    generated `_start`. The `-r` COFF link (PHASE 10.3b.1), MSVC `.lib`
+    archives (PHASE 10.3b.2) and `args()` (PHASE 10.3b.3, `__getmainargs`) are
+    done; remaining Windows work is `.pdata`/`.xdata` exception data and TLS.
+    The macOS
     Mach-O container is PHASE 10.3d.
 
 31. **[P0] [done]** VM/AOT divergence in reading a global before it is assigned:
