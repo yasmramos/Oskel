@@ -488,6 +488,7 @@ if(BUILD_TESTING)
   endif()
   oskel_add_cpp_test(pe_test)
   oskel_add_cpp_test(lower_test)
+  oskel_add_cpp_test(bytecode_io_test)
   oskel_add_cpp_test(freestanding_test)
   oskel_add_cpp_test(bare_metal_test)
 
@@ -769,6 +770,29 @@ if(BUILD_TESTING)
         "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/oskelc_parity.cmake")
+
+    # The `.oskc` image is lossless: a program written to an image, run on the
+    # VM and lowered to a binary must agree with the source on both. The two
+    # binaries are compared byte for byte, which is what proves the image kept
+    # everything the lowerer reads.
+    add_test(NAME oskelc.oskc_parity
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskelc.oskc_parity"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_oskc_parity.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/oskc_parity.cmake")
+
+    # The same round trip on a real program: closures, collections and string
+    # formatting, so a field the format carries but the small fixture never
+    # exercises (an upvalue, a map constant) cannot break silently.
+    add_test(NAME oskelc.oskc_parity_full
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskelc.oskc_parity_full"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_oskc_full.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/oskc_parity.cmake")
 
     # The flagship example must also build and agree with the VM, so the AOT
     # backend is exercised by a real program (a lexer, a parser and an

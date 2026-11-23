@@ -17,11 +17,6 @@ void appendU8(std::vector<std::uint8_t>& out, std::uint8_t value) {
   out.push_back(value);
 }
 
-void appendU16(std::vector<std::uint8_t>& out, std::uint16_t value) {
-  out.push_back(static_cast<std::uint8_t>(value & 0xFFu));
-  out.push_back(static_cast<std::uint8_t>((value >> 8) & 0xFFu));
-}
-
 void appendU32(std::vector<std::uint8_t>& out, std::uint32_t value) {
   for (int shift = 0; shift < 32; shift += 8) {
     out.push_back(static_cast<std::uint8_t>((value >> shift) & 0xFFu));
@@ -60,14 +55,6 @@ struct Reader {
   std::uint8_t u8(const char* what) {
     require(1, what);
     return bytes[offset++];
-  }
-
-  std::uint16_t u16(const char* what) {
-    require(2, what);
-    std::uint16_t value = static_cast<std::uint16_t>(bytes[offset]) |
-                          static_cast<std::uint16_t>(bytes[offset + 1]) << 8;
-    offset += 2;
-    return value;
   }
 
   std::uint32_t u32(const char* what) {
