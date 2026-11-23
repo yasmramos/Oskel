@@ -604,6 +604,17 @@ std::string Compiler::assignError(const TypeRef& from, const TypeRef& to,
          context;
 }
 
+// One argument against one parameter, shared by a `native fn` call and a user
+// function call so the two cannot drift apart. A Oskel `string` is
+// NUL-terminated and stays alive for the whole call, so it is a valid
+// `const char *` *argument* even though it is not assignable to an owned
+// `cstring` binding (see `checkAssignable`).
+void Compiler::checkArgumentAssignable(const TypeRef& argument, const TypeRef& param,
+                                       const std::string& context, int line, int col) {
+  if (param.name == "cstring" && argument.name == "string" && !argument.nullable) return;
+  checkAssignable(argument, param, context, line, col);
+}
+
 // A `native fn` declares the arity and the argument types the host function
 // expects. The check is best-effort: an unannotated parameter means the
 // argument is not checked, so a native with a loose signature still compiles.
@@ -634,13 +645,51 @@ void Compiler::checkNativeCall(const std::string& name, const NativeSig& sig,
     const size_t slot = i < required ? i : sig.params.size() - 1;
     const TypeRef& param = sig.params[slot].type;
     if (!param.isPresent()) continue;
-    const TypeRef& argument = args.types[i];
-    // A Oskel `string` is NUL-terminated and stays alive for the whole call, so
-    // it is a valid `const char *` *argument* even though it is not assignable
-    // to an owned `cstring` binding (see `checkAssignable`).
-    if (param.name == "cstring" && argument.name == "string" && !argument.nullable) continue;
-    checkAssignable(argument, param, "argument " + std::to_string(i + 1) + " of '" + name + "'",
-                    args.lines[i], args.cols[i]);
+    checkArgumentAssignable(args.types[i], param,
+                            "argument " + std::to_string(i + 1) + " of '" + name + "'",
+                            args.lines[i], args.cols[i]);
+  }
+}
+
+// Checks a direct call to a user-declared function against its parameter
+// list: the arity must match, and each argument must be assignable to the
+// matching parameter. This is the user-function counterpart of
+// `checkNativeCall`, and it exists because a parameter's annotation used to be
+// erased without ever being compared to an argument — `fn f(x: int) {}` then
+// accepted `f("s")` and failed only when the body touched `x`.
+//
+// The check is deliberately conservative, because the signature table is keyed
+// by name and a function is a first-class value:
+//   * A parameter with no annotation, or typed `any`, is not checked, so the
+//     dynamic style keeps compiling.
+//   * A `...` variadic parameter accepts any count from `params.size() - 1` up;
+//     the extras are checked against the element type.
+//   * A parameter typed as a callback (`fn(int): int`) accepts any function
+//     value, exactly like `checkAssignable`'s callback rule.
+// It never rejects a call whose callee the table does not know: an indirect
+// call (`let g = f; g(...)`) and a reassigned name both fall through to the
+// run-time guard, which keeps the exact `f() expects N argument(s)` message.
+void Compiler::checkUserCall(const std::string& name, const std::vector<Param>& params,
+                             const NativeCallArgs& args, int line, int col) {
+  const bool variadic = !params.empty() && params.back().variadic;
+  const std::size_t required = params.size() - (variadic ? 1 : 0);
+  const std::size_t got = args.types.size();
+  const bool arityOk = variadic ? got >= required : got == required;
+  if (!arityOk) {
+    fail(name + "() expects " + std::to_string(required) + " argument" +
+             (required == 1 ? "" : "s") + (variadic ? " or more" : "") + ", got " +
+             std::to_string(got),
+         line, col);
+  }
+  // Every supplied argument is checked; for a variadic call the extras all bind
+  // the element type of the last parameter.
+  for (std::size_t i = 0; i < got; ++i) {
+    const std::size_t slot = (variadic && i >= required) ? params.size() - 1 : i;
+    const TypeRef& param = params[slot].type;
+    if (!param.isPresent()) continue;
+    checkArgumentAssignable(args.types[i], param,
+                            "argument " + std::to_string(i + 1) + " of '" + name + "'",
+                            args.lines[i], args.cols[i]);
   }
 }
 
@@ -1073,6 +1122,7 @@ void Compiler::clearSession() {
   classMethodDefs_.clear();
   nativeSigs_.clear();
   functionReturnTypes_.clear();
+  functionParams_.clear();
   externSignatures_.clear();
   mustUseGlobals_.clear();
   loadedModules_.clear();
@@ -1198,6 +1248,7 @@ Compiler::SessionSnapshot Compiler::snapshotSession() const {
   snapshot.classDefs = classDefs_;
   snapshot.classMethodDefs = classMethodDefs_;
   snapshot.functionReturnTypes = functionReturnTypes_;
+  snapshot.functionParams = functionParams_;
   snapshot.nativeSigs = nativeSigs_;
   snapshot.externSignatures = externSignatures_;
   snapshot.mustUseGlobals = mustUseGlobals_;
@@ -1218,6 +1269,7 @@ void Compiler::restoreSession(SessionSnapshot snapshot) {
   classDefs_ = std::move(snapshot.classDefs);
   classMethodDefs_ = std::move(snapshot.classMethodDefs);
   functionReturnTypes_ = std::move(snapshot.functionReturnTypes);
+  functionParams_ = std::move(snapshot.functionParams);
   nativeSigs_ = std::move(snapshot.nativeSigs);
   externSignatures_ = std::move(snapshot.externSignatures);
   mustUseGlobals_ = std::move(snapshot.mustUseGlobals);
@@ -1539,6 +1591,7 @@ void Compiler::compileLet(const LetStmt& s) {
     // user function's declared return type.
     nativeSigs_.erase(s.name);
     functionReturnTypes_.erase(s.name);
+    functionParams_.erase(s.name);
     // The binding is no longer the `@MustUse` function it may have shadowed.
     mustUseGlobals_.erase(s.name);
   } else {
@@ -1607,6 +1660,7 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   auto savedClassDefs = std::move(classDefs_);
   auto savedClassMethodDefs = std::move(classMethodDefs_);
   auto savedFunctionReturnTypes = std::move(functionReturnTypes_);
+  auto savedFunctionParams = std::move(functionParams_);
   auto savedNativeSigs = std::move(nativeSigs_);
   auto savedMustUseGlobals = std::move(mustUseGlobals_);
   std::deque<FuncState> savedFuncStack = std::move(funcStack_);
@@ -1644,6 +1698,7 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   structDefs_.clear();
   nativeSigs_.clear();
   functionReturnTypes_.clear();
+  functionParams_.clear();
   mustUseGlobals_.clear();
   namespaces_.clear();
   importedNames_.clear();
@@ -1716,6 +1771,7 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
   classDefs_ = std::move(savedClassDefs);
   classMethodDefs_ = std::move(savedClassMethodDefs);
   functionReturnTypes_ = std::move(savedFunctionReturnTypes);
+  functionParams_ = std::move(savedFunctionParams);
   nativeSigs_ = std::move(savedNativeSigs);
   mustUseGlobals_ = std::move(savedMustUseGlobals);
   funcStack_ = std::move(savedFuncStack);
@@ -2289,12 +2345,18 @@ void Compiler::compileFnDecl(const FnDeclStmt& fn, int line, int col) {
       // A native's type is its declared signature; the call path above already
       // covers it, so the user-function table must not shadow that.
       functionReturnTypes_.erase(fn.name);
+      functionParams_.erase(fn.name);
     } else {
       if (fn.returnType.isPresent()) {
         functionReturnTypes_[fn.name] = fn.returnType;
       } else {
         functionReturnTypes_.erase(fn.name);
       }
+      // The parameters are recorded even when none carries an annotation: the
+      // arity check needs the count, and `checkUserCall` skips an unannotated
+      // parameter's type. A function defined inside another body is *not*
+      // global, so its entry must not leak a signature to the enclosing scope.
+      functionParams_[fn.name] = fn.params;
       nativeSigs_.erase(fn.name);
     }
     // `@MustUse` (PHASE 6.7.5) is tracked separately from the signature: a
@@ -3060,6 +3122,17 @@ int Compiler::compileCall(const CallExpr& call, int line, int col) {
   if (const auto* callee = std::get_if<VariableExpr>(&call.callee->node)) {
     if (const NativeSig* sig = nativeSigFor(callee->name)) {
       checkNativeCall(callee->name, *sig, captureCallArgs(call), line, col);
+    } else if (LocalVar shadowing; !resolveLocal(callee->name, shadowing)) {
+      // A direct call to a user function is checked the same way, using the
+      // parameter list the declaration recorded. A local of the same name
+      // shadows the global function, so its signature no longer applies (the
+      // callee is a value of unknown type). `compileAssign` erases the entry
+      // when the name is reassigned, so this only fires for a binding that is
+      // still the declared function.
+      auto params = functionParams_.find(callee->name);
+      if (params != functionParams_.end()) {
+        checkUserCall(callee->name, params->second, captureCallArgs(call), line, col);
+      }
     }
   }
 
@@ -3125,6 +3198,14 @@ int Compiler::compileAssign(const AssignExpr& assign, int line, int col) {
       if (targetType.isPresent()) {
         checkAssignable(inferExprType(*assign.value), targetType, "'" + name + "'",
                         assign.value->line, assign.value->col);
+      }
+      // A global function is a first-class value: `f = (x, y) => x + y;`
+      // replaces it with a function of a different arity. The recorded
+      // parameter list describes the *declaration*, so it stops applying the
+      // moment the name is reassigned — a later `f(1)` must fall through to the
+      // run-time guard rather than be rejected against a stale signature.
+      if (!isLocal && upvalueSlot < 0) {
+        functionParams_.erase(name);
       }
     }
 

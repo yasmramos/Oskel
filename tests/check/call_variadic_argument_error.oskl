@@ -1,0 +1,6 @@
+// expect-exit: 65
+// A variadic call still checks the fixed prefix: the extras are free, the
+// named parameter is not.
+fn variadic(first: int, rest...) { return first; }
+
+variadic("not an int", 2, 3);

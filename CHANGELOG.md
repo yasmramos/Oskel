@@ -11,6 +11,40 @@ may change between minor versions.
 
 ### Added
 
+- **`bindgen --abi` selects the destination ABI.** A generated module must not
+  emit a shape the destination cannot marshal: `--abi system-v` emits
+  struct-by-value, callbacks and variadics; `--abi win64` emits only the
+  variadic; `--abi aapcs64`/`wasm` comment all three out. `--target llp64`
+  implies `win64`, because that data model is Windows, and `--abi` overrides it
+  when a header is generated on another host. The decision comes from
+  `ffi::capabilitiesForAbi`, not from the host running the tool, so a module
+  generated on Linux for Windows is correct. `tests/bindgen_test.cpp` and
+  `tests/run_bindgen_target.cmake` pin the matrix.
+
+- **`std.bytes`, the byte-string and binary-codec module.** A byte is an `int`
+  in `0..255` and a byte string is an ordinary array, so no runtime type is
+  added. The module provides UTF-8 `fromString`/`toString`/`byteLength`,
+  `hexEncode`/`hexDecode`, standard and URL-safe Base64, fixed-width
+  little-/big-endian readers and writers for 8/16/32-bit signed and unsigned
+  integers, and the `concat`/`slice`/`indexOf`/`contains`/`startsWith`/
+  `endsWith`/`equals`/`compare`/`reversed`/`repeat`/`isAscii` array helpers.
+  Every public function validates its input and raises on an invalid byte,
+  offset, digit or width; `isValid` checks without raising. The module stays on
+  the portable primitive surface, so the VM, `oskel build` and WebAssembly
+  agree byte for byte. `tests/67_std_bytes.oskl` and
+  `tests/native_build_bytes.oskl` pin the three engines.
+
+- **`std.ui` buttons react to the pointer.** A button now carries `hover` and
+  `pressed`, and `pointerMove`/`pointerDown`/`pointerUp` update them; a release
+  runs `onClick` only when it lands on the pressed button, so releasing outside
+  cancels the click. `button` uses distinct blue shades, `buttonStates` exposes
+  all three fills, and `buttonStyle` keeps one fill for compatibility.
+  `std.ui.window` routes SDL mouse motion, press and release through the same
+  primitives, and clears both states when the pointer leaves the window or the
+  window loses focus. `ui.click` remains the headless press/release helper.
+  `tests/native_build_ui.oskl` pins the state transitions on the VM and under
+  `oskel build`.
+
 - **VM/AOT parity for callbacks (PHASE 7f.11).** A callback may now return a
   struct by value under `oskel build`: the AOT body stages the returned map's
   fields into the C bytes and loads them into the System V return registers
@@ -124,8 +158,13 @@ may change between minor versions.
   COFF objects into a new COFF object: defined symbols at their merged
   offsets, uniquely renamed local symbols, section symbols with aux records,
   and section-symbol relocations retargeted to the output section symbol with
-  the addend adjusted. The result links with `oskelld`/`--linker own`. MSVC
-  `.lib` archives and `args()` remain 10.3b.
+  the addend adjusted. The result links with `oskelld`/`--linker own`.
+- **MSVC `.lib` archives (PHASE 10.3b.2).** The Windows linker expands
+  `!<arch>` inputs before parsing: it skips the first/second linker members,
+  resolves `//` long names and `/N` references, strips the member's trailing
+  `/`, and rejects a short import object with a dedicated message. A static
+  `.lib` member links through both the direct PE path and `-r`. `args()`
+  remains 10.3b.
 
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,
@@ -352,6 +391,46 @@ may change between minor versions.
   pull in SDL3 or Skia.
 
 ### Fixed
+
+- **A direct call to a user function is checked at compile time.** A parameter
+  annotation used to be erased without ever being compared to an argument, so
+  `fn f(x: int) { return x; }` accepted `f("s")` and failed only when the body
+  touched `x` (`unsupported operand types for '+'`), or silently produced a
+  wrong value when it did not. The compiler now records each function's
+  parameter list and checks the arity and every argument against its annotation
+  at the call site, reusing the same assignability rule as a declaration and an
+  assignment (`int` widens to `float`/`double`, `nil` fits `int?`, `any` and an
+  unannotated parameter accept anything, a `...` variadic takes any number of
+  extras). The check is metadata only: the emitted bytecode is unchanged, so the
+  VM and `oskel build` agree byte for byte
+  (`tests/native_build_call_checks.oskl`). Because a function is a first-class
+  value, reassigning it (`f = (x, y) => x + y;`) or shadowing it with a local
+  drops the recorded signature and the call falls back to the run-time guard,
+  which is why an indirect call (`let g = f; g()`) is still checked at run time.
+  The diagnostics match the native-call form: `cannot assign 'string' to 'int'
+  in argument 1 of 'f'` and `f() expects 1 argument, got 0`.
+
+- **Runtime error messages now match the VM across the AOT and WebAssembly
+  backends.** A program that inspects `pcall`'s `error.message` saw a different
+  sentence under `oskel build`: a string index reported `array index must be an
+  integer`, a map key reported `map key must be a string`, and a non-string
+  needle to `in` reported the generic `unsupported operands for 'in'` instead
+  of the map, string or range membership message. Those are now worded
+  identically (`string index must be an integer`, `map keys must be strings`,
+  `map membership requires a string key`, `string membership requires a string
+  operand`, `range membership requires an integer`), and the messages that
+  quote a type or member name keep the VM's fixed words instead of a separate
+  AOT wording: `cannot iterate over a value of type`, `cannot index a value of
+  type`, `cannot assign to an index of a value of type`, `cannot set a field on
+  a value of type`, `cannot call a value of type`, `cannot slice a value of
+  type`, `len() is not defined for values of type`, `unsupported unary operator
+  for type`, `unsupported operand types for`, `operator 'in' is not supported
+  for` and `type ... has no member`. The file builtins name the function too
+  (`fsRead() expects a file handle`, not `file handle expected`), and `$slice`
+  checks the receiver before the bounds so `5[1:2]` names the receiver in both
+  engines. The WebAssembly pool was aligned the same way.
+  `tests/native_build_runtime_error_messages.oskl` pins both halves through
+  `pcall` and compares the binary's output with the VM's.
 
 - **The standard-library docs no longer claim an AOT gap that does not exist.**
   `std/collections.oskl`, its two fixtures, `docs/language.md` §12.12 and

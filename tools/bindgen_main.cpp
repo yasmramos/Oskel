@@ -40,6 +40,8 @@ const char* kUsage =
     "  -o, --output    output path (default: stdout)\n"
     "  --target <model>  C data model for long/wchar_t:\n"
     "                    lp64 (default) or llp64 (Windows)\n"
+    "  --abi <abi>     destination ABI for the emitted declarations:\n"
+    "                  build (default), system-v, win64, aapcs64 or wasm\n"
     "  --cxx           read a C++ bridge descriptor instead of a C header\n"
     "  --shim <dir>    directory for <stem>_shim.h and <stem>_shim.cpp\n";
 
@@ -76,6 +78,7 @@ int main(int argc, char** argv) {
   std::string shimDir;
   bool cxx = false;
   bool targetSet = false;
+  bool abiSet = false;
   bindgen::Options options;
   for (std::size_t i = 0; i < arguments.size(); ++i) {
     const std::string& arg = arguments[i];
@@ -125,6 +128,30 @@ int main(int argc, char** argv) {
       }
       continue;
     }
+    if (arg == "--abi") {
+      if (i + 1 >= arguments.size()) {
+        std::cerr << "bindgen: option '" << arg << "' needs an argument\n";
+        return 64;
+      }
+      abiSet = true;
+      const std::string abi = arguments[++i];
+      if (abi == "build") {
+        options.abi = ffi::FfiAbi::Build;
+      } else if (abi == "system-v" || abi == "sysv") {
+        options.abi = ffi::FfiAbi::SysVX86_64;
+      } else if (abi == "win64") {
+        options.abi = ffi::FfiAbi::Win64;
+      } else if (abi == "aapcs64") {
+        options.abi = ffi::FfiAbi::Aapcs64;
+      } else if (abi == "wasm") {
+        options.abi = ffi::FfiAbi::Wasm;
+      } else {
+        std::cerr << "bindgen: unknown ABI '" << abi
+                  << "' (expected build, system-v, win64, aapcs64 or wasm)\n";
+        return 64;
+      }
+      continue;
+    }
     if (!arg.empty() && arg[0] == '-' && arg != "-") {
       std::cerr << "bindgen: unknown option '" << arg << "'\n";
       return 64;
@@ -151,6 +178,15 @@ int main(int argc, char** argv) {
   if (cxx && targetSet) {
     std::cerr << "bindgen: --target is only valid for C headers\n";
     return 64;
+  }
+  if (cxx && abiSet) {
+    std::cerr << "bindgen: --abi is only valid for C headers\n";
+    return 64;
+  }
+  // The LLP64 data model is Windows, so its ABI is Win64 unless `--abi`
+  // overrides it for an unusual cross-generation.
+  if (!abiSet && options.target == bindgen::Target::Llp64) {
+    options.abi = ffi::FfiAbi::Win64;
   }
 
   std::string source;
@@ -228,7 +264,7 @@ int main(int argc, char** argv) {
       std::cerr << ", " << result.macroConstants << " macro constant(s)";
     }
     std::cerr << ", " << result.commented
-              << " commented out (this build cannot marshal it)";
+              << " commented out (the destination cannot marshal it)";
     if (result.skipped > 0) {
       std::cerr << ", skipped " << result.skipped << " (see the '// skipped:' comments)";
     }

@@ -87,6 +87,24 @@ it as a caveat:
   dedicated message (exit 65); a genuine self-read (`var x = x;`) keeps the
   generic "global 'N' is read but never assigned". `sqrt`, `floor`, `ceil` and
   `round` are the curated stubs (`sqrtsd` and the SSE rounding are exact).
+- A runtime error message is observable through `pcall`, so the AOT wording
+  must start with the VM's. The messages without a dynamic tail are identical
+  (`array index must be an integer`, `string index must be an integer`,
+  `map keys must be strings`, `map membership requires a string key`,
+  `string membership requires a string operand`, `range membership requires an
+  integer`); the ones that quote a type or member name keep the fixed words and
+  stop before the tail (`cannot iterate over a value of type`, `cannot index a
+  value of type`, `cannot assign to an index of a value of type`, `cannot set a
+  field on a value of type`, `cannot call a value of type`, `cannot slice a
+  value of type`, `len() is not defined for values of type`, `unsupported unary
+  operator for type`, `unsupported operand types for`, `operator 'in' is not
+  supported for`, `type ... has no member`). The file builtins name the function
+  too (`fsRead() expects a file handle`), and `$slice` checks the receiver
+  before the bounds so `5[1:2]` names the receiver in both engines.
+  `tests/native_build_runtime_error_messages.oskl` pins both halves. A new
+  index or operator message starts from the VM's text, never from a new
+  wording, and `emitIn`'s range branch uses `msgRangeIntType` rather than the
+  generic `msgBadIn` -- the WASM backend already did.
 - The compiler validates an `extern "C"` declaration against the **destination**,
   not against how the engine was built: `oskel build` passes
   `ffi::kAotAbiCapabilities` (struct-by-value and class-MEMORY on, variadic off)
@@ -323,6 +341,19 @@ it as a caveat:
   the fact of failing (PHASE 7c.5b.6). Other dynamic tails — a type name, an
   index or a callback-return field name — still keep only their fixed prefix
   (BACKLOG §6 item 25).
+- A *direct* call to a user function is checked at compile time — arity and
+  argument types against the annotations — by `Compiler::checkUserCall`, using
+  the parameter list `functionParams_` records at the declaration. It mirrors
+  `functionReturnTypes_`: a shadowing binding, a `native fn` of the same name, a
+  module boundary and `clearSession` all clear or save it, and **a reassignment
+  erases it** (`f = (x, y) => ...;`), because a function is a first-class value
+  and the recorded signature then describes a binding that no longer holds it.
+  `checkArgumentAssignable` is the one place a string argument is allowed
+  against a `cstring` parameter (the string stays alive for the call), shared
+  with `checkNativeCall` so the two cannot drift. An indirect call (`let g = f;
+  g()`) is still checked at run time, which is why the VM's arity guard and its
+  tests stay: those tests must reach it through a value of unknown type
+  (`let g = f; g()`), never through a direct `f()`, which no longer compiles.
 - `random`/`seed` are AOT-backed (PHASE 7g): `mt19937_64` is emitted as machine
   code, so a native binary reproduces the VM's stream after the same `seed(n)`.
   Three rules keep it correct, and each was a real bug first: only `rbx` and
@@ -591,8 +622,14 @@ it as a caveat:
   retargeted to the output section symbol with the input section's merged
   offset added to the field. The output is accepted by `linkWindowsExecutable`
   and by the two-object `link_pe_test` fixture.
-- MSVC `.lib` archives, `args()` and `.pdata`/`.xdata`/TLS remain 10.3b; the
-  macOS Mach-O container is 10.3d.
+- MSVC `.lib` archives (`expandCoffArchives`, PHASE 10.3b.2) are handled. The
+  first and second linker members are skipped because the own linker walks
+  every member; `//` long names and `/N` references are resolved; the member's
+  trailing `/` is stripped; a short import object (`0x00 0xFF`) is rejected
+  with a dedicated message. The archive test builds a `.lib` with a long member
+  name and links the member through both `linkHostedExecutable` and `-r`.
+- `args()` and `.pdata`/`.xdata`/TLS remain 10.3b; the macOS Mach-O container
+  is 10.3d.
 - The multi-object e2e helper is an `OBJECT` library compiled with
   `-fno-sanitize=all` when the build is sanitized: the object is linked into a
   plain emitted binary that does not carry the ASan runtime. The archive test
@@ -965,7 +1002,12 @@ it as a caveat:
   `isKnownTypeName`/`isIntegerTypeName` from `src/frontend/ast.h` so the vocabulary it
   emits cannot drift from the compiler's; keep that the single source of truth.
   It must never emit a declaration the compiler rejects — an unsupported type
-  becomes a `// skipped:` comment, and a C variadic is written commented out.
+  becomes a `// skipped:` comment, and a shape the *destination* ABI cannot
+  marshal is written commented out. `--target` selects the C data model and
+  `--abi` the destination ABI (`build`, `system-v`, `win64`, `aapcs64`, `wasm`);
+  `--target llp64` implies `win64`. The destination is asked through
+  `ffi::capabilitiesForAbi`, never through the host that runs the tool, so a
+  module generated on Linux for Windows does not emit a struct Windows rejects.
   Its stdout is byte for byte the same module as its `-o` file, so it is set to
   binary mode on Windows (`_setmode(_fileno(stdout), _O_BINARY)`); a text-mode
   stdout would turn every `\n` into `\r\n` and the piped module would differ

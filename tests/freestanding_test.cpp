@@ -930,7 +930,7 @@ static void test_slice_helper_errors() {
       "print(5[1:2]);\n");
   RunResult value = buildAndRun("/tmp/oskel_slice_not_sliceable", notSliceable);
   check(value.exitCode == 70, "slicing a non-collection exits 70");
-  check(value.output.find("not sliceable") != std::string::npos,
+  check(value.output.find("cannot slice a value of type") != std::string::npos,
         "the failed slice names the non-sliceable operand");
 }
 
@@ -1660,7 +1660,7 @@ static void test_boxed_runtime_call_non_function() {
                              {Value(static_cast<int64_t>(5)), Value(static_cast<int64_t>(7))}, 2);
   RunResult result = buildAndRun("/tmp/oskel_boxed_call_nonfunc", proto);
   check(result.exitCode == 70, "calling a non-function exits 70");
-  check(result.output.find("non-function") != std::string::npos,
+  check(result.output.find("cannot call a value of type") != std::string::npos,
         "the runtime error names the non-function call");
 }
 
@@ -1979,11 +1979,14 @@ static void test_variadic() {
 }
 
 // A variadic function called with fewer than its fixed parameters is an arity
-// error and exits 70, matching the VM's arity check.
+// error and exits 70, matching the VM's arity check. A direct call is caught by
+// the compiler, so the run-time guard is reached through an indirect one: the
+// callee is a value of unknown type.
 static void test_variadic_arity_error() {
   Bytecode proto = compileSource(
       "fn join(sep, parts...) { return len(parts); }\n"
-      "print(join());\n");
+      "let g = join;\n"
+      "print(g());\n");
   RunResult result = buildAndRun("/tmp/oskel_variadic_arity", proto);
   check(result.exitCode == 70, "a variadic call below the fixed arity exits 70");
   // The message names the function, its fixed arity and the actual count,

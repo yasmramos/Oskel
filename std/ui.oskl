@@ -95,22 +95,35 @@ fn textColor(content, size, color) {
   };
 }
 
-// A blue button with white text.
+// A blue button with white text and distinct hover/pressed shades.
 @MustUse
 fn button(label, onClick) {
-  return buttonStyle(label, onClick, 0xFF2563EB, 0xFFFFFFFF);
+  return buttonStates(label, onClick, 0xFF2563EB, 0xFF1D4ED8, 0xFF1E40AF,
+                      0xFFFFFFFF);
 }
 
-// A button with an explicit background and text colour.
+// A button with an explicit background and text colour. The hover and pressed
+// states keep the same background; use `buttonStates` when they must differ.
 @MustUse
 fn buttonStyle(label, onClick, background, color) {
+  return buttonStates(label, onClick, background, background, background, color);
+}
+
+// A button with an explicit background for each pointer state.
+@MustUse
+fn buttonStates(label, onClick, background, hoverBackground, pressedBackground,
+                color) {
   return {
     kind: "button",
     label: label,
     onClick: onClick,
     size: 14,
     background: background,
+    hoverBackground: hoverBackground,
+    pressedBackground: pressedBackground,
     color: color,
+    hover: false,
+    pressed: false,
     x: 0,
     y: 0,
     w: 0,
@@ -260,7 +273,13 @@ fn _collect(node, out) {
     _push(out, "text", node.x, node.y + node.size, node.w, node.h, node.color,
           node.content, node.size);
   } else if (node.kind == "button") {
-    _push(out, "rect", node.x, node.y, node.w, node.h, node.background, "", 0);
+    var fill = node.background;
+    if (node.pressed) {
+      fill = node.pressedBackground;
+    } else if (node.hover) {
+      fill = node.hoverBackground;
+    }
+    _push(out, "rect", node.x, node.y, node.w, node.h, fill, "", 0);
     _push(out, "text", node.x + 12, node.y + int((node.h + node.size) / 2),
           node.w - 24, node.size, node.color, node.label, node.size);
   }
@@ -301,4 +320,116 @@ fn hitTest(node, x, y) {
     }
   }
   return nil;
+}
+
+// --- pointer state ----------------------------------------------------------
+
+fn _setHover(node, x, y): bool {
+  var changed = false;
+  if (node.kind == "button") {
+    let next = _contains(node, x, y);
+    if (node.hover != next) {
+      node.hover = next;
+      changed = true;
+    }
+  } else if (node.kind == "window" || node.kind == "padding") {
+    changed = _setHover(node.child, x, y);
+  } else if (node.kind == "column" || node.kind == "row") {
+    for child in node.children {
+      if (_setHover(child, x, y)) {
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+fn _setPressed(node, x, y): bool {
+  var changed = false;
+  if (node.kind == "button") {
+    let next = _contains(node, x, y);
+    if (node.pressed != next) {
+      node.pressed = next;
+      changed = true;
+    }
+  } else if (node.kind == "window" || node.kind == "padding") {
+    changed = _setPressed(node.child, x, y);
+  } else if (node.kind == "column" || node.kind == "row") {
+    for child in node.children {
+      if (_setPressed(child, x, y)) {
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+fn _clearPressed(node): bool {
+  var changed = false;
+  if (node.kind == "button") {
+    if (node.pressed) {
+      node.pressed = false;
+      changed = true;
+    }
+  } else if (node.kind == "window" || node.kind == "padding") {
+    changed = _clearPressed(node.child);
+  } else if (node.kind == "column" || node.kind == "row") {
+    for child in node.children {
+      if (_clearPressed(child)) {
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+// Updates the hovered button under `(x, y)`. Returns whether a button changed
+// state, so a caller can decide to redraw.
+@MustUse
+fn pointerMove(root, x, y): bool {
+  return _setHover(root, x, y);
+}
+
+// Marks the button under `(x, y)` as pressed and clears every other button.
+@MustUse
+fn pointerDown(root, x, y): bool {
+  let hovered = _setHover(root, x, y);
+  let pressed = _setPressed(root, x, y);
+  return hovered || pressed;
+}
+
+// Clears hover and pressed when the pointer leaves the window or the window
+// loses focus, so no button keeps a stale highlight.
+@MustUse
+fn pointerCancel(root): bool {
+  let hovered = _setHover(root, -1, -1);
+  let pressed = _clearPressed(root);
+  return hovered || pressed;
+}
+
+// Releases the pointer. The handler runs only when the press and the release
+// land on the same button; the pressed state is always cleared.
+@MustUse
+fn pointerUp(root, x, y): bool {
+  _setHover(root, x, y);
+  let hit = hitTest(root, x, y);
+  var pressed = false;
+  if (hit != nil && hit.pressed) {
+    pressed = true;
+  }
+  _clearPressed(root);
+  if (!pressed) {
+    return false;
+  }
+  let handler = hit.onClick;
+  handler();
+  return true;
+}
+
+// A complete press/release at one point, for headless callers. Returns whether
+// the button's handler ran.
+@MustUse
+fn click(root, x, y): bool {
+  _ = pointerDown(root, x, y);
+  return pointerUp(root, x, y);
 }

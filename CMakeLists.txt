@@ -1046,6 +1046,18 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_error.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # A runtime error message is observable through `pcall`, so the two engines
+    # must word it the same way. This pins the messages without a dynamic tail
+    # exactly (`string index must be an integer`, `map keys must be strings`,
+    # `range membership requires an integer`) and the fixed prefix of the ones
+    # that quote a type or member name (BACKLOG §6 item 25).
+    add_test(NAME oskel.build_binary_runtime_error_messages
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_runtime_error_messages"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_runtime_error_messages.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `switch`, `defer` and `struct` lower in AOT but no earlier fixture
     # exercised them: `switch` on an int, a string and a range, `defer` in LIFO
     # order across nested scopes, and `struct` with typed/untyped fields,
@@ -1446,6 +1458,16 @@ if(BUILD_TESTING)
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
     endif()
 
+    # The call-site checks (arity and argument types) are compile-time metadata:
+    # a program that passes them must build and agree with the VM byte for byte,
+    # proving the checks are erased and never change the emitted code.
+    add_test(NAME oskel.build_binary_call_checks
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_call_checks"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_call_checks.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `std.json` is plain Oskel over the portable primitive surface, so it must
     # build to a native binary and agree with the VM. The fixture is the guard
     # that keeps the module off the collection/string methods and
@@ -1569,6 +1591,16 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_TEST_NAME=oskel.build_binary_strings"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_strings.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # `std.bytes` is plain Oskel over arrays and code points, so the UTF-8,
+    # hexadecimal, Base64 and fixed-width codecs must build to a native binary
+    # and agree with the VM.
+    add_test(NAME oskel.build_binary_bytes
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_bytes"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_bytes.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
     # `std.io` is plain Oskel over strings, and its readers and writers are
@@ -1982,6 +2014,19 @@ if(BUILD_TESTING)
         "-DOSKEL_TEST_NAME=oskel.build_wasm_strings"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_strings.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `std.bytes` is pure Oskel over arrays and code points, so the UTF-8,
+    # hexadecimal, Base64 and fixed-width codecs must also match the VM in a
+    # WebAssembly module.
+    add_test(NAME oskel.build_wasm_bytes
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_bytes"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_bytes.oskl"
         "-DNODE_EXE=${OSKEL_NODE_EXE}"
         "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"

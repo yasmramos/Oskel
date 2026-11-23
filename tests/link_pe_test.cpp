@@ -104,6 +104,86 @@ void testRelocatable() {
         "the helper body is at its merged offset");
 }
 
+
+void appendArchiveMember(std::vector<std::uint8_t>& archive,
+                         const std::string& name,
+                         const std::vector<std::uint8_t>& data) {
+  const std::size_t header = archive.size();
+  archive.resize(header + 60, ' ');
+  std::memcpy(archive.data() + header, name.data(),
+              std::min<std::size_t>(name.size(), 16));
+  const std::string size = std::to_string(data.size());
+  std::memcpy(archive.data() + header + 48, size.data(),
+              std::min<std::size_t>(size.size(), 10));
+  archive[header + 58] = '`';
+  archive[header + 59] = '\n';
+  archive.insert(archive.end(), data.begin(), data.end());
+  if ((data.size() & 1) != 0) archive.push_back('\n');
+}
+
+std::vector<std::uint8_t> buildCoffArchive(
+    const std::vector<std::pair<std::string, std::vector<std::uint8_t>>>& members) {
+  std::vector<std::uint8_t> archive = {'!', '<', 'a', 'r', 'c', 'h', '>', '\n'};
+  const std::vector<std::uint8_t> emptyLinker = {0, 0, 0, 0};
+  appendArchiveMember(archive, "/", emptyLinker);
+  appendArchiveMember(archive, "/", emptyLinker);
+  std::string longNames;
+  std::vector<std::pair<std::string, std::vector<std::uint8_t>>> longMembers;
+  for (const auto& member : members) {
+    longMembers.push_back({std::to_string(longNames.size()), member.second});
+    longNames += member.first;
+    longNames += '\0';
+  }
+  appendArchiveMember(archive, "//",
+                      std::vector<std::uint8_t>(longNames.begin(), longNames.end()));
+  for (const auto& member : longMembers) {
+    appendArchiveMember(archive, "/" + member.first, member.second);
+  }
+  return archive;
+}
+
+void testArchive() {
+  const std::vector<std::uint8_t> mainText = {0xE8, 0x00, 0x00, 0x00,
+                                              0x00, 0xC3};
+  const std::vector<std::uint8_t> helperText = {0xB8, 42, 0x00, 0x00,
+                                                0x00, 0xC3};
+  const std::vector<std::uint8_t> mainObject = buildRelocatableObject(
+      Target::winX64(), mainText, {}, {{1, "helper", true}}, {{"main", 0}});
+  const std::vector<std::uint8_t> helperObject = buildRelocatableObject(
+      Target::winX64(), helperText, {}, {}, {{"helper", 0}});
+  const std::vector<std::uint8_t> archive = buildCoffArchive(
+      {{"helper_object_with_a_long_name.obj", helperObject}});
+  LinkOptions options;
+  options.target = Target::winX64();
+
+  const std::vector<std::uint8_t> pe = linkHostedExecutable(
+      std::vector<LinkInput>{{"main.obj", mainObject},
+                             {"helper.lib", archive}},
+      options);
+  const std::size_t textSection = findSection(pe, ".text");
+  check(textSection != 0, "a .lib member links into a PE");
+  if (textSection == 0) return;
+  const std::uint32_t textOffset = read32(pe, textSection + 20);
+  check(static_cast<std::int32_t>(read32(pe, textOffset + 1)) == 11,
+        "the .lib member resolves the call");
+  check(pe[textOffset + 16] == 0xB8 && pe[textOffset + 17] == 42,
+        "the .lib helper body is linked");
+
+  const std::vector<std::uint8_t> combined = linkRelocatable(
+      std::vector<LinkInput>{{"main.obj", mainObject},
+                             {"helper.lib", archive}},
+      options);
+  const std::vector<std::uint8_t> relocPe = linkHostedExecutable(
+      std::vector<LinkInput>{{"combined.obj", combined}}, options);
+  const std::size_t relocText = findSection(relocPe, ".text");
+  check(relocText != 0, "a .lib member combines with -r");
+  if (relocText != 0) {
+    const std::uint32_t relocOffset = read32(relocPe, relocText + 20);
+    check(static_cast<std::int32_t>(read32(relocPe, relocOffset + 1)) == 11,
+          "-r resolves a .lib member");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -184,5 +264,6 @@ int main() {
         "the _start call lands on main");
 
   testRelocatable();
+  testArchive();
   return failures == 0 ? 0 : 1;
 }
