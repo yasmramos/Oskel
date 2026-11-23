@@ -1496,8 +1496,14 @@ static void test_boxed_runtime_print() {
 }
 
 // The global table (PHASE 7c.2a) inside a real static ELF: the chunk allocates
-// it from the arena at entry, every slot starts nil, and set/get round-trip
+// it from the arena at entry, every slot starts *unset*, and set/get round-trip
 // through r15. The helpers are driven directly, like the printer above.
+//
+// A slot nothing has assigned is `Unset`, not `Nil`: the program can assign
+// `nil` (`var g = nil`), so the two states must differ. Reading an unset slot
+// through `globalGetChecked` fails with the hosted engine's wording and exit 70;
+// `globalGet` still returns the raw slot, which the lowerer only uses where the
+// analysis proved the read cannot observe `Unset`.
 static void test_boxed_runtime_globals() {
   CodeGen cg(Target::linuxX64());
   RuntimeHandles entry = newRuntimeHandles(cg);
@@ -1518,6 +1524,11 @@ static void test_boxed_runtime_globals() {
     cg.callLabel(rt.globalSet);
   };
 
+  // The message an unset read reports, laid out as a raw `AotString` (an 8-byte
+  // length then the bytes) after the code, so nothing falls into it.
+  const std::string unsetMessage = "undefined variable 'g'";
+  CodeGen::Label messageLabel = cg.newLabel();
+
   cg.bind(mainLabel);
   cg.push(X64Reg::Rbp);
   cg.movReg(X64Reg::Rbp, X64Reg::Rsp);
@@ -1528,14 +1539,28 @@ static void test_boxed_runtime_globals() {
   setInt(2, -9);
   printSlot(0);  // 7
   printSlot(2);  // -9
-  printSlot(1);  // nil: never assigned
+  // Slot 1 was never assigned: the checked read fails instead of printing nil.
+  cg.movImm(X64Reg::Rdi, 1);
+  cg.leaRipLabel(X64Reg::Rsi, messageLabel);
+  cg.callLabel(rt.globalGetChecked);
+  cg.movReg(X64Reg::Rdi, X64Reg::Rax);
+  cg.movReg(X64Reg::Rsi, X64Reg::Rdx);
+  cg.callLabel(rt.printValue);
   cg.xorReg(X64Reg::Rax, X64Reg::Rax);
   cg.movReg(X64Reg::Rsp, X64Reg::Rbp);
   cg.pop(X64Reg::Rbp);
   cg.retInsn();
 
   std::uint64_t start = emitFreestandingRuntime(cg, entry, mainLabel);
-  emitAotRuntime(cg, rt, entry);
+  AotRuntimeExtras extras;
+  extras.needsGlobalGetChecked = true;
+  emitAotRuntime(cg, rt, entry, nullptr, false, false, false, -1, -1, extras);
+  // The message blob, bound after every code path has returned.
+  cg.bind(messageLabel);
+  const std::uint64_t length = unsetMessage.size();
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>(&length), sizeof length);
+  cg.emitBytes(reinterpret_cast<const std::uint8_t*>(unsetMessage.data()),
+               unsetMessage.size());
   cg.finalize();
 
   std::vector<std::uint8_t> elf =
@@ -1543,9 +1568,14 @@ static void test_boxed_runtime_globals() {
   const std::string path = "/tmp/oskel_boxed_globals";
   writeFile(path, elf);
   RunResult result = runProgram(path);
-  check(result.output == "7\n-9\nnil\n",
-        "the boxed runtime keeps globals in distinct slots and starts them nil");
-  check(result.exitCode == 0, "the global program exits 0");
+  // `runProgram` merges stderr into the captured output, so the two printed
+  // values come first and the failure message follows them.
+  check(result.output.rfind("7\n-9\n", 0) == 0,
+        "the boxed runtime keeps globals in distinct slots");
+  check(result.output.find("undefined variable 'g'") != std::string::npos,
+        "reading an unset global names the variable");
+  check(result.exitCode == 70,
+        "reading an unset global fails with the hosted engine's exit code");
 }
 
 // A type mismatch in a lowered operation must report an error and exit 70,

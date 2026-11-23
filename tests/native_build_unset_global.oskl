@@ -1,0 +1,13 @@
+// A read of a global that nothing has assigned yet is a runtime error in the
+// hosted engine ("undefined variable '<name>'", exit 70). The AOT backend
+// reproduces it instead of reading a zeroed slot as `nil` (BACKLOG §6 item 30).
+//
+// The read is before the assignment, but the assignment exists, so the compiler
+// accepts the program (a global with *no* assignment anywhere is a lowering
+// error, exit 65, which is a different case). The AOT binary must therefore fail
+// at run time with the hosted engine's wording, not read the slot.
+//
+// `var g = nil;` is deliberately *not* the shape here: assigning `nil` is a
+// legitimate value, and the slot has to tell it apart from "never assigned".
+print(first);
+first = 1;
