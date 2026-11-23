@@ -552,6 +552,16 @@ previous one.
   so the VM, `oskel build` and WebAssembly agree. No new runtime type, opcode
   or builtin. See `docs/language.md` §12.17, `tests/67_std_bytes.oskl` and the
   AOT/WASM fixture `tests/native_build_bytes.oskl`.
+- **Standard library: `std.decimal`** — **done**: Java-style arbitrary-precision
+  `BigDecimal` as a pure-Oskel class. An arbitrary-precision signed unscaled
+  integer plus an `int` scale gives exact `add`/`subtract`/`multiply`, exact
+  terminating `divide`, `divide(divisor, scale, mode)` with the Java rounding
+  modes, `setScale`, `compareTo`, scale-sensitive `equals`,
+  `stripTrailingZeros`, `pow` and the conversion methods. The class module is
+  `std.decimal.BigDecimal`; the facade exposes `decimal(value)`. No runtime
+  type, opcode or builtin is added, so the VM, `oskel build` and WebAssembly
+  agree exactly. See `docs/language.md` §12.18, `tests/68_std_decimal.oskl`
+  and the AOT/WASM fixture `tests/native_build_decimal.oskl`.
 - **Standard library: `std.io`** — **done**: in-memory text streams built on
   classes. `StringReader` walks a string by code point (`readLine`, `read`,
   `readChar`, `readToken`, `readWhile`, `lines`, ...); `StringWriter`

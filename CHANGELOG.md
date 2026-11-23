@@ -20,6 +20,19 @@ may change between minor versions.
   `ffi::capabilitiesForAbi`, not from the host running the tool, so a module
   generated on Linux for Windows is correct. `tests/bindgen_test.cpp` and
   `tests/run_bindgen_target.cmake` pin the matrix.
+- **`std.decimal`, Java-style arbitrary-precision decimals.** `BigDecimal`
+  stores an arbitrary-precision signed unscaled integer plus an `int` scale and
+  implements the Java `java.math.BigDecimal` surface: exact `add`, `subtract`
+  and `multiply`; exact `divide` when the expansion terminates and
+  `divide(divisor, scale, mode)` otherwise; `divideToIntegralValue`,
+  `remainder`, `setScale`, `round`, `compareTo`, scale-sensitive `equals`,
+  `stripTrailingZeros`, `pow`, `intValue` and `doubleValue`; and the Java
+  rounding modes (`UP`, `DOWN`, `CEILING`, `FLOOR`, `HALF_UP`, `HALF_DOWN`,
+  `HALF_EVEN`, `UNNECESSARY`). The class lives in the
+  `std.decimal.BigDecimal` class module and the `std.decimal` facade exposes
+  `decimal(value)`. It is pure Oskel, so the VM, `oskel build` and WebAssembly
+  agree exactly. `tests/68_std_decimal.oskl` and
+  `tests/native_build_decimal.oskl` pin the three engines.
 
 - **`std.bytes`, the byte-string and binary-codec module.** A byte is an `int`
   in `0..255` and a byte string is an ordinary array, so no runtime type is

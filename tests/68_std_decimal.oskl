@@ -1,0 +1,165 @@
+// std.decimal: arbitrary-precision decimal arithmetic, Java BigDecimal style.
+//
+// The module is pure Oskel over arrays, strings, loops and closures, so every
+// expected value here must hold on the VM, under `oskel build` and on
+// WebAssembly (see `tests/native_build_decimal.oskl`).
+
+import std.decimal;
+import std.decimal.*;
+import std.decimal as d;
+import { decimal } from std.decimal;
+import std.decimal.BigDecimal;
+
+// --- construction, scale and precision -------------------------------------
+
+assertEq(decimal("0").toPlainString(), "0");
+assertEq(decimal("0").scale(), 0);
+assertEq(decimal("0").precision(), 1);
+assertEq(decimal("0.00").scale(), 2);
+assertEq(decimal("0.00").precision(), 1);
+assertEq(decimal("1.2300").scale(), 4);
+assertEq(decimal("1.2300").precision(), 5);
+assertEq(decimal("-0.001").signum(), -1);
+assertEq(decimal("1E+3").scale(), -3);
+assertEq(decimal("1E+3").toPlainString(), "1000");
+assertEq(decimal("1E-3").toPlainString(), "0.001");
+assertEq(decimal(".5").toPlainString(), "0.5");
+assertEq(decimal("1.").toPlainString(), "1");
+assertEq(decimal("+1.25").toPlainString(), "1.25");
+assertEq(decimal(42).toPlainString(), "42");
+assertEq(decimal(-42).toPlainString(), "-42");
+assertEq(decimal(1.5).toPlainString(), "1.5");
+assertEq(decimal(decimal("2.50")).toPlainString(), "2.50");
+
+// --- exact addition, subtraction and multiplication ------------------------
+
+assertEq(decimal("1.23").add(decimal("2.0")).toPlainString(), "3.23");
+assertEq(decimal("1.23").add(decimal("2.0")).scale(), 2);
+assertEq(decimal("1.2").add(decimal("0.03")).toPlainString(), "1.23");
+assertEq(decimal("1.23").subtract(decimal("2.0")).toPlainString(), "-0.77");
+assertEq(decimal("1.23").subtract(decimal("1.23")).toPlainString(), "0.00");
+assertEq(decimal("1.23").multiply(decimal("2.0")).toPlainString(), "2.460");
+assertEq(decimal("1.23").multiply(decimal("2.0")).scale(), 3);
+assertEq(decimal("1.20").multiply(decimal("2.0")).toPlainString(), "2.400");
+assertEq(decimal("-2.5").multiply(decimal("4")).toPlainString(), "-10.0");
+assertEq(decimal("999999999999999999999999999999").add(decimal("1")).toPlainString(),
+  "1000000000000000000000000000000");
+assertEq(decimal("12345678901234567890").multiply(decimal("2")).toPlainString(),
+  "24691357802469135780");
+
+// --- comparison and equality -----------------------------------------------
+
+assertEq(decimal("1.0").compareTo(decimal("1.00")), 0);
+assertEq(decimal("1.0").equals(decimal("1.00")), false);
+assertEq(decimal("1.0").equals(decimal("1.0")), true);
+assertEq(decimal("1.0").compareTo(decimal("1.01")), -1);
+assertEq(decimal("1.01").compareTo(decimal("1.0")), 1);
+assertEq(decimal("-1.0").compareTo(decimal("-2.0")), 1);
+assertEq(decimal("-1.0").compareTo(decimal("1.0")), -1);
+
+// --- exact division ---------------------------------------------------------
+
+assertEq(decimal("1").divide(decimal("8")).toPlainString(), "0.125");
+assertEq(decimal("1").divide(decimal("40")).toPlainString(), "0.025");
+assertEq(decimal("1").divide(decimal("25")).toPlainString(), "0.04");
+assertEq(decimal("3").divide(decimal("6")).toPlainString(), "0.5");
+assertEq(decimal("100").divide(decimal("8")).toPlainString(), "12.5");
+assertEq(decimal("-1").divide(decimal("8")).toPlainString(), "-0.125");
+assertEq(decimal("1").divide(decimal("-8")).toPlainString(), "-0.125");
+assertEq(decimal("1.00").divide(decimal("2")).toPlainString(), "0.50");
+assertEq(decimal("0").divide(decimal("8")).toPlainString(), "0");
+
+// --- division with scale and Java rounding modes ---------------------------
+
+assertEq(decimal("1").divide(decimal("3"), 5, "HALF_EVEN").toPlainString(), "0.33333");
+assertEq(decimal("2").divide(decimal("3"), 5, "HALF_EVEN").toPlainString(), "0.66667");
+assertEq(decimal("1").divide(decimal("3"), 2, "HALF_UP").toPlainString(), "0.33");
+assertEq(decimal("2").divide(decimal("3"), 2, "HALF_UP").toPlainString(), "0.67");
+assertEq(decimal("1").divide(decimal("3"), 2, "HALF_DOWN").toPlainString(), "0.33");
+assertEq(decimal("2").divide(decimal("3"), 2, "HALF_DOWN").toPlainString(), "0.67");
+assertEq(decimal("1").divide(decimal("3"), 2, "HALF_EVEN").toPlainString(), "0.33");
+assertEq(decimal("2").divide(decimal("3"), 2, "HALF_EVEN").toPlainString(), "0.67");
+assertEq(decimal("1").divide(decimal("3"), 2, "UP").toPlainString(), "0.34");
+assertEq(decimal("1").divide(decimal("3"), 2, "DOWN").toPlainString(), "0.33");
+assertEq(decimal("1").divide(decimal("3"), 2, "CEILING").toPlainString(), "0.34");
+assertEq(decimal("1").divide(decimal("3"), 2, "FLOOR").toPlainString(), "0.33");
+assertEq(decimal("-1").divide(decimal("3"), 2, "CEILING").toPlainString(), "-0.33");
+assertEq(decimal("-1").divide(decimal("3"), 2, "FLOOR").toPlainString(), "-0.34");
+assertEq(decimal("1").divide(decimal("8"), 2, "HALF_EVEN").toPlainString(), "0.12");
+assertEq(decimal("1").divide(decimal("8"), 2, "HALF_UP").toPlainString(), "0.13");
+assertEq(decimal("1.00").divide(decimal("8"), "HALF_UP").toPlainString(), "0.13");
+assertEq(decimal("1").divide(decimal("8"), 3, "UNNECESSARY").toPlainString(), "0.125");
+
+// --- setScale and round -----------------------------------------------------
+
+assertEq(decimal("1.23").setScale(4).toPlainString(), "1.2300");
+assertEq(decimal("2.5").setScale(0, "HALF_EVEN").toPlainString(), "2");
+assertEq(decimal("3.5").setScale(0, "HALF_EVEN").toPlainString(), "4");
+assertEq(decimal("-2.5").setScale(0, "HALF_EVEN").toPlainString(), "-2");
+assertEq(decimal("-3.5").setScale(0, "HALF_EVEN").toPlainString(), "-4");
+assertEq(decimal("1.235").setScale(2, "HALF_UP").toPlainString(), "1.24");
+assertEq(decimal("1.234").setScale(2, "HALF_UP").toPlainString(), "1.23");
+assertEq(decimal("1234").setScale(-2, "HALF_UP").toPlainString(), "1200");
+assertEq(decimal("1.235").round(2, "HALF_EVEN").toPlainString(), "1.24");
+
+// --- stripTrailingZeros -----------------------------------------------------
+
+assertEq(decimal("1.2300").stripTrailingZeros().toPlainString(), "1.23");
+assertEq(decimal("1.2300").stripTrailingZeros().scale(), 2);
+assertEq(decimal("1000").stripTrailingZeros().toPlainString(), "1000");
+assertEq(decimal("1000").stripTrailingZeros().scale(), -3);
+assertEq(decimal("0.00").stripTrailingZeros().toPlainString(), "0");
+assertEq(decimal("0.00").stripTrailingZeros().scale(), 0);
+
+// --- integral division and remainder ---------------------------------------
+
+assertEq(decimal("10.5").divideToIntegralValue(decimal("3")).toPlainString(), "3");
+assertEq(decimal("10.5").remainder(decimal("3")).toPlainString(), "1.5");
+assertEq(decimal("-10.5").remainder(decimal("3")).toPlainString(), "-1.5");
+assertEq(decimal("10.5").remainder(decimal("3.0")).toPlainString(), "1.5");
+
+// --- powers and conversions -------------------------------------------------
+
+assertEq(decimal("1.20").pow(2).toPlainString(), "1.4400");
+assertEq(decimal("1.20").pow(2).scale(), 4);
+assertEq(decimal("-2").pow(3).toPlainString(), "-8");
+assertEq(decimal("2").pow(0).toPlainString(), "1");
+assertEq(decimal("-12.9").intValue(), -12);
+assertEq(decimal("12.9").intValue(), 12);
+assertEq(decimal("-0.9").intValue(), 0);
+assertEq(decimal("1.5").doubleValue(), 1.5);
+assertEq(decimal("1.5").toString(), "1.5");
+assertEq(decimal("-1.2300").toString(), "-1.2300");
+assertEq(decimal("1E+3").toString(), "1E+3");
+assertEq(decimal("1E-7").toString(), "1E-7");
+assertEq(decimal("0.000001").toString(), "0.000001");
+assertEq(decimal("0.0000001").toString(), "1E-7");
+assertEq(decimal("0.00").toString(), "0.00");
+assertEq(decimal("0E+3").toString(), "0E+3");
+assertEq(decimal("1000").stripTrailingZeros().toString(), "1E+3");
+
+// --- runtime errors ---------------------------------------------------------
+
+assertEq(pcall(() => decimal("1").divide(decimal("3"))).ok, false);
+assertEq(pcall(() => decimal("1").divide(decimal("0"))).ok, false);
+assertEq(pcall(() => decimal("1").divide(decimal("8"), 2, "UNNECESSARY")).ok, false);
+assertEq(pcall(() => decimal("1.23").setScale(0)).ok, false);
+assertEq(pcall(() => decimal("1").pow(-1)).ok, false);
+assertEq(pcall(() => decimal("not a number")).ok, false);
+assertEq(pcall(() => decimal("1.2.3")).ok, false);
+assertEq(pcall(() => decimal("1e")).ok, false);
+assertEq(pcall(() => decimal(nil)).ok, false);
+
+// --- import forms -----------------------------------------------------------
+
+assertEq(std.decimal.decimal("1.25").toPlainString(), "1.25");
+assertEq(d.decimal("1.25").toPlainString(), "1.25");
+assertEq(decimal("1.25").toPlainString(), "1.25");
+assertEq(BigDecimal("1.25").toPlainString(), "1.25");
+
+// The implementation helpers are private.
+assertEq(std.decimal._make, nil);
+assertEq(std.decimal._parseDecimal, nil);
+assertEq(std.decimal._divModAbs, nil);
+
+print("std.decimal ok");
