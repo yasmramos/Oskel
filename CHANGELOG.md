@@ -86,6 +86,15 @@ may change between minor versions.
   bind a global. A bodyless declaration (`extern "C"`, `native fn`) now reports
   its name and skips its parameters. Four cases in `tests/oskelint_test.cpp`
   pin the shapes.
+- **`oskelp.end_to_end` aborted on Windows.** `tests/run_oskelp_case.cmake`
+  checked the output with `macro(require_contains ...)`, and a macro
+  substitutes its arguments textually and re-parses them: the workspace path
+  `oskelp tree` prints (`D:\a\Oskel\...`) reached `string(FIND)` as an escape
+  sequence and CMake aborted with "Invalid character escape '\a'" before any
+  assertion ran. `require_contains`, `require_file_contains` and
+  `require_file_not_contains` are `function`s now, so the value travels through
+  a variable untouched. The Linux and macOS jobs were green only because their
+  paths carry no backslashes.
 
 ## [0.3.0] - 2026-11-23
 

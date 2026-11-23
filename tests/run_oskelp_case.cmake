@@ -62,31 +62,35 @@ macro(require_failure label expected)
   endif()
 endmacro()
 
-macro(require_contains label haystack needle)
+# A `function`, not a `macro`: a macro substitutes its arguments textually and
+# re-parses them, so a Windows path in the output (`D:\a\...`) reaches
+# `string(FIND)` as an escape sequence and aborts the script. A function passes
+# the value through a variable and leaves it intact.
+function(require_contains label haystack needle)
   string(FIND "${haystack}" "${needle}" position)
   if(position EQUAL -1)
     message(FATAL_ERROR
       "${label}: expected '${needle}' in:\n${haystack}")
   endif()
-endmacro()
+endfunction()
 
-macro(require_file_contains path needle)
+function(require_file_contains path needle)
   file(READ "${path}" contents)
   string(FIND "${contents}" "${needle}" position)
   if(position EQUAL -1)
     message(FATAL_ERROR
       "expected '${needle}' in ${path}:\n${contents}")
   endif()
-endmacro()
+endfunction()
 
-macro(require_file_not_contains path needle)
+function(require_file_not_contains path needle)
   file(READ "${path}" contents)
   string(FIND "${contents}" "${needle}" position)
   if(NOT position EQUAL -1)
     message(FATAL_ERROR
       "did not expect '${needle}' in ${path}:\n${contents}")
   endif()
-endmacro()
+endfunction()
 
 # --- 1. `new` creates the layout -------------------------------------------
 run_oskelp("${WORK_DIR}" new demo)
