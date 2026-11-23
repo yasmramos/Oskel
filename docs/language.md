@@ -2881,6 +2881,56 @@ used `std.os` operation by name; `std.sys` remains available there. Both
 modules are ordinary Oskel namespaces, so `import std.os.*;` binds the members
 directly and `import std.os as os;` renames the table.
 
+### 12.17 Bytes and binary codecs
+
+`std.bytes` treats a **byte** as an `int` in `0..255` and a **byte string** as
+an ordinary array of bytes. No new runtime type is introduced, so the
+collection helpers compose with it. Every public function validates its input
+and raises a runtime error on a value outside the byte range; `isValid` checks
+without raising.
+
+| Function | Description |
+| --- | --- |
+| `isValid(bytes)` | True when the value is an array of bytes. |
+| `fromString(s)` | UTF-8 bytes of a string. |
+| `toString(bytes)` | Decodes UTF-8, rejecting truncated, overlong, surrogate and out-of-range forms. |
+| `byteLength(s)` | Number of UTF-8 bytes a string occupies. |
+| `hexEncode(bytes)` / `hexDecode(text)` | Lowercase hexadecimal; decoding accepts either case. |
+| `base64Encode(bytes)` / `base64Decode(text)` | RFC 4648 standard Base64; decoding accepts padded and unpadded input. |
+| `base64UrlEncode(bytes)` / `base64UrlDecode(text)` | URL-safe alphabet (`-`/`_`), no padding on encode; decoding accepts optional padding. |
+| `readU8` / `readI8` | One unsigned / signed byte at an offset. |
+| `readU16LE` / `readU16BE`, `readI16LE` / `readI16BE` | Fixed-width 16-bit integers. |
+| `readU32LE` / `readU32BE`, `readI32LE` / `readI32BE` | Fixed-width 32-bit integers. |
+| `writeU8` / `writeI8` | Encodes one byte as an array. |
+| `writeU16LE` / `writeU16BE`, `writeI16LE` / `writeI16BE` | Encodes a 16-bit integer as two bytes. |
+| `writeU32LE` / `writeU32BE`, `writeI32LE` / `writeI32BE` | Encodes a 32-bit integer as four bytes. |
+| `concat`, `slice`, `reversed`, `repeat` | New arrays; never mutate the input. |
+| `indexOf`, `contains`, `startsWith`, `endsWith` | Sub-array search with `-1` for a missing index. |
+| `equals`, `compare` | Structural equality and lexicographic order (`-1`, `0`, `1`). |
+| `isAscii(bytes)` | True when every byte is below `0x80`. |
+
+```oskl
+import std.bytes;
+
+let payload = std.bytes.fromString("hé");
+print(payload);                       // [104, 195, 169]
+print(std.bytes.hexEncode(payload));  // "68c3a9"
+print(std.bytes.base64Encode(payload)); // "aMOp"
+
+let frame = std.bytes.concat(std.bytes.writeU16LE(0x1234), std.bytes.writeU32BE(7));
+print(std.bytes.readU16LE(frame, 0), std.bytes.readU32BE(frame, 2));
+```
+
+The fixed-width readers and writers use a **signed 64-bit `int`**. An unsigned
+32-bit value fits; a 64-bit unsigned value does not, so there is no `readU64`.
+A read outside the array, an odd hexadecimal length, a non-hexadecimal digit,
+an invalid Base64 character, a negative repeat count and a value outside the
+declared width are runtime errors.
+
+The module is pure Oskel over indexing, slicing, `len`, `ord`/`chr`, `str`,
+`type`, `panic`, `for ... in` and closures, so it behaves identically on the
+development VM, under `oskel build` and on WebAssembly.
+
 ---
 
 ## 13. Errors and diagnostics
