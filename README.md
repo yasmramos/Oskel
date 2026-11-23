@@ -91,6 +91,11 @@ cmake --build build-cmake
 ./build-cmake/oskel examples/hello.oskl
 ```
 
+The released SDK bundles SDL3 and Skia, so `std.ui` needs no separate install.
+A source build that wants the window backend can fetch the same pair with
+`python3 tools/prepare_ui_deps.py`; CMake then finds both through
+`CMAKE_PREFIX_PATH`.
+
 ### Manual build
 
 The sources split in three, and the directory a file lives in is its

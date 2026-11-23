@@ -9,6 +9,7 @@
 ;   stage\bin\oskelld.exe   the project's own linker
 ;   stage\bin\oskelp.exe    the project and package manager
 ;   stage\share\oskel\std\*.oskl
+;   stage\lib\oskel\ui\*        (bundled SDL3 and Skia shim)
 ; The installer reproduces that layout under the install directory, so the
 ; engine resolves `import std.math` through `..\share\oskel\std` relative to the
 ; executable, with no environment variable needed.
@@ -74,6 +75,7 @@ Source: "{#StageDir}\bin\oskelp.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "{#StageDir}\bin\bindgen.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "{#StageDir}\bin\oskelint.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "{#StageDir}\share\oskel\std\*"; DestDir: "{app}\share\oskel\std"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#StageDir}\lib\oskel\ui\*"; DestDir: "{app}\lib\oskel\ui"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 

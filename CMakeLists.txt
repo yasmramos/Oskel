@@ -254,16 +254,24 @@ endif()
 
 # --------------------------------------------------------------------------- Skia (optional)
 # `std/internal/skia.oskl` is the raster backend for `std.ui`. The checked-in
-# module needs no Skia to compile; building the C++ shim needs a Skia root with
-# headers and a built `libskia.a`/`libskia.so`.
+# module needs no Skia to compile; building the C++ shim needs Skia headers and
+# a built library.
 #
-# When both are present CMake builds `skia_shim` into `build/ui`, which is the
+# Two inputs are accepted, in this order:
+#
+#   1. an imported `unofficial::skia::skia` target from vcpkg (the release
+#      artifacts use the static vcpkg triplet, so the shim is self-contained);
+#   2. the older `OSKEL_SKIA_DIR` + `OSKEL_SKIA_LIB` pair for a hand-built Skia.
+#
+# When either is present CMake builds `skia_shim` into `build/ui`, which is the
 # directory `ui_runtime.cpp` searches while running from a checkout. The
 # installed engine finds the same file under `lib/oskel/ui`.
 set(OSKEL_SKIA_DIR "" CACHE PATH
     "Skia root with include/core/SkSurface.h (enables the UI backend)")
 set(OSKEL_SKIA_LIB "" CACHE FILEPATH
     "Path to libskia.a or libskia.so (enables the UI backend)")
+set(OSKEL_SKIA_TARGET "" CACHE STRING
+    "Imported Skia target, e.g. unofficial::skia::skia (enables the UI backend)")
 if(WIN32)
   # MSVC links system libraries by name; the POSIX `-l` spellings are invalid.
   set(OSKEL_SKIA_LIBS "" CACHE STRING
@@ -286,6 +294,22 @@ if(OSKEL_SKIA_DIR AND NOT OSKEL_SKIA_LIB)
       break()
     endif()
   endforeach()
+endif()
+if(NOT OSKEL_SKIA_TARGET AND NOT OSKEL_SKIA_DIR AND NOT OSKEL_SKIA_LIB)
+  find_package(unofficial-skia CONFIG QUIET)
+  if(TARGET unofficial::skia::skia)
+    set(OSKEL_SKIA_TARGET "unofficial::skia::skia")
+  endif()
+endif()
+set(OSKEL_SKIA_FOUND FALSE)
+if(OSKEL_SKIA_TARGET)
+  if(NOT TARGET "${OSKEL_SKIA_TARGET}")
+    message(FATAL_ERROR
+      "OSKEL_SKIA_TARGET '${OSKEL_SKIA_TARGET}' is not an imported target")
+  endif()
+  set(OSKEL_SKIA_FOUND TRUE)
+elseif(OSKEL_SKIA_DIR AND OSKEL_SKIA_LIB)
+  set(OSKEL_SKIA_FOUND TRUE)
 endif()
 
 # `oskelc`: the host compiler. Sources in, a native image out; it links the front
@@ -326,13 +350,15 @@ install(TARGETS bindgen RUNTIME DESTINATION bin)
 # Build the Skia bridge when a Skia root is available. The generated module
 # stays in the build tree; the checked-in `std/internal/skia.oskl` is the
 # module the compiler installs, and `cxxbind.generate` keeps the two identical.
-if(OSKEL_SKIA_DIR AND OSKEL_SKIA_LIB)
-  if(NOT EXISTS "${OSKEL_SKIA_DIR}/include/core/SkSurface.h")
-    message(FATAL_ERROR
-      "OSKEL_SKIA_DIR does not contain include/core/SkSurface.h: ${OSKEL_SKIA_DIR}")
-  endif()
-  if(NOT EXISTS "${OSKEL_SKIA_LIB}")
-    message(FATAL_ERROR "OSKEL_SKIA_LIB does not exist: ${OSKEL_SKIA_LIB}")
+if(OSKEL_SKIA_FOUND)
+  if(NOT OSKEL_SKIA_TARGET)
+    if(NOT EXISTS "${OSKEL_SKIA_DIR}/include/core/SkSurface.h")
+      message(FATAL_ERROR
+        "OSKEL_SKIA_DIR does not contain include/core/SkSurface.h: ${OSKEL_SKIA_DIR}")
+    endif()
+    if(NOT EXISTS "${OSKEL_SKIA_LIB}")
+      message(FATAL_ERROR "OSKEL_SKIA_LIB does not exist: ${OSKEL_SKIA_LIB}")
+    endif()
   endif()
 
   set(OSKEL_SKIA_GENERATED_DIR "${OSKEL_UI_BUILD_DIR}/generated")
@@ -354,22 +380,27 @@ if(OSKEL_SKIA_DIR AND OSKEL_SKIA_LIB)
   set_target_properties(skia_shim PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
   target_include_directories(skia_shim PRIVATE
     "${OSKEL_SKIA_GENERATED_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/bindings/skia"
-    "${OSKEL_SKIA_DIR}")
-  if(WIN32)
-    separate_arguments(OSKEL_SKIA_LINK_ARGS NATIVE_COMMAND "${OSKEL_SKIA_LIBS}")
+    "${CMAKE_CURRENT_SOURCE_DIR}/bindings/skia")
+  if(OSKEL_SKIA_TARGET)
+    target_link_libraries(skia_shim PRIVATE "${OSKEL_SKIA_TARGET}")
   else()
-    separate_arguments(OSKEL_SKIA_LINK_ARGS UNIX_COMMAND "${OSKEL_SKIA_LIBS}")
+    target_include_directories(skia_shim PRIVATE "${OSKEL_SKIA_DIR}")
+    if(WIN32)
+      separate_arguments(OSKEL_SKIA_LINK_ARGS NATIVE_COMMAND "${OSKEL_SKIA_LIBS}")
+    else()
+      separate_arguments(OSKEL_SKIA_LINK_ARGS UNIX_COMMAND "${OSKEL_SKIA_LIBS}")
+    endif()
+    target_link_libraries(skia_shim PRIVATE "${OSKEL_SKIA_LIB}" ${OSKEL_SKIA_LINK_ARGS})
   endif()
-  target_link_libraries(skia_shim PRIVATE "${OSKEL_SKIA_LIB}" ${OSKEL_SKIA_LINK_ARGS})
   if(APPLE)
     target_link_options(skia_shim PRIVATE "-Wl,-rpath,@loader_path")
   elseif(UNIX)
     target_link_options(skia_shim PRIVATE "-Wl,-rpath,$ORIGIN")
   endif()
-  if(UNIX AND CMAKE_BUILD_TYPE MATCHES "^(Release|MinSizeRel|RelWithDebInfo)$")
+  if(UNIX AND NOT APPLE AND CMAKE_BUILD_TYPE MATCHES "^(Release|MinSizeRel|RelWithDebInfo)$")
     # Static Skia carries its object debug information into the shared bridge;
-    # the shipped file is the machine code only.
+    # the shipped file is the machine code only. Apple's strip rejects a dylib
+    # whose static archive references symbols through an indirect symbol table.
     add_custom_command(TARGET skia_shim POST_BUILD
       COMMAND "${CMAKE_STRIP}" "$<TARGET_FILE:skia_shim>"
       VERBATIM)
@@ -615,12 +646,20 @@ if(BUILD_TESTING)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_cxxbind_case.cmake")
   endif()
 
-  if(OSKEL_SKIA_DIR AND OSKEL_SKIA_LIB AND
+  if(OSKEL_SKIA_FOUND AND
      CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
      CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
     set(OSKEL_TEST_SDL3_LIBRARY "")
     if(TARGET SDL3::SDL3)
       set(OSKEL_TEST_SDL3_LIBRARY "$<TARGET_FILE:SDL3::SDL3>")
+    endif()
+    set(OSKEL_SKIA_TEST_ARGS
+      "-DSKIA_DIR=${OSKEL_SKIA_DIR}"
+      "-DSKIA_LIB=${OSKEL_SKIA_LIB}"
+      "-DSKIA_LIBS=${OSKEL_SKIA_LIBS}")
+    if(TARGET skia_shim)
+      list(APPEND OSKEL_SKIA_TEST_ARGS
+        "-DSKIA_SHIM=$<TARGET_FILE:skia_shim>")
     endif()
     add_test(NAME cxxbind.skia
       COMMAND ${CMAKE_COMMAND}
@@ -629,9 +668,7 @@ if(BUILD_TESTING)
         "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
         "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
         "-DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/cxxbind-skia"
-        "-DSKIA_DIR=${OSKEL_SKIA_DIR}"
-        "-DSKIA_LIB=${OSKEL_SKIA_LIB}"
-        "-DSKIA_LIBS=${OSKEL_SKIA_LIBS}"
+        ${OSKEL_SKIA_TEST_ARGS}
         "-DSDL3_FOUND=${OSKEL_SDL3_FOUND}"
         "-DSDL3_LIBRARY=${OSKEL_TEST_SDL3_LIBRARY}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_skia_case.cmake")
@@ -765,6 +802,8 @@ if(BUILD_TESTING)
       "-DOSKEL_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
       "-DOSKEL_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
       "-DOSKEL_EXE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}"
+      "-DOSKEL_EXPECT_UI=${OSKEL_SKIA_FOUND}"
+      "-DOSKEL_UI_TEST=${CMAKE_CURRENT_SOURCE_DIR}/tests/cxxbind/skia_ui_test.oskl"
       "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/21_std_math.oskl"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_stdlib.cmake")
 

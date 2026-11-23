@@ -39,14 +39,23 @@ The complete example, with an event loop and an animation, is
 
 ## Requirements
 
-- The SDL3 development package (`libsdl3-dev` on Debian/Ubuntu,
-  `brew install sdl3` on macOS).
-- CMake finds SDL3 (`find_package(SDL3)`) and links the development engine
-  against `SDL3::SDL3`. `build.sh` probes `pkg-config --exists sdl3`. If the
-  library is absent, the engine still builds; only the `std.internal.sdl` runtime tests
-  are skipped (`OSKEL_ENABLE_SDL3=OFF` silences the status line).
-- The module itself is always installed; `import std.internal.sdl` type-checks
-  on every platform, with or without SDL3.
+The release SDK bundles a shared SDL3 under `lib/oskel/ui`; the engine loads it
+lazily when a program asks for an `SDL_*` symbol. A user does not install SDL3
+separately.
+
+A source build still needs an SDL3 development package (`libsdl3-dev` on
+Debian/Ubuntu, `brew install sdl3` on macOS), or the bundled dependency script:
+
+```sh
+python3 tools/prepare_ui_deps.py
+```
+
+CMake finds SDL3 (`find_package(SDL3)`) and either links a static `SDL3::SDL3`
+into the engine or copies the shared library beside it. If the library is
+absent, the engine still builds; only the `std.internal.sdl` runtime tests are
+skipped (`OSKEL_ENABLE_SDL3=OFF` silences the status line). The module itself is
+always installed; `import std.internal.sdl` type-checks on every platform, with
+or without SDL3.
 
 The development engine resolves `SDL_*` through `Platform::lookupSymbol`, which
 on Linux is `dlsym(RTLD_DEFAULT)`. That only sees a shared object the process
@@ -71,16 +80,19 @@ SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy oskel examples/sdl/window.oskl
 
 ## Native binaries (AOT)
 
-A native binary needs the hosted link mode, because SDL3 is a host library:
+A native binary needs the hosted link mode, because SDL3 is a host library.
+The compiler chooses it when it sees the SDL module import and adds the
+bundled SDL3 to the link:
 
 ```sh
-oskel build examples/sdl/window.oskl --mode hosted --link-lib SDL3 -o window
+oskel build examples/sdl/window.oskl -o window
 ./window
 ```
 
-`--link-lib SDL3` becomes `-lSDL3` in the host linker command. It is repeatable,
-it requires `--mode hosted` (the freestanding image has no linker), and the name
-is restricted to letters, digits, `_`, `+`, `-` and `.`. See
+`--link-lib SDL3` remains available for a custom library and becomes `-lSDL3`
+in the host linker command. It is repeatable, it requires `--mode hosted` (the
+freestanding image has no linker), and the name is restricted to letters,
+digits, `_`, `+`, `-` and `.`. See
 `docs/language.md` for the flag and `docs/BACKLOG.md` §7 for the FFI limits.
 The hosted link is available on Linux, Windows and macOS x86-64. The SDL3
 module is exercised on Linux; a target whose FFI surface the module needs (a

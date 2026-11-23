@@ -11,6 +11,7 @@
 #
 #   /usr/bin/oskel
 #   /usr/share/oskel/std/*.oskl
+#   /usr/lib/oskel/ui/*          (bundled SDL3 and Skia shim)
 #
 # `standardLibraryDir` looks for `../share/oskel/std` relative to the
 # executable, so `/usr/bin/oskel` resolves `/usr/share/oskel/std` with no
@@ -53,6 +54,10 @@ if [ ! -f "$stage/share/oskel/std/math.oskl" ]; then
   echo "package-linux: $stage/share/oskel/std/math.oskl not found" >&2
   exit 1
 fi
+if [ ! -d "$stage/lib/oskel/ui" ]; then
+  echo "package-linux: $stage/lib/oskel/ui not found; build with the bundled UI dependencies" >&2
+  exit 1
+fi
 
 # Debian versions may contain `-`, but it separates the upstream version from
 # the revision, so a pre-release tag (`0.1.0-rc1`) is rewritten with `~`, which
@@ -79,7 +84,8 @@ trap 'rm -rf "$work"' EXIT
 
 # ---------------------------------------------------------------------- .deb
 root="$work/deb"
-mkdir -p "$root/DEBIAN" "$root/usr/bin" "$root/usr/share/oskel"
+mkdir -p "$root/DEBIAN" "$root/usr/bin" "$root/usr/share/oskel" \
+  "$root/usr/lib/oskel"
 install -m 0755 "$stage/bin/oskel" "$root/usr/bin/oskel"
 install -m 0755 "$stage/bin/oskelc" "$root/usr/bin/oskelc"
 install -m 0755 "$stage/bin/oskelld" "$root/usr/bin/oskelld"
@@ -87,6 +93,7 @@ install -m 0755 "$stage/bin/oskelp" "$root/usr/bin/oskelp"
 install -m 0755 "$stage/bin/bindgen" "$root/usr/bin/bindgen"
 install -m 0755 "$stage/bin/oskelint" "$root/usr/bin/oskelint"
 cp -a "$stage/share/oskel/std" "$root/usr/share/oskel/std"
+cp -a "$stage/lib/oskel/ui" "$root/usr/lib/oskel/ui"
 
 installed_size="$(du -sk "$root" | cut -f1)"
 cat > "$root/DEBIAN/control" <<EOF
@@ -136,7 +143,8 @@ The Oskel development engine and its standard library. Oskel is a dynamic,
 general-purpose language with a Lua-style bytecode architecture.
 
 %install
-mkdir -p %{buildroot}/usr/bin %{buildroot}/usr/share/oskel
+mkdir -p %{buildroot}/usr/bin %{buildroot}/usr/share/oskel \
+  %{buildroot}/usr/lib/oskel
 install -m 0755 "$stage/bin/oskel" %{buildroot}/usr/bin/oskel
 install -m 0755 "$stage/bin/oskelc" %{buildroot}/usr/bin/oskelc
 install -m 0755 "$stage/bin/oskelld" %{buildroot}/usr/bin/oskelld
@@ -144,6 +152,7 @@ install -m 0755 "$stage/bin/oskelp" %{buildroot}/usr/bin/oskelp
 install -m 0755 "$stage/bin/bindgen" %{buildroot}/usr/bin/bindgen
 install -m 0755 "$stage/bin/oskelint" %{buildroot}/usr/bin/oskelint
 cp -a "$stage/share/oskel/std" %{buildroot}/usr/share/oskel/std
+cp -a "$stage/lib/oskel/ui" %{buildroot}/usr/lib/oskel/ui
 
 %files
 /usr/bin/oskel
@@ -153,6 +162,7 @@ cp -a "$stage/share/oskel/std" %{buildroot}/usr/share/oskel/std
 /usr/bin/bindgen
 /usr/bin/oskelint
 /usr/share/oskel/std
+/usr/lib/oskel/ui
 
 %changelog
 * Thu Jan 01 2026 Oskel contributors <noreply@example.com> - $rpm_version-$rpm_release

@@ -10,71 +10,80 @@
 #   SKIA_DIR    Skia root (contains include/core/SkSurface.h)
 #   SKIA_LIB    path to libskia.a or libskia.so
 #   SKIA_LIBS   extra link arguments (default: -lpthread -ldl -lm)
+#   SKIA_SHIM   optional prebuilt shim; when set, the script uses the CMake
+#               target instead of compiling a second one
 #   SDL3_FOUND  whether the build found SDL3 (enables the window half)
 #   SDL3_LIBRARY path to the SDL3 shared library, copied into BUILD_DIR so the
 #               engine's lazy UI loader finds it
 
-if(NOT EXISTS "${SKIA_DIR}/include/core/SkSurface.h")
-  message(FATAL_ERROR "SKIA_DIR does not contain include/core/SkSurface.h: ${SKIA_DIR}")
-endif()
-if(NOT EXISTS "${SKIA_LIB}")
-  message(FATAL_ERROR "SKIA_LIB does not exist: ${SKIA_LIB}")
-endif()
-
 file(MAKE_DIRECTORY "${BUILD_DIR}")
 
-execute_process(
-  COMMAND "${BINDGEN_EXE}" --cxx "${SOURCE_DIR}/bindings/skia/skia.oskelbind"
-          --shim "${BUILD_DIR}" -o "${BUILD_DIR}/skia.oskl"
-  RESULT_VARIABLE generate_exit
-  OUTPUT_VARIABLE generate_stdout
-  ERROR_VARIABLE generate_stderr
-)
-if(NOT generate_exit EQUAL 0)
-  message(FATAL_ERROR
-    "bindgen --cxx skia exited ${generate_exit}\n--- stdout ---\n${generate_stdout}\n"
-    "--- stderr ---\n${generate_stderr}")
-endif()
+if(SKIA_SHIM)
+  if(NOT EXISTS "${SKIA_SHIM}")
+    message(FATAL_ERROR "SKIA_SHIM does not exist: ${SKIA_SHIM}")
+  endif()
+  file(COPY "${SKIA_SHIM}" DESTINATION "${BUILD_DIR}")
+else()
+  if(NOT EXISTS "${SKIA_DIR}/include/core/SkSurface.h")
+    message(FATAL_ERROR "SKIA_DIR does not contain include/core/SkSurface.h: ${SKIA_DIR}")
+  endif()
+  if(NOT EXISTS "${SKIA_LIB}")
+    message(FATAL_ERROR "SKIA_LIB does not exist: ${SKIA_LIB}")
+  endif()
 
-execute_process(
-  COMMAND "${OSKEL_EXE}" -c "${BUILD_DIR}/skia.oskl"
-  RESULT_VARIABLE check_exit
-  OUTPUT_VARIABLE check_stdout
-  ERROR_VARIABLE check_stderr
-)
-if(NOT check_exit EQUAL 0)
-  message(FATAL_ERROR
-    "oskel -c rejected the generated Skia module (exit ${check_exit})\n"
-    "--- stderr ---\n${check_stderr}")
-endif()
+  execute_process(
+    COMMAND "${BINDGEN_EXE}" --cxx "${SOURCE_DIR}/bindings/skia/skia.oskelbind"
+            --shim "${BUILD_DIR}" -o "${BUILD_DIR}/skia.oskl"
+    RESULT_VARIABLE generate_exit
+    OUTPUT_VARIABLE generate_stdout
+    ERROR_VARIABLE generate_stderr
+  )
+  if(NOT generate_exit EQUAL 0)
+    message(FATAL_ERROR
+      "bindgen --cxx skia exited ${generate_exit}\n--- stdout ---\n${generate_stdout}\n"
+      "--- stderr ---\n${generate_stderr}")
+  endif()
 
-# The bridge module is checked in under std/internal, so the descriptor and
-# the committed module cannot drift. Only the generated header line differs
-# (it names the descriptor path).
-file(READ "${SOURCE_DIR}/std/internal/skia.oskl" committed_module)
-file(READ "${BUILD_DIR}/skia.oskl" generated_module)
-string(REGEX REPLACE "^// Generated[^\n]*\n" "" committed_body "${committed_module}")
-string(REGEX REPLACE "^// Generated[^\n]*\n" "" generated_body "${generated_module}")
-if(NOT committed_body STREQUAL generated_body)
-  message(FATAL_ERROR
-    "std/internal/skia.oskl is out of date with bindings/skia/skia.oskelbind.\n"
-    "Run bindgen --cxx bindings/skia/skia.oskelbind -o std/internal/skia.oskl.")
-endif()
+  execute_process(
+    COMMAND "${OSKEL_EXE}" -c "${BUILD_DIR}/skia.oskl"
+    RESULT_VARIABLE check_exit
+    OUTPUT_VARIABLE check_stdout
+    ERROR_VARIABLE check_stderr
+  )
+  if(NOT check_exit EQUAL 0)
+    message(FATAL_ERROR
+      "oskel -c rejected the generated Skia module (exit ${check_exit})\n"
+      "--- stderr ---\n${check_stderr}")
+  endif()
 
-separate_arguments(skia_libs UNIX_COMMAND "${SKIA_LIBS}")
-execute_process(
-  COMMAND "${CXX_COMPILER}" -std=c++17 -shared -fPIC
-          "-I${SKIA_DIR}" "-I${SOURCE_DIR}/bindings/skia" "-I${BUILD_DIR}"
-          -o "${BUILD_DIR}/libskia_shim.so"
-          "${BUILD_DIR}/skia_shim.cpp" "${SKIA_LIB}" ${skia_libs}
-  RESULT_VARIABLE compile_exit
-  OUTPUT_VARIABLE compile_stdout
-  ERROR_VARIABLE compile_stderr
-)
-if(NOT compile_exit EQUAL 0)
-  message(FATAL_ERROR
-    "the host C++ compiler rejected the Skia shim (exit ${compile_exit})\n"
-    "--- stdout ---\n${compile_stdout}\n--- stderr ---\n${compile_stderr}")
+  # The bridge module is checked in under std/internal, so the descriptor and
+  # the committed module cannot drift. Only the generated header line differs
+  # (it names the descriptor path).
+  file(READ "${SOURCE_DIR}/std/internal/skia.oskl" committed_module)
+  file(READ "${BUILD_DIR}/skia.oskl" generated_module)
+  string(REGEX REPLACE "^// Generated[^\n]*\n" "" committed_body "${committed_module}")
+  string(REGEX REPLACE "^// Generated[^\n]*\n" "" generated_body "${generated_module}")
+  if(NOT committed_body STREQUAL generated_body)
+    message(FATAL_ERROR
+      "std/internal/skia.oskl is out of date with bindings/skia/skia.oskelbind.\n"
+      "Run bindgen --cxx bindings/skia/skia.oskelbind -o std/internal/skia.oskl.")
+  endif()
+
+  separate_arguments(skia_libs UNIX_COMMAND "${SKIA_LIBS}")
+  execute_process(
+    COMMAND "${CXX_COMPILER}" -std=c++17 -shared -fPIC
+            "-I${SKIA_DIR}" "-I${SOURCE_DIR}/bindings/skia" "-I${BUILD_DIR}"
+            -o "${BUILD_DIR}/libskia_shim.so"
+            "${BUILD_DIR}/skia_shim.cpp" "${SKIA_LIB}" ${skia_libs}
+    RESULT_VARIABLE compile_exit
+    OUTPUT_VARIABLE compile_stdout
+    ERROR_VARIABLE compile_stderr
+  )
+  if(NOT compile_exit EQUAL 0)
+    message(FATAL_ERROR
+      "the host C++ compiler rejected the Skia shim (exit ${compile_exit})\n"
+      "--- stdout ---\n${compile_stdout}\n--- stderr ---\n${compile_stderr}")
+  endif()
 endif()
 
 file(COPY "${SOURCE_DIR}/tests/cxxbind/skia_test.oskl" DESTINATION "${BUILD_DIR}")
@@ -85,14 +94,18 @@ file(COPY "${SOURCE_DIR}/tests/cxxbind/skia_test.oskl" DESTINATION "${BUILD_DIR}
 if(SDL3_FOUND AND SDL3_LIBRARY AND EXISTS "${SDL3_LIBRARY}")
   file(COPY "${SDL3_LIBRARY}" DESTINATION "${BUILD_DIR}")
   get_filename_component(sdl3_name "${SDL3_LIBRARY}" NAME)
-  file(REMOVE "${BUILD_DIR}/libSDL3.so.0" "${BUILD_DIR}/libSDL3.so")
-  file(CREATE_LINK "${sdl3_name}" "${BUILD_DIR}/libSDL3.so.0" SYMBOLIC)
-  file(CREATE_LINK "libSDL3.so.0" "${BUILD_DIR}/libSDL3.so" SYMBOLIC)
+  if(NOT sdl3_name STREQUAL "libSDL3.so.0")
+    file(CREATE_LINK "${sdl3_name}" "${BUILD_DIR}/libSDL3.so.0" SYMBOLIC)
+  endif()
+  if(NOT sdl3_name STREQUAL "libSDL3.so")
+    file(CREATE_LINK "libSDL3.so.0" "${BUILD_DIR}/libSDL3.so" SYMBOLIC)
+  endif()
 endif()
 
-# The test must prove the zero-configuration path: `OSKEL_UI_LIBDIR` points at
-# this directory, but no `LD_PRELOAD`, `LD_LIBRARY_PATH` or `--link-lib` is set.
-set(skia_env "OSKEL_UI_LIBDIR=${BUILD_DIR}")
+# The test runs from a scratch directory, so `OSKEL_UI_LIBDIR` names it; no
+# `LD_PRELOAD`, `LD_LIBRARY_PATH` or `--link-lib` is set. The build tree may be
+# outside the source tree, so name the standard library explicitly.
+set(skia_env "OSKEL_UI_LIBDIR=${BUILD_DIR}" "OSKEL_STDLIB=${SOURCE_DIR}/std")
 execute_process(
   COMMAND ldd "${OSKEL_EXE}"
   OUTPUT_VARIABLE oskel_ldd

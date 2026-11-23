@@ -87,6 +87,13 @@ it as a caveat:
 - `oskel build` prints lowering errors (unsupported builtins, unlowered
   opcodes) and exits 65 without writing a binary; it never emits a
   mis-compiled one.
+- The release SDK bundles the UI runtime. `tools/prepare_ui_deps.py` builds a
+  shared SDL3 and a static Skia with the pinned vcpkg checkout and exports
+  `CMAKE_PREFIX_PATH`; CMake links the static Skia into `libskia_shim`, and
+  every package installs the pair under `lib/oskel/ui`. A user never installs
+  SDL3 or Skia. `install_stdlib` runs the real shim from the installed tree, so
+  a package that drops `lib/oskel/ui` fails the suite; do not make that test
+  optional when `OSKEL_SKIA_FOUND` is true.
 - A host binding (`native fn`, `extern "C"`) and `var x = x;` both compile to
   `GETGLOBAL N; SETGLOBAL N` at the top level (or `GETGLOBAL N; SETLOCAL` inside
   a function). The AOT backend has no host. An *unused* declaration is harmless
