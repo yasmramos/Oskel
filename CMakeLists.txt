@@ -485,6 +485,15 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_link_windows.oskl"
         "-DOSKEL_EXPECTED_OUTPUT=windows own linker"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_windows.cmake")
+    # PHASE 10.3b.3: `_start` obtains argc/argv with `__getmainargs`; the
+    # quoted argument with a space survives as one element.
+    add_test(NAME oskel.build_hosted_own_windows_args
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_link_windows_args.oskl"
+        "-DOSKEL_EXPECTED_OUTPUT=2 <one><two words>"
+        "-DOSKEL_ARGS=one;two words"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_windows.cmake")
   endif()
   oskel_add_cpp_test(pe_test)
   oskel_add_cpp_test(lower_test)

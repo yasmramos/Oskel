@@ -137,8 +137,13 @@ may change between minor versions.
   COFF objects into a new COFF object: defined symbols at their merged
   offsets, uniquely renamed local symbols, section symbols with aux records,
   and section-symbol relocations retargeted to the output section symbol with
-  the addend adjusted. The result links with `oskelld`/`--linker own`. MSVC
-  `.lib` archives and `args()` remain 10.3b.
+  the addend adjusted. The result links with `oskelld`/`--linker own`.
+- **`args()` on the Windows own linker (PHASE 10.3b.3).** The generated
+  `_start` calls the UCRT's `__getmainargs`, then hands `(argc, argv)` to a
+  `main` wrapper that moves the Microsoft x64 `rcx`/`rdx` pair into the chunk's
+  `rdi`/`rsi`. The hosted `cl` path shares the wrapper, so `args()` matches the
+  VM under both linkers; an argument containing a space survives as one
+  element. The freestanding Windows image still rejects `args()` by name.
 
 - **`std.io` adds in-memory text streams built on classes.** `StringReader`
   walks a string by code point (`readLine`, `read`, `readChar`, `readToken`,

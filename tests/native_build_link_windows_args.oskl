@@ -1,0 +1,9 @@
+// PHASE 10.3b.3: the own-linker `_start` reads the process command line with
+// `__getmainargs`, so `args()` matches the VM, including a quoted argument
+// with a space. The harness passes `one` and `two words`.
+var rest = args();
+var text = "";
+for (a in rest) {
+  text = text + "<" + a + ">";
+}
+print(len(rest), text);
