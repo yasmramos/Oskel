@@ -1,0 +1,17 @@
+// Fixture for the `.oskc` round trip (tests/oskc_parity.cmake).
+//
+// Small on purpose: it is the first thing that fails if the image loses a field
+// every program uses (a function, a jump, a constant, a global). The larger
+// round trip lives in `native_build_oskc_full.oskl`.
+
+fn square(n) {
+  return n * n;
+}
+
+var total = 0;
+var i = 0;
+while (i < 5) {
+  total = total + square(i);
+  i = i + 1;
+}
+print("total =", total);

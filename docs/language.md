@@ -3238,16 +3238,15 @@ working and the two cannot drift:
 oskel build app.oskl -o app                # the same binary as `oskelc`
 ```
 
-**Planned (a later release)**:
+**Bytecode and packaging**:
 
 ```sh
-oskelc <file.oskl> -c          compiles to bytecode (.oskc)
-oskelc -pkg ... -o app.oskpkg  packages a .oskpkg
+oskelc <file.oskl> -c -o <file.oskc>   compiles to bytecode
+oskelc <file.oskc> -o app              lowers the bytecode to a binary
 ```
 
-There is no `.oskc` serializer in the tree yet, so `-c` and `-pkg` are refused
-by name with exit 64 rather than read as a typo. They are future work, not
-features of this release.
+`-pkg` is still refused by name with exit 64 rather than read as a typo: it is
+future work. `-c` is implemented; the `.oskc` format is specified in §19.1.
 
 ---
 
@@ -3500,14 +3499,14 @@ helper (`_helper`) stays reachable from the class methods but is never exported.
 
 ## 19. File extensions
 
-Only `.oskl` (source) and the native binary exist in 0.1.0. The rest of the
-table is the target naming, not something the compiler writes today: there is no
-bytecode serializer, no package reader and no native-library loader yet.
+Only `.oskl` (source), `.oskc` (bytecode) and the native binary exist today. The
+rest of the table is the target naming, not something the compiler writes yet:
+there is no package reader and no native-library loader.
 
 | Extension | What it is | Java analog | Status |
 |-----------|------------|-------------|--------|
 | `.oskl` | Source code | `.java` | ✅ |
-| `.oskc` | Bytecode | `.class` | planned |
+| `.oskc` | Bytecode | `.class` | ✅ |
 | `.oskpkg` | Package (ZIP) | `.jar` | planned |
 | `.osklib` | Native library | `.dll` / `.so` / `.dylib` | planned |
 | `.oskdoc` | Documentation | `.javadoc` | planned |
@@ -3525,7 +3524,86 @@ myapp.oskpkg
 └── README.md
 ```
 
-The `.oskc` bytecode layout, its checksum and the Level 1/Level 2 verification
-steps are specified in `DEVELOPMENT.md` §8; all of it is planned, since nothing
-serializes a `Bytecode` to disk yet — the compiler keeps it in memory and the
-AOT backend lowers it directly.
+The `.oskc` bytecode layout is documented in §19.1. Its Level 1/Level 2
+verification steps are still specified in `DEVELOPMENT.md` §8; the loader
+implements Level 1 (structure, indices, jump targets) and the format is versioned
+so a later level can be added without ambiguity.
+
+### 19.1 The `.oskc` image
+
+A `.oskc` file is a compiled program: the same `Bytecode` tree the compiler
+builds in memory, written to disk. It is the input to two front ends — the VM
+runs it, and the AOT backend lowers it — so it carries everything either needs
+and nothing that belongs to a particular host.
+
+```sh
+oskelc -c app.oskl -o app.oskc     # compile source to an image
+oskel app.oskc                     # run the image on the VM
+oskelc app.oskc -o app             # lower the image to a native binary
+oskel build app.oskc -o app        # the same, through the alias
+```
+
+**Header** (20 bytes, all integers little-endian, fixed width):
+
+| Offset | Size | Field |
+|--------|------|-------|
+| 0 | 4 | Magic `OSKC` |
+| 4 | 4 | Format version (`kOskcVersion`, currently 1) |
+| 8 | 4 | Reserved flags, must be 0 |
+| 12 | 4 | FFI capability bits the chunk needs (see below) |
+| 16 | 4 | Requirement bits (see below) |
+
+The version is checked on load: an unknown version is refused with exit 65
+rather than misread. Adding an opcode, a constant kind or a field changes the
+layout and therefore the version.
+
+**Body**: the root proto, recursively. Each proto writes its name (a `u32`
+length and its bytes), its frame counts, its variadic flag, its instruction
+stream, its constant pool, its child protos, its upvalue descriptors, its
+`extern "C"` declarations and its compiler bookkeeping (`nativeFns`,
+`nativeUses`, `usedMethods`). Every instruction records its source line and
+column, so a runtime error in a program loaded from an image still names the
+place in the original source. The source text itself is not stored; the name is,
+which is what the diagnostics print.
+
+A constant is tagged by kind — `nil`, `bool`, `int`, `float`, `double`, `str` —
+and the writer refuses a value `LOADK` could not rebuild (an array, a map), so a
+file never contains a constant the loader cannot restore.
+
+**FFI capability bits**: bit 0 structs by value, bit 1 class-MEMORY structs,
+bit 2 C variadics, bit 3 callbacks. These record what the chunk *needs*, derived
+from its `extern "C"` signatures, not the superset the compiler supports. A
+program with no FFI writes 0 and loads on every target. The loader compares the
+bits against the destination's own capabilities — the engine's for a VM run,
+`targetAbiCapabilities` for a build — and refuses a file that needs a capability
+the destination lacks, naming it:
+
+```text
+oskelc: app.oskc: the bytecode needs FFI support this target lacks: structs by value
+```
+
+That is what makes an image portable in a meaningful sense: a chunk built on
+Linux that marshals a struct by value is refused by the Windows build, because
+the Microsoft x64 thunk does not carry a struct — instead of being lowered into
+code that would marshal the wrong registers.
+
+**Requirement bits**: bit 0 needs SDL3, bit 1 needs the Skia shim. They record
+what the chunk needs from the UI backend, which the chunk alone cannot say: the
+Skia bindings use the ambiguous `oskel_` prefix, so scanning `externs` would miss
+them. The writer derives the bits from the modules the compiler loaded, so a
+program that imports `std.ui.window` records both and a plain one records 0.
+The AOT path reads them back and links the same libraries the source path would,
+then runs the same code; a program whose runtime is missing fails with the same
+message and exit 65 on either path instead of producing a binary that cannot
+open a window.
+
+**Validation on load.** The loader is a verifier, not a `memcpy`: it rejects a
+bad magic, an unknown version, non-zero reserved flags, a truncated image, a
+trailing byte, an unknown opcode, a register outside the frame, a constant index
+past the pool, a jump target past the end of the code and a nesting depth over
+`kOskcMaxDepth`. Every one is a `BytecodeIoError` naming the field, never a
+crash — a `.oskc` is untrusted input, since it can be produced by any tool or
+hand-edited.
+
+**Determinism**: writing the same chunk twice produces the same bytes, so an
+image can be compared or cached by content (`tests/bytecode_io_test.cpp`).
