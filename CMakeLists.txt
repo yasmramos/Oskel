@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(oskel VERSION 0.2.0 LANGUAGES CXX)
+project(oskel VERSION 0.3.0 LANGUAGES CXX)
 
 # `include/version.h` is the version the binary prints; CMake's project version
 # names the packages and the release tag. They must agree, so the configure step
@@ -484,6 +484,15 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_link_windows.oskl"
         "-DOSKEL_EXPECTED_OUTPUT=windows own linker"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_windows.cmake")
+    # PHASE 10.3b.3: `_start` obtains argc/argv with `__getmainargs`; the
+    # quoted argument with a space survives as one element.
+    add_test(NAME oskel.build_hosted_own_windows_args
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_link_windows_args.oskl"
+        "-DOSKEL_EXPECTED_OUTPUT=2 <one><two words>"
+        "-DOSKEL_ARGS=one;two words"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_windows.cmake")
   endif()
   oskel_add_cpp_test(pe_test)
@@ -1603,6 +1612,16 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_bytes.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `std.decimal` is a pure-Oskel BigDecimal over arrays and strings, so its
+    # arbitrary-precision arithmetic must build to a native binary and agree
+    # with the VM.
+    add_test(NAME oskel.build_binary_decimal
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_decimal"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_decimal.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `std.io` is plain Oskel over strings, and its readers and writers are
     # ordinary classes (maps with closures), so it must build to a native binary
     # and agree with the VM. The fixture also pins that an instance travels
@@ -2027,6 +2046,18 @@ if(BUILD_TESTING)
         "-DOSKEL_TEST_NAME=oskel.build_wasm_bytes"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_bytes.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `std.decimal` is pure Oskel over arrays and strings, so its
+    # arbitrary-precision arithmetic must also match the VM in WebAssembly.
+    add_test(NAME oskel.build_wasm_decimal
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_decimal"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_decimal.oskl"
         "-DNODE_EXE=${OSKEL_NODE_EXE}"
         "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"

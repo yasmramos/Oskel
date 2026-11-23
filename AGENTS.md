@@ -628,8 +628,15 @@ it as a caveat:
   trailing `/` is stripped; a short import object (`0x00 0xFF`) is rejected
   with a dedicated message. The archive test builds a `.lib` with a long member
   name and links the member through both `linkHostedExecutable` and `-r`.
-- `args()` and `.pdata`/`.xdata`/TLS remain 10.3b; the macOS Mach-O container
-  is 10.3d.
+- `args()` is handled on Windows (PHASE 10.3b.3). The generated `_start`
+  imports `__getmainargs` from `msvcrt.dll` (the UCRT does not export it),
+  builds the CRT's `argc`/`argv`, and calls `main`
+  with them in `rcx`/`rdx`; the Windows hosted runtime exports a two-instruction
+  `main` wrapper (`mov rdi, rcx; mov rsi, rdx; jmp chunk`) so the chunk's
+  `rdi`/`rsi` entry reads the same vector under `--linker cl` and the own
+  linker. `oskel.build_hosted_own_windows_args` runs `args()` with an argument
+  containing a space.
+- `.pdata`/`.xdata`/TLS remain 10.3b; the macOS Mach-O container is 10.3d.
 - The multi-object e2e helper is an `OBJECT` library compiled with
   `-fno-sanitize=all` when the build is sanitized: the object is linked into a
   plain emitted binary that does not carry the ASan runtime. The archive test
@@ -726,7 +733,12 @@ it as a caveat:
   declares a local named `index` (the byte offset) shadows it, so `return
   index` returns the WASM local number: `loadByte`/`storeByte` shipped that way
   and their table slots pointed at function 5, which trapped on first use. Name
-  a byte offset `at`, never `index`.
+  a byte offset `at`, never `index`. The bounds follow the VM, not the address:
+  `buffer` rejects a size above `0xFFFFFFFF` before the `i32` narrowing, `alloc`
+  reports `out of memory` on a wrapped cursor or a failed `memory.grow`, `cstr`
+  skips `memory.copy` for a zero length (a `void *` token can point past linear
+  memory), and `ptrToInt` returns a token only for `kPtrKindVoid`, because the
+  VM returns `0` for a buffer or a cstring.
 - A construct the backend cannot lower yet must fail cleanly, never emit a
   mis-compiled module: an unbound builtin is seeded as a trapping closure, and
   a used `extern "C"`/`native fn` symbol with no stub is a build error (exit

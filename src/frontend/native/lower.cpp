@@ -1479,10 +1479,12 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   //     `entry.open`/`readFd`/`writeFd`/`close`, which every prelude with a file
   //     system binds. A bare-metal image has none, so there the three are
   //     rejected by name below rather than emitted against an unbound label.
-  //   * `args()` reads the `(argc, argv)` the prelude hands `main`. The
-  //     freestanding Linux `_start` and the hosted C runtime both pass one; the
-  //     Windows loader calls the entry with no arguments and bare metal has no
-  //     command line, so `args` stays unseeded there.
+  //   * `args()` reads the `(argc, argv)` the prelude hands `main`. The hosted
+  //     runtime passes one (the Windows `main` wrapper moves the CRT's rcx/rdx
+  //     to the chunk's rdi/rsi, and the own linker's `_start` obtains it with
+  //     `__getmainargs`); freestanding Linux passes one. The freestanding
+  //     Windows image and bare metal have no command line, so `args` stays
+  //     unseeded there.
   const bool hasFiles = target.os != Os::Freestanding || mode == LinkMode::Hosted;
   const bool hasArgv = mode == LinkMode::Hosted ||
                        (target.os == Os::Linux && target.arch == Arch::X86_64);
@@ -1554,13 +1556,13 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
         "lowering: memSize() is only available on the bare-metal target "
         "(x86_64-freestanding-sysv); it reads the multiboot memory map");
   }
-  // `args()` needs the `(argc, argv)` the process entry hands `main`, which the
-  // Windows loader and a bare-metal boot do not provide.
+  // `args()` needs the `(argc, argv)` the process entry hands `main`, which a
+  // freestanding Windows image and a bare-metal boot do not provide.
   if (!hasArgv && unassignedRead("args")) {
     throw LoweringError(
         "lowering: args() needs a process argument vector, which this target "
-        "does not provide (Windows calls the entry with no arguments and bare "
-        "metal has no command line)");
+        "does not provide (the freestanding Windows image has no command line "
+        "and bare metal has none)");
   }
   // `input()` reads the keyboard through `entry.read`, which only the bare-metal
   // prelude binds.

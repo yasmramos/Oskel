@@ -25,7 +25,7 @@ if(NOT EXISTS "${output}")
 endif()
 
 execute_process(
-  COMMAND "${output}"
+  COMMAND "${output}" ${OSKEL_ARGS}
   RESULT_VARIABLE run_result
   OUTPUT_VARIABLE run_output
   ERROR_VARIABLE run_error)

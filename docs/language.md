@@ -2942,6 +2942,78 @@ The module is pure Oskel over indexing, slicing, `len`, `ord`/`chr`, `str`,
 `type`, `panic`, `for ... in` and closures, so it behaves identically on the
 development VM, under `oskel build` and on WebAssembly.
 
+### 12.18 Exact decimals
+
+`std.decimal` provides `BigDecimal`, an arbitrary-precision decimal in the
+spirit of Java's `java.math.BigDecimal`. It is a **class**, not a primitive: a
+value is a Java-style object with an arbitrary-precision unscaled integer and a
+32-bit scale, so `type(value)` reports `"map"`, exactly as every Oskel class
+does. Use its methods; `print(value)` prints the object map, so print
+`value.toPlainString()` when the text matters.
+
+```oskl
+import std.decimal;
+
+let price = decimal("19.99");
+let tax = decimal("0.21");
+print(price.multiply(tax).toPlainString());  // "4.1979"
+print(price.add(tax).toPlainString());       // "20.20"
+```
+
+| Import | Binds |
+| --- | --- |
+| `import std.decimal;` | The facade (`std.decimal.decimal`, `std.decimal.BigDecimal`). |
+| `import std.decimal.*;` | `decimal` and `BigDecimal` directly. |
+| `import std.decimal.BigDecimal;` | The class module, as `BigDecimal(...)`. |
+
+The value is `unscaled * 10^-scale`. The unscaled value has arbitrary precision
+and the scale is an `int`; a negative scale represents trailing zeros
+(`decimal("1E+3")` has scale `-3` and prints `"1000"`). Addition, subtraction
+and multiplication are exact; the result keeps the Java scales (`1.20 * 2.0`
+is `2.400`).
+
+| Member | Meaning |
+| --- | --- |
+| `add`, `subtract`, `multiply` | Exact arithmetic. |
+| `divide(divisor)` | Exact quotient; raises when the expansion does not terminate. |
+| `divide(divisor, scale, mode)` | Quotient rounded to `scale` with a Java rounding mode. |
+| `divide(divisor, mode)` | Uses this value's scale and the given mode. |
+| `divideToIntegralValue`, `remainder` | Truncating integral quotient with Java's preferred scale, and exact remainder. |
+| `setScale(scale)` / `setScale(scale, mode)` | Rescales; the one-argument form raises if digits would be lost. |
+| `round(scale, mode)` | Alias for the two-argument `setScale`. |
+| `compareTo`, `equals` | Numeric comparison; `equals` also compares the scale. |
+| `scale`, `precision`, `signum` | Decimal scale, significant digits and sign. |
+| `negate`, `abs`, `pow`, `stripTrailingZeros` | Derived values. |
+| `toPlainString`, `toString` | Exact text; `toString` uses Java's scientific form for a negative adjusted exponent or a negative scale. |
+| `intValue`, `doubleValue` | Truncating integer and nearest binary64 value. |
+
+Rounding modes are the Java names: `UP`, `DOWN`, `CEILING`, `FLOOR`,
+`HALF_UP`, `HALF_DOWN`, `HALF_EVEN` and `UNNECESSARY`. `UNNECESSARY` raises
+when a digit would be discarded. The default division/setScale forms raise on
+a non-terminating expansion or on discarded digits, matching Java's
+`divide(BigDecimal)` and `setScale(int)`.
+
+```oskl
+let third = decimal("1").divide(decimal("3"), 5, "HALF_EVEN");
+print(third.toPlainString());                 // "0.33333"
+
+let cents = decimal("1.235").setScale(2, "HALF_UP");
+print(cents.toPlainString());                 // "1.24"
+
+print(decimal("1.0").compareTo(decimal("1.00"))); // 0
+print(decimal("1.0").equals(decimal("1.00")));    // false
+```
+
+`BigDecimal("...")` is the exact constructor and is the recommended form.
+`BigDecimal(int)` is exact; `BigDecimal(double)` uses the shortest
+round-tripping decimal text, the same idea as `BigDecimal.valueOf(double)`,
+rather than the exact binary expansion of `new BigDecimal(double)`. There is
+no decimal literal suffix: use `decimal("19.99")` or `BigDecimal("19.99")`.
+
+A `BigDecimal` has no C representation, so it is rejected at the FFI boundary.
+The module is pure Oskel over arrays, strings, loops and closures, so the VM,
+`oskel build` and WebAssembly produce the same exact strings.
+
 ---
 
 ## 13. Errors and diagnostics
