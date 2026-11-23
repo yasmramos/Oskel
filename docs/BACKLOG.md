@@ -1168,16 +1168,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    recovers, `error()` works and structural equality matches the VM.
    **Done**: `tests/native_build_error.oskl` covers `error()`, `isError`,
    `type`, `.message`/`.code`, equality, `print`/`repr`, interpolation and
-   `catch` recovering a returned error; `tests/native_build_pcall.oskl` covers
-   a success, a caught failure, a nested catch and a closure; and
-   `tests/native_build_runtime_error_messages.oskl` compares the exact text on
-   both engines. All three are built and run against the VM by
-   `tests/build_binary.cmake`.
-3. **[P1] [done]** Add an AOT wrong-arity test. **Done**:
-   `tests/native_build_builtin_arity.oskl` (`oskel.build_binary_builtin_arity`)
-   drives every fixed-arity builtin and a user function (through an indirect
-   `any` call, because a direct call is checked at compile time) through
-   `pcall` and prints the message, so a wrong count cannot diverge silently.
+   `catch` recovering a returned error, and it is built and run against the VM
+   by `tests/build_binary.cmake`. A wrong arity is pinned by two fixtures
+   between them: `tests/native_build_builtin_arity.oskl` drives every
+   fixed-arity builtin through `pcall`, and `tests/native_build_arity.oskl`
+   calls a function *value* with too few and too many arguments (a direct call
+   is a compile-time error, so the runtime guard is only reachable through a
+   value), printing `two() expects 2 arguments, got 1` and the rest byte for
+   byte identical to the VM (`oskel.build_binary_arity`).
 4. **[P1] [done]** Add `map`/`filter`/`reduce` tests with a VM closure callback.
    **Done**: `tests/native_build_array_callbacks.oskl` covers `map`, `filter`,
    `each`, `find`, `any` and `all` with lambdas and named functions, and

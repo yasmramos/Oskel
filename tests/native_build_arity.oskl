@@ -1,0 +1,41 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): calling a function
+// value with the wrong number of arguments (BACKLOG §12 item 3). A direct call
+// is checked at compile time, so the runtime check is only reachable through a
+// value -- `var f = two; f(1)`. The VM raises `two() expects 2 arguments, got
+// 1`, and `pcall` turns that into a value, so the message is compared rather
+// than only the exit code. Both directions matter: too few arguments and too
+// many, and the matching arity must still run.
+
+fn two(a: int, b: int): int {
+  return a + b;
+}
+
+fn three(a: int, b: int, c: int): int {
+  return a + b + c;
+}
+
+fn zero(): string {
+  return "none";
+}
+
+var f = two;
+print(pcall(f, 1));
+print(pcall(f, 1, 2));
+print(pcall(f, 1, 2, 3));
+
+var g = three;
+print(pcall(g, 1, 2));
+print(pcall(g, 1, 2, 3));
+print(pcall(g, 1, 2, 3, 4));
+
+var h = zero;
+print(pcall(h));
+print(pcall(h, 1));
+
+// A wrong arity inside a call that itself sits in a `pcall` must recover the
+// same way, so the check is not tied to a top-level call site.
+fn callOne(f: fn(int, int): int): map {
+  return pcall(f, 9);
+}
+
+print(callOne(two));

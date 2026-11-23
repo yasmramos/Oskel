@@ -1673,6 +1673,17 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_call_checks.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # A wrong arity through a function value (BACKLOG §12 item 3). A direct
+    # call is rejected at compile time, so the runtime guard is only reachable
+    # through a value; `pcall` turns its message into a comparable value, which
+    # pins the wording on both engines instead of only the exit code.
+    add_test(NAME oskel.build_binary_arity
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_arity"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_arity.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `std.json` is plain Oskel over the portable primitive surface, so it must
     # build to a native binary and agree with the VM. The fixture is the guard
     # that keeps the module off the collection/string methods and
