@@ -754,6 +754,7 @@ require_contains("oskelp test every workspace member" "${run_out}"
                  "2 passed")
 
 run_oskelp("${WORK_DIR}/ws" tree)
+string(REPLACE "\\" "/" run_out "${run_out}")
 require_success("oskelp tree in a workspace")
 require_contains("oskelp tree in a workspace" "${run_out}" "workspace ")
 require_contains("oskelp tree in a workspace" "${run_out}" "alpha v0.1.0")
