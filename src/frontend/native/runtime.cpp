@@ -1251,14 +1251,20 @@ void emitArith(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   // The VM names the operator, so the selector picks the prefix; the operands
   // are untouched here (the number-flag test only writes rax).
   {
+    // The selectors in declaration order, so the message list stays parallel to
+    // `AotArithOp` rather than to its numeric values.
+    constexpr AotArithOp kOps[] = {AotArithOp::Add, AotArithOp::Sub, AotArithOp::Mul,
+                                   AotArithOp::Div, AotArithOp::Mod};
+    constexpr std::size_t kOpCount = sizeof kOps / sizeof kOps[0];
+    static_assert(kOpCount == 5);
     std::vector<CodeGen::Label> named;
-    for (std::size_t i = 0; i < opMessages.size(); ++i) {
+    for (std::size_t i = 0; i < kOpCount && i < opMessages.size(); ++i) {
       named.push_back(cg.newLabel());
-      cg.cmpImm32(R8, static_cast<std::int32_t>(i + 1));
+      cg.cmpImm32(R8, static_cast<std::int32_t>(kOps[i]));
       cg.jcc(Jcc::Eq, named.back());
     }
     emitFailCall(cg, fail, msgTypes);  // an unknown selector keeps the bare text
-    for (std::size_t i = 0; i < opMessages.size(); ++i) {
+    for (std::size_t i = 0; i < named.size(); ++i) {
       cg.bind(named[i]);
       emitTwoTypeFail(cg, *opMessages[i], separator, Rdi, Rsi, Rdx, Rcx);
     }
