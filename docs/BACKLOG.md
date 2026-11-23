@@ -53,11 +53,16 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    frame). The parser accepts a bare-name label and the compiler
    (`Compiler::checkCaseLabelName`) rejects a `var`, an unknown name or a
    captured binding, so the label stays a fixed value. No new opcode.
-4. **[P1]** `parseImport` does not reject `from` being a user variable, so
-   `import { x } from from;` is ambiguous.
-5. **[P1]** `parseProgram` pre-scans `structNames_` without requiring `struct`
-   to be followed by `{`; a malformed struct is skipped in the pre-scan and
-   fails later with a less clear message.
+4. **[P1] [done]** `parseImport` did not reject `from` being a user variable,
+   so `import { x } from from;` was ambiguous. **Done**: `parseImport` rejects
+   `from` both as an imported name and as the module path of a selective
+   import, while `let from = 7;` outside an import stays an ordinary binding
+   (`tests/errors/import_from_ambiguous.oskl`, `tests/13_modules.oskl`).
+5. **[P1] [done]** `parseProgram` pre-scanned `structNames_` without requiring
+   `struct` to be followed by `{`, so a malformed declaration could make
+   `Name { ... }` parse as a literal elsewhere. **Done**: the pre-scan requires
+   the `{` for `struct`, `class` and `enum`, and the declaration itself reports
+   the missing brace (`tests/errors/struct_missing_brace.oskl`).
 6. **[P2]** `warn` in `foldConstant` does a linear scan of `warnings_` per
    warning (O(n²) with many overflowing consts). Use a set.
 7. **[P2]** The unary overflow warning uses `expr.line/col` while the binary
@@ -241,17 +246,28 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `isError`, `err.message`/`err.code`, structural equality, `print`/`repr` and
    string interpolation all agree with the VM. `tests/native_build_error.oskl`
    pins the parity (built and run by `tests/build_binary.cmake`).
-6. **[P1]** VM/AOT divergence in `map.get`: the VM uses `unordered_map` (O(1)),
-   AOT uses a linear scan (O(n)), so a loop over a large map is O(n²).
+6. **[P1] [done]** VM/AOT divergence in `map.get`: the VM uses
+   `unordered_map` (O(1)) while AOT used a linear scan (O(n)), so a loop over a
+   large map was O(n²). **Done**: the AOT map keeps a lazy open-addressing
+   index over its insertion-ordered entry array (FNV-1a over the key, load
+   factor 7/10, grown and rebuilt on demand). It is built on the first lookup
+   of a map with eight or more entries, so small maps keep the linear scan's
+   cache behaviour. `set`, `delete` and `merge` maintain it; `delete` refills
+   the existing table in place instead of allocating, because a delete loop
+   otherwise exhausted the arena. `tests/native_build_map_hash.oskl` is the
+   2000-entry stress fixture (`oskel.build_binary_map_hash`), and
+   `tests/native_build_map_methods.oskl` pins the method surface.
 7. **[P1]** VM/AOT divergence in string iteration: AOT allocates one
    `AotString` per character; a 1M-char string means 1M arena allocations.
 8. **[P1] [done]** `emitContains` for arrays uses `AotCompareOp::Eq`, which
    used to be identity for arrays/maps; now that equality is structural, `in`
    over an array of arrays matches the VM (fixed with item 2).
-9. **[P1] [done]** `emitMemberGet` for a string binds the twelve pure methods
-   (PHASE 7c.3i, item 1). `split`/`lines`/`chars`/`replace`/`replaceFirst` and
-   the callback forms stay open: they return a collection or call back into the
-   program.
+9. **[P1] [done]** `emitMemberGet` for a string binds every string method the
+   VM exposes (`upper`, `lower`, `trim`, `trimStart`, `trimEnd`, `split`,
+   `lines`, `chars`, `replace`, `replaceFirst`, `startsWith`, `endsWith`,
+   `contains`, `indexOf`, `substr`, `repeat`, `reversed`, `padStart`,
+   `padEnd`). `tests/native_build_string_methods.oskl` and
+   `oskel.build_wasm_string_methods` pin the AOT and WASM paths against the VM.
 10. **[P1]** `emitIterNext` for `str` allocates a string per character — same
     as item 7.
 11. ~~**[P1]** `collectGlobals` does not detect name-resolution cycles: a
@@ -294,15 +310,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     the extra slot at the site.
 18. **[P3]** `emitArith` handles `INT64_MIN / -1` on the int path but not on the
     float path; consistent semantics, inconsistent code.
-19. **[P0]** The AOT backend has no FFI: an `extern "C"` symbol (or a `native
-    fn`) is a host binding with no host, so `oskel build` cannot lower it. The
-    read now fails with a dedicated message (`extern "C" symbol 'X' cannot be
+19. **[P0] [done]** The AOT backend had no FFI: an `extern "C"` symbol (or a
+    `native fn`) is a host binding with no host, so `oskel build` could not
+    lower it. The read used to fail with a dedicated message (`extern "C" symbol 'X' cannot be
     resolved by the AOT backend (PHASE 7f)`) instead of the generic
-    unassigned-global one, but the lowering itself is PHASE 7f work: a design
-    decision (curated syscall stubs, an object + external link, or a dynamic
-    ELF) is still open, since the generated binary is freestanding today
-    (`ldd` reports "not a dynamic executable"). `tests/build_error.cmake` pins
-    the current behaviour. **Partial (7f.1)**: an *unused* declaration no longer
+    unassigned-global one. The design (curated stubs, plus a hosted object and
+    an external link) is settled and implemented; the freestanding image stays
+    self-contained (`ldd` reports "not a dynamic executable"), and a used
+    symbol it cannot stub fails with exit 65. `tests/build_error.cmake` pins
+    the rejection. **7f.1**: an *unused* declaration no longer
     fails the build (the lowerer counts reads against declarations), and `sqrt`
     is provided by a curated stub that matches the VM bit for bit. **Partial
     (7c.5b.4)**: `std.math`'s libm surface (`exp`, `log`, `pow`, `sin`, `cos`,
@@ -323,9 +339,9 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     through libc (`write`/`exit`/`malloc`) instead of a raw syscall, and
     `oskel build --mode hosted` links the object against libc with the host C
     compiler (`$CC`, default `cc`, `-no-pie -lm`). The freestanding output is
-    byte-identical to before. General `extern "C"` *marshalling* (a per-signature
-    thunk) is still open (7f.5): the lowering still rejects an `extern "C"` read.
-    **Partial (7f.5)**: a *scalar* `extern "C"` signature (integer/bool/float/
+    byte-identical to before. General `extern "C"` *marshalling* (a
+    per-signature thunk) followed in 7f.5.
+    **7f.5**: a *scalar* `extern "C"` signature (integer/bool/float/
     double parameter or return) now resolves in the hosted mode — the lowerer
     narrows it to an `AotExternThunk` (`ffi::ParamClass`/`ffi::ReturnClass` per
     slot) and `emitExternThunk` marshals it and calls the symbol through a
@@ -338,9 +354,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     exactly what `intToPtr` builds, so `ptrToInt` reads it back and a later call
     passes the real address. A NULL address becomes `nil`, the hosted engine's
     own rule (`wrapPointerValue` returns an empty `Value` before it looks at the
-    type name), so `type()` reports `"nil"` and not `"ptr"`. A struct and a
-    callback still reject the Windows build; a C variadic is lowered on all
-    hosted targets (7f.10).
+    type name), so `type()` reports `"nil"` and not `"ptr"`. **Done (7f.7-7f.10)**:
+    a struct by value (register and MEMORY classes) and a C callback are
+    implemented on the System V targets; the Windows hosted backend supports
+    scalars, `cstring`, `ptr` and a C variadic, and rejects a struct or callback
+    with a dedicated message. `tests/native_build_extern_*.oskl`, the hosted
+    fixtures and the own-linker parity tests pin the matrix. The remaining
+    Windows shapes are the platform limitation recorded in §7 item 20, not an
+    open FFI gap.
 20. **[P0] [done]** VM/AOT divergence in string iteration: `emitIterNext`'s
     `str` branch built the character but fell through into the `range` block,
     which overwrote `rax:rdx` with the cursor index, so `for c in "abc"`
@@ -797,7 +818,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 19. ~~**[P3]** `installExterns` recurses over children; make it iterative for
     deep module trees.~~ **Done**: `VM::installExterns` now walks the module
     tree with an explicit stack.
-20. **[P0] Decided: FFI under `oskel build` is hosted-only.** A program that
+20. **[P0] [done] Decided: FFI under `oskel build` is hosted-only.** A program that
     uses `extern "C"` compiles with `oskel build --mode hosted` (Linux x86-64,
     Windows x86-64 and macOS x86-64), which links it against the host C library
     so the symbol resolves to the real C function. The freestanding mode — the
@@ -818,11 +839,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 8. GC (`src/core/gc.cpp`)
 
-1. **[P1]** `gcCollect` does not run at `SETTABLE`/`GETTABLE` safe points, only
-   at `CLOSURE` and `NEWTABLE`; a loop that only mutates tables with cycles
-   does not collect until the next `NEWTABLE`. Add the table safe points.
-2. **[P1]** `gcCollect` is not reentrant; the `collecting` flag silently
-   ignores a nested call. Document it and assert.
+1. **[P1] [done]** `gcCollect` did not run at `SETTABLE`/`GETTABLE` safe
+   points, only at `CLOSURE` and `NEWTABLE`, so a loop that only mutated
+   self-referencing tables never collected. **Done**: both table opcodes call
+   `gcCollectIfNeeded()` before reading their operands; the operands are still
+   in registers, so the collector sees them as roots.
+2. **[P1] [done]** `gcCollect` is not reentrant; the `collecting` flag silently
+   ignored a nested call. **Done**: the flag still short-circuits a release
+   build, and a debug build asserts `gcCollect is not reentrant` so a nested
+   path is found instead of hidden.
 3. **[P1]** `GcNode::track()` does not validate that the object is not already
    tracked (`link()` does).
 4. **[P1]** `gcCollect` does not handle objects created during collection: a
@@ -908,16 +933,20 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     distribution) so it matches the AOT backend bit for bit.
 ## 13. Ops (`src/runtime/ops.cpp`)
 
-1. **[P1]** `unary` `Minus` on `INT64_MIN` wraps to `INT64_MIN` while the
-   compiler's const folding warns; the runtime does not warn. Make the runtime
-   consistent with the compile-time policy.
-2. **[P1]** `binary` `StarStar` with an int base and a negative exponent falls
-   to `std::pow` and yields a double, not an int. The type rule is now
-   documented and implemented in both engines (PHASE 7c.1d.2): rank is the
-   widest operand's, so a negative int exponent yields a double. Reconsider
-   whether it should stay an int (the rule is settled, the choice is not).
-3. **[P1]** `binary` `Shl`/`Shr` reject `b < 0 || b > 63`; verify the same rule
-   in the AOT path.
+1. **[P1] [done]** `unary` `Minus` on `INT64_MIN` wraps to `INT64_MIN` while
+   the compiler's const folding warns; the runtime does not warn. **Decided**:
+   the language spec says integer arithmetic wraps, and the warning is a
+   compile-time diagnostic for constant expressions only; the runtime has no
+   warning channel, and both engines return the same bit pattern. Pinned by
+   `tests/native_build_compound_ops.oskl`.
+2. **[P1] [done]** `binary` `StarStar` with an int base and a negative exponent
+   falls to `std::pow` and yields a double, not an int. **Decided**: the rank
+   is the widest operand's, so a negative int exponent yields a double in both
+   engines. Pinned by `tests/native_build_compound_ops.oskl`.
+3. **[P1] [done]** `binary` `Shl`/`Shr` reject `b < 0 || b > 63`; the AOT
+   `emitShift` checks the same range before emitting `shl`/`sar`. Pinned by
+   `tests/native_build_compound_ops.oskl`, which drives `-1` and `64` through
+   `pcall` on both engines.
 4. **[P2]** `indexGet` for a map with a missing key returns `nil` (JS-style)
    while Python raises; decide the language rule and keep VM/AOT in step.
 5. **[P2]** `indexSet` for an array with `index == length` pushes (Lua-style);
@@ -926,25 +955,33 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `nil`; verify the AOT path matches.
 7. **[P2]** `binary` `Plus` on two arrays concatenates; done in PHASE 7c.3b
    (`oskel_array_concat`); the VM is the reference and the AOT path matches it.
-8. **[P3]** `lessThan` for bool (`!left && right`) is correct but subtle; add a
-   test.
+8. **[P3] [done]** `lessThan` for bool (`!left && right`) is correct but
+   subtle. **Done**: `tests/native_build_compound_ops.oskl` pins `false < true`,
+   `true < false`, `false <= false` and `true >= false` on both engines.
 
 ---
 
 ## 14. dtoa (`src/frontend/native/dtoa.cpp`)
 
-1. **[P1]** No NaN/Inf tests; the special path in `emitFormatDouble` is
-   uncovered.
-2. **[P1]** No explicit subnormal tests; the `fSub` path
-   (`(2^52 + frac52) >> (926 - be)`) is delicate.
-3. **[P1]** No stability test across invocations; if the scratch is not cleaned
-   the second call can return garbage.
+1. **[P1] [done]** No NaN/Inf tests; the special path in `emitFormatDouble` is
+   uncovered. **Done**: `tests/native_build_double_format.oskl` prints `inf`,
+   `-inf` and `nan` for both `double` and `float`, and the fixture is registered
+   for AOT and WASM.
+2. **[P1] [done]** No explicit subnormal tests; the `fSub` path
+   (`(2^52 + frac52) >> (926 - be)`) is delicate. **Done**: the fixture prints
+   `5e-324` and `2.2250738585072014e-308` twice.
+3. **[P1] [done]** No stability test across invocations; if the scratch is not
+   cleaned the second call can return garbage. **Done**: the fixture repeats
+   the largest and smallest values at the end.
 4. **[P2]** `emitBnShl` uses `r9` as scratch in `moveLoop` and reloads it before
    `remLoop`; fragile, assert the invariant.
-5. **[P2]** The fixed-vs-scientific rule in `emitFormatDouble` is undocumented
-   (`1e6 -> 1e+06`, `1e4 -> 10000`, `1e-4 -> 1e-04`); document the rule.
-6. **[P3]** `emitFormatDouble` returns `-0` for `-0.0`; matches
-   `std::to_chars`, but add a test.
+5. **[P2] [done]** The fixed-vs-scientific rule in `emitFormatDouble` is
+   undocumented (`1e6 -> 1e+06`, `1e4 -> 10000`, `1e-4 -> 1e-04`).
+   **Done**: documented at the function (shorter spelling wins, fixed on a
+   tie) and pinned by `tests/native_build_double_format.oskl`.
+6. **[P3] [done]** `emitFormatDouble` returns `-0` for `-0.0`; matches
+   `std::to_chars`. **Done**: `tests/native_build_double_format.oskl` prints
+   `-0.0` and the VM/AOT/WASM outputs agree.
 7. **[P3]** `emitGenerate` is large and complex; needs exhaustive tests.
 
 ---
@@ -962,12 +999,21 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 16. ELF and PE emitters (`src/frontend/native/elf.cpp`, `src/frontend/native/pe.cpp`)
 
-1. **[P1]** `buildStaticElf` never receives `rodata` (always `{}`); either use
-   it or drop the parameter.
-2. **[P1]** `buildStaticElf` does not set `p_memsz` correctly for `.rodata` when
-   its size is not a page multiple; Linux rounds up today, but fix it.
-3. **[P1]** `buildStaticElf` error paths (`text.empty()`, `entryOffset` out of
-   range) throw `std::runtime_error` but have no tests.
+1. **[P1] [done]** `buildStaticElf` never received `rodata` (always `{}`);
+   either use it or drop the parameter. **Done**: the parameter is used, and
+   `tests/elf_test.cpp` builds an image with a five-byte `.rodata`, checks its
+   `PT_LOAD` (address `0x600000`, `PF_R`, page-aligned file offset) and compares
+   every byte.
+2. **[P1] [done]** `buildStaticElf` did not set `p_memsz` for `.rodata` when its
+   size is not a page multiple. **Verified**: `p_memsz` is the data size, which
+   is the ELF contract for a read-only file-backed segment; the loader
+   zero-fills the tail of the last page, and no segment follows `.rodata`.
+   `tests/elf_test.cpp` asserts `p_memsz == p_filesz == 5` for a five-byte
+   section.
+3. **[P1] [done]** `buildStaticElf` error paths (`text.empty()`, `entryOffset`
+   out of range) throw `std::runtime_error` but had no tests. **Done**:
+   `tests/elf_test.cpp` asserts both messages, and also that `e_phnum` is 1
+   without `.rodata` (the second header used to stay a zeroed `PT_NULL`).
 4. **[P2]** `buildStaticPe` ignores `rdata`; either use it or drop it.
 5. **[P3]** `writeProgramHeader` hardcodes `p_align = 0x1000`; make it a
    parameter for other page sizes.
@@ -977,12 +1023,20 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 17. Arena (`src/frontend/native/arena.cpp`)
 
-1. **[P1]** `Arena::allocate` returns null for `alignment == 0` or a
-   non-power-of-two alignment; callers must know. Return an explicit error.
-2. **[P2]** `Arena::allocate` with `size == 0` consumes one byte; decide and
-   document.
-3. **[P2]** `Arena` has no `reset()` that keeps the block (`PlatformFreestanding`
-   does); add one for symmetry.
+1. **[P1] [done]** `Arena::allocate` returns null for `alignment == 0` or a
+   non-power-of-two alignment; callers must know. **Decided**: `nullptr` is the
+   error signal by design, because this header compiles into a freestanding
+   runtime with no libstdc++ to throw from; the contract is documented in the
+   header and `tests/arena_test.cpp` pins an invalid alignment, a null block
+   and an exhausted region.
+2. **[P2] [done]** `Arena::allocate` with `size == 0` consumes one byte;
+   **decided**: a zero-size allocation still consumes one aligned slot so two
+   live allocations never share an address (the runtime relies on distinct
+   pointers for identity). Documented in the header and pinned by
+   `tests/arena_test.cpp`.
+3. **[P2] [done]** `Arena` has no `reset()` that keeps the block
+   (`PlatformFreestanding` does); add one for symmetry. **Done**: `reset()` is
+   present and `tests/arena_test.cpp` checks that it reclaims the region.
 
 ---
 
@@ -993,8 +1047,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `Sleep`, ...) failed at run time. The search now walks the process image,
    `kernel32.dll` and the C runtime in turn; the executable was already covered
    by `GetModuleHandleA(nullptr)`. Covered by `tests/54_ffi_win32.oskl`.
-2. **[P1]** `PlatformPosix::lookupSymbol` on POSIX relies on `dlsym(RTLD_DEFAULT)`,
-   which needs `-rdynamic` for the executable's own symbols; make it work.
+2. **[P1] [done]** `PlatformPosix::lookupSymbol` on POSIX relies on
+   `dlsym(RTLD_DEFAULT)`, which needs the executable's symbols in its dynamic
+   symbol table. **Done**: `oskel` is built with `ENABLE_EXPORTS` on POSIX
+   (`-rdynamic` on ELF), and `platform_lookup_test` now defines a C function in
+   the test executable and resolves it through the same path on Linux and
+   macOS (the Windows branch keeps the loaded-DLL case).
 3. **[P2]** `PlatformFreestanding::alloc` does not validate `alignment == 0` or
    non-power-of-two (the `Arena` caller does).
 4. **[P2]** `PlatformFreestanding::open` and `PlatformPosix::open` hardcode mode
@@ -1025,22 +1083,37 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    script is the remaining work; `tests/native_build_control_flow.oskl`
    (registered as `oskel.build_binary_control_flow`) closes the `switch`/
    `defer`/`struct` hole the earlier fixtures left.
-2. **[P0]** Add an AOT test that `try`/`catch` catches an error, `pcall`
+2. **[P0] [done]** Add an AOT test that `try`/`catch` catches an error, `pcall`
    recovers, `error()` works and structural equality matches the VM.
-   **Partial**: `tests/native_build_error.oskl` covers `error()`, `isError`,
+   **Done**: `tests/native_build_error.oskl` covers `error()`, `isError`,
    `type`, `.message`/`.code`, equality, `print`/`repr`, interpolation and
-   `catch` recovering a returned error, and it is built and run against the VM
-   by `tests/build_binary.cmake`. `pcall` is still unimplemented in AOT
-   (backlog §6.4).
-3. **[P1]** Add an AOT wrong-arity test.
-4. **[P1]** Add `map`/`filter`/`reduce` tests with a VM closure callback.
+   `catch` recovering a returned error; `tests/native_build_pcall.oskl` covers
+   a success, a caught failure, a nested catch and a closure; and
+   `tests/native_build_runtime_error_messages.oskl` compares the exact text on
+   both engines. All three are built and run against the VM by
+   `tests/build_binary.cmake`.
+3. **[P1] [done]** Add an AOT wrong-arity test. **Done**:
+   `tests/native_build_builtin_arity.oskl` (`oskel.build_binary_builtin_arity`)
+   drives every fixed-arity builtin and a user function (through an indirect
+   `any` call, because a direct call is checked at compile time) through
+   `pcall` and prints the message, so a wrong count cannot diverge silently.
+4. **[P1] [done]** Add `map`/`filter`/`reduce` tests with a VM closure callback.
+   **Done**: `tests/native_build_array_callbacks.oskl` covers `map`, `filter`,
+   `each`, `find`, `any` and `all` with lambdas and named functions, and
+   `tests/native_build_array_folds.oskl` covers `reduce`, `sum` and `join`.
+   Both are registered for AOT and WASM and compared with the VM.
 5. **[P1] [done]** Add an `ITER`-over-a-non-iterable test.
    `tests/errors/for_in_not_iterable.oskl` pins that `for x in 5` is a runtime
    error naming the type (`cannot iterate over a value of type 'int'`), and
    `testIterValueFormRejectsNonMap` in `tests/vm_test.cpp` covers the key/value
    form over an array, a string and a range.
-6. **[P1]** Add dtoa NaN/Inf, explicit subnormal and cross-invocation stability
-   tests.
+6. **[P1] [done]** Add dtoa NaN/Inf, explicit subnormal and cross-invocation
+   stability tests. **Done**: `tests/native_build_double_format.oskl` now
+   prints `inf`, `-inf` and `nan` for both `double` and `float`, repeats the
+   subnormal and scientific extremes to catch leaked scratch state, and is
+   registered for AOT (`oskel.build_binary_double_format`) as well as WASM.
+   The WASM `parseDoubleStr` accepts the same non-finite spellings, so the
+   shared fixture passes on all three engines.
 7. **[P1]** Add an `OSKEL_GC_STRESS` test run.
 8. **[P1]** Add `lower_test.cpp` cases for `RETURN` in the root chunk and for a
    `JMP` to exactly `size`.
