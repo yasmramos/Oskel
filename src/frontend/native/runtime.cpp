@@ -1667,7 +1667,17 @@ void emitCompare(CodeGen& cg, CodeGen::Label label, const DataBlob& message,
   epilogue(cg);
 
   cg.bind(badCompare);
+  // The VM lowers `a > b` to `lessThan(b, a)` and `a <= b` to `!lessThan(b, a)`,
+  // so its message quotes those two operators' operands reversed. Match it:
+  // `error.message` is observable.
+  CodeGen::Label badReversed = cg.newLabel();
+  cg.cmpImm32(R8, static_cast<std::int32_t>(AotCompareOp::Gt));
+  cg.jcc(Jcc::Eq, badReversed);
+  cg.cmpImm32(R8, static_cast<std::int32_t>(AotCompareOp::Le));
+  cg.jcc(Jcc::Eq, badReversed);
   emitTwoTypeFail(cg, message, *gMsgText.textWith, Rdi, Rsi, Rdx, Rcx);
+  cg.bind(badReversed);
+  emitTwoTypeFail(cg, message, *gMsgText.textWith, Rdx, Rcx, Rdi, Rsi);
 
   // --- internal subroutine: rax = (a == b) ---
   // Not reached by fall-through: every branch above ends in `ret` or a call to
