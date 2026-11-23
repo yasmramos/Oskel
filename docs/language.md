@@ -306,6 +306,40 @@ print(x);      // 1
 
 Redeclaring a name in the same block replaces the previous definition.
 
+**Builtins are globals.** A builtin is not a keyword and lives in no separate
+namespace: `print`, `len`, `str` and the rest are globals the engine installs
+before the program runs, each holding a native function. They therefore follow
+the rule above — a declaration with a builtin's name replaces it for the rest of
+the scope:
+
+```oskel
+var len = 3;
+print(len);      // 3, not the builtin
+
+var print = 5;
+print("hi");     // runtime error: cannot call a value of type 'int'
+```
+
+The failure is the same one any non-function callee produces, raised at the
+point of use rather than at the declaration: the language has no way to tell
+`var print = 5;` apart from an ordinary redeclaration, so it does not special-case
+the name. This matches the dynamic languages the language is modelled on (Python,
+Lua and JavaScript all accept `len = 5` and fail only on the call). A compiler
+warning is deliberately *not* emitted: the standard library itself re-exports
+builtins this way, and `double`, `int` and `type` are natural variable names. A
+lint rule is the right place for that check, not the compiler.
+
+**Re-exporting a builtin.** Because a declaration's initializer is evaluated
+before the new binding exists, a builtin can be re-exported under its own name.
+This is how `std.sys` surfaces `time`, `clock`, `arch`, `platform` and `exit`:
+
+```oskel
+let time = time;   // reads the builtin, then binds the name to it
+```
+
+The same idiom works for a value (`var print = print;`), which keeps the builtin
+reachable after a later reassignment.
+
 ### 4.3 Assignment
 
 Assignment looks the variable up in the current scope and, if it does not exist, in the parent scopes. It does not create new variables:
