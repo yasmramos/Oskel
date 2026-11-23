@@ -341,6 +341,19 @@ it as a caveat:
   the fact of failing (PHASE 7c.5b.6). Other dynamic tails — a type name, an
   index or a callback-return field name — still keep only their fixed prefix
   (BACKLOG §6 item 25).
+- A *direct* call to a user function is checked at compile time — arity and
+  argument types against the annotations — by `Compiler::checkUserCall`, using
+  the parameter list `functionParams_` records at the declaration. It mirrors
+  `functionReturnTypes_`: a shadowing binding, a `native fn` of the same name, a
+  module boundary and `clearSession` all clear or save it, and **a reassignment
+  erases it** (`f = (x, y) => ...;`), because a function is a first-class value
+  and the recorded signature then describes a binding that no longer holds it.
+  `checkArgumentAssignable` is the one place a string argument is allowed
+  against a `cstring` parameter (the string stays alive for the call), shared
+  with `checkNativeCall` so the two cannot drift. An indirect call (`let g = f;
+  g()`) is still checked at run time, which is why the VM's arity guard and its
+  tests stay: those tests must reach it through a value of unknown type
+  (`let g = f; g()`), never through a direct `f()`, which no longer compiles.
 - `random`/`seed` are AOT-backed (PHASE 7g): `mt19937_64` is emitted as machine
   code, so a native binary reproduces the VM's stream after the same `seed(n)`.
   Three rules keep it correct, and each was a real bug first: only `rbx` and

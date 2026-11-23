@@ -97,14 +97,16 @@ print(reported(noArgsSin));
 print(reported(noArgsExp));
 
 // A user function names itself and its declared arity; a variadic one says
-// "or more" for the fixed part.
+// "or more" for the fixed part. The compiler rejects a direct call with the
+// wrong count, so the run-time guard is reached through an indirect one: the
+// callee is a value of unknown type (`any`), exactly like the VM.
 fn two(a: int64, b: int64): int64 { return a + b; }
 fn none(): int64 { return 0; }
 fn atLeast(a: int64, rest...) { return a; }
-fn callTwo0(): any { return two(); }
-fn callTwo3(): any { return two(1, 2, 3); }
-fn callNone1(): any { return none(1); }
-fn callAtLeast0(): any { return atLeast(); }
+fn callTwo0(): any { let t: any = two; return t(); }
+fn callTwo3(): any { let t: any = two; return t(1, 2, 3); }
+fn callNone1(): any { let n: any = none; return n(1); }
+fn callAtLeast0(): any { let a: any = atLeast; return a(); }
 print(reported(callTwo0));
 print(reported(callTwo3));
 print(reported(callNone1));
