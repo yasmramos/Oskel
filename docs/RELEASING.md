@@ -111,7 +111,8 @@ are correct.
   ```sh
   tar -xzf oskel-linux-x64.tar.gz -C /tmp/oskel-check
   /tmp/oskel-check/bin/oskel --version
-  /tmp/oskel-check/bin/oskel -e 'print("ok")'
+  # `-e` takes a statement, so the trailing `;` is required.
+  /tmp/oskel-check/bin/oskel -e 'print("ok");'
   # the compiler ships beside the engine and must emit a working binary
   /tmp/oskel-check/bin/oskelc --version
   printf 'print("ok");\n' > /tmp/hello.oskl
