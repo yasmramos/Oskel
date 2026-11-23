@@ -1,0 +1,36 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): the call-site checks
+// are compile-time metadata, so a program that passes them must produce the
+// same bytecode on both engines and the same output.
+//
+// This guards the promise that the new arity/argument-type checks are erased:
+// they reject a bad call before a binary is written, and never change what a
+// good call compiles to. `oskel build` compares this output with the VM's.
+fn typed(a: int, b: string): string { return b; }
+fn unannotated(x) { return x; }
+fn loose(x: any) { return x; }
+fn unionParam(x: int | string) { return x; }
+fn nullableParam(x: int?) { return x; }
+fn variadic(first: int, rest...) { return first + len(rest); }
+fn callbackParam(f: fn(int): int) { return f(10); }
+fn noParams() { return 7; }
+
+print("typed", typed(1, "ok"));
+print("unannotated", unannotated("text"));
+print("loose", loose(3));
+print("union", unionParam(4), unionParam("five"));
+print("nullable", nullableParam(nil), nullableParam(6));
+print("variadic", variadic(1), variadic(1, 2, 3));
+print("callback", callbackParam(x => x + 1));
+print("noparams", noParams());
+
+// Widening: an int argument fits a float/double parameter.
+fn takesDouble(x: double): double { return x; }
+print("widening", takesDouble(2));
+
+// A call through a value of unknown type skips the compile-time check and is
+// resolved by the run-time guard, exactly like before.
+fn indirect(): int {
+  let g = typed;
+  return len(g(1, "four"));
+}
+print("indirect", indirect());

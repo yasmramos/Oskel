@@ -353,6 +353,24 @@ may change between minor versions.
 
 ### Fixed
 
+- **A direct call to a user function is checked at compile time.** A parameter
+  annotation used to be erased without ever being compared to an argument, so
+  `fn f(x: int) { return x; }` accepted `f("s")` and failed only when the body
+  touched `x` (`unsupported operand types for '+'`), or silently produced a
+  wrong value when it did not. The compiler now records each function's
+  parameter list and checks the arity and every argument against its annotation
+  at the call site, reusing the same assignability rule as a declaration and an
+  assignment (`int` widens to `float`/`double`, `nil` fits `int?`, `any` and an
+  unannotated parameter accept anything, a `...` variadic takes any number of
+  extras). The check is metadata only: the emitted bytecode is unchanged, so the
+  VM and `oskel build` agree byte for byte
+  (`tests/native_build_call_checks.oskl`). Because a function is a first-class
+  value, reassigning it (`f = (x, y) => x + y;`) or shadowing it with a local
+  drops the recorded signature and the call falls back to the run-time guard,
+  which is why an indirect call (`let g = f; g()`) is still checked at run time.
+  The diagnostics match the native-call form: `cannot assign 'string' to 'int'
+  in argument 1 of 'f'` and `f() expects 1 argument, got 0`.
+
 - **The standard-library docs no longer claim an AOT gap that does not exist.**
   `std/collections.oskl`, its two fixtures, `docs/language.md` §12.12 and
   `DEVELOPMENT.md` said `sort`/`sorted` and the string methods were not bound

@@ -1446,6 +1446,16 @@ if(BUILD_TESTING)
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
     endif()
 
+    # The call-site checks (arity and argument types) are compile-time metadata:
+    # a program that passes them must build and agree with the VM byte for byte,
+    # proving the checks are erased and never change the emitted code.
+    add_test(NAME oskel.build_binary_call_checks
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_call_checks"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_call_checks.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `std.json` is plain Oskel over the portable primitive surface, so it must
     # build to a native binary and agree with the VM. The fixture is the guard
     # that keeps the module off the collection/string methods and

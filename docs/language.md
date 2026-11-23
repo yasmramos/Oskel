@@ -1693,6 +1693,17 @@ print(sum(1, 2, 3, 4)); // 10
 
 Parameters are local. Arrays and maps are passed by reference; reassigning the parameter inside the function does not change the caller's variable.
 
+A direct call is checked at compile time against the parameter list: the arity
+must match, and each argument must be assignable to its parameter's annotation.
+The rule is the same one that governs a declaration and an assignment, so
+`int` widens to `float`/`double`, `nil` is accepted where `int?` is declared, and
+a parameter typed `any` — or left unannotated — accepts anything. A `...`
+variadic parameter accepts any number of extras. Because a function is a
+first-class value, the check only applies while the name still refers to its
+declaration: reassigning it (`f = (x, y) => x + y;`) or shadowing it with a
+local drops the recorded signature, and the call falls back to the run-time
+guard. An indirect call (`let g = f; g(...)`) is likewise checked at run time.
+
 ```oskel
 fn append(arr) {
   arr.push(1); // visible outside

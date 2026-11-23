@@ -409,6 +409,15 @@ class Compiler {
   // function clears the entry, exactly like `nativeSigs_`.
   std::unordered_map<std::string, TypeRef> functionReturnTypes_;
 
+  // Declared parameters of the user functions in scope, keyed by name, so a
+  // direct call is checked — arity and argument types — exactly like a `native
+  // fn` call. Without it the annotation on a parameter was erased without ever
+  // being compared to an argument, so `fn f(x: int) {}` accepted `f("s")` and
+  // failed only when the body used `x`. Shares the lifecycle of
+  // `functionReturnTypes_`: a shadowing binding, a native of the same name and
+  // a module boundary all clear or save it.
+  std::unordered_map<std::string, std::vector<Param>> functionParams_;
+
   // The declared field of `fields` closest to `name` within two edits, or an
   // empty string when none is close enough. Used to turn a mistyped field
   // assignment on a class instance into a warning (PHASE 6.8.1).
@@ -523,6 +532,18 @@ class Compiler {
   // flush time, once the module is loaded).
   void checkNativeCall(const std::string& name, const NativeSig& sig, const NativeCallArgs& args,
                        int line, int col);
+
+  // One argument against one parameter, with the FFI exception a string
+  // argument enjoys against a `cstring` parameter. Shared by both call checks.
+  void checkArgumentAssignable(const TypeRef& argument, const TypeRef& param,
+                               const std::string& context, int line, int col);
+
+  // Checks a direct call to a user function against its recorded parameter
+  // list. Kept separate from `checkNativeCall` because the two signatures have
+  // a different shape (`Param` with `variadic` vs `NativeSig` with `cVariadic`),
+  // but they word every diagnostic the same way.
+  void checkUserCall(const std::string& name, const std::vector<Param>& params,
+                     const NativeCallArgs& args, int line, int col);
 
   // Infers the type of every argument of `call` and records its position. The
   // types must be captured while the call site's scopes are open, because a
@@ -700,6 +721,7 @@ class Compiler {
     std::unordered_map<std::string, std::vector<StructField>> classDefs;
     std::unordered_map<std::string, std::vector<ClassMethodSig>> classMethodDefs;
     std::unordered_map<std::string, TypeRef> functionReturnTypes;
+    std::unordered_map<std::string, std::vector<Param>> functionParams;
     std::unordered_map<std::string, NativeSig> nativeSigs;
     std::unordered_map<std::string, std::string> externSignatures;
     std::unordered_set<std::string> mustUseGlobals;

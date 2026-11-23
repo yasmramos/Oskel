@@ -1,4 +1,6 @@
-// expect-exit: 70
+// expect-exit: 65
+// A direct call to a user function is checked at compile time (arity and
+// argument types), so the wrong count never reaches the VM.
 fn sumar(a, b) {
   return a + b;
 }

@@ -1,0 +1,5 @@
+// expect-exit: 65
+// The wrong count is caught at the call site, before the VM runs.
+fn takesOne(x: int): int { return x; }
+
+takesOne();
