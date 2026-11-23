@@ -513,6 +513,11 @@ struct DynamicMessageEnv {
   CodeGen::Label sbAppend;
   const TypeNameBlobs* names = nullptr;
   const DataBlob* textGot = nullptr;
+  const DataBlob* textTypeQuote = nullptr;
+  const DataBlob* textTypeOpen = nullptr;
+  const DataBlob* textHasNoMember = nullptr;
+  const DataBlob* textWith = nullptr;
+  const DataBlob* textAnd = nullptr;
   const DataBlob* quoteClose = nullptr;
 };
 DynamicMessageEnv gMsgText;
@@ -538,6 +543,21 @@ void emitAppendInt(CodeGen& cg, CodeGen::Label sbAppend, std::int32_t builderSlo
 void emitFailLength(CodeGen& cg, CodeGen::Label label, CodeGen::Label failDynamic,
                     CodeGen::Label sbNew, CodeGen::Label sbAppend,
                     const DataBlob& prefix, const DataBlob& close, X64Reg lenReg);
+void emitFailGotType(CodeGen& cg, CodeGen::Label label, CodeGen::Label failDynamic,
+                     CodeGen::Label sbNew, CodeGen::Label sbAppend,
+                     const DataBlob& prefix, const DataBlob& textGot,
+                     const DataBlob& textQuoteEnd, const TypeNameBlobs& names,
+                     X64Reg tagReg, X64Reg payloadReg);
+void emitTypeTailFail(CodeGen& cg, const DataBlob& prefix, X64Reg tagReg,
+                      X64Reg payloadReg);
+void emitTypeQuoteFail(CodeGen& cg, const DataBlob& prefix, X64Reg tagReg,
+                       X64Reg payloadReg);
+void emitNoMemberFail(CodeGen& cg, X64Reg tagReg, X64Reg payloadReg,
+                      X64Reg nameReg);
+void emitTypeNameAppend(CodeGen& cg, CodeGen::Label sbAppend, std::int32_t tagSlot,
+                        std::int32_t payloadSlot, std::int32_t builderSlot);
+void emitTwoTypeFail(CodeGen& cg, const DataBlob& prefix, const DataBlob& separator,
+                     X64Reg tag1, X64Reg payload1, X64Reg tag2, X64Reg payload2);
 
 // The one wrong-arity body (`emitArityFail`) is emitted once per program, but
 // the ~70 guards that call it are spread over the builtin and method emitters,
@@ -1387,8 +1407,7 @@ void emitBitwise(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
 
 // `AotValue oskel_negate(AotValue a)`: arithmetic negation of an int (wrapping)
 // or a float/double (sign-bit flip, exact for every value including NaN).
-void emitNegate(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
-                const DataBlob& message) {
+void emitNegate(CodeGen& cg, CodeGen::Label label, const DataBlob& message) {
   CodeGen::Label bad = cg.newLabel();
   CodeGen::Label asInt = cg.newLabel();
   CodeGen::Label asFloat = cg.newLabel();
@@ -1417,12 +1436,11 @@ void emitNegate(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   epilogue(cg);
 
   cg.bind(bad);
-  emitFailCall(cg, fail, message);
+  emitTypeQuoteFail(cg, message, Rdi, Rsi);
 }
 
 // `AotValue oskel_bit_not(AotValue a)`: int-only `~`.
-void emitBitNot(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
-                const DataBlob& message) {
+void emitBitNot(CodeGen& cg, CodeGen::Label label, const DataBlob& message) {
   CodeGen::Label bad = cg.newLabel();
   cg.bind(label);
   prologue(cg);
@@ -1433,7 +1451,7 @@ void emitBitNot(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   cg.movImm(Rax, kTagInt);
   epilogue(cg);
   cg.bind(bad);
-  emitFailCall(cg, fail, message);
+  emitTypeQuoteFail(cg, message, Rdi, Rsi);
 }
 
 // `AotValue oskel_not(AotValue a)`: logical not of the value's truthiness,
@@ -1471,8 +1489,8 @@ void emitNot(CodeGen& cg, CodeGen::Label label) {
 // always a bool. The op selector is the low nibble of the x86-64 condition code
 // of the matching comparison. `mapFind` is needed by the map branch of the
 // structural equality.
-void emitCompare(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
-                 const DataBlob& message, CodeGen::Label mapFind) {
+void emitCompare(CodeGen& cg, CodeGen::Label label, const DataBlob& message,
+                 CodeGen::Label mapFind) {
   CodeGen::Label eqBranch = cg.newLabel();
   CodeGen::Label neBranch = cg.newLabel();
   CodeGen::Label order = cg.newLabel();
@@ -1649,7 +1667,17 @@ void emitCompare(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   epilogue(cg);
 
   cg.bind(badCompare);
-  emitFailCall(cg, fail, message);
+  // The VM lowers `a > b` to `lessThan(b, a)` and `a <= b` to `!lessThan(b, a)`,
+  // so its message quotes those two operators' operands reversed. Match it:
+  // `error.message` is observable.
+  CodeGen::Label badReversed = cg.newLabel();
+  cg.cmpImm32(R8, static_cast<std::int32_t>(AotCompareOp::Gt));
+  cg.jcc(Jcc::Eq, badReversed);
+  cg.cmpImm32(R8, static_cast<std::int32_t>(AotCompareOp::Le));
+  cg.jcc(Jcc::Eq, badReversed);
+  emitTwoTypeFail(cg, message, *gMsgText.textWith, Rdi, Rsi, Rdx, Rcx);
+  cg.bind(badReversed);
+  emitTwoTypeFail(cg, message, *gMsgText.textWith, Rdx, Rcx, Rdi, Rsi);
 
   // --- internal subroutine: rax = (a == b) ---
   // Not reached by fall-through: every branch above ends in `ret` or a call to
@@ -2529,7 +2557,8 @@ void emitArrayInsertMethod(CodeGen& cg, CodeGen::Label label, const CollectionEn
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badType);
-  emitFailCall(cg, env.fail, msgIndexType);
+  cg.movFromMem(Rdx, Rdi, 8);  // index payload, for the quoted type
+  emitTypeTailFail(cg, msgIndexType, Rax, Rdx);
   cg.bind(badRange);
   emitFailLength(cg, cg.newLabel(), gMsgText.failDynamic, gMsgText.sbNew,
                  gMsgText.sbAppend, msgRange, msgRangeClose, R12);
@@ -2542,7 +2571,8 @@ void emitArrayInsertMethod(CodeGen& cg, CodeGen::Label label, const CollectionEn
 // index outside `[0, len)` is the hosted "index out of range" error; the item
 // is removed and returned. The tail items move down one slot with a single
 // forward `rep movsb`.
-void emitArrayRemoveAtMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+void emitArrayRemoveAtMethod(CodeGen& cg, CodeGen::Label label,
+                             [[maybe_unused]] const CollectionEnv& env,
                              const DataBlob& msgArgc, const DataBlob& msgIndexType,
                              const DataBlob& msgRange, const DataBlob& msgRangeClose) {
   CodeGen::Label nonNegative = cg.newLabel();
@@ -2607,7 +2637,8 @@ void emitArrayRemoveAtMethod(CodeGen& cg, CodeGen::Label label, const Collection
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badType);
-  emitFailCall(cg, env.fail, msgIndexType);
+  cg.movFromMem(Rdx, Rdi, 8);  // index payload, for the quoted type
+  emitTypeTailFail(cg, msgIndexType, Rax, Rdx);
   cg.bind(badRange);
   emitFailLength(cg, cg.newLabel(), gMsgText.failDynamic, gMsgText.sbNew,
                  gMsgText.sbAppend, msgRange, msgRangeClose, R12);
@@ -4695,7 +4726,8 @@ void emitStringContainsMethod(CodeGen& cg, CodeGen::Label label, const Collectio
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badType);
-  emitFailCall(cg, env.fail, msgType);
+  cg.movFromMem(Rdx, Rdi, 8);  // argument payload, for the quoted type
+  emitTypeTailFail(cg, msgType, Rax, Rdx);
 }
 
 // `AotValue oskel_builtin_string_starts_with(...)`: the bound
@@ -4744,12 +4776,14 @@ void emitStringStartsWithMethod(CodeGen& cg, CodeGen::Label label,
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badType);
-  emitFailCall(cg, env.fail, msgType);
+  cg.movFromMem(Rdx, Rdi, 8);  // argument payload, for the quoted type
+  emitTypeTailFail(cg, msgType, Rax, Rdx);
 }
 
 // `AotValue oskel_builtin_string_ends_with(...)`: the bound
 // `s.endsWith(suffix)`, the hosted length check plus a compare of the tail.
-void emitStringEndsWithMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
+void emitStringEndsWithMethod(CodeGen& cg, CodeGen::Label label,
+                              [[maybe_unused]] const CollectionEnv& env,
                               const DataBlob& msgArgc, const DataBlob& msgType) {
   CodeGen::Label badArgc = cg.newLabel();
   CodeGen::Label badType = cg.newLabel();
@@ -4808,7 +4842,8 @@ void emitStringEndsWithMethod(CodeGen& cg, CodeGen::Label label, const Collectio
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badType);
-  emitFailCall(cg, env.fail, msgType);
+  cg.movFromMem(Rdx, Rdi, 8);  // argument payload, for the quoted type
+  emitTypeTailFail(cg, msgType, Rax, Rdx);
 }
 
 // `AotValue oskel_builtin_string_index_of(...)`: the bound `s.indexOf(needle)`,
@@ -4856,7 +4891,8 @@ void emitStringIndexOfMethod(CodeGen& cg, CodeGen::Label label, const Collection
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badType);
-  emitFailCall(cg, env.fail, msgType);
+  cg.movFromMem(Rdx, Rdi, 8);  // argument payload, for the quoted type
+  emitTypeTailFail(cg, msgType, Rax, Rdx);
 }
 
 // `AotValue oskel_builtin_string_trim(AotValue* args, long argc, AotClosure* self)`:
@@ -5031,7 +5067,8 @@ void emitStringRepeatMethod(CodeGen& cg, CodeGen::Label label, const CollectionE
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badType);
-  emitFailCall(cg, env.fail, msgType);
+  cg.movFromMem(Rdx, Rdi, 8);  // count payload, for the quoted type
+  emitTypeTailFail(cg, msgType, Rax, Rdx);
   cg.bind(negative);
   emitFailCall(cg, env.fail, msgNegative);
   cg.bind(tooLarge);
@@ -5202,9 +5239,11 @@ void emitStringSubstrMethod(CodeGen& cg, CodeGen::Label label, const CollectionE
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badStart);
-  emitFailCall(cg, env.fail, msgStartType);
+  cg.movFromMem(Rdx, Rdi, 8);   // start payload
+  emitTypeTailFail(cg, msgStartType, Rax, Rdx);
   cg.bind(badLength);
-  emitFailCall(cg, env.fail, msgLengthType);
+  cg.movFromMem(Rdx, Rdi, -8);  // length payload
+  emitTypeTailFail(cg, msgLengthType, Rax, Rdx);
 }
 
 // Appends the bytes `[startSlot, endSlot)` of `r12` to the array in
@@ -5642,7 +5681,8 @@ void emitStringSplitMethod(CodeGen& cg, CodeGen::Label label, const CollectionEn
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badType);
-  emitFailCall(cg, env.fail, msgType);
+  cg.movFromMem(Rdx, Rdi, 8);  // argument payload, for the quoted type
+  emitTypeTailFail(cg, msgType, Rax, Rdx);
 }
 
 // `AotValue oskel_builtin_string_replace(...)`: the bound `s.replace(from, to)`.
@@ -5742,9 +5782,11 @@ void emitStringReplaceMethod(CodeGen& cg, CodeGen::Label label, const Collection
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badSearch);
-  emitFailCall(cg, env.fail, msgSearchType);
+  cg.movFromMem(Rdx, Rdi, 8);   // search payload
+  emitTypeTailFail(cg, msgSearchType, Rax, Rdx);
   cg.bind(badRepl);
-  emitFailCall(cg, env.fail, msgReplType);
+  cg.movFromMem(Rdx, Rdi, -8);  // replacement payload
+  emitTypeTailFail(cg, msgReplType, Rax, Rdx);
   cg.bind(oom);
   emitFailCall(cg, env.fail, *env.msgOom);
 }
@@ -5922,9 +5964,11 @@ void emitStringPadMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv&
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badWidth);
-  emitFailCall(cg, env.fail, msgWidthType);
+  cg.movFromMem(Rdx, Rdi, 8);   // width payload
+  emitTypeTailFail(cg, msgWidthType, Rax, Rdx);
   cg.bind(badFill);
-  emitFailCall(cg, env.fail, msgFillType);
+  cg.movFromMem(Rdx, Rdi, -8);  // fill payload
+  emitTypeTailFail(cg, msgFillType, Rax, Rdx);
   cg.bind(emptyFill);
   emitFailCall(cg, env.fail, msgEmpty);
   cg.bind(tooLarge);
@@ -6222,9 +6266,11 @@ void emitArraySliceMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv
   cg.bind(badArity);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badStart);
-  emitFailCall(cg, env.fail, msgStart);
+  cg.movFromMem(Rdx, Rdi, 8);   // start payload
+  emitTypeTailFail(cg, msgStart, Rax, Rdx);
   cg.bind(badEnd);
-  emitFailCall(cg, env.fail, msgEnd);
+  cg.movFromMem(Rdx, Rdi, -8);  // end payload
+  emitTypeTailFail(cg, msgEnd, Rax, Rdx);
   cg.bind(oom);
   emitFailCall(cg, env.fail, *env.msgOom);
 }
@@ -6419,8 +6465,7 @@ void emitCellNew(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel,
 // convention -- rdi = args, rsi = argc, rdx = the `AotClosure*` -- and return
 // the result (rax:rdx) untouched. A non-function callee is a fatal error, the
 // runtime counterpart of the hosted engine's "cannot call a value of type".
-void emitCall(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
-              const DataBlob& msgNonFunc) {
+void emitCall(CodeGen& cg, CodeGen::Label label, const DataBlob& msgNonFunc) {
   CodeGen::Label bad = cg.newLabel();
 
   cg.bind(label);
@@ -6442,7 +6487,7 @@ void emitCall(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   cg.retInsn();
 
   cg.bind(bad);
-  emitFailCall(cg, fail, msgNonFunc);
+  emitTypeQuoteFail(cg, msgNonFunc, Rdi, Rsi);
 }
 
 // `long oskel_str_eq(AotString* a, AotString* b)`: 1 when the two strings have
@@ -6651,7 +6696,8 @@ void emitMapKeyQueryMethod(CodeGen& cg, CodeGen::Label label, const CollectionEn
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badType);
-  emitFailCall(cg, env.fail, msgKeyType);
+  cg.movFromMem(Rdx, Rdi, 8);  // key payload, for the quoted type
+  emitTypeTailFail(cg, msgKeyType, Rax, Rdx);
 }
 
 // `has(key)`: true when the key is present.
@@ -6737,7 +6783,8 @@ void emitMapGetMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& en
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badType);
-  emitFailCall(cg, env.fail, msgKeyType);
+  cg.movFromMem(Rdx, Rdi, 8);  // key payload, for the quoted type
+  emitTypeTailFail(cg, msgKeyType, Rax, Rdx);
 }
 
 // `delete(key)`: true when an entry was removed, false otherwise.
@@ -6857,7 +6904,8 @@ void emitMapSetMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& en
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badType);
-  emitFailCall(cg, env.fail, msgKeyType);
+  cg.movFromMem(Rdx, Rdi, 8);  // key payload, for the quoted type
+  emitTypeTailFail(cg, msgKeyType, Rax, Rdx);
   cg.bind(oom);
   emitFailCall(cg, env.fail, *env.msgOom);
 }
@@ -7561,9 +7609,10 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.pop(Rbx);
   epilogue(cg);
   cg.bind(failMember);
-  emitFailCall(cg, env.fail, *env.msgNoMember);
+  cg.movFromMem(R8, Rbp, -24);  // the member name AotString*
+  emitNoMemberFail(cg, Rbx, R12, R8);
   cg.bind(failIndex);
-  emitFailCall(cg, env.fail, *env.msgBadIndex);
+  emitTypeQuoteFail(cg, *env.msgBadIndex, Rbx, R12);
 }
 
 
@@ -8041,7 +8090,7 @@ void emitTableGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
                  {nullptr, R9},
                  {env.msgIndexRangeClose, Rax}});
   cg.bind(failIndex);
-  emitFailCall(cg, env.fail, *env.msgBadIndex);
+  emitTypeQuoteFail(cg, *env.msgBadIndex, Rbx, R12);
   cg.bind(oom);
   emitFailCall(cg, env.fail, *env.msgOom);
 }
@@ -8181,7 +8230,7 @@ void emitTableSet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.bind(failImmutable);
   emitFailCall(cg, env.fail, *env.msgImmutable);
   cg.bind(failAssign);
-  emitFailCall(cg, env.fail, *env.msgBadAssign);
+  emitTypeQuoteFail(cg, *env.msgBadAssign, Rbx, R12);
   cg.bind(arrRange);
   // `ops::indexSet` quotes the index as written and the array's length.
   cg.movFromMem(Rax, Rbp, -32);   // index payload
@@ -8259,7 +8308,7 @@ void emitMemberSet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.pop(Rbx);
   epilogue(cg);
   cg.bind(failField);
-  emitFailCall(cg, env.fail, *env.msgBadField);
+  emitTypeQuoteFail(cg, *env.msgBadField, Rbx, R12);
   cg.bind(oom);
   emitFailCall(cg, env.fail, *env.msgOom);
 }
@@ -8465,7 +8514,7 @@ void emitContains(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.pop(Rbx);
   epilogue(cg);
   cg.bind(failType);
-  emitFailCall(cg, env.fail, *env.msgBadIn);
+  emitTwoTypeFail(cg, *env.msgBadIn, *gMsgText.textAnd, Rbx, R12, Rdx, Rcx);
   cg.bind(failRangeType);
   emitFailCall(cg, env.fail, *env.msgRangeIntType);
   cg.bind(failMapKey);
@@ -8522,16 +8571,22 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.movReg(R12, Rdx);              // iterable payload
   cg.movToMem(Rbp, -24, Rsi);       // iterable tag
   cg.movToMem(Rbp, -56, Rcx);       // value-out slot (null when no value variable)
-  // A `for k, v` over anything but a map is a fatal error, the same one the VM
-  // raises; the AOT message is the fixed `msgMapValue` blob (it does not carry
-  // the offending type name, which the freestanding runtime has no formatter
-  // for on this path).
+  // A `for k, v` over an iterable that is not a map is a fatal error, the same
+  // one the VM raises. An unsupported tag is *not* this error: the VM checks
+  // the shape first and reports "cannot iterate", so only array, string and
+  // range reach the key/value message here.
   cg.movFromMem(R8, Rbp, -56);
   cg.testReg(R8);
   cg.jcc(Jcc::Eq, noValueCheck);
   cg.movFromMem(R8, Rbp, -24);
   cg.cmpImm32(R8, static_cast<std::int32_t>(kTagMap));
-  cg.jcc(Jcc::Ne, failKeyValue);
+  cg.jcc(Jcc::Eq, noValueCheck);
+  cg.cmpImm32(R8, static_cast<std::int32_t>(kTagArray));
+  cg.jcc(Jcc::Eq, failKeyValue);
+  cg.cmpImm32(R8, static_cast<std::int32_t>(kTagStr));
+  cg.jcc(Jcc::Eq, failKeyValue);
+  cg.cmpImm32(R8, static_cast<std::int32_t>(kTagRange));
+  cg.jcc(Jcc::Eq, failKeyValue);
   cg.bind(noValueCheck);
   cg.movFromMem(R8, Rbx, 0);        // cursor tag
   cg.movFromMem(R9, Rbx, 8);        // cursor payload
@@ -8643,9 +8698,9 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.pop(Rbx);
   epilogue(cg);
   cg.bind(failKeyValue);
-  emitFailCall(cg, env.fail, *env.msgMapValue);
+  emitTypeTailFail(cg, *env.msgMapValue, R8, R12);
   cg.bind(failType);
-  emitFailCall(cg, env.fail, *env.msgNotIterable);
+  emitTypeQuoteFail(cg, *env.msgNotIterable, R8, R12);
   cg.bind(failState);
   emitFailCall(cg, env.fail, *env.msgNotIterable);
   cg.bind(oom);
@@ -8784,7 +8839,8 @@ void emitErrorBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLab
   cg.movFromMem(Rax, Rbx, -16);     // args[1].tag
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
   cg.jcc(Jcc::Eq, codeOk);
-  emitFailCall(cg, fail, msgCodeType);
+  cg.movFromMem(Rdx, Rbx, -8);      // args[1].payload
+  emitTypeTailFail(cg, msgCodeType, Rax, Rdx);
   cg.bind(codeOk);
   cg.movFromMem(Rax, Rbx, -8);      // args[1].payload
   cg.movToMem(Rbp, -24, Rax);
@@ -9219,7 +9275,8 @@ void emitRangeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLab
 // fail, each with its own message.
 void emitSliceBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
                       const DataBlob& msgSliceStart, const DataBlob& msgSliceEnd,
-                      const DataBlob& msgSliceStep, const DataBlob& msgSliceType) {
+                      const DataBlob& msgSliceStepType, const DataBlob& msgSliceStep,
+                      const DataBlob& msgSliceType) {
   CodeGen::Label stepSet = cg.newLabel();
   CodeGen::Label sliceArray = cg.newLabel();
   CodeGen::Label sliceStr = cg.newLabel();
@@ -9544,11 +9601,11 @@ void emitSliceBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& en
   cg.bind(failEnd);
   emitFailCall(cg, env.fail, msgSliceEnd);
   cg.bind(failStepType);
-  emitFailCall(cg, env.fail, msgSliceStep);
+  emitFailCall(cg, env.fail, msgSliceStepType);
   cg.bind(failStep);
   emitFailCall(cg, env.fail, msgSliceStep);
   cg.bind(failType);
-  emitFailCall(cg, env.fail, msgSliceType);
+  emitTypeQuoteFail(cg, msgSliceType, Rax, R12);
   cg.bind(oom);
   emitFailCall(cg, env.fail, *env.msgOom);
 
@@ -9605,7 +9662,7 @@ void emitLenBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
   cg.jcc(Jcc::Eq, asMap);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagRange));
   cg.jcc(Jcc::Eq, asRange);
-  emitFailCall(cg, env.fail, msgLenType);
+  emitTypeQuoteFail(cg, msgLenType, Rax, R12);
 
   cg.bind(asStr);
   cg.movReg(Rdi, R12);
@@ -10332,6 +10389,95 @@ void emitArityFail(CodeGen& cg, CodeGen::Label label, CodeGen::Label failDynamic
   cg.ud2();
 }
 
+// Appends the `typeName()` of the value parked at `[rbp + tagSlot]` /
+// `[rbp + payloadSlot]` to the builder at `[rbp + builderSlot]`. A tag the
+// vocabulary does not know reports `nil`, which is what `Value::typeName`
+// does; a pointer handle reports its kind (`cstring` or `ptr`). The slots are
+// the caller's, so the caller keeps them disjoint from its own frame.
+void emitTypeNameAppend(CodeGen& cg, CodeGen::Label sbAppend, std::int32_t tagSlot,
+                        std::int32_t payloadSlot, std::int32_t builderSlot) {
+  CodeGen::Label asPtr = cg.newLabel();
+  CodeGen::Label asCString = cg.newLabel();
+  CodeGen::Label emit = cg.newLabel();
+
+  struct Case {
+    std::int64_t tag;
+    const DataBlob* blob;
+  };
+  const TypeNameBlobs& names = *gMsgText.names;
+  const Case cases[] = {
+      {kTagNil, names.nil},         {kTagBool, names.boolValue},
+      {kTagInt, names.intValue},    {kTagFloat, names.floatValue},
+      {kTagDouble, names.doubleValue}, {kTagStr, names.str},
+      {kTagArray, names.array},     {kTagMap, names.map},
+      {kTagFunc, names.func},       {kTagRange, names.range},
+      {kTagError, names.error},
+  };
+
+#define OSKEL_TYPE_NAME(blob)                                  \
+  emitAppendBlob(cg, sbAppend, builderSlot, *(blob));          \
+  cg.jmp(emit)
+
+  cg.movFromMem(Rax, Rbp, tagSlot);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagPtr));
+  cg.jcc(Jcc::Eq, asPtr);
+  for (const Case& c : cases) {
+    CodeGen::Label next = cg.newLabel();
+    cg.cmpImm32(Rax, static_cast<std::int32_t>(c.tag));
+    cg.jcc(Jcc::Ne, next);
+    OSKEL_TYPE_NAME(c.blob);
+    cg.bind(next);
+  }
+  OSKEL_TYPE_NAME(names.nil);
+
+  cg.bind(asPtr);
+  cg.movFromMem(Rax, Rbp, payloadSlot);
+  cg.movFromMem(Rax, Rax, kPtrKindOffset);
+  cg.cmpImm32(Rax, static_cast<std::int32_t>(kPtrKindCString));
+  cg.jcc(Jcc::Eq, asCString);
+  OSKEL_TYPE_NAME(names.ptr);
+
+  cg.bind(asCString);
+  OSKEL_TYPE_NAME(names.cstring);
+
+#undef OSKEL_TYPE_NAME
+
+  cg.bind(emit);
+}
+
+// `prefix + " '" + type1 + "'" + separator + "'" + type2 + "'"`: the two
+// operator messages (`cannot compare 'int' with 'string'`,
+// `operator 'in' is not supported for 'int' and 'int'`).
+void emitTwoTypeFail(CodeGen& cg, const DataBlob& prefix, const DataBlob& separator,
+                     X64Reg tag1, X64Reg payload1, X64Reg tag2, X64Reg payload2) {
+  constexpr std::int32_t kBuilder = -24;
+  constexpr std::int32_t kTag1 = -32;
+  constexpr std::int32_t kPayload1 = -40;
+  constexpr std::int32_t kTag2 = -48;
+  constexpr std::int32_t kPayload2 = -56;
+
+  cg.subRegImm32(Rsp, 80);
+  cg.movToMem(Rbp, kTag1, tag1);
+  cg.movToMem(Rbp, kPayload1, payload1);
+  cg.movToMem(Rbp, kTag2, tag2);
+  cg.movToMem(Rbp, kPayload2, payload2);
+  cg.callLabel(gMsgText.sbNew);
+  cg.movToMem(Rbp, kBuilder, Rax);
+  emitAppendBlob(cg, gMsgText.sbAppend, kBuilder, prefix);
+  emitAppendBlob(cg, gMsgText.sbAppend, kBuilder, *gMsgText.textTypeQuote);
+  emitTypeNameAppend(cg, gMsgText.sbAppend, kTag1, kPayload1, kBuilder);
+  emitAppendBlob(cg, gMsgText.sbAppend, kBuilder, *gMsgText.quoteClose);
+  emitAppendBlob(cg, gMsgText.sbAppend, kBuilder, separator);
+  emitAppendBlob(cg, gMsgText.sbAppend, kBuilder, *gMsgText.textTypeQuote);
+  emitTypeNameAppend(cg, gMsgText.sbAppend, kTag2, kPayload2, kBuilder);
+  emitAppendBlob(cg, gMsgText.sbAppend, kBuilder, *gMsgText.quoteClose);
+  cg.movFromMem(Rax, Rbp, kBuilder);
+  cg.movFromMem(Rdi, Rax, kSbDataOffset);
+  cg.movFromMem(Rsi, Rax, kSbLengthOffset);
+  cg.callLabel(gMsgText.failDynamic);
+  cg.ud2();
+}
+
 // The failure path bound to `label`, for the `, got '<type>'` tail: it quotes
 // the type name of the value whose tag is in `tagReg` and whose payload is in
 // `payloadReg`, reproducing the hosted `"..., got '" + typeName + "'"`. A tag
@@ -10340,11 +10486,9 @@ void emitArityFail(CodeGen& cg, CodeGen::Label label, CodeGen::Label failDynamic
 void emitFailGotType(CodeGen& cg, CodeGen::Label label, CodeGen::Label failDynamic,
                      CodeGen::Label sbNew, CodeGen::Label sbAppend,
                      const DataBlob& prefix, const DataBlob& textGot,
-                     const DataBlob& textQuoteEnd, const TypeNameBlobs& names,
+                     const DataBlob& textQuoteEnd,
+                     [[maybe_unused]] const TypeNameBlobs& names,
                      X64Reg tagReg, X64Reg payloadReg) {
-  CodeGen::Label asPtr = cg.newLabel();
-  CodeGen::Label asCString = cg.newLabel();
-  CodeGen::Label emit = cg.newLabel();
   // The appends clobber rdi/rsi/rdx, so the tag and payload are parked first.
   constexpr std::int32_t kBuilder = -24;
   constexpr std::int32_t kTag = -32;
@@ -10358,55 +10502,62 @@ void emitFailGotType(CodeGen& cg, CodeGen::Label label, CodeGen::Label failDynam
   cg.movToMem(Rbp, kBuilder, Rax);
   emitAppendBlob(cg, sbAppend, kBuilder, prefix);
   emitAppendBlob(cg, sbAppend, kBuilder, textGot);
-
-  // The name, selected by tag; a pointer handle reports its kind.
-  struct Case {
-    std::int64_t tag;
-    const DataBlob* blob;
-  };
-  const Case cases[] = {
-      {kTagNil, names.nil},         {kTagBool, names.boolValue},
-      {kTagInt, names.intValue},    {kTagFloat, names.floatValue},
-      {kTagDouble, names.doubleValue}, {kTagStr, names.str},
-      {kTagArray, names.array},     {kTagMap, names.map},
-      {kTagFunc, names.func},       {kTagRange, names.range},
-      {kTagError, names.error},
-  };
-
-#define OSKEL_GOT_NAME(blob)                                            \
-  emitAppendBlob(cg, sbAppend, kBuilder, *(blob));                      \
-  cg.jmp(emit)
-
-  cg.movFromMem(Rax, Rbp, kTag);
-  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagPtr));
-  cg.jcc(Jcc::Eq, asPtr);
-  for (const Case& c : cases) {
-    CodeGen::Label next = cg.newLabel();
-    cg.cmpImm32(Rax, static_cast<std::int32_t>(c.tag));
-    cg.jcc(Jcc::Ne, next);
-    OSKEL_GOT_NAME(c.blob);
-    cg.bind(next);
-  }
-  OSKEL_GOT_NAME(names.nil);
-
-  cg.bind(asPtr);
-  cg.movFromMem(Rax, Rbp, kPayload);
-  cg.movFromMem(Rax, Rax, kPtrKindOffset);
-  cg.cmpImm32(Rax, static_cast<std::int32_t>(kPtrKindCString));
-  cg.jcc(Jcc::Eq, asCString);
-  OSKEL_GOT_NAME(names.ptr);
-
-  cg.bind(asCString);
-  OSKEL_GOT_NAME(names.cstring);
-
-#undef OSKEL_GOT_NAME
-
-  cg.bind(emit);
+  emitTypeNameAppend(cg, sbAppend, kTag, kPayload, kBuilder);
   emitAppendBlob(cg, sbAppend, kBuilder, textQuoteEnd);
   cg.movFromMem(Rax, Rbp, kBuilder);
   cg.movFromMem(Rdi, Rax, kSbDataOffset);
   cg.movFromMem(Rsi, Rax, kSbLengthOffset);
   cg.callLabel(failDynamic);
+  cg.ud2();
+}
+
+// `prefix + ", got '" + type + "'"`: the builtin argument-type tail.
+void emitTypeTailFail(CodeGen& cg, const DataBlob& prefix, X64Reg tagReg,
+                      X64Reg payloadReg) {
+  emitFailGotType(cg, cg.newLabel(), gMsgText.failDynamic, gMsgText.sbNew,
+                  gMsgText.sbAppend, prefix, *gMsgText.textGot,
+                  *gMsgText.quoteClose, *gMsgText.names, tagReg, payloadReg);
+}
+
+// `prefix + " '" + type + "'"`: the value-type tail (`cannot slice a value of
+// type 'int'`), where the prefix already names the condition.
+void emitTypeQuoteFail(CodeGen& cg, const DataBlob& prefix, X64Reg tagReg,
+                       X64Reg payloadReg) {
+  emitFailGotType(cg, cg.newLabel(), gMsgText.failDynamic, gMsgText.sbNew,
+                  gMsgText.sbAppend, prefix, *gMsgText.textTypeQuote,
+                  *gMsgText.quoteClose, *gMsgText.names, tagReg, payloadReg);
+}
+
+// `type '<t>' has no member '<name>'`: the one message that quotes both the
+// receiver's type and the member name (`name` is an `AotString*`). The hosted
+// `memberGet` words both, so a bare "type has no member" is a divergence.
+void emitNoMemberFail(CodeGen& cg, X64Reg tagReg, X64Reg payloadReg,
+                      X64Reg nameReg) {
+  constexpr std::int32_t kBuilder = -24;
+  constexpr std::int32_t kTag = -32;
+  constexpr std::int32_t kPayload = -40;
+  constexpr std::int32_t kName = -48;
+
+  cg.subRegImm32(Rsp, 64);
+  cg.movToMem(Rbp, kTag, tagReg);
+  cg.movToMem(Rbp, kPayload, payloadReg);
+  cg.movToMem(Rbp, kName, nameReg);
+  cg.callLabel(gMsgText.sbNew);
+  cg.movToMem(Rbp, kBuilder, Rax);
+  emitAppendBlob(cg, gMsgText.sbAppend, kBuilder, *gMsgText.textTypeOpen);
+  emitTypeNameAppend(cg, gMsgText.sbAppend, kTag, kPayload, kBuilder);
+  emitAppendBlob(cg, gMsgText.sbAppend, kBuilder, *gMsgText.textHasNoMember);
+  cg.movFromMem(Rax, Rbp, kName);
+  cg.movFromMem(Rdx, Rax, 0);  // the name's byte length
+  cg.movReg(Rsi, Rax);
+  cg.addImm32(Rsi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movFromMem(Rdi, Rbp, kBuilder);
+  cg.callLabel(gMsgText.sbAppend);
+  emitAppendBlob(cg, gMsgText.sbAppend, kBuilder, *gMsgText.quoteClose);
+  cg.movFromMem(Rax, Rbp, kBuilder);
+  cg.movFromMem(Rdi, Rax, kSbDataOffset);
+  cg.movFromMem(Rsi, Rax, kSbLengthOffset);
+  cg.callLabel(gMsgText.failDynamic);
   cg.ud2();
 }
 
@@ -10874,7 +11025,7 @@ void emitSqrtBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   cg.jcc(Jcc::Eq, asFloat);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
   cg.jcc(Jcc::Eq, asDouble);
-  emitFailCall(cg, fail, msgType);
+  emitTypeTailFail(cg, msgType, Rax, Rcx);
 
   cg.bind(asInt);
   cg.cvtsi2sd(Xmm0, Rcx);
@@ -10935,7 +11086,8 @@ void emitOrdBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label utf8Len,
   cg.movFromMem(Rax, Rdi, 0);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, isStr);
-  emitFailCall(cg, fail, msgOrdType);
+  cg.movFromMem(Rdx, Rdi, 8);
+  emitTypeTailFail(cg, msgOrdType, Rax, Rdx);
 
   cg.bind(isStr);
   cg.movFromMem(R12, Rdi, 8);   // AotString*
@@ -11046,7 +11198,8 @@ void emitChrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
   cg.movFromMem(Rax, Rdi, 0);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
   cg.jcc(Jcc::Eq, isInt);
-  emitFailCall(cg, fail, msgChrInt);
+  cg.movFromMem(Rdx, Rdi, 8);
+  emitTypeTailFail(cg, msgChrInt, Rax, Rdx);
 
   cg.bind(isInt);
   cg.movFromMem(R8, Rdi, 8);    // code point
@@ -11545,7 +11698,7 @@ void emitMathReturn(CodeGen& cg) {
 // `mode` selects the correction applied after the truncation.
 enum class AotRoundMode { Floor, Ceil, Round };
 
-void emitRoundingBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+void emitRoundingBuiltin(CodeGen& cg, CodeGen::Label label,
                          const DataBlob& message, const DataBlob& msgArgc,
                          AotRoundMode mode) {
   constexpr int Xmm0 = kXmmBase + 0;
@@ -11584,7 +11737,7 @@ void emitRoundingBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   cg.jcc(Jcc::Eq, asNumber);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
   cg.jcc(Jcc::Eq, asNumber);
-  emitFailCall(cg, fail, message);
+  emitTypeTailFail(cg, message, Rax, Rcx);
 
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
@@ -11684,7 +11837,7 @@ void emitRoundingBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
 // and `args[1]` at -16. An int is converted, a float/double is reinterpreted,
 // anything else fails with `message`. Only rax/rcx and `xmm` are touched, so rdi
 // survives and a second argument can be loaded afterwards.
-void emitNumberArg(CodeGen& cg, int byteOffset, int xmm, CodeGen::Label fail,
+void emitNumberArg(CodeGen& cg, int byteOffset, int xmm,
                    const DataBlob& message) {
   CodeGen::Label asInt = cg.newLabel();
   CodeGen::Label asNumber = cg.newLabel();
@@ -11697,7 +11850,7 @@ void emitNumberArg(CodeGen& cg, int byteOffset, int xmm, CodeGen::Label fail,
   cg.jcc(Jcc::Eq, asNumber);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagDouble));
   cg.jcc(Jcc::Eq, asNumber);
-  emitFailCall(cg, fail, message);
+  emitTypeTailFail(cg, message, Rax, Rcx);
   cg.bind(asInt);
   cg.cvtsi2sd(xmm, Rcx);
   cg.jmp(done);
@@ -11726,7 +11879,7 @@ void emitTranscendentalBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label
   prologue(cg);
   cg.cmpImm32(Rsi, 1);
   cg.jcc(Jcc::Ne, badArgc);
-  emitNumberArg(cg, 0, Xmm0, fail, message);
+  emitNumberArg(cg, 0, Xmm0, message);
   cg.jmp(check);
 
   cg.bind(badArgc);
@@ -11752,7 +11905,7 @@ void emitTranscendentalBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label
 
 // `oskel_builtin_pow`: two numeric arguments, both converted to binary64 in
 // xmm0/xmm1, then the embedded `pow`. A non-number operand fails.
-void emitPowBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
+void emitPowBuiltin(CodeGen& cg, CodeGen::Label label,
                     CodeGen::Label mathCore, const DataBlob& message,
                     const DataBlob& msgArgc) {
   constexpr int Xmm0 = kXmmBase + 0;
@@ -11764,8 +11917,8 @@ void emitPowBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   prologue(cg);
   cg.cmpImm32(Rsi, 2);
   cg.jcc(Jcc::Ne, badArgc);
-  emitNumberArg(cg, 0, Xmm0, fail, message);
-  emitNumberArg(cg, -16, Xmm1, fail, message);
+  emitNumberArg(cg, 0, Xmm0, message);
+  emitNumberArg(cg, -16, Xmm1, message);
   cg.callLabel(mathCore);
   emitMathReturn(cg);
   epilogue(cg);
@@ -11803,10 +11956,12 @@ void emitRangeFnBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocL
   cg.jcc(Jcc::Ne, badArgc);
   // Two arguments: args[0] is start, args[1] is end.
   cg.movFromMem(Rax, Rbx, 0);
+  cg.movFromMem(Rdx, Rbx, 8);   // start payload, for the quoted type
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
   cg.jcc(Jcc::Ne, badStart);
   cg.movFromMem(R8, Rbx, 8);    // start
   cg.movFromMem(Rax, Rbx, -16);
+  cg.movFromMem(Rdx, Rbx, -8);  // end payload, for the quoted type
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
   cg.jcc(Jcc::Ne, badEnd);
   cg.movFromMem(R9, Rbx, -8);   // end
@@ -11814,6 +11969,7 @@ void emitRangeFnBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocL
 
   cg.bind(oneArg);
   cg.movFromMem(Rax, Rbx, 0);
+  cg.movFromMem(Rdx, Rbx, 8);   // end payload, for the quoted type
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
   cg.jcc(Jcc::Ne, badEnd);
   cg.xorReg(R8, R8);            // start = 0
@@ -11837,9 +11993,9 @@ void emitRangeFnBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocL
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badStart);
-  emitFailCall(cg, fail, msgStart);
+  emitTypeTailFail(cg, msgStart, Rax, Rdx);
   cg.bind(badEnd);
-  emitFailCall(cg, fail, msgEnd);
+  emitTypeTailFail(cg, msgEnd, Rax, Rdx);
   cg.bind(oom);
   emitFailCall(cg, fail, msgOom);
 }
@@ -11979,8 +12135,7 @@ void emitAssertEqBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label compa
 // with the integer code (`0` when omitted), so it never returns to the caller.
 // The hosted builtin accepts zero or one integer argument.
 void emitExitBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label exitLabel,
-                     CodeGen::Label fail, const DataBlob& msgArgc,
-                     const DataBlob& msgType) {
+                     const DataBlob& msgArgc, const DataBlob& msgType) {
   CodeGen::Label haveCode = cg.newLabel();
   CodeGen::Label exitNow = cg.newLabel();
   CodeGen::Label badArgc = cg.newLabel();
@@ -12006,7 +12161,8 @@ void emitExitBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label exitLabel
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badType);
-  emitFailCall(cg, fail, msgType);
+  cg.movFromMem(Rdx, Rdi, 8);
+  emitTypeTailFail(cg, msgType, Rax, Rdx);
 }
 
 // `time()`: the wall clock, in whole seconds since the Unix epoch (UTC), as an
@@ -12384,8 +12540,8 @@ void emitRandomSeed(CodeGen& cg, CodeGen::Label label) {
 // `void oskel_builtin_seed(AotValue* args, long argc, AotClosure* self)`:
 // reseed from one integer, exactly as the hosted `seed(n)`.
 void emitSeedBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label stateLabel,
-                     CodeGen::Label seedLabel, CodeGen::Label fail,
-                     const DataBlob& msgArgc, const DataBlob& msgInt) {
+                     CodeGen::Label seedLabel, const DataBlob& msgArgc,
+                     const DataBlob& msgInt) {
   CodeGen::Label badType = cg.newLabel();
   CodeGen::Label badArgc = cg.newLabel();
 
@@ -12415,7 +12571,8 @@ void emitSeedBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label stateLabe
 
   // Out of line, so the happy path stays straight.
   cg.bind(badType);
-  emitFailCall(cg, fail, msgInt);
+  cg.movFromMem(Rdx, Rbx, 8);
+  emitTypeTailFail(cg, msgInt, Rax, Rdx);
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
 }
@@ -12463,11 +12620,13 @@ void emitRandomBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label nextLab
   // --- two arguments: low = args[0], high = args[1] ---
   cg.bind(twoArgs);
   cg.movFromMem(Rax, Rbx, 0);  // args[0].tag
+  cg.movFromMem(Rdx, Rbx, 8);  // args[0].payload, for the quoted type
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
   cg.jcc(Jcc::Ne, badType);
   // Argument slots grow *downward* from `args` (slotOffset is -16*(index+1)),
   // so args[1] sits 16 bytes below args[0], not above it.
   cg.movFromMem(Rax, Rbx, -16);  // args[1].tag
+  cg.movFromMem(Rdx, Rbx, -8);   // args[1].payload, for the quoted type
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
   cg.jcc(Jcc::Ne, badType);
   cg.movFromMem(R8, Rbx, 8);    // low  = args[0].payload
@@ -12489,6 +12648,7 @@ void emitRandomBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label nextLab
   // --- one argument: high = args[0], 0 <= r < high ---
   cg.bind(oneArg);
   cg.movFromMem(Rax, Rbx, 0);  // args[0].tag
+  cg.movFromMem(Rdx, Rbx, 8);  // args[0].payload, for the quoted type
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
   cg.jcc(Jcc::Ne, badType);
   cg.movFromMem(R11, Rbx, 8);  // high
@@ -12528,7 +12688,7 @@ void emitRandomBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label nextLab
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
   cg.bind(badType);
-  emitFailCall(cg, fail, msgType);
+  emitTypeTailFail(cg, msgType, Rax, Rdx);
 }
 
 // `void oskel_sb_init(AotStringBuilder* sb, char* data, long capacity)`: start a
@@ -15406,9 +15566,10 @@ void emitCStringBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label ptrNew
 
   cg.bind(argcOk);
   cg.movFromMem(Rax, Rdi, 0);
+  cg.movFromMem(Rdx, Rdi, 8);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, isText);
-  emitFailCall(cg, fail, msgType);
+  emitTypeTailFail(cg, msgType, Rax, Rdx);
 
   cg.bind(isText);
   cg.movFromMem(R12, Rdi, 8);  // the AotString*
@@ -15459,9 +15620,10 @@ void emitBufferBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label ptrNew,
 
   cg.bind(argcOk);
   cg.movFromMem(Rax, Rdi, 0);
+  cg.movFromMem(Rdx, Rdi, 8);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
   cg.jcc(Jcc::Eq, isInt);
-  emitFailCall(cg, fail, msgType);
+  emitTypeTailFail(cg, msgType, Rax, Rdx);
 
   cg.bind(isInt);
   cg.movFromMem(R12, Rdi, 8);  // size
@@ -15733,9 +15895,10 @@ void emitIntToPtrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label ptrNe
 
   cg.bind(argcOk);
   cg.movFromMem(Rax, Rdi, 0);
+  cg.movFromMem(Rdx, Rdi, 8);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
   cg.jcc(Jcc::Eq, isInt);
-  emitFailCall(cg, fail, msgType);
+  emitTypeTailFail(cg, msgType, Rax, Rdx);
 
   cg.bind(isInt);
   cg.movFromMem(R12, Rdi, 8);  // the token
@@ -15763,6 +15926,8 @@ void emitPtrToIntBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
                          const DataBlob& msgArgc, const DataBlob& msgType,
                          const DataBlob& msgFreed) {
   CodeGen::Label argcOk = cg.newLabel();
+  CodeGen::Label haveToken = cg.newLabel();
+  CodeGen::Label notVoid = cg.newLabel();
 
   cg.bind(label);
   prologue(cg);
@@ -15774,7 +15939,16 @@ void emitPtrToIntBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
 
   cg.bind(argcOk);
   emitPtrArgCheck(cg, Rdi, 0, Rbx, fail, msgType, msgFreed);
+  // Only a `Void` handle carries a token (`intToPtr`); a cstring or buffer has
+  // no address of its own, and the hosted `ptrToInt` returns 0 for both.
+  cg.movFromMem(Rax, Rbx, kPtrKindOffset);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, notVoid);
   cg.movFromMem(Rdx, Rbx, kPtrDataOffset);
+  cg.jmp(haveToken);
+  cg.bind(notVoid);
+  cg.xorReg(Rdx, Rdx);
+  cg.bind(haveToken);
   cg.movImm(Rax, kTagInt);
   cg.pop(R12);
   cg.pop(Rbx);
@@ -15788,8 +15962,6 @@ void emitFreeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
                      const DataBlob& msgArgc, const DataBlob& msgType,
                      const DataBlob& msgFreed) {
   CodeGen::Label argcOk = cg.newLabel();
-  CodeGen::Label isPtr = cg.newLabel();
-  CodeGen::Label live = cg.newLabel();
 
   cg.bind(label);
   prologue(cg);
@@ -15800,19 +15972,7 @@ void emitFreeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
   emitArityFailCall(cg, msgArgc);
 
   cg.bind(argcOk);
-  cg.movFromMem(Rax, Rdi, 0);
-  cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagPtr));
-  cg.jcc(Jcc::Eq, isPtr);
-  emitFailCall(cg, fail, msgType);
-
-  cg.bind(isPtr);
-  cg.movFromMem(Rbx, Rdi, 8);
-  cg.movFromMem(Rax, Rbx, kPtrReleasedOffset);
-  cg.testReg(Rax);
-  cg.jcc(Jcc::Eq, live);
-  emitFailCall(cg, fail, msgFreed);
-
-  cg.bind(live);
+  emitPtrArgCheck(cg, Rdi, 0, Rbx, fail, msgType, msgFreed);
   cg.movImmToMem(Rbx, kPtrReleasedOffset, 1);
   cg.movImmToMem(Rbx, kPtrLengthOffset, 0);
   cg.xorReg(Rax, Rax);  // nil
@@ -15945,9 +16105,10 @@ void emitReadFileBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv&
 
   cg.bind(argcOk);
   cg.movFromMem(Rax, Rdi, 0);
+  cg.movFromMem(Rdx, Rdi, 8);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, isPath);
-  emitFailCall(cg, env.fail, msgPathType);
+  emitTypeTailFail(cg, msgPathType, Rax, Rdx);
 
   cg.bind(isPath);
   cg.movFromMem(R12, Rdi, 8);  // the path AotString*
@@ -16035,17 +16196,19 @@ void emitWriteFileBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv
 
   cg.bind(argcOk);
   cg.movFromMem(Rax, Rdi, 0);
+  cg.movFromMem(Rdx, Rdi, 8);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, isPath);
-  emitFailCall(cg, env.fail, msgPathType);
+  emitTypeTailFail(cg, msgPathType, Rax, Rdx);
 
   cg.bind(isPath);
   cg.movFromMem(R12, Rdi, 8);    // the path AotString*
   cg.movToMem(Rbp, kPath, R12);
   cg.movFromMem(Rax, Rdi, -16);  // args[1].tag
+  cg.movFromMem(Rdx, Rdi, -8);   // args[1].payload, for the quoted type
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, isText);
-  emitFailCall(cg, env.fail, msgContentsType);
+  emitTypeTailFail(cg, msgContentsType, Rax, Rdx);
 
   cg.bind(isText);
   cg.movFromMem(Rbx, Rdi, -8);  // args[1].payload: the contents AotString*
@@ -16094,9 +16257,10 @@ void emitFileExistsBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEn
 
   cg.bind(argcOk);
   cg.movFromMem(Rax, Rdi, 0);
+  cg.movFromMem(Rdx, Rdi, 8);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, isPath);
-  emitFailCall(cg, env.fail, msgPathType);
+  emitTypeTailFail(cg, msgPathType, Rax, Rdx);
 
   cg.bind(isPath);
   cg.movFromMem(R12, Rdi, 8);
@@ -16134,7 +16298,9 @@ void emitFsHandleCheck(CodeGen& cg, X64Reg args, X64Reg dst, CodeGen::Label fail
   cg.movFromMem(Rax, dst, kPtrKindOffset);
   cg.testReg(Rax);
   cg.jcc(Jcc::Eq, kindOk);  // kPtrKindVoid == 0
-  emitFailCall(cg, fail, msgType);
+  cg.movImm(Rax, kTagPtr);
+  cg.movReg(Rdx, dst);
+  emitTypeTailFail(cg, msgType, Rax, Rdx);
   cg.bind(kindOk);
 }
 
@@ -16169,16 +16335,18 @@ void emitFsOpenBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label ptrNew,
 
   cg.bind(argcOk);
   cg.movFromMem(Rax, Rdi, 0);
+  cg.movFromMem(Rdx, Rdi, 8);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, isPath);
-  emitFailCall(cg, env.fail, msgPathType);
+  emitTypeTailFail(cg, msgPathType, Rax, Rdx);
 
   cg.bind(isPath);
   cg.movFromMem(R12, Rdi, 8);  // the path AotString*
   cg.movFromMem(Rax, Rdi, -16);
+  cg.movFromMem(Rdx, Rdi, -8);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, isMode);
-  emitFailCall(cg, env.fail, msgModeType);
+  emitTypeTailFail(cg, msgModeType, Rax, Rdx);
 
   cg.bind(isMode);
   cg.movFromMem(Rbx, Rdi, -8);  // the mode AotString*
@@ -16268,9 +16436,10 @@ void emitFsReadBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& e
   cg.bind(argcOk);
   emitFsHandleCheck(cg, Rdi, Rbx, env.fail, msgHandleType, msgFreed);
   cg.movFromMem(Rax, Rdi, -16);
+  cg.movFromMem(Rdx, Rdi, -8);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
   cg.jcc(Jcc::Eq, isCount);
-  emitFailCall(cg, env.fail, msgCountType);
+  emitTypeTailFail(cg, msgCountType, Rax, Rdx);
 
   cg.bind(isCount);
   cg.movFromMem(R12, Rdi, -8);  // the count
@@ -16362,9 +16531,10 @@ void emitFsWriteBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& 
   cg.bind(argcOk);
   emitFsHandleCheck(cg, Rdi, Rbx, env.fail, msgHandleType, msgFreed);
   cg.movFromMem(Rax, Rdi, -16);
+  cg.movFromMem(Rdx, Rdi, -8);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, isText);
-  emitFailCall(cg, env.fail, msgTextType);
+  emitTypeTailFail(cg, msgTextType, Rax, Rdx);
 
   cg.bind(isText);
   cg.movFromMem(R12, Rdi, -8);  // the text AotString*
@@ -16439,16 +16609,18 @@ void emitFsSeekBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& e
   cg.bind(argcOk);
   emitFsHandleCheck(cg, Rdi, Rbx, env.fail, msgHandleType, msgFreed);
   cg.movFromMem(Rax, Rdi, -16);
+  cg.movFromMem(Rdx, Rdi, -8);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagInt));
   cg.jcc(Jcc::Eq, isOffset);
-  emitFailCall(cg, env.fail, msgOffsetType);
+  emitTypeTailFail(cg, msgOffsetType, Rax, Rdx);
 
   cg.bind(isOffset);
   cg.movFromMem(R12, Rdi, -8);  // the offset
   cg.movFromMem(Rax, Rdi, -32);
+  cg.movFromMem(Rdx, Rdi, -24);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, isOrigin);
-  emitFailCall(cg, env.fail, msgOriginType);
+  emitTypeTailFail(cg, msgOriginType, Rax, Rdx);
 
   cg.bind(isOrigin);
   cg.movFromMem(Rax, Rdi, -24);  // the origin AotString*
@@ -16546,9 +16718,10 @@ void emitFsPathOpBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv&
 
   cg.bind(argcOk);
   cg.movFromMem(Rax, Rdi, 0);
+  cg.movFromMem(Rdx, Rdi, 8);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, isPath);
-  emitFailCall(cg, env.fail, msgPathType);
+  emitTypeTailFail(cg, msgPathType, Rax, Rdx);
 
   cg.bind(isPath);
   cg.movFromMem(R12, Rdi, 8);
@@ -16572,7 +16745,8 @@ void emitFsPathOpBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv&
 // before the prelude call. The failure text stays a fixed prefix.
 void emitFsRenameBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
                          CodeGen::Label handle, const DataBlob& msgArgc,
-                         const DataBlob& msgPathType, const DataBlob& msgNul,
+                         const DataBlob& msgSourcePathType,
+                         const DataBlob& msgDestinationPathType, const DataBlob& msgNul,
                          const DataBlob& msgFail) {
   CodeGen::Label argcOk = cg.newLabel();
   CodeGen::Label firstOk = cg.newLabel();
@@ -16590,16 +16764,18 @@ void emitFsRenameBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv&
 
   cg.bind(argcOk);
   cg.movFromMem(Rax, Rdi, 0);
+  cg.movFromMem(Rdx, Rdi, 8);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, firstOk);
-  emitFailCall(cg, env.fail, msgPathType);
+  emitTypeTailFail(cg, msgSourcePathType, Rax, Rdx);
 
   cg.bind(firstOk);
   cg.movFromMem(R12, Rdi, 8);
   cg.movFromMem(Rax, Rdi, -16);
+  cg.movFromMem(Rdx, Rdi, -8);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, secondOk);
-  emitFailCall(cg, env.fail, msgPathType);
+  emitTypeTailFail(cg, msgDestinationPathType, Rax, Rdx);
 
   cg.bind(secondOk);
   cg.movFromMem(Rbx, Rdi, -8);
@@ -16652,9 +16828,10 @@ void emitFsListBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& e
 
   cg.bind(argcOk);
   cg.movFromMem(Rax, Rdi, 0);
+  cg.movFromMem(Rdx, Rdi, 8);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, isPath);
-  emitFailCall(cg, env.fail, msgPathType);
+  emitTypeTailFail(cg, msgPathType, Rax, Rdx);
 
   cg.bind(isPath);
   cg.movFromMem(R12, Rdi, 8);
@@ -16728,9 +16905,10 @@ void emitFsStatBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& e
 
   cg.bind(argcOk);
   cg.movFromMem(Rax, Rdi, 0);
+  cg.movFromMem(Rdx, Rdi, 8);
   cg.cmpImm32(Rax, static_cast<std::int32_t>(kTagStr));
   cg.jcc(Jcc::Eq, isPath);
-  emitFailCall(cg, env.fail, msgPathType);
+  emitTypeTailFail(cg, msgPathType, Rax, Rdx);
 
   cg.bind(isPath);
   cg.movFromMem(R12, Rdi, 8);
@@ -17021,12 +17199,14 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgBit = addText("unsupported operand types for");
   DataBlob msgNeg = addText("unsupported unary operator for type");
   DataBlob msgBitNot = addText("unsupported unary operator for type");
-  DataBlob msgCompare = addText("cannot compare these values");
+  DataBlob msgCompare = addText("cannot compare");
   DataBlob msgPrint = addText("cannot print this value");
   DataBlob msgOom = addText("out of memory");
   DataBlob msgCallNonFunc = addText("cannot call a value of type");
   DataBlob msgArity = addText("wrong number of arguments");
   DataBlob msgArrayIndexType = addText("array index must be an integer");
+  DataBlob msgInsertIndexType = addText("insert() expects an integer index");
+  DataBlob msgRemoveAtIndexType = addText("removeAt() expects an integer index");
   DataBlob msgStringIndexType = addText("string index must be an integer");
   DataBlob msgMapKeyType = addText("map keys must be strings");
   DataBlob msgBadIndex = addText("cannot index a value of type");
@@ -17069,43 +17249,43 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgTrimStartArgc = addText("trimStart() expects 0 arguments");
   DataBlob msgTrimEndArgc = addText("trimEnd() expects 0 arguments");
   DataBlob msgStrContainsArgc = addText("contains() expects 1 argument");
-  DataBlob msgStrContainsType = addText("contains() expects a string text, got '");
+  DataBlob msgStrContainsType = addText("contains() expects a string text");
   DataBlob msgStartsWithArgc = addText("startsWith() expects 1 argument");
-  DataBlob msgStartsWithType = addText("startsWith() expects a string prefix, got '");
+  DataBlob msgStartsWithType = addText("startsWith() expects a string prefix");
   DataBlob msgEndsWithArgc = addText("endsWith() expects 1 argument");
-  DataBlob msgEndsWithType = addText("endsWith() expects a string suffix, got '");
+  DataBlob msgEndsWithType = addText("endsWith() expects a string suffix");
   DataBlob msgStrIndexOfArgc = addText("indexOf() expects 1 argument");
-  DataBlob msgStrIndexOfType = addText("indexOf() expects a string text, got '");
+  DataBlob msgStrIndexOfType = addText("indexOf() expects a string text");
   DataBlob msgSubstrArgc = addText("substr() expects between 1 and 2 arguments");
-  DataBlob msgSubstrStartType = addText("substr() expects an integer start, got '");
-  DataBlob msgSubstrLengthType = addText("substr() expects an integer length, got '");
+  DataBlob msgSubstrStartType = addText("substr() expects an integer start");
+  DataBlob msgSubstrLengthType = addText("substr() expects an integer length");
   DataBlob msgStrReversedArgc = addText("reversed() expects 0 arguments");
   DataBlob msgRepeatArgc = addText("repeat() expects 1 argument");
-  DataBlob msgRepeatType = addText("repeat() expects an integer count, got '");
+  DataBlob msgRepeatType = addText("repeat() expects an integer count");
   DataBlob msgRepeatNegative = addText("repeat() count cannot be negative");
   DataBlob msgRepeatTooLarge = addText("repeat() result is too large");
   DataBlob msgSplitArgc = addText("split() expects between 0 and 1 arguments");
-  DataBlob msgSplitType = addText("split() expects a string separator, got '");
+  DataBlob msgSplitType = addText("split() expects a string separator");
   DataBlob msgLinesArgc = addText("lines() expects 0 arguments");
   DataBlob msgCharsArgc = addText("chars() expects 0 arguments");
   DataBlob msgReplaceArgc = addText("replace() expects 2 arguments");
-  DataBlob msgReplaceSearchType = addText("replace() expects a string search text, got '");
-  DataBlob msgReplaceReplType = addText("replace() expects a string replacement text, got '");
+  DataBlob msgReplaceSearchType = addText("replace() expects a string search text");
+  DataBlob msgReplaceReplType = addText("replace() expects a string replacement text");
   DataBlob msgReplaceEmpty = addText("replace() search text cannot be empty");
   DataBlob msgReplaceFirstArgc = addText("replaceFirst() expects 2 arguments");
   DataBlob msgReplaceFirstSearchType =
-      addText("replaceFirst() expects a string search text, got '");
+      addText("replaceFirst() expects a string search text");
   DataBlob msgReplaceFirstReplType =
-      addText("replaceFirst() expects a string replacement text, got '");
+      addText("replaceFirst() expects a string replacement text");
   DataBlob msgReplaceFirstEmpty = addText("replaceFirst() search text cannot be empty");
   DataBlob msgPadStartArgc = addText("padStart() expects between 1 and 2 arguments");
-  DataBlob msgPadStartWidthType = addText("padStart() expects an integer width, got '");
-  DataBlob msgPadStartFillType = addText("padStart() expects a string fill, got '");
+  DataBlob msgPadStartWidthType = addText("padStart() expects an integer width");
+  DataBlob msgPadStartFillType = addText("padStart() expects a string fill");
   DataBlob msgPadStartEmpty = addText("padStart() fill cannot be empty");
   DataBlob msgPadStartTooLarge = addText("padStart() result is too large");
   DataBlob msgPadEndArgc = addText("padEnd() expects between 1 and 2 arguments");
-  DataBlob msgPadEndWidthType = addText("padEnd() expects an integer width, got '");
-  DataBlob msgPadEndFillType = addText("padEnd() expects a string fill, got '");
+  DataBlob msgPadEndWidthType = addText("padEnd() expects an integer width");
+  DataBlob msgPadEndFillType = addText("padEnd() expects a string fill");
   DataBlob msgPadEndEmpty = addText("padEnd() fill cannot be empty");
   DataBlob msgPadEndTooLarge = addText("padEnd() result is too large");
   // The bound map methods (PHASE 7c.3g). `clear`/`clone` reuse the array
@@ -17154,6 +17334,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgRangeBounds = addText("range bounds must be integers");
   DataBlob msgSliceStart = addText("slice start must be an integer");
   DataBlob msgSliceEnd = addText("slice end must be an integer");
+  DataBlob msgSliceStepType = addText("slice step must be an integer");
   DataBlob msgSliceStep = addText("slice step must not be zero");
   DataBlob msgSliceType = addText("cannot slice a value of type");
   DataBlob textQuote = addText("\"");
@@ -17321,6 +17502,11 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   // The tails a message assembled at run time needs: the quoted-type one and
   // the `(length N)` one the collection errors carry.
   DataBlob textGotQuote = addText(", got '");
+  DataBlob textTypeQuote = addText(" '");
+  DataBlob textTypeOpen = addText("type '");
+  DataBlob textHasNoMember = addText("' has no member '");
+  DataBlob textWith = addText(" with");
+  DataBlob textAnd = addText(" and");
   DataBlob textQuoteClose = addText("'");
   DataBlob textLengthOpen = addText(" (length ");
   DataBlob textLengthClose = addText(")");
@@ -17348,7 +17534,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgFsReadArgc = addText("fsRead() expects 2 arguments");
   DataBlob msgFsReadCountType = addText("fsRead() expects an integer count");
   DataBlob msgFsWriteArgc = addText("fsWrite() expects 2 arguments");
-  DataBlob msgFsWriteTextType = addText("fsWrite() expects a string");
+  DataBlob msgFsWriteTextType = addText("fsWrite() expects a string contents");
   DataBlob msgFsWriteFailed = addText("cannot write file");
   DataBlob msgFsSeekArgc = addText("fsSeek() expects 3 arguments");
   DataBlob msgFsSeekOffsetType = addText("fsSeek() expects an integer offset");
@@ -17365,7 +17551,15 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgFsStatArgc = addText("fsStat() expects 1 argument");
   DataBlob msgFsCwdArgc = addText("fsCwd() expects 0 arguments");
   DataBlob msgFsChdirArgc = addText("fsChdir() expects 1 argument");
-  DataBlob msgFsDirPathType = addText("fs directory function expects a string path");
+  DataBlob msgFsRemovePathType = addText("fsRemove() expects a string path");
+  DataBlob msgFsRenameSourcePathType = addText("fsRename() expects a string source path");
+  DataBlob msgFsRenameDestinationPathType =
+      addText("fsRename() expects a string destination path");
+  DataBlob msgFsMkdirPathType = addText("fsMkdir() expects a string path");
+  DataBlob msgFsRmdirPathType = addText("fsRmdir() expects a string path");
+  DataBlob msgFsListPathType = addText("fsList() expects a string path");
+  DataBlob msgFsStatPathType = addText("fsStat() expects a string path");
+  DataBlob msgFsChdirPathType = addText("fsChdir() expects a string path");
   DataBlob msgFsRemoveFailed = addText("cannot remove path");
   DataBlob msgFsRenameFailed = addText("cannot rename path");
   DataBlob msgFsMkdirFailed = addText("cannot create directory");
@@ -17470,6 +17664,11 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   gMsgText.sbAppend = sbAppend;
   gMsgText.names = &convNames;
   gMsgText.textGot = &textGotQuote;
+  gMsgText.textTypeQuote = &textTypeQuote;
+  gMsgText.textTypeOpen = &textTypeOpen;
+  gMsgText.textHasNoMember = &textHasNoMember;
+  gMsgText.textWith = &textWith;
+  gMsgText.textAnd = &textAnd;
   gMsgText.quoteClose = &textQuoteClose;
   CodeGen::Label sbAppendEscaped = cg.newLabel();
   CodeGen::Label sbAppendEscapedBytes = cg.newLabel();
@@ -17795,9 +17994,9 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitArrayShiftMethod(cg, handles.arrayShiftMethod, env, msgShiftArgc);
   emitArrayUnshiftMethod(cg, handles.arrayUnshiftMethod, env, msgUnshiftArgc);
   emitArrayInsertMethod(cg, handles.arrayInsertMethod, env, msgInsertArgc,
-                        msgArrayIndexType, msgInsertRangePrefix, textLengthClose);
+                        msgInsertIndexType, msgInsertRangePrefix, textLengthClose);
   emitArrayRemoveAtMethod(cg, handles.arrayRemoveAtMethod, env, msgRemoveAtArgc,
-                          msgArrayIndexType, msgRemoveAtRangePrefix, textLengthClose);
+                          msgRemoveAtIndexType, msgRemoveAtRangePrefix, textLengthClose);
   emitArrayContainsMethod(cg, handles.arrayContainsMethod, env, msgContainsArgc);
   emitArrayIndexOfMethod(cg, handles.arrayIndexOfMethod, env, msgIndexOfArgc);
   emitArrayClearMethod(cg, handles.arrayClearMethod, env, msgClearArgc);
@@ -17910,7 +18109,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   }
   emitClosure(cg, handles.closure, handles.alloc, fail, msgOom);
   emitCellNew(cg, handles.cellNew, handles.alloc, fail, msgOom);
-  emitCall(cg, handles.call, fail, msgCallNonFunc);
+  emitCall(cg, handles.call, msgCallNonFunc);
   if (externThunks != nullptr) {
     // The box is emitted only for a signature that needs it, so a program with
     // no `ptr`-returning binding and no `ptr` callback parameter keeps its
@@ -18005,10 +18204,10 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
             handles.arrayConcat);
   emitShift(cg, handles.shiftValues, fail, msgShift);
   emitBitwise(cg, handles.bitwiseValues, fail, msgBit);
-  emitNegate(cg, handles.negateValue, fail, msgNeg);
-  emitBitNot(cg, handles.bitNotValue, fail, msgBitNot);
+  emitNegate(cg, handles.negateValue, msgNeg);
+  emitBitNot(cg, handles.bitNotValue, msgBitNot);
   emitNot(cg, handles.notValue);
-  emitCompare(cg, handles.compareValues, fail, msgCompare, env.mapFind);
+  emitCompare(cg, handles.compareValues, msgCompare, env.mapFind);
   emitStrEq(cg, handles.strEq);
   emitMapFind(cg, env.mapFind, env);
   emitBlockEnsure(cg, env.blockEnsure, env);
@@ -18032,7 +18231,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitRangeBuiltin(cg, handles.rangeBuiltin, handles.alloc, fail, msgOom,
                    msgRangeBounds);
   emitSliceBuiltin(cg, handles.sliceBuiltin, env, msgSliceStart, msgSliceEnd,
-                   msgSliceStep, msgSliceType);
+                   msgSliceStepType, msgSliceStep, msgSliceType);
   // The pointer/file/clock/argument builtins (BACKLOG §6 item 25). `strNew`,
   // `ptrNew` and `ptrTextLen` are the shared leaves; the builtins below are
   // emitted unconditionally for the pointer ones (every target can back them)
@@ -18102,25 +18301,26 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
     emitFsCloseBuiltin(cg, handles.fsCloseBuiltin, env, entry, msgFsCloseArgc,
                        msgFsCloseHandleType, msgFsCloseHandleFreed);
     emitFsPathOpBuiltin(cg, handles.fsRemoveBuiltin, env, entry.removePath,
-                        msgFsRemoveArgc, msgFsDirPathType, msgFsNul,
+                        msgFsRemoveArgc, msgFsRemovePathType, msgFsNul,
                         msgFsRemoveFailed);
     emitFsRenameBuiltin(cg, handles.fsRenameBuiltin, env, entry.renamePath,
-                        msgFsRenameArgc, msgFsDirPathType, msgFsNul,
+                        msgFsRenameArgc, msgFsRenameSourcePathType,
+                        msgFsRenameDestinationPathType, msgFsNul,
                         msgFsRenameFailed);
     emitFsPathOpBuiltin(cg, handles.fsMkdirBuiltin, env, entry.mkdirPath,
-                        msgFsMkdirArgc, msgFsDirPathType, msgFsNul,
+                        msgFsMkdirArgc, msgFsMkdirPathType, msgFsNul,
                         msgFsMkdirFailed);
     emitFsPathOpBuiltin(cg, handles.fsRmdirBuiltin, env, entry.rmdirPath,
-                        msgFsRmdirArgc, msgFsDirPathType, msgFsNul,
+                        msgFsRmdirArgc, msgFsRmdirPathType, msgFsNul,
                         msgFsRmdirFailed);
     emitFsListBuiltin(cg, handles.fsListBuiltin, env, entry, msgFsListArgc,
-                      msgFsDirPathType, msgFsNul, msgFsListFailed);
+                      msgFsListPathType, msgFsNul, msgFsListFailed);
     emitFsStatBuiltin(cg, handles.fsStatBuiltin, env, entry, msgFsStatArgc,
-                      msgFsDirPathType, msgFsNul, msgFsStatFailed);
+                      msgFsStatPathType, msgFsNul, msgFsStatFailed);
     emitFsCwdBuiltin(cg, handles.fsCwdBuiltin, env, entry, msgFsCwdArgc,
                      msgFsCwdFailed);
     emitFsPathOpBuiltin(cg, handles.fsChdirBuiltin, env, entry.chdirPath,
-                        msgFsChdirArgc, msgFsDirPathType, msgFsNul,
+                        msgFsChdirArgc, msgFsChdirPathType, msgFsNul,
                         msgFsChdirFailed);
   }
 
@@ -18142,11 +18342,11 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitAssertBuiltin(cg, handles.assertBuiltin, handles.truthy, fail, failDynamic,
                     msgAssert);
   emitPanicBuiltin(cg, handles.panicBuiltin, fail, failDynamic, msgPanic);
-  emitRoundingBuiltin(cg, handles.floorBuiltin, fail, msgFloorType, msgFloorArgc,
+  emitRoundingBuiltin(cg, handles.floorBuiltin, msgFloorType, msgFloorArgc,
                       AotRoundMode::Floor);
-  emitRoundingBuiltin(cg, handles.ceilBuiltin, fail, msgCeilType, msgCeilArgc,
+  emitRoundingBuiltin(cg, handles.ceilBuiltin, msgCeilType, msgCeilArgc,
                       AotRoundMode::Ceil);
-  emitRoundingBuiltin(cg, handles.roundBuiltin, fail, msgRoundType, msgRoundArgc,
+  emitRoundingBuiltin(cg, handles.roundBuiltin, msgRoundType, msgRoundArgc,
                       AotRoundMode::Round);
   emitSqrtBuiltin(cg, handles.sqrtBuiltin, fail, msgSqrtArgc, msgSqrtType,
                   msgSqrtNegative);
@@ -18160,7 +18360,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                             msgExpArgc, false, msgLogNonPositive);
   emitTranscendentalBuiltin(cg, handles.logBuiltin, fail, math.log, msgLogType,
                             msgLogArgc, true, msgLogNonPositive);
-  emitPowBuiltin(cg, handles.powBuiltin, fail, math.pow, msgPowType, msgPowArgc);
+  emitPowBuiltin(cg, handles.powBuiltin, math.pow, msgPowType, msgPowArgc);
   // The trigonometric builtins (PHASE 7c.5b.4b). `sin`/`cos`/`tan` share the
   // `__rem_pio2` reduction and the `__sin`/`__cos` kernels; `emitMathLib` already
   // emitted them above.
@@ -18179,7 +18379,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitAssertEqBuiltin(cg, handles.assertEqBuiltin, handles.compareValues, reprToString,
                       sbNew, sbAppend, failDynamic, fail, msgAssertEqArgc,
                       msgAssertEqDefault, textExpected, textGot, msgOom);
-  emitExitBuiltin(cg, handles.exitBuiltin, entry.exit, fail, msgExitArgc, msgExitType);
+  emitExitBuiltin(cg, handles.exitBuiltin, entry.exit, msgExitArgc, msgExitType);
   emitTimeBuiltin(cg, handles.timeBuiltin, entry.now, msgTimeArgc);
   // `platform()`/`arch()`: the target names are compile-time constants, so the
   // body only has to return a static `AotString`. They are seeded on every
@@ -18235,7 +18435,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
     cg.retInsn();
     emitRandomBuiltin(cg, handles.randomBuiltin, nextLabel, stateThunk, fail,
                       msgRandomHigh, msgRandomBounds, msgRandomArgc, msgRandomType);
-    emitSeedBuiltin(cg, handles.seedBuiltin, stateThunk, seedLabel, fail, msgSeedArgc,
+    emitSeedBuiltin(cg, handles.seedBuiltin, stateThunk, seedLabel, msgSeedArgc,
                     msgSeedType);
   }
   // `pcall(fn, args...)` (BACKLOG §6 item 4). Emitted only when the program

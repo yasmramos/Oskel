@@ -20,6 +20,13 @@ may change between minor versions.
   `link_macho_test` pins the container on every host and
   `oskel.build_hosted_own_macos` runs the image on `macos-15-intel` (x86-64); the
   arm64 runner checks the `file` type only.
+- **`oskelp` resolves the latest release and inspects registry updates.**
+  `oskelp add <name>` without `--version` writes a caret requirement for the
+  highest published release (a prerelease-only package needs an explicit
+  version), `oskelp outdated` prints the compatible and latest registry
+  versions, and `oskelp update <name> --precise <version>` pins one registry
+  version, failing when it is missing or outside the manifest requirement.
+  `tests/oskelp_test.cpp` and `tests/run_oskelp_case.cmake` pin the behavior.
 
 ### Changed
 
@@ -533,6 +540,26 @@ may change between minor versions.
   (`fsRead() expects a file handle`, not `file handle expected`), and `$slice`
   checks the receiver before the bounds so `5[1:2]` names the receiver in both
   engines. The WebAssembly pool was aligned the same way.
+  The dynamic tail is assembled too, not truncated at the fixed prefix:
+  `emitTypeTailFail` appends `, got '<type>'`, `emitTypeQuoteFail` appends
+  ` '<type>'` for a prefix that already names the condition, and
+  `emitNoMemberFail` builds `type '<t>' has no member '<name>'`. The type name
+  comes from the same table `type()` reads, so a pointer handle reports
+  `cstring` or `ptr`. A builtin, method or operator that used to stop early now
+  prints the VM's sentence: `free() expects a pointer, got 'int'`,
+  `insert() expects an integer index, got 'string'`,
+  `padStart() expects a string fill, got 'int'`, the string
+  `contains`/`startsWith`/`endsWith`/`indexOf`/`split`/`replace`/
+  `replaceFirst`/`substr`/`repeat` tails, the map `has`/`get`/`set`/`delete`
+  key tail, and `unsupported unary operator for type 'int'`. The two-operand
+  tails quote both operands too: `cannot compare 'int' with 'string'` and
+  `operator 'in' is not supported for 'int' and 'int'`; `>` and `<=` swap the
+  names, because the VM lowers them to `lessThan(b, a)` and its message is the
+  one a program sees. Two tails still stop
+  at the prefix: the arithmetic/bitwise `unsupported operand types for '<op>':
+  '<t1>' and '<t2>'`, which needs the operator symbol threaded through the
+  shared helper, and the FFI struct-field name, which names a C layout field
+  rather than a runtime value.
   `tests/native_build_runtime_error_messages.oskl` pins both halves through
   `pcall` and compares the binary's output with the VM's.
 

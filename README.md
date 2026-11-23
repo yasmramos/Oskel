@@ -196,19 +196,23 @@ skipped.
 
 `oskelp` is the Cargo-style project layer: a manifest (`oskel.toml`), a
 lockfile, dependency resolution (path and local-registry) and the
-`new`/`init`/`add`/`remove`/`publish`/`update`/`build`/`run`/`check`/`test`
-workflow. It is a standalone tool that drives `oskel` and `oskelc` as child
-processes, so the engine carries no project or dependency policy:
+`new`/`init`/`add`/`remove`/`publish`/`update`/`outdated`/`build`/`run`/
+`check`/`test` workflow. It is a standalone tool that drives `oskel` and
+`oskelc` as child processes, so the engine carries no project or dependency
+policy:
 
 ```sh
 ./build/oskelp new hello
 cd hello
 ../build/oskelp add utils --path ../utils  # ../utils is another package
-../build/oskelp add text --version "^1.0.0"  # from $OSKEL_REGISTRY
+../build/oskelp add text                    # the latest registry release
+../build/oskelp add json --version "^1.0.0"  # an explicit requirement
 ../build/oskelp run          # the VM, for the fast development loop
 ../build/oskelp build        # target/hello, the native binary
 ../build/oskelp test         # every tests/**/*.oskl
+../build/oskelp outdated     # registry updates available to the lockfile
 ../build/oskelp update       # move registry pins to newer versions
+../build/oskelp update text --precise 1.0.2  # pin one registry version
 ```
 
 `oskelp publish --registry <dir>` copies the current package into a local
@@ -227,10 +231,13 @@ oskel build <file.oskl>    compiles the script to a native binary (AOT)
 oskelc <file.oskl>         the same compiler without the interpreter
 oskelp new <dir>           creates a project (oskel.toml, src/<name>/...)
 oskelp add <name> --path <dir>  adds a path dependency to oskel.toml
-oskelp add <name> --version <req>  adds a registry dependency (OSKEL_REGISTRY)
+oskelp add <name>          adds the latest registry release (OSKEL_REGISTRY)
+oskelp add <name> --version <req>  adds an explicit registry requirement
 oskelp remove <name>       removes a dependency from oskel.toml
 oskelp publish             publishes the package into a local registry
 oskelp update [<name>]     moves registry pins to newer versions
+oskelp update <name> --precise <version>  pins one registry version
+oskelp outdated            shows registry updates available to the lockfile
 oskelp build               builds the project to target/<name>
 oskelp run                 runs the project (--native for the AOT binary)
 oskelp test                runs every tests/**/*.oskl
