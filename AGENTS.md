@@ -6,6 +6,13 @@ in `DEVELOPMENT.md`; this file records how to deliver work and how to behave.
 
 ## Delivery
 
+- **Bring the remote changes before starting any work.** Run
+  `git fetch origin` and merge (or reset the base to) the current
+  `origin/develop` **before** creating the work branch. Do it again before
+  opening the PR and after any other PR lands. Starting from a stale tree is
+  what turns a clean PR into a conflict: `develop` moves while the branch is
+  being written, and a later PR that touches the same lines makes the branch
+  `dirty` without any push to it.
 - **Every finished task ends with a pull request against `develop`.** Do not
   wait to be asked. `develop` is the base branch (CONVENTIONS.md).
 - Branch naming: `feat/phase-X.Y.Z-<slug>`, `fix/<slug>`, `docs/<slug>`.
@@ -898,6 +905,48 @@ it as a caveat:
   SDL window, with no `LD_PRELOAD`, `LD_LIBRARY_PATH` or `--link-lib`. The
   `cxxbind.end_to_end` fixture is the other guard: a non-UI binding whose
   symbols share the Skia names must stay a freestanding build.
+
+## `async` / `await` (PHASE 11.1)
+
+- `async fn` declares an **eager** function whose call returns a `Future`; the
+  annotation is the payload, so `async fn f(): int` returns `Future<int>` at the
+  type level. `await` is a prefix expression, valid only inside an `async fn`
+  body. There is no scheduler: the body runs when called and the future is
+  already settled when the caller sees it.
+- A future is a **plain map**, not a value tag: `compileMakeFuture` emits
+  `NEWTABLE` + `SETTABLE` for `{state: "fulfilled", value: <payload>, error:
+  nil}`, and `compileAwait` reads it with `GETTABLE`/`EQ`/`JMP_IF_FALSE`/`JMP`
+  plus the existing `panic` call. No opcode, no builtin and no backend change is
+  involved, which is why the VM, `oskel build` and WASM agree by construction.
+  `type(future)` is `"map"`, and a future can be passed to map code; that is the
+  deliberate trade-off of not adding a runtime tag (BACKLOG §6 item 32).
+- `compileAwait` must leave its result in the **operand's own register**, like
+  `a!!`, and free only the registers above it. Allocating a fresh result
+  register makes a call argument list non-contiguous and fails with "internal
+  compiler error: call arguments are not contiguous" as soon as `print(await f())`
+  is compiled.
+- The parser tracks `asyncDepth_`: an async function body increments it and a
+  lambda **resets it to zero**, so `() => await x` is rejected even inside an
+  async function. There is no top-level `await`, and `async fn init` is rejected
+  because the constructor is called without `await`.
+- `asyncReturnTypes_` holds the payload type of every async function in scope.
+  `compileFnDecl` puts `Future` in `functionReturnTypes_` (the call-site type)
+  and the annotation in `asyncReturnTypes_`; `inferExprType` uses the latter to
+  type `await f()` for a direct call. The table is part of `SessionSnapshot` and
+  is saved/restored around `importModule`, like `functionReturnTypes_`.
+- `currentIsAsync_` wraps every `return` value and the implicit nil epilogue in
+  a future. It is saved/restored by `compileFunctionProto` for the same reason
+  `currentReturnType_` is, so a nested lambda compiled inside an async body does
+  not inherit the wrapping.
+- `ClassMethodSig::isAsync` makes a replacement match the method's asyncness; a
+  non-async lambda for an async method is a compile error, because `await
+  obj.m()` would otherwise await a payload.
+- Tests: `tests/65_async.oskl` (payloads, recursion, values, methods, error
+  values) and `tests/65_async_modules.oskl` (imported async functions) run on
+  the VM and are compared byte for byte by `oskel.build_binary_async`,
+  `oskel.build_binary_async_modules`, `oskel.build_wasm_async` and
+  `oskel.build_wasm_async_modules`. The diagnostics live in
+  `tests/errors/async_*.oskl`.
 
 ## The VS Code extension
 

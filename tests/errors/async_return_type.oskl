@@ -1,0 +1,6 @@
+// expect-exit: 65
+// The annotation on an async function is the payload type, checked like any
+// other return.
+async fn f(): int {
+  return "s";
+}

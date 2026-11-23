@@ -682,6 +682,24 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     and a read after assignment) pin it. A global with *no* assignment anywhere is
     still a lowering error (exit 65), which is a different, compile-time case.
 
+32. **[P1]** `async`/`await` (PHASE 11.1) is the language surface without a
+    scheduler. An `async fn` body runs eagerly when called, so the future is
+    already `"fulfilled"` (or carries an error value in `value`) by the time the
+    caller sees it; `await` reads the map and never suspends. The `"pending"`
+    and `"rejected"` states are reserved in the representation but no API
+    creates them, and `await` on a pending future raises "await on a pending
+    Future is not supported yet". There is no event loop, no `then`/`catch`
+    chaining, no `spawn`/`join`, no async lambda and no async `init`. The future
+    is a plain map, so `type(future)` is `"map"` and a future can be passed to
+    code expecting a map; a dedicated runtime tag would be a new value kind in
+    all three engines. A scheduler that suspends a call and resumes it would
+    need a coroutine/continuation representation, which is a larger change than
+    this phase: it would turn the bytecode into a resumable frame and make the
+    AOT/WASM backends carry a state machine, so it stays out of scope here.
+    `tests/65_async.oskl`, `tests/65_async_modules.oskl` and the
+    `oskel.build_binary_async`/`oskel.build_wasm_async` fixtures pin the current
+    surface.
+
 ---
 
 ## 7. FFI (`src/runtime/ffi.cpp`)

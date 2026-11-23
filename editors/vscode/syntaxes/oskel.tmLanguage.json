@@ -138,11 +138,11 @@
       "patterns": [
         {
           "name": "keyword.control.oskl",
-          "match": "\\b(?:if|else|while|do|for|in|break|continue|return|switch|case|default|try|catch|defer)\\b"
+          "match": "\\b(?:if|else|while|do|for|in|break|continue|return|switch|case|default|try|catch|defer|await)\\b"
         },
         {
           "name": "storage.type.oskl",
-          "match": "\\b(?:let|var|const|fn|struct|enum|class|native|extern|import)\\b"
+          "match": "\\b(?:let|var|const|fn|async|struct|enum|class|native|extern|import)\\b"
         }
       ]
     },
@@ -262,7 +262,7 @@
         {
           "comment": "The scalar vocabulary of `isKnownTypeName` (src/ast.h), plus the `fn(...)` callback head, which the parser reads as a type.",
           "name": "support.type.primitive.oskl",
-          "match": "\\b(?:bool|int|float|double|string|error|array|map|function|range|void|any|ptr|cstring|int8|int16|int32|int64|uint8|uint16|uint32|uint64|uint|size_t)\\b"
+          "match": "\\b(?:bool|int|float|double|string|error|array|map|function|range|void|any|Future|ptr|cstring|int8|int16|int32|int64|uint8|uint16|uint32|uint64|uint|size_t)\\b"
         },
         {
           "comment": "A user type used as an annotation: `let p: Point = ...`.",

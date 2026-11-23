@@ -533,6 +533,10 @@ StmtPtr Parser::parseStatement() {
 
   if (match(Tok::Var) || match(Tok::Let) || match(Tok::Const)) return parseVarDecl();
   if (check(Tok::At)) return parseAttributedDecl();
+  if (match(Tok::Async)) {
+    consume(Tok::Fn, "expected 'fn' after 'async'");
+    return parseFnDecl(false, true);
+  }
   if (match(Tok::Fn)) return parseFnDecl();
   if (match(Tok::Native)) return parseNativeDecl();
   if (match(Tok::Extern)) return parseExternDecl();
@@ -961,9 +965,13 @@ StmtPtr Parser::parseAttributedDecl() {
   // declaration and add no bytecode.
   advance();  // '@'
   bool mustUse = parseAttributes();
+  if (match(Tok::Async)) {
+    consume(Tok::Fn, "expected 'fn' after 'async'");
+    return parseFnDecl(mustUse, true);
+  }
   if (match(Tok::Fn)) return parseFnDecl(mustUse);
   if (match(Tok::Native)) return parseNativeDecl(mustUse);
-  error(peek(), "an attribute must precede a 'fn' or 'native fn' declaration");
+  error(peek(), "an attribute must precede a 'fn', 'async fn' or 'native fn' declaration");
 }
 
 // One or more `@name` attributes. The caller has already consumed the first
@@ -983,7 +991,7 @@ bool Parser::parseAttributes() {
   return mustUse;
 }
 
-StmtPtr Parser::parseFnDecl(bool mustUse) {
+StmtPtr Parser::parseFnDecl(bool mustUse, bool isAsync) {
   const Token& keyword = previous();
   if (check(Tok::LParen)) {
     error(peek(),
@@ -998,7 +1006,12 @@ StmtPtr Parser::parseFnDecl(bool mustUse) {
   if (check(Tok::Arrow)) {
     const Token& arrow = advance();
     const bool isBlock = check(Tok::LBrace);
-    body = parseFunctionBody(arrow);
+    if (isAsync) {
+      AsyncScope scope(asyncDepth_, asyncDepth_ + 1);
+      body = parseFunctionBody(arrow);
+    } else {
+      body = parseFunctionBody(arrow);
+    }
     // An expression body is a statement of its own and needs a terminator.
     if (isBlock) {
       match(Tok::Semicolon);
@@ -1006,12 +1019,18 @@ StmtPtr Parser::parseFnDecl(bool mustUse) {
       consume(Tok::Semicolon, "expected ';' after the function body");
     }
   } else {
-    body = parseBlock();
+    if (isAsync) {
+      AsyncScope scope(asyncDepth_, asyncDepth_ + 1);
+      body = parseBlock();
+    } else {
+      body = parseBlock();
+    }
     match(Tok::Semicolon);
   }
-  return makeStmt(FnDeclStmt{name.lexeme, std::move(params), std::move(returnType),
-                             std::move(body), false, mustUse},
-                  keyword.line, keyword.col);
+  FnDeclStmt decl{name.lexeme, std::move(params), std::move(returnType), std::move(body), false,
+                  mustUse};
+  decl.isAsync = isAsync;
+  return makeStmt(std::move(decl), keyword.line, keyword.col);
 }
 
 // `native fn name(params): ret;` (PHASE 6.5): a bodyless declaration that binds
@@ -1429,6 +1448,7 @@ StmtPtr Parser::parseClassDecl() {
     StmtPtr body;
     int line;
     int col;
+    bool isAsync = false;
   };
   std::vector<StructField> fields;
   std::vector<Method> methods;
@@ -1438,10 +1458,15 @@ StmtPtr Parser::parseClassDecl() {
   while (!check(Tok::RBrace)) {
     if (check(Tok::Eof)) error(peek(), "expected '}' to close the class body");
     if (match(Tok::Semicolon)) continue;  // stray separators are harmless
-    if (match(Tok::Fn)) {
+    bool isAsync = match(Tok::Async);
+    if (isAsync) consume(Tok::Fn, "expected 'fn' after 'async'");
+    if (isAsync || match(Tok::Fn)) {
       const Token& methodName = consume(Tok::Ident, "expected a method name");
       if (methodName.lexeme == "self") {
         error(methodName, "'self' is reserved inside a class");
+      }
+      if (isAsync && methodName.lexeme == "init") {
+        error(methodName, "'init' cannot be async: the constructor calls it without awaiting");
       }
       if (!seenMethods.insert(methodName.lexeme).second) {
         throw CompileError{
@@ -1452,6 +1477,7 @@ StmtPtr Parser::parseClassDecl() {
       method.name = methodName.lexeme;
       method.line = methodName.line;
       method.col = methodName.col;
+      method.isAsync = isAsync;
       method.params = parseParams();
       for (const Param& param : method.params) {
         if (param.name == "self") error(methodName, "'self' is reserved inside a class");
@@ -1460,14 +1486,24 @@ StmtPtr Parser::parseClassDecl() {
       if (check(Tok::Arrow)) {
         const Token& arrow = advance();
         const bool isBlock = check(Tok::LBrace);
-        method.body = parseFunctionBody(arrow);
+        if (isAsync) {
+          AsyncScope scope(asyncDepth_, asyncDepth_ + 1);
+          method.body = parseFunctionBody(arrow);
+        } else {
+          method.body = parseFunctionBody(arrow);
+        }
         if (isBlock) {
           match(Tok::Semicolon);
         } else {
           consume(Tok::Semicolon, "expected ';' after the method body");
         }
       } else {
-        method.body = parseBlock();
+        if (isAsync) {
+          AsyncScope scope(asyncDepth_, asyncDepth_ + 1);
+          method.body = parseBlock();
+        } else {
+          method.body = parseBlock();
+        }
         match(Tok::Semicolon);
       }
       methods.push_back(std::move(method));
@@ -1581,6 +1617,7 @@ StmtPtr Parser::parseClassDecl() {
     lambda.name = name.lexeme + "." + method.name;
     lambda.returnType = method.returnType;
     lambda.ownerClass = name.lexeme;
+    lambda.isAsync = method.isAsync;
     ExprPtr target = makeExpr(
         MemberExpr{makeExpr(VariableExpr{"self"}, method.line, method.col), method.name, false},
         method.line, method.col);
@@ -1628,6 +1665,7 @@ StmtPtr Parser::parseClassDecl() {
     sig.name = method.name;
     sig.params = method.params;
     sig.returnType = method.returnType;
+    sig.isAsync = method.isAsync;
     constructor.classMethods.push_back(std::move(sig));
   }
 
@@ -1675,7 +1713,13 @@ ExprPtr Parser::parseLambda() {
     params = parseParams();
   }
   const Token& arrow = consume(Tok::Arrow, "expected '=>' after the lambda parameters");
-  auto body = parseFunctionBody(arrow);
+  StmtPtr body;
+  {
+    // A lambda is not an async function: `await` cannot cross its boundary,
+    // even when the lambda is written inside an async function body.
+    AsyncScope scope(asyncDepth_, 0);
+    body = parseFunctionBody(arrow);
+  }
   LambdaExpr lambda;
   lambda.params = std::move(params);
   lambda.body = std::move(body);
@@ -2262,6 +2306,17 @@ ExprPtr Parser::parsePower() {
 
 ExprPtr Parser::parseUnary() {
   DepthGuard guard(*this);
+  // `await expr` (PHASE 11.1): unwrap a `Future`. It binds like the other
+  // prefix operators, so `await f().x` awaits the call and then reads `.x`.
+  // The parser rejects it outside an `async fn`; a lambda resets the depth.
+  if (check(Tok::Await)) {
+    const Token& op = advance();
+    if (asyncDepth_ == 0) {
+      throw CompileError{"'await' is only allowed inside an 'async fn'", op.line, op.col};
+    }
+    auto operand = parseUnary();
+    return makeExpr(AwaitExpr{std::move(operand)}, op.line, op.col);
+  }
   // `try expr` (PHASE 6.7.3): prefix propagation. It binds like the other
   // prefix operators (`-`, `!`, `~`), so it applies to the whole postfix
   // operand: `try f().x` propagates the result of the member access.
