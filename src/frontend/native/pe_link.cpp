@@ -506,7 +506,11 @@ const char* dllForImport(const std::string& name) {
       "qsort", "sqrt", "pow", "sin", "cos", "tan", "log", "exp", "floor",
       "ceil", "round", "fabs", "rand", "srand", "system", "remove", "rename",
       "perror"};
+  // The UCRT does not export the legacy `__getmainargs`; the compatibility
+  // `msvcrt.dll` does, and it parses the process command line the same way.
+  static const std::unordered_set<std::string> msvcrt = {"__getmainargs"};
   if (kernel.count(name) != 0) return "kernel32.dll";
+  if (msvcrt.count(name) != 0) return "msvcrt.dll";
   if (ucrt.count(name) != 0) return "ucrtbase.dll";
   if (!name.empty() && name[0] == '_') return "ucrtbase.dll";
   throw LinkError("undefined symbol '" + name + "' has no known import DLL");
@@ -745,8 +749,9 @@ std::vector<std::string> resolvePatches(
     importIndex.emplace("ExitProcess", static_cast<std::uint32_t>(imports.size()));
     imports.push_back("ExitProcess");
   }
-  // The generated `_start` parses the process command line with the UCRT's
-  // `__getmainargs`, so `args()` sees the same vector as the VM.
+  // The generated `_start` parses the process command line with
+  // `msvcrt.dll`'s `__getmainargs` (the UCRT does not export it), so `args()`
+  // sees the same vector as the VM.
   if (importIndex.count("__getmainargs") == 0) {
     importIndex.emplace("__getmainargs", static_cast<std::uint32_t>(imports.size()));
     imports.push_back("__getmainargs");

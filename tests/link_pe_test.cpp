@@ -244,6 +244,8 @@ int main() {
         "imports ucrtbase.dll");
   check(contains(pe, idataOffset, idataSize, "kernel32.dll"),
         "imports kernel32.dll");
+  check(contains(pe, idataOffset, idataSize, "msvcrt.dll"),
+        "imports msvcrt.dll");
 
   // The first thunk follows the 14-byte program text.
   check(textSize >= 14 + 6 * 3 + 88, ".text holds the thunks and _start");

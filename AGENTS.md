@@ -629,7 +629,8 @@ it as a caveat:
   with a dedicated message. The archive test builds a `.lib` with a long member
   name and links the member through both `linkHostedExecutable` and `-r`.
 - `args()` is handled on Windows (PHASE 10.3b.3). The generated `_start`
-  imports `__getmainargs`, builds the UCRT's `argc`/`argv`, and calls `main`
+  imports `__getmainargs` from `msvcrt.dll` (the UCRT does not export it),
+  builds the CRT's `argc`/`argv`, and calls `main`
   with them in `rcx`/`rdx`; the Windows hosted runtime exports a two-instruction
   `main` wrapper (`mov rdi, rcx; mov rsi, rdx; jmp chunk`) so the chunk's
   `rdi`/`rsi` entry reads the same vector under `--linker cl` and the own

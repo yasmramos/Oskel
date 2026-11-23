@@ -2300,8 +2300,8 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
   uses it. MSVC `.lib` archives are handled by `expandCoffArchives`: the first
   and second linker members are skipped, `//` long names and `/N` references
   are resolved, and a short import object is rejected with a dedicated
-  message. `args()` is handled too: the generated `_start` calls the UCRT's
-  `__getmainargs` and passes `(argc, argv)` to the Windows `main` wrapper,
+  message. `args()` is handled too: the generated `_start` calls
+  `msvcrt.dll`'s `__getmainargs` and passes `(argc, argv)` to the Windows `main` wrapper,
   which moves `rcx`/`rdx` to the chunk's `rdi`/`rsi`; the hosted `cl` path
   uses the same wrapper. The `.pdata`/`.xdata` exception data remain; TLS is
   unsupported.
