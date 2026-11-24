@@ -241,6 +241,63 @@ void testCollectionRunsAutomaticallyAfterEnoughAllocations() {
 }
 #endif
 
+// A `clear` that allocates. `GcNode::ops` is a public pointer, so a plain map
+// can be given a table whose clear registers a new tracked array, which moves
+// `registryHead` mid-pass. The collector gathers the garbage into vectors and
+// pins it before clearing, so nothing is walking the live registry while it
+// grows (BACKLOG §8 item 4).
+std::vector<ArrayPtr>* spawnGraveyard = nullptr;
+
+void allocatingClear(GcNode& node) {
+  static_cast<Map&>(node).clear();
+  if (spawnGraveyard) spawnGraveyard->push_back(makeArray());
+}
+
+std::shared_ptr<void> retainingPin(GcNode& node) {
+  Ref<Map> handle = Ref<Map>::retaining(static_cast<Map*>(&node));
+  return std::shared_ptr<void>(new Ref<Map>(std::move(handle)),
+                               [](void* p) { delete static_cast<Ref<Map>*>(p); });
+}
+
+std::size_t plainRefCount(const GcNode& node) {
+  return static_cast<const Map&>(node).refs;
+}
+
+void mapVisitChildren(const GcNode& node, GcNode::Visitor visitor, void* context) {
+  for (const auto& entry : static_cast<const Map&>(node).entries) {
+    gcVisit(entry.second, visitor, context);
+  }
+}
+
+const GcNode::Ops allocatingMapOps = {plainRefCount, mapVisitChildren,
+                                      allocatingClear, retainingPin};
+
+void testObjectsCreatedDuringCollection() {
+  const std::size_t base = settledCount();
+  {
+    MapPtr map = makeMap();
+    map->set("self", Value(map));
+    map->ops = &allocatingMapOps;
+  }
+  assert(gcTrackedCount() == base + 1);
+
+  // The map is garbage, so the pass clears it, and each clear allocates a
+  // tracked array. Those arrays are held outside the collector, so they are
+  // alive; the pass must finish with them intact and the count honest.
+  std::vector<ArrayPtr> spawned;
+  spawnGraveyard = &spawned;
+  gcCollect();
+  spawnGraveyard = nullptr;
+
+  assert(spawned.size() == 1);
+  assert(gcTrackedCount() == base + 1);
+  // Once the outside reference is gone the next pass reclaims it, so an object
+  // created during a collection is not leaked.
+  spawned.clear();
+  gcCollect();
+  assert(gcTrackedCount() == base);
+}
+
 }  // namespace
 
 int main() {
@@ -248,6 +305,7 @@ int main() {
   testTrackIsIdempotent();
   testSelfReferencingMap();
   testMutualCycle();
+  testObjectsCreatedDuringCollection();
   testAcyclicObjectsFreedWithoutTheCollector();
   testReferencedCycleSurvives();
   testEverythingReachableFromAnOutsideReferenceSurvives();

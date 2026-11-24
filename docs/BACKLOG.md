@@ -970,9 +970,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    by the constructors and by `track()`, so nothing outside `gc.cpp` can double
    link. `tests/gc_test.cpp` now pins it: three `track()` calls leave the
    registry one entry larger, and removing the guard aborts the test.
-4. **[P1]** `gcCollect` does not handle objects created during collection: a
-   `clear` that creates an object moves `registryHead` and can invalidate the
-   iterator; pins avoid it but there is no test.
+4. **[P1] [done]** `gcCollect` does not handle objects created during
+   collection: a `clear` that creates an object moves `registryHead` and can
+   invalidate the iterator; pins avoid it but there is no test. **Done**: the
+   collector already gathers the garbage into a vector, pins every object and
+   only then calls `clear`, so no pass walks the live registry while it grows.
+   `testObjectsCreatedDuringCollection` gives a map an ops table whose `clear`
+   allocates a tracked array: the pass ends with the array alive and the count
+   honest, and the next pass reclaims it. Replacing the pin-and-clear block with
+   the naive "clear while walking" loop segfaults the test.
 5. **[P2]** `gcCollectIfNeeded` under `OSKEL_GC_STRESS` collects at every safe
    point but is not exercised by any test.
 6. **[P2]** `threshold` grows with `trackedCount` without bound.
