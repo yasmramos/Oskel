@@ -1192,9 +1192,18 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    **Done**: `tests/native_build_error.oskl` covers `error()`, `isError`,
    `type`, `.message`/`.code`, equality, `print`/`repr`, interpolation and
    `catch` recovering a returned error, and it is built and run against the VM
-   by `tests/build_binary.cmake`. A wrong arity is pinned by two fixtures
-   between them: `tests/native_build_builtin_arity.oskl` drives every
+   by `tests/build_binary.cmake`. `pcall` is implemented (§6 item 4) and pinned
+   by `tests/native_build_pcall.oskl` (`oskel.build_binary_pcall`): a success,
+   a caught `panic` (the only thing `pcall` catches — a *returned* `error(...)`
+   is a success whose `value` is the error), a nested `pcall`, a closure
+   capture, and structural equality over a map holding an array, an array
+   holding a map and mismatches in both. A wrong arity is pinned by two
+   fixtures between them: `tests/native_build_builtin_arity.oskl` drives every
    fixed-arity builtin through `pcall`, and `tests/native_build_arity.oskl`
+   calls a function *value* with too few and too many arguments (a direct call
+   is a compile-time error, so the runtime guard is only reachable through a
+   value), printing `two() expects 2 arguments, got 1` and the rest byte for
+   byte identical to the VM (`oskel.build_binary_arity`).
    calls a function *value* with too few and too many arguments (a direct call
    is a compile-time error, so the runtime guard is only reachable through a
    value), printing `two() expects 2 arguments, got 1` and the rest byte for
