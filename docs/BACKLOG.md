@@ -199,9 +199,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    caller's contract (`VM::jitFor`).
 4. **[P1] [done]** `Jit::get` keys on `proto.get()`; if a `Bytecode` is freed
    and another lands at the same address the cache returns the wrong JIT.
-   **Done**: not reachable. Each cache entry holds a `shared_ptr` to its proto,
-   so the address cannot be reused while the entry exists (`include/jit/jit.h`
-   documents it). The cache's unbounded growth is item 2.
+   **Not reachable**: the entry owns the `shared_ptr` (that is what keeps the
+   address stable), and eviction drops the reference together with the entry,
+   so a key never outlives the proto it names. The invariant is now pinned by
+   `jit_test`: `get` raises the proto's `use_count` and the entry outlives the
+   caller's reference.
 5. **[P1] [done]** `jitHostSupported()` does not cover macOS. **Done**: it now
    covers x86-64 macOS (the same System V ABI as Linux), and `jit_test` runs
    there. Apple Silicon is arm64 and stays on the interpreter. The executable

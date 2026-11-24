@@ -441,6 +441,22 @@ int main() {
     check(oldestAgain != nullptr, "an evicted proto recompiles on demand");
     check(jit.size() <= Jit::kMaxEntries, "recompiling an evicted proto keeps the cap");
 
+    // The cache keys on the proto address, so it must own each proto it
+    // compiled: otherwise a freed proto could leave a stale key behind and a
+    // different `Bytecode` allocated at the same address would resolve to the
+    // old compiled code (BACKLOG §5 item 4). The entry's `shared_ptr` is what
+    // makes that impossible, so assert the reference count actually rises.
+    {
+      Jit jit;
+      std::shared_ptr<const Bytecode> owned = protos.front();
+      const long before = owned.use_count();
+      jit.get(owned);
+      check(owned.use_count() == before + 1,
+            "the cache holds its own reference to a compiled proto");
+      owned.reset();
+      check(jit.size() == 1, "the entry outlives the caller's reference");
+    }
+
     // `clear` empties both the map and the insertion order.
     jit.clear();
     check(jit.size() == 0, "clear drops every entry");
