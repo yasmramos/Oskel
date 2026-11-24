@@ -546,6 +546,11 @@ struct Array : RefCounted, GcNode {
 struct Map : RefCounted, GcNode {
   std::vector<std::pair<std::string, Value>> entries;
   std::unordered_map<std::string, size_t> index;
+  // Class identity (PHASE 12). A plain map leaves both empty; a class
+  // instance carries the class name and a separate method table, so methods
+  // never appear in `entries` (iteration, `len` and printing see fields only).
+  std::string className;
+  MapPtr methods;
 
   Map() : GcNode(mapGcOps) {}
 

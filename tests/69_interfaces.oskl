@@ -1,0 +1,52 @@
+// PHASE 12.1: `interface` and its `trait` alias.
+//
+// An interface is a compile-time contract: a class that says `implements`
+// must provide every method with the declared arity. The declaration emits no
+// bytecode, so the VM, the AOT backend and WebAssembly all run the same class
+// desugaring; the value is still a map whose methods are closures.
+
+interface Shape {
+  fn area(): double;
+  fn name(): string;
+}
+
+trait Describable {
+  fn describe(): string;
+}
+
+class Circle implements Shape, Describable {
+  r: double;
+  fn init(r: double) { self.r = r; }
+  fn area(): double { return 3.0 * self.r * self.r; }
+  fn name(): string { return "circle"; }
+  fn describe(): string { return self.name() + ":" + str(self.area()); }
+}
+
+class Square implements Shape, Describable {
+  side: double;
+  fn init(side: double) { self.side = side; }
+  fn area(): double { return self.side * self.side; }
+  fn name(): string { return "square"; }
+  fn describe(): string { return self.name() + ":" + str(self.area()); }
+}
+
+// Interfaces are dynamic: a list holds different classes and each call
+// dispatches to the receiver's own method table.
+let shapes = [Circle(2.0), Square(3.0)];
+assertEq(shapes[0].area(), 12.0);
+assertEq(shapes[1].area(), 9.0);
+assertEq(shapes[0].describe(), "circle:12");
+assertEq(shapes[1].describe(), "square:9");
+
+// An interface may be declared after the class that implements it: the parser
+// validates every `implements` once the whole module has been parsed.
+class Late implements Later {
+  fn ping(): int { return 7; }
+}
+interface Later {
+  fn ping(): int;
+}
+assertEq(Late().ping(), 7);
+
+// A class without an implementation is rejected by the parser; see
+// tests/errors/interface_missing_method.oskl and tests/errors/interface_arity.oskl.

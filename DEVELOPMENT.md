@@ -2491,10 +2491,30 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
   Input widgets (`Input`, `Checkbox`, `Slider`), real font metrics and text
   wrapping are still pending.
 
+### PHASE 12 — Interfaces and traits ✅
+
+`interface Name { fn method(params): ret; ... }` declares a compile-time
+contract; `trait` is a spelling alias. A class opts in with
+`class Name implements A, B { ... }`. The parser validates, once the whole
+module is parsed (so an interface may follow the class), that every listed
+interface exists and that the class provides each method with the declared
+arity and variadic shape. A missing method, a wrong arity, a variadic mismatch
+or an unknown interface is a compile error (exit 65).
+
+The declaration emits no bytecode and adds no opcode: an instance is still the
+class desugaring (a map plus closures), so the VM, the AOT backend and the WASM
+backend agree by construction. Interfaces are not a runtime type: there is no
+inheritance, no default method body and no `instanceof`; polymorphism remains
+dynamic through the receiver's method table. The contract is module-local (an
+imported interface is not re-exported to a consumer's `implements` yet).
+Fixtures: `tests/69_interfaces.oskl` (VM), `tests/native_build_interfaces.oskl`
+(AOT and WASM), `tests/errors/interface_missing_method.oskl` and
+`tests/errors/interface_arity.oskl` (rejections). See `docs/language.md`
+§4.8.1.
+
 ### Post-1.0 — Other features
 
 - **Cosmopolitan (APE)** for CLI multi-platform (optional).
-- **Interfaces/traits** (for generic code without full generics).
 - **Dynamic FFI** (`dlopen`, `dlsym`, runtime stubs with the project's own JIT).
 - **Hot reload** (1.1+).
 - **Extended stdlib**: JSON, dates, bytes, regex, networking.

@@ -23,6 +23,7 @@ const char* Value::typeName() const {
     case VType::Array:
       return "array";
     case VType::Map:
+      if (data.map && !data.map->className.empty()) return data.map->className.c_str();
       return "map";
     case VType::Func:
       return "function";
@@ -91,12 +92,16 @@ bool Value::equalsImpl(
     case VType::Map: {
       const RefCounted* self = data.map.get();
       const RefCounted* that = other.data.map.get();
+      // A class instance is an object: equality is identity, never structural.
+      const Map& a = map();
+      const Map& b = other.map();
+      if (!a.className.empty() || !b.className.empty()) {
+        return a.className == b.className && self == that;
+      }
       for (const auto& pair : visited) {
         if (pair.first == self && pair.second == that) return true;
       }
       visited.emplace_back(self, that);
-      const auto& a = map();
-      const auto& b = other.map();
       if (a.size() != b.size()) return false;
       for (const auto& entry : a.entries) {
         const Value* v = b.get(entry.first);
@@ -197,15 +202,25 @@ static void writeValue(std::string& out, const Value& value, bool repr, int dept
       break;
     }
     case VType::Map: {
-      const auto& entries = value.map().entries;
-      out += '{';
+      const Map& map = value.map();
+      const auto& entries = map.entries;
+      if (!map.className.empty()) {
+        out += map.className;
+        out += entries.empty() ? " {}" : " { ";
+      } else {
+        out += '{';
+      }
       for (size_t i = 0; i < entries.size(); ++i) {
         if (i) out += ", ";
         out += quoteString(entries[i].first);
         out += ": ";
         writeValue(out, entries[i].second, true, depth + 1);
       }
-      out += '}';
+      if (map.className.empty() || entries.empty()) {
+        out += '}';
+      } else {
+        out += " }";
+      }
       break;
     }
     case VType::Func: {
@@ -491,12 +506,18 @@ void arrayClear(GcNode& node) { std::vector<Value>().swap(static_cast<Array&>(no
 std::size_t mapRefCount(const GcNode& node) { return static_cast<const Map&>(node).refs; }
 
 void mapVisit(const GcNode& node, GcNode::Visitor visitor, void* context) {
-  for (const auto& entry : static_cast<const Map&>(node).entries) {
+  const Map& map = static_cast<const Map&>(node);
+  for (const auto& entry : map.entries) {
     gcVisit(entry.second, visitor, context);
   }
+  if (map.methods) gcVisit(Value(map.methods), visitor, context);
 }
 
-void mapClear(GcNode& node) { static_cast<Map&>(node).clear(); }
+void mapClear(GcNode& node) {
+  Map& map = static_cast<Map&>(node);
+  map.clear();
+  map.methods = MapPtr();
+}
 
 std::size_t functionRefCount(const GcNode& node) { return static_cast<const Function&>(node).refs; }
 
