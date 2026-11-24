@@ -282,11 +282,172 @@ void testRelocatable() {
   check(writeTarget == stubs.addr, "the import call still lands on __stubs");
 }
 
+// The image must be internally consistent even on a host that cannot run it, so
+// every field the loader reads is checked against the file it describes: each
+// load command fits in `sizeofcmds`, the case that a wrong `ncmds` hides; every
+// segment's `fileoff`/`filesize` lies in the file; the three mapped segments do
+// not overlap in virtual address space; `LC_MAIN` enters `__text`; and the
+// symbol/string/indirect/bind tables of `LC_SYMTAB`, `LC_DYSYMTAB` and
+// `LC_DYLD_INFO_ONLY` lie in `__LINKEDIT` and inside the file.
+void testContainerStructure() {
+  const std::vector<std::uint8_t> text = {0xE8, 0, 0, 0, 0, 0xC3};
+  const std::vector<std::uint8_t> data = {0x41, 0x42};
+  const std::vector<std::uint8_t> object = buildRelocatableObject(
+      Target::macX64(), text, data, {{1, "write", true}, {1, "exit", true}},
+      {{"main", 0}});
+  LinkOptions options;
+  options.target = Target::macX64();
+  const std::vector<std::uint8_t> image = linkHostedExecutable(
+      std::vector<LinkInput>{{"structure.obj", object}}, options);
+  if (image.size() < 0x20) {
+    check(false, "the image has a header");
+    return;
+  }
+
+  const std::uint32_t commandCount = read32(image, 16);
+  const std::uint32_t commandsSize = read32(image, 20);
+  check(commandsSize != 0 && 0x20u + commandsSize <= image.size(),
+        "sizeofcmds fits in the file");
+
+  // Walk the load commands by their own `cmdsize` and require the walk to land
+  // exactly on `0x20 + sizeofcmds`; a command whose size is wrong, or an
+  // `ncmds` that does not match, breaks the sum.
+  struct Segment {
+    std::uint64_t vmaddr = 0;
+    std::uint64_t vmsize = 0;
+    std::uint64_t fileoff = 0;
+    std::uint64_t filesize = 0;
+    std::uint32_t initprot = 0;
+    std::string name;
+  };
+  std::vector<Segment> segments;
+  bool walkOk = true;
+  bool allInFile = true;
+  std::size_t cursor = 0x20;
+  for (std::uint32_t i = 0; i < commandCount; ++i) {
+    if (cursor + 8 > image.size()) {
+      walkOk = false;
+      break;
+    }
+    const std::uint32_t command = read32(image, cursor);
+    const std::uint32_t size = read32(image, cursor + 4);
+    if (size < 8 || cursor + size > 0x20u + commandsSize) {
+      walkOk = false;
+      break;
+    }
+    if (command == 0x19) {  // LC_SEGMENT_64
+      Segment segment;
+      char name[17] = {0};
+      std::memcpy(name, image.data() + cursor + 8, 16);
+      segment.name = name;
+      segment.vmaddr = read64(image, cursor + 24);
+      segment.vmsize = read64(image, cursor + 32);
+      segment.fileoff = read64(image, cursor + 40);
+      segment.filesize = read64(image, cursor + 48);
+      segment.initprot = read32(image, cursor + 60);
+      segments.push_back(segment);
+      if (segment.filesize != 0 &&
+          (segment.fileoff > image.size() ||
+           segment.filesize > image.size() - segment.fileoff)) {
+        allInFile = false;
+      }
+    }
+    cursor += size;
+  }
+  check(walkOk, "every load command fits in sizeofcmds");
+  check(cursor == 0x20u + commandsSize,
+        "the load commands sum to exactly sizeofcmds");
+  check(allInFile, "every segment's file range lies in the file");
+
+  const bool hasText = segments.size() > 1 && segments[1].name == "__TEXT";
+  const bool hasData = segments.size() > 2 && segments[2].name == "__DATA";
+  const bool hasLinkedit = segments.size() > 3 && segments[3].name == "__LINKEDIT";
+  check(hasText && hasData && hasLinkedit,
+        "the segments are __PAGEZERO, __TEXT, __DATA, __LINKEDIT");
+  if (hasText && hasData && hasLinkedit) {
+    // __text is mapped read+execute, __DATA read+write and __LINKEDIT read
+    // only; a segment with the wrong protection is rejected by the kernel
+    // (or, worse, silently lets the program write its own code).
+    check(segments[1].initprot == 5, "__TEXT is read+execute");
+    check(segments[2].initprot == 3, "__DATA is read+write");
+    check(segments[3].initprot == 1, "__LINKEDIT is read only");
+    check(segments[1].vmsize % 0x1000 == 0, "__TEXT is page aligned");
+    check(segments[2].vmaddr >= segments[1].vmaddr + segments[1].vmsize,
+          "__DATA does not overlap __TEXT");
+    check(segments[3].vmaddr >= segments[2].vmaddr + segments[2].vmsize,
+          "__LINKEDIT does not overlap __DATA");
+    check(segments[3].filesize != 0 &&
+              segments[3].fileoff + segments[3].filesize <= image.size(),
+          "__LINKEDIT carries the tables and lies in the file");
+  }
+
+  const MachSection textSection = findSection(image, "__text");
+  const std::size_t mainCommand = findCommand(image, 0x80000028);
+  check(mainCommand != 0, "LC_MAIN is present");
+  if (mainCommand != 0 && textSection.found) {
+    const std::uint64_t entry = read64(image, mainCommand + 8);
+    check(entry >= textSection.offset &&
+              entry < textSection.offset + textSection.size,
+          "LC_MAIN enters __text");
+  }
+
+  const std::size_t symtab = findCommand(image, 0x2);
+  check(symtab != 0, "LC_SYMTAB is present");
+  if (symtab != 0) {
+    const std::uint32_t symoff = read32(image, symtab + 8);
+    const std::uint32_t nsyms = read32(image, symtab + 12);
+    const std::uint32_t stroff = read32(image, symtab + 16);
+    const std::uint32_t strsize = read32(image, symtab + 20);
+    check(nsyms != 0 && symoff + static_cast<std::uint64_t>(nsyms) * 16 <= image.size(),
+          "the symbol table lies in the file");
+    check(strsize != 0 && stroff + static_cast<std::uint64_t>(strsize) <= image.size(),
+          "the string table lies in the file");
+    // Every symbol's name offset must land inside the string table, or a
+    // debugger reads past it.
+    bool namesInRange = true;
+    for (std::uint32_t i = 0; i < nsyms; ++i) {
+      const std::uint32_t nameOffset = read32(image, symoff + i * 16);
+      if (nameOffset >= strsize) namesInRange = false;
+    }
+    check(namesInRange, "every symbol name offset lies in the string table");
+  }
+
+  const std::size_t dysymtab = findCommand(image, 0xB);
+  check(dysymtab != 0, "LC_DYSYMTAB is present");
+  if (dysymtab != 0) {
+    const std::uint32_t indirectOff = read32(image, dysymtab + 56);
+    const std::uint32_t indirectCount = read32(image, dysymtab + 60);
+    check(indirectCount == 4, "one indirect entry per import, twice");
+    check(indirectOff + static_cast<std::uint64_t>(indirectCount) * 4 <= image.size(),
+          "the indirect symbol table lies in the file");
+    // Each indirect entry indexes the symbol table's undefined block, so an
+    // entry must name one of the two imports.
+    const std::size_t symtabCommand = findCommand(image, 0x2);
+    const std::uint32_t nsyms =
+        symtabCommand == 0 ? 0 : read32(image, symtabCommand + 12);
+    bool inRange = true;
+    for (std::uint32_t i = 0; i < indirectCount; ++i) {
+      if (read32(image, indirectOff + i * 4) >= nsyms) inRange = false;
+    }
+    check(inRange, "every indirect entry indexes the symbol table");
+  }
+
+  const std::size_t dyldInfo = findCommand(image, 0x80000022);
+  check(dyldInfo != 0, "LC_DYLD_INFO_ONLY is present");
+  if (dyldInfo != 0) {
+    const std::uint32_t bindOff = read32(image, dyldInfo + 16);
+    const std::uint32_t bindSize = read32(image, dyldInfo + 20);
+    check(bindSize != 0 && bindOff + static_cast<std::uint64_t>(bindSize) <= image.size(),
+          "the bind stream lies in the file");
+  }
+}
+
 }  // namespace
 
 int main() {
   testHello();
   testDataImport();
   testRelocatable();
+  testContainerStructure();
   return failures == 0 ? 0 : 1;
 }

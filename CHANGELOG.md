@@ -153,6 +153,11 @@ may change between minor versions.
   runner accepts an optional `// expect-message:` header, so the three new
   `tests/errors/*_malformed_after_use.oskl` fixtures pin the message and not
   just the exit code.
+- **Structural tests for the Mach-O and PE containers.** Each image is now
+  checked field by field on every host: load-command sizes sum to `sizeofcmds`,
+  segment file ranges and VM ranges are valid, `LC_MAIN` enters `__text`, the
+  symbol/indirect/bind tables lie inside the file, and the PE sections, data
+  directories and import descriptors are in range and terminated.
 - **A test for an object created during a collection.** A `clear` that
   allocates used to have no coverage; the new case pins that the pass pins the
   garbage before clearing and leaves the new object intact.

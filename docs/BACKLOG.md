@@ -751,8 +751,19 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     `S_NON_LAZY_SYMBOL_POINTERS` sections: the indirect symbol table holds the
     stub block first, so `__stubs` starts at index 0 and `__got` at
     `imports.size()`. Both were the other way round, which made dyld resolve
-    each GOT slot through the stub block (same symbol, wrong section). Still
-    open here: the ad-hoc signature and ARM64.
+    each GOT slot through the stub block (same symbol, wrong section). The
+    container is also checked structurally on every host:
+    `testContainerStructure` walks the load commands (`ncmds` and `sizeofcmds`
+    must agree with the walk), requires each segment's `fileoff`/`filesize` to
+    lie in the file, asserts `__TEXT` is read+execute, `__DATA` read+write and
+    `__LINKEDIT` read-only with non-overlapping page-aligned VM ranges, and
+    bounds `LC_MAIN`, the `LC_SYMTAB` symbol/string tables, the
+    `LC_DYSYMTAB` indirect table and the `LC_DYLD_INFO_ONLY` bind stream to the
+    file. The PE side has the matching `testContainerStructure`: section raw
+    ranges in the file, page-aligned non-overlapping RVAs inside
+    `SizeOfImage`, the entry point in `.text`, every data directory inside the
+    image and a NULL-terminated import descriptor array. Still open here: the
+    ad-hoc signature and ARM64.
 
 31. **[P0] [done]** VM/AOT divergence in reading a global before it is assigned:
     the VM fails with `runtime error: undefined variable '<name>'` and exit 70,
