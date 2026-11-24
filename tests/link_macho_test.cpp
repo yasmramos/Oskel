@@ -151,9 +151,52 @@ void testHello() {
   check(dysymtab != 0 && read32(pe, dysymtab + 60) == 2, "two indirect symbols");
 }
 
+void testRelocatable() {
+  // `main` calls `helper`, which a second object defines, and `write`, which
+  // stays undefined. `-r` merges the two objects and keeps both relocations;
+  // the executable link resolves `helper` in the merged text and `write`
+  // through `__stubs`.
+  const std::vector<std::uint8_t> mainText = {0xE8, 0, 0, 0, 0, 0xE8, 0, 0, 0, 0, 0xC3};
+  const std::vector<std::uint8_t> helperText = {0xC3};
+  const std::vector<std::uint8_t> mainObject = buildRelocatableObject(
+      Target::macX64(), mainText, {}, {{1, "helper", true}, {6, "write", true}},
+      {{"main", 0}});
+  const std::vector<std::uint8_t> helperObject = buildRelocatableObject(
+      Target::macX64(), helperText, {}, {}, {{"helper", 0}});
+
+  LinkOptions options;
+  options.target = Target::macX64();
+  const std::vector<std::uint8_t> merged = linkRelocatable(
+      std::vector<LinkInput>{{"main.o", mainObject}, {"helper.o", helperObject}},
+      options);
+  check(read32(merged, 0) == 0xFEEDFACF, "the relocatable output is Mach-O");
+  check(read32(merged, 12) == 1, "the relocatable output is MH_OBJECT");
+  check(contains(merged, 0, merged.size(), "_main"), "the relocatable output keeps main");
+  check(contains(merged, 0, merged.size(), "_helper"), "the relocatable output keeps helper");
+  check(contains(merged, 0, merged.size(), "_write"), "the relocatable output keeps write");
+
+  const std::vector<std::uint8_t> image = linkHostedExecutable(
+      std::vector<LinkInput>{{"merged.o", merged}}, options);
+  const MachSection text = findSection(image, "__text");
+  const MachSection stubs = findSection(image, "__stubs");
+  check(text.found && text.size == 17, "the executable carries both text blocks");
+  check(stubs.found && stubs.size == 6, "write still reaches a stub");
+  if (!text.found || !stubs.found) return;
+  const std::int32_t helperCall =
+      static_cast<std::int32_t>(read32(image, text.offset + 1));
+  const std::uint64_t helperTarget = text.addr + 1 + 4 + helperCall;
+  const std::uint64_t helperAddress = text.addr + 16;  // second object, 16-aligned
+  check(helperTarget == helperAddress, "the cross-object call lands on helper");
+  const std::int32_t writeCall =
+      static_cast<std::int32_t>(read32(image, text.offset + 6));
+  const std::uint64_t writeTarget = text.addr + 6 + 4 + writeCall;
+  check(writeTarget == stubs.addr, "the import call still lands on __stubs");
+}
+
 }  // namespace
 
 int main() {
   testHello();
+  testRelocatable();
   return failures == 0 ? 0 : 1;
 }

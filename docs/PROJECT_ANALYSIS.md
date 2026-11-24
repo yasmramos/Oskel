@@ -1,6 +1,6 @@
 # Oskel — Project Analysis
 
-Date: 2026-11-08 · Branch: `develop` · Language version: **0.1.0**
+Date: 2026-11-23 · Branch: `develop` · Language version: **0.1.0**
 
 This analysis reflects the **actual code in the repository** (about 12,300
 lines of engine C++ under `src/` and `include/`, plus about 6,300 lines for the
@@ -23,8 +23,8 @@ tests and no CI).
 | Register-based VM | PHASE 6 complete | `src/runtime/vm.cpp` (815 L); **39/40 opcodes** (`static_assert(kOpcodeCount <= 40)`) |
 | AST interpreter | **Retired** | no `src/interpreter.cpp`; the VM is the only engine |
 | Shared runtime | Working | `src/value.cpp`, `src/ops.cpp` (operators), `src/runtime/builtins.cpp` (1,524 L), `src/gc.cpp` |
-| AOT backend | PHASE 7 in progress (7a, 7b, 7c.0–7c.2) | `src/frontend/native/*` (codegen, lower, runtime, dtoa, elf, pe, arena, freestanding platform, entry) |
-| Tests | 160 `.oskl` under `tests/` (75 numbered, 82 `native_build_*` AOT fixtures, 3 named) + 157 under `tests/errors/` + 12 under `tests/check/` + 18 top-level examples (+ 4 subdirectory demos) + 25 C++ test sources | `tests/`, `tests/errors/`, `tests/check/`, `examples/`, wired into CTest |
+| AOT backend | PHASE 7 in progress (7f.11 done) | `src/frontend/native/*` (codegen, lower, runtime, dtoa, elf, pe, arena, freestanding platform, entry) |
+| Tests | 162 `.oskl` under `tests/` (75 numbered, 84 `native_build_*` AOT fixtures, 3 named) + 159 under `tests/errors/` + 12 under `tests/check/` + 18 top-level examples (+ 4 subdirectory demos) + 26 C++ test sources | `tests/`, `tests/errors/`, `tests/check/`, `examples/`, wired into CTest |
 | CI | Two workflows | `.github/workflows/{cmake-multi-platform,artifacts}.yml` (Linux, Windows, macOS) |
 
 Build (`sh build.sh`) and the full CTest suite run clean on Linux x86-64, and

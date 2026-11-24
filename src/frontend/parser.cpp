@@ -139,24 +139,28 @@ Parser::TopLevelScope::~TopLevelScope() { flag_ = previous_; }
 StmtPtr Parser::parseProgram() {
   TopLevelScope topLevel(atTopLevel_);
   // A `struct` name is visible to the whole module, like a hoisted `fn`, so a
-  // literal or an annotation may appear before the declaration. `struct` is a
-  // keyword, so the only `struct Name` sequence is a declaration; a name that
-  // is never declared this way stays out of the set, keeping `name { ... }` a
-  // variable followed by a block.
-  for (size_t i = 0; i + 1 < tokens_.size(); ++i) {
-    if (tokens_[i].type == Tok::Struct && tokens_[i + 1].type == Tok::Ident) {
+  // literal or an annotation may appear before the declaration. The pre-scan
+  // requires the `{` every declaration needs: a malformed `struct Name` must
+  // not make `Name { ... }` parse as a literal elsewhere, and the declaration
+  // itself reports the missing brace.
+  auto declaresType = [&](size_t i, Tok kind) {
+    return tokens_[i].type == kind && i + 2 < tokens_.size() &&
+           tokens_[i + 1].type == Tok::Ident && tokens_[i + 2].type == Tok::LBrace;
+  };
+  for (size_t i = 0; i + 2 < tokens_.size(); ++i) {
+    if (declaresType(i, Tok::Struct)) {
       structNames_.insert(tokens_[i + 1].lexeme);
     }
     // A `class` name is visible to the whole module too, so an annotation
     // written before the declaration is still accepted. It is kept apart from
     // `structNames_` so `Name { ... }` stays a struct literal only for a real
     // `struct` (a class is instantiated by calling its name, not with braces).
-    if (tokens_[i].type == Tok::Class && tokens_[i + 1].type == Tok::Ident) {
+    if (declaresType(i, Tok::Class)) {
       classNames_.insert(tokens_[i + 1].lexeme);
     }
     // An `enum` name is visible to the whole module too: `Color.RED` may be
     // written before the declaration, and `Color` is a valid annotation.
-    if (tokens_[i].type == Tok::Enum && tokens_[i + 1].type == Tok::Ident) {
+    if (declaresType(i, Tok::Enum)) {
       enumNames_.insert(tokens_[i + 1].lexeme);
     }
   }
@@ -1969,6 +1973,12 @@ StmtPtr Parser::parseImport() {
       while (true) {
         if (check(Tok::RBrace)) break;
         const Token& name = consume(Tok::Ident, "expected an imported name");
+        // `from` is the contextual keyword that follows the list, not a name
+        // the import may introduce: allowing it would make the declaration
+        // ambiguous with a user binding named `from`.
+        if (name.lexeme == "from") {
+          error(name, "'from' cannot be used as an imported name");
+        }
         // An imported enum is a name the import introduces, not a binding that
         // shadows one; a local enum of the same name still wins and is rejected.
         if (importedEnumNames_.count(name.lexeme) == 0) rejectEnumNameAsBinding(name);
@@ -1981,6 +1991,12 @@ StmtPtr Parser::parseImport() {
       error(peek(), "expected 'from' after the imported names");
     }
     advance();
+    // A module path that starts with `from` is the same identifier as the
+    // keyword that just preceded it, so `import { x } from from;` is
+    // ambiguous. Reject it instead of guessing which `from` is the module.
+    if (check(Tok::Ident) && peek().lexeme == "from") {
+      error(peek(), "'from' cannot be used as a module name in a selective import");
+    }
     stmt.module = parseImportPath();
     consume(Tok::Semicolon, "expected ';' after the import declaration");
     return makeStmt(std::move(stmt), keyword.line, keyword.col);

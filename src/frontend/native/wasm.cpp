@@ -813,6 +813,7 @@ struct Runtime {
 
   // Static strings the helpers and the builtins share.
   std::uint32_t sNil = 0, sTrue = 0, sFalse = 0, sNan = 0, sInf = 0, sNegInf = 0,
+                sInfinity = 0,
                 sZero = 0, sNegZero = 0, pow10Table = 0,
                 sDotDot = 0, sDotDotEq = 0, sPrefix = 0, sNewline = 0,
                 sSpace = 0, sQuote = 0, sErrorPrefix = 0;
@@ -904,7 +905,7 @@ struct Runtime {
                 arraySet = 0, mapFind = 0, mapSet = 0, mapGet = 0,
                 mapDelete = 0, mapClear = 0, equals = 0, toStrDepth = 0,
                 reprDepth = 0, slice = 0, parseIntStr = 0,
-                parseDoubleStr = 0;
+                parseDoubleStr = 0, wordMatch = 0;
   std::uint32_t newPtr = 0, ptrTextLen = 0, ptrText = 0, ptrTypeName = 0;
 
   std::uint32_t opAdd = 0, opSub = 0, opMul = 0, opDiv = 0, opMod = 0,
@@ -956,6 +957,7 @@ struct Runtime {
     sNan = pool.addString("nan");
     sInf = pool.addString("inf");
     sNegInf = pool.addString("-inf");
+    sInfinity = pool.addString("infinity");
     sZero = pool.addString("0");
     sNegZero = pool.addString("-0");
     std::vector<double> powers;
@@ -1256,6 +1258,7 @@ struct Runtime {
   std::uint32_t emitSlice();
   std::uint32_t emitParseIntStr();
   std::uint32_t emitParseDoubleStr();
+  std::uint32_t emitWordMatch();
   std::uint32_t emitBinary(int op, std::uint32_t failAddress, const char* failText);
   std::uint32_t emitUnary(int op);
   std::uint32_t emitCompare(int op);
@@ -12025,6 +12028,91 @@ std::uint32_t Runtime::emitParseIntStr() {
   return index;
 }
 
+// `(p, end, literal, length) -> i32`: case-insensitive comparison of the
+// byte range `[p, end)` with a raw literal (the address points at the bytes,
+// not at the AotString header). Used for the `inf`/`infinity`/`nan` spellings.
+std::uint32_t Runtime::emitWordMatch() {
+  std::uint32_t index = m.reserveFunction(m.typeFor({kI32, kI32, kI32, kI32}, {kI32}));
+  Func f(m, index, {kI32, kI32, kI32, kI32});
+  std::uint32_t i = f.addLocal(kI32), a = f.addLocal(kI32), b = f.addLocal(kI32);
+
+  f.lget(1);
+  f.lget(0);
+  f.i32Sub();
+  f.lget(3);
+  f.i32Ne();
+  f.if_();
+  f.i32c(0);
+  f.ret();
+  f.end();
+
+  f.i32c(0);
+  f.lset(i);
+  f.block();
+  f.loop();
+  f.lget(i);
+  f.lget(3);
+  f.i32GeS();
+  f.brIf(1);
+
+  f.lget(0);
+  f.lget(i);
+  f.i32Add();
+  f.i32Load8u(0);
+  f.lset(a);
+  f.lget(a);
+  f.i32c(65);
+  f.i32GeS();
+  f.lget(a);
+  f.i32c(90);
+  f.i32LeS();
+  f.i32And();
+  f.if_();
+  f.lget(a);
+  f.i32c(32);
+  f.i32Add();
+  f.lset(a);
+  f.end();
+
+  f.lget(2);
+  f.lget(i);
+  f.i32Add();
+  f.i32Load8u(0);
+  f.lset(b);
+  f.lget(b);
+  f.i32c(65);
+  f.i32GeS();
+  f.lget(b);
+  f.i32c(90);
+  f.i32LeS();
+  f.i32And();
+  f.if_();
+  f.lget(b);
+  f.i32c(32);
+  f.i32Add();
+  f.lset(b);
+  f.end();
+
+  f.lget(a);
+  f.lget(b);
+  f.i32Ne();
+  f.if_();
+  f.i32c(0);
+  f.ret();
+  f.end();
+
+  f.lget(i);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(i);
+  f.br(0);
+  f.end();
+  f.end();
+
+  f.i32c(1);
+  return index;
+}
+
 std::uint32_t Runtime::emitParseDoubleStr() {
   std::uint32_t index = m.reserveFunction(m.typeFor({kI32}, {kF64}));
   Func f(m, index, {kI32});
@@ -12134,6 +12222,42 @@ std::uint32_t Runtime::emitParseDoubleStr() {
   f.lset(p);
   f.end();
   f.end();
+  f.end();
+
+  // The VM accepts the non-finite spellings `inf`, `infinity` and `nan`
+  // (case-insensitive, optional sign) and rejects a silent overflow such as
+  // `1e400`. The sign was parsed above, so `-inf` reaches here as `inf` with
+  // `sign == -1`.
+  f.lget(p);
+  f.lget(end);
+  f.i32c(static_cast<std::int32_t>(sInf + 8));
+  f.i32c(3);
+  f.call(wordMatch);
+  f.if_();
+  f.f64c(std::numeric_limits<double>::infinity());
+  f.lget(sign);
+  f.f64Mul();
+  f.ret();
+  f.end();
+  f.lget(p);
+  f.lget(end);
+  f.i32c(static_cast<std::int32_t>(sInfinity + 8));
+  f.i32c(8);
+  f.call(wordMatch);
+  f.if_();
+  f.f64c(std::numeric_limits<double>::infinity());
+  f.lget(sign);
+  f.f64Mul();
+  f.ret();
+  f.end();
+  f.lget(p);
+  f.lget(end);
+  f.i32c(static_cast<std::int32_t>(sNan + 8));
+  f.i32c(3);
+  f.call(wordMatch);
+  f.if_();
+  f.f64c(std::numeric_limits<double>::quiet_NaN());
+  f.ret();
   f.end();
 
   f.f64c(0.0);
@@ -12442,6 +12566,19 @@ std::uint32_t Runtime::emitParseDoubleStr() {
   f.end();
   f.end();
 
+  // Only the explicit `inf`/`-inf` spellings may produce an infinity; a
+  // numeric literal that overflows (`1e400`) is rejected like the VM.
+  f.lget(value);
+  f.f64c(std::numeric_limits<double>::infinity());
+  f.f64Eq();
+  f.lget(value);
+  f.f64c(-std::numeric_limits<double>::infinity());
+  f.f64Eq();
+  f.i32Or();
+  f.if_();
+  emitFailStatic(f, sFloatString);
+  f.end();
+
   f.lget(p);
   f.lget(end);
   f.i32Ne();
@@ -12464,6 +12601,7 @@ void Runtime::emitCore() {
   strCmp = emitStrCmp();
   fmtInt = emitFmtInt();
   parseIntStr = emitParseIntStr();
+  wordMatch = emitWordMatch();
   parseDoubleStr = emitParseDoubleStr();
   emitDtoaHelpers();
   fmtDouble = emitFmtDouble();

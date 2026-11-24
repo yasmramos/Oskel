@@ -4,6 +4,7 @@ build2/
 build-ci/
 build_asan/
 build-cmake/
+build-cmake2/
 
 # IDE
 .vs/

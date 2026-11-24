@@ -27,3 +27,19 @@ print(123456789.123);
 print(3.141592653589793);
 print(2.718281828459045);
 print(1.4142135623730951);
+
+// Non-finite values are accepted only when the text spells them out, and both
+// engines print the canonical spelling.
+print(double("inf"));
+print(double("-inf"));
+print(double("nan"));
+print(float("inf"));
+print(float("-inf"));
+print(float("nan"));
+
+// A second pass over the same values catches a formatter whose scratch state
+// leaks from one conversion to the next.
+print(double("1.2345678901234567e150"));
+print(double("5e-324"));
+print(double("1.2345678901234567e150"));
+print(double("5e-324"));

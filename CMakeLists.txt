@@ -135,24 +135,30 @@ add_library(oskel_lib STATIC ${OSKEL_RUNTIME_SOURCES})
 target_link_libraries(oskel_lib PUBLIC oskel_frontend)
 target_compile_options(oskel_lib PRIVATE ${OSKEL_WARNINGS})
 
-# Struct-by-value FFI is written for the System V AMD64 ABI only; the Microsoft
-# x64 ABI passes a struct larger than 8 bytes through a hidden pointer, a shape
-# the register thunks cannot express. The compiler rejects such a declaration
-# with a clear error on other targets, and the test that exercises it is skipped.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
+# Struct-by-value FFI is lowered for both x86-64 ABIs: System V passes up to two
+# eightbytes in registers, Microsoft x64 passes a 1/2/4/8-byte aggregate in one
+# integer register and every other size by reference with an `sret` return. The
+# compiler rejects the declaration elsewhere and the test is skipped.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
   set(OSKEL_FFI_STRUCT_BY_VALUE TRUE)
-  set(OSKEL_FFI_CALLBACKS TRUE)
 else()
   set(OSKEL_FFI_STRUCT_BY_VALUE FALSE)
+endif()
+
+# A callback is still a System V shape: the Microsoft x64 thunk does not lower
+# one, so the declaration is rejected there and the test is skipped.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
+  set(OSKEL_FFI_CALLBACKS TRUE)
+else()
   set(OSKEL_FFI_CALLBACKS FALSE)
 endif()
 
-# A struct larger than 16 bytes is class MEMORY (passed on the stack, returned
-# through a hidden pointer). The development engine's descriptor stub expresses
-# that on the System V AMD64 ABI; elsewhere the declaration is rejected at
-# compile time and the test that exercises the rejection stays. This must mirror
+# A struct larger than 16 bytes is class MEMORY on System V (passed on the stack,
+# returned through a hidden pointer); Microsoft x64 has no class MEMORY but uses
+# its own by-reference rule. The descriptor stub expresses both, so the
+# declaration is accepted wherever the stub exists. This must mirror
 # `OSKEL_FFI_MEMORY_STRUCTS` in `include/ffi_types.h`.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
   set(OSKEL_FFI_MEMORY_STRUCTS TRUE)
 else()
   set(OSKEL_FFI_MEMORY_STRUCTS FALSE)
@@ -174,6 +180,13 @@ endif()
 add_executable(oskel "${OSKEL_MAIN}")
 target_link_libraries(oskel PRIVATE oskel_lib)
 target_compile_options(oskel PRIVATE ${OSKEL_WARNINGS})
+
+# `dlsym(RTLD_DEFAULT)` only sees the executable's own symbols when they are in
+# its dynamic symbol table. Exporting them is what makes an `extern "C"` to a
+# symbol the host program itself defines resolve in the development engine.
+if(NOT WIN32)
+  set_target_properties(oskel PROPERTIES ENABLE_EXPORTS ON)
+endif()
 
 # --------------------------------------------------------------------------- SDL3 (optional)
 # `std/internal/sdl.oskl` binds SDL3's window, renderer and event surface. The
@@ -519,6 +532,7 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(dtoa_test)
   oskel_add_cpp_test(parse_float_test)
   oskel_add_cpp_test(mathlib_test)
+  oskel_add_cpp_test(arena_test)
   oskel_add_cpp_test(elf_test)
   oskel_add_cpp_test(object_test)
   oskel_add_cpp_test(link_test)
@@ -559,18 +573,27 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(freestanding_test)
   oskel_add_cpp_test(bare_metal_test)
 
-  # Windows only: `lookupSymbol` must search a DLL loaded after startup, not
-  # just the process image, kernel32 and the CRT. The test loads the DLL CMake
-  # builds beside it and resolves its export.
+  # `lookupSymbol` must find a DLL loaded after startup on Windows and a symbol
+  # the executable itself defines on POSIX. The Windows path loads the DLL CMake
+  # builds beside it; the POSIX path looks up a C function in the test binary.
+  add_executable(platform_lookup_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/platform_lookup_test.cpp")
+  target_link_libraries(platform_lookup_test PRIVATE oskel_lib)
+  target_compile_options(platform_lookup_test PRIVATE ${OSKEL_WARNINGS})
   if(WIN32)
     add_library(oskel_lookup_test_dll SHARED
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/platform_lookup_dll.cpp")
-    add_executable(platform_lookup_test
-      "${CMAKE_CURRENT_SOURCE_DIR}/tests/platform_lookup_test.cpp")
-    target_link_libraries(platform_lookup_test PRIVATE oskel_lib)
-    target_compile_options(platform_lookup_test PRIVATE ${OSKEL_WARNINGS})
+    add_dependencies(platform_lookup_test oskel_lookup_test_dll)
     add_test(NAME platform_lookup_test
       COMMAND platform_lookup_test "$<TARGET_FILE:oskel_lookup_test_dll>"
+      WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+  else()
+    # The test defines its own C symbol and looks it up through the same
+    # `dlsym(RTLD_DEFAULT)` path; `ENABLE_EXPORTS` puts it in the dynamic
+    # symbol table.
+    set_target_properties(platform_lookup_test PROPERTIES ENABLE_EXPORTS ON)
+    add_test(NAME platform_lookup_test
+      COMMAND platform_lookup_test
       WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
   endif()
 
@@ -948,6 +971,17 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_conversions.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # The shortest round-trip formatter over the whole double range, including
+    # the subnormals, the non-finite spellings and a repeated pass that catches
+    # leaked scratch state. The WASM backend has its own registration; the AOT
+    # path was previously covered only indirectly by `native_build_math.oskl`.
+    add_test(NAME oskel.build_binary_double_format
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_double_format"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_double_format.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `+` on two arrays concatenates them; the hosted engine builds a fresh
     # array and leaves both operands unchanged. Checked against the VM here
     # because the script test that covers array concatenation
@@ -1062,6 +1096,16 @@ if(BUILD_TESTING)
         "-DOSKEL_TEST_NAME=oskel.build_binary_map_methods"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_map_methods.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The AOT map's lazy hash index (BACKLOG §6 item 6). `map.get` used to be a
+    # linear scan, so a loop over a large map was O(n²); the fixture exercises
+    # 2000 keys, misses, delete, clone, merge and clear against the VM.
+    add_test(NAME oskel.build_binary_map_hash
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_map_hash"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_map_hash.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
     # `repr`/`str` of a function value (BACKLOG §6.22). The VM renders
@@ -1346,6 +1390,19 @@ if(BUILD_TESTING)
             "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
             "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_memory_struct.oskl"
             "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/memory_struct_helper.c"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
+      endif()
+      # Microsoft x64 passes a 1/2/4/8-byte aggregate in one integer register and
+      # every other size by reference, with an `sret` return. No libc symbol
+      # exercises both directions, so the fixture links its own helper.
+      if(WIN32)
+        add_test(NAME oskel.build_hosted_extern_struct_win64
+          COMMAND ${CMAKE_COMMAND}
+            "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_struct_win64"
+            "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+            "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_struct_win64.oskl"
+            "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/win64_struct_helper.c"
+            "-DOSKEL_EXPECTED_OUTPUT=win64 ffi struct by value ok"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
       endif()
       # The seventh and eighth integer arguments do not fit the six System V
@@ -2388,6 +2445,11 @@ if(BUILD_TESTING)
     if(name STREQUAL "native_build_extern_many_args")
       continue()
     endif()
+    # The Win64 struct fixture binds a helper the VM cannot resolve; the
+    # Windows-only `oskel.build_hosted_extern_struct_win64` links it.
+    if(name STREQUAL "native_build_extern_struct_win64")
+      continue()
+    endif()
     # The mixed variadic fixture binds a helper the VM cannot resolve; its
     # hosted tests (`..._variadic_mixed` and the Windows twin) are the coverage.
     if(name STREQUAL "native_build_extern_variadic_mixed")
@@ -2548,7 +2610,7 @@ if(BUILD_TESTING)
     # A callback that returns a struct needs the by-value struct marshalling
     # (and, for a struct over 16 bytes, the descriptor stub); elsewhere the same
     # declaration is a compile error.
-    if(name STREQUAL "ffi_callback_struct_return" AND NOT OSKEL_FFI_STRUCT_BY_VALUE)
+    if(name STREQUAL "ffi_callback_struct_return" AND NOT OSKEL_FFI_CALLBACKS)
       continue()
     endif()
     set(expected 0)

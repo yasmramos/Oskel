@@ -1,6 +1,7 @@
 #include "core/gc.h"
 
 #include <algorithm>
+#include <cassert>
 #include <vector>
 
 namespace {
@@ -66,7 +67,13 @@ void GcNode::unlink() {
 }
 
 void gcCollect() {
-  if (collecting) return;
+  // A collection may release an object whose destructor reaches back into the
+  // collector; that nested call has nothing safe to do, so it is ignored in
+  // release builds and asserted in debug builds.
+  if (collecting) {
+    assert(false && "gcCollect is not reentrant");
+    return;
+  }
   collecting = true;
   struct Done {
     ~Done() { collecting = false; }

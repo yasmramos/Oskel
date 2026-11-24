@@ -441,25 +441,26 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
       thunk.symbol = symbol.name;
       thunk.arity = symbol.paramTypes.size();
       thunk.variadic = symbol.variadic;
-      if (win64 && symbol.returnType.isStruct) {
-        throw LoweringError(
-            "lowering: a struct return from '" + symbol.name +
-            "' is not supported on the Windows x86-64 hosted backend yet");
-      }
       // A class-MEMORY return reserves `rdi` for the hidden `sret` pointer, so
       // the integer argument registers start one later. Compute it before the
-      // parameters because their register/stack assignment depends on it.
+      // parameters because their register/stack assignment depends on it. On
+      // Win64 a 1/2/4/8-byte struct returns in `rax`; every other size uses a
+      // hidden pointer in `rcx`, which shifts every argument one position.
       bool returnMemory = false;
+      bool win64ReturnByRef = false;
       if (symbol.returnType.isStruct) {
         ffi::StructLayout layout;
         std::string reason;
         if (ffi::buildStructLayout(symbol.returnType.fields, layout, reason)) {
           returnMemory = layout.isMemory;
+          win64ReturnByRef = win64 && !ffi::win64StructInRegister(layout);
         }
       }
+      const int win64Shift = win64ReturnByRef ? 1 : 0;
       int gpr = returnMemory ? 1 : 0;  // the integer argument registers
       int sse = 0;                     // the SSE argument registers
       int nextBufSlot = 0;             // register-class struct staging buffers
+      std::int64_t nextBufOffset = 0;  // Win64 struct staging buffers
       // The Microsoft ABI reserves 32 bytes of shadow space below the outgoing
       // stack arguments, so a Win64 stack argument starts at offset 32. A
       // variadic Win64 thunk reserves the whole outgoing area at run time
@@ -499,11 +500,6 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
           continue;
         }
         if (param.isStruct) {
-          if (win64) {
-            throw LoweringError(
-                "lowering: a struct parameter to '" + symbol.name +
-                "' is not supported on the Windows x86-64 hosted backend yet");
-          }
           ffi::StructLayout layout;
           std::string reason;
           if (!ffi::buildStructLayout(param.fields, layout, reason)) {
@@ -515,6 +511,31 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
           entry.layout = layout;
           for (std::size_t f = 0; f < layout.fields.size(); ++f) {
             entry.fieldNameLabels.push_back(cg.newLabel());
+          }
+          if (win64) {
+            // Microsoft x64: a 1/2/4/8-byte struct is one integer argument; a
+            // larger one (16 bytes included) is a pointer to a caller-owned
+            // copy. Either way it occupies one argument position.
+            entry.bufOffset = nextBufOffset;
+            nextBufOffset += std::max<std::int64_t>(
+                16, (static_cast<std::int64_t>(layout.size) + 15) / 16 * 16);
+            AotThunkParam flat;
+            flat.cls = ffi::ParamClass::Int;
+            flat.argIndex = arg;
+            flat.structIndex = index;
+            flat.win64Position = arg + win64Shift;
+            if (ffi::win64StructInRegister(layout)) {
+              flat.win64StructBytes = static_cast<int>(layout.size);
+            } else {
+              flat.structByRef = true;
+            }
+            if (flat.win64Position >= 4) {
+              flat.stackOffset = 32 + 8LL * (flat.win64Position - 4);
+              if (!symbol.variadic) thunk.stackArgBytes = flat.stackOffset + 8;
+            }
+            thunk.params.push_back(flat);
+            thunk.structs.push_back(std::move(entry));
+            continue;
           }
           if (layout.isMemory) {
             // Class MEMORY: the whole struct travels in the outgoing stack
@@ -533,6 +554,7 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
             }
             if (gpr + needGpr <= gprLimit && sse + needSse <= sseLimit) {
               entry.bufSlot = nextBufSlot++;
+              entry.bufOffset = 16LL * entry.bufSlot;
               for (int e = 0; e < layout.eightbyteCount; ++e) {
                 AotThunkParam flat;
                 flat.cls = layout.eightbyte[e] == 'S' ? ffi::ParamClass::Double : ffi::ParamClass::Int;
@@ -564,9 +586,12 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
         if (win64) {
           // The Microsoft x64 ABI assigns the register by argument position,
           // not by class: argument i uses the i-th integer or SSE register,
-          // and every argument from the fifth onward travels on the stack.
-          if (arg >= 4) {
-            flat.stackOffset = 32 + 8LL * (arg - 4);
+          // and every argument from the fifth onward travels on the stack. A
+          // hidden `sret` pointer occupies position zero, so every declared
+          // argument shifts one position.
+          flat.win64Position = arg + win64Shift;
+          if (flat.win64Position >= 4) {
+            flat.stackOffset = 32 + 8LL * (flat.win64Position - 4);
             if (!symbol.variadic) thunk.stackArgBytes = flat.stackOffset + 8;
           }
         } else if (cls == ffi::ParamClass::Float || cls == ffi::ParamClass::Double) {
@@ -612,8 +637,15 @@ std::vector<AotExternThunk> collectExternThunks(CodeGen& cg,
         thunk.returns = ffi::ReturnClass::Struct;
         thunk.returnType = "";
         // A class-MEMORY return goes through a hidden `sret` buffer instead of
-        // the return registers.
-        if (layout.isMemory) thunk.returnMemoryBytes = static_cast<std::int64_t>(layout.size);
+        // the return registers. On Win64 that is every struct except the
+        // 1/2/4/8-byte integer-shaped ones.
+        if (win64) {
+          if (win64ReturnByRef) {
+            thunk.returnMemoryBytes = static_cast<std::int64_t>(layout.size);
+          }
+        } else if (layout.isMemory) {
+          thunk.returnMemoryBytes = static_cast<std::int64_t>(layout.size);
+        }
       } else {
         ffi::ReturnClass ret = ffi::ReturnClass::Int;
         // `Ptr` is supported: the thunk boxes the returned address as a `Void`

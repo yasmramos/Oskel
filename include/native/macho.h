@@ -13,8 +13,19 @@
 // non-PIE `MH_EXECUTE` that imports libSystem through a non-lazy `__got` and
 // a `__stubs` entry per symbol, and enters at `main` through `LC_MAIN`.
 //
-// The object is the only container the first slice understands: the
-// `__stubs`/`__got` path covers a call (`X86_64_RELOC_BRANCH`); a data
-// reference (`X86_64_RELOC_SIGNED` to an import) is reported, not mis-linked.
+// A call reaches an import through `__stubs` (`X86_64_RELOC_BRANCH`) and a data
+// reference reaches the import's non-lazy pointer in `__got`
+// (`X86_64_RELOC_SIGNED`). A pcrel reference to a symbol defined in the same
+// object is resolved directly; an absolute relocation is reported, never
+// mis-linked.
 std::vector<std::uint8_t> linkMachOExecutable(
+    const std::vector<LinkInput>& inputs, const LinkOptions& options);
+
+// Combines one or more `MH_OBJECT` inputs into a new `MH_OBJECT` (`-r`). The
+// output concatenates `__text` and `__const`, keeps every defined symbol at its
+// merged offset, leaves an undefined symbol undefined, and preserves the
+// external pcrel relocations so `linkMachOExecutable` can close the result.
+// Internal (section-relative) relocations and absolute relocations are
+// reported, never mis-linked.
+std::vector<std::uint8_t> linkRelocatableMachO(
     const std::vector<LinkInput>& inputs, const LinkOptions& options);

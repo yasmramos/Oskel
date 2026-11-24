@@ -55,17 +55,18 @@ enum class ReturnClass {
 // keeping the template at a few thousand instantiations.
 constexpr std::size_t kMaxExternArgs = 8;
 
-// Whether a `struct` may cross the C boundary by value. The marshalling is
-// written for the System V AMD64 ABI, where a struct of up to 16 bytes travels
-// in registers as up to two eightbytes; the Microsoft x64 ABI (Windows) passes
-// a struct larger than 8 bytes through a hidden pointer instead, a shape the
-// register thunks cannot express. Scalars stay portable: the call goes through
-// a typed function pointer, so the host compiler applies the platform ABI.
+// Whether a `struct` may cross the C boundary by value. System V passes a
+// struct of up to 16 bytes in registers as up to two eightbytes; Microsoft x64
+// passes a 1/2/4/8-byte aggregate in one integer register and every other size
+// by reference, with a hidden `sret` return pointer. Both are lowered, so the
+// declaration is available on every x86-64 host. Scalars stay portable: the
+// call goes through a typed function pointer, so the host compiler applies the
+// platform ABI.
 //
 // A macro, not only a `constexpr`, because the tests select which cases to
 // compile with `#if` (the preprocessor does not evaluate `constexpr`).
 #ifndef OSKEL_FFI_STRUCT_BY_VALUE
-#if defined(__x86_64__) && !defined(_WIN32)
+#if defined(__x86_64__) || defined(_M_X64)
 #define OSKEL_FFI_STRUCT_BY_VALUE 1
 #else
 #define OSKEL_FFI_STRUCT_BY_VALUE 0
@@ -92,11 +93,11 @@ constexpr bool kCVariadicSupported = OSKEL_FFI_VARIADIC != 0;
 // Whether a struct larger than 16 bytes (System V class MEMORY) may cross the
 // boundary. The register thunks express a struct only as up to two eightbytes,
 // so a MEMORY struct — passed on the stack, and returned through a hidden
-// `sret` pointer — goes through the descriptor stub instead. That stub is
-// x86-64 System V; the Microsoft x64 ABI passes a struct by reference, which
-// the hosted backend does not lower, so the declaration is rejected there.
+// `sret` pointer — goes through the descriptor stub instead. Microsoft x64 has
+// no class MEMORY, but its own by-reference rule uses the same stub, so the
+// declaration is available on every x86-64 host.
 #ifndef OSKEL_FFI_MEMORY_STRUCTS
-#if (defined(__x86_64__) || defined(_M_X64)) && !defined(_WIN32)
+#if defined(__x86_64__) || defined(_M_X64)
 #define OSKEL_FFI_MEMORY_STRUCTS 1
 #else
 #define OSKEL_FFI_MEMORY_STRUCTS 0
@@ -140,8 +141,8 @@ inline constexpr AbiCapabilities kFullAbiCapabilities{true, true, true, true};
 // needs a host FFI library: a class-MEMORY struct travels in the outgoing stack
 // area and comes back through an `sret` pointer, and a register-class struct
 // goes through the eightbyte buffers. Its thunks follow the target's C ABI:
-// System V on Linux and macOS, Microsoft x64 on Windows (scalar/pointer classes
-// and a C variadic; structs and callbacks are rejected there).
+// System V on Linux and macOS, Microsoft x64 on Windows (scalar/pointer
+// classes, a C variadic and a by-value struct; a callback is rejected there).
 //
 // A C variadic is lowered too (PHASE 7f.5, 7f.10): the thunk walks the tail at
 // run time, promotes each value by its tag, continues the target's register
@@ -174,9 +175,10 @@ inline constexpr AbiCapabilities capabilitiesForAbi(FfiAbi abi) {
     case FfiAbi::SysVX86_64:
       return kFullAbiCapabilities;
     case FfiAbi::Win64:
-      // Scalars, pointers and a C variadic; a struct and a callback are
-      // rejected by the Microsoft x64 thunk.
-      return AbiCapabilities{/*structByValue=*/false, /*memoryStructs=*/false,
+      // Scalars, pointers, a C variadic and a by-value struct (1/2/4/8 bytes in
+      // one GPR, every other size through a caller-owned copy and an `sret`
+      // return). A callback is still rejected by the Microsoft x64 thunk.
+      return AbiCapabilities{/*structByValue=*/true, /*memoryStructs=*/true,
                              /*variadic=*/true, /*callbacks=*/false};
     case FfiAbi::Aapcs64:
     case FfiAbi::Wasm:
@@ -412,6 +414,16 @@ inline StructShape structShapeOf(const StructLayout& layout) {
   const char second = layout.eightbyte[1];
   if (first == 'I') return second == 'I' ? StructShape::II : StructShape::IS;
   return second == 'I' ? StructShape::SI : StructShape::SS;
+}
+
+// The Microsoft x64 rule for a by-value struct: a 1, 2, 4 or 8-byte aggregate
+// travels in one integer register as if it were an integer of that width;
+// every other size (16 bytes included) travels by reference to a caller-owned
+// copy, and a return of that size goes through a hidden `sret` pointer. This is
+// the Win64 counterpart of `structShapeOf` and `StructLayout::isMemory`.
+inline bool win64StructInRegister(const StructLayout& layout) {
+  return layout.size == 1 || layout.size == 2 || layout.size == 4 ||
+         layout.size == 8;
 }
 
 // Checks one resolved parameter/return spec against what the marshalling can
