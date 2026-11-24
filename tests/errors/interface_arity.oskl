@@ -1,0 +1,3 @@
+// expect-exit: 65
+interface Shape { fn area(a: int): double; }
+class Blob implements Shape { fn area(): double { return 1.0; } }

@@ -340,6 +340,8 @@ Value indexGet(Runtime &rt, const Value &object, const Value &index, int line,
   if (object.isMap()) {
     if (!index.isStr())
       rt.fail("map keys must be strings", line, col);
+    if (!object.map().className.empty())
+      rt.fail("cannot index a class instance; use .field", line, col);
     const Value *found = object.map().get(index.asStr());
     return found ? *found : Value();
   }
@@ -373,6 +375,8 @@ void indexSet(Runtime& rt, const Value& object, const Value& index, Value value,
   if (object.isStr()) rt.fail("strings are immutable", line, col);
   if (object.isMap()) {
     if (!index.isStr()) rt.fail("map keys must be strings", line, col);
+    if (!object.map().className.empty())
+      rt.fail("cannot index a class instance; use .field", line, col);
     object.map().set(index.asStr(), std::move(value));
     return;
   }
@@ -391,6 +395,10 @@ Value memberGet(Runtime &rt, const Value &object, const std::string &name,
   if (object.isMap()) {
     if (const Value *found = object.map().get(name))
       return *found;
+    if (object.map().methods) {
+      if (const Value *found = object.map().methods->get(name))
+        return *found;
+    }
     if (name == "length")
       return Value(object.map().size());
     Value method;
@@ -421,6 +429,13 @@ Value memberGet(Runtime &rt, const Value &object, const std::string &name,
 void memberSet(Runtime &rt, const Value &object, const std::string &name,
                Value value, int line, int col) {
   if (object.isMap()) {
+    if (object.map().methods && object.map().methods->has(name)) {
+      object.map().methods->set(name, std::move(value));
+      return;
+    }
+    if (!object.map().className.empty() && !object.map().has(name)) {
+      rt.fail("class '" + object.map().className + "' has no field '" + name + "'", line, col);
+    }
     object.map().set(name, std::move(value));
     return;
   }

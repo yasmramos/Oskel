@@ -976,12 +976,14 @@ fn Point(x: int, y: int) {
 ```
 
 Every field becomes a key of the instance map (each starting `nil`), every
-method becomes a closure assigned to that key, and `self` is the local that
-those closures capture. A method's declared return type rides on the desugared
-lambda, so the body's `return` is still checked even though a lambda the user
-writes has no return-annotation position. An instance **is a map at runtime**, so
-the whole map surface applies: member access, `in`, `len`, `for ... in`,
-indexing, `type(p)` reports `"map"`, and instances nest and live in collections.
+method becomes a closure in the instance's method table, and `self` is the local
+that those closures capture. A method's declared return type rides on the
+desugared lambda, so the body's `return` is still checked even though a lambda
+the user writes has no return-annotation position. An instance behaves like a
+closed object: member access and `in` see the fields, `len(p)` counts them,
+`for ... in` walks them, `type(p)` reports the class name, and instances nest and
+live in collections. Indexing (`p["x"]`) and adding an undeclared key are
+rejected.
 
 `init` is optional and defines the constructor's parameters: the arguments the
 caller writes after the class name are forwarded to `init`, so the arity of
@@ -1098,11 +1100,12 @@ cases stay unchecked, by design:
 - a compound assignment (`self.x += 1`) has a result type the compiler does not
   track statically.
 
-Writing a key the class never declared (`p.added = ...`) is allowed, because an
-instance is a map and the map surface stays open. A name within two edits of a
-declared field is far more likely a typo than a deliberate new key — the typo
-would add a field while every read of the real one keeps returning its old value
-— so it is reported as a **warning** and the program still runs:
+Writing a key the class never declared (`p.added = ...`) is a runtime error:
+the instance is closed over its declared fields, so a typo cannot silently add
+a second field while every read of the real one keeps returning its old value.
+The compiler still warns when the name is within two edits of a declared field,
+to point at the likely typo, and the runtime error names both the class and the
+field:
 
 ```oskl
 class Counter {
@@ -1110,8 +1113,8 @@ class Counter {
   fn init() { self.count = 0; }
 }
 let c = Counter();
-c.cont = 5;    // warning: 'cont' is not a field of class 'Counter'
-               //          (did you mean 'count'?); the assignment adds a new key
+c.cont = 5;    // warning: did you mean 'count'?
+               // runtime error: class 'Counter' has no field 'cont'
 ```
 
 The declared type name itself is validated as a known type (or a declared
@@ -1161,6 +1164,45 @@ instead when it wants to keep the class itself private.
 
 `class` is a **reserved word** from 0.1.0 on: a variable or function named
 `class` no longer parses.
+
+### 4.8.1 `interface` and `trait`
+
+An `interface` declares a **compile-time contract**: a set of method names and
+their arities. `trait` is a spelling alias for the same declaration. Interfaces
+add no runtime value and no bytecode; they exist so a class can state what it
+provides and the parser can reject a class that does not:
+
+```oskel
+interface Shape {
+  fn area(): double;
+  fn name(): string;
+}
+
+trait Describable {
+  fn describe(): string;
+}
+
+class Circle implements Shape, Describable {
+  r: double;
+  fn init(r: double) { self.r = r; }
+  fn area(): double { return 3.0 * self.r * self.r; }
+  fn name(): string { return "circle"; }
+  fn describe(): string { return self.name() + ":" + str(self.area()); }
+}
+```
+
+`implements` accepts a comma-separated list. Every listed interface must be
+declared somewhere in the module (an interface may come after the class that
+implements it) and the class must provide every method with the declared arity.
+A missing method, a wrong arity, a variadic mismatch or an unknown interface is
+a compile error, so the contract cannot drift silently.
+
+Interfaces are **not** a runtime type. A class instance is still the class
+desugaring (a field map plus a method table), and `type(instance)` reports the
+class name. Polymorphism is dynamic: a list may
+hold instances of different classes and a call dispatches to the receiver's own
+method table. There is **no inheritance** and no default method body; a class
+that needs shared code composes it (a field or a free function) instead.
 
 ### 4.9 `enum`
 
@@ -2870,8 +2912,8 @@ the development VM, under `oskel build` and on WebAssembly.
 
 `std.io` adds **in-memory text streams**: a `StringReader` that walks a string
 by code point and a `StringWriter` that accumulates text. They are ordinary
-classes (§4.8), so an instance is a map with methods and can be passed to a
-function like any other value.
+classes (§4.8), so an instance is a value with fields and methods and can be
+passed to a function like any other value.
 
 The module is split into focused files. The two classes are **class modules**
 (§18.6): their PascalCase file name is the class name, so a qualified import
@@ -2968,8 +3010,8 @@ a run of non-whitespace, so `int(r.readToken())` parses a number without a
 second scanner. `StringWriter` stores chunks and concatenates them with a
 balanced tree in `toString`, so a long sequence of small writes does not copy
 the prefix once per write; still call it once when the text is complete.
-Because an instance is a map, `len(writer)` is the number of chunks, not the
-text length; use `size()`.
+Because a class instance is closed over its fields, `len(writer)` is `2` (the
+`chunks` and `count` fields), not the text length; use `size()`.
 
 The module is pure Oskel over strings and classes, so it behaves identically on
 the development VM, under `oskel build` and on WebAssembly.
@@ -3140,8 +3182,9 @@ development VM, under `oskel build` and on WebAssembly.
 `std.decimal` provides `BigDecimal`, an arbitrary-precision decimal in the
 spirit of Java's `java.math.BigDecimal`. It is a **class**, not a primitive: a
 value is a Java-style object with an arbitrary-precision unscaled integer and a
-32-bit scale, so `type(value)` reports `"map"`, exactly as every Oskel class
-does. Use its methods; `print(value)` prints the object map, so print
+32-bit scale, so `type(value)` reports `"BigDecimal"`, exactly as every Oskel
+class reports its class name. Use its methods; `print(value)` prints the object
+map, so print
 `value.toPlainString()` when the text matters.
 
 ```oskl
@@ -3640,7 +3683,7 @@ future work. `-c` is implemented; the `.oskc` format is specified in §19.1.
 
 - Dynamic typing. The `oskel` executable compiles source to bytecode and runs it on the register-based VM; the AST is never executed. The compiler and the VM implement the whole language surface this reference documents (PHASE 6 and its 6.5/6.6/6.7 additions).
 - The JIT covers only a narrow integer subset, and only in the development engine. `oskel` (a script run, `-e` and the REPL) compiles a *leaf* function whose body only manipulates `nil`/`bool`/`int` to native x86-64 the first time it is called (PHASE 8, slices 1-4: constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing). Everything else keeps running on the interpreter, so results never change, and `oskel build` and the generated binary never contain the JIT. `oskel --no-jit` disables it.
-- Classes are supported (see §4.8): a `class` declares a named shape with methods, desugared by the parser into a top-level constructor function (a map plus closures capturing an explicit `self`), so it needs no new opcode. There is **no inheritance** and no interfaces; composition replaces them. A `struct` (data only, no methods) is the method-less form (see §4.7). Both are named map shapes checked at compile time.
+- Classes are supported (see §4.8): a `class` declares a named shape with methods, desugared by the parser into a top-level constructor function (a map plus closures capturing an explicit `self`), so it needs no new opcode. `interface`/`trait` declarations (see §4.8.1) are compile-time contracts checked by `implements`; there is **no inheritance**, no default method body and no runtime interface value. A `struct` (data only, no methods) is the method-less form (see §4.7). Both are named map shapes checked at compile time.
 - No `try`/`catch` *statement* and no catchable exceptions. Error handling is value-based: `nil` (not found), `pcall(fn, ...)` to turn a raised runtime error into a `{ok, value, error}` map (see §13.1), and the error-value operators `try expr` (propagate, Rust's `?`) and `expr catch default` (recover locally, Zig's `catch`, see §13.3). `panic()` is for unrecoverable errors. A raised runtime error is not a value and is not caught by `catch`; use `pcall` for that.
 - Modules use Java-style `import` (see §18). `import` is only allowed at the top level of a module: nesting an import inside a function or block is a compile error. `require` (Lua-style) is dropped — `import` is the only module form. A module is loaded once, eagerly, when the program is compiled, and a cyclic import is a compile error rather than a crash.
 - No `++`, `--` or default parameters. A trailing `rest...` parameter makes a function variadic (see §7.1). `switch` on literals and ranges is supported (see §6.10), and so is the post-test loop `do { ... } while (cond);` (see §6.4).
