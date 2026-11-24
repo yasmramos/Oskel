@@ -600,6 +600,7 @@ if(BUILD_TESTING)
       "-DBINDGEN_EXE=$<TARGET_FILE:bindgen>"
       "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
       "-DBINDGEN_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/tests/bindgen/target.h"
+      "-DOSKEL_STRUCT_BY_VALUE=${OSKEL_FFI_STRUCT_BY_VALUE}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_bindgen_target.cmake")
 
   # The Skia bridge needs a real Skia root for the shim and the pixel test.
@@ -1345,6 +1346,19 @@ if(BUILD_TESTING)
             "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
             "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_memory_struct.oskl"
             "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/memory_struct_helper.c"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
+      endif()
+      # Microsoft x64 passes a 1/2/4/8-byte aggregate in one integer register and
+      # every other size by reference, with an `sret` return. No libc symbol
+      # exercises both directions, so the fixture links its own helper.
+      if(WIN32)
+        add_test(NAME oskel.build_hosted_extern_struct_win64
+          COMMAND ${CMAKE_COMMAND}
+            "-DOSKEL_TEST_NAME=oskel.build_hosted_extern_struct_win64"
+            "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+            "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_extern_struct_win64.oskl"
+            "-DOSKEL_HELPER=${CMAKE_CURRENT_SOURCE_DIR}/tests/hosted/win64_struct_helper.c"
+            "-DOSKEL_EXPECTED_OUTPUT=win64 ffi struct by value ok"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_helper.cmake")
       endif()
       # The seventh and eighth integer arguments do not fit the six System V
@@ -2385,6 +2399,11 @@ if(BUILD_TESTING)
     # The many-args fixture binds a helper too; the VM has no registry entry for
     # those symbols, so it is covered by `oskel.build_hosted_extern_many_args`.
     if(name STREQUAL "native_build_extern_many_args")
+      continue()
+    endif()
+    # The Win64 struct fixture binds a helper the VM cannot resolve; the
+    # Windows-only `oskel.build_hosted_extern_struct_win64` links it.
+    if(name STREQUAL "native_build_extern_struct_win64")
       continue()
     endif()
     # The mixed variadic fixture binds a helper the VM cannot resolve; its

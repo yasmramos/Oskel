@@ -68,7 +68,11 @@ expect_lines("${text}" "fn wide(): int32;" "fn uwide(): uint32;" "fn wider(): in
 
 run_bindgen(llp64)
 set(text "${generated_text}")
-expect_lines("${text}" "// fn pair(): Pair;" "// fn takes_cb(cb: fn(int32): int32): void;")
+if(DEFINED OSKEL_STRUCT_BY_VALUE AND OSKEL_STRUCT_BY_VALUE)
+  expect_lines("${text}" "fn pair(): Pair;" "// fn takes_cb(cb: fn(int32): int32): void;")
+else()
+  expect_lines("${text}" "// fn pair(): Pair;" "// fn takes_cb(cb: fn(int32): int32): void;")
+endif()
 
 # `--abi` selects the destination independently of the host that runs bindgen.
 # The System V module is inspected but not compiled: on Windows, `oskel -c`

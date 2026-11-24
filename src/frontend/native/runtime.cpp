@@ -1,5 +1,6 @@
 #include "native/runtime.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 
@@ -14342,19 +14343,29 @@ void emitVoidPtrBox(CodeGen& cg, CodeGen::Label label, CodeGen::Label ptrNew,
 void emitStructReturn(CodeGen& cg, const AotStructLayout& ret, std::int64_t bufDisp,
                       CodeGen::Label tableNew, CodeGen::Label memberSet,
                       CodeGen::Label oom, CodeGen::Label allocLabel, CodeGen::Label fail,
-                      const DataBlob& msgCStringTooLong) {
+                      const DataBlob& msgCStringTooLong, bool win64Inline = false,
+                      bool fromMemory = false) {
   const ffi::StructLayout& layout = ret.layout;
-  int intReg = 0;
-  int sseReg = 0;
-  for (int e = 0; e < layout.eightbyteCount; ++e) {
-    const std::int64_t off = bufDisp + 8LL * e;
-    if (layout.eightbyte[e] == 'S') {
-      cg.movqFromXmm(R11, kXmmBase + sseReg);
-      cg.movToMem(Rbp, off, R11);
-      ++sseReg;
-    } else {
-      cg.movToMem(Rbp, off, intReg == 0 ? Rax : Rdx);
-      ++intReg;
+  if (win64Inline) {
+    // A Win64 1/2/4/8-byte aggregate comes back in `rax`; its low bytes are the
+    // struct. Park it in the buffer the field loop below reads.
+    cg.movToMem(Rbp, bufDisp, Rax);
+  } else if (fromMemory) {
+    // A class-MEMORY or Win64 by-reference return was written by the callee into
+    // the `sret` buffer; the return registers carry only its address.
+  } else {
+    int intReg = 0;
+    int sseReg = 0;
+    for (int e = 0; e < layout.eightbyteCount; ++e) {
+      const std::int64_t off = bufDisp + 8LL * e;
+      if (layout.eightbyte[e] == 'S') {
+        cg.movqFromXmm(R11, kXmmBase + sseReg);
+        cg.movToMem(Rbp, off, R11);
+        ++sseReg;
+      } else {
+        cg.movToMem(Rbp, off, intReg == 0 ? Rax : Rdx);
+        ++intReg;
+      }
     }
   }
 
@@ -14483,18 +14494,25 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   // registers. Six 8-byte slots keep the frame 16-byte aligned (48 is a
   // multiple of 16). A spilled GPR is written straight to the outgoing area.
   constexpr std::int32_t kArgStageBytes = 6 * 8;
-  // One 16-byte buffer per register-class struct. The eightbyte bound allows at
-  // most `kMaxExternArgs` such structs (each contributes at least one); a struct
-  // that does not fit is passed wholly on the stack and needs no buffer.
-  constexpr std::int32_t kStructBufSlots = static_cast<std::int32_t>(ffi::kMaxExternArgs);
-  constexpr std::int32_t kStructBufBytes = 16 * kStructBufSlots;
+  // One buffer per by-value struct. System V uses a 16-byte register-class
+  // buffer; Win64 uses 16 bytes for an inline 1/2/4/8-byte value and the
+  // padded layout size for a by-reference copy. A struct that does not fit a
+  // System V register pair is passed wholly on the stack and needs no buffer.
+  std::int32_t kStructBufBytes = 0;
+  for (const AotStructLayout& layout : thunk.structs) {
+    if (layout.bufOffset < 0) continue;
+    const std::int64_t span = std::max<std::int64_t>(
+        16, (static_cast<std::int64_t>(layout.layout.size) + 15) / 16 * 16);
+    kStructBufBytes = std::max<std::int32_t>(
+        kStructBufBytes, static_cast<std::int32_t>(layout.bufOffset + span));
+  }
   // The frame below `rbp` is laid out top to bottom as: the staging slots, the
   // register-class struct buffers, the `sret` buffer, and finally the outgoing
   // stack-argument area. Only the last is addressed from `rsp` (it must be the
   // lowest part, where the callee reads its stack arguments); everything else is
   // `rbp`-relative, so the two never overlap.
   constexpr std::int64_t kStageBase = -static_cast<std::int64_t>(16 + kArgStageBytes);
-  constexpr std::int64_t kStructBufBase = kStageBase - kStructBufBytes;
+  const std::int64_t kStructBufBase = kStageBase - kStructBufBytes;
   const std::int64_t sretBytes =
       thunk.returnMemoryBytes > 0 ? (thunk.returnMemoryBytes + 15) / 16 * 16 : 0;
   const std::int64_t sretBase = kStructBufBase - sretBytes;
@@ -14577,7 +14595,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
       for (const AotThunkParam& param : thunk.params) {
         if ((param.cls == ffi::ParamClass::Double ||
              param.cls == ffi::ParamClass::Float) &&
-            param.argIndex < 4) {
+            (param.win64Position >= 0 ? param.win64Position : param.argIndex) < 4) {
           ++fixedSse;
         }
       }
@@ -14773,10 +14791,12 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   // the loop below has loaded the eightbytes, which is why the return path
   // reuses them.
   for (const AotThunkParam& param : thunk.params) {
-    if (param.structIndex >= 0 && param.eightbyte == 0) {
+    const bool firstEightbyte = param.structIndex >= 0 && param.eightbyte == 0;
+    const bool win64Struct = param.win64StructBytes > 0 || param.structByRef;
+    if (firstEightbyte || win64Struct) {
       const AotStructLayout& arg = thunk.structs[static_cast<std::size_t>(param.structIndex)];
       emitStructArgBytes(cg, arg, -16LL * param.argIndex, Rbp,
-                         kStructBufBase + 16LL * arg.bufSlot, memberGet, oom, allocLabel,
+                         kStructBufBase + arg.bufOffset, memberGet, oom, allocLabel,
                          fail, msgType);
     }
   }
@@ -14795,8 +14815,9 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   bool gprUsed[6] = {};
   auto stageGpr = [&](const AotThunkParam& param, X64Reg value) {
     if (win64) {
-      cg.movToMem(Rbp, kStageBase + 8LL * param.argIndex, value);
-      gprUsed[param.argIndex] = true;
+      const int position = param.win64Position >= 0 ? param.win64Position : param.argIndex;
+      cg.movToMem(Rbp, kStageBase + 8LL * position, value);
+      gprUsed[position] = true;
     } else {
       cg.movToMem(Rbp, kStageBase + 8LL * gpr, value);
       gprUsed[gpr] = true;
@@ -14812,18 +14833,54 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
   int sse = 0;
   for (std::size_t i = 0; i < thunk.params.size(); ++i) {
     const AotThunkParam& param = thunk.params[i];
+    if (param.win64StructBytes > 0) {
+      // Win64 inline aggregate: its 1/2/4/8 bytes are one integer argument.
+      const AotStructLayout& arg =
+          thunk.structs[static_cast<std::size_t>(param.structIndex)];
+      const std::int64_t off = kStructBufBase + arg.bufOffset;
+      if (param.win64StructBytes == 1) {
+        cg.movzxFromMem(R11, Rbp, off);
+      } else if (param.win64StructBytes == 2) {
+        cg.movFromMem32(R11, Rbp, off);
+        cg.andImm32(R11, 0xffff);
+      } else if (param.win64StructBytes == 4) {
+        cg.movFromMem32(R11, Rbp, off);
+      } else {
+        cg.movFromMem(R11, Rbp, off);
+      }
+      if (param.stackOffset >= 0) {
+        cg.movToMem(Rsp, param.stackOffset, R11);
+      } else {
+        stageGpr(param, R11);
+      }
+      continue;
+    }
+    if (param.structByRef) {
+      // Win64 by-reference aggregate: pass the address of the caller-owned copy.
+      const AotStructLayout& arg =
+          thunk.structs[static_cast<std::size_t>(param.structIndex)];
+      cg.leaMem(R11, Rbp, kStructBufBase + arg.bufOffset);
+      if (param.stackOffset >= 0) {
+        cg.movToMem(Rsp, param.stackOffset, R11);
+      } else {
+        stageGpr(param, R11);
+      }
+      continue;
+    }
     if (param.structIndex >= 0) {
-      // One eightbyte of a struct: load it whole out of the buffer the pre-pass
-      // filled. An INTEGER eightbyte stages like a scalar GPR argument, an SSE
-      // one goes straight to its xmm register.
+      // One eightbyte of a System V struct: load it whole out of the buffer the
+      // pre-pass filled. An INTEGER eightbyte stages like a scalar GPR argument,
+      // an SSE one goes straight to its xmm register.
+      const AotStructLayout& arg =
+          thunk.structs[static_cast<std::size_t>(param.structIndex)];
       const std::int64_t off =
-          kStructBufBase +
-          16LL * thunk.structs[static_cast<std::size_t>(param.structIndex)].bufSlot +
-          8LL * param.eightbyte;
+          kStructBufBase + arg.bufOffset + 8LL * param.eightbyte;
       cg.movFromMem(R11, Rbp, off);
       if (param.cls == ffi::ParamClass::Double) {
-        cg.movqToXmm(kXmmBase + sse, R11);
-        ++sse;
+        const int xmmIndex =
+            win64 ? (param.win64Position >= 0 ? param.win64Position : param.argIndex) : sse;
+        cg.movqToXmm(kXmmBase + xmmIndex, R11);
+        if (!win64) ++sse;
       } else {
         stageGpr(param, R11);
       }
@@ -14870,7 +14927,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         CodeGen::Label asInt = cg.newLabel();
         CodeGen::Label done = cg.newLabel();
         const bool onStack = param.stackOffset >= 0;
-        const int sseIndex = win64 ? param.argIndex : sse;
+        const int sseIndex = win64 ? (param.win64Position >= 0 ? param.win64Position : param.argIndex) : sse;
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagFloat));
         cg.jcc(Jcc::Eq, asIs);
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagDouble));
@@ -14911,7 +14968,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
         CodeGen::Label asInt = cg.newLabel();
         CodeGen::Label done = cg.newLabel();
         const bool onStack = param.stackOffset >= 0;
-        const int sseIndex = win64 ? param.argIndex : sse;
+        const int sseIndex = win64 ? (param.win64Position >= 0 ? param.win64Position : param.argIndex) : sse;
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagFloat));
         cg.jcc(Jcc::Eq, asIs);
         cg.cmpImm32(R10, static_cast<std::int32_t>(kTagDouble));
@@ -15074,7 +15131,7 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
       for (const AotThunkParam& param : thunk.params) {
         if ((param.cls == ffi::ParamClass::Double ||
              param.cls == ffi::ParamClass::Float) &&
-            param.argIndex < 4) {
+            (param.win64Position >= 0 ? param.win64Position : param.argIndex) < 4) {
           ++fixedSse;
         }
       }
@@ -15285,7 +15342,9 @@ void emitExternThunk(CodeGen& cg, const AotExternThunk& thunk, CodeGen::Label fa
     // written by the callee into the `sret` buffer.
     emitStructReturn(cg, thunk.structs[static_cast<std::size_t>(thunk.returnStructIndex)],
                      thunk.returnMemoryBytes > 0 ? sretBase : kStructBufBase, tableNew,
-                     memberSet, oom, allocLabel, fail, msgCStringTooLong);
+                     memberSet, oom, allocLabel, fail, msgCStringTooLong,
+                     win64 && thunk.returnMemoryBytes == 0,
+                     thunk.returnMemoryBytes > 0);
     restoreFrame();
     cg.bind(oom);
     emitFailCall(cg, fail, msgOom);

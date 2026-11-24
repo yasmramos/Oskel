@@ -516,6 +516,15 @@ struct AotThunkParam {
   // is either wholly in registers (one entry per eightbyte) or wholly on the
   // stack (no entries; it is in `AotExternThunk::stackArgs` instead).
   std::int64_t stackOffset = -1;
+  // Win64 assigns the register by argument position, not by class. This is the
+  // position after the hidden `sret` shift (0..), or -1 for a System V thunk.
+  int win64Position = -1;
+  // A Win64 struct that travels in one GPR because its size is 1, 2, 4 or 8
+  // bytes (the value, zero-extended), or by reference because it is any other
+  // size (the address of a caller-owned copy). Both use `structIndex`; the
+  // buffer lives in the thunk frame at `AotStructLayout::bufOffset`.
+  int win64StructBytes = 0;
+  bool structByRef = false;
 };
 
 // One by-value struct in a thunk's signature: its C layout plus one data-island
@@ -531,6 +540,10 @@ struct AotStructLayout {
   ffi::StructLayout layout;
   std::vector<CodeGen::Label> fieldNameLabels;  // parallel to `layout.fields`
   int bufSlot = -1;
+  // Byte offset from `AotExternThunk`'s struct-buffer base. System V uses
+  // 16-byte slots; Win64 reserves the layout's padded size for a by-reference
+  // copy and 8 bytes for an inline 1/2/4/8-byte value.
+  std::int64_t bufOffset = -1;
 };
 
 // A struct passed in the outgoing stack-argument area: a class-MEMORY struct,

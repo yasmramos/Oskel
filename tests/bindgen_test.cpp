@@ -203,14 +203,14 @@ int main() {
           "System V emits every optional shape");
 
     const bindgen::Result win = generateFor(ffi::FfiAbi::Win64);
-    check(contains(win.text, "// fn make_p(x: int32, y: int32): P;"),
-          "Win64 comments a struct-by-value declaration");
+    check(contains(win.text, "fn make_p(x: int32, y: int32): P;"),
+          "Win64 emits a struct-by-value declaration");
     check(contains(win.text, "// fn takes_cb(cb: fn(int32): int32): void;"),
           "Win64 comments a callback declaration");
     check(contains(win.text, "fn printf(fmt: cstring, ...): int32;"),
           "Win64 emits a variadic declaration");
-    check(win.emitted == 1 && win.commented == 2,
-          "Win64 emits only the variadic declaration");
+    check(win.emitted == 2 && win.commented == 1,
+          "Win64 emits the struct and variadic declarations");
 
     const bindgen::Result arm = generateFor(ffi::FfiAbi::Aapcs64);
     check(contains(arm.text, "// fn make_p(x: int32, y: int32): P;"),

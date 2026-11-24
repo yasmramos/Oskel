@@ -357,11 +357,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     type name), so `type()` reports `"nil"` and not `"ptr"`. **Done (7f.7-7f.10)**:
     a struct by value (register and MEMORY classes) and a C callback are
     implemented on the System V targets; the Windows hosted backend supports
-    scalars, `cstring`, `ptr` and a C variadic, and rejects a struct or callback
-    with a dedicated message. `tests/native_build_extern_*.oskl`, the hosted
-    fixtures and the own-linker parity tests pin the matrix. The remaining
-    Windows shapes are the platform limitation recorded in §7 item 20, not an
-    open FFI gap.
+    scalars, `cstring`, `ptr`, a C variadic and a struct by value (a 1/2/4/8-byte
+    aggregate in one integer register, every other size by reference with an
+    `sret` return), and rejects a callback with a dedicated message.
+    `tests/native_build_extern_*.oskl`, the hosted fixtures and the own-linker
+    parity tests pin the matrix. The remaining Windows shape (a callback) is the
+    platform limitation recorded in §7 item 20, not an open FFI gap.
 20. **[P0] [done]** VM/AOT divergence in string iteration: `emitIterNext`'s
     `str` branch built the character but fell through into the `range` block,
     which overwrote `rax:rdx` with the cursor index, so `for c in "abc"`
