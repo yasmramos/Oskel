@@ -153,6 +153,9 @@ may change between minor versions.
   runner accepts an optional `// expect-message:` header, so the three new
   `tests/errors/*_malformed_after_use.oskl` fixtures pin the message and not
   just the exit code.
+- **A test that CRLF and CR-only sources keep token positions.** The lexer
+  folds line endings before scanning; the test proves the fold never moves a
+  token, which is what makes a Windows file report the same line and column.
 - **A test for a repeated `GcNode::track()`.** `track()` is guarded and
   `link()` is private, so the double-link hazard was unreachable; the test
   pins the invariant (it aborts without the guard).

@@ -172,6 +172,29 @@ void testNewlineNormalization() {
   assert(lines[0].line == 1 && lines[1].line == 2);
 }
 
+// Normalising the source before lexing must not move a token. `\r` sits at the
+// end of a line, so folding `\r\n` to `\n` cannot change a column *within*
+// that line, and a lone `\r` is a line break in the lexer and in
+// `lineText` alike -- the two agree, which is what a diagnostic needs
+// (BACKLOG §11 item 1).
+void testNewlineNormalizationKeepsPositions() {
+  const std::string lf = "let a = 1;\nlet b = ;\n";
+  const std::string crlf = "let a = 1;\r\nlet b = ;\r\n";
+  const std::string cr = "let a = 1;\rlet b = ;\r";
+
+  const auto positions = [](const std::string& source) {
+    std::vector<std::pair<int, int>> result;
+    for (const Token& token : lex(source)) {
+      result.push_back({token.line, token.col});
+    }
+    return result;
+  };
+
+  const auto expected = positions(lf);
+  assert(positions(crlf) == expected);
+  assert(positions(cr) == expected);
+}
+
 void testBoolAndNilLiterals() {
   Bytecode bc = compileSource("let a = true;\nlet b = false;\nlet c = nil;\n");
 
@@ -1834,6 +1857,7 @@ int main() {
   testLeftAssociativePrecedence();
   testStringConstant();
   testNewlineNormalization();
+  testNewlineNormalizationKeepsPositions();
   testBoolAndNilLiterals();
   testVarWithoutInitializer();
   testModuloAndPower();

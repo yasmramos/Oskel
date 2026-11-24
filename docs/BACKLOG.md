@@ -1023,9 +1023,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 11. Lexer (`src/frontend/lexer.cpp`)
 
-1. **[P1]** `normalizeNewlines` rewrites the whole source before lexing, so
-   `col` counts the normalized source, not the original (`\r\n` is 2 bytes but
-   1 column). Make line/col refer to the original.
+1. **[P1] [done]** `normalizeNewlines` rewrites the whole source before lexing,
+   so `col` counts the normalized source, not the original (`\r\n` is 2 bytes
+   but 1 column). **Not a bug**: `\r` only ever appears at a line end, and
+   folding it there changes the byte count but never a column *within* a line,
+   so the first token of a line and every token after it keep their column.
+   `lineText` breaks on the same three endings, so the snippet agrees with the
+   position. `tests/compiler_test.cpp` compares the (line, col) of every token
+   across LF, CRLF and CR-only sources; it aborts if the fold is removed.
 2. **[P2]** `skipQuoted` for an interpolated string is fragile when a `${...}`
    contains another string with `${...}`.
 3. ~~**[P2]** `readEscape` for `\uXXXX` does not handle surrogates (`\uD800`
