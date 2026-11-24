@@ -1,0 +1,91 @@
+// `try` propagation and `defer` (BACKLOG, compiler item 6).
+//
+// `try e` returns the error from the enclosing function when `e` is an error,
+// so it is one of the ways a scope is left early. A `defer` registered in any
+// scope that `try` leaves must run, innermost scope first, exactly once.
+
+fn fails() { return error("boom"); }
+fn succeeds() { return 7; }
+
+// The error propagates and the deferred block still runs before the function
+// returns.
+fn propagates(log) {
+  defer { log.push("deferred"); }
+  let value = try fails();
+  log.push("unreachable");
+  return value;
+}
+var log1 = [];
+let result1 = propagates(log1);
+assertEq(isError(result1), true);
+assertEq(log1, ["deferred"]);
+
+// A successful `try` yields the value and the deferred block runs once, at the
+// normal exit.
+fn passesThrough(log) {
+  defer { log.push("deferred"); }
+  let value = try succeeds();
+  log.push("body");
+  return value;
+}
+var log2 = [];
+assertEq(passesThrough(log2), 7);
+assertEq(log2, ["body", "deferred"]);
+
+// `try` inside a nested block leaves both scopes: the inner deferred block runs
+// first, then the outer one.
+fn nested(log) {
+  defer { log.push("outer"); }
+  if (true) {
+    defer { log.push("inner"); }
+    let value = try fails();
+    log.push("unreachable");
+  }
+  log.push("unreachable");
+  return 1;
+}
+var log3 = [];
+assertEq(isError(nested(log3)), true);
+assertEq(log3, ["inner", "outer"]);
+
+// Several deferred blocks in the scope `try` leaves keep their LIFO order.
+fn lifo(log) {
+  defer { log.push("first"); }
+  defer { log.push("second"); }
+  let value = try fails();
+  return value;
+}
+var log4 = [];
+assertEq(isError(lifo(log4)), true);
+assertEq(log4, ["second", "first"]);
+
+// In a loop, the iteration body's deferred block runs once per iteration, and
+// on the iteration where `try` leaves the loop and the function.
+fn inLoop(log, limit) {
+  defer { log.push("function"); }
+  for i in 0..5 {
+    defer { log.push("iteration"); }
+    if (i == limit) {
+      let value = try fails();
+    }
+  }
+  return "finished";
+}
+var log5 = [];
+assertEq(isError(inLoop(log5, 2)), true);
+assertEq(log5, ["iteration", "iteration", "iteration", "function"]);
+var log6 = [];
+assertEq(inLoop(log6, 99), "finished");
+assertEq(log6, ["iteration", "iteration", "iteration", "iteration", "iteration", "function"]);
+
+// `catch` recovers locally, so it does not leave the scope: the deferred block
+// runs once, at the end, not when the fallback is taken.
+fn recovers(log) {
+  defer { log.push("deferred"); }
+  let value = fails() catch 0;
+  log.push("after catch");
+  return value;
+}
+var log7 = [];
+assertEq(recovers(log7), 0);
+assertEq(log7, ["after catch", "deferred"]);

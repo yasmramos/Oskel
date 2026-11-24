@@ -9,6 +9,7 @@
 
 #include <cstdio>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -432,6 +433,32 @@ int main() {
     check(plain.first.equals(jitted.first), "VM result is identical with the JIT on");
     check(plain.second == 0, "the JIT compiles nothing while disabled");
     check(jitted.second >= 1, "the JIT compiles an accepted proto while enabled");
+  }
+
+  // --- A direct call with the wrong argument count is rejected --------------
+  {
+    Bytecode bc = compileSource("fn add(a, b) { return a + b; }\n");
+    std::shared_ptr<const Bytecode> proto = findProto(bc, "add");
+    std::unique_ptr<JitFunction> fn = proto ? jitCompile(*proto) : nullptr;
+    check(fn != nullptr, "arity guard: the two-parameter proto compiles");
+    if (fn) {
+      auto throwsOnCount = [&](const std::vector<Value>& args) {
+        try {
+          fn->call(args);
+        } catch (const std::logic_error&) {
+          return true;
+        }
+        return false;
+      };
+      check(throwsOnCount({}), "call with no arguments throws");
+      check(throwsOnCount({Value(static_cast<int64_t>(1))}), "call with too few arguments throws");
+      check(throwsOnCount({Value(static_cast<int64_t>(1)), Value(static_cast<int64_t>(2)),
+                           Value(static_cast<int64_t>(3))}),
+            "call with too many arguments throws");
+      check(fn->call({Value(static_cast<int64_t>(2)), Value(static_cast<int64_t>(3))})
+                .equals(Value(static_cast<int64_t>(5))),
+            "call with the exact argument count still returns the result");
+    }
   }
 
   // --- Differential fuzz over random integer leaf functions ------------------
