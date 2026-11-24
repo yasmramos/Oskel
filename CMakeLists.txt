@@ -2611,7 +2611,7 @@ if(BUILD_TESTING)
     # A callback that returns a struct needs the by-value struct marshalling
     # (and, for a struct over 16 bytes, the descriptor stub); elsewhere the same
     # declaration is a compile error.
-    if(name STREQUAL "ffi_callback_struct_return" AND NOT OSKEL_FFI_STRUCT_BY_VALUE)
+    if(name STREQUAL "ffi_callback_struct_return" AND NOT OSKEL_FFI_CALLBACKS)
       continue()
     endif()
     set(expected 0)

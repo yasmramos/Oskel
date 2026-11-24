@@ -61,6 +61,13 @@
 namespace ffi {
 namespace {
 
+#if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
+constexpr bool kHostWin64 = true;
+#else
+constexpr bool kHostWin64 = false;
+#endif
+
+
 // ------------------------------------------------------------------ arguments
 
 // The machine address behind a pointer argument. A `void *` carries an opaque
@@ -626,12 +633,6 @@ Ref<CallbackObj> makeCallback(Runtime& rt, const std::string& name, const TypeSp
 }
 
 // ------------------------------------------------------------------ dynamic calls
-
-#if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
-constexpr bool kHostWin64 = true;
-#else
-constexpr bool kHostWin64 = false;
-#endif
 
 struct PromotedArg {
   ParamClass cls = ParamClass::Int;
