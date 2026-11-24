@@ -500,6 +500,20 @@ void testConflictingExternAcrossModules() {
         "the cross-module conflict names the symbol and the problem");
 }
 
+// The same C symbol declared by two modules with the *same* signature is not a
+// conflict: the compiler builds one marshalling thunk per symbol, so the second
+// import reuses it. Only a signature disagreement is rejected (the test above).
+void testCompatibleExternAcrossModules() {
+  VM vm;
+  compileAndRun(
+      "import modules.externsqrt_a;\n"
+      "import modules.externsqrt_b;\n"
+      "let got = int(modules.externsqrt_a.rootOf(9.0) +"
+      " modules.externsqrt_b.otherRootOf(16.0));\n",
+      fixtureResolver(), vm);
+  check(globalInt(vm, "got") == 7, "two modules may declare one extern with the same signature");
+}
+
 // A `struct` name is compile-time metadata, not a value binding, so it is not
 // tracked by `userGlobals_`: an import that takes the same name used to coexist
 // with it silently, `Name { ... }` staying a struct literal and `Name.member`
@@ -661,6 +675,7 @@ int main() {
   testImportConflictAcrossForms();
   testNonConflictingImportCombinations();
   testConflictingExternAcrossModules();
+  testCompatibleExternAcrossModules();
   testStructImportNameConflict();
 
   if (g_failures != 0) {

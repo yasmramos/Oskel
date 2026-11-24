@@ -1265,8 +1265,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 10. **[P1]** Add `compiler_test.cpp` cases for a `Point` alias plus a
     `struct Point`, `try` inside a block with a `defer`, and `catch` with a
     fallback block that has a `defer`.
-11. **[P1]** Add `module_test.cpp` cases for two `extern "C"` of the same name
-    in different modules and for `import` with `from` as a user variable.
+11. **[P1] [done]** Add `module_test.cpp` cases for two `extern "C"` of the
+    same name in different modules and for `import` with `from` as a user
+    variable. **Done**: `testConflictingExternAcrossModules` already covered the
+    disagreeing signatures. The agreeing case is now
+    `testCompatibleExternAcrossModules` (two modules declaring `sqrt` the same
+    way bind one thunk and both calls run), and
+    `testFromIsAnIdentifierOutsideImports` runs a `from` variable beside an
+    import.
 12. **[P2]** Add `repl_test.cpp` for "import X, fail, import X again runs the
     body once".
 13. **[P2]** Add `elf_test.cpp` for non-empty `rodata`, `entryOffset != 0` and

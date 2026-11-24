@@ -153,6 +153,10 @@ may change between minor versions.
   runner accepts an optional `// expect-message:` header, so the three new
   `tests/errors/*_malformed_after_use.oskl` fixtures pin the message and not
   just the exit code.
+- **Tests for `from` outside imports and a shared `extern "C"`.** A variable
+  named `from` stays an ordinary identifier beside an `import`, and two modules
+  that declare the same C symbol with the same signature bind one thunk instead
+  of failing. Both were uncovered behaviour; the tests pin it.
 - **A `JMP` to the end of a chunk lowers.** The VM accepts a jump target of
   exactly `code.size()`: the pc passes the last instruction and the next
   dispatch falls off the end, which is an implicit `return nil`. The AOT
