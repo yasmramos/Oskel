@@ -87,6 +87,13 @@ it as a caveat:
 - `oskel build` prints lowering errors (unsupported builtins, unlowered
   opcodes) and exits 65 without writing a binary; it never emits a
   mis-compiled one.
+- The release SDK bundles the UI runtime. `tools/prepare_ui_deps.py` builds a
+  shared SDL3 and a static Skia with the pinned vcpkg checkout and exports
+  `CMAKE_PREFIX_PATH`; CMake links the static Skia into `libskia_shim`, and
+  every package installs the pair under `lib/oskel/ui`. A user never installs
+  SDL3 or Skia. `install_stdlib` runs the real shim from the installed tree, so
+  a package that drops `lib/oskel/ui` fails the suite; do not make that test
+  optional when `OSKEL_SKIA_FOUND` is true.
 - A host binding (`native fn`, `extern "C"`) and `var x = x;` both compile to
   `GETGLOBAL N; SETGLOBAL N` at the top level (or `GETGLOBAL N; SETLOCAL` inside
   a function). The AOT backend has no host. An *unused* declaration is harmless
@@ -1108,6 +1115,20 @@ it as a caveat:
   allowed. When you move a file, grep for its old path across `tests/`,
   `CMakeLists.txt`, the build scripts and the workflows, then plant a violation
   and watch the check fail before trusting it.
+- `oskelint` (the linter, `docs/oskelint.md`) is a sixth executable, and the
+  one tool that *does* link the engine: it constructs a `VM` to read
+  `globals()` after `registerBuiltins`, so `builtin-shadow` has no second list
+  of builtin names to drift. It never runs a program, so `oskelc` stays
+  interpreter-free. The walker is the part that rots: it must visit every
+  variant of `StmtNode` and `ExprNode`, and a variant that binds a name must be
+  reported. Two gaps shipped in #420 and were fixed in #422 — `EnumDeclStmt`
+  was never visited (an `enum len { A, B }` shadowed `len` silently), and an
+  `extern "C"` block reported its *parameters* (the C side's names, binding
+  nothing) while staying silent on the declaration's own name. A bodyless
+  declaration (`extern "C"`, `native fn`) reports its name and skips its
+  parameters. When you touch the walker, check it by running `oskelint` on a
+  program per node kind rather than by reading it: both gaps survived a review
+  and only showed up under execution.
 - `bindgen` (the C binding generator, `docs/bindgen.md`) is a second executable
   shipped beside `oskel`. It is standalone — it links no engine code — and its
   sources live under `tools/`, outside the three `src/` globs, so it is never

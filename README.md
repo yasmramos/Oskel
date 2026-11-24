@@ -91,6 +91,11 @@ cmake --build build-cmake
 ./build-cmake/oskel examples/hello.oskl
 ```
 
+The released SDK bundles SDL3 and Skia, so `std.ui` needs no separate install.
+A source build that wants the window backend can fetch the same pair with
+`python3 tools/prepare_ui_deps.py`; CMake then finds both through
+`CMAKE_PREFIX_PATH`.
+
 ### Manual build
 
 The sources split in three, and the directory a file lives in is its
@@ -612,6 +617,13 @@ Every release also ships a `SHA256SUMS` file; verify a download with
 ships beside it: it links the front end and the AOT backend without the VM or
 the JIT, so a compiled program carries no interpreter. Both call the same
 `buildBinary` pipeline, so they emit the same image.
+
+## Contributing
+
+The build, test and builtin-addition workflow lives in
+[`CONTRIBUTING.md`](CONTRIBUTING.md). The language specification and the
+development phases are in [`DEVELOPMENT.md`](DEVELOPMENT.md), and the git
+workflow and commit format are in [`CONVENTIONS.md`](CONVENTIONS.md).
 
 ## License
 

@@ -8,6 +8,12 @@ fn assertEq(actual: int, expected: int) {
   }
 }
 
+fn assertEqStr(actual: string, expected: string) {
+  if (actual != expected) {
+    panic("expected '" + expected + "', got '" + actual + "'");
+  }
+}
+
 let root = ui.window("Demo", 120, 80,
   ui.column(8, [
     ui.text("Hi", 16),
@@ -17,14 +23,14 @@ ui.layout(root, 120, 80);
 
 let commands = ui.commands(root);
 assertEq(len(commands), 4);
-assertEq(commands[0].kind, "rect");
-assertEq(commands[1].kind, "text");
-assertEq(commands[2].kind, "rect");
-assertEq(commands[3].kind, "text");
+assertEqStr(commands[0].kind, "rect");
+assertEqStr(commands[1].kind, "text");
+assertEqStr(commands[2].kind, "rect");
+assertEqStr(commands[3].kind, "text");
 
 let hit = ui.hitTest(root, 10, 40);
 assert(hit != nil);
-assertEq(hit.label, "OK");
+assertEqStr(hit.label, "OK");
 assert(ui.hitTest(root, 100, 75) == nil);
 
 let surface = skia.Surfaces.raster(120, 80);

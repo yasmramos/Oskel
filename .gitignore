@@ -59,3 +59,8 @@ build-release/
 *.tar.xz
 *.tar.bz2
 build-dev/
+
+# UI dependency checkout and vcpkg binary cache (built by tools/prepare_ui_deps.py)
+.vcpkg/
+.vcpkg-cache/
+__pycache__/

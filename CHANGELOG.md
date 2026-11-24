@@ -11,6 +11,16 @@ may change between minor versions.
 
 ### Added
 
+- **The release SDK bundles SDL3 and Skia.** `std.ui` and `std.ui.window` no
+  longer depend on libraries the user installs. The artifacts workflow builds a
+  shared SDL3 and a static Skia with vcpkg, links the static archive into
+  `libskia_shim`, and every archive, `.deb`/`.rpm`, `.pkg`/`.dmg` and Windows
+  installer ships both under `lib/oskel/ui`. The installed engine finds them
+  through its executable-relative lookup, so `import std.ui.window` works with
+  no `OSKEL_UI_LIBDIR`, `LD_PRELOAD` or `--link-lib`. A source build gets the
+  same pair with `tools/prepare_ui_deps.py`; the `install_stdlib` test runs the
+  real shim from the installed tree. The Windows and macOS artifacts now build
+  the UI backend instead of silently omitting it.
 - **`oskelp` supports multi-member workspaces.** A root `oskel.toml` with a
   `[workspace] members = [...]` table shares one `oskel.lock`, one
   `.oskel/deps` and one `target/` across every member. `build`, `check` and
@@ -86,6 +96,15 @@ may change between minor versions.
   bind a global. A bodyless declaration (`extern "C"`, `native fn`) now reports
   its name and skips its parameters. Four cases in `tests/oskelint_test.cpp`
   pin the shapes.
+- **`oskelp.end_to_end` aborted on Windows.** `tests/run_oskelp_case.cmake`
+  checked the output with `macro(require_contains ...)`, and a macro
+  substitutes its arguments textually and re-parses them: the workspace path
+  `oskelp tree` prints (`D:\a\Oskel\...`) reached `string(FIND)` as an escape
+  sequence and CMake aborted with "Invalid character escape '\a'" before any
+  assertion ran. `require_contains`, `require_file_contains` and
+  `require_file_not_contains` are `function`s now, so the value travels through
+  a variable untouched. The Linux and macOS jobs were green only because their
+  paths carry no backslashes.
 
 ## [0.3.0] - 2026-11-23
 
