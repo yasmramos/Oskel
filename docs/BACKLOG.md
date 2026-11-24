@@ -99,13 +99,27 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    and the struct arrive in different entries). Covered by
    `testStructImportNameConflict` in `tests/module_test.cpp` and
    `tests/errors/struct_import_conflict.oskl`.
-6. **[P1]** `compileTry`/`compileReturn` emit `emitDeferredBlocks(1)` before
-   `RETURN`; the interaction of `try` inside a block with a `defer` that
-   returns is subtle and untested. Define and test it.
-7. **[P1]** `compileCatch` does not emit `emitDeferredBlocks` on the fallback
-   path; whether a fallback block's `defer` runs is undefined and untested.
+6. **[P1] [done]** `compileTry`/`compileReturn` emit `emitDeferredBlocks(1)`
+   before `RETURN`; the interaction of `try` inside a block with a `defer` was
+   untested. **Done**: the behavior was already correct (a `try` that
+   propagates an error runs every pending `defer` of the scopes it leaves,
+   innermost first, once each; a `catch` that recovers runs none early) and is
+   now pinned by `tests/70_try_defer.oskl`.
+7. **[P1] [done]** `compileCatch` does not emit `emitDeferredBlocks` on the
+   fallback path; whether a fallback block's `defer` runs was undefined.
+   **Done**: not reachable. The fallback of `catch` is an expression, `defer`
+   is a statement that needs a block, and neither a lambda (`x => expr`) nor
+   `fn` (named declarations only) can put a block inside an expression, so no
+   `defer` can sit on that path. Revisit if the language ever gains a block
+   expression or an anonymous `fn`.
 8. **[P1]** `compileExternBlock` does not reject a symbol that collides with a
-   builtin (`print`, `len`, ...), which then shadows it silently.
+   builtin (`print`, `len`, ...), which then shadows it silently. **Needs a
+   decision**: shadowing a builtin is how the language behaves today for every
+   declaration (a user `fn len(x)` shadows it, and `tests/29_extern_c.oskl`
+   declares `sqrt` and `abs` as `extern`), so rejecting it only for `extern`
+   would be inconsistent and would break that test. Either reject collisions
+   for all declarations or record in `DEVELOPMENT.md` that shadowing is
+   intended.
 9. **[P2]** `inferExprType` for a `CatchExpr` with one unknown side returns
    untyped, losing check opportunities. Infer the known side when possible.
 10. **[P2]** `compileSwitch` emits `EQ` + `JMP_IF_TRUE` + `JMP` for the
@@ -160,11 +174,17 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    containers, `CALL`, `GETGLOBAL`/`SETGLOBAL`. It accelerates very little.
 2. **[P1]** `Jit::get` caches failures (a null function) with no size cap; the
    cache grows unbounded in a long REPL. Add an LRU or a cap.
-3. **[P1]** `JitFunction::call` does not validate `args.size() == numParams`;
-   `jitFor` checks first, but a direct `call` does not.
-4. **[P1]** `Jit::get` keys on `proto.get()`; if a `Bytecode` is freed and
-   another lands at the same address the cache returns the wrong JIT. Key on a
-   stable identity.
+3. **[P1] [done]** `JitFunction::call` does not validate
+   `args.size() == numParams`; `jitFor` checks first, but a direct `call` did
+   not, so a shorter vector was an out-of-bounds read (an empty one crashed).
+   **Done**: `call` throws `std::logic_error` on a count mismatch
+   (`tests/jit_test.cpp`). That every argument is an integer is still the
+   caller's contract (`VM::jitFor`).
+4. **[P1] [done]** `Jit::get` keys on `proto.get()`; if a `Bytecode` is freed
+   and another lands at the same address the cache returns the wrong JIT.
+   **Done**: not reachable. Each cache entry holds a `shared_ptr` to its proto,
+   so the address cannot be reused while the entry exists (`include/jit/jit.h`
+   documents it). The cache's unbounded growth is item 2.
 5. **[P1]** `jitHostSupported()` does not cover macOS; add `defined(__APPLE__)`.
 6. **[P1]** On Windows `JitCode::assign` always returns false; the user gets no
    JIT and no message. Report it at startup.
