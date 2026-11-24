@@ -108,8 +108,9 @@ int main(int argc, char **argv) {
       }
       if (!isOwnLinkerTarget(target)) {
         std::cerr << "oskelld: the own linker supports "
-                  << targetName(Target::linuxX64()) << " and "
-                  << targetName(Target::winX64()) << "\n";
+                  << targetName(Target::linuxX64()) << ", "
+                  << targetName(Target::winX64()) << " and "
+                  << targetName(Target::macX64()) << "\n";
         return 64;
       }
       options.target = target;

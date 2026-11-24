@@ -1,8 +1,10 @@
 #include "native/macho.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -119,14 +121,27 @@ struct MachReloc {
   std::uint32_t address = 0;
   std::string symbol;
   bool branch = false;
+  std::uint8_t type = kRelocBranch;
+  bool pcrel = true;
+  std::uint8_t length = 2;
+};
+
+struct MachSymbol {
+  std::string name;
+  bool defined = false;
+  std::uint8_t section = 0;
+  std::uint64_t value = 0;
 };
 
 struct MachObject {
   std::vector<std::uint8_t> text;
   std::vector<std::uint8_t> rodata;
   std::vector<MachReloc> relocs;
+  std::vector<MachSymbol> symbols;
   std::vector<std::string> imports;
   std::uint32_t entryOffset = 0;
+  std::uint64_t textOffset = 0;    // assigned by the relocatable link
+  std::uint64_t rodataOffset = 0;  // assigned by the relocatable link
 };
 
 MachObject parseMachObject(const LinkInput& input) {
@@ -186,10 +201,7 @@ MachObject parseMachObject(const LinkInput& input) {
   MachObject object;
   object.text = reader.bytes(textOffset, textSize);
   if (constSize != 0) object.rodata = reader.bytes(constOffset, constSize);
-  std::vector<std::string> names;
-  std::vector<bool> defined;
-  names.reserve(static_cast<std::size_t>(symCount));
-  defined.reserve(static_cast<std::size_t>(symCount));
+  object.symbols.reserve(static_cast<std::size_t>(symCount));
   for (std::uint64_t i = 0; i < symCount; ++i) {
     const std::uint64_t base = symOffset + i * 16;
     const std::uint32_t nameOffset = reader.u32(base);
@@ -198,10 +210,13 @@ MachObject parseMachObject(const LinkInput& input) {
     const std::uint64_t value = reader.u64(base + 8);
     std::string name = nameOffset == 0 ? std::string() : reader.string(strOffset + nameOffset);
     if (!name.empty() && name[0] == '_') name.erase(name.begin());
-    names.push_back(name);
-    const bool isDefined = (type & kNSect) != 0;
-    defined.push_back(isDefined);
-    if (isDefined && name == "main") {
+    MachSymbol symbol;
+    symbol.name = std::move(name);
+    symbol.defined = (type & kNSect) != 0;
+    symbol.section = section;
+    symbol.value = value;
+    object.symbols.push_back(symbol);
+    if (symbol.defined && symbol.name == "main") {
       if (section != 1) throw LinkError("'main' is not in __text");
       object.entryOffset = static_cast<std::uint32_t>(value);
     }
@@ -214,22 +229,23 @@ MachObject parseMachObject(const LinkInput& input) {
     const bool external = ((info >> 27) & 1) != 0;
     const std::uint8_t type = static_cast<std::uint8_t>(info >> 28);
     if (!external) throw LinkError("the Mach-O linker does not support internal relocations yet");
-    if (symbolIndex >= names.size()) throw LinkError("a Mach-O relocation names an out-of-range symbol");
-    if (type != kRelocBranch) {
-      throw LinkError("the Mach-O linker does not support external data imports yet: '" +
-                      names[symbolIndex] + "'");
+    if (symbolIndex >= object.symbols.size()) {
+      throw LinkError("a Mach-O relocation names an out-of-range symbol");
     }
     MachReloc reloc;
     reloc.address = address;
-    reloc.symbol = names[symbolIndex];
-    reloc.branch = true;
+    reloc.symbol = object.symbols[symbolIndex].name;
+    reloc.branch = type == kRelocBranch;
+    reloc.type = type;
+    reloc.pcrel = ((info >> 24) & 1) != 0;
+    reloc.length = static_cast<std::uint8_t>((info >> 25) & 0x3);
     object.relocs.push_back(reloc);
   }
-  for (std::size_t i = 0; i < names.size(); ++i) {
-    if (!defined[i] && !names[i].empty() &&
-        std::find(object.imports.begin(), object.imports.end(), names[i]) ==
+  for (const MachSymbol& symbol : object.symbols) {
+    if (!symbol.defined && !symbol.name.empty() &&
+        std::find(object.imports.begin(), object.imports.end(), symbol.name) ==
             object.imports.end()) {
-      object.imports.push_back(names[i]);
+      object.imports.push_back(symbol.name);
     }
   }
   return object;
@@ -348,16 +364,44 @@ std::vector<std::uint8_t> linkMachOExecutable(
   std::vector<std::uint8_t> text = object.text;
   std::unordered_map<std::string, std::size_t> importIndex;
   for (std::size_t i = 0; i < imports.size(); ++i) importIndex.emplace(imports[i], i);
-  for (const MachReloc& reloc : object.relocs) {
-    const auto found = importIndex.find(reloc.symbol);
-    if (found == importIndex.end()) {
-      throw LinkError("unresolved Mach-O symbol '" + reloc.symbol + "'");
+  std::unordered_map<std::string, const MachSymbol*> definedSymbols;
+  for (const MachSymbol& symbol : object.symbols) {
+    if (symbol.defined && !symbol.name.empty()) {
+      definedSymbols.emplace(symbol.name, &symbol);
     }
-    const std::uint64_t stub =
-        kTextVmaddr + stubsFileOffset + found->second * kStubSize;
+  }
+  for (const MachReloc& reloc : object.relocs) {
+    if (!reloc.pcrel) {
+      throw LinkError("the Mach-O linker does not support absolute relocations yet: '" +
+                      reloc.symbol + "'");
+    }
+    std::uint64_t target = 0;
+    const auto defined = definedSymbols.find(reloc.symbol);
+    if (defined != definedSymbols.end()) {
+      const MachSymbol& symbol = *defined->second;
+      if (symbol.section == 1) {
+        target = kTextVmaddr + textFileOffset + symbol.value;
+      } else if (symbol.section == 2 && hasConst) {
+        target = kTextVmaddr + textFileOffset + symbol.value;
+      } else {
+        throw LinkError("a Mach-O relocation names '" + reloc.symbol +
+                        "', which is not in __text or __const");
+      }
+    } else {
+      const auto found = importIndex.find(reloc.symbol);
+      if (found == importIndex.end()) {
+        throw LinkError("unresolved Mach-O symbol '" + reloc.symbol + "'");
+      }
+      // A call reaches the import through __stubs; a data reference reaches the
+      // non-lazy symbol pointer in __got, exactly like a C compiler's own
+      // Mach-O object.
+      target = reloc.branch
+                   ? kTextVmaddr + stubsFileOffset + found->second * kStubSize
+                   : dataVmaddr + found->second * 8;
+    }
     const std::uint64_t field = kTextVmaddr + textFileOffset + reloc.address;
     const std::int32_t displacement =
-        static_cast<std::int32_t>(stub - (field + 4));
+        static_cast<std::int32_t>(target - (field + 4));
     put32(text, reloc.address, static_cast<std::uint32_t>(displacement));
   }
   std::vector<std::uint8_t> stubs(stubsSize, 0);
@@ -541,5 +585,221 @@ std::vector<std::uint8_t> linkMachOExecutable(
   std::memcpy(out.data() + stroff, strtab.data(), strtab.size());
   if (!indirect.empty()) std::memcpy(out.data() + indirectsymoff, indirect.data(), indirect.size());
   if (!bind.empty()) std::memcpy(out.data() + bindoff, bind.data(), bind.size());
+  return out;
+}
+
+std::vector<std::uint8_t> linkRelocatableMachO(
+    const std::vector<LinkInput>& inputs, const LinkOptions& options) {
+  if (inputs.empty()) throw LinkError("no input objects");
+  if (options.target.arch != Arch::X86_64 || options.target.os != Os::MacOs) {
+    throw LinkError("the Mach-O relocatable link supports x86_64-macos-sysv only");
+  }
+  std::vector<MachObject> objects;
+  objects.reserve(inputs.size());
+  for (const LinkInput& input : inputs) objects.push_back(parseMachObject(input));
+
+  std::uint64_t textSize = 0;
+  std::uint64_t constSize = 0;
+  for (MachObject& object : objects) {
+    object.textOffset = alignUp(textSize, 16);
+    textSize = object.textOffset + object.text.size();
+    object.rodataOffset = alignUp(constSize, 8);
+    constSize = object.rodataOffset + object.rodata.size();
+  }
+  std::vector<std::uint8_t> text(static_cast<std::size_t>(textSize), 0);
+  std::vector<std::uint8_t> rodata(static_cast<std::size_t>(constSize), 0);
+  for (const MachObject& object : objects) {
+    std::copy(object.text.begin(), object.text.end(),
+              text.begin() + static_cast<std::ptrdiff_t>(object.textOffset));
+    std::copy(object.rodata.begin(), object.rodata.end(),
+              rodata.begin() + static_cast<std::ptrdiff_t>(object.rodataOffset));
+  }
+
+  struct OutSymbol {
+    std::string name;
+    bool defined = false;
+    std::uint8_t section = 0;
+    std::uint64_t value = 0;
+  };
+  std::vector<OutSymbol> symbols;
+  symbols.push_back(OutSymbol{});
+  std::unordered_map<std::string, std::uint32_t> definedIndex;
+  const bool hasConst = constSize != 0;
+  const std::uint64_t constBase = hasConst ? alignUp(textSize, 8) : 0;
+  for (const MachObject& object : objects) {
+    for (const MachSymbol& symbol : object.symbols) {
+      if (!symbol.defined || symbol.name.empty()) continue;
+      if (definedIndex.count(symbol.name) != 0) {
+        throw LinkError("duplicate Mach-O symbol '" + symbol.name + "'");
+      }
+      std::uint64_t value = 0;
+      if (symbol.section == 1) {
+        value = object.textOffset + symbol.value;
+      } else if (symbol.section == 2) {
+        value = constBase + object.rodataOffset + symbol.value;
+      } else {
+        throw LinkError("'" + symbol.name + "' is not in __text or __const");
+      }
+      definedIndex.emplace(symbol.name, static_cast<std::uint32_t>(symbols.size()));
+      symbols.push_back(OutSymbol{symbol.name, true, symbol.section, value});
+    }
+  }
+  std::unordered_map<std::string, std::uint32_t> undefinedIndex;
+  for (const MachObject& object : objects) {
+    for (const MachSymbol& symbol : object.symbols) {
+      if (symbol.defined || symbol.name.empty()) continue;
+      if (definedIndex.count(symbol.name) != 0 || undefinedIndex.count(symbol.name) != 0) {
+        continue;
+      }
+      undefinedIndex.emplace(symbol.name, static_cast<std::uint32_t>(symbols.size()));
+      symbols.push_back(OutSymbol{symbol.name, false, 0, 0});
+    }
+  }
+
+  const auto push8 = [](std::vector<std::uint8_t>& out, std::uint8_t value) {
+    out.push_back(value);
+  };
+  const auto push16 = [](std::vector<std::uint8_t>& out, std::uint16_t value) {
+    out.push_back(static_cast<std::uint8_t>(value));
+    out.push_back(static_cast<std::uint8_t>(value >> 8));
+  };
+  const auto push32 = [](std::vector<std::uint8_t>& out, std::uint32_t value) {
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<std::uint8_t>(value >> (8 * i)));
+  };
+  const auto push64 = [](std::vector<std::uint8_t>& out, std::uint64_t value) {
+    for (int i = 0; i < 8; ++i) out.push_back(static_cast<std::uint8_t>(value >> (8 * i)));
+  };
+
+  std::vector<std::uint8_t> relocs;
+  for (const MachObject& object : objects) {
+    for (const MachReloc& reloc : object.relocs) {
+      std::uint32_t index = 0;
+      const auto defined = definedIndex.find(reloc.symbol);
+      if (defined != definedIndex.end()) {
+        index = defined->second;
+      } else {
+        const auto undefined = undefinedIndex.find(reloc.symbol);
+        if (undefined == undefinedIndex.end()) {
+          throw LinkError("unresolved Mach-O symbol '" + reloc.symbol + "'");
+        }
+        index = undefined->second;
+      }
+      push32(relocs, static_cast<std::uint32_t>(object.textOffset + reloc.address));
+      const std::uint32_t word =
+          index | (reloc.pcrel ? (1u << 24) : 0u) |
+          (static_cast<std::uint32_t>(reloc.length) << 25) | (1u << 27) |
+          (static_cast<std::uint32_t>(reloc.type) << 28);
+      push32(relocs, word);
+    }
+  }
+
+  std::vector<std::uint8_t> strtab(1, 0);
+  std::vector<std::uint8_t> symtab;
+  for (const OutSymbol& symbol : symbols) {
+    std::uint32_t nameOffset = 0;
+    if (!symbol.name.empty()) {
+      nameOffset = static_cast<std::uint32_t>(strtab.size());
+      strtab.push_back('_');  // Mach-O external names carry the C underscore
+      strtab.insert(strtab.end(), symbol.name.begin(), symbol.name.end());
+      strtab.push_back(0);
+    }
+    push32(symtab, nameOffset);
+    push8(symtab, static_cast<std::uint8_t>(
+                       symbol.defined ? (kNSect | kNExt) : (kNUndef | kNExt)));
+    push8(symtab, symbol.defined ? symbol.section : 0);
+    push16(symtab, 0);
+    push64(symtab, symbol.value);
+  }
+
+  const std::uint32_t sectionCount = hasConst ? 2u : 1u;
+  const std::uint32_t segmentCommandSize = 72u + 80u * sectionCount;
+  const std::uint32_t sizeofcmds = segmentCommandSize + 24u + 24u;
+  const std::uint64_t textFileOffset = alignUp(32u + sizeofcmds, 16);
+  const std::uint64_t constFileOffset =
+      hasConst ? alignUp(textFileOffset + textSize, 8) : 0;
+  const std::uint64_t sectionEnd =
+      hasConst ? constFileOffset + constSize : textFileOffset + textSize;
+  const std::uint64_t relocOffset = alignUp(sectionEnd, 8);
+  const std::uint64_t symtabOffset = alignUp(relocOffset + relocs.size(), 8);
+  const std::uint64_t strtabOffset = symtabOffset + symtab.size();
+  const std::uint64_t sectionBytes = sectionEnd - textFileOffset;
+
+  std::vector<std::uint8_t> out;
+  out.reserve(static_cast<std::size_t>(strtabOffset + strtab.size()));
+  push32(out, kMagic64);
+  push32(out, kCpuX86_64);
+  push32(out, kCpuSubtypeX86_64All);
+  push32(out, kFileTypeObject);
+  push32(out, 3);  // segment, build version, symtab
+  push32(out, sizeofcmds);
+  push32(out, 0x2000);  // MH_SUBSECTIONS_VIA_SYMBOLS
+  push32(out, 0);
+
+  push32(out, kSegment64);
+  push32(out, segmentCommandSize);
+  appendFixedName(out, "", 16);
+  push64(out, 0);  // vmaddr
+  push64(out, sectionBytes);
+  push64(out, textFileOffset);
+  push64(out, sectionBytes);
+  push32(out, 7);
+  push32(out, 7);
+  push32(out, sectionCount);
+  push32(out, 0);
+
+  appendFixedName(out, "__text", 16);
+  appendFixedName(out, "__TEXT", 16);
+  push64(out, 0);
+  push64(out, textSize);
+  push32(out, static_cast<std::uint32_t>(textFileOffset));
+  push32(out, 4);
+  push32(out, static_cast<std::uint32_t>(relocOffset));
+  push32(out, static_cast<std::uint32_t>(relocs.size() / 8));
+  push32(out, kTextAttributes);
+  push32(out, 0);
+  push32(out, 0);
+  push32(out, 0);
+
+  if (hasConst) {
+    appendFixedName(out, "__const", 16);
+    appendFixedName(out, "__TEXT", 16);
+    push64(out, constFileOffset - textFileOffset);
+    push64(out, constSize);
+    push32(out, static_cast<std::uint32_t>(constFileOffset));
+    push32(out, 3);
+    push32(out, 0);
+    push32(out, 0);
+    push32(out, 0);
+    push32(out, 0);
+    push32(out, 0);
+    push32(out, 0);
+  }
+
+  push32(out, kBuildVersion);
+  push32(out, 24);
+  push32(out, kPlatformMacOs);
+  push32(out, kMacOs10_15);
+  push32(out, kMacOs10_15);
+  push32(out, 0);
+
+  push32(out, kSymtab);
+  push32(out, 24);
+  push32(out, static_cast<std::uint32_t>(symtabOffset));
+  push32(out, static_cast<std::uint32_t>(symbols.size()));
+  push32(out, static_cast<std::uint32_t>(strtabOffset));
+  push32(out, static_cast<std::uint32_t>(strtab.size()));
+
+  padTo(out, 16);
+  if (out.size() != textFileOffset) {
+    throw std::logic_error("native/macho: internal error, relocatable header size mismatch");
+  }
+  out.insert(out.end(), text.begin(), text.end());
+  padTo(out, 8);
+  out.insert(out.end(), rodata.begin(), rodata.end());
+  padTo(out, 8);
+  out.insert(out.end(), relocs.begin(), relocs.end());
+  padTo(out, 8);
+  out.insert(out.end(), symtab.begin(), symtab.end());
+  out.insert(out.end(), strtab.begin(), strtab.end());
   return out;
 }
