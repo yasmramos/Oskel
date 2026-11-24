@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <stdexcept>
+#include <string>
 
 #include "native/codegen.h"
 #include "native/target.h"
@@ -2140,6 +2142,13 @@ bool JitCode::assign(const std::vector<std::uint8_t>& bytes) {
 // --------------------------------------------------------------- public API
 
 Value JitFunction::call(const std::vector<Value>& args) const {
+  // The native body reads `args[0 .. numParams_ - 1]` with no bounds check, so
+  // a shorter vector would be an out-of-bounds read. `VM::jitFor` already
+  // guarantees the count; this keeps a direct caller from breaking the contract.
+  if (args.size() != static_cast<std::size_t>(numParams_)) {
+    throw std::logic_error("jit: JitFunction::call expects " + std::to_string(numParams_) +
+                           " argument(s), got " + std::to_string(args.size()));
+  }
   Value out;
   auto entry = reinterpret_cast<Entry>(code_.entry());
   entry(args.data(), static_cast<std::int64_t>(args.size()), &out);
