@@ -10,7 +10,16 @@ helpers stay in the facade.
 `std/internal/skia_window.oskl` presents it through SDL3; `std.ui.window` is
 the public entry point.
 
-Build it with a Skia root that has headers and a built `libskia`:
+The release SDK ships the bridge; a source build gets it from vcpkg:
+
+```sh
+python3 tools/prepare_ui_deps.py
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+That links the static `unofficial::skia::skia` target into `build/ui`, so the
+shipped shim needs no separate `libskia`. A hand-built Skia root still works:
 
 ```sh
 SKIA_DIR=/path/to/skia ./build.sh
@@ -53,14 +62,17 @@ and reads pixels back in bulk. `tests/cxxbind/skia_ui_test.oskl` builds a small
 `std.ui` tree, renders it, and checks the window and button pixels.
 `tests/cxxbind/skia_window_test.oskl` drives the full `std.ui.window` loop
 through SDL3's dummy video driver. All three run on the VM and the hosted AOT
-binary when CMake is configured with:
+binary when CMake finds Skia, either from the bundled vcpkg target or from a
+hand-built root:
 
 ```sh
-cmake -S . -B build   -DOSKEL_SKIA_DIR=/path/to/skia   -DOSKEL_SKIA_LIB=/path/to/libskia.a   -DOSKEL_SKIA_LIBS='-lpthread -ldl -lm ...'
+cmake -S . -B build -DOSKEL_SKIA_DIR=/path/to/skia -DOSKEL_SKIA_LIB=/path/to/libskia.a -DOSKEL_SKIA_LIBS='-lpthread -ldl -lm ...'
 ```
 
-The CTest is `cxxbind.skia`. Without those options it is not registered, so a
-checkout without Skia keeps the suite green. Under AddressSanitizer the test
+The CTest is `cxxbind.skia`. Without Skia it is not registered, so a checkout
+without the backend keeps the suite green. The installed-layout test
+`install_stdlib` also runs the real shim from `lib/oskel/ui`, which is what
+proves the SDK needs no user-installed Skia. Under AddressSanitizer the test
 sets `ASAN_OPTIONS=detect_leaks=0` for the VM run: fontconfig keeps process-wide
 caches that LeakSanitizer reports as leaks, and the test's job is the pixel
 assertions, not third-party allocator bookkeeping.

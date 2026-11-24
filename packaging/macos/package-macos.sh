@@ -12,6 +12,7 @@
 #
 #   /usr/local/bin/oskel
 #   /usr/local/share/oskel/std/*.oskl
+#   /usr/local/lib/oskel/ui/*    (bundled SDL3 and Skia shim)
 #
 # `standardLibraryDir` looks for `../share/oskel/std` relative to the
 # executable, so `/usr/local/bin/oskel` resolves `/usr/local/share/oskel/std`
@@ -50,12 +51,20 @@ if [ ! -x "$stage/bin/bindgen" ]; then
   echo "package-macos: $stage/bin/bindgen not found; did the install step run?" >&2
   exit 1
 fi
+if [ ! -x "$stage/bin/oskelint" ]; then
+  echo "package-macos: $stage/bin/oskelint not found; did the install step run?" >&2
+  exit 1
+fi
 if [ ! -x "$stage/bin/oskelp" ]; then
   echo "package-macos: $stage/bin/oskelp not found; did the install step run?" >&2
   exit 1
 fi
 if [ ! -f "$stage/share/oskel/std/math.oskl" ]; then
   echo "package-macos: $stage/share/oskel/std/math.oskl not found" >&2
+  exit 1
+fi
+if [ ! -d "$stage/lib/oskel/ui" ]; then
+  echo "package-macos: $stage/lib/oskel/ui not found; build with the bundled UI dependencies" >&2
   exit 1
 fi
 
@@ -65,13 +74,16 @@ trap 'rm -rf "$work"' EXIT
 # A fresh payload root: `pkgbuild` refuses to build from a directory that
 # already holds package metadata from a previous run.
 payload="$work/payload"
-mkdir -p "$payload/usr/local/bin" "$payload/usr/local/share/oskel"
+mkdir -p "$payload/usr/local/bin" "$payload/usr/local/share/oskel" \
+  "$payload/usr/local/lib/oskel"
 install -m 0755 "$stage/bin/oskel" "$payload/usr/local/bin/oskel"
 install -m 0755 "$stage/bin/oskelc" "$payload/usr/local/bin/oskelc"
 install -m 0755 "$stage/bin/oskelld" "$payload/usr/local/bin/oskelld"
 install -m 0755 "$stage/bin/oskelp" "$payload/usr/local/bin/oskelp"
 install -m 0755 "$stage/bin/bindgen" "$payload/usr/local/bin/bindgen"
+install -m 0755 "$stage/bin/oskelint" "$payload/usr/local/bin/oskelint"
 cp -a "$stage/share/oskel/std" "$payload/usr/local/share/oskel/std"
+cp -a "$stage/lib/oskel/ui" "$payload/usr/local/lib/oskel/ui"
 
 # ---------------------------------------------------------------------- .pkg
 pkg_root="$work/pkg"
@@ -111,7 +123,7 @@ echo "wrote $out/oskel-${version}.pkg"
 
 # ---------------------------------------------------------------------- .dmg
 # A drag-and-drop image: the engine tree plus a symlink to /usr/local, so the
-# user can drag `oskel` and `share` into place. The .pkg above is the scripted
+# user can drag `oskel`, `share` and `lib` into place. The .pkg above is the scripted
 # alternative for a one-click install.
 dmg_src="$work/dmg"
 mkdir -p "$dmg_src"
@@ -119,7 +131,9 @@ install -m 0755 "$stage/bin/oskel" "$dmg_src/oskel"
 install -m 0755 "$stage/bin/oskelld" "$dmg_src/oskelld"
 install -m 0755 "$stage/bin/oskelp" "$dmg_src/oskelp"
 install -m 0755 "$stage/bin/bindgen" "$dmg_src/bindgen"
+install -m 0755 "$stage/bin/oskelint" "$dmg_src/oskelint"
 cp -a "$stage/share" "$dmg_src/share"
+cp -a "$stage/lib" "$dmg_src/lib"
 ln -s /usr/local "$dmg_src/usr-local"
 
 hdiutil create \

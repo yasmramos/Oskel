@@ -1,0 +1,5 @@
+// expect-exit: 65
+// `await` needs a Future; an int is rejected at compile time.
+async fn f() {
+  await 1;
+}

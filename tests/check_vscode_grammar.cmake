@@ -85,10 +85,10 @@ endif()
 
 # --- types: the scalar vocabulary in src/frontend/ast.h -----------------------------
 file(READ "${ROOT}/src/frontend/ast.h" ast_source)
-string(REGEX MATCHALL "name == \"[a-z0-9_]+\"" type_entries "${ast_source}")
+string(REGEX MATCHALL "name == \"[A-Za-z0-9_]+\"" type_entries "${ast_source}")
 set(type_count 0)
 foreach(entry IN LISTS type_entries)
-  string(REGEX REPLACE "name == \"([a-z0-9_]+)\"" "\\1" word "${entry}")
+  string(REGEX REPLACE "name == \"([A-Za-z0-9_]+)\"" "\\1" word "${entry}")
   math(EXPR type_count "${type_count} + 1")
   expect_highlighted("${word}" "type in src/frontend/ast.h")
 endforeach()

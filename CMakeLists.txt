@@ -254,16 +254,24 @@ endif()
 
 # --------------------------------------------------------------------------- Skia (optional)
 # `std/internal/skia.oskl` is the raster backend for `std.ui`. The checked-in
-# module needs no Skia to compile; building the C++ shim needs a Skia root with
-# headers and a built `libskia.a`/`libskia.so`.
+# module needs no Skia to compile; building the C++ shim needs Skia headers and
+# a built library.
 #
-# When both are present CMake builds `skia_shim` into `build/ui`, which is the
+# Two inputs are accepted, in this order:
+#
+#   1. an imported `unofficial::skia::skia` target from vcpkg (the release
+#      artifacts use the static vcpkg triplet, so the shim is self-contained);
+#   2. the older `OSKEL_SKIA_DIR` + `OSKEL_SKIA_LIB` pair for a hand-built Skia.
+#
+# When either is present CMake builds `skia_shim` into `build/ui`, which is the
 # directory `ui_runtime.cpp` searches while running from a checkout. The
 # installed engine finds the same file under `lib/oskel/ui`.
 set(OSKEL_SKIA_DIR "" CACHE PATH
     "Skia root with include/core/SkSurface.h (enables the UI backend)")
 set(OSKEL_SKIA_LIB "" CACHE FILEPATH
     "Path to libskia.a or libskia.so (enables the UI backend)")
+set(OSKEL_SKIA_TARGET "" CACHE STRING
+    "Imported Skia target, e.g. unofficial::skia::skia (enables the UI backend)")
 if(WIN32)
   # MSVC links system libraries by name; the POSIX `-l` spellings are invalid.
   set(OSKEL_SKIA_LIBS "" CACHE STRING
@@ -286,6 +294,22 @@ if(OSKEL_SKIA_DIR AND NOT OSKEL_SKIA_LIB)
       break()
     endif()
   endforeach()
+endif()
+if(NOT OSKEL_SKIA_TARGET AND NOT OSKEL_SKIA_DIR AND NOT OSKEL_SKIA_LIB)
+  find_package(unofficial-skia CONFIG QUIET)
+  if(TARGET unofficial::skia::skia)
+    set(OSKEL_SKIA_TARGET "unofficial::skia::skia")
+  endif()
+endif()
+set(OSKEL_SKIA_FOUND FALSE)
+if(OSKEL_SKIA_TARGET)
+  if(NOT TARGET "${OSKEL_SKIA_TARGET}")
+    message(FATAL_ERROR
+      "OSKEL_SKIA_TARGET '${OSKEL_SKIA_TARGET}' is not an imported target")
+  endif()
+  set(OSKEL_SKIA_FOUND TRUE)
+elseif(OSKEL_SKIA_DIR AND OSKEL_SKIA_LIB)
+  set(OSKEL_SKIA_FOUND TRUE)
 endif()
 
 # `oskelc`: the host compiler. Sources in, a native image out; it links the front
@@ -326,13 +350,15 @@ install(TARGETS bindgen RUNTIME DESTINATION bin)
 # Build the Skia bridge when a Skia root is available. The generated module
 # stays in the build tree; the checked-in `std/internal/skia.oskl` is the
 # module the compiler installs, and `cxxbind.generate` keeps the two identical.
-if(OSKEL_SKIA_DIR AND OSKEL_SKIA_LIB)
-  if(NOT EXISTS "${OSKEL_SKIA_DIR}/include/core/SkSurface.h")
-    message(FATAL_ERROR
-      "OSKEL_SKIA_DIR does not contain include/core/SkSurface.h: ${OSKEL_SKIA_DIR}")
-  endif()
-  if(NOT EXISTS "${OSKEL_SKIA_LIB}")
-    message(FATAL_ERROR "OSKEL_SKIA_LIB does not exist: ${OSKEL_SKIA_LIB}")
+if(OSKEL_SKIA_FOUND)
+  if(NOT OSKEL_SKIA_TARGET)
+    if(NOT EXISTS "${OSKEL_SKIA_DIR}/include/core/SkSurface.h")
+      message(FATAL_ERROR
+        "OSKEL_SKIA_DIR does not contain include/core/SkSurface.h: ${OSKEL_SKIA_DIR}")
+    endif()
+    if(NOT EXISTS "${OSKEL_SKIA_LIB}")
+      message(FATAL_ERROR "OSKEL_SKIA_LIB does not exist: ${OSKEL_SKIA_LIB}")
+    endif()
   endif()
 
   set(OSKEL_SKIA_GENERATED_DIR "${OSKEL_UI_BUILD_DIR}/generated")
@@ -354,22 +380,27 @@ if(OSKEL_SKIA_DIR AND OSKEL_SKIA_LIB)
   set_target_properties(skia_shim PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
   target_include_directories(skia_shim PRIVATE
     "${OSKEL_SKIA_GENERATED_DIR}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/bindings/skia"
-    "${OSKEL_SKIA_DIR}")
-  if(WIN32)
-    separate_arguments(OSKEL_SKIA_LINK_ARGS NATIVE_COMMAND "${OSKEL_SKIA_LIBS}")
+    "${CMAKE_CURRENT_SOURCE_DIR}/bindings/skia")
+  if(OSKEL_SKIA_TARGET)
+    target_link_libraries(skia_shim PRIVATE "${OSKEL_SKIA_TARGET}")
   else()
-    separate_arguments(OSKEL_SKIA_LINK_ARGS UNIX_COMMAND "${OSKEL_SKIA_LIBS}")
+    target_include_directories(skia_shim PRIVATE "${OSKEL_SKIA_DIR}")
+    if(WIN32)
+      separate_arguments(OSKEL_SKIA_LINK_ARGS NATIVE_COMMAND "${OSKEL_SKIA_LIBS}")
+    else()
+      separate_arguments(OSKEL_SKIA_LINK_ARGS UNIX_COMMAND "${OSKEL_SKIA_LIBS}")
+    endif()
+    target_link_libraries(skia_shim PRIVATE "${OSKEL_SKIA_LIB}" ${OSKEL_SKIA_LINK_ARGS})
   endif()
-  target_link_libraries(skia_shim PRIVATE "${OSKEL_SKIA_LIB}" ${OSKEL_SKIA_LINK_ARGS})
   if(APPLE)
     target_link_options(skia_shim PRIVATE "-Wl,-rpath,@loader_path")
   elseif(UNIX)
     target_link_options(skia_shim PRIVATE "-Wl,-rpath,$ORIGIN")
   endif()
-  if(UNIX AND CMAKE_BUILD_TYPE MATCHES "^(Release|MinSizeRel|RelWithDebInfo)$")
+  if(UNIX AND NOT APPLE AND CMAKE_BUILD_TYPE MATCHES "^(Release|MinSizeRel|RelWithDebInfo)$")
     # Static Skia carries its object debug information into the shared bridge;
-    # the shipped file is the machine code only.
+    # the shipped file is the machine code only. Apple's strip rejects a dylib
+    # whose static archive references symbols through an indirect symbol table.
     add_custom_command(TARGET skia_shim POST_BUILD
       COMMAND "${CMAKE_STRIP}" "$<TARGET_FILE:skia_shim>"
       VERBATIM)
@@ -417,6 +448,24 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_L
 endif()
 
 install(TARGETS oskelp RUNTIME DESTINATION bin)
+
+# --------------------------------------------------------------------------- oskelint
+# The linter. Unlike `bindgen` and `oskelp` it links the engine, but only for one
+# question: `builtinNames()` constructs a `VM` and reads `globals()`, so the rule
+# uses the names `registerBuiltins` actually installs instead of a second list
+# that would drift. It never runs a program, so `oskelc` (which must not carry
+# the interpreter) is untouched. Its sources live under `tools/`, outside the
+# `src/*.cpp` glob, so it is never pulled into `oskel` or `oskelc`.
+add_library(oskelint_lib STATIC "${CMAKE_CURRENT_SOURCE_DIR}/tools/oskelint.cpp")
+target_include_directories(oskelint_lib PUBLIC include src)
+target_link_libraries(oskelint_lib PUBLIC oskel_lib)
+target_compile_options(oskelint_lib PRIVATE ${OSKEL_WARNINGS})
+
+add_executable(oskelint "${CMAKE_CURRENT_SOURCE_DIR}/tools/oskelint_main.cpp")
+target_link_libraries(oskelint PRIVATE oskelint_lib)
+target_compile_options(oskelint PRIVATE ${OSKEL_WARNINGS})
+
+install(TARGETS oskelint RUNTIME DESTINATION bin)
 
 # The standard library ships next to the binary: `standardLibraryDir` looks for
 # `../share/oskel/std` relative to the executable, so `import std.math` resolves
@@ -474,6 +523,15 @@ if(BUILD_TESTING)
   oskel_add_cpp_test(object_test)
   oskel_add_cpp_test(link_test)
   oskel_add_cpp_test(link_pe_test)
+  oskel_add_cpp_test(link_macho_test)
+  if(APPLE)
+    add_test(NAME oskel.build_hosted_own_macos
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_hosted_own_macos"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_hello.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_macos.cmake")
+  endif()
 
   # PHASE 10.3a: the own linker emits a PE32+ image on Windows. The fixture is
   # a plain `print`, so the test exercises the UCRT imports and the generated
@@ -524,6 +582,22 @@ if(BUILD_TESTING)
   add_test(NAME bindgen_test COMMAND bindgen_test
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 
+  # The linter's unit test links `oskelint_lib`, which pulls the engine for
+  # `builtinNames()` (a `VM` is built and its globals read; no program runs).
+  add_executable(oskelint_test "${CMAKE_CURRENT_SOURCE_DIR}/tests/oskelint_test.cpp")
+  target_link_libraries(oskelint_test PRIVATE oskelint_lib)
+  target_compile_options(oskelint_test PRIVATE ${OSKEL_WARNINGS})
+  add_test(NAME oskelint_test COMMAND oskelint_test
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+  # End-to-end: the tool itself on a real file, so the CLI wiring (argument
+  # parsing, the exit codes, the formatted line) is covered too.
+  add_test(NAME oskelint.cli
+    COMMAND ${CMAKE_COMMAND}
+      "-DOSKELINT_EXE=$<TARGET_FILE:oskelint>"
+      "-DOSKELINT_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_builtin_shadow.oskl"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_oskelint_cli.cmake")
+
   # End-to-end: run the `bindgen` binary on a header, then feed the generated
   # module back to `oskel -c`, so the tool and the compiler cannot drift apart.
   add_test(NAME bindgen.end_to_end
@@ -572,12 +646,20 @@ if(BUILD_TESTING)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_cxxbind_case.cmake")
   endif()
 
-  if(OSKEL_SKIA_DIR AND OSKEL_SKIA_LIB AND
+  if(OSKEL_SKIA_FOUND AND
      CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
      CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
     set(OSKEL_TEST_SDL3_LIBRARY "")
     if(TARGET SDL3::SDL3)
       set(OSKEL_TEST_SDL3_LIBRARY "$<TARGET_FILE:SDL3::SDL3>")
+    endif()
+    set(OSKEL_SKIA_TEST_ARGS
+      "-DSKIA_DIR=${OSKEL_SKIA_DIR}"
+      "-DSKIA_LIB=${OSKEL_SKIA_LIB}"
+      "-DSKIA_LIBS=${OSKEL_SKIA_LIBS}")
+    if(TARGET skia_shim)
+      list(APPEND OSKEL_SKIA_TEST_ARGS
+        "-DSKIA_SHIM=$<TARGET_FILE:skia_shim>")
     endif()
     add_test(NAME cxxbind.skia
       COMMAND ${CMAKE_COMMAND}
@@ -586,9 +668,7 @@ if(BUILD_TESTING)
         "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
         "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
         "-DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/cxxbind-skia"
-        "-DSKIA_DIR=${OSKEL_SKIA_DIR}"
-        "-DSKIA_LIB=${OSKEL_SKIA_LIB}"
-        "-DSKIA_LIBS=${OSKEL_SKIA_LIBS}"
+        ${OSKEL_SKIA_TEST_ARGS}
         "-DSDL3_FOUND=${OSKEL_SDL3_FOUND}"
         "-DSDL3_LIBRARY=${OSKEL_TEST_SDL3_LIBRARY}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_skia_case.cmake")
@@ -722,6 +802,8 @@ if(BUILD_TESTING)
       "-DOSKEL_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
       "-DOSKEL_BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
       "-DOSKEL_EXE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}"
+      "-DOSKEL_EXPECT_UI=${OSKEL_SKIA_FOUND}"
+      "-DOSKEL_UI_TEST=${CMAKE_CURRENT_SOURCE_DIR}/tests/cxxbind/skia_ui_test.oskl"
       "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/21_std_math.oskl"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/install_stdlib.cmake")
 
@@ -1686,6 +1768,27 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/64_enum_wildcard.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `async fn` / `await` (PHASE 11.1) add no opcode and no builtin: a future is
+    # a map the compiler builds with `NEWTABLE`/`SETTABLE`, and `await` reads it
+    # with `GETTABLE` plus a `panic` call. The fixture proves the VM and a
+    # native binary agree on the payload, recursion, methods and error values.
+    add_test(NAME oskel.build_binary_async
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_async"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/65_async.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # An async function crosses a module boundary as an ordinary closure, so the
+    # importer's `await` reads the same future map. The fixture awaits an
+    # exported async function both qualified and through an alias.
+    add_test(NAME oskel.build_binary_async_modules
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_async_modules"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/65_async_modules.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # The pointer builtins (BACKLOG §6 item 25): `cstring`/`cstr`/`buffer`/
     # `byteLen`/`loadByte`/`storeByte`/`intToPtr`/`ptrToInt`/`free` are opaque
     # handles an `AotPtr` in the arena backs, so every target emits them. The
@@ -1956,6 +2059,29 @@ if(BUILD_TESTING)
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
 
+    # `async fn` / `await` (PHASE 11.1) lower to the same map operations the
+    # backend already binds, so the WASM module must agree with the VM byte for
+    # byte on the payload, recursion, methods and error values.
+    add_test(NAME oskel.build_wasm_async
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_async"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/65_async.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    add_test(NAME oskel.build_wasm_async_modules
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_async_modules"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/65_async_modules.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
     # `range` takes one or two bounds: `range(5)` starts at 0. The fixture also
     # pins `assertEq` and `exit`, so a wrong arity check in the WASM builtin
     # cannot pass unnoticed.
@@ -2211,7 +2337,8 @@ if(BUILD_TESTING)
       oskel.build_wasm_map_methods oskel.build_wasm_datetime
       oskel.build_wasm_collections oskel.build_wasm_strings
       oskel.build_wasm_string_methods oskel.build_wasm_range_methods
-      oskel.build_wasm_pointers
+      oskel.build_wasm_pointers oskel.build_wasm_async
+      oskel.build_wasm_async_modules
       oskel.build_wasm_io oskel.build_wasm_math
       oskel.build_wasm_double_format oskel.build_wasm_tree_shake PROPERTIES TIMEOUT 120)
   endif()

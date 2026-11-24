@@ -12,6 +12,7 @@ The language surface this reference documents is implemented on the development 
 | --- | --- | --- |
 | Language core: functions, closures, control flow, collections | ✅ | ✅ (subset the lowerer covers) |
 | Types, nullability, `struct`, `class`, `enum`, variadics, `import`, `switch`, `defer` (PHASE 6.5/6.8/6.9) | ✅ | ✅ (all are compile-time; `struct`/`class` are erased, `enum` members fold to `LOADK`, `switch`/`defer` lower to existing opcodes) |
+| `async fn` / `await` (PHASE 11.1) | ✅ | ✅ (a future is a map built with existing opcodes; no backend change) |
 | `native fn` (PHASE 6.5) | ✅ | 🔶 only for the curated stubs the backend seeds; anything else fails the build (PHASE 7f) |
 | FFI with C (PHASE 6.6) | ✅ | 🔶 scalar `extern "C"` in `--mode hosted` only; FFI is hosted-only by design (PHASE 7f, §4.5) |
 | Error values, `pcall`, `try`/`catch`, unions, `@MustUse` (PHASE 6.7) | ✅ | ✅ `error` values, `try`/`catch` and `pcall` (PHASE 7c.5c/7c.5d); a raised error with no active `pcall` exits 70 |
@@ -27,6 +28,7 @@ The language surface this reference documents is implemented on the development 
    - [4.7 `struct`](#47-struct)
    - [4.8 `class`](#48-class)
    - [4.9 `enum`](#49-enum)
+   - [4.10 `async fn` and `await`](#410-async-fn-and-await)
 5. [Operators](#5-operators)
 6. [Statements](#6-statements)
 7. [Functions and closures](#7-functions-and-closures)
@@ -91,7 +93,7 @@ Identifiers start with an ASCII letter or `_`, and continue with ASCII letters, 
 Reserved words:
 
 ```text
-break  case   catch  class  const  continue  default  defer  do     else  enum  false  fn
+async  await  break  case   catch  class  const  continue  default  defer  do     else  enum  false  fn
 for    if     import in     let    native   nil      return struct switch true  try   var
 while
 ```
@@ -1255,6 +1257,56 @@ alone is an error, and a selective or wildcard import binds the enum as a type,
 not as a runtime global.
 
 `enum` is a **reserved word** from 0.1.0 on.
+
+---
+
+### 4.10 `async fn` and `await`
+
+An `async fn` is a function whose call returns a `Future`; the declared return
+type is the payload type. `await` consumes a future and yields its payload, and
+is only valid inside an `async fn`:
+
+```oskel
+async fn fetchName(id: int): string {
+  return "user-" + str(id);
+}
+
+async fn greet(id: int): string {
+  let name: string = await fetchName(id);
+  return "hello, " + name;
+}
+
+async fn main(): void {
+  print(await greet(7));   // hello, user-7
+}
+
+main();
+```
+
+- The body runs **eagerly** when the function is called. `await` reads a future
+  that is already settled; it does not suspend the caller. There is no event
+  loop and no scheduler in this phase (PHASE 11.1).
+- `Future` is a built-in type. `let f: Future = fetchName(1);` is valid, and the
+  same future may be awaited more than once.
+- A call to an async function returns `Future`, so `let n: int = await f();`
+  checks the payload. `await` on a value whose static type is neither `Future`
+  nor unknown is a compile error.
+- `await` is rejected outside an `async fn`, including inside a lambda: a lambda
+  is not an async function. There is no top-level `await`.
+- An async method is declared with `async fn` inside a class and awaited like
+  any other call: `await obj.m()`. A method replacement must match its
+  asyncness.
+- `async fn init` is rejected: the constructor is called without `await`.
+- At run time a future is a map with the fields `state` (`"fulfilled"`,
+  `"rejected"` or `"pending"`), `value` and `error`; `type(future)` is `"map"`.
+  A `"pending"` future is not produced by this phase, and awaiting one raises a
+  runtime error. `"rejected"` is reserved for a future that carries an error.
+- The feature adds **no opcode and no builtin**: `NEWTABLE`/`SETTABLE`/
+  `GETTABLE` and the existing `panic` implement it, so the VM, the AOT backend
+  and WASM agree by construction.
+
+A future is not a promise with `then`/`catch`; an error value crosses the
+boundary as the payload and can be inspected with `isError`.
 
 ---
 
@@ -3507,16 +3559,19 @@ compiles either way):
 oskel build app.oskl                       # freestanding on Linux/Windows
 oskel build app.oskl --mode freestanding   # the same on Linux/Windows
 oskel build app.oskl --mode hosted         # links libc (FFI; PHASE 7f.4)
-oskel build app.oskl --mode hosted --link-lib SDL3 -o app   # links SDL3 too
+oskel build app.oskl -o app                # std.ui: hosted + bundled SDL3/Skia
+oskel build app.oskl --mode hosted --link-lib SDL3 -o app   # custom SDL3
 ```
 
 `--link-lib <name>` adds a library to the hosted link as `-l<name>`, which is
 how an `extern "C"` symbol that lives in a third-party library resolves. It is
 repeatable, it is only meaningful with `--mode hosted` (the freestanding image
 has no linker), and the name is restricted to letters, digits, `_`, `+`, `-`
-and `.` so it cannot smuggle a shell metacharacter into the `$CC` command. The
-development engine does not use it: it links the library itself (CMake finds
-SDL3, for example) and resolves the symbol through `Platform::lookupSymbol`.
+and `.` so it cannot smuggle a shell metacharacter into the `$CC` command. A
+program that imports `std.ui` does not need it: the compiler records the
+requirement and adds the bundled SDL3 and Skia shim itself. The development
+engine does not use it either: it loads the bundled libraries and resolves the
+symbol through `Platform::lookupSymbol`.
 
 The backend targets `x86_64-linux-sysv`, `x86_64-windows-win64`,
 `x86_64-macos-sysv` and the bare-metal `x86_64-freestanding-sysv`; on any other

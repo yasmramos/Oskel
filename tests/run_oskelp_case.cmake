@@ -62,31 +62,35 @@ macro(require_failure label expected)
   endif()
 endmacro()
 
-macro(require_contains label haystack needle)
+# A `function`, not a `macro`: a macro substitutes its arguments textually and
+# re-parses them, so a Windows path in the output (`D:\a\...`) reaches
+# `string(FIND)` as an escape sequence and aborts the script. A function passes
+# the value through a variable and leaves it intact.
+function(require_contains label haystack needle)
   string(FIND "${haystack}" "${needle}" position)
   if(position EQUAL -1)
     message(FATAL_ERROR
       "${label}: expected '${needle}' in:\n${haystack}")
   endif()
-endmacro()
+endfunction()
 
-macro(require_file_contains path needle)
+function(require_file_contains path needle)
   file(READ "${path}" contents)
   string(FIND "${contents}" "${needle}" position)
   if(position EQUAL -1)
     message(FATAL_ERROR
       "expected '${needle}' in ${path}:\n${contents}")
   endif()
-endmacro()
+endfunction()
 
-macro(require_file_not_contains path needle)
+function(require_file_not_contains path needle)
   file(READ "${path}" contents)
   string(FIND "${contents}" "${needle}" position)
   if(NOT position EQUAL -1)
     message(FATAL_ERROR
       "did not expect '${needle}' in ${path}:\n${contents}")
   endif()
-endmacro()
+endfunction()
 
 # --- 1. `new` creates the layout -------------------------------------------
 run_oskelp("${WORK_DIR}" new demo)
@@ -580,6 +584,68 @@ require_success("oskelp add a prerelease with an exact version")
 require_file_contains("${WORK_DIR}/pre_app/oskel.toml"
                       "pre = \"0.1.0-beta.1\"")
 
+# A yanked release is hidden from new selections but an existing lockfile pin
+# keeps working; --undo restores it.
+run_oskelp("${WORK_DIR}" new yank_app)
+require_success("oskelp new yank_app")
+run_oskelp("${WORK_DIR}/yank_app" add utils --version "^0.2.0")
+require_success("oskelp add a version that will be yanked")
+require_file_contains("${WORK_DIR}/yank_app/oskel.lock"
+                      "source = \"registry+utils@0.2.1\"")
+
+run_oskelp("${WORK_DIR}/yank_app" yank utils --version 0.2.1)
+require_success("oskelp yank a published version")
+require_contains("oskelp yank a published version" "${run_out}"
+                 "yanked utils 0.2.1")
+run_oskelp("${WORK_DIR}/yank_app" yank utils --version 0.2.1)
+require_success("oskelp yank is idempotent")
+require_contains("oskelp yank is idempotent" "${run_out}"
+                 "already yanked")
+
+run_oskelp("${WORK_DIR}/yank_app" outdated)
+require_success("oskelp outdated reports a yanked pin")
+require_contains("oskelp outdated reports a yanked pin" "${run_out}"
+                 "utils 0.2.1 (yanked")
+require_contains("oskelp outdated reports a yanked pin" "${run_out}"
+                 "latest 0.3.0")
+
+run_oskelp("${WORK_DIR}/yank_app" update utils --precise 0.2.1)
+require_failure("oskelp update --precise a yanked version" "1")
+require_contains("oskelp update --precise a yanked version" "${run_err}"
+                 "is yanked")
+
+run_oskelp("${WORK_DIR}/yank_app" check --locked)
+require_success("oskelp check --locked keeps a yanked pin")
+
+run_oskelp("${WORK_DIR}" new yank_add)
+require_success("oskelp new yank_add")
+run_oskelp("${WORK_DIR}/yank_add" add utils --version "^0.2.0")
+require_success("oskelp add skips a yanked version")
+require_file_contains("${WORK_DIR}/yank_add/oskel.lock"
+                      "source = \"registry+utils@0.2.0\"")
+
+run_oskelp("${WORK_DIR}/yank_app" yank utils --version 0.2.1 --undo)
+require_success("oskelp yank --undo restores a version")
+require_contains("oskelp yank --undo restores a version" "${run_out}"
+                 "unyanked utils 0.2.1")
+run_oskelp("${WORK_DIR}/yank_app" update utils --precise 0.2.1)
+require_success("oskelp update --precise after --undo")
+
+run_oskelp("${WORK_DIR}/yank_app" yank utils --version 0.2.1 --undo)
+require_success("oskelp yank --undo is idempotent")
+require_contains("oskelp yank --undo is idempotent" "${run_out}"
+                 "is not yanked")
+
+run_oskelp("${WORK_DIR}/yank_app" yank utils --version 9.9.9)
+require_failure("oskelp yank a missing version" "1")
+require_contains("oskelp yank a missing version" "${run_err}"
+                 "has no 'utils' version '9.9.9'")
+
+run_oskelp("${WORK_DIR}/yank_app" yank utils)
+require_failure("oskelp yank without a version" "64")
+require_contains("oskelp yank without a version" "${run_err}"
+                 "--version <version> is required")
+
 run_oskelp("${WORK_DIR}/registry_app" update missing)
 require_failure("oskelp update an unknown package" "1")
 require_contains("oskelp update an unknown package" "${run_err}"
@@ -611,5 +677,151 @@ run_oskelp("${WORK_DIR}/registry_app" build)
 require_failure("oskelp build without OSKEL_REGISTRY" "1")
 require_contains("oskelp build without OSKEL_REGISTRY" "${run_err}"
                  "OSKEL_REGISTRY")
+
+
+# --- 15. A `[workspace]` shares one lockfile and one target/ ---------------
+set(ENV{OSKEL_REGISTRY} "${REGISTRY}")
+file(MAKE_DIRECTORY "${WORK_DIR}/ws")
+run_oskelp("${WORK_DIR}/ws" new alpha)
+require_success("oskelp new alpha")
+run_oskelp("${WORK_DIR}/ws" new beta)
+require_success("oskelp new beta")
+file(WRITE "${WORK_DIR}/ws/oskel.toml" [=[
+[workspace]
+members = ["alpha", "beta"]
+]=])
+
+run_oskelp("${WORK_DIR}/ws/beta" add alpha --path ../alpha)
+require_success("oskelp add a workspace member as a path dependency")
+require_file_contains("${WORK_DIR}/ws/beta/oskel.toml"
+                      "alpha = { path = \"../alpha\" }")
+file(WRITE "${WORK_DIR}/ws/beta/src/beta/main.oskl" [=[
+import { message } from alpha.greeting;
+
+print(message("beta"));
+]=])
+
+run_oskelp("${WORK_DIR}/ws" build)
+require_success("oskelp build every workspace member")
+require_contains("oskelp build every workspace member" "${run_out}"
+                 "built target/alpha")
+require_contains("oskelp build every workspace member" "${run_out}"
+                 "built target/beta")
+if(NOT EXISTS "${WORK_DIR}/ws/target/alpha${exe_suffix}" OR
+   NOT EXISTS "${WORK_DIR}/ws/target/beta${exe_suffix}")
+  message(FATAL_ERROR "the workspace binaries are not under the shared target/")
+endif()
+
+run_oskelp("${WORK_DIR}/ws" run -p beta)
+require_success("oskelp run --package")
+require_contains("oskelp run --package" "${run_out}" "Hello, beta!")
+
+run_oskelp("${WORK_DIR}/ws" run)
+require_failure("oskelp run in an ambiguous workspace" "1")
+require_contains("oskelp run in an ambiguous workspace" "${run_err}"
+                 "--package <name>")
+
+run_oskelp("${WORK_DIR}/ws" add utils --version "0.1.0")
+require_failure("oskelp add in an ambiguous workspace" "1")
+require_contains("oskelp add in an ambiguous workspace" "${run_err}"
+                 "--package <name>")
+
+run_oskelp("${WORK_DIR}/ws" add utils -p alpha --version "0.1.0")
+require_success("oskelp add a registry dependency to a member")
+run_oskelp("${WORK_DIR}/ws" add utils -p beta --version "0.1.0")
+require_success("oskelp add the same registry dependency to another member")
+if(NOT EXISTS "${WORK_DIR}/ws/oskel.lock")
+  message(FATAL_ERROR "the workspace did not write a root oskel.lock")
+endif()
+require_file_contains("${WORK_DIR}/ws/oskel.lock"
+                      "source = \"registry+utils@0.1.0\"")
+if(EXISTS "${WORK_DIR}/ws/alpha/oskel.lock" OR
+   EXISTS "${WORK_DIR}/ws/beta/oskel.lock")
+  message(FATAL_ERROR "a workspace member wrote its own oskel.lock")
+endif()
+if(NOT EXISTS "${WORK_DIR}/ws/.oskel/deps/utils/text.oskl")
+  message(FATAL_ERROR "the workspace did not materialise the registry package")
+endif()
+
+run_oskelp("${WORK_DIR}/ws" outdated)
+require_success("oskelp outdated in a workspace")
+require_contains("oskelp outdated in a workspace" "${run_out}"
+                 "utils 0.1.0 (latest 0.3.0")
+
+run_oskelp("${WORK_DIR}/ws" check -p alpha)
+require_success("oskelp check --package")
+require_contains("oskelp check --package" "${run_out}" "checked alpha:")
+
+run_oskelp("${WORK_DIR}/ws" test)
+require_success("oskelp test every workspace member")
+require_contains("oskelp test every workspace member" "${run_out}"
+                 "2 passed")
+
+run_oskelp("${WORK_DIR}/ws" tree)
+string(REPLACE "\\" "/" run_out "${run_out}")
+require_success("oskelp tree in a workspace")
+require_contains("oskelp tree in a workspace" "${run_out}" "workspace ")
+require_contains("oskelp tree in a workspace" "${run_out}" "alpha v0.1.0")
+require_contains("oskelp tree in a workspace" "${run_out}" "beta v0.1.0")
+
+# The invoked member wins when the command runs inside it.
+run_oskelp("${WORK_DIR}/ws/alpha" build)
+require_success("oskelp build from a member")
+require_contains("oskelp build from a member" "${run_out}" "built target/alpha")
+if(EXISTS "${WORK_DIR}/ws/alpha/target")
+  message(FATAL_ERROR "a member wrote its own target/")
+endif()
+
+run_oskelp("${WORK_DIR}/ws" clean)
+require_success("oskelp clean in a workspace")
+if(EXISTS "${WORK_DIR}/ws/target" OR EXISTS "${WORK_DIR}/ws/.oskel")
+  message(FATAL_ERROR "oskelp clean left the workspace target/ or .oskel/")
+endif()
+
+# --- 15a. A root package is the default member -----------------------------
+file(MAKE_DIRECTORY "${WORK_DIR}/wsroot")
+run_oskelp("${WORK_DIR}" init wsroot --name root)
+require_success("oskelp init a root package")
+run_oskelp("${WORK_DIR}/wsroot" new member)
+require_success("oskelp new a root workspace member")
+file(APPEND "${WORK_DIR}/wsroot/oskel.toml"
+     "\n[workspace]\nmembers = [\"member\"]\n")
+
+run_oskelp("${WORK_DIR}/wsroot" build)
+require_success("oskelp build defaults to the root package")
+require_contains("oskelp build defaults to the root package" "${run_out}"
+                 "built target/root")
+if(EXISTS "${WORK_DIR}/wsroot/target/member${exe_suffix}")
+  message(FATAL_ERROR "the root package build also built a member")
+endif()
+run_oskelp("${WORK_DIR}/wsroot" build -p member)
+require_success("oskelp build -p selects a member of a root package workspace")
+require_contains("oskelp build -p selects a member of a root package workspace"
+                 "${run_out}" "built target/member")
+
+run_oskelp("${WORK_DIR}/wsroot" add utils --version "0.1.0")
+require_success("oskelp add defaults to the root package")
+require_file_contains("${WORK_DIR}/wsroot/oskel.toml" "utils = \"0.1.0\"")
+run_oskelp("${WORK_DIR}/wsroot" add utils -p member --version "0.1.0")
+require_success("oskelp add -p edits the member")
+require_file_contains("${WORK_DIR}/wsroot/member/oskel.toml" "utils = \"0.1.0\"")
+
+# --- 15b. An invalid workspace is rejected --------------------------------
+file(MAKE_DIRECTORY "${WORK_DIR}/badws")
+file(WRITE "${WORK_DIR}/badws/oskel.toml" [=[
+[workspace]
+members = ["missing"]
+]=])
+run_oskelp("${WORK_DIR}/badws" build)
+require_failure("oskelp build with a missing member" "66")
+require_contains("oskelp build with a missing member" "${run_err}"
+                 "has no oskel.toml")
+
+run_oskelp("${WORK_DIR}/ws/alpha" add beta --version "0.1.0")
+require_failure("oskelp add a registry requirement on a member" "1")
+require_contains("oskelp add a registry requirement on a member" "${run_err}"
+                 "is a workspace member")
+
+unset(ENV{OSKEL_REGISTRY})
 
 message(STATUS "oskelp end-to-end: all checks passed")

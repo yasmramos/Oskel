@@ -1,0 +1,5 @@
+// expect-exit: 65
+// A constructor is called without `await`, so it cannot be async.
+class C {
+  async fn init() {}
+}

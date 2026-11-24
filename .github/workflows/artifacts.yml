@@ -60,10 +60,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Linux UI build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev \
+            libxfixes-dev libxss-dev pkg-config autoconf automake libtool \
+            autoconf-archive zip unzip
+
+      - name: Cache bundled UI dependencies
+        uses: actions/cache@v4
+        with:
+          path: .vcpkg-cache
+          key: vcpkg-ui-${{ runner.os }}-${{ hashFiles('tools/prepare_ui_deps.py', 'cmake/triplets/**') }}
+          restore-keys: |
+            vcpkg-ui-${{ runner.os }}-
+
+      - name: Prepare bundled UI dependencies
+        # Builds shared SDL3 and static Skia into .vcpkg, then exports the two
+        # install prefixes through CMAKE_PREFIX_PATH. The release archive must
+        # not ask the user to install either library.
+        shell: bash
+        run: |
+          PYTHON=${{ matrix.os == 'windows-latest' && 'python' || 'python3' }}
+          "$PYTHON" tools/prepare_ui_deps.py \
+            --vcpkg-root .vcpkg \
+            --cache .vcpkg-cache \
+            --github-env "$GITHUB_ENV"
+
       - name: Configure CMake
         # The default generator is Visual Studio on Windows (multi-config) and
         # Unix Makefiles / Ninja elsewhere (single-config); the configuration
-        # is chosen at build/install time with --config either way.
+        # is chosen at build/install time with --config either way. CMake reads
+        # the CMAKE_PREFIX_PATH exported by the dependency step.
         run: >
           cmake -B build
           -DCMAKE_BUILD_TYPE=Release
@@ -82,7 +112,7 @@ jobs:
       - name: Install into a staging prefix
         # `cmake --install` produces the same layout as `make install`:
         # stage/bin/oskel, stage/bin/oskelc, stage/bin/oskelld,
-        # stage/bin/oskelp and stage/bin/bindgen plus
+        # stage/bin/oskelp, stage/bin/bindgen and stage/bin/oskelint plus
         # stage/share/oskel/std/*.oskl. The engine finds the library through
         # `../share/oskel/std` relative to the executable, so the staged tree is
         # self-contained and runs after unpacking.

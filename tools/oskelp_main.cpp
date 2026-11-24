@@ -17,25 +17,28 @@ const char* kUsage =
     "usage:\n"
     "  oskelp new <dir> [--name <name>] [--vcs none|git]\n"
     "  oskelp init [dir] [--name <name>] [--vcs none|git]\n"
-    "  oskelp add <name> [--version <requirement>]\n"
+    "  oskelp add <name> [--version <requirement>] [--package <name>]\n"
     "             [--manifest-path <file>]\n"
-    "  oskelp add <name> --path <path> [--version <v>]\n"
+    "  oskelp add <name> --path <path> [--version <v>] [--package <name>]\n"
     "             [--manifest-path <file>]\n"
-    "  oskelp add --path <path> [--version <v>] [--manifest-path <file>]\n"
-    "  oskelp remove <name> [--manifest-path <file>]\n"
-    "  oskelp publish [--registry <dir>] [--manifest-path <file>]\n"
+    "  oskelp add --path <path> [--version <v>] [--package <name>]\n"
+    "             [--manifest-path <file>]\n"
+    "  oskelp remove <name> [--package <name>] [--manifest-path <file>]\n"
+    "  oskelp publish [--registry <dir>] [--package <name>]\n"
+    "                 [--manifest-path <file>]\n"
+    "  oskelp yank <name> --version <version> [--undo] [--registry <dir>]\n"
     "  oskelp update [<name>] [--precise <version>]\n"
     "                [--manifest-path <file>]\n"
     "  oskelp outdated [--manifest-path <file>]\n"
     "  oskelp build [--target <name>] [--mode <name>] [--locked]\n"
-    "               [--manifest-path <file>]\n"
+    "               [--package <name>] [--manifest-path <file>]\n"
     "  oskelp run [--native] [--target <name>] [--mode <name>] [--locked]\n"
-    "             [--manifest-path <file>] [-- <args>...]\n"
-    "  oskelp check [--locked] [--manifest-path <file>]\n"
+    "             [--package <name>] [--manifest-path <file>] [-- <args>...]\n"
+    "  oskelp check [--locked] [--package <name>] [--manifest-path <file>]\n"
     "  oskelp test [--native] [--target <name>] [--mode <name>] [--locked]\n"
-    "              [--manifest-path <file>]\n"
+    "              [--package <name>] [--manifest-path <file>]\n"
     "  oskelp clean [--manifest-path <file>]\n"
-    "  oskelp tree [--manifest-path <file>]\n"
+    "  oskelp tree [--package <name>] [--manifest-path <file>]\n"
     "\n"
     "options:\n"
     "  -h, --help      show this help\n"
@@ -46,12 +49,17 @@ const char* kUsage =
     "`--version <requirement>` for one from the registry named by\n"
     "OSKEL_REGISTRY; without `--version` it uses the latest published release\n"
     "and writes a caret requirement. `oskelp publish` copies the package to\n"
-    "that registry. `oskelp update` re-resolves every package, or only <name>,\n"
+    "that registry; `oskelp yank` hides a published version from new\n"
+    "selections without deleting it (an existing lockfile pin keeps working).\n"
+    "`oskelp update` re-resolves every package, or only <name>,\n"
     "and rewrites oskel.lock; `--precise <version>` pins that registry package\n"
     "to one version. `oskelp outdated` prints the available registry updates.\n"
     "`oskelp build` compiles the project's entry point to a native binary;\n"
     "`oskelp run` runs it on the VM unless --native is given. Both resolve the\n"
-    "dependencies in oskel.toml and materialise them under .oskel/deps.\n";
+    "dependencies in oskel.toml and materialise them under .oskel/deps.\n"
+    "A [workspace] in oskel.toml shares one oskel.lock, one .oskel/deps and\n"
+    "one target/ across its members; --package/-p selects one member when a\n"
+    "command would otherwise be ambiguous.\n";
 
 bool takeValue(const std::vector<std::string>& arguments, size_t& index,
                const std::string& option, std::string& value) {
@@ -149,12 +157,17 @@ int commandAdd(const std::vector<std::string>& arguments) {
   std::string name;
   std::string path;
   std::string version;
+  std::string package;
   std::string manifestPath;
   for (size_t i = 1; i < arguments.size(); ++i) {
     const std::string& arg = arguments[i];
     if (arg == "-h" || arg == "--help") {
       std::cout << "oskelp " << OSKEL_VERSION << "\n\n" << kUsage;
       return oskelp::kOk;
+    }
+    if (arg == "-p" || arg == "--package") {
+      if (!takeValue(arguments, i, arg, package)) return oskelp::kUsage;
+      continue;
     }
     if (arg == "--path") {
       if (!takeValue(arguments, i, arg, path)) return oskelp::kUsage;
@@ -185,17 +198,22 @@ int commandAdd(const std::vector<std::string>& arguments) {
   std::string manifest;
   int status = resolveManifest(manifestPath, manifest);
   if (status != oskelp::kOk) return status;
-  return oskelp::commandAdd(manifest, name, path, version);
+  return oskelp::commandAdd(manifest, package, name, path, version);
 }
 
 int commandRemove(const std::vector<std::string>& arguments) {
   std::string name;
+  std::string package;
   std::string manifestPath;
   for (size_t i = 1; i < arguments.size(); ++i) {
     const std::string& arg = arguments[i];
     if (arg == "-h" || arg == "--help") {
       std::cout << "oskelp " << OSKEL_VERSION << "\n\n" << kUsage;
       return oskelp::kOk;
+    }
+    if (arg == "-p" || arg == "--package") {
+      if (!takeValue(arguments, i, arg, package)) return oskelp::kUsage;
+      continue;
     }
     if (arg == "--manifest-path") {
       if (!takeValue(arguments, i, arg, manifestPath)) return oskelp::kUsage;
@@ -218,17 +236,22 @@ int commandRemove(const std::vector<std::string>& arguments) {
   std::string manifest;
   int status = resolveManifest(manifestPath, manifest);
   if (status != oskelp::kOk) return status;
-  return oskelp::commandRemove(manifest, name);
+  return oskelp::commandRemove(manifest, package, name);
 }
 
 int commandPublish(const std::vector<std::string>& arguments) {
   std::string registry;
+  std::string package;
   std::string manifestPath;
   for (size_t i = 1; i < arguments.size(); ++i) {
     const std::string& arg = arguments[i];
     if (arg == "-h" || arg == "--help") {
       std::cout << "oskelp " << OSKEL_VERSION << "\n\n" << kUsage;
       return oskelp::kOk;
+    }
+    if (arg == "-p" || arg == "--package") {
+      if (!takeValue(arguments, i, arg, package)) return oskelp::kUsage;
+      continue;
     }
     if (arg == "--registry") {
       if (!takeValue(arguments, i, arg, registry)) return oskelp::kUsage;
@@ -248,7 +271,51 @@ int commandPublish(const std::vector<std::string>& arguments) {
   std::string manifest;
   int status = resolveManifest(manifestPath, manifest);
   if (status != oskelp::kOk) return status;
-  return oskelp::commandPublish(manifest, registry);
+  return oskelp::commandPublish(manifest, package, registry);
+}
+
+int commandYank(const std::vector<std::string>& arguments) {
+  std::string name;
+  std::string version;
+  std::string registry;
+  bool undo = false;
+  for (size_t i = 1; i < arguments.size(); ++i) {
+    const std::string& arg = arguments[i];
+    if (arg == "-h" || arg == "--help") {
+      std::cout << "oskelp " << OSKEL_VERSION << "\n\n" << kUsage;
+      return oskelp::kOk;
+    }
+    if (arg == "--version") {
+      if (!takeValue(arguments, i, arg, version)) return oskelp::kUsage;
+      continue;
+    }
+    if (arg == "--registry") {
+      if (!takeValue(arguments, i, arg, registry)) return oskelp::kUsage;
+      continue;
+    }
+    if (arg == "--undo") {
+      undo = true;
+      continue;
+    }
+    if (!arg.empty() && arg[0] == '-') {
+      std::cerr << "oskelp yank: unknown option '" << arg << "'\n";
+      return oskelp::kUsage;
+    }
+    if (!name.empty()) {
+      std::cerr << "oskelp yank: a single package name is expected\n";
+      return oskelp::kUsage;
+    }
+    name = arg;
+  }
+  if (name.empty()) {
+    std::cerr << "oskelp yank: a package name is required\n";
+    return oskelp::kUsage;
+  }
+  if (version.empty()) {
+    std::cerr << "oskelp yank: --version <version> is required\n";
+    return oskelp::kUsage;
+  }
+  return oskelp::commandYank(name, version, registry, undo);
 }
 
 int commandUpdate(const std::vector<std::string>& arguments) {
@@ -347,6 +414,10 @@ int parseProjectOptions(const std::vector<std::string>& arguments,
       options.locked = true;
       continue;
     }
+    if (arg == "-p" || arg == "--package") {
+      if (!takeValue(arguments, i, arg, options.package)) return oskelp::kUsage;
+      continue;
+    }
     if (arg == "--target") {
       if (!takeValue(arguments, i, arg, options.target)) return oskelp::kUsage;
       continue;
@@ -398,6 +469,7 @@ int main(int argc, char** argv) {
   if (command == "add") return commandAdd(arguments);
   if (command == "remove") return commandRemove(arguments);
   if (command == "publish") return commandPublish(arguments);
+  if (command == "yank") return commandYank(arguments);
   if (command == "update") return commandUpdate(arguments);
   if (command == "outdated") return commandOutdated(arguments);
 
@@ -436,5 +508,5 @@ int main(int argc, char** argv) {
   if (command == "clean") {
     return oskelp::commandClean(path, argv[0]);
   }
-  return oskelp::commandTree(path, argv[0]);
+  return oskelp::commandTree(path, options.package, argv[0]);
 }

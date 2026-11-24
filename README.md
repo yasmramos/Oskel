@@ -23,6 +23,7 @@ for language in languages {
 - Optional types and nullability: annotations (`let x: int = 5`), local inference, nullable `T?`, unions (`T | E`) and the null-safe expressions `?.`, `??` and `!!`.
 - `struct` declarations (data only, no methods) checked against their literal at compile time.
 - `class` declarations (fields plus methods): instantiating is calling the class name (`Point(3, 4)`, no `new`), `self` is explicit and there is no inheritance. A class is parser sugar over a map plus closures, so it runs identically on the VM and under `oskel build`. Field and method annotations are checked at compile time.
+- `async fn` / `await` (PHASE 11.1): a call returns a `Future`, `await` yields its payload and the declared return type is the payload. The body runs eagerly (no scheduler yet); a future is a map, so it behaves identically on the VM, `oskel build` and WASM.
 - String interpolation with `"${expression}"` and UTF-8 support.
 - Ordered arrays and maps that preserve insertion order, with `for k, v in map` key/value iteration.
 - Ascending and descending ranges: `1..5`, `0..=10`, `5..0`.
@@ -89,6 +90,11 @@ cmake -S . -B build-cmake -DCMAKE_BUILD_TYPE=Release
 cmake --build build-cmake
 ./build-cmake/oskel examples/hello.oskl
 ```
+
+The released SDK bundles SDL3 and Skia, so `std.ui` needs no separate install.
+A source build that wants the window backend can fetch the same pair with
+`python3 tools/prepare_ui_deps.py`; CMake then finds both through
+`CMAKE_PREFIX_PATH`.
 
 ### Manual build
 
@@ -196,8 +202,8 @@ skipped.
 
 `oskelp` is the Cargo-style project layer: a manifest (`oskel.toml`), a
 lockfile, dependency resolution (path and local-registry) and the
-`new`/`init`/`add`/`remove`/`publish`/`update`/`outdated`/`build`/`run`/
-`check`/`test` workflow. It is a standalone tool that drives `oskel` and
+`new`/`init`/`add`/`remove`/`publish`/`yank`/`update`/`outdated`/`build`/
+`run`/`check`/`test` workflow. It is a standalone tool that drives `oskel` and
 `oskelc` as child processes, so the engine carries no project or dependency
 policy:
 
@@ -213,12 +219,33 @@ cd hello
 ../build/oskelp outdated     # registry updates available to the lockfile
 ../build/oskelp update       # move registry pins to newer versions
 ../build/oskelp update text --precise 1.0.2  # pin one registry version
+../build/oskelp yank text --version 1.0.1   # hide a broken release
 ```
 
 `oskelp publish --registry <dir>` copies the current package into a local
-registry, so another project can depend on its version. See
+registry, so another project can depend on its version; `oskelp yank` hides a
+published version without deleting it (an existing lockfile pin keeps working,
+and `--undo` restores it). A `[workspace]` manifest in the project root shares
+one `oskel.lock`, one `.oskel/deps` and one `target/` across its members;
+`oskelp build`, `check` and `test` cover every member at the root, and
+`--package`/`-p <name>` selects one. See
 [docs/oskelp.md](docs/oskelp.md) for the project layout, the manifest, the
-dependency model, the registry layout and every command.
+dependency model, workspaces, the registry layout and every command.
+
+### oskelint (the linter)
+
+`oskelint` reports suspicious but legal code. The first rule, `builtin-shadow`,
+warns when a declaration replaces a builtin — legal, and the standard library
+relies on it, which is why the check lives in a tool instead of the compiler:
+
+```sh
+./build/oskelint mylib.oskl      # report the diagnostics on stdout
+./build/oskelint --list-rules    # the rule names
+```
+
+A lint warning exits 0; it never fails a build. See
+[docs/oskelint.md](docs/oskelint.md) for the rule and where the builtin names
+come from.
 
 ## Usage
 
@@ -239,6 +266,7 @@ oskelp update [<name>]     moves registry pins to newer versions
 oskelp update <name> --precise <version>  pins one registry version
 oskelp outdated            shows registry updates available to the lockfile
 oskelp build               builds the project to target/<name>
+oskelp build -p <member>   builds one member of a [workspace]
 oskelp run                 runs the project (--native for the AOT binary)
 oskelp test                runs every tests/**/*.oskl
 ```
@@ -389,7 +417,7 @@ behave differently — under AOT. This is the exact split in 0.3.0.
 
 - Arithmetic, comparisons, logical and bitwise operators, control flow
   (`if`/`while`/`for`/`for-in`/`switch`), functions, closures, `defer`,
-  `struct`, `class`, ranges, slicing, string interpolation.
+  `struct`, `class`, `async fn`/`await`, ranges, slicing, string interpolation.
 - Arrays and maps (literals, indexing, `in`, `for-in`, printing, and `+` to
   concatenate two arrays).
 - The array methods `push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`,
@@ -589,6 +617,13 @@ Every release also ships a `SHA256SUMS` file; verify a download with
 ships beside it: it links the front end and the AOT backend without the VM or
 the JIT, so a compiled program carries no interpreter. Both call the same
 `buildBinary` pipeline, so they emit the same image.
+
+## Contributing
+
+The build, test and builtin-addition workflow lives in
+[`CONTRIBUTING.md`](CONTRIBUTING.md). The language specification and the
+development phases are in [`DEVELOPMENT.md`](DEVELOPMENT.md), and the git
+workflow and commit format are in [`CONVENTIONS.md`](CONVENTIONS.md).
 
 ## License
 

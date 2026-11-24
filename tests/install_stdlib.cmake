@@ -12,6 +12,9 @@
 if(NOT DEFINED OSKEL_SOURCE_DIR OR NOT DEFINED OSKEL_BUILD_DIR OR NOT DEFINED OSKEL_SCRIPT)
   message(FATAL_ERROR "install_stdlib.cmake requires OSKEL_SOURCE_DIR, OSKEL_BUILD_DIR and OSKEL_SCRIPT")
 endif()
+if(NOT DEFINED OSKEL_EXE_SUFFIX)
+  set(OSKEL_EXE_SUFFIX "")
+endif()
 
 set(prefix "${CMAKE_CURRENT_BINARY_DIR}/install-prefix")
 
@@ -52,10 +55,33 @@ if(NOT EXISTS "${prefix}/bin/bindgen${OSKEL_EXE_SUFFIX}")
     "generator is not being installed")
 endif()
 
+# The UI backend is part of the standard library: an installed engine must
+# find SDL3 and the Skia shim under lib/oskel/ui, with no environment variable.
+if(OSKEL_EXPECT_UI)
+  file(GLOB OSKEL_INSTALLED_UI "${prefix}/lib/oskel/ui/*")
+  if(NOT OSKEL_INSTALLED_UI)
+    message(FATAL_ERROR
+      "the installed tree is missing lib/oskel/ui; the UI runtime was not "
+      "bundled into the SDK")
+  endif()
+  execute_process(
+    COMMAND "${prefix}/bin/oskel${OSKEL_EXE_SUFFIX}" "${OSKEL_UI_TEST}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    RESULT_VARIABLE ui_exit
+    OUTPUT_VARIABLE ui_out
+    ERROR_VARIABLE ui_err
+  )
+  if(NOT ui_exit EQUAL 0 OR NOT ui_out MATCHES "skia ui ok")
+    message(FATAL_ERROR
+      "the installed engine could not run the Skia widget test (exit ${ui_exit})\n"
+      "--- stdout ---\n${ui_out}\n--- stderr ---\n${ui_err}")
+  endif()
+endif()
+
 # Run the installed binary from an unrelated directory, so the working
 # directory cannot supply `std/`: only the shipped copy can.
 execute_process(
-  COMMAND "${prefix}/bin/oskel" "${OSKEL_SCRIPT}"
+  COMMAND "${prefix}/bin/oskel${OSKEL_EXE_SUFFIX}" "${OSKEL_SCRIPT}"
   WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
   RESULT_VARIABLE run_exit
   OUTPUT_VARIABLE run_out

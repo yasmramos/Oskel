@@ -514,12 +514,17 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     'int' with 'string'` and `operator 'in' is not supported for 'int' and
     'int'` share `emitTwoTypeFail`. `>` and `<=` reverse the two names, because
     the VM lowers them to `lessThan(b, a)`, so `1 > "a"` reports
-    `cannot compare 'string' with 'int'` in both engines. Two tails are still truncated: the
-    arithmetic/bitwise `unsupported operand types for '<op>': '<t1>' and
-    '<t2>'`, which needs the operator symbol threaded through the shared
-    helper (the helper receives the opcode at run time, not the symbol), and
-    the FFI struct-field name (`the struct returned by a callback is missing
-    field`), which names a C layout field rather than a runtime value.
+    `cannot compare 'string' with 'int'` in both engines. The six callback
+    methods (`map`, `filter`, `each`, `find`, `any`, `all`) and `reduce` report
+    `map() must be a function, got 'int'` from a guard at the call, not at
+    entry, so an empty receiver still returns without reporting. The arithmetic,
+    bitwise, shift and power operators quote themselves and both operand types
+    -- `unsupported operand types for '+': 'int' and 'string'` -- from the
+    selector the helper already carries, and a shift by a non-integer reports
+    that pair instead of the count range. One tail is still truncated: the FFI
+    struct-field name (`the struct returned by a callback is missing field`),
+    which names a C layout field rather than a runtime value; its field names
+    are static, so the fix is a pre-built message per field, not a builder.
 
     The collection and operator messages without a tail were aligned word for
     word: `string index must be an integer`, `map keys must be strings`,
@@ -651,8 +656,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     done; a `.pdata`/`.xdata` or `.tls` input is rejected with a dedicated
     message (PHASE 10.3b.4): the AOT object emits no unwind data and the image
     defines no TLS variables, so the PE exception and TLS directories stay
-    zero. Emitting unwind data is future container work. The macOS Mach-O
-    container is PHASE 10.3d.
+    zero. Emitting unwind data is future container work. The macOS own linker
+    (PHASE 10.3d) closes a hosted `MH_OBJECT` into a non-PIE `MH_EXECUTE` with
+    libSystem imports; a data import, the `-r` Mach-O link, the ad-hoc
+    signature and ARM64 remain for the rest of 10.3d.
 
 31. **[P0] [done]** VM/AOT divergence in reading a global before it is assigned:
     the VM fails with `runtime error: undefined variable '<name>'` and exit 70,
@@ -674,6 +681,24 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     unreached function) and `tests/native_build_global_nil.oskl` (the `nil` case
     and a read after assignment) pin it. A global with *no* assignment anywhere is
     still a lowering error (exit 65), which is a different, compile-time case.
+
+32. **[P1]** `async`/`await` (PHASE 11.1) is the language surface without a
+    scheduler. An `async fn` body runs eagerly when called, so the future is
+    already `"fulfilled"` (or carries an error value in `value`) by the time the
+    caller sees it; `await` reads the map and never suspends. The `"pending"`
+    and `"rejected"` states are reserved in the representation but no API
+    creates them, and `await` on a pending future raises "await on a pending
+    Future is not supported yet". There is no event loop, no `then`/`catch`
+    chaining, no `spawn`/`join`, no async lambda and no async `init`. The future
+    is a plain map, so `type(future)` is `"map"` and a future can be passed to
+    code expecting a map; a dedicated runtime tag would be a new value kind in
+    all three engines. A scheduler that suspends a call and resumes it would
+    need a coroutine/continuation representation, which is a larger change than
+    this phase: it would turn the bytecode into a resumable frame and make the
+    AOT/WASM backends carry a state machine, so it stays out of scope here.
+    `tests/65_async.oskl`, `tests/65_async_modules.oskl` and the
+    `oskel.build_binary_async`/`oskel.build_wasm_async` fixtures pin the current
+    surface.
 
 ---
 
@@ -1106,10 +1131,27 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     `$OSKEL_REGISTRY`, `update [<name>]` moves the lockfile pin and prints each
     change, `update --precise <version>` pins one registry version and refuses
     a missing or out-of-range one, and `outdated` prints the compatible and
-    latest versions without writing the lockfile.
+    latest versions without writing the lockfile. `yank <name> --version <v>`
+    writes a `.yanked` marker that hides a published version from new
+    selections while a lockfile pin keeps working; `--undo` restores it.
 13. **[P2]** `oskelp`: add build profiles. `target/<name>` is the only output
     today because the AOT backend has no optimization level to select; a
     `--release` that changes nothing would be a cosmetic lie.
-14. **[P2]** `oskelp`: add workspaces (several packages sharing one lockfile)
-    and a `@Test` attribute, so a test file is not limited to a whole program
-    that exits `0`.
+14. **[P2] [done]** `oskelp`: multi-member workspaces landed. A root
+    `[workspace]` shares one `oskel.lock`, one `.oskel/deps` and one `target/`
+    across its members; `--package` selects one, and `build`, `check` and
+    `test` cover every member at the virtual root. Members may path-depend on
+    each other, a registry requirement that names a member is rejected, and
+    members stay out of the lockfile.
+15. **[P2]** `oskelp`: add a `@Test` attribute, so a test file is not limited
+    to a whole program that exits `0`.
+16. **[P2] [done]** `oskelint`: the linter (`docs/oskelint.md`) landed as a
+    fifth binary, with the `builtin-shadow` rule. Shadowing a builtin is legal
+    and the standard library re-exports its own builtins, so the check belongs
+    in a tool rather than in the compiler; the tool reads the builtin names from
+    the engine (`VM::globals()` after `registerBuiltins`) instead of keeping a
+    second list that would drift. `oskelint` links `oskel_lib` and never runs a
+    program, so `oskelc` stays interpreter-free (`nm build/oskel | grep
+    oskelint` is empty). Pending: more rules (an unused declaration, a `var`
+    that is never reassigned, a `@MustUse` value discarded), a `--fix` mode and
+    a config file.

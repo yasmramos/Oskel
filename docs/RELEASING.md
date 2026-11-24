@@ -26,13 +26,20 @@ packaged as `0.3.0` too.
 
 ## 2. Pre-flight
 
-From a clean checkout of `develop`:
+From a clean checkout of `develop`, build the bundled UI dependencies first so
+the local build matches the artifacts:
 
 ```sh
+python3 tools/prepare_ui_deps.py
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j"$(nproc)"
 (cd build && ctest --output-on-failure)   # all tests must pass
 ```
+
+`prepare_ui_deps.py` prints the `CMAKE_PREFIX_PATH` it installed; export that
+value before configuring if CMake does not see it. The release SDK must contain
+`lib/oskel/ui` with SDL3 and `libskia_shim`; the `install_stdlib` test fails when
+that directory is missing.
 
 - The suite is green on Linux, Windows and macOS; the CI runs all three.
 - The AOT execution tests (`oskel.build_binary`) run on Linux x86-64 only and
@@ -118,6 +125,10 @@ are correct.
   printf 'print("ok");\n' > /tmp/hello.oskl
   /tmp/oskel-check/bin/oskelc /tmp/hello.oskl -o /tmp/hello
   /tmp/hello
+  # the UI runtime is bundled, not installed by the user
+  test -f /tmp/oskel-check/lib/oskel/ui/libskia_shim.so
+  test -f /tmp/oskel-check/lib/oskel/ui/libSDL3.so
+  /tmp/oskel-check/bin/oskel tests/cxxbind/skia_ui_test.oskl
   ```
 
 ## 5. Pre-release tags
