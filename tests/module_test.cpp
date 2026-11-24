@@ -235,6 +235,20 @@ void testFromCannotBeAPathSegment() {
         "'m.from' error explains that 'from' is a keyword");
 }
 
+// `from` is a keyword, but only inside an `import`: it stays a normal
+// identifier everywhere else. A program that names a variable `from` and also
+// imports a module must compile and run, or the keyword would leak into the
+// expression grammar.
+void testFromIsAnIdentifierOutsideImports() {
+  VM vm;
+  compileAndRun(
+      "let from = 5;\n"
+      "import modules.util;\n"
+      "let got = modules.util.answer + from;\n",
+      fixtureResolver(), vm);
+  check(globalInt(vm, "got") == 47, "'from' is an ordinary variable outside an import");
+}
+
 void testModuleRunsOnce() {
   // `modules/counter.oskl` increments the caller's `runs` global at load time.
   // Three imports must run it once, so `runs` ends at 1.
@@ -634,6 +648,7 @@ int main() {
   testAmbiguityIsCompileError();
   testFromCannotNameAModule();
   testFromCannotBeAPathSegment();
+  testFromIsAnIdentifierOutsideImports();
   testModuleRunsOnce();
   testNestedImport();
   testRepeatedImportBindsOnce();

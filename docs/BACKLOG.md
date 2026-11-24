@@ -1249,8 +1249,17 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    The WASM `parseDoubleStr` accepts the same non-finite spellings, so the
    shared fixture passes on all three engines.
 7. **[P1]** Add an `OSKEL_GC_STRESS` test run.
-8. **[P1]** Add `lower_test.cpp` cases for `RETURN` in the root chunk and for a
-   `JMP` to exactly `size`.
+8. **[P1] [done]** Add `lower_test.cpp` cases for `RETURN` in the root chunk
+   and for a `JMP` to exactly `size`. **Done**: `RETURN` in the root chunk was
+   already covered by `testRootReturnLowers` and `testRootReturnBehavesLikeHalt`
+   (RETURN behaves like HALT and yields R0). The `JMP` case was a real VM/AOT
+   divergence, not just a missing test: the VM accepts a target of exactly
+   `code.size()` (the pc passes the last instruction and the next dispatch
+   falls off the end, an implicit `return nil`), while `jumpTarget` rejected
+   it with "outside the code". The lowerer now reserves one extra label per
+   chunk, binds it after the last instruction to `nil` + the frame's epilogue,
+   and accepts `jump == size`. Covered by `testJumpToCodeSizeLowers` and the
+   executing `testExecJumpToEnd`.
 9. **[P1]** Add `vm_test.cpp` cases for `GETUPVAL`/`SETUPVAL` with a null cell,
    `runFrames` with `fail()` outside `call()`, and `RETURN` in the root chunk.
 10. **[P1]** Add `compiler_test.cpp` cases for a `Point` alias plus a

@@ -219,9 +219,14 @@ void callBinary(CodeGen& cg, CodeGen::Label helper, int lhs, int rhs, int dst) {
   storeValue(cg, dst, X64Reg::Rax, X64Reg::Rdx);
 }
 
+// `labels` carries one entry per instruction plus a trailing one for
+// `code.size()`. The VM accepts a target of exactly `size` -- a jump past the
+// last instruction falls off the end, which is an implicit `return nil` -- so
+// the lowerer binds that address to an end label that publishes nil and runs
+// the frame's epilogue. Rejecting it here would diverge from the VM.
 CodeGen::Label jumpTarget(const Instruction& instr, const Bytecode& proto,
                           const std::vector<CodeGen::Label>& labels) {
-  if (instr.jump < 0 || static_cast<std::size_t>(instr.jump) >= proto.code.size()) {
+  if (instr.jump < 0 || static_cast<std::size_t>(instr.jump) > proto.code.size()) {
     throw LoweringError("lowering: jump target " + std::to_string(instr.jump) +
                         " is outside the code (size " +
                         std::to_string(proto.code.size()) + ")");
@@ -1826,8 +1831,9 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     frame.callbackStateSlot = callbackStateSlot;
     frame.capturedSlots = capturedLocalSlots(proto);
     std::vector<CodeGen::Label> labels;
-    labels.reserve(proto.code.size());
+    labels.reserve(proto.code.size() + 1);
     for (std::size_t i = 0; i < proto.code.size(); ++i) labels.push_back(cg.newLabel());
+    labels.push_back(cg.newLabel());
     const std::unordered_set<std::size_t> checked =
         checkedGlobalReads(proto, globals, unsetCandidates);
     if (!checked.empty()) needsGlobalGetChecked = true;
@@ -1836,6 +1842,11 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       lowerInstruction(i, proto.code[i], proto, cg, labels, rt, globals, frame,
                        protoEntry, displayOf, stringConstants, checked);
     }
+    // Falling off the end of the root chunk is an implicit nil result.
+    cg.bind(labels.back());
+    cg.movImm(X64Reg::Rax, static_cast<std::int64_t>(AotTag::Nil));
+    cg.movImm(X64Reg::Rdx, 0);
+    emitRootEpilogue(cg, frame.callbackStateSlot);
   }
 
   // Every child proto: a function with the lowering's own convention
@@ -1919,8 +1930,9 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     }
 
     std::vector<CodeGen::Label> labels;
-    labels.reserve(fn.code.size());
+    labels.reserve(fn.code.size() + 1);
     for (std::size_t i = 0; i < fn.code.size(); ++i) labels.push_back(cg.newLabel());
+    labels.push_back(cg.newLabel());
     const std::unordered_set<std::size_t> checked =
         checkedGlobalReads(fn, globals, unsetCandidates);
     if (!checked.empty()) needsGlobalGetChecked = true;
@@ -1929,6 +1941,11 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       lowerInstruction(i, fn.code[i], fn, cg, labels, rt, globals, frame,
                        protoEntry, displayOf, stringConstants, checked);
     }
+    // Falling off the end of a function body is an implicit `return nil`.
+    cg.bind(labels.back());
+    cg.movImm(X64Reg::Rax, static_cast<std::int64_t>(AotTag::Nil));
+    cg.movImm(X64Reg::Rdx, 0);
+    emitFunctionEpilogue(cg);
   }
 
   // `main`: run the chunk and return 0, so the process exit code is a clean

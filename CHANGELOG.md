@@ -153,6 +153,13 @@ may change between minor versions.
   runner accepts an optional `// expect-message:` header, so the three new
   `tests/errors/*_malformed_after_use.oskl` fixtures pin the message and not
   just the exit code.
+- **A `JMP` to the end of a chunk lowers.** The VM accepts a jump target of
+  exactly `code.size()`: the pc passes the last instruction and the next
+  dispatch falls off the end, which is an implicit `return nil`. The AOT
+  lowerer rejected the same chunk with "jump target N is outside the code", so
+  a chunk the VM ran had no image. Each chunk now carries one extra label,
+  bound after the last instruction to publish `nil` and run the frame's
+  epilogue.
 - **The Mach-O linker writes the right indirect-symbol start index.** The
   indirect symbol table holds the `__stubs` block first and the `__got`
   pointers second, so `__stubs` starts at index 0 and `__got` at

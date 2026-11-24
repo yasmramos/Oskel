@@ -234,6 +234,16 @@ static void testBadJumpTargetThrows() {
   check(loweringThrows(proto, "outside the code"), "an out-of-range jump target throws");
 }
 
+static void testJumpToCodeSizeLowers() {
+  // The VM accepts a jump target of exactly `code.size()`: the pc is set past
+  // the last instruction and the next dispatch falls off the end, which is an
+  // implicit `return nil`. The lowerer must accept it too, or AOT rejects a
+  // chunk the VM runs.
+  auto proto = makeProto({instr(OpCode::JMP, 0, 0, 0, 1)}, {}, 1);
+  LoweredChunk chunk = lower(proto);
+  check(!chunk.code.empty(), "a jump to exactly the code size lowers");
+}
+
 static void testUnassignedGlobalThrows() {
   // A GETGLOBAL whose name is never SETGLOBAL is a lowering error naming the
   // variable, the compile-time counterpart of the hosted engine's run-time
@@ -569,6 +579,15 @@ static void testExecUnop() {
        instr(OpCode::UNOP, 0, 0, static_cast<int>(UnaryOp::Not)), instr(OpCode::HALT)},
       {Value()}, 1);
   checkBool(notNil, true, "exec: !nil is true");
+}
+
+static void testExecJumpToEnd() {
+  // `JMP` to exactly `code.size()` falls off the end of the root chunk, so the
+  // result is nil -- the same value the VM's implicit `return nil` produces.
+  auto proto = makeProto({instr(OpCode::JMP, 0, 0, 0, 1)}, {}, 1);
+  AotValue value = run(proto);
+  check(value.tag == static_cast<std::uint64_t>(AotTag::Nil),
+        "exec: a jump to the end of the chunk yields nil");
 }
 
 static void testExecJumps() {
@@ -1303,6 +1322,7 @@ int main() {
   testCollectionsLower();
   testIterOperandsLower();
   testBadJumpTargetThrows();
+  testJumpToCodeSizeLowers();
   testUnassignedGlobalThrows();
   testHostBindingThrows();
   testUnusedHostBindingLowers();
@@ -1319,6 +1339,7 @@ int main() {
   testExecBitwise();
   testExecComparisonsAsValues();
   testExecUnop();
+  testExecJumpToEnd();
   testExecJumps();
   testExecBackwardJumpLoop();
   testExecManyRegisters();
