@@ -9,6 +9,7 @@
 #include <cctype>
 #include <iostream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -91,9 +92,11 @@ int runSource(const std::string &source, const std::string &name,
   std::vector<Warning> warnings;
   ModuleResolver resolver = resolverFor(name, argv0);
   auto enumScanner = makeEnumScanner(resolver);
+  auto interfaceScanner = makeInterfaceScanner(resolver);
   try {
     Parser parser(std::move(tokens), name);
     parser.setEnumScanner(enumScanner);
+    parser.setInterfaceScanner(interfaceScanner);
     program = parser.parseProgram();
     warnings = parser.warnings();
   } catch (const CompileError &error) {
@@ -108,6 +111,7 @@ int runSource(const std::string &source, const std::string &name,
   Bytecode bytecode;
   Compiler compiler;
   compiler.setEnumScanner(enumScanner);
+  compiler.setInterfaceScanner(interfaceScanner);
   try {
     compiler.setImportLoader(makeImportLoader(resolver));
     bytecode = compiler.compile(program);
@@ -215,7 +219,9 @@ void printReplHelp() {
 // Returns true when the REPL should exit.
 bool handleCommand(VM &vm, Compiler &compiler, const std::string &command,
                    const std::string &argv0,
-                   const Parser::EnumScanner &replScanner) {
+                   const Parser::EnumScanner &replScanner,
+                   const Parser::InterfaceScanner &replInterfaceScanner,
+                   std::unordered_map<std::string, Parser::InterfaceInfo> &replInterfaces) {
   if (command == ":quit" || command == ":q" || command == ":exit")
     return true;
 
@@ -231,6 +237,7 @@ bool handleCommand(VM &vm, Compiler &compiler, const std::string &command,
     // just forgotten, so it is dropped with them; otherwise a later entry
     // would still see a type or a module the user no longer has.
     compiler.clearSession();
+    replInterfaces.clear();
     std::cout << "all definitions cleared\n";
     return false;
   }
@@ -275,6 +282,13 @@ bool handleCommand(VM &vm, Compiler &compiler, const std::string &command,
     try {
       ModuleResolver fileResolver = resolverFor(path, argv0);
       auto fileEnumScanner = makeEnumScanner(fileResolver);
+      auto fileInterfaceScanner = makeInterfaceScanner(fileResolver);
+      struct InterfaceScannerGuard {
+        Compiler &compiler;
+        Parser::InterfaceScanner saved;
+        ~InterfaceScannerGuard() { compiler.setInterfaceScanner(std::move(saved)); }
+      } interfaceGuard{compiler, replInterfaceScanner};
+      compiler.setInterfaceScanner(fileInterfaceScanner);
       struct ScannerGuard {
         Compiler &compiler;
         Parser::EnumScanner saved;
@@ -283,12 +297,18 @@ bool handleCommand(VM &vm, Compiler &compiler, const std::string &command,
       compiler.setEnumScanner(fileEnumScanner);
       Parser parser(lex(source), path);
       parser.setEnumScanner(fileEnumScanner);
+      parser.setInterfaceScanner(fileInterfaceScanner);
+      parser.seedInterfaces(replInterfaces);
       parser.seedStructNames(compiler.structNames());
       parser.seedClassNames(compiler.classNames());
       parser.seedEnumNames(compiler.enumNames());
       parser.seedEnumValues(compiler.enumValues(), compiler.enumMemberOwners());
+      StmtPtr program = parser.parseProgram();
+      for (const auto &entry : parser.visibleInterfaces()) {
+        replInterfaces[entry.first] = entry.second;
+      }
       Bytecode bytecode = compiler.compileLoaded(
-          parser.parseProgram(), makeImportLoader(fileResolver), path);
+          std::move(program), makeImportLoader(fileResolver), path);
       for (const Warning &warning : parser.warnings())
         printCompileWarning(path, source, warning, platformPosix());
       for (const Warning &warning : compiler.warnings())
@@ -329,8 +349,11 @@ void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, 
   Compiler compiler;
   ModuleResolver replResolver = resolverFor("<repl>", argv0);
   auto enumScanner = makeEnumScanner(replResolver);
+  auto interfaceScanner = makeInterfaceScanner(replResolver);
+  std::unordered_map<std::string, Parser::InterfaceInfo> replInterfaces;
   compiler.setImportLoader(makeImportLoader(replResolver));
   compiler.setEnumScanner(enumScanner);
+  compiler.setInterfaceScanner(interfaceScanner);
 
   std::cout << "Oskel " << kVersion
             << " - a small scripting language written in C++\n";
@@ -352,7 +375,8 @@ void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, 
       continue;
     }
     if (buffer.empty() && !trimmed.empty() && trimmed[0] == ':') {
-      if (handleCommand(vm, compiler, trimmed, argv0, enumScanner))
+      if (handleCommand(vm, compiler, trimmed, argv0, enumScanner, interfaceScanner,
+                        replInterfaces))
         break;
       continue;
     }
@@ -384,6 +408,8 @@ void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, 
       try {
         Parser expressionParser(tokens, "<repl>");
         expressionParser.setEnumScanner(enumScanner);
+        expressionParser.setInterfaceScanner(interfaceScanner);
+        expressionParser.seedInterfaces(replInterfaces);
         expressionParser.seedStructNames(compiler.structNames());
         expressionParser.seedClassNames(compiler.classNames());
         expressionParser.seedEnumNames(compiler.enumNames());
@@ -408,24 +434,34 @@ void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, 
     try {
       Parser parser(tokens, "<repl>");
       parser.setEnumScanner(enumScanner);
+      parser.setInterfaceScanner(interfaceScanner);
+      parser.seedInterfaces(replInterfaces);
       parser.seedStructNames(compiler.structNames());
       parser.seedClassNames(compiler.classNames());
       parser.seedEnumNames(compiler.enumNames());
       parser.seedEnumValues(compiler.enumValues(), compiler.enumMemberOwners());
       program = parser.parseProgram();
       parseWarnings = parser.warnings();
+      for (const auto &entry : parser.visibleInterfaces()) {
+        replInterfaces[entry.first] = entry.second;
+      }
     } catch (const CompileError &error) {
       if (error.message.find("end of input") != std::string::npos) {
         // Convenience: accept a missing ';' at the end of a REPL entry.
         try {
           Parser parser(lex(buffer + ";"), "<repl>");
           parser.setEnumScanner(enumScanner);
+          parser.setInterfaceScanner(interfaceScanner);
+          parser.seedInterfaces(replInterfaces);
           parser.seedStructNames(compiler.structNames());
           parser.seedClassNames(compiler.classNames());
           parser.seedEnumNames(compiler.enumNames());
           parser.seedEnumValues(compiler.enumValues(), compiler.enumMemberOwners());
           program = parser.parseProgram();
           parseWarnings = parser.warnings();
+          for (const auto &entry : parser.visibleInterfaces()) {
+            replInterfaces[entry.first] = entry.second;
+          }
         } catch (const CompileError &retry) {
           bool incomplete =
               retry.message.find("end of input") != std::string::npos ||

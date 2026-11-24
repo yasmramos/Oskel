@@ -44,6 +44,13 @@ Compiler::ImportLoader makeImportLoader(ModuleResolver resolver);
 // read here is reported by the compiler with its own diagnostic.
 Parser::EnumScanner makeEnumScanner(ModuleResolver resolver);
 
+// Builds the scanner the parser uses to make a module's interfaces visible at
+// parse time (PHASE 12.2). It parses each imported module once (with the enum
+// scanner too, so its annotations resolve) and caches the declarations it
+// exports, so `import { Shape } from geom;` and `implements Shape` work before
+// the compiler loads the module.
+Parser::InterfaceScanner makeInterfaceScanner(ModuleResolver resolver);
+
 // The AOT target `--target` names, and the host's own target.
 bool parseTargetName(const std::string& name, Target& out);
 Target hostTarget();

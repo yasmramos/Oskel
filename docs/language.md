@@ -1192,10 +1192,34 @@ class Circle implements Shape, Describable {
 ```
 
 `implements` accepts a comma-separated list. Every listed interface must be
-declared somewhere in the module (an interface may come after the class that
-implements it) and the class must provide every method with the declared arity.
+declared or imported somewhere in the module (an interface may come after the
+class that implements it) and the class must provide every method with the
+declared arity.
 A missing method, a wrong arity, a variadic mismatch or an unknown interface is
 a compile error, so the contract cannot drift silently.
+
+**Across modules.** An interface is a compile-time export of its module. A
+selective or wildcard import makes it visible by its own name; a qualified
+import makes it visible as `alias.Interface`:
+
+```oskel
+import { Shape, Named } from modules.geometry;
+
+class A implements Shape, Named { /* ... */ }
+```
+
+A qualified import (`import modules.geometry as geo;`) exposes it as
+`geo.Shape` (and `import modules.geometry;` as `modules.geometry.Shape`, or
+`geometry.Shape` through the short leaf); a wildcard import
+(`import modules.geometry.*;`) exposes it by its own name. The three forms
+are alternatives for one module, not a combination: importing the same module
+several ways would bind its values repeatedly.
+
+The import binds no runtime value: an interface has no table entry, so a
+selective import of one emits no `GETTABLE`/`SETTABLE`. It is still a valid
+export name, which is what lets the compiler accept it in the selective list.
+A module that imports an interface may itself implement it in a class, but it
+does not re-export the interface to its own consumers.
 
 Interfaces are **not** a runtime type. A class instance is still the class
 desugaring (a field map plus a method table), and `type(instance)` reports the

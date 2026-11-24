@@ -1,0 +1,17 @@
+// PHASE 12.2: a wildcard import makes every interface the module declares
+// visible by its own name. Runtime binding still only covers the module's
+// values, because an interface has no table entry.
+
+import modules.interface_geom.*;
+
+class Diamond implements Shape, Named {
+  d: double;
+  fn init(d: double) { self.d = d; }
+  fn area(): double { return 0.5 * self.d * self.d; }
+  fn name(): string { return "diamond"; }
+}
+
+let diamond = Diamond(6.0);
+assertEq(diamond.area(), 18.0);
+assertEq(diamond.name(), "diamond");
+assertEq(ModuleCircle(2.0).area(), 12.0);
