@@ -588,29 +588,34 @@ print(d.quot);   // 3
 print(d.rem);    // 2
 ```
 
-The ABI classifies a small struct as up to two **eightbytes**, each INTEGER (a
+System V classifies a small struct as up to two **eightbytes**, each INTEGER (a
 general-purpose register) or SSE (an xmm register); a `{int; int}` struct comes
 back wholly in `rax`, a `{double; double}` in `xmm0`/`xmm1`, and a mixed
 `{int; double}` in `rax` + `xmm0`. A struct argument is flattened to the same
 eightbytes and passed in the registers the ABI assigns it, so the callee reads
 back the exact bytes of the struct.
 
-A struct of **more than 16 bytes** is class MEMORY: it is passed in the outgoing
-stack-argument area and returned through a hidden `sret` buffer the caller
-supplies in `rdi` (which shifts every integer argument one register along). The
-development engine expresses both directions through its x86-64 descriptor stub,
-so a class-MEMORY struct needs the System V AMD64 ABI; elsewhere (Windows, arm64)
-the declaration is rejected at compile time with a clear message instead of a
-wrong call. A struct field must be an FFI scalar type (an integer, `float`/
-`double`, `ptr`/`cstring` or `bool`); a nested struct field is rejected.
+A struct of **more than 16 bytes** is class MEMORY on System V: it is passed in
+the outgoing stack-argument area and returned through a hidden `sret` buffer the
+caller supplies in `rdi` (which shifts every integer argument one register
+along). The development engine expresses both directions through its x86-64
+descriptor stub. Microsoft x64 has no class MEMORY, but it uses the same
+by-reference rule for any aggregate that is not 1, 2, 4 or 8 bytes: the caller
+passes a pointer to a copy and a return of that size goes through a hidden
+`sret` pointer in `rcx`, which shifts every declared argument one position. A
+non-x86-64 host (arm64) rejects the declaration at compile time with a clear
+message instead of a wrong call. A struct field must be an FFI scalar type (an
+integer, `float`/`double`, `ptr`/`cstring` or `bool`); a nested struct field is
+rejected.
 
-Structs by value are **System V AMD64 only**. The register classification above
-is the System V ABI's; the Microsoft x64 ABI (Windows) passes a struct larger
-than 8 bytes through a hidden pointer instead, a shape the register thunks
-cannot express. On such a target the declaration is rejected at compile time
-with `a struct cannot cross the C boundary by value on this target`. Scalar
-arguments and results stay portable: the call goes through a typed function
-pointer, so the host compiler applies whichever ABI it targets.
+Structs by value cross **both x86-64 ABIs**. System V classifies up to two
+eightbytes and passes or returns them in the registers it assigns. Microsoft x64
+passes a 1/2/4/8-byte aggregate in one integer register and returns it in
+`rax`; any other size travels by reference with the hidden `sret` return above.
+A host that is not x86-64 rejects the declaration at compile time with
+`a struct cannot cross the C boundary by value on this target`. Scalar arguments
+and results stay portable: the call goes through a typed function pointer, so
+the host compiler applies whichever ABI it targets.
 
 **Callbacks.** A parameter typed `fn(paramTypes): returnType` is a C function
 pointer. A Oskel function (or a closure) passed for it is callable from C, and a
@@ -3641,7 +3646,7 @@ future work. `-c` is implemented; the `.oskc` format is specified in §19.1.
 - No `++`, `--` or default parameters. A trailing `rest...` parameter makes a function variadic (see §7.1). `switch` on literals and ranges is supported (see §6.10), and so is the post-test loop `do { ... } while (cond);` (see §6.4).
 - Optional types and nullability are implemented for declarations and expressions (PHASE 6.5). Type annotations (`let x: int = 5`), local inference, the nullable `T?` annotation, and the null-safe expressions `?.`, `??` and `!!` are checked at compile time. `struct` is implemented (see §4.7) and so is `native fn` (see §7.6), the typed declaration of a host-provided function.
 - FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the host C ABI without a host FFI library for scalars and register structs; a class-MEMORY struct, a C variadic and a callback go through a small x86-64 descriptor/closure stub emitted by the engine. A `fn(P...): R` parameter is a callback: the development engine builds a closure stub that re-enters the VM (its `R` may be a scalar or a struct by value); it is available on x86-64 System V (Linux, x86-64 macOS), not on Windows or arm64. A trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...): int`), which applies the C default argument promotions and goes through the descriptor stub on either x86-64 ABI (System V AMD64 or Microsoft x64); it is rejected at compile time on a non-x86-64 host.
-- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.11 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux, Windows and macOS x86-64), where the program is linked against the host C library; the freestanding mode, which is the default on Linux and Windows, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — both register-class and class-MEMORY — are lowered on the System V targets (Linux and macOS, 7f.6, 7f.7); the Windows x86-64 backend supports the scalar, `cstring` and `ptr` classes and rejects a struct or a callback with a dedicated message. A C variadic is lowered on all three hosted targets: System V continues the independent GPR/SSE counters, Win64 continues the argument positions (a floating value in a register position goes in both its SSE and integer register, and position four onward spills to the outgoing stack area past the shadow space). `native fn` declarations the backend has no stub for fail the build with a dedicated message. Callbacks are lowered on System V (7f.8): a scalar parameter or return crosses through a generated stub, and a struct return by value is rebuilt into the C return registers or the hidden `sret` buffer (7f.11). A struct parameter is rejected by both engines with a dedicated message.
+- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.11 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux, Windows and macOS x86-64), where the program is linked against the host C library; the freestanding mode, which is the default on Linux and Windows, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — register-class on System V and by-reference on Win64 — are lowered on all three hosted x86-64 targets (7f.6, 7f.7); the Windows backend also supports the scalar, `cstring`, `ptr` and C variadic classes, and rejects only a callback with a dedicated message. A C variadic is lowered on all three hosted targets: System V continues the independent GPR/SSE counters, Win64 continues the argument positions (a floating value in a register position goes in both its SSE and integer register, and position four onward spills to the outgoing stack area past the shadow space). `native fn` declarations the backend has no stub for fail the build with a dedicated message. Callbacks are lowered on System V (7f.8): a scalar parameter or return crosses through a generated stub, and a struct return by value is rebuilt into the C return registers or the hidden `sret` buffer (7f.11). A struct parameter is rejected by both engines with a dedicated message.
 - A function's text representation is the same on both engines: `<fn name>` for a named function, `<native fn name>` for a host binding (a builtin, a `native fn`, an `extern "C"` symbol or a bound collection method such as `<native fn array.map>`), and `<fn <anonymous>>` for a lambda. The AOT closure carries a `display` pointer to a static `AotString` with that exact text, so `print`, `repr`, `str` and string interpolation all agree byte for byte (BACKLOG §6.22, `tests/native_build_function_repr.oskl`).
 - The first UI layer is `std/ui.oskl` (`docs/ui.md`): a declarative widget
   tree, deterministic layout, a `rect`/`text` display list and button hit
@@ -3964,9 +3969,9 @@ oskelc: app.oskc: the bytecode needs FFI support this target lacks: structs by v
 ```
 
 That is what makes an image portable in a meaningful sense: a chunk built on
-Linux that marshals a struct by value is refused by the Windows build, because
-the Microsoft x64 thunk does not carry a struct — instead of being lowered into
-code that would marshal the wrong registers.
+Linux that passes a callback is refused by the Windows build, because the
+Microsoft x64 thunk does not carry one — instead of being lowered into code that
+would marshal the wrong registers.
 
 **Requirement bits**: bit 0 needs SDL3, bit 1 needs the Skia shim. They record
 what the chunk needs from the UI backend, which the chunk alone cannot say: the

@@ -1,0 +1,6 @@
+// expect-exit: 65
+// A malformed declaration must not seed `structNames_`: the missing brace is
+// reported at the declaration itself, and `Point { ... }` below is not parsed
+// as a struct literal.
+struct Point
+let p = Point { x: 1 };

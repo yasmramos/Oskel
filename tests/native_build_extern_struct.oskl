@@ -3,9 +3,10 @@
 // wherever the host links them, exactly like `31_ffi_struct.oskl`.
 //
 // It covers both directions and both register classes:
-//   - `div`/`ldiv` return a struct (INTEGER eightbytes, `rax` then `rdx`),
-//   - `cabs` takes a struct by value (`double complex` is two SSE eightbytes,
-//     `xmm0` then `xmm1`).
+//   - `div` returns 8 bytes in `rax`; `lldiv` returns 16 bytes in
+//     `rax`/`rdx` on System V and through the hidden `sret` pointer on Win64,
+//   - `cabs` takes a 16-byte struct by value: two SSE eightbytes on System V,
+//     a caller-owned copy passed by reference on Win64.
 
 struct DivResult {
   quot: int32;
@@ -21,7 +22,7 @@ struct Complex {
 }
 extern "C" {
   fn div(numerator: int, denominator: int): DivResult;
-  fn ldiv(numerator: int64, denominator: int64): LDivResult;
+  fn lldiv(numerator: int64, denominator: int64): LDivResult;
   fn cabs(z: Complex): double;
 }
 
@@ -29,7 +30,7 @@ let d = div(17, 5);
 assertEq(d.quot, 3);
 assertEq(d.rem, 2);
 
-let l = ldiv(100, 7);
+let l = lldiv(100, 7);
 assertEq(l.quot, 14);
 assertEq(l.rem, 2);
 

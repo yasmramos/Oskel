@@ -1222,6 +1222,10 @@ void emitBuildSci(CodeGen& cg, CodeGen::Label label) {
 // long format_double(long tag, long payload, char* out, Scratch* scratch):
 // the entry point. `scratch` is a caller-provided block of at least
 // `kScratchBytes` bytes; the routine keeps the arena (r12-r15) untouched.
+// Shortest round-trip: build both the fixed and the scientific spelling and
+// emit the shorter one; a tie goes to fixed. That is why `1e6` prints
+// `1e+06` (scientific is shorter), `1e4` prints `10000` (fixed is shorter)
+// and `1e-4` prints `1e-04`.
 void emitFormatDouble(CodeGen& cg, CodeGen::Label label, CodeGen::Label generate,
                       CodeGen::Label buildFixed, CodeGen::Label buildSci) {
   CodeGen::Label floatPath = cg.newLabel();

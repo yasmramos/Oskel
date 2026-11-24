@@ -1592,7 +1592,7 @@ std::vector<std::uint8_t> linkHostedExecutable(
 std::vector<std::uint8_t> linkRelocatable(
     const std::vector<LinkInput>& inputs, const LinkOptions& options) {
   if (options.target.os == Os::MacOs) {
-    throw LinkError("the Mach-O relocatable link is not implemented yet");
+    return linkRelocatableMachO(inputs, options);
   }
   if (options.target.os == Os::Windows) {
     return linkRelocatableCoff(inputs, options);

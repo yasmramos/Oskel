@@ -152,23 +152,17 @@ int main() {
     if (ffi::kStructByValueSupported) {
       check(contains(result.text, "fn make(x: int32, y: int32): Point;"),
             "a struct-by-value return is emitted with its struct name");
-      check(result.emitted == 2, "the struct and the callback declarations are emitted");
-      check(result.commented == 0, "nothing is commented out on a System V build");
     } else {
       check(contains(result.text, "// fn make(x: int32, y: int32): Point;"),
             "a struct-by-value return is commented out where the ABI cannot carry it");
       check(contains(result.text, "cannot cross the C boundary by value"),
             "the reason is the compiler's own, not a second guess");
-      if (ffi::kCallbacksSupported) {
-        check(result.emitted == 1, "only the callback declaration is emitted");
-        check(result.commented == 1,
-              "the struct-by-value declaration is counted as commented");
-      } else {
-        check(result.emitted == 0, "neither declaration is emitted");
-        check(result.commented == 2,
-              "the struct-by-value and callback declarations are counted as commented");
-      }
     }
+    const int emitted = (ffi::kStructByValueSupported ? 1 : 0) +
+                        (ffi::kCallbacksSupported ? 1 : 0);
+    check(result.emitted == emitted, "the declarations the ABI can carry are emitted");
+    check(result.commented == 2 - emitted,
+          "the declarations the ABI cannot carry are counted as commented");
     check(contains(result.text, "// skipped: weird:"), "a long double is skipped");
     if (ffi::kCallbacksSupported) {
       check(contains(result.text, "fn takes_cb(cb: fn(int32): int32, n: int32): void;"),
@@ -203,14 +197,14 @@ int main() {
           "System V emits every optional shape");
 
     const bindgen::Result win = generateFor(ffi::FfiAbi::Win64);
-    check(contains(win.text, "// fn make_p(x: int32, y: int32): P;"),
-          "Win64 comments a struct-by-value declaration");
+    check(contains(win.text, "fn make_p(x: int32, y: int32): P;"),
+          "Win64 emits a struct-by-value declaration");
     check(contains(win.text, "// fn takes_cb(cb: fn(int32): int32): void;"),
           "Win64 comments a callback declaration");
     check(contains(win.text, "fn printf(fmt: cstring, ...): int32;"),
           "Win64 emits a variadic declaration");
-    check(win.emitted == 1 && win.commented == 2,
-          "Win64 emits only the variadic declaration");
+    check(win.emitted == 2 && win.commented == 1,
+          "Win64 emits the struct and variadic declarations");
 
     const bindgen::Result arm = generateFor(ffi::FfiAbi::Aapcs64);
     check(contains(arm.text, "// fn make_p(x: int32, y: int32): P;"),

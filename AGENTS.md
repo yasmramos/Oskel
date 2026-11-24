@@ -296,8 +296,10 @@ it as a caveat:
   extern thunk takes the ABI as a parameter: System V (Linux, macOS) keeps the
   six GPRs/eight SSE registers and the struct/callback/variadic surface;
   Win64 uses four of each, 32 bytes of shadow space and stack arguments from
-  offset 32, supports the scalar/`cstring`/`ptr` classes and a C variadic, and
-  rejects a struct or a callback with a dedicated message. Win64 selects the
+  offset 32, supports the scalar/`cstring`/`ptr` classes, a C variadic and a
+  struct by value (1/2/4/8 bytes in one integer register, every other size by
+  reference with an `sret` return), and rejects only a callback with a dedicated
+  message. Win64 selects the
   register by **argument position**, not by class: argument i uses the i-th
   integer or SSE register, a floating value in a register position is
   duplicated in the integer register of the same position on a variadic call,
@@ -322,14 +324,19 @@ it as a caveat:
   along. The thunk builds the C bytes field by field from the `AotMap` the
   program holds (a struct is a map at run time), reading each field with
   `oskel_member_get`, and rebuilds a returned struct into a fresh map with
-  `oskel_member_set`. Both directions stay System V AMD64 only; the frame keeps
-  the outgoing area, the `sret` buffer, the register-class staging buffers and
-  the integer staging slots disjoint. `tests/native_build_extern_struct.oskl`
-  covers the register class and `tests/native_build_extern_memory_struct.oskl`
-  the MEMORY class (the latter links `tests/hosted/memory_struct_helper.c`,
-  because no libc symbol exercises that shape). A struct passed to a callback
-  is rejected by both engines, and a struct through a C variadic is still
-  PHASE 7f work; the callback and variadic surfaces themselves are done.
+  `oskel_member_set`. On Win64 a 1/2/4/8-byte struct is one integer argument
+  and every other size is a pointer to a caller-owned copy, with an `sret`
+  return that shifts the declared arguments one position. The frame keeps the
+  outgoing area, the `sret` buffer, the register-class staging buffers and the
+  integer staging slots disjoint. `tests/native_build_extern_struct.oskl`
+  covers the register class on System V and the by-reference class on Win64,
+  `tests/native_build_extern_memory_struct.oskl` the System V MEMORY class (it
+  links `tests/hosted/memory_struct_helper.c`, because no libc symbol exercises
+  that shape), and `tests/native_build_extern_struct_win64.oskl` with
+  `tests/hosted/win64_struct_helper.c` the Windows-only shapes. A struct passed
+  to a callback is rejected by both engines, and a struct through a C variadic
+  is still PHASE 7f work; the callback and variadic surfaces themselves are
+  done.
 - A builtin whose argument window the AOT backend walks by hand has to read
   `args[i]` **downward**: `slotOffset` is `-16 * (index + 1)`, so `args[1]` sits
   16 bytes *below* `args[0]` (`-16` tag, `-8` payload), not at `+16`/`+24`. A
@@ -523,7 +530,7 @@ it as a caveat:
   compare against the *registered* list (`ctest -N`), never against
   `tests/*.oskl`: a Windows build registers fewer tests than a Linux one, and the
   difference is exactly the families `CMakeLists.txt` excludes with `NOT WIN32`
-  (struct-by-value, callbacks, memory structs, SDL). Running the full glob under
+  (callbacks and SDL). Running the full glob under
   Wine reports those as failures when they are deliberate skips. Do not write the
   two counts down — they move with every PR; derive them with `ctest -N`.
 

@@ -1,5 +1,6 @@
 #include "ffi_marshal.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -59,6 +60,13 @@
 // library is involved on either path.
 namespace ffi {
 namespace {
+
+#if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
+constexpr bool kHostWin64 = true;
+#else
+constexpr bool kHostWin64 = false;
+#endif
+
 
 // ------------------------------------------------------------------ arguments
 
@@ -626,12 +634,6 @@ Ref<CallbackObj> makeCallback(Runtime& rt, const std::string& name, const TypeSp
 
 // ------------------------------------------------------------------ dynamic calls
 
-#if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
-constexpr bool kHostWin64 = true;
-#else
-constexpr bool kHostWin64 = false;
-#endif
-
 struct PromotedArg {
   ParamClass cls = ParamClass::Int;
   std::uint64_t raw = 0;
@@ -711,11 +713,14 @@ Value callDynamic(Runtime& rt, const std::string& name, void* address,
   std::vector<std::uint8_t> stack;
   std::vector<std::uint8_t> sret;
   std::vector<Ref<CallbackObj>> callbacks;
+  // A by-reference Win64 struct needs a stable address until the stub returns;
+  // a vector's reallocation would invalidate the pointers.
+  std::vector<std::unique_ptr<std::vector<std::uint8_t>>> structCopies;
 
-  if (returnType.isStruct && retLayout.isMemory) {
-    if (kHostWin64) {
-      rt.fail("a struct of class MEMORY cannot cross the C boundary on this target");
-    }
+  const bool win64ReturnByRef =
+      kHostWin64 && returnType.isStruct && !win64StructInRegister(retLayout);
+  const std::size_t win64Shift = win64ReturnByRef ? 1 : 0;
+  if (returnType.isStruct && (retLayout.isMemory || win64ReturnByRef)) {
     sret.assign(retLayout.size, 0);
     descriptor.gpr[0] = reinterpret_cast<std::uint64_t>(sret.data());
     descriptor.gprCount = 1;
@@ -780,7 +785,7 @@ Value callDynamic(Runtime& rt, const std::string& name, void* address,
         code = reinterpret_cast<std::int64_t>(callback->code.entry());
         callbacks.push_back(std::move(callback));
       }
-      assign(i, ParamClass::Int, static_cast<std::uint64_t>(code), false);
+      assign(i + win64Shift, ParamClass::Int, static_cast<std::uint64_t>(code), false);
       continue;
     }
     if (spec.isStruct) {
@@ -789,12 +794,26 @@ Value callDynamic(Runtime& rt, const std::string& name, void* address,
       if (!buildStructLayout(spec.fields, layout, reason)) rt.fail(reason);
       std::vector<char> bytes;
       writeStructBytes(rt, layout, args[i], name, i, bytes);
-      if (layout.isMemory) {
+      if (layout.isMemory && !kHostWin64) {
         pushBytes(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
         continue;
       }
       if (kHostWin64) {
-        rt.fail("a struct cannot cross the C boundary by value on this target");
+        // Microsoft x64: a 1/2/4/8-byte aggregate is one integer argument; any
+        // other size is a pointer to a caller-owned copy.
+        if (win64StructInRegister(layout)) {
+          std::uint64_t raw = 0;
+          std::memcpy(&raw, bytes.data(), std::min<std::size_t>(layout.size, 8));
+          assign(i + win64Shift, ParamClass::Int, raw, false);
+        } else {
+          auto copy = std::make_unique<std::vector<std::uint8_t>>(
+              bytes.begin(), bytes.end());
+          const std::uint64_t address =
+              reinterpret_cast<std::uint64_t>(copy->data());
+          structCopies.push_back(std::move(copy));
+          assign(i + win64Shift, ParamClass::Int, address, false);
+        }
+        continue;
       }
       bytes.resize(static_cast<std::size_t>(layout.eightbyteCount) * 8, 0);
       for (int e = 0; e < layout.eightbyteCount; ++e) {
@@ -807,12 +826,13 @@ Value callDynamic(Runtime& rt, const std::string& name, void* address,
     ParamClass cls = ParamClass::Int;
     classifyParam(spec.scalarType, cls);
     const std::uint64_t raw = scalarRaw(rt, args[i], spec.scalarType, cls);
-    assign(i, cls, raw, variadic && (cls == ParamClass::Float || cls == ParamClass::Double));
+    assign(i + win64Shift, cls, raw,
+           variadic && (cls == ParamClass::Float || cls == ParamClass::Double));
   }
 
   for (std::size_t i = fixedCount; i < args.size(); ++i) {
     const PromotedArg promoted = promoteVariadic(rt, name, i, args[i]);
-    assign(i, promoted.cls, promoted.raw, true);
+    assign(i + win64Shift, promoted.cls, promoted.raw, true);
   }
 
   descriptor.stackBytes = static_cast<std::uint32_t>(stack.size());
@@ -844,8 +864,13 @@ Value callDynamic(Runtime& rt, const std::string& name, void* address,
   }
 
   if (returnType.isStruct) {
-    if (retLayout.isMemory) {
+    if (retLayout.isMemory || win64ReturnByRef) {
       return boxStructResult(rt, retLayout, reinterpret_cast<const char*>(sret.data()));
+    }
+    if (kHostWin64) {
+      char bytes[16] = {0};
+      std::memcpy(bytes, ret, std::min<std::size_t>(retLayout.size, 8));
+      return boxStructResult(rt, retLayout, bytes);
     }
     char bytes[16] = {0};
     switch (structShapeOf(retLayout)) {
@@ -962,13 +987,17 @@ Value makeExternNative(Runtime& rt, const std::string& name, void* address,
   // beside one of those travels through the same path.
   bool needsDynamic = variadic;
   if (!needsDynamic && returnType.isStruct && layout.isMemory) needsDynamic = true;
+  // Win64 classifies a struct by size, not by the System V eightbyte shapes the
+  // typed thunk dispatches on, so every Win64 struct goes through the
+  // descriptor stub.
+  if (!needsDynamic && kHostWin64 && returnType.isStruct) needsDynamic = true;
   if (!needsDynamic) {
     for (const TypeSpec& spec : paramTypes) {
       if (!spec.isStruct) continue;
       StructLayout paramLayout;
       std::string reason;
       if (!buildStructLayout(spec.fields, paramLayout, reason)) rt.fail(reason);
-      if (paramLayout.isMemory) needsDynamic = true;
+      if (paramLayout.isMemory || kHostWin64) needsDynamic = true;
     }
   }
   if (needsDynamic) {

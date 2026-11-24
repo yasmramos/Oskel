@@ -659,15 +659,15 @@ previous one.
   whose members land in `rax`/`rdx`/`xmm0`/`xmm1` and rebuilt as a map. A
   nested (non-scalar) field is rejected. No new opcode and no compiler-side ABI
   logic: the layout is the single source of truth in `ffi_types.h`, shared by
-  the compiler and the runtime across the §2 boundary. Struct-by-value is
-  **System V AMD64 only**: the register classification is that ABI's, and the
-  Microsoft x64 ABI (Windows) passes a struct larger than 8 bytes through a
-  hidden pointer instead. Off System V the compiler rejects the declaration
-  (`kStructByValueSupported` in `ffi_types.h`; the CMake capability
-  `OSKEL_FFI_STRUCT_BY_VALUE` skips the script test), so a Windows build fails
-  cleanly at compile time instead of crashing at the call. Scalars stay portable
-  because the call is a typed function pointer. See `docs/language.md` §4.6 and
-  `tests/31_ffi_struct.oskl`.
+  the compiler and the runtime across the §2 boundary. Struct-by-value crosses
+  both x86-64 ABIs: System V flattens up to two eightbytes into the registers it
+  assigns, while Microsoft x64 passes a 1/2/4/8-byte aggregate in one integer
+  register and every other size by reference with a hidden `sret` return
+  (`kStructByValueSupported` in `ffi_types.h`; `OSKEL_FFI_STRUCT_BY_VALUE` in
+  CMake gates the script test). A non-x86-64 host rejects the declaration, so it
+  fails cleanly at compile time instead of crashing at the call. Scalars stay
+  portable because the call is a typed function pointer. See
+  `docs/language.md` §4.6 and `tests/31_ffi_struct.oskl`.
 - **Class-MEMORY structs by value (done, PHASE 7f.7)** — a struct larger than
   two eightbytes (more than 16 bytes) is class MEMORY: it travels in the
   outgoing stack-argument area and is returned through a hidden `sret` buffer the
@@ -1895,11 +1895,12 @@ binary prints byte for byte what the VM prints).
       before the chunk, so `args()` works there too. The extern thunk takes the
       ABI as a parameter: four integer and four SSE registers, shadow space,
       stack arguments from offset 32, and a fifth SSE value spilled to the
-      outgoing stack area. The scalar, `cstring` and `ptr` classes are supported
-      on Windows; a struct and a callback are rejected with a dedicated message
-      (the System V fixtures keep covering those), and a C variadic is lowered
-      positionally (7f.10). macOS uses System V, so it shares the existing thunk
-      unchanged. Two Windows details
+      outgoing stack area. The scalar, `cstring`, `ptr`, C variadic and struct
+      classes are supported on Windows: a struct is passed and returned by
+      reference unless it is 1/2/4/8 bytes, which travels in one integer
+      register (and `rax` on return); a callback is rejected with a dedicated
+      message, and the C variadic is lowered positionally (7f.10). macOS uses
+      System V, so it shares the existing thunk unchanged. Two Windows details
       are easy to miss: the UCRT opens stdout and stderr in text mode, so
       `oskel_init_arena` calls `_setmode(1/2, _O_BINARY)` before the first
       write -- otherwise every `\n` becomes `\r\n` and the binary disagrees
@@ -2530,7 +2531,7 @@ Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
 Phase 6.9: ✅ completed (`enum`: a scoped set of integer constants, folded by the parser; no opcode, no engine code, and identical on the VM, the AOT backend and WASM)
 Phase 11: 🔶 in progress (11.1 `async fn`/`await`/`Future` done: a future is a plain map, so no opcode and no builtin is added; eager bodies, no scheduler yet)
-Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.11 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY), callbacks (including a struct return) and a stored callback resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr` surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
+Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.11 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY), callbacks (including a struct return) and a stored callback resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr`/struct-by-value surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Phase 10: 🔶 in progress (10.1, 10.2, 10.2b and 10.3a done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar`, `-r`, `.data`/`.bss`, the common x86-64 ELF relocations, and the Windows COFF→PE32+ path with UCRT/kernel32 imports. 10.3b `-r` COFF, `.lib`, `args` and the `.pdata`/TLS rejection done, and 10.3d first slice done (`-r`, ad-hoc signature and ARM64 pending))
 Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending

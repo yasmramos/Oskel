@@ -1,9 +1,11 @@
-// requires: x86-64-system-v
+// requires: x86-64
 // `struct` by value across the C boundary (PHASE 6.6). A small struct (<= 16
 // bytes) is passed and returned in registers, classified by the System V ABI as
 // up to two eightbytes, each INTEGER (a general-purpose register) or SSE (an xmm
-// register). The functions below are real libc names, so the test runs wherever
-// the host links libc.
+// register). Win64 passes the same values differently: an 8-byte aggregate in one
+// integer register, a larger one by reference with a hidden `sret` return. The
+// functions below are real libc names, so the test runs wherever the host links
+// libc.
 
 // `div_t` is `{int quot; int rem;}`: 8 bytes, one INTEGER eightbyte. It comes
 // back wholly in `rax`.
@@ -19,17 +21,17 @@ let d = div(17, 5);
 assertEq(d.quot, 3);
 assertEq(d.rem, 2);
 
-// `ldiv_t` is `{long quot; long rem;}`: 16 bytes, two INTEGER eightbytes, so
+// `lldiv_t` is `{long long quot; long long rem;}`: 16 bytes on every host,
 // the result is read from `rax` and `rdx`.
 struct LDivResult {
   quot: int64;
   rem: int64;
 }
 extern "C" {
-  fn ldiv(numerator: int64, denominator: int64): LDivResult;
+  fn lldiv(numerator: int64, denominator: int64): LDivResult;
 }
 
-let l = ldiv(100, 7);
+let l = lldiv(100, 7);
 assertEq(l.quot, 14);
 assertEq(l.rem, 2);
 
