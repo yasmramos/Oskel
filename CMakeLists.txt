@@ -135,24 +135,30 @@ add_library(oskel_lib STATIC ${OSKEL_RUNTIME_SOURCES})
 target_link_libraries(oskel_lib PUBLIC oskel_frontend)
 target_compile_options(oskel_lib PRIVATE ${OSKEL_WARNINGS})
 
-# Struct-by-value FFI is written for the System V AMD64 ABI only; the Microsoft
-# x64 ABI passes a struct larger than 8 bytes through a hidden pointer, a shape
-# the register thunks cannot express. The compiler rejects such a declaration
-# with a clear error on other targets, and the test that exercises it is skipped.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
+# Struct-by-value FFI is lowered for both x86-64 ABIs: System V passes up to two
+# eightbytes in registers, Microsoft x64 passes a 1/2/4/8-byte aggregate in one
+# integer register and every other size by reference with an `sret` return. The
+# compiler rejects the declaration elsewhere and the test is skipped.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
   set(OSKEL_FFI_STRUCT_BY_VALUE TRUE)
-  set(OSKEL_FFI_CALLBACKS TRUE)
 else()
   set(OSKEL_FFI_STRUCT_BY_VALUE FALSE)
+endif()
+
+# A callback is still a System V shape: the Microsoft x64 thunk does not lower
+# one, so the declaration is rejected there and the test is skipped.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
+  set(OSKEL_FFI_CALLBACKS TRUE)
+else()
   set(OSKEL_FFI_CALLBACKS FALSE)
 endif()
 
-# A struct larger than 16 bytes is class MEMORY (passed on the stack, returned
-# through a hidden pointer). The development engine's descriptor stub expresses
-# that on the System V AMD64 ABI; elsewhere the declaration is rejected at
-# compile time and the test that exercises the rejection stays. This must mirror
+# A struct larger than 16 bytes is class MEMORY on System V (passed on the stack,
+# returned through a hidden pointer); Microsoft x64 has no class MEMORY but uses
+# its own by-reference rule. The descriptor stub expresses both, so the
+# declaration is accepted wherever the stub exists. This must mirror
 # `OSKEL_FFI_MEMORY_STRUCTS` in `include/ffi_types.h`.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$" AND NOT WIN32)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
   set(OSKEL_FFI_MEMORY_STRUCTS TRUE)
 else()
   set(OSKEL_FFI_MEMORY_STRUCTS FALSE)
