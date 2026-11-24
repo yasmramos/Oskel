@@ -71,6 +71,9 @@ constexpr std::int64_t kTableBlockOffset = 16;
 // Map-only header words: the lazy hash index over the entry array.
 constexpr std::int64_t kTableHashCapacityOffset = 24;
 constexpr std::int64_t kTableHashBlockOffset = 32;
+// Class identity, after the hash index (PHASE 12).
+constexpr std::int64_t kTableClassNameOffset = 40;
+constexpr std::int64_t kTableMethodsOffset = 48;
 // Below this many entries a linear scan beats the index's allocation.
 constexpr std::int64_t kMapHashThreshold = 8;
 constexpr std::int64_t kArrayItemSize = static_cast<std::int64_t>(sizeof(AotValue));
@@ -429,6 +432,7 @@ struct CollectionEnv {
   const DataBlob* msgImmutable;
   const DataBlob* msgBadAssign;
   const DataBlob* msgBadField;
+  const DataBlob* msgNoField;
   const DataBlob* msgBadIn;
   const DataBlob* msgMapMembershipKey;
   const DataBlob* msgStringMembershipOperand;
@@ -1586,6 +1590,7 @@ void emitCompare(CodeGen& cg, CodeGen::Label label, const DataBlob& message,
   CodeGen::Label eqError = cg.newLabel();
   CodeGen::Label eqArray = cg.newLabel();
   CodeGen::Label eqMap = cg.newLabel();
+  CodeGen::Label eqMapClassB = cg.newLabel();
   CodeGen::Label eqArrayLoop = cg.newLabel();
   CodeGen::Label eqMapLoop = cg.newLabel();
   CodeGen::Label eqArrayScan = cg.newLabel();
@@ -1898,6 +1903,22 @@ void emitCompare(CodeGen& cg, CodeGen::Label label, const DataBlob& message,
   // value (the same rule as the hosted `Value::equals`, which looks up each of
   // A's keys in B). ---
   cg.bind(eqMap);
+  // A class instance compares by identity, never structurally. The class-name
+  // islands are shared per class, so a pointer comparison is enough.
+  cg.movFromMem(Rax, Rsi, kTableClassNameOffset);
+  cg.movFromMem(Rdx, Rcx, kTableClassNameOffset);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, eqMapClassB);
+  cg.testReg(Rdx);
+  cg.jcc(Jcc::Eq, eqRetFalse);
+  cg.cmpReg(Rax, Rdx);
+  cg.jcc(Jcc::Ne, eqRetFalse);
+  cg.cmpReg(Rsi, Rcx);
+  cg.jcc(Jcc::Eq, eqRetTrue);
+  cg.jmp(eqRetFalse);
+  cg.bind(eqMapClassB);
+  cg.testReg(Rdx);
+  cg.jcc(Jcc::Ne, eqRetFalse);
   cg.movFromMem(Rbx, Rsi, kTableLengthOffset);
   cg.movFromMem(R9, Rcx, kTableLengthOffset);
   cg.cmpReg(Rbx, R9);
@@ -7188,6 +7209,11 @@ void emitMapCloneMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& 
   cg.movImmToMem(Rax, kTableBlockOffset, 0);
   cg.movImmToMem(Rax, kTableHashCapacityOffset, 0);
   cg.movImmToMem(Rax, kTableHashBlockOffset, 0);
+  // A clone of a class instance keeps its class identity and method table.
+  cg.movFromMem(R8, Rbx, kTableClassNameOffset);
+  cg.movToMem(Rax, kTableClassNameOffset, R8);
+  cg.movFromMem(R8, Rbx, kTableMethodsOffset);
+  cg.movToMem(Rax, kTableMethodsOffset, R8);
   cg.movFromMem(Rdi, Rbp, -40);
   cg.imulImm32(Rdi, Rdi, static_cast<std::int32_t>(kMapEntrySize));
   cg.callLabel(env.alloc);
@@ -7251,6 +7277,27 @@ void emitMapMemberGet(CodeGen& cg, const CollectionEnv& env, CodeGen::Label memb
   CodeGen::Label b9 = cg.newLabel();
   CodeGen::Label len = cg.newLabel();
   CodeGen::Label fail = cg.newLabel();
+
+  // A class instance may have a user method under this name. The method table
+  // is checked before the built-in map members, so a method named `length`
+  // wins over the map length, exactly like the hosted `ops::memberGet`.
+  CodeGen::Label noMethods = cg.newLabel();
+  CodeGen::Label methodFound = cg.newLabel();
+  cg.movFromMem(Rdi, R12, kTableMethodsOffset);
+  cg.testReg(Rdi);
+  cg.jcc(Jcc::Eq, noMethods);
+  cg.movFromMem(Rsi, Rbp, -24);
+  cg.callLabel(env.mapFind);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Lt, noMethods);
+  cg.imulImm32(Rax, Rax, static_cast<std::int32_t>(kMapEntrySize));
+  cg.movFromMem(R10, R12, kTableMethodsOffset);
+  cg.movFromMem(R10, R10, kTableBlockOffset);
+  cg.addReg(R10, Rax);
+  cg.movFromMem(Rax, R10, kMapEntryValueOffset);
+  cg.movFromMem(Rdx, R10, kMapEntryValueOffset + 8);
+  cg.jmp(memberDone);
+  cg.bind(noMethods);
 
   auto nameIs = [&](CodeGen::Label constLabel, CodeGen::Label target) {
     cg.movFromMem(Rdi, Rbp, -24);
@@ -8267,6 +8314,8 @@ void emitTableNew(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.jcc(Jcc::Eq, arrayDone);
   cg.movImmToMem(Rax, kTableHashCapacityOffset, 0);
   cg.movImmToMem(Rax, kTableHashBlockOffset, 0);
+  cg.movImmToMem(Rax, kTableClassNameOffset, 0);
+  cg.movImmToMem(Rax, kTableMethodsOffset, 0);
   cg.bind(arrayDone);
   cg.movReg(Rdx, Rax);
   cg.movImm(Rax, kTagArray);
@@ -8671,12 +8720,15 @@ void emitTableSet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
 // `obj.name = value`, valid only on a map (mirrors `ops::memberSet`).
 void emitMemberSet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   CodeGen::Label map = cg.newLabel();
+  CodeGen::Label noMethod = cg.newLabel();
+  CodeGen::Label methodStore = cg.newLabel();
   CodeGen::Label append = cg.newLabel();
   CodeGen::Label store = cg.newLabel();
   CodeGen::Label next = cg.newLabel();
   CodeGen::Label oom = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
   CodeGen::Label failField = cg.newLabel();
+  CodeGen::Label failClassField = cg.newLabel();
 
   cg.bind(label);
   prologue(cg);
@@ -8693,6 +8745,15 @@ void emitMemberSet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.jmp(failField);
 
   cg.bind(map);
+  // Reassigning a method updates the method table, not a new field.
+  cg.movFromMem(Rdi, R12, kTableMethodsOffset);
+  cg.testReg(Rdi);
+  cg.jcc(Jcc::Eq, noMethod);
+  cg.movFromMem(Rsi, Rbp, -24);
+  cg.callLabel(env.mapFind);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ge, methodStore);
+  cg.bind(noMethod);
   cg.movReg(Rdi, R12);
   cg.movFromMem(Rsi, Rbp, -24);
   cg.callLabel(env.mapFind);
@@ -8703,7 +8764,22 @@ void emitMemberSet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.addReg(R10, Rax);
   cg.addImm32(R10, static_cast<std::int32_t>(kMapEntryValueOffset));
   cg.jmp(store);
+  cg.bind(methodStore);
+  cg.imulImm32(Rax, Rax, static_cast<std::int32_t>(kMapEntrySize));
+  cg.movFromMem(R10, R12, kTableMethodsOffset);
+  cg.movFromMem(R10, R10, kTableBlockOffset);
+  cg.addReg(R10, Rax);
+  cg.addImm32(R10, static_cast<std::int32_t>(kMapEntryValueOffset));
+  cg.movFromMem(R9, Rbp, -40);
+  cg.movFromMem(R11, Rbp, -48);
+  cg.movToMem(R10, 0, R9);
+  cg.movToMem(R10, 8, R11);
+  cg.jmp(done);
   cg.bind(append);
+  // A class instance has a fixed field set; an unknown name is an error.
+  cg.movFromMem(R8, R12, kTableClassNameOffset);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Ne, failClassField);
   cg.movReg(Rdi, R12);
   cg.movFromMem(Rsi, R12, kTableLengthOffset);
   cg.addImm32(Rsi, 1);
@@ -8743,6 +8819,8 @@ void emitMemberSet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   epilogue(cg);
   cg.bind(failField);
   emitTypeQuoteFail(cg, *env.msgBadField, Rbx, R12);
+  cg.bind(failClassField);
+  emitFailCall(cg, env.fail, *env.msgNoField);
   cg.bind(oom);
   emitFailCall(cg, env.fail, *env.msgOom);
 }
@@ -9707,6 +9785,29 @@ void emitRangeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLab
 // array slices by element; a string slices by UTF-8 code point. A start or end
 // that is neither nil nor an integer, a zero step and any other operand type
 // fail, each with its own message.
+// `$setClass(obj, name, methods)`: writes the class-name `AotString` and the
+// method-table `AotMap` into the instance header. The class desugaring emits
+// exactly three arguments; a wrong count fails like every other fixed-arity
+// builtin.
+void emitSetClassBuiltin(CodeGen& cg, CodeGen::Label label,
+                         const DataBlob& msgArgc) {
+  CodeGen::Label argcOk = cg.newLabel();
+  cg.bind(label);
+  prologue(cg);
+  cg.cmpImm32(Rsi, 3);
+  cg.jcc(Jcc::Eq, argcOk);
+  emitArityFailCall(cg, msgArgc);
+  cg.bind(argcOk);
+  cg.movFromMem(R8, Rdi, 8);        // args[0] payload: the instance map
+  cg.movFromMem(R9, Rdi, -8);       // args[1] payload: the class name
+  cg.movFromMem(R10, Rdi, -24);     // args[2] payload: the method map
+  cg.movToMem(R8, kTableClassNameOffset, R9);
+  cg.movToMem(R8, kTableMethodsOffset, R10);
+  cg.xorReg(Rax, Rax);
+  cg.xorReg(Rdx, Rdx);
+  epilogue(cg);
+}
+
 void emitSliceBuiltin(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
                       const DataBlob& msgSliceStart, const DataBlob& msgSliceEnd,
                       const DataBlob& msgSliceStepType, const DataBlob& msgSliceStep,
@@ -10173,6 +10274,7 @@ void emitTypeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
   CodeGen::Label asStr = cg.newLabel();
   CodeGen::Label asArray = cg.newLabel();
   CodeGen::Label asMap = cg.newLabel();
+  CodeGen::Label asMapPlain = cg.newLabel();
   CodeGen::Label asFunc = cg.newLabel();
   CodeGen::Label asRange = cg.newLabel();
   CodeGen::Label asError = cg.newLabel();
@@ -10245,7 +10347,20 @@ void emitTypeBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabe
   OSKEL_TYPE_CASE(asDouble, tDouble)
   OSKEL_TYPE_CASE(asStr, tStr)
   OSKEL_TYPE_CASE(asArray, tArray)
-  OSKEL_TYPE_CASE(asMap, tMap)
+  // A class instance reports its class name; a plain map reports "map".
+  cg.bind(asMap);
+  cg.movFromMem(Rax, Rdi, 8);   // the map payload
+  cg.movFromMem(Rax, Rax, kTableClassNameOffset);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, asMapPlain);
+  cg.movFromMem(R12, Rax, 0);   // the class-name length
+  cg.movReg(R8, Rax);
+  cg.addImm32(R8, static_cast<std::int32_t>(kStringDataOffset));
+  cg.jmp(buildConst);
+  cg.bind(asMapPlain);
+  cg.leaRipLabel(R8, tMap.label);
+  cg.movImm(R12, static_cast<std::int64_t>(tMap.text.size()));
+  cg.jmp(buildConst);
   OSKEL_TYPE_CASE(asFunc, tFunc)
   OSKEL_TYPE_CASE(asRange, tRange)
   OSKEL_TYPE_CASE(asError, tError)
@@ -13454,6 +13569,7 @@ void emitReprInto(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbAppend,
                   const DataBlob& textComma, const DataBlob& textColon,
                   const DataBlob& textOpenBracket, const DataBlob& textCloseBracket,
                   const DataBlob& textOpenBrace, const DataBlob& textCloseBrace,
+                  const DataBlob& textClassOpen, const DataBlob& textClassClose,
                   const DataBlob& textEllipsis, const DataBlob& textError,
                   const DataBlob& textCloseParen, const DataBlob& textPtr) {
   CodeGen::Label asInt = cg.newLabel();
@@ -13485,6 +13601,10 @@ void emitReprInto(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbAppend,
   CodeGen::Label mapLoop = cg.newLabel();
   CodeGen::Label mapBody = cg.newLabel();
   CodeGen::Label mapEnd = cg.newLabel();
+  CodeGen::Label mapPlainOpen = cg.newLabel();
+  CodeGen::Label mapOpenDone = cg.newLabel();
+  CodeGen::Label mapPlainClose = cg.newLabel();
+  CodeGen::Label mapCloseDone = cg.newLabel();
   CodeGen::Label tooDeep = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
   CodeGen::Label intPos = cg.newLabel();
@@ -13697,11 +13817,27 @@ void emitReprInto(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbAppend,
   cg.jmp(done);
 
   cg.bind(asMap);
+  cg.movFromMem(R12, Rbp, -40);        // map header
+  cg.movFromMem(R8, R12, kTableClassNameOffset);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Eq, mapPlainOpen);
+  // `Persona { "name": "Ana" }`: the class name replaces the bare `{`.
+  cg.movReg(Rdi, Rbx);
+  cg.movReg(Rsi, R8);
+  cg.addImm32(Rsi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.movFromMem(Rdx, R8, 0);
+  cg.callLabel(sbAppend);
+  cg.movReg(Rdi, Rbx);
+  cg.leaRipLabel(Rsi, textClassOpen.label);
+  cg.movImm(Rdx, static_cast<std::int64_t>(textClassOpen.text.size()));
+  cg.callLabel(sbAppend);
+  cg.jmp(mapOpenDone);
+  cg.bind(mapPlainOpen);
   cg.movReg(Rdi, Rbx);
   cg.leaRipLabel(Rsi, textOpenBrace.label);
   cg.movImm(Rdx, static_cast<std::int64_t>(textOpenBrace.text.size()));
   cg.callLabel(sbAppend);
-  cg.movFromMem(R12, Rbp, -40);        // map header
+  cg.bind(mapOpenDone);
   cg.movImmToMem(Rbp, -48, 0);         // index
   cg.bind(mapLoop);
   cg.movFromMem(R8, Rbp, -48);
@@ -13741,10 +13877,20 @@ void emitReprInto(CodeGen& cg, CodeGen::Label label, CodeGen::Label sbAppend,
   cg.movToMem(Rbp, -48, R8);
   cg.jmp(mapLoop);
   cg.bind(mapEnd);
+  cg.movFromMem(R8, R12, kTableClassNameOffset);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Eq, mapPlainClose);
+  cg.movReg(Rdi, Rbx);
+  cg.leaRipLabel(Rsi, textClassClose.label);
+  cg.movImm(Rdx, static_cast<std::int64_t>(textClassClose.text.size()));
+  cg.callLabel(sbAppend);
+  cg.jmp(mapCloseDone);
+  cg.bind(mapPlainClose);
   cg.movReg(Rdi, Rbx);
   cg.leaRipLabel(Rsi, textCloseBrace.label);
   cg.movImm(Rdx, static_cast<std::int64_t>(textCloseBrace.text.size()));
   cg.callLabel(sbAppend);
+  cg.bind(mapCloseDone);
   cg.jmp(done);
 
   cg.bind(asRange);
@@ -17818,6 +17964,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgRangeIntType = addText("range membership requires an integer");
   DataBlob msgBadAssign = addText("cannot assign to an index of a value of type");
   DataBlob msgBadField = addText("cannot set a field on a value of type");
+  DataBlob msgNoField = addText("class instance has no such field");
   DataBlob msgBadIn = addText("operator 'in' is not supported for");
   DataBlob msgMapMembershipKey = addText("map membership requires a string key");
   DataBlob msgStringMembershipOperand = addText("string membership requires a string operand");
@@ -17839,6 +17986,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob textOpenBracket = addText("[");
   DataBlob textCloseBracket = addText("]");
   DataBlob textOpenBrace = addText("{");
+  DataBlob textClassOpen = addText(" { ");
+  DataBlob textClassClose = addText(" }");
   DataBlob textCloseBrace = addText("}");
   DataBlob textEllipsis = addText("...");
   DataBlob msgRangeBounds = addText("range bounds must be integers");
@@ -17847,6 +17996,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   DataBlob msgSliceStepType = addText("slice step must be an integer");
   DataBlob msgSliceStep = addText("slice step must not be zero");
   DataBlob msgSliceType = addText("cannot slice a value of type");
+  DataBlob msgSetClassArgc = addText("$setClass() expects 3 arguments");
   DataBlob textQuote = addText("\"");
   DataBlob textEscQuote = addText("\\\"");
   DataBlob textEscBackslash = addText("\\\\");
@@ -18460,6 +18610,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   env.msgImmutable = &msgImmutable;
   env.msgBadAssign = &msgBadAssign;
   env.msgBadField = &msgBadField;
+  env.msgNoField = &msgNoField;
   env.msgBadIn = &msgBadIn;
   env.msgMapMembershipKey = &msgMapMembershipKey;
   env.msgStringMembershipOperand = &msgStringMembershipOperand;
@@ -18701,7 +18852,8 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitReprInto(cg, reprInto, sbAppend, sbAppendEscaped, sbAppendEscapedBytes,
                dtoaHandles.formatDouble, textTrue, textFalse, textNil, textFunc,
                textComma, textColon, textOpenBracket, textCloseBracket, textOpenBrace,
-               textCloseBrace, textEllipsis, textError, textCloseParen, textPtr);
+               textCloseBrace, textClassOpen, textClassClose, textEllipsis, textError,
+               textCloseParen, textPtr);
   emitReprToString(cg, reprToString, sbNew, reprInto, handles.alloc, fail, msgOom);
   emitPrintRepr(cg, printRepr, entry.write, sbInit, reprInto);
   emitPrintValue(cg, handles.printValue, entry.write, fail, writeInt,
@@ -18758,6 +18910,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
                    msgRangeBounds);
   emitSliceBuiltin(cg, handles.sliceBuiltin, env, msgSliceStart, msgSliceEnd,
                    msgSliceStepType, msgSliceStep, msgSliceType);
+  emitSetClassBuiltin(cg, handles.setClassBuiltin, msgSetClassArgc);
   // The pointer/file/clock/argument builtins (BACKLOG §6 item 25). `strNew`,
   // `ptrNew` and `ptrTextLen` are the shared leaves; the builtins below are
   // emitted unconditionally for the pointer ones (every target can back them)

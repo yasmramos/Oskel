@@ -143,6 +143,33 @@ class Parser {
   // not share a name, and the two sets are checked against each other in both
   // declaration orders.
   std::unordered_set<std::string> declaredClasses_;
+  // An `interface`/`trait` declaration (PHASE 12.1). Methods are name plus
+  // arity; a class that says `implements` must provide each of them.
+  struct InterfaceMethodInfo {
+    std::string name;
+    std::size_t arity = 0;
+    bool variadic = false;
+    int line = 1;
+    int col = 1;
+  };
+  struct InterfaceInfo {
+    std::string name;
+    std::unordered_map<std::string, InterfaceMethodInfo> methods;
+    int line = 1;
+    int col = 1;
+  };
+  std::unordered_map<std::string, InterfaceInfo> interfaces_;
+  // A class and the interfaces it claims, validated after the whole module is
+  // parsed so an interface may be declared after the class that implements it.
+  struct PendingImplementation {
+    std::string className;
+    std::vector<std::string> interfaceNames;
+    std::unordered_map<std::string, InterfaceMethodInfo> methods;
+    int line = 1;
+    int col = 1;
+  };
+  std::vector<PendingImplementation> pendingImplementations_;
+  void validateInterfaces() const;
   // Names of the `class` types visible as type annotations. Pre-scanned in
   // `parseProgram` (like `structNames_`) so an annotation written before the
   // declaration is accepted, and seeded by the REPL across entries.
@@ -280,6 +307,9 @@ class Parser {
   // top-level constructor function, so no AST node, opcode, compiler or VM
   // change is involved (see the definition).
   StmtPtr parseClassDecl();
+  // `interface Name { fn method(params): ret; ... }` (PHASE 12.1). A bodyless
+  // contract; `trait` is accepted as an alias. Emits no bytecode.
+  StmtPtr parseInterfaceDecl();
   // Body that follows a `=>`: a `{ ... }` block, or a single expression that
   // is desugared into a block holding one `return`. `arrow` is the `=>` token.
   StmtPtr parseFunctionBody(const Token& arrow);

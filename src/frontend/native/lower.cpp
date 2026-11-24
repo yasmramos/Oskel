@@ -1426,6 +1426,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
       {"$str", rt.strBuiltin},
       {"$range", rt.rangeBuiltin},
       {"$slice", rt.sliceBuiltin},
+      {"$setClass", rt.setClassBuiltin},
       // The public standard-library builtins (PHASE 7c.5a). Seeded the same way,
       // so `len(x)` and `print(x)` are both ordinary calls. `str` and `isError`
       // reuse the `$str` and `$isError` code; a user binding of any of these

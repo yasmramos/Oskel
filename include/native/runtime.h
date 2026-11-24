@@ -159,6 +159,9 @@ struct AotRuntimeHandles {
   // `$slice` (`obj[start:end:step]`): slices a string by UTF-8 character or an
   // array by element, following Python's bounds rule.
   CodeGen::Label sliceBuiltin;     // AotValue oskel_builtin_slice(AotValue* args, long argc, AotClosure* self)
+  // `$setClass(obj, name, methods)`: attaches the class identity and method
+  // table to an instance map (PHASE 12).
+  CodeGen::Label setClassBuiltin;  // AotValue oskel_builtin_set_class(AotValue* args, long argc, AotClosure* self)
   // The public standard-library builtins (PHASE 7c.5a). They use the proto
   // convention too and are seeded into their global slots like `print`, so a
   // call reaches them through the ordinary `oskel_call` path. Each is a pure

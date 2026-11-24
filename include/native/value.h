@@ -128,9 +128,17 @@ struct AotMap {
   std::uint64_t entries;      // address of the entries block
   std::uint64_t hashCapacity; // slots in the index, a power of two, or 0
   std::uint64_t hashTable;    // address of the index slots
+  // Class identity (PHASE 12): the class-name `AotString` address, or 0 for a
+  // plain map, and the method table (a map from method name to closure), or 0.
+  // Methods live outside `entries`, so iteration, `len` and printing see
+  // fields only.
+  std::uint64_t className;
+  std::uint64_t methods;
 };
 
-constexpr std::size_t kAotMapHeaderSize = 5 * sizeof(std::uint64_t);
+constexpr std::size_t kAotMapHeaderSize = 7 * sizeof(std::uint64_t);
+constexpr std::size_t kAotMapClassNameOffset = 5 * sizeof(std::uint64_t);
+constexpr std::size_t kAotMapMethodsOffset = 6 * sizeof(std::uint64_t);
 
 // On-image layout of a range (PHASE 7c.4c): two int64 bounds and an inclusive
 // flag. A `Range` payload points at the header. `for-in` walks from `start`
