@@ -1,4 +1,4 @@
-https://deepwiki.com/badge-maker?url=https%3A%2F%2Fdeepwiki.com%2Fyasmramos%2FOskel
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/yasmramos/Oskel)
 
 # Oskel Programming Language 
 
