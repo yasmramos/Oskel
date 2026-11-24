@@ -1,0 +1,34 @@
+// PHASE 12.2: an interface is a compile-time export, so a selective import
+// makes it a valid `implements` target without binding a runtime value.
+//
+// The module also exports a class that implements the same interfaces, and a
+// second module implements an interface it imported itself.
+
+import { Shape, Named, ModuleCircle, makeModuleCircle } from modules.interface_geom;
+import { NestedSquare } from modules.interface_nested;
+
+class Circle implements Shape, Named {
+  r: double;
+  fn init(r: double) { self.r = r; }
+  fn area(): double { return 3.0 * self.r * self.r; }
+  fn name(): string { return "circle"; }
+}
+
+let local = Circle(2.0);
+assertEq(local.area(), 12.0);
+assertEq(local.name(), "circle");
+
+let fromModule = ModuleCircle(3.0);
+assertEq(fromModule.area(), 27.0);
+assertEq(fromModule.name(), "module-circle");
+assertEq(makeModuleCircle(1.0).area(), 3.0);
+
+let nested = NestedSquare(4.0);
+assertEq(nested.area(), 16.0);
+assertEq(nested.name(), "nested-square");
+
+// Polymorphism stays dynamic: one array holds classes from both modules.
+let all = [local, fromModule, nested];
+assertEq(all[0].area(), 12.0);
+assertEq(all[1].area(), 27.0);
+assertEq(all[2].area(), 16.0);

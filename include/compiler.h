@@ -179,6 +179,15 @@ class Compiler {
   using ImportLoader = std::function<StmtPtr(const std::string& path, int line, int col)>;
   void setImportLoader(ImportLoader loader) { importLoader_ = std::move(loader); }
 
+  // Makes a module's compile-time interfaces visible to `compileImport`
+  // (PHASE 12.2). A selective import may name an interface: it is a valid
+  // export but has no runtime table entry, so the compiler validates it and
+  // emits no binding for it. The CLI wires this to the same cached scanner the
+  // parser uses.
+  void setInterfaceScanner(Parser::InterfaceScanner scanner) {
+    interfaceScanner_ = std::move(scanner);
+  }
+
   // The ABI capabilities `extern "C"` declarations are validated against. The
   // default is this build's, which is what the interpreter marshals; the AOT
   // path sets `ffi::kAotAbiCapabilities` because the backend emits its own
@@ -933,6 +942,7 @@ class Compiler {
   void predeclareModuleImports(const BlockStmt& block);
 
   ImportLoader importLoader_;
+  Parser::InterfaceScanner interfaceScanner_;
   // The ABI `extern "C"` declarations are validated against; see
   // `setAbiCapabilities`. Defaults to this build's, which is what the
   // interpreter marshals.

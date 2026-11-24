@@ -1,0 +1,20 @@
+// PHASE 12.2: a qualified import exposes an interface as `alias.Interface`,
+// the same shape as a qualified enum. The interface still has no runtime table
+// entry; only `implements` sees it.
+
+import modules.interface_geom as geom;
+
+class Triangle implements geom.Shape, geom.Named {
+  base: double;
+  height: double;
+  fn init(base: double, height: double) {
+    self.base = base;
+    self.height = height;
+  }
+  fn area(): double { return 0.5 * self.base * self.height; }
+  fn name(): string { return "triangle"; }
+}
+
+let triangle = Triangle(4.0, 3.0);
+assertEq(triangle.area(), 6.0);
+assertEq(triangle.name(), "triangle");

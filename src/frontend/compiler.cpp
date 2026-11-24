@@ -2096,15 +2096,28 @@ void Compiler::compileImport(const ImportStmt& import, int line, int col) {
     names = module.symbols;
   } else {
     names = import.names;
-    // Validate that every selected name is actually exported. An enum is a
-    // compile-time export too, even though it has no table entry.
+    // An interface is a compile-time export too, but it has no table entry:
+    // the parser already made its name visible and the compiler must not emit
+    // a binding for it.
+    std::unordered_set<std::string> interfaces;
+    if (interfaceScanner_) {
+      for (const auto& entry : interfaceScanner_(import.module)) {
+        interfaces.insert(entry.first);
+      }
+    }
     for (const std::string& name : names) {
       const bool isValue = std::find(module.symbols.begin(), module.symbols.end(), name) !=
                            module.symbols.end();
-      if (!isValue && module.enums.find(name) == module.enums.end()) {
+      if (!isValue && module.enums.find(name) == module.enums.end() &&
+          interfaces.find(name) == interfaces.end()) {
         fail("module '" + import.module + "' has no export named '" + name + "'", line, col);
       }
     }
+    names.erase(std::remove_if(names.begin(), names.end(),
+                               [&](const std::string& name) {
+                                 return interfaces.find(name) != interfaces.end();
+                               }),
+                names.end());
   }
   compileNameImport(module, names, line, col);
 }

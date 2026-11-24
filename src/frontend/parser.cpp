@@ -163,6 +163,12 @@ StmtPtr Parser::parseProgram() {
     if (declaresType(i, Tok::Enum)) {
       enumNames_.insert(tokens_[i + 1].lexeme);
     }
+    // An interface is a type annotation too, and a class may implement one
+    // declared later in the file. The contract itself is validated at the end
+    // of the parse, but the name must be accepted as a type from the start.
+    if (declaresType(i, Tok::Interface) || declaresType(i, Tok::Trait)) {
+      classNames_.insert(tokens_[i + 1].lexeme);
+    }
   }
   // Imported enums are visible to the whole module too (PHASE 6.9 across
   // modules), so they are seeded before the first statement is parsed. The
@@ -187,7 +193,7 @@ StmtPtr Parser::parseProgram() {
 }
 
 void Parser::prescanImportedEnums() {
-  if (!enumScanner_) return;
+  if (!enumScanner_ && !interfaceScanner_) return;
   // Imports are top-level only, so the scan ignores everything inside braces.
   // It reads the import grammar from the token vector instead of consuming the
   // main parser state: the statements are parsed afterwards, in source order.
@@ -228,7 +234,10 @@ void Parser::prescanImportedEnums() {
             j += 2;
           }
         }
-        if (!path.empty()) seedImportedEnums(path, names, "", false);
+        if (!path.empty()) {
+          seedImportedEnums(path, names, "", false);
+          seedImportedInterfaces(path, names, "", false);
+        }
       }
       i = j;
       continue;
@@ -247,6 +256,7 @@ void Parser::prescanImportedEnums() {
     if (j + 1 < tokens_.size() && tokens_[j].type == Tok::Dot &&
         tokens_[j + 1].type == Tok::Star) {
       seedImportedEnums(path, {}, "", true);
+      seedImportedInterfaces(path, {}, "", true);
       i = j + 1;
       continue;
     }
@@ -258,8 +268,10 @@ void Parser::prescanImportedEnums() {
     }
     if (!alias.empty()) {
       seedImportedEnums(path, {}, alias, false);
+      seedImportedInterfaces(path, {}, alias, false);
     } else {
       seedImportedEnums(path, {}, path, false);
+      seedImportedInterfaces(path, {}, path, false);
       // `import a.b;` also binds the short name `b` (the compiler does the
       // same), so `b.Enum.MEMBER` is valid as well as `a.b.Enum.MEMBER`.
       const size_t dot = path.rfind('.');
@@ -267,6 +279,7 @@ void Parser::prescanImportedEnums() {
         const std::string shortName = path.substr(dot + 1);
         if (shortName != path.substr(0, path.find('.'))) {
           seedImportedEnums(path, {}, shortName, false);
+          seedImportedInterfaces(path, {}, shortName, false);
         }
       }
     }
@@ -300,6 +313,37 @@ void Parser::seedImportedEnums(const std::string& module,
       if (entry.first.empty() || entry.first[0] == '_') continue;
       seedEnum(alias + "." + entry.first, entry.second, false);
     }
+  }
+}
+
+void Parser::seedImportedInterfaces(const std::string& module,
+                                    const std::vector<std::string>& selected,
+                                    const std::string& alias, bool wildcard) {
+  if (!interfaceScanner_) return;
+  const auto interfaces = interfaceScanner_(module);
+  if (interfaces.empty()) return;
+  auto seed = [&](const std::string& visibleName, const InterfaceInfo& info) {
+    if (visibleName.empty() || visibleName[0] == '_') return;
+    // A declaration in this file owns the name, and the first import that
+    // binds a name owns it too, like `seedEnum`.
+    if (declaredInterfaceNames_.count(visibleName) != 0) return;
+    if (interfaces_.count(visibleName) != 0) return;
+    interfaces_[visibleName] = info;
+    if (visibleName.find('.') == std::string::npos) classNames_.insert(visibleName);
+  };
+  if (!selected.empty()) {
+    for (const std::string& name : selected) {
+      auto found = interfaces.find(name);
+      if (found != interfaces.end()) seed(name, found->second);
+    }
+    return;
+  }
+  if (wildcard) {
+    for (const auto& entry : interfaces) seed(entry.first, entry.second);
+    return;
+  }
+  if (!alias.empty()) {
+    for (const auto& entry : interfaces) seed(alias + "." + entry.first, entry.second);
   }
 }
 
@@ -1436,7 +1480,7 @@ StmtPtr Parser::parseInterfaceDecl() {
                        keyword.line, keyword.col};
   }
   const Token& name = consume(Tok::Ident, "expected an interface name");
-  if (interfaces_.count(name.lexeme) != 0) {
+  if (declaredInterfaceNames_.count(name.lexeme) != 0) {
     throw CompileError{"interface '" + name.lexeme + "' is already declared", name.line,
                        name.col};
   }
@@ -1477,6 +1521,7 @@ StmtPtr Parser::parseInterfaceDecl() {
   consume(Tok::RBrace, "expected '}' to close the interface body");
   match(Tok::Semicolon);
   interfaces_[name.lexeme] = std::move(info);
+  declaredInterfaceNames_.insert(name.lexeme);
   // An interface is a valid type annotation, like a class name.
   classNames_.insert(name.lexeme);
   // The declaration is compile-time metadata only.
@@ -1534,15 +1579,23 @@ StmtPtr Parser::parseClassDecl() {
     throw CompileError{"'" + name.lexeme + "' is already declared as a struct", name.line,
                        name.col};
   }
-  if (interfaces_.count(name.lexeme) != 0) {
+  if (declaredInterfaceNames_.count(name.lexeme) != 0) {
     throw CompileError{"'" + name.lexeme + "' is already declared as an interface", name.line,
                        name.col};
   }
   std::vector<std::string> implementedInterfaces;
   if (match(Tok::Implements)) {
     do {
-      const Token& interfaceName = consume(Tok::Ident, "expected an interface name");
-      implementedInterfaces.push_back(interfaceName.lexeme);
+      const Token& first = consume(Tok::Ident, "expected an interface name");
+      std::string interfaceName = first.lexeme;
+      // A qualified import binds `alias.Interface` (PHASE 12.2); the parser
+      // seeds exactly that key, so the dotted spelling is the lookup name.
+      while (match(Tok::Dot)) {
+        const Token& part = consume(Tok::Ident, "expected an interface name after '.'");
+        interfaceName += ".";
+        interfaceName += part.lexeme;
+      }
+      implementedInterfaces.push_back(std::move(interfaceName));
     } while (match(Tok::Comma));
   }
   consume(Tok::LBrace, "expected '{' to start the class body");

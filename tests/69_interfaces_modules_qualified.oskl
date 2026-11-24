@@ -1,0 +1,18 @@
+// PHASE 12.2: a plain qualified import binds the module namespace under its
+// full path and its short leaf, so either dotted spelling reaches an interface.
+
+import modules.interface_geom;
+
+class Hexagon implements modules.interface_geom.Shape {
+  side: double;
+  fn init(side: double) { self.side = side; }
+  fn area(): double { return 2.598076211353316 * self.side * self.side; }
+  fn name(): string { return "hexagon"; }
+}
+
+class HexagonAlias implements interface_geom.Named {
+  fn name(): string { return "hexagon-alias"; }
+}
+
+assertEq(Hexagon(2.0).name(), "hexagon");
+assertEq(HexagonAlias().name(), "hexagon-alias");
