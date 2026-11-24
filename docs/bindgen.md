@@ -26,8 +26,8 @@ default, this build's capabilities), `system-v` (x86-64 Linux and macOS),
 `win64` (Windows), `aapcs64` (arm64) or `wasm`. `--target llp64` implies
 `win64`, because that data model is Windows; pass `--abi` explicitly to
 override it. A shape the destination cannot marshal is written commented out,
-so a module generated on Linux for Windows never emits a struct-by-value or a
-callback that Windows rejects.
+so a module generated on Linux for Windows never emits a callback that Windows
+rejects; a struct by value is emitted, because Win64 carries it.
 
 `-h`/`--help` and `-v`/`--version` are also available. Exit codes follow the
 toolchain convention: `64` for a usage error, `66` for an unreadable input or an

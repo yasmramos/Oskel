@@ -680,8 +680,8 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     defines no TLS variables, so the PE exception and TLS directories stay
     zero. Emitting unwind data is future container work. The macOS own linker
     (PHASE 10.3d) closes a hosted `MH_OBJECT` into a non-PIE `MH_EXECUTE` with
-    libSystem imports; a data import, the `-r` Mach-O link, the ad-hoc
-    signature and ARM64 remain for the rest of 10.3d.
+    libSystem imports, and `-r` combines Mach-O objects into a new `MH_OBJECT`;
+    a data import, the ad-hoc signature and ARM64 remain for the rest of 10.3d.
 
 31. **[P0] [done]** VM/AOT divergence in reading a global before it is assigned:
     the VM fails with `runtime error: undefined variable '<name>'` and exit 70,
@@ -741,8 +741,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 2. ~~**[P1]** `extern "C"` does not support structs larger than 16 bytes by value
    (System V passes them via a hidden pointer / `sret`).~~ **Done**: a struct
    larger than 16 bytes (class MEMORY) is passed on the stack and returned through
-   the hidden `sret` pointer via the descriptor stub (`kMemoryStructsSupported`).
-   Off System V x86-64 the declaration is rejected at compile time. See
+   the hidden `sret` pointer via the descriptor stub on System V
+   (`kMemoryStructsSupported`); Microsoft x64 uses its own by-reference rule for
+   any aggregate that is not 1/2/4/8 bytes. A non-x86-64 host rejects the
+   declaration at compile time. See
    `vm_test.cpp::testExternMarshalsMemoryStruct*` and `docs/language.md` §4.6.
 3. ~~**[P1]** `extern "C"` does not support callbacks returning structs (scalars
    only).~~ **Done**: a callback may return a struct by value. The compiler
@@ -829,9 +831,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     the freestanding image is self-contained by construction and a general
     `extern "C"` call is what breaks that. The full 7f surface (structs by
     value and callbacks) is implemented on the System V targets (Linux and
-    macOS); Windows supports the scalar, `cstring` and `ptr` classes and a C
-    variadic, and rejects the aggregate and callback shapes with a dedicated
-    message. A C variadic follows the target's allocation rule: independent
+    macOS); Windows supports the scalar, `cstring`, `ptr` and struct-by-value
+    classes and a C variadic, and rejects only the callback shape with a
+    dedicated message. A C variadic follows the target's allocation rule:
+    independent
     GPR/SSE counters on System V, argument positions on Win64 (including the
     integer duplicate of a floating value). Documented in `docs/language.md`
     §4.5 and §16.
