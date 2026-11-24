@@ -1,3 +1,5 @@
+https://deepwiki.com/badge-maker?url=https%3A%2F%2Fdeepwiki.com%2Fyasmramos%2FOskel
+
 # Oskel Programming Language 
 
 **Oskel** is a dynamic, general-purpose programming language implemented from scratch in **C++17**. The project includes the lexer, the parser, the AST, the bytecode compiler, the register-based virtual machine and the standard library, with no external dependencies beyond the C++ standard library.
