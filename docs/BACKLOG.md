@@ -184,9 +184,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 1. **[P1]** The JIT compiles only `nil`/`bool`/`int`: no floats, strings,
    containers, `CALL`, `GETGLOBAL`/`SETGLOBAL`. It accelerates very little.
-2. **[P1]** `Jit::get` caches failures (a null function) with no size cap; the
-   cache grows unbounded in a long REPL. Add an LRU or a cap.
-3. **[P1] [done]** `JitFunction::call` does not validate
+2. **[P1] [done]** `Jit::get` cached failures (a null function) with no size
+   cap, so a long REPL session held every entry's `Bytecode` and executable
+   mapping alive forever. The cache is now bounded at `Jit::kMaxEntries` (256)
+   and evicts the oldest entry, mapping included; a proto that comes back is
+   simply recompiled. A miss is still cached, so a proto outside the subset is
+   analyzed once. Pinned by the bounded-cache case in `tests/jit_test.cpp` (it
+   fails without the eviction loop).
+3. **[P1] [done]** `JitFunction::call` did not validate
    `args.size() == numParams`; `jitFor` checks first, but a direct `call` did
    not, so a shorter vector was an out-of-bounds read (an empty one crashed).
    **Done**: `call` throws `std::logic_error` on a count mismatch

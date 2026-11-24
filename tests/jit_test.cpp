@@ -412,6 +412,41 @@ int main() {
     }
   }
 
+  // --- The cache is bounded and evicts the oldest entry ----------------------
+  {
+    Jit jit;
+    // Fill past the cap with distinct protos. A REPL entry creates a fresh
+    // `Bytecode`, so distinct protos are the real workload; the cache must not
+    // grow with the session (BACKLOG §5 item 2).
+    std::vector<std::shared_ptr<const Bytecode>> protos;
+    for (std::size_t i = 0; i < Jit::kMaxEntries + 10; ++i) {
+      const std::string source = "fn f" + std::to_string(i) + "(a) { return a + " +
+                                 std::to_string(i) + "; }\n";
+      Bytecode bc = compileSource(source);
+      protos.push_back(findProto(bc, "f" + std::to_string(i)));
+      jit.get(protos.back());
+    }
+    check(jit.size() <= Jit::kMaxEntries, "the cache never exceeds its cap");
+    check(jit.size() == Jit::kMaxEntries, "the cache fills up to the cap");
+
+    // The oldest protos were dropped and the newest are still cached. A dropped
+    // proto is recompiled on demand, so the second `get` must compile again.
+    std::shared_ptr<const Bytecode> oldest = protos.front();
+    std::shared_ptr<const Bytecode> newest = protos.back();
+    const std::size_t before = jit.size();
+    JitFunction* newestAgain = jit.get(newest);
+    check(jit.size() == before, "a cached proto is a hit, not a new entry");
+    check(newestAgain != nullptr, "the newest proto is still cached");
+    JitFunction* oldestAgain = jit.get(oldest);
+    check(oldestAgain != nullptr, "an evicted proto recompiles on demand");
+    check(jit.size() <= Jit::kMaxEntries, "recompiling an evicted proto keeps the cap");
+
+    // `clear` empties both the map and the insertion order.
+    jit.clear();
+    check(jit.size() == 0, "clear drops every entry");
+    check(jit.compiledCount() == 0, "no compiled function survives clear");
+  }
+
   // --- The VM with the JIT enabled must agree with the VM without it ---------
   {
     const std::string program =

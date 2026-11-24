@@ -2184,5 +2184,17 @@ JitFunction* Jit::get(const std::shared_ptr<const Bytecode>& proto) {
   // Cache even a failed compilation (nullptr function) so a proto outside the
   // subset is analyzed once, not on every call.
   functions_.emplace(key, std::move(entry));
+  order_.push_back(key);
+  // Bound the cache. A REPL entry leaves its proto unreferenced, so without a
+  // cap every entry of a long session keeps one `Bytecode` and one executable
+  // mapping alive. The oldest entry goes first; `result` is the one just
+  // inserted, so it is never the evicted key.
+  while (functions_.size() > kMaxEntries && !order_.empty()) {
+    const Bytecode* oldest = order_.front();
+    order_.pop_front();
+    // A key can repeat in `order_` only if it was evicted and recompiled; the
+    // stale entry is already gone, so erasing it again is a no-op.
+    functions_.erase(oldest);
+  }
   return result;
 }

@@ -153,6 +153,12 @@ may change between minor versions.
   runner accepts an optional `// expect-message:` header, so the three new
   `tests/errors/*_malformed_after_use.oskl` fixtures pin the message and not
   just the exit code.
+- **The JIT cache is bounded.** A long REPL session created a fresh `Bytecode`
+  per entry and the cache kept every one of them, plus its executable memory
+  mapping, alive for as long as the session lived. `Jit` now keeps at most
+  `kMaxEntries` (256) and evicts the oldest, mapping included; a proto that
+  comes back is recompiled. A failed compilation is still cached, so a proto
+  outside the JIT subset is analyzed once and not on every call.
 - **The macOS own linker emitted a desynchronised dyld bind stream.** The
   `LC_DYLD_INFO_ONLY` bind stream wrote `0x32` where dyld expects
   `SET_SEGMENT_AND_OFFSET_ULEB` (`0x70` with the segment index in the low
