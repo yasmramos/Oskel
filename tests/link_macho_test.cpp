@@ -197,6 +197,49 @@ void testHello() {
   check(dysymtab != 0 && read32(pe, dysymtab + 60) == 2, "two indirect symbols");
 }
 
+// A data import: a pcrel `X86_64_RELOC_SIGNED` reference (`call = false`) must
+// reach the import's non-lazy pointer in `__got`, not a stub. The instruction
+// shape is `lea rax, [rip + disp]` (0x48 0x8D 0x05 disp32), whose field-relative
+// walk is the same one the object emitter leaves zero.
+void testDataImport() {
+  // `lea rax, [rip+0]` then `ret`.
+  const std::vector<std::uint8_t> text = {0x48, 0x8D, 0x05, 0, 0, 0, 0xC3};
+  const std::vector<std::uint8_t> object = buildRelocatableObject(
+      Target::macX64(), text, {}, {{3, "stdout", false}}, {{"main", 0}});
+  LinkOptions options;
+  options.target = Target::macX64();
+  const std::vector<std::uint8_t> pe = linkHostedExecutable(
+      std::vector<LinkInput>{{"data.obj", object}}, options);
+
+  const MachSection textSection = findSection(pe, "__text");
+  const MachSection stubs = findSection(pe, "__stubs");
+  const MachSection got = findSection(pe, "__got");
+  check(got.found && got.size == 8, "a data import still gets a __got slot");
+  check(stubs.found && stubs.size == 6, "a data import still gets a __stubs entry");
+  if (!textSection.found || !got.found) return;
+
+  const std::int32_t displacement = static_cast<std::int32_t>(read32(pe, textSection.offset + 3));
+  const std::uint64_t field = textSection.addr + 3;
+  const std::uint64_t target = field + 4 + displacement;
+  check(target == got.addr, "the data reference lands on __got, not __stubs");
+
+  // `__stubs` is the first block of the indirect symbol table; the GOT pointers
+  // are the second, so `__got`'s `reserved1` is the import count, not 0. A 0
+  // there makes dyld resolve the GOT slot through the stub block, which names
+  // the same symbol but a different section.
+  check(stubs.reserved1 == 0, "__stubs starts the indirect table at index 0");
+  check(got.reserved1 == 1, "__got starts after the stub block");
+
+  // The bind still reaches __DATA with the right symbol.
+  const std::size_t dyldInfo = findCommand(pe, 0x80000022);
+  check(dyldInfo != 0, "LC_DYLD_INFO_ONLY is present");
+  if (dyldInfo != 0) {
+    const std::uint32_t bindOffset = read32(pe, dyldInfo + 16);
+    const std::uint32_t bindSize = read32(pe, dyldInfo + 20);
+    check(contains(pe, bindOffset, bindSize, "_stdout"), "the bind names _stdout");
+  }
+}
+
 void testRelocatable() {
   // `main` calls `helper`, which a second object defines, and `write`, which
   // stays undefined. `-r` merges the two objects and keeps both relocations;
@@ -243,6 +286,7 @@ void testRelocatable() {
 
 int main() {
   testHello();
+  testDataImport();
   testRelocatable();
   return failures == 0 ? 0 : 1;
 }

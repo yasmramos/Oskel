@@ -491,20 +491,28 @@ std::vector<std::uint8_t> linkMachOExecutable(
                  0, 0);
   }
   if (hasImports) {
+    // `reserved1` of a stub section is the index of its first entry in the
+    // indirect symbol table, which starts with the stub block, so it is 0.
+    // `reserved2` is the stub's stride, which dyld needs to walk the section.
     writeSection("__stubs", "__TEXT", kTextVmaddr + stubsFileOffset, stubsSize,
                  static_cast<std::uint32_t>(stubsFileOffset), 1,
                  kSectionTypeSymbolStubs | kSectionAttributesPureInstructions |
                      kSectionAttributesSomeInstructions,
-                 static_cast<std::uint32_t>(imports.size()), kStubSize);
+                 0, kStubSize);
   }
   const std::size_t dataCommand = segment("__DATA", dataVmaddr, dataFileSize,
                                           dataFileOffset, dataFileSize, 3, 3,
                                           dataSections);
   section = dataCommand + kSegmentCommandSize;
   if (hasImports) {
+    // `__got` follows `__stubs` in the indirect symbol table: the first
+    // `imports.size()` entries describe the stubs, the next block the GOT
+    // pointers. `reserved1` is the index of the section's first entry, so it is
+    // `imports.size()`, not 0 -- 0 would name the stub block.
     writeSection("__got", "__DATA", dataVmaddr, gotSize,
                  static_cast<std::uint32_t>(dataFileOffset), 3,
-                 kSectionTypeNonLazySymbolPointers, 0, 0);
+                 kSectionTypeNonLazySymbolPointers,
+                 static_cast<std::uint32_t>(imports.size()), 0);
   }
   segment("__LINKEDIT", linkeditVmaddr, linkeditVmsize, linkeditFileOffset,
           linkeditSize, 1, 1, 0);

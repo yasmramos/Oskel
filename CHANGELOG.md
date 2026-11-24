@@ -153,6 +153,13 @@ may change between minor versions.
   runner accepts an optional `// expect-message:` header, so the three new
   `tests/errors/*_malformed_after_use.oskl` fixtures pin the message and not
   just the exit code.
+- **The Mach-O linker writes the right indirect-symbol start index.** The
+  indirect symbol table holds the `__stubs` block first and the `__got`
+  pointers second, so `__stubs` starts at index 0 and `__got` at
+  `imports.size()`. The two sections had them swapped, which made dyld resolve
+  every GOT slot through the stub block: same symbol name, wrong section. A
+  data import (a pcrel `X86_64_RELOC_SIGNED` reference) is now covered by
+  `link_macho_test`, which is what exposed it.
 - **The JIT cache is bounded.** A long REPL session created a fresh `Bytecode`
   per entry and the cache kept every one of them, plus its executable memory
   mapping, alive for as long as the session lived. `Jit` now keeps at most

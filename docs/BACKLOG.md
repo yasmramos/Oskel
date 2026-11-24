@@ -738,8 +738,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     the symbol *names* (which a `memmem`-style check sees) survived.
     `link_macho_test` walks the stream opcode by opcode and asserts it ends on
     `DONE` with one `DO_BIND` per import, so the container is checked on every
-    host instead of only where a Mach-O image can run. Still open here: a data
-    import, the ad-hoc signature and ARM64.
+    host instead of only where a Mach-O image can run. A data import is covered
+    too (`testDataImport`): a pcrel `X86_64_RELOC_SIGNED` reference reaches the
+    import's non-lazy pointer in `__got`, never a stub. That case exposed a
+    swapped `reserved1` in the two `S_LAZY_SYMBOL_POINTERS`/
+    `S_NON_LAZY_SYMBOL_POINTERS` sections: the indirect symbol table holds the
+    stub block first, so `__stubs` starts at index 0 and `__got` at
+    `imports.size()`. Both were the other way round, which made dyld resolve
+    each GOT slot through the stub block (same symbol, wrong section). Still
+    open here: the ad-hoc signature and ARM64.
 
 31. **[P0] [done]** VM/AOT divergence in reading a global before it is assigned:
     the VM fails with `runtime error: undefined variable '<name>'` and exit 70,
