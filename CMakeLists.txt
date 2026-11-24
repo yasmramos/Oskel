@@ -2572,6 +2572,18 @@ if(BUILD_TESTING)
       -DEXPECTED_EXIT=0
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_oskel_case.cmake")
 
+  # `native_build_fs.oskl` is run by three tests (the VM glob, the
+  # freestanding build and the hosted build) and they all use the same relative
+  # fixture paths in the build directory. Serialize them so a parallel `ctest`
+  # cannot delete a file while another run reads it.
+  foreach(test_name oskel.native_build_fs oskel.build_binary_fs
+                    oskel.build_fs_hosted)
+    if(TEST "${test_name}")
+      set_tests_properties("${test_name}" PROPERTIES
+        RESOURCE_LOCK oskel_fs_fixture)
+    endif()
+  endforeach()
+
   # --- examples/*.oskl (auto-detected) ---
   file(GLOB oskel_examples CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/examples/*.oskl"

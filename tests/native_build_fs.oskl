@@ -11,7 +11,14 @@ import std.fs.dir;
 fn cleanDir(path: string) {
   if (std.fs.dir.exists(path)) {
     for name in std.fs.dir.listDir(path) {
-      std.fs.dir.remove(path + "/" + name);
+      let child = path + "/" + name;
+      // A failed run can leave a nested directory behind; a flat remove would
+      // fail on it and poison every later run in the same build tree.
+      if (std.fs.dir.isDir(child)) {
+        cleanDir(child);
+      } else {
+        std.fs.dir.remove(child);
+      }
     }
     std.fs.dir.removeDir(path);
   }
@@ -48,7 +55,15 @@ fn main() {
   print(std.fs.exists("oskel_native_fs_missing.txt"));
 
   let dir = "oskel_native_fs_dir_fixture";
+  // Seed the shape an interrupted earlier run leaves behind: a non-empty
+  // nested directory. `cleanDir` must remove it, not fail on it.
+  if (!std.fs.dir.exists(dir)) {
+    std.fs.dir.makeDir(dir);
+    std.fs.dir.makeDir(dir + "/stale");
+    std.fs.writeText(dir + "/stale/leftover.txt", "x");
+  }
   cleanDir(dir);
+  print(!std.fs.dir.exists(dir));
   let original = std.fs.dir.currentDir();
   std.fs.dir.makeDir(dir);
   std.fs.dir.changeDir(dir);
