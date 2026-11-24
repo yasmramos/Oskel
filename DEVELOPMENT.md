@@ -2491,7 +2491,7 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
   Input widgets (`Input`, `Checkbox`, `Slider`), real font metrics and text
   wrapping are still pending.
 
-### PHASE 12 — Interfaces and traits ✅
+### PHASE 12.1/12.2 — Interfaces and traits ✅
 
 `interface Name { fn method(params): ret; ... }` declares a compile-time
 contract; `trait` is a spelling alias. A class opts in with
@@ -2505,11 +2505,26 @@ The declaration emits no bytecode and adds no opcode: an instance is still the
 class desugaring (a map plus closures), so the VM, the AOT backend and the WASM
 backend agree by construction. Interfaces are not a runtime type: there is no
 inheritance, no default method body and no `instanceof`; polymorphism remains
-dynamic through the receiver's method table. The contract is module-local (an
-imported interface is not re-exported to a consumer's `implements` yet).
-Fixtures: `tests/69_interfaces.oskl` (VM), `tests/native_build_interfaces.oskl`
-(AOT and WASM), `tests/errors/interface_missing_method.oskl` and
-`tests/errors/interface_arity.oskl` (rejections). See `docs/language.md`
+dynamic through the receiver's method table.
+
+Imports are compile-time metadata too (PHASE 12.2). A selective or wildcard
+import makes an interface visible by its own name, and a qualified import as
+`alias.Interface`; the parser prescans the same top-level imports it already
+prescans for enums, through a cached `Parser::InterfaceScanner`. `implements`
+therefore accepts `Shape`, `geo.Shape` or `modules.geometry.Shape`. No runtime
+binding is emitted: the compiler asks the scanner whether a selective name is
+an interface and skips its `GETTABLE`/`SETTABLE`, while still accepting it as a
+valid export. A module that imports an interface may implement it locally, but
+the interface is not re-exported to that module's consumers.
+
+Fixtures: `tests/69_interfaces.oskl`,
+`tests/69_interfaces_modules.oskl`,
+`tests/69_interfaces_modules_namespace.oskl`,
+`tests/69_interfaces_modules_qualified.oskl` and
+`tests/69_interfaces_modules_wildcard.oskl` (VM),
+`tests/native_build_interfaces.oskl` (AOT and WASM, including a class that
+implements an imported interface), `tests/errors/interface_missing_method.oskl`
+and `tests/errors/interface_arity.oskl` (rejections). See `docs/language.md`
 §4.8.1.
 
 ### Post-1.0 — Other features
