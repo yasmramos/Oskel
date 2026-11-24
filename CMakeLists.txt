@@ -637,7 +637,6 @@ if(BUILD_TESTING)
       "-DBINDGEN_EXE=$<TARGET_FILE:bindgen>"
       "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
       "-DBINDGEN_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/tests/bindgen/target.h"
-      "-DOSKEL_STRUCT_BY_VALUE=${OSKEL_FFI_STRUCT_BY_VALUE}"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_bindgen_target.cmake")
 
   # The Skia bridge needs a real Skia root for the shim and the pixel test.
