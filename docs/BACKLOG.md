@@ -1260,8 +1260,13 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    chunk, binds it after the last instruction to `nil` + the frame's epilogue,
    and accepts `jump == size`. Covered by `testJumpToCodeSizeLowers` and the
    executing `testExecJumpToEnd`.
-9. **[P1]** Add `vm_test.cpp` cases for `GETUPVAL`/`SETUPVAL` with a null cell,
-   `runFrames` with `fail()` outside `call()`, and `RETURN` in the root chunk.
+9. **[P1] [done]** Add `vm_test.cpp` cases for `GETUPVAL`/`SETUPVAL` with a
+   null cell, `runFrames` with `fail()` outside `call()`, and `RETURN` in the
+   root chunk. **Done**: `testNullUpvalueIsRejected` covered the read,
+   `testFailOutsideCallLeavesVmClean` the failed run's reset and
+   `testRootReturnBehavesLikeHalt` the root `RETURN`. The write was missing:
+   `testNullUpvalueWriteIsRejected` runs a `SETUPVAL` through a null cell and
+   asserts the same "undefined upvalue: 0" (removing the guard segfaults it).
 10. **[P1]** Add `compiler_test.cpp` cases for a `Point` alias plus a
     `struct Point`, `try` inside a block with a `defer`, and `catch` with a
     fallback block that has a `defer`.

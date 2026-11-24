@@ -153,6 +153,9 @@ may change between minor versions.
   runner accepts an optional `// expect-message:` header, so the three new
   `tests/errors/*_malformed_after_use.oskl` fixtures pin the message and not
   just the exit code.
+- **A test for `SETUPVAL` through a null cell.** `GETUPVAL`, the failed run's
+  reset and a root `RETURN` were covered; the write side was not. Removing the
+  `SETUPVAL` null-cell guard segfaults the new test, so the guard is now pinned.
 - **Tests for `from` outside imports and a shared `extern "C"`.** A variable
   named `from` stays an ordinary identifier beside an `import`, and two modules
   that declare the same C symbol with the same signature bind one thunk instead
