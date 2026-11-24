@@ -137,6 +137,22 @@ may change between minor versions.
   on Windows. Bare metal has no page allocator, so its `.bss` region stays the
   ceiling and the allocator keeps reporting `out of memory` there.
 
+- **A malformed `struct`/`class`/`enum` declaration is now reported at the
+  declaration.** `parseProgram` registers type names in a prescan so a literal
+  or annotation written before the declaration still parses, but it took any
+  `struct`/`class`/`enum` followed by an identifier as a declaration without
+  checking for the `{`. A malformed declaration was therefore skipped, and a
+  *use* written before it failed instead: `let v = Point { x: 1 }; struct`
+  reported "expected ';' after variable declaration" at the use, several lines
+  away from the real problem. `rejectMalformedTypeDeclarations()` now checks
+  the `keyword Name {` shape in the same prescan pass and reports the
+  declaration itself; it looks only at brace depth 0, so a declaration inside a
+  block keeps its own "only allowed at the top level" message. A class's
+  optional `implements A, b.C` clause is skipped before the brace is expected,
+  so a valid declaration with one is not rejected by the check. The script-test
+  runner accepts an optional `// expect-message:` header, so the three new
+  `tests/errors/*_malformed_after_use.oskl` fixtures pin the message and not
+  just the exit code.
 - **The macOS own linker emitted a desynchronised dyld bind stream.** The
   `LC_DYLD_INFO_ONLY` bind stream wrote `0x32` where dyld expects
   `SET_SEGMENT_AND_OFFSET_ULEB` (`0x70` with the segment index in the low

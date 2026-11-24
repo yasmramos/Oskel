@@ -62,10 +62,19 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    binding (`tests/errors/import_from_ambiguous.oskl`, `tests/13_modules.oskl`,
    `tests/module_test.cpp`).
 5. **[P1] [done]** `parseProgram` pre-scanned `structNames_` without requiring
-   `struct` to be followed by `{`, so a malformed declaration could make
-   `Name { ... }` parse as a literal elsewhere. **Done**: the pre-scan requires
-   the `{` for `struct`, `class` and `enum`, and the declaration itself reports
-   the missing brace (`tests/errors/struct_missing_brace.oskl`).
+   `struct` to be followed by `{`, so a malformed declaration was either
+   registered (letting `Name { ... }` parse as a literal) or skipped (making a
+   *use* written before it fail instead, pointing at the wrong line). **Done**
+   in two steps that cover both orders: the pre-scan now requires the `{` for
+   `struct`, `class` and `enum`, so a malformed declaration never seeds the set
+   (`tests/errors/struct_missing_brace.oskl`), and
+   `rejectMalformedTypeDeclarations()` checks the `keyword Name {` shape of
+   every depth-0 declaration up front, so `let v = Point { x: 1 }; struct`
+   reports the declaration and not the use
+   (`tests/errors/struct_malformed_after_use.oskl`). The depth-0 filter keeps
+   the "only allowed at the top level" message for a declaration inside a
+   block. `run_oskel_case.cmake` gained an optional `// expect-message:` header
+   so a fixture pins the message and not just the exit code.
 6. **[P2]** `warn` in `foldConstant` does a linear scan of `warnings_` per
    warning (O(n²) with many overflowing consts). Use a set.
 7. **[P2]** The unary overflow warning uses `expr.line/col` while the binary

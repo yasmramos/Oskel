@@ -508,16 +508,28 @@ if(BUILD_TESTING)
   # first-line `// expect-exit: N` comment, defaulting to 0.
   function(oskel_add_script_test name script)
     set(expected 0)
-    file(STRINGS "${script}" first_line LIMIT_COUNT 1)
-    string(REGEX MATCH "expect-exit:[ \t]*([0-9]+)" declared_exit "${first_line}")
-    if(declared_exit)
-      set(expected "${CMAKE_MATCH_1}")
-    endif()
+    set(expected_message "")
+    # A fixture declares its expectations in the leading comment block, so the
+    # same script documents why it fails and the runner can check it.
+    file(STRINGS "${script}" header_lines LIMIT_COUNT 3)
+    foreach(line IN LISTS header_lines)
+      if(line MATCHES "^[ \t]*//")
+        string(REGEX MATCH "expect-exit:[ \t]*([0-9]+)" declared_exit "${line}")
+        if(declared_exit)
+          set(expected "${CMAKE_MATCH_1}")
+        endif()
+        string(REGEX MATCH "expect-message:[ \t]*(.+)$" declared_message "${line}")
+        if(declared_message)
+          set(expected_message "${CMAKE_MATCH_1}")
+        endif()
+      endif()
+    endforeach()
     add_test(NAME "${name}"
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${script}"
         "-DEXPECTED_EXIT=${expected}"
+        "-DEXPECTED_MESSAGE=${expected_message}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_oskel_case.cmake")
   endfunction()
 
