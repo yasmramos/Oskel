@@ -964,8 +964,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    ignored a nested call. **Done**: the flag still short-circuits a release
    build, and a debug build asserts `gcCollect is not reentrant` so a nested
    path is found instead of hidden.
-3. **[P1]** `GcNode::track()` does not validate that the object is not already
-   tracked (`link()` does).
+3. **[P1] [done]** `GcNode::track()` does not validate that the object is not
+   already tracked (`link()` does). **Not a bug**: `track()` is exactly the
+   guarded entry point (`if (!linked) link()`) and `link()` is private, called
+   by the constructors and by `track()`, so nothing outside `gc.cpp` can double
+   link. `tests/gc_test.cpp` now pins it: three `track()` calls leave the
+   registry one entry larger, and removing the guard aborts the test.
 4. **[P1]** `gcCollect` does not handle objects created during collection: a
    `clear` that creates an object moves `registryHead` and can invalidate the
    iterator; pins avoid it but there is no test.

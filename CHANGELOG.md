@@ -153,6 +153,9 @@ may change between minor versions.
   runner accepts an optional `// expect-message:` header, so the three new
   `tests/errors/*_malformed_after_use.oskl` fixtures pin the message and not
   just the exit code.
+- **A test for a repeated `GcNode::track()`.** `track()` is guarded and
+  `link()` is private, so the double-link hazard was unreachable; the test
+  pins the invariant (it aborts without the guard).
 - **`oskel` says when the JIT is not available.** The JIT is on by default and
   fails silent (`JitCode::assign` returns false) on any host without the
   backend, so a Windows or macOS user got an interpreter with no hint. The

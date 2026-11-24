@@ -133,6 +133,24 @@ void testFunctionAndCellCycle() {
   assert(gcTrackedCount() == base);
 }
 
+// `track()` is idempotent: an object already in the registry must not be linked
+// a second time. A second link would splice the doubly linked list onto
+// itself (the node would point at itself, `prev`/`next` corrupting the
+// neighbours), and `trackedCount` would count it twice -- the collector would
+// then free an object that is still reachable. Only `link()` lacks the guard;
+// `track()` has it, and this pins it (BACKLOG §8 item 3).
+void testTrackIsIdempotent() {
+  const std::size_t base = settledCount();
+  {
+    ArrayPtr array = makeArray();
+    array->track();
+    array->track();
+    array->track();
+    assert(gcTrackedCount() == base + 1);
+  }
+  assert(gcTrackedCount() == base);
+}
+
 void testCellStaysAliveThroughAClosure() {
   const std::size_t base = settledCount();
   FuncPtr escaped;
@@ -227,6 +245,7 @@ void testCollectionRunsAutomaticallyAfterEnoughAllocations() {
 
 int main() {
   testSelfReferencingArray();
+  testTrackIsIdempotent();
   testSelfReferencingMap();
   testMutualCycle();
   testAcyclicObjectsFreedWithoutTheCollector();
