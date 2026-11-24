@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <string>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -81,6 +82,17 @@ class JitFunction {
   JitCode code_;
   int numParams_ = 0;
 };
+
+// True when this host has a JIT backend at all: x86-64 Linux and x86-64 macOS,
+// because the emitter produces x86-64 System V code. False everywhere else,
+// including Windows and Apple Silicon, where every proto keeps running on the
+// interpreter.
+bool jitHostSupported();
+
+// Why `jitHostSupported()` is false, phrased for the user; empty when the
+// backend exists. A build that cannot JIT says so at startup instead of
+// silently interpreting (BACKLOG §5 item 6).
+std::string jitUnsupportedReason();
 
 // Compiles `proto` to machine code, or returns nullptr when it is outside the
 // supported subset or this host has no backend. Exposed for tests; production

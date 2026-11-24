@@ -153,6 +153,10 @@ may change between minor versions.
   runner accepts an optional `// expect-message:` header, so the three new
   `tests/errors/*_malformed_after_use.oskl` fixtures pin the message and not
   just the exit code.
+- **`oskel` says when the JIT is not available.** The JIT is on by default and
+  fails silent (`JitCode::assign` returns false) on any host without the
+  backend, so a Windows or macOS user got an interpreter with no hint. The
+  engine now prints the reason once at startup, in `runChunk` and in the REPL.
 - **A test for `SETUPVAL` through a null cell.** `GETUPVAL`, the failed run's
   reset and a root `RETURN` were covered; the write side was not. Removing the
   `SETUPVAL` null-cell guard segfaults the new test, so the guard is now pinned.

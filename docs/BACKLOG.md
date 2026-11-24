@@ -210,8 +210,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    mapping was already W^X (`mmap` read-write, then `mprotect` read-execute),
    which an unsigned binary may do on macOS; if the OS refuses it, `assign`
    returns false and the VM keeps interpreting.
-6. **[P1]** On Windows `JitCode::assign` always returns false; the user gets no
-   JIT and no message. Report it at startup.
+6. **[P1] [done]** On Windows `JitCode::assign` always returns false; the user
+   gets no JIT and no message. **Done**: `jitHostSupported()` and the new
+   `jitUnsupportedReason()` are public, and `oskel` and the REPL print
+   "the JIT is unavailable on this host (...); running interpreted" once at
+   startup when the JIT is on and the backend does not exist. A test pins that
+   the reason is empty exactly when the backend is present.
 7. **[P2]** `emitProto` does not handle `MOD`/`POW` (`i % 2` in a loop is
    common), `CALL`, `GETGLOBAL`/`SETGLOBAL` or `NEWTABLE`/`GETTABLE`/`SETTABLE`;
    any function using a builtin or a collection is not compiled.

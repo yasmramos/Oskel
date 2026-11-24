@@ -397,6 +397,23 @@ int main() {
   expectRejected("fn mk(n) { return (x) => x; }\n", "mk",
                  "a proto with a child closure is rejected");
 
+  // --- Host support is reported, not silently false --------------------------
+  {
+    // `JitCode::assign` fails without a word on a host with no backend, so the
+    // CLI now asks these two and prints the reason. A supported host must
+    // report no reason and an unsupported one must report something; the two
+    // cannot disagree (BACKLOG §5 item 6).
+    const bool supported = jitHostSupported();
+    const std::string reason = jitUnsupportedReason();
+    check(supported == reason.empty(),
+          "jitUnsupportedReason is empty exactly when the backend exists");
+#if defined(__linux__) && (defined(__x86_64__) || defined(__amd64__))
+    check(supported, "the JIT backend is available on x86-64 Linux");
+#else
+    check(!supported, "no JIT backend outside x86-64 Linux");
+#endif
+  }
+
   // --- The cache compiles each proto once and stays correct ------------------
   {
     Bytecode bc = compileSource(arith);

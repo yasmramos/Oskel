@@ -26,6 +26,7 @@
 #include "frontend/diagnostic.h"
 #include "frontend/lexer.h"
 #include "frontend/parser.h"
+#include "jit/jit.h"
 #include "runtime/builtins.h"
 #include "version.h"
 #include "vm.h"
@@ -147,6 +148,10 @@ int runChunk(const Bytecode &bytecode, const std::string &name,
   vm.sourceName = name;
   vm.scriptArgs = scriptArgs;
   vm.setJitEnabled(useJit);
+  if (useJit && !jitHostSupported()) {
+    std::cerr << "oskel: the JIT is unavailable on this host ("
+              << jitUnsupportedReason() << "); running interpreted\n";
+  }
   registerBuiltins(vm);
   try {
     vm.run(bytecode);
@@ -342,6 +347,10 @@ void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, 
   vm.sourceName = "<repl>";
   vm.scriptArgs = scriptArgs;
   vm.setJitEnabled(useJit);
+  if (useJit && !jitHostSupported()) {
+    std::cerr << "oskel: the JIT is unavailable on this host ("
+              << jitUnsupportedReason() << "); running interpreted\n";
+  }
   registerBuiltins(vm);
 
   // One compiler for the whole session so a module imported in an earlier
