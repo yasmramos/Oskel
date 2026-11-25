@@ -4094,7 +4094,8 @@ int Compiler::compileSlice(const SliceExpr& slice, int line, int col) {
 // the VM, the AOT backend and the WASM backend all already construct and read
 // maps, so async needs no runtime tag, no builtin and no opcode. The keys are
 // the private protocol `await` reads (`state`, `value`, `error`); user code can
-// see them, but the type checker keeps a `Future` away from ordinary map code.
+// see and mutate them, because `Future` is a compile-time name rather than an
+// opaque runtime type.
 int Compiler::compileMakeFuture(int value, int line, int col) {
   currentLine_ = line;
   currentCol_ = col;

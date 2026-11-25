@@ -2418,7 +2418,7 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
 
 ### PHASE 11 — `async` / `await` 🔶 in progress
 
-- **11.1 (done) — `async fn`, `await` and `Future`.** An `async fn` is a
+- **11.1 (done, surface only) — `async fn`, `await` and `Future`.** An `async fn` is a
   function whose call returns a `Future`; the declared return type is the
   payload, so `async fn f(): int` returns `Future<int>` at the type level and
   `await f()` is an `int`. The body runs eagerly when the function is called,
@@ -2471,7 +2471,9 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
   `"map"`, because the representation is a map and the type checker erases
   `Future`; a future can therefore be passed to code expecting a map, which is
   the deliberate trade-off of not adding a runtime tag. A scheduler, a
-  `spawn`/`join` surface and a `Future`-specific runtime type are later slices.
+  `spawn`/`join` surface and a `Future`-specific runtime type are PHASE 11.2,
+  which is not started. The feature is therefore a language surface, not a
+  finished async runtime.
 
 ### Post-1.0 — UI library
 
@@ -2577,7 +2579,7 @@ Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalli
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
 Phase 6.9: ✅ completed (`enum`: a scoped set of integer constants, folded by the parser; no opcode, no engine code, and identical on the VM, the AOT backend and WASM)
-Phase 11: 🔶 in progress (11.1 `async fn`/`await`/`Future` done: a future is a plain map, so no opcode and no builtin is added; eager bodies, no scheduler yet)
+Phase 11: 🔶 in progress (11.1 `async fn`/`await`/`Future` surface done: a future is a plain map, so no opcode and no builtin is added; eager bodies, no scheduler. 11.2 scheduler, pending futures and `spawn`/`join` not started)
 Phase 12.1/12.2: ✅ completed (`interface`/`trait`, `class ... implements`, and imported interfaces; see the section above)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.11 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY), callbacks (including a struct return) and a stored callback resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr`/struct-by-value surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
@@ -2645,7 +2647,7 @@ and is no longer in the tree.
 | Superinstructions | Violate the 40-opcode ceiling |
 | Inline caching | Changes the bytecode contract |
 | Runtime specialization | Changes the bytecode contract |
-| Generics, full pattern matching, generators, transactions | Out of scope (2.0 monomorphizes concrete, annotated types only; no user-defined generics). `async`/`await` is implemented in PHASE 11.1. |
+| Generics, full pattern matching, generators, transactions | Out of scope (2.0 monomorphizes concrete, annotated types only; no user-defined generics). `async`/`await` stops at the PHASE 11.1 eager surface; PHASE 11.2 (scheduler, pending futures, `spawn`/`join`) is not implemented. |
 
 **Note**: there is **no** host FFI dependency. The development engine emits its
 own x86-64 descriptor/closure stubs; the machine-code emitter, the static
