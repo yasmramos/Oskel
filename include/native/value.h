@@ -115,18 +115,30 @@ struct AotArray {
 constexpr std::size_t kAotArrayHeaderSize = 3 * sizeof(std::uint64_t);
 
 // On-image layout of a map (PHASE 7c.3): an insertion-ordered array of entries
-// with string keys, matching the hosted `Map` (which keeps insertion order too).
-// A linear scan is enough for the sizes a compiled desktop program builds at
-// start-up; a hash index can come later without changing the layout's contract.
+// with string keys, matching the hosted `Map` (which keeps insertion order too),
+// plus a lazy open-addressing hash index over the entry array. The index is
+// built on the first lookup of a map with at least eight entries, so small maps
+// keep the cheap linear scan and the insertion order stays the iteration order.
 // Each entry is a 24-byte record: the key's `AotString` address, then the
-// 16-byte value.
+// 16-byte value. `hashCapacity` is zero until the index exists; `hashTable`
+// points at `hashCapacity` signed 64-bit entry indices (-1 means empty).
 struct AotMap {
   std::uint64_t length;
   std::uint64_t capacity;
-  std::uint64_t entries;  // address of the entries block
+  std::uint64_t entries;      // address of the entries block
+  std::uint64_t hashCapacity; // slots in the index, a power of two, or 0
+  std::uint64_t hashTable;    // address of the index slots
+  // Class identity (PHASE 12): the class-name `AotString` address, or 0 for a
+  // plain map, and the method table (a map from method name to closure), or 0.
+  // Methods live outside `entries`, so iteration, `len` and printing see
+  // fields only.
+  std::uint64_t className;
+  std::uint64_t methods;
 };
 
-constexpr std::size_t kAotMapHeaderSize = 3 * sizeof(std::uint64_t);
+constexpr std::size_t kAotMapHeaderSize = 7 * sizeof(std::uint64_t);
+constexpr std::size_t kAotMapClassNameOffset = 5 * sizeof(std::uint64_t);
+constexpr std::size_t kAotMapMethodsOffset = 6 * sizeof(std::uint64_t);
 
 // On-image layout of a range (PHASE 7c.4c): two int64 bounds and an inclusive
 // flag. A `Range` payload points at the header. `for-in` walks from `start`

@@ -85,6 +85,11 @@ constexpr std::uint32_t kArrayItemsOffset = 16;
 constexpr std::uint32_t kMapLengthOffset = 0;
 constexpr std::uint32_t kMapCapacityOffset = 8;
 constexpr std::uint32_t kMapEntriesOffset = 16;
+// Class identity (PHASE 12): the class-name string address, or 0 for a plain
+// map, and the method-table map address, or 0.
+constexpr std::uint32_t kMapClassNameOffset = 24;
+constexpr std::uint32_t kMapMethodsOffset = 32;
+constexpr std::uint32_t kMapHeaderSize = 40;
 constexpr std::uint32_t kMapEntryKeyOffset = 0;
 constexpr std::uint32_t kMapEntryTagOffset = 8;
 constexpr std::uint32_t kMapEntryPayloadOffset = 16;
@@ -308,10 +313,19 @@ class ModuleBuilder {
   std::uint32_t arenaStart = 0;
   std::uint32_t memoryPages = 1;
 
+  static bool sameTypes(const std::vector<std::uint8_t>& left,
+                        const std::vector<std::uint8_t>& right) {
+    if (left.size() != right.size()) return false;
+    for (std::size_t i = 0; i < left.size(); ++i) {
+      if (left[i] != right[i]) return false;
+    }
+    return true;
+  }
+
   std::uint32_t typeFor(const std::vector<std::uint8_t>& params,
                         const std::vector<std::uint8_t>& results) {
     for (std::size_t i = 0; i < types.size(); ++i) {
-      if (types[i].params == params && types[i].results == results) {
+      if (sameTypes(types[i].params, params) && sameTypes(types[i].results, results)) {
         return static_cast<std::uint32_t>(i);
       }
     }
@@ -580,7 +594,7 @@ class Func {
   }
 
  private:
-  ModuleBuilder& module_;
+  [[maybe_unused]] ModuleBuilder& module_;
   Body& body_;
   std::uint32_t localBase_;
 };
@@ -813,9 +827,10 @@ struct Runtime {
 
   // Static strings the helpers and the builtins share.
   std::uint32_t sNil = 0, sTrue = 0, sFalse = 0, sNan = 0, sInf = 0, sNegInf = 0,
+                sInfinity = 0,
                 sZero = 0, sNegZero = 0, pow10Table = 0,
                 sDotDot = 0, sDotDotEq = 0, sPrefix = 0, sNewline = 0,
-                sSpace = 0, sQuote = 0, sErrorPrefix = 0;
+                sSpace = 0, sSpaceCloseBrace = 0, sQuote = 0, sErrorPrefix = 0;
   std::uint32_t sTypeNil = 0, sTypeBool = 0, sTypeInt = 0, sTypeFloat = 0,
                 sTypeDouble = 0, sTypeString = 0, sTypeFunction = 0,
                 sTypeRange = 0, sTypeError = 0, sTypeArray = 0, sTypeMap = 0,
@@ -863,7 +878,7 @@ struct Runtime {
                 sFind = 0, sAny = 0, sAll = 0, sReduce = 0, sSort = 0,
                 sSorted = 0, sKeys = 0, sValues = 0, sEntries = 0,
                 sHas = 0, sGet = 0, sSet = 0, sDelete = 0, sMerge = 0,
-                sCannotSetField = 0, sCannotSlice = 0, sSliceStartInt = 0,
+                sCannotSetField = 0, sNoField = 0, sCannotSlice = 0, sSliceStartInt = 0,
                 sSliceEndInt = 0, sSliceStepInt = 0, sSliceStepZero = 0;
   std::uint32_t sArrayIndexInt = 0, sMapKeyString = 0, sStringIndexInt = 0,
                 sArrayRange = 0, sMapMembership = 0, sStringMembership = 0,
@@ -904,7 +919,7 @@ struct Runtime {
                 arraySet = 0, mapFind = 0, mapSet = 0, mapGet = 0,
                 mapDelete = 0, mapClear = 0, equals = 0, toStrDepth = 0,
                 reprDepth = 0, slice = 0, parseIntStr = 0,
-                parseDoubleStr = 0;
+                parseDoubleStr = 0, wordMatch = 0;
   std::uint32_t newPtr = 0, ptrTextLen = 0, ptrText = 0, ptrTypeName = 0;
 
   std::uint32_t opAdd = 0, opSub = 0, opMul = 0, opDiv = 0, opMod = 0,
@@ -956,6 +971,7 @@ struct Runtime {
     sNan = pool.addString("nan");
     sInf = pool.addString("inf");
     sNegInf = pool.addString("-inf");
+    sInfinity = pool.addString("infinity");
     sZero = pool.addString("0");
     sNegZero = pool.addString("-0");
     std::vector<double> powers;
@@ -971,6 +987,7 @@ struct Runtime {
     sPrefix = pool.addString("runtime error: ");
     sNewline = pool.addString("\n");
     sSpace = pool.addString(" ");
+    sSpaceCloseBrace = pool.addString(" }");
     sQuote = pool.addString("\"");
     sErrorPrefix = pool.addString("error(");
     sTypeNil = pool.addString("nil");
@@ -1119,6 +1136,7 @@ struct Runtime {
     sInsertIndex = pool.addString("insert() index must be an integer");
     sRemoveAtIndex = pool.addString("removeAt() index must be an integer");
     sCannotSetField = pool.addString("cannot set a field on a value of type");
+    sNoField = pool.addString("class instance has no such field");
     sCannotSlice = pool.addString("cannot slice a value of type");
     sSliceStartInt = pool.addString("slice start must be an integer");
     sSliceEndInt = pool.addString("slice end must be an integer");
@@ -1256,6 +1274,7 @@ struct Runtime {
   std::uint32_t emitSlice();
   std::uint32_t emitParseIntStr();
   std::uint32_t emitParseDoubleStr();
+  std::uint32_t emitWordMatch();
   std::uint32_t emitBinary(int op, std::uint32_t failAddress, const char* failText);
   std::uint32_t emitUnary(int op);
   std::uint32_t emitCompare(int op);
@@ -3062,6 +3081,7 @@ std::uint32_t Runtime::emitIterStep() {
                 vPayload = f.addLocal(kI64), items = f.addLocal(kI32),
                 entries = f.addLocal(kI32), entry = f.addLocal(kI32),
                 idx = f.addLocal(kI32);
+  (void)idx;  // declared to reserve the local slot, never read
   f.i64c(static_cast<std::int64_t>(kNil));
   f.lset(itemTag);
   f.i64c(0);
@@ -4021,6 +4041,7 @@ std::uint32_t Runtime::emitCompare(int op) {
   std::uint32_t index = m.reserveFunction(tBin);
   Func f(m, index, {kI64, kI64, kI64, kI64});
   std::uint32_t addrA = f.addLocal(kI32), addrB = f.addLocal(kI32);
+  (void)addrB;  // declared to reserve the local slot, never read
 
   if (op == 0) {  // equality
     f.lget(0);
@@ -5225,7 +5246,8 @@ std::uint32_t Runtime::emitMemberGet() {
   std::uint32_t index = m.reserveFunction(tBin);
   Func f(m, index, {kI64, kI64, kI64, kI64});
   std::uint32_t addr = f.addLocal(kI32), idx = f.addLocal(kI32),
-                entry = f.addLocal(kI32), start = f.addLocal(kI64),
+                entry = f.addLocal(kI32), methods = f.addLocal(kI32),
+                start = f.addLocal(kI64),
                 end = f.addLocal(kI64), incl = f.addLocal(kI32),
                 count = f.addLocal(kI64), range = f.addLocal(kI32);
 
@@ -5310,6 +5332,40 @@ std::uint32_t Runtime::emitMemberGet() {
   f.lget(entry);
   f.i64Load(kMapEntryPayloadOffset);
   f.ret();
+  f.end();
+  // A user method in the class method table wins over the built-in map
+  // members; a method named `length` must shadow the map length.
+  f.lget(1);
+  f.i32WrapI64();
+  f.i64Load(kMapMethodsOffset);
+  f.i32WrapI64();
+  f.lset(methods);
+  f.lget(methods);
+  f.i32c(0);
+  f.i32Ne();
+  f.if_();
+  f.lget(methods);
+  f.lget(addr);
+  f.call(mapFind);
+  f.lset(idx);
+  f.lget(idx);
+  f.i32c(0);
+  f.i32GeS();
+  f.if_();
+  f.lget(methods);
+  f.i64Load(kMapEntriesOffset);
+  f.i32WrapI64();
+  f.lget(idx);
+  f.i32c(kMapEntrySize);
+  f.i32Mul();
+  f.i32Add();
+  f.lset(entry);
+  f.lget(entry);
+  f.i64Load(kMapEntryTagOffset);
+  f.lget(entry);
+  f.i64Load(kMapEntryPayloadOffset);
+  f.ret();
+  f.end();
   f.end();
   f.lget(addr);
   f.i32c(static_cast<std::int32_t>(sLength));
@@ -5844,6 +5900,9 @@ std::uint32_t Runtime::emitMemberSet() {
   std::uint32_t type = m.typeFor({kI64, kI64, kI64, kI64, kI64, kI64}, {kI64, kI64});
   std::uint32_t index = m.reserveFunction(type);
   Func f(m, index, {kI64, kI64, kI64, kI64, kI64, kI64});
+  std::uint32_t addr = f.addLocal(kI32), methods = f.addLocal(kI32),
+                idx = f.addLocal(kI32), name = f.addLocal(kI32),
+                className = f.addLocal(kI32);
   f.lget(0);
   f.i64c(static_cast<std::int64_t>(kMap));
   f.i64Eq();
@@ -5857,8 +5916,59 @@ std::uint32_t Runtime::emitMemberSet() {
   f.end();
   f.lget(1);
   f.i32WrapI64();
+  f.lset(addr);
   f.lget(3);
   f.i32WrapI64();
+  f.lset(name);
+  // Reassigning a method updates the method table, not a new field.
+  f.lget(addr);
+  f.i64Load(kMapMethodsOffset);
+  f.i32WrapI64();
+  f.lset(methods);
+  f.lget(methods);
+  f.i32c(0);
+  f.i32Ne();
+  f.if_();
+  f.lget(methods);
+  f.lget(name);
+  f.call(mapFind);
+  f.lset(idx);
+  f.lget(idx);
+  f.i32c(0);
+  f.i32GeS();
+  f.if_();
+  f.lget(methods);
+  f.lget(name);
+  f.lget(4);
+  f.lget(5);
+  f.call(mapSet);
+  f.i64c(static_cast<std::int64_t>(kNil));
+  f.i64c(0);
+  f.ret();
+  f.end();
+  f.end();
+  // A class instance has a fixed field set; an unknown name is an error.
+  f.lget(addr);
+  f.i64Load(kMapClassNameOffset);
+  f.i32WrapI64();
+  f.lset(className);
+  f.lget(className);
+  f.i32c(0);
+  f.i32Ne();
+  f.if_();
+  f.lget(addr);
+  f.lget(name);
+  f.call(mapFind);
+  f.lset(idx);
+  f.lget(idx);
+  f.i32c(0);
+  f.i32LtS();
+  f.if_();
+  emitFailStatic(f, sNoField);
+  f.end();
+  f.end();
+  f.lget(addr);
+  f.lget(name);
   f.lget(4);
   f.lget(5);
   f.call(mapSet);
@@ -10012,7 +10122,7 @@ std::uint32_t Runtime::emitNewMap() {
   std::uint32_t index = m.reserveFunction(tNewMap);
   Func f(m, index, {});
   std::uint32_t header = f.addLocal(kI32), entries = f.addLocal(kI32);
-  f.i32c(24);
+  f.i32c(static_cast<std::int32_t>(kMapHeaderSize));
   f.call(alloc);
   f.lset(header);
   f.i32c(4 * kMapEntrySize);
@@ -10028,6 +10138,12 @@ std::uint32_t Runtime::emitNewMap() {
   f.lget(entries);
   f.i64ExtendI32U();
   f.i64Store(kMapEntriesOffset);
+  f.lget(header);
+  f.i64c(0);
+  f.i64Store(kMapClassNameOffset);
+  f.lget(header);
+  f.i64c(0);
+  f.i64Store(kMapMethodsOffset);
   f.i64c(static_cast<std::int64_t>(kMap));
   f.lget(header);
   f.i64ExtendI32U();
@@ -10590,6 +10706,7 @@ std::uint32_t Runtime::emitEquals() {
                 p = f.addLocal(kI32), itemsA = f.addLocal(kI32),
                 itemsB = f.addLocal(kI32), entryA = f.addLocal(kI32),
                 entryB = f.addLocal(kI32), idx = f.addLocal(kI32),
+                classA = f.addLocal(kI32), classB = f.addLocal(kI32),
                 a = f.addLocal(kF64), b = f.addLocal(kF64);
 
   // Numbers compare numerically (`1 == 1.0`), matching `Value::equals`.
@@ -10729,6 +10846,48 @@ std::uint32_t Runtime::emitEquals() {
   f.i64Eq();
   f.i32And();
   f.ret();
+  f.end();
+
+  // A class instance compares by identity, never structurally. The class-name
+  // islands are shared per class, so a pointer comparison is enough.
+  f.lget(0);
+  f.i64c(static_cast<std::int64_t>(kMap));
+  f.i64Eq();
+  f.if_();
+  f.lget(1);
+  f.i32WrapI64();
+  f.lset(addrA);
+  f.lget(3);
+  f.i32WrapI64();
+  f.lset(addrB);
+  f.lget(addrA);
+  f.i64Load(kMapClassNameOffset);
+  f.i32WrapI64();
+  f.lset(classA);
+  f.lget(addrB);
+  f.i64Load(kMapClassNameOffset);
+  f.i32WrapI64();
+  f.lset(classB);
+  f.lget(classA);
+  f.i32c(0);
+  f.i32Ne();
+  f.lget(classB);
+  f.i32c(0);
+  f.i32Ne();
+  f.i32Or();
+  f.if_();
+  f.lget(classA);
+  f.lget(classB);
+  f.i32Ne();
+  f.if_();
+  f.i32c(0);
+  f.ret();
+  f.end();
+  f.lget(addrA);
+  f.lget(addrB);
+  f.i32Eq();
+  f.ret();
+  f.end();
   f.end();
 
   // Containers: compare lengths, then walk the pair list so a cycle is
@@ -11059,7 +11218,8 @@ std::uint32_t Runtime::emitReprDepthBody(std::uint32_t index) {
   std::uint32_t addr = f.addLocal(kI32), len = f.addLocal(kI64),
                 i = f.addLocal(kI64), items = f.addLocal(kI32),
                 s = f.addLocal(kI32), itemTag = f.addLocal(kI64),
-                itemPayload = f.addLocal(kI64), entry = f.addLocal(kI32);
+                itemPayload = f.addLocal(kI64), entry = f.addLocal(kI32),
+                className = f.addLocal(kI32);
   f.lget(2);
   f.i32c(8);
   f.i32GtS();
@@ -11190,8 +11350,27 @@ std::uint32_t Runtime::emitReprDepthBody(std::uint32_t index) {
   f.i64Load(kMapEntriesOffset);
   f.i32WrapI64();
   f.lset(items);
+  // A class instance prints its class name before the field map.
+  f.lget(addr);
+  f.i64Load(kMapClassNameOffset);
+  f.i32WrapI64();
+  f.lset(className);
+  f.lget(className);
+  f.i32c(0);
+  f.i32Ne();
+  f.if_();
+  f.lget(className);
+  f.i32c(static_cast<std::int32_t>(sSpace));
+  f.call(concat);
+  f.i32c(static_cast<std::int32_t>(sOpenBrace));
+  f.call(concat);
+  f.i32c(static_cast<std::int32_t>(sSpace));
+  f.call(concat);
+  f.lset(s);
+  f.else_();
   f.i32c(static_cast<std::int32_t>(sOpenBrace));
   f.lset(s);
+  f.end();
   f.i64c(0);
   f.lset(i);
   f.block();
@@ -11245,9 +11424,21 @@ std::uint32_t Runtime::emitReprDepthBody(std::uint32_t index) {
   f.br(0);
   f.end();
   f.end();
+  f.lget(className);
+  f.i32c(0);
+  f.i32Ne();
+  f.if_();
+  f.lget(s);
+  f.i32c(static_cast<std::int32_t>(sSpaceCloseBrace));
+  f.call(concat);
+  f.lset(s);
+  f.else_();
   f.lget(s);
   f.i32c(static_cast<std::int32_t>(sCloseBrace));
   f.call(concat);
+  f.lset(s);
+  f.end();
+  f.lget(s);
   f.ret();
   f.end();
   f.lget(0);
@@ -11489,6 +11680,7 @@ std::uint32_t Runtime::emitSlice() {
                 itemAddr = f.addLocal(kI32), resTag = f.addLocal(kI64),
                 resPay = f.addLocal(kI64), out = f.addLocal(kI32),
                 cpay = f.addLocal(kI64);
+  (void)addr;  // declared to reserve the local slot, never read
 
   f.lget(0);
   f.i64c(static_cast<std::int64_t>(kArray));
@@ -12025,6 +12217,91 @@ std::uint32_t Runtime::emitParseIntStr() {
   return index;
 }
 
+// `(p, end, literal, length) -> i32`: case-insensitive comparison of the
+// byte range `[p, end)` with a raw literal (the address points at the bytes,
+// not at the AotString header). Used for the `inf`/`infinity`/`nan` spellings.
+std::uint32_t Runtime::emitWordMatch() {
+  std::uint32_t index = m.reserveFunction(m.typeFor({kI32, kI32, kI32, kI32}, {kI32}));
+  Func f(m, index, {kI32, kI32, kI32, kI32});
+  std::uint32_t i = f.addLocal(kI32), a = f.addLocal(kI32), b = f.addLocal(kI32);
+
+  f.lget(1);
+  f.lget(0);
+  f.i32Sub();
+  f.lget(3);
+  f.i32Ne();
+  f.if_();
+  f.i32c(0);
+  f.ret();
+  f.end();
+
+  f.i32c(0);
+  f.lset(i);
+  f.block();
+  f.loop();
+  f.lget(i);
+  f.lget(3);
+  f.i32GeS();
+  f.brIf(1);
+
+  f.lget(0);
+  f.lget(i);
+  f.i32Add();
+  f.i32Load8u(0);
+  f.lset(a);
+  f.lget(a);
+  f.i32c(65);
+  f.i32GeS();
+  f.lget(a);
+  f.i32c(90);
+  f.i32LeS();
+  f.i32And();
+  f.if_();
+  f.lget(a);
+  f.i32c(32);
+  f.i32Add();
+  f.lset(a);
+  f.end();
+
+  f.lget(2);
+  f.lget(i);
+  f.i32Add();
+  f.i32Load8u(0);
+  f.lset(b);
+  f.lget(b);
+  f.i32c(65);
+  f.i32GeS();
+  f.lget(b);
+  f.i32c(90);
+  f.i32LeS();
+  f.i32And();
+  f.if_();
+  f.lget(b);
+  f.i32c(32);
+  f.i32Add();
+  f.lset(b);
+  f.end();
+
+  f.lget(a);
+  f.lget(b);
+  f.i32Ne();
+  f.if_();
+  f.i32c(0);
+  f.ret();
+  f.end();
+
+  f.lget(i);
+  f.i32c(1);
+  f.i32Add();
+  f.lset(i);
+  f.br(0);
+  f.end();
+  f.end();
+
+  f.i32c(1);
+  return index;
+}
+
 std::uint32_t Runtime::emitParseDoubleStr() {
   std::uint32_t index = m.reserveFunction(m.typeFor({kI32}, {kF64}));
   Func f(m, index, {kI32});
@@ -12134,6 +12411,42 @@ std::uint32_t Runtime::emitParseDoubleStr() {
   f.lset(p);
   f.end();
   f.end();
+  f.end();
+
+  // The VM accepts the non-finite spellings `inf`, `infinity` and `nan`
+  // (case-insensitive, optional sign) and rejects a silent overflow such as
+  // `1e400`. The sign was parsed above, so `-inf` reaches here as `inf` with
+  // `sign == -1`.
+  f.lget(p);
+  f.lget(end);
+  f.i32c(static_cast<std::int32_t>(sInf + 8));
+  f.i32c(3);
+  f.call(wordMatch);
+  f.if_();
+  f.f64c(std::numeric_limits<double>::infinity());
+  f.lget(sign);
+  f.f64Mul();
+  f.ret();
+  f.end();
+  f.lget(p);
+  f.lget(end);
+  f.i32c(static_cast<std::int32_t>(sInfinity + 8));
+  f.i32c(8);
+  f.call(wordMatch);
+  f.if_();
+  f.f64c(std::numeric_limits<double>::infinity());
+  f.lget(sign);
+  f.f64Mul();
+  f.ret();
+  f.end();
+  f.lget(p);
+  f.lget(end);
+  f.i32c(static_cast<std::int32_t>(sNan + 8));
+  f.i32c(3);
+  f.call(wordMatch);
+  f.if_();
+  f.f64c(std::numeric_limits<double>::quiet_NaN());
+  f.ret();
   f.end();
 
   f.f64c(0.0);
@@ -12442,6 +12755,19 @@ std::uint32_t Runtime::emitParseDoubleStr() {
   f.end();
   f.end();
 
+  // Only the explicit `inf`/`-inf` spellings may produce an infinity; a
+  // numeric literal that overflows (`1e400`) is rejected like the VM.
+  f.lget(value);
+  f.f64c(std::numeric_limits<double>::infinity());
+  f.f64Eq();
+  f.lget(value);
+  f.f64c(-std::numeric_limits<double>::infinity());
+  f.f64Eq();
+  f.i32Or();
+  f.if_();
+  emitFailStatic(f, sFloatString);
+  f.end();
+
   f.lget(p);
   f.lget(end);
   f.i32Ne();
@@ -12464,6 +12790,7 @@ void Runtime::emitCore() {
   strCmp = emitStrCmp();
   fmtInt = emitFmtInt();
   parseIntStr = emitParseIntStr();
+  wordMatch = emitWordMatch();
   parseDoubleStr = emitParseDoubleStr();
   emitDtoaHelpers();
   fmtDouble = emitFmtDouble();
@@ -13025,18 +13352,40 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
 
   if (name == "type") {
     arity(1);
+    std::uint32_t typeResult = f.addLocal(kI32), className = f.addLocal(kI32);
     f.i64c(static_cast<std::int64_t>(kStr));
     argTag(0);
     f.i64c(static_cast<std::int64_t>(kPtr));
     f.i64Eq();
-    f.ifResult(kI32);
+    f.if_();
     argPayload(0);
     f.i32WrapI64();
     f.call(ptrTypeName);
+    f.lset(typeResult);
     f.else_();
     argTag(0);
     f.call(typeName);
+    f.lset(typeResult);
+    // A class instance reports its class name instead of "map".
+    argTag(0);
+    f.i64c(static_cast<std::int64_t>(kMap));
+    f.i64Eq();
+    f.if_();
+    argPayload(0);
+    f.i32WrapI64();
+    f.i64Load(kMapClassNameOffset);
+    f.i32WrapI64();
+    f.lset(className);
+    f.lget(className);
+    f.i32c(0);
+    f.i32Ne();
+    f.if_();
+    f.lget(className);
+    f.lset(typeResult);
     f.end();
+    f.end();
+    f.end();
+    f.lget(typeResult);
     f.i64ExtendI32U();
     return index;
   }
@@ -13730,6 +14079,33 @@ std::uint32_t Runtime::emitBuiltin(const std::string& name) {
       argPayload(i);
     }
     f.call(slice);
+    return index;
+  }
+
+  if (name == "$setClass") {
+    arity(3);
+    std::uint32_t instance = f.addLocal(kI32), className = f.addLocal(kI32),
+                  methods = f.addLocal(kI32);
+    argPayload(0);
+    f.i32WrapI64();
+    f.lset(instance);
+    argPayload(1);
+    f.i32WrapI64();
+    f.lset(className);
+    argPayload(2);
+    f.i32WrapI64();
+    f.lset(methods);
+    f.lget(instance);
+    f.lget(className);
+    f.i64ExtendI32U();
+    f.i64Store(kMapClassNameOffset);
+    f.lget(instance);
+    f.lget(methods);
+    f.i64ExtendI32U();
+    f.i64Store(kMapMethodsOffset);
+    f.i64c(static_cast<std::int64_t>(kNil));
+    f.i64c(0);
+    f.ret();
     return index;
   }
 
@@ -14447,7 +14823,7 @@ const std::unordered_set<std::string>& supportedBuiltins() {
       "print", "write", "eprint", "len", "type", "str", "$str", "repr",
       "int", "float", "double", "bool", "chr", "ord", "floor", "ceil",
       "round", "sqrt", "assert", "assertEq", "panic", "error", "isError",
-      "$isError", "$nonNull", "$range", "range", "exit", "$slice",
+      "$isError", "$nonNull", "$range", "range", "exit", "$slice", "$setClass",
       "time", "clock", "platform", "arch", "random", "seed",
       "cstring", "buffer", "cstr", "byteLen", "loadByte", "storeByte",
       "intToPtr", "ptrToInt", "free",
@@ -14470,7 +14846,7 @@ const std::unordered_set<std::string>& vmBuiltinNames() {
       "readFile", "writeFile", "fileExists", "fsOpen", "fsRead", "fsWrite",
       "fsSeek", "fsClose", "fsRemove", "fsRename", "fsMkdir", "fsRmdir",
       "fsList", "fsStat", "fsCwd", "fsChdir", "range", "$range", "$nonNull",
-      "$slice", "cstring", "buffer", "cstr", "byteLen", "loadByte",
+      "$slice", "$setClass", "cstring", "buffer", "cstr", "byteLen", "loadByte",
       "storeByte", "intToPtr", "ptrToInt", "free",
   };
   return names;

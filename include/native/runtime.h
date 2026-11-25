@@ -159,6 +159,9 @@ struct AotRuntimeHandles {
   // `$slice` (`obj[start:end:step]`): slices a string by UTF-8 character or an
   // array by element, following Python's bounds rule.
   CodeGen::Label sliceBuiltin;     // AotValue oskel_builtin_slice(AotValue* args, long argc, AotClosure* self)
+  // `$setClass(obj, name, methods)`: attaches the class identity and method
+  // table to an instance map (PHASE 12).
+  CodeGen::Label setClassBuiltin;  // AotValue oskel_builtin_set_class(AotValue* args, long argc, AotClosure* self)
   // The public standard-library builtins (PHASE 7c.5a). They use the proto
   // convention too and are seeded into their global slots like `print`, so a
   // call reaches them through the ordinary `oskel_call` path. Each is a pure
@@ -516,6 +519,15 @@ struct AotThunkParam {
   // is either wholly in registers (one entry per eightbyte) or wholly on the
   // stack (no entries; it is in `AotExternThunk::stackArgs` instead).
   std::int64_t stackOffset = -1;
+  // Win64 assigns the register by argument position, not by class. This is the
+  // position after the hidden `sret` shift (0..), or -1 for a System V thunk.
+  int win64Position = -1;
+  // A Win64 struct that travels in one GPR because its size is 1, 2, 4 or 8
+  // bytes (the value, zero-extended), or by reference because it is any other
+  // size (the address of a caller-owned copy). Both use `structIndex`; the
+  // buffer lives in the thunk frame at `AotStructLayout::bufOffset`.
+  int win64StructBytes = 0;
+  bool structByRef = false;
 };
 
 // One by-value struct in a thunk's signature: its C layout plus one data-island
@@ -531,6 +543,10 @@ struct AotStructLayout {
   ffi::StructLayout layout;
   std::vector<CodeGen::Label> fieldNameLabels;  // parallel to `layout.fields`
   int bufSlot = -1;
+  // Byte offset from `AotExternThunk`'s struct-buffer base. System V uses
+  // 16-byte slots; Win64 reserves the layout's padded size for a by-reference
+  // copy and 8 bytes for an inline 1/2/4/8-byte value.
+  std::int64_t bufOffset = -1;
 };
 
 // A struct passed in the outgoing stack-argument area: a class-MEMORY struct,

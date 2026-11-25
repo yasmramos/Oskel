@@ -179,6 +179,15 @@ class Compiler {
   using ImportLoader = std::function<StmtPtr(const std::string& path, int line, int col)>;
   void setImportLoader(ImportLoader loader) { importLoader_ = std::move(loader); }
 
+  // Makes a module's compile-time interfaces visible to `compileImport`
+  // (PHASE 12.2). A selective import may name an interface: it is a valid
+  // export but has no runtime table entry, so the compiler validates it and
+  // emits no binding for it. The CLI wires this to the same cached scanner the
+  // parser uses.
+  void setInterfaceScanner(Parser::InterfaceScanner scanner) {
+    interfaceScanner_ = std::move(scanner);
+  }
+
   // The ABI capabilities `extern "C"` declarations are validated against. The
   // default is this build's, which is what the interpreter marshals; the AOT
   // path sets `ffi::kAotAbiCapabilities` because the backend emits its own
@@ -509,6 +518,13 @@ class Compiler {
   // (a literal, or a variable whose type is known). Returns an empty TypeRef
   // when the type cannot be determined, which means "no check".
   TypeRef inferExprType(const Expr& expr) const;
+
+  // Rejects indexing, slicing, iteration and member access on a `Future`-typed
+  // value (PHASE 11.2.1). A future is a map at run time, so without this check
+  // user code could read or overwrite the `state`/`value` protocol that `await`
+  // owns. A value erased to `any` still reaches the map; the runtime tag that
+  // closes that hole is PHASE 11.2.5.
+  void checkFutureAccess(const Expr& object, int line, int col) const;
 
   // Capture list of the frame currently being compiled, keyed by variable
   // name and parallel to `bc_.upvalues`.
@@ -933,6 +949,7 @@ class Compiler {
   void predeclareModuleImports(const BlockStmt& block);
 
   ImportLoader importLoader_;
+  Parser::InterfaceScanner interfaceScanner_;
   // The ABI `extern "C"` declarations are validated against; see
   // `setAbiCapabilities`. Defaults to this build's, which is what the
   // interpreter marshals.

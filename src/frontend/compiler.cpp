@@ -27,6 +27,17 @@ namespace {
 // reaches.
 constexpr int kMaxCompileDepth = 256;
 
+// True when the static type is a `Future`, including a union that can hold one.
+// A union is rejected because the runtime value may be the future branch.
+bool isFutureType(const TypeRef& type) {
+  if (!type.isPresent()) return false;
+  if (type.name == "Future") return true;
+  for (const std::string& alternative : type.alternatives) {
+    if (alternative == "Future") return true;
+  }
+  return false;
+}
+
 }  // namespace
 
 Compiler::DepthGuard::DepthGuard(const Compiler& compiler) : compiler_(compiler) {
@@ -1128,6 +1139,11 @@ TypeRef Compiler::inferExprType(const Expr& expr) const {
   return TypeRef{};  // any other shape: unknown, so no check
 }
 
+void Compiler::checkFutureAccess(const Expr& object, int line, int col) const {
+  if (!isFutureType(inferExprType(object))) return;
+  fail("a Future is opaque; use 'await' to read its value", line, col);
+}
+
 // The declared fields of a struct or class, or null when `name` is neither.
 const std::vector<StructField>* Compiler::lookupAggregateFields(const std::string& name) const {
   auto structFound = structDefs_.find(name);
@@ -2096,15 +2112,28 @@ void Compiler::compileImport(const ImportStmt& import, int line, int col) {
     names = module.symbols;
   } else {
     names = import.names;
-    // Validate that every selected name is actually exported. An enum is a
-    // compile-time export too, even though it has no table entry.
+    // An interface is a compile-time export too, but it has no table entry:
+    // the parser already made its name visible and the compiler must not emit
+    // a binding for it.
+    std::unordered_set<std::string> interfaces;
+    if (interfaceScanner_) {
+      for (const auto& entry : interfaceScanner_(import.module)) {
+        interfaces.insert(entry.first);
+      }
+    }
     for (const std::string& name : names) {
       const bool isValue = std::find(module.symbols.begin(), module.symbols.end(), name) !=
                            module.symbols.end();
-      if (!isValue && module.enums.find(name) == module.enums.end()) {
+      if (!isValue && module.enums.find(name) == module.enums.end() &&
+          interfaces.find(name) == interfaces.end()) {
         fail("module '" + import.module + "' has no export named '" + name + "'", line, col);
       }
     }
+    names.erase(std::remove_if(names.begin(), names.end(),
+                               [&](const std::string& name) {
+                                 return interfaces.find(name) != interfaces.end();
+                               }),
+                names.end());
   }
   compileNameImport(module, names, line, col);
 }
@@ -3263,6 +3292,7 @@ void Compiler::compileFor(const ForStmt& s) {
 }
 
 void Compiler::compileForIn(const ForInStmt& s) {
+  checkFutureAccess(*s.iterable, s.iterable->line, s.iterable->col);
   // Evaluate the iterable once. The cursor starts as nil, which tells ITER to
   // initialize it from the iterable on the first call (0 for arrays, strings
   // and maps; the start bound for ranges).
@@ -3793,9 +3823,11 @@ int Compiler::compileAssign(const AssignExpr& assign, int line, int col) {
   int object = 0;
   int key = 0;
   if (const auto* index = std::get_if<IndexExpr>(&assign.target->node)) {
+    checkFutureAccess(*index->object, assign.target->line, assign.target->col);
     object = compileExpr(*index->object);
     key = compileExpr(*index->index);
   } else if (const auto* member = std::get_if<MemberExpr>(&assign.target->node)) {
+    checkFutureAccess(*member->object, assign.target->line, assign.target->col);
     checkFieldAssign(*member, assign);
     // A compound assignment reads the member first; record the name for the
     // WASM backend's method reachability analysis (PHASE 9.4).
@@ -4080,8 +4112,10 @@ int Compiler::compileSlice(const SliceExpr& slice, int line, int col) {
 // Builds the map an `async fn` returns. A future is deliberately a plain map:
 // the VM, the AOT backend and the WASM backend all already construct and read
 // maps, so async needs no runtime tag, no builtin and no opcode. The keys are
-// the private protocol `await` reads (`state`, `value`, `error`); user code can
-// see them, but the type checker keeps a `Future` away from ordinary map code.
+// the private protocol `await` reads (`state`, `value`, `error`). `Future` is a
+// compile-time name rather than a runtime tag, so `checkFutureAccess` rejects
+// index, slice, iteration and member access on a `Future`-typed value; a value
+// erased to `any` still reaches the map until PHASE 11.2.5 adds the tag.
 int Compiler::compileMakeFuture(int value, int line, int col) {
   currentLine_ = line;
   currentCol_ = col;
@@ -4266,9 +4300,12 @@ int Compiler::compileExpr(const Expr& expr) {
             return compileAssign(assign, expr.line, expr.col);
           },
           [&](const CallExpr& call) -> int { return compileCall(call, expr.line, expr.col); },
-          [&](const LambdaExpr& lambda) -> int { return compileLambda(lambda, expr.line, expr.col); },
+          [&](const LambdaExpr& lambda) -> int {
+            return compileLambda(lambda, expr.line, expr.col);
+          },
           [&](const TernaryExpr& ternary) -> int { return compileTernary(ternary); },
           [&](const IndexExpr& index) -> int {
+            checkFutureAccess(*index.object, expr.line, expr.col);
             int object = compileExpr(*index.object);
             int key = compileExpr(*index.index);
             emit(OpCode::GETTABLE, object, object, key);
@@ -4276,9 +4313,11 @@ int Compiler::compileExpr(const Expr& expr) {
             return object;
           },
           [&](const SliceExpr& slice) -> int {
+            checkFutureAccess(*slice.object, expr.line, expr.col);
             return compileSlice(slice, expr.line, expr.col);
           },
           [&](const MemberExpr& member) -> int {
+            if (member.object) checkFutureAccess(*member.object, expr.line, expr.col);
             // `Color.RED` and the imported `geom.Color.RED` (PHASE 6.9) are
             // compile-time constants, not table reads: emit a `LOADK` of the
             // folded integer. The parser rejects a binding with an enum name,
@@ -4353,9 +4392,7 @@ int Compiler::compileExpr(const Expr& expr) {
           [&](const AwaitExpr& awaited) -> int {
             return compileAwait(awaited, expr.line, expr.col);
           },
-          [&](const RangeExpr& range) -> int {
-            return compileRange(range, expr.line, expr.col);
-          },
+          [&](const RangeExpr& range) -> int { return compileRange(range, expr.line, expr.col); },
           [&](const TryExpr& node) -> int { return compileTry(node, expr.line, expr.col); },
           [&](const CatchExpr& node) -> int { return compileCatch(node, expr.line, expr.col); },
           [&](const auto&) -> int {

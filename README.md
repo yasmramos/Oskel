@@ -1,3 +1,5 @@
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/yasmramos/Oskel)
+
 # Oskel Programming Language 
 
 **Oskel** is a dynamic, general-purpose programming language implemented from scratch in **C++17**. The project includes the lexer, the parser, the AST, the bytecode compiler, the register-based virtual machine and the standard library, with no external dependencies beyond the C++ standard library.
@@ -23,7 +25,9 @@ for language in languages {
 - Optional types and nullability: annotations (`let x: int = 5`), local inference, nullable `T?`, unions (`T | E`) and the null-safe expressions `?.`, `??` and `!!`.
 - `struct` declarations (data only, no methods) checked against their literal at compile time.
 - `class` declarations (fields plus methods): instantiating is calling the class name (`Point(3, 4)`, no `new`), `self` is explicit and there is no inheritance. A class is parser sugar over a map plus closures, so it runs identically on the VM and under `oskel build`. Field and method annotations are checked at compile time.
-- `async fn` / `await` (PHASE 11.1): a call returns a `Future`, `await` yields its payload and the declared return type is the payload. The body runs eagerly (no scheduler yet); a future is a map, so it behaves identically on the VM, `oskel build` and WASM.
+- `interface`/`trait` contracts with `class X implements A, B`: compile-time method and arity checking, importable across modules, with no runtime interface value and no inheritance.
+- `enum` declarations: scoped integer constants folded at compile time; module imports expose them like any other name.
+- `async fn` / `await` (PHASE 11.1, **surface only**): a call returns a `Future`, `await` yields its payload and the declared return type is the payload. This is not a complete async runtime: the body runs eagerly, `await` never suspends, and there is no scheduler, event loop, `then`/`catch` chaining, `spawn`/`join` or async lambda. A future is a plain map at run time, but the compiler treats `Future` as opaque: indexing, slicing, iteration and member access on a `Future`-typed value are compile errors, so only `await` reads its state. A value erased to `any` can still reach the map until the runtime tag lands. The surface behaves identically on the VM, `oskel build` and WASM.
 - String interpolation with `"${expression}"` and UTF-8 support.
 - Ordered arrays and maps that preserve insertion order, with `for k, v in map` key/value iteration.
 - Ascending and descending ranges: `1..5`, `0..=10`, `5..0`.
@@ -36,8 +40,9 @@ for language in languages {
 - **Ahead-of-time native compilation**: `oskel build file.oskl` emits a
   self-contained static executable (no libc, no runtime to install; `ldd`
   reports *"not a dynamic executable"*). The AOT backend covers the language
-  core, not the whole runtime; see
-  [What runs where](#what-runs-where-vm-vs-aot) for the exact split and the
+  core and the portable standard library; target-specific facilities such as
+  FFI, files and the UI backend have their own conditions. See
+  [What runs where](#what-runs-where-vm-vs-aot) and the
   [CLI tutorial](docs/tutorial-cli.md).
 - **Bare-metal target (experimental)**: `oskel build --target
   x86_64-freestanding-sysv` emits a multiboot kernel that boots with no
@@ -46,8 +51,9 @@ for language in languages {
   [Bare metal](#bare-metal-experimental).
 - **WebAssembly target (experimental)**: `oskel build --target
   wasm32-freestanding-wasm` emits a `.wasm` module that runs in a browser, an
-  edge runtime or Node. The module imports only `oskel.write` and
-  `oskel.exit`; see [WebAssembly](#webassembly-experimental).
+  edge runtime or Node. The module imports `oskel.write`, `oskel.exit`,
+  `oskel.time` and `oskel.clock`; see
+  [WebAssembly](#webassembly-experimental).
 - Diagnostics with file, line, column, code snippet and stack trace.
 
 ## Status
@@ -124,7 +130,7 @@ g++ -std=c++17 -O2 -Wall -Wextra -Iinclude -Isrc -o build/oskelp \
 ```
 
 `./build.sh` and `build.bat` run these commands for you, and `CMakeLists.txt`
-builds the same five targets (`oskel`, `oskelc`, `oskelld`, `bindgen`, `oskelp`).
+builds the same six targets (`oskel`, `oskelc`, `oskelld`, `bindgen`, `oskelp`, `oskelint`).
 
 ### oskelc (the host compiler)
 
@@ -139,8 +145,9 @@ builtins:
 
 Both entry points call the same pipeline (`src/frontend/cli.cpp`), so the flags, the
 defaults, the diagnostics and the exit codes are identical and the emitted image
-is byte for byte the same. `-c` (a `.oskc` bytecode image) and `-pkg` (a
-`.oskpkg`) are not implemented yet and are refused by name with exit 64.
+is byte for byte the same. `oskelc -c` writes a portable `.oskc` image;
+`oskelc app.oskc -o app` lowers it. `-pkg` (a `.oskpkg`) is still refused by
+name with exit 64.
 
 ### oskelld (the project's own linker)
 
@@ -179,8 +186,8 @@ PHASE 10 for the design.
 
 ### bindgen (the C binding generator)
 
-Every build above also produces `bindgen` (`bindgen.exe` on Windows) next to the
-engine. It reads a C header and writes an Oskel `extern "C"` module, so a C
+A full `build.sh` or CMake build also produces `bindgen` (`bindgen.exe` on
+Windows) next to the engine. It reads a C header and writes an Oskel `extern "C"` module, so a C
 library can be called from Oskel without writing the signatures by hand:
 
 ```sh
@@ -262,13 +269,17 @@ oskelp add <name>          adds the latest registry release (OSKEL_REGISTRY)
 oskelp add <name> --version <req>  adds an explicit registry requirement
 oskelp remove <name>       removes a dependency from oskel.toml
 oskelp publish             publishes the package into a local registry
+oskelp yank <name>         hides a published version from new selections
 oskelp update [<name>]     moves registry pins to newer versions
 oskelp update <name> --precise <version>  pins one registry version
 oskelp outdated            shows registry updates available to the lockfile
 oskelp build               builds the project to target/<name>
 oskelp build -p <member>   builds one member of a [workspace]
 oskelp run                 runs the project (--native for the AOT binary)
+oskelp check               compiles without running
 oskelp test                runs every tests/**/*.oskl
+oskelp clean               removes target/ and .oskel/
+oskelp tree                prints the dependency tree
 ```
 
 Options:
@@ -282,6 +293,11 @@ Options:
 | `-o`, `--output <file>` | Output path for `build`/`oskelc` (default: the script's base name). |
 | `--target <name>` | Build target for `build`/`oskelc` (default: the host). |
 | `--mode <name>` | Link mode for `build`/`oskelc` (default: `freestanding`). |
+| `--link-lib <name>` | Library for the hosted link (repeatable), e.g. `SDL3`. |
+| `-L`, `--library-path <dir>` | Where the hosted link finds `lib<name>.so` (repeatable). |
+| `--link-object <file>` | Extra object or `ar` archive for the hosted link (repeatable). |
+| `--linker <name>` | Closes a hosted build with `host` (default, `$CC`) or `own`. |
+| `--emit-object` | Writes the hosted relocatable object instead of an executable. |
 | `--no-jit` | Disables the JIT (development engine only). |
 | `--` | Marks the end of the options; the next argument is the file. |
 
@@ -303,7 +319,7 @@ for name in args() {
 | --- | --- |
 | `0` | Successful execution. |
 | `64` | Command-line usage error. |
-| `65` | Compile error (lexer or parser). |
+| `65` | Compile, type-check or lowering error (lexer, parser, compiler, AOT backend). |
 | `66` | The file could not be read. |
 | `70` | Runtime error. |
 | other | Value given to `exit(code)`. |
@@ -348,7 +364,8 @@ In the `examples/` directory (see `examples/README.md` for details):
 | --- | --- |
 | `calc.oskl` | An arithmetic expression evaluator: lexer, parser and evaluator. Builds with `oskel build`. |
 | `mandelbrot.oskl` | The Mandelbrot set rendered as ASCII art. Builds with `oskel build`. |
-| `tui_editor.oskl` | A minimal terminal text editor (interactive; VM only). |
+| `tui_editor.oskl` | A minimal terminal text editor (interactive; hosted AOT capable on a POSIX host). |
+| `ui/todo.oskl` | A desktop task list built with `std.ui` and `std.ui.window`; needs the bundled SDL3 and Skia bridge. |
 | `hello.oskl` | Greeting and string interpolation. |
 | `fizzbuzz.oskl` | Loops, conditionals and modulo. |
 | `fibonacci.oskl` | Recursion and an iterative version. |
@@ -365,7 +382,7 @@ oskel build examples/calc.oskl -o calc && ./calc
 ```oskel
 // Variables: var is mutable, let is immutable, const is a compile-time constant
 let name = "world";
-const VERSION = "0.1.0";
+const VERSION = "0.3.0";
 
 // Functions and closures
 fn makeCounter() {
@@ -408,41 +425,55 @@ The full reference is in **[docs/language.md](docs/language.md)**.
 ## What runs where (VM vs AOT)
 
 Oskel has two execution paths: the register-based **VM** (used by `oskel`,
-`oskel -e` and the REPL) and the **AOT backend** (used by `oskel build`, which
-emits a static native binary). The AOT backend covers the language core, not
-the whole runtime yet, so a program can run on the VM and fail to build — or
-behave differently — under AOT. This is the exact split in 0.3.0.
+`oskel -e` and the REPL) and the **AOT backend** (used by `oskel build`).
+The AOT backend covers the language core and the portable standard library on
+every target it emits. What varies is a property of the *target*, not of the
+language: FFI needs a host, file builtins need a filesystem, and the UI backend
+needs the bundled SDL3 and Skia libraries.
 
 **Available in both:**
 
 - Arithmetic, comparisons, logical and bitwise operators, control flow
   (`if`/`while`/`for`/`for-in`/`switch`), functions, closures, `defer`,
-  `struct`, `class`, `async fn`/`await`, ranges, slicing, string interpolation.
+  `struct`, `class`, `interface`/`trait`, `enum`, `async fn`/`await` (eager
+  surface, no scheduler), ranges,
+  slicing and string interpolation.
 - Arrays and maps (literals, indexing, `in`, `for-in`, printing, and `+` to
-  concatenate two arrays).
-- The array methods `push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`,
-  `contains`, `indexOf` and `clear`. Each binds to a closure that captures its
-  receiver, so a call mutates or scans the same array; `contains`/`indexOf`
-  compare structurally (an array or map needle compares by content).
-- These builtins: `print`, `write`, `eprint`, `len`, `type`, `str`, `repr`,
-  `bool`, `ord`, `chr`, `assert`, `panic`, `isError`, `error`, `pcall`, `exit`,
-  `clock`, `args`, `readFile`, `writeFile` and `fileExists`.
-- The numeric conversions `int`, `float`, `double`, and the math builtins
-  `floor`, `ceil`, `round`, `sqrt`, `pow`, `exp`, `log`, `sin`, `cos`, `tan`.
+  concatenate two arrays), including every bound collection method: the array
+  methods `push`, `pop`, `shift`, `unshift`, `insert`, `removeAt`, `slice`,
+  `concat`, `join`, `contains`, `indexOf`, `map`, `filter`, `each`, `find`,
+  `any`, `all`, `reduce`, `sum`, `reversed`, `clone`, `clear`, `sort` and
+  `sorted`; the map methods `keys`, `values`, `entries`, `has`, `get`, `set`,
+  `delete`, `clear`, `merge` and `clone`; the range methods `toArray` and
+  `contains`; and all string methods.
+- Every builtin `registerBuiltins` installs, including the string, array, map,
+  math, error, random, pointer and file families. A builtin a target cannot
+  back is rejected by name with a dedicated message and exit 65, never lowered
+  into code that faults.
 
-**VM only — not yet available in `oskel build` (a build error names the global):**
+**Target-specific facilities:**
 
-- The string methods such as `str.upper`, `str.split` and `str.trim`, and
-  `sort`/`sorted` on an array. They compile but fail at runtime with
-  `value has no such member`.
+- `extern "C"` and `native fn` need a host, so they work with
+  `oskel build --mode hosted`; a freestanding image reports the unresolved
+  symbol and exits 65.
+- The streaming and directory file builtins need a filesystem. They are seeded
+  on Linux freestanding, Windows freestanding and hosted builds; bare metal
+  rejects a use by name.
+- `args()` is available where the entry point receives an argument vector
+  (Linux and Windows, freestanding or hosted). `memSize()` is bare-metal only.
+- `std.ui` is pure Oskel and portable. `std.ui.window` needs the bundled SDL3
+  and Skia bridge and therefore a hosted build.
+- WASM imports `oskel.write`, `oskel.exit`, `oskel.time` and `oskel.clock`;
+  a WASM host supplies them.
 
 **Available in both, but with different semantics:**
 
-- **`map.get` is O(n) in AOT** (linear scan) instead of O(1) (hash lookup), so
-  a loop that looks up every key of a large map is O(n²) in a compiled binary.
+- **`map.get` is O(n) in AOT** (linear scan) instead of O(1) in the VM, so a
+  loop that looks up every key of a large map is O(n²) in a compiled binary.
+  Indexing (`m[key]`) uses the map's own lookup.
 
-The divergences are tracked internally in `docs/BACKLOG.md`; closing them (and
-a VM/AOT parity test) is the goal of the remaining AOT work.
+Every VM/AOT parity fixture under `tests/native_build_*.oskl` compares the two
+outputs byte for byte; remaining divergences are tracked in `docs/BACKLOG.md`.
 
 ## Bare metal (experimental)
 
@@ -571,26 +602,26 @@ Current limitations:
 
 - Dynamic typing. The product model is Lua's: source code is always compiled to bytecode and run on the VM. The CLI and the REPL both compile to bytecode and run on the register-based VM; the AST is never executed.
 - The development engine (`oskel`) also ships an **experimental JIT** for a narrow integer subset: a *leaf* function whose body only manipulates `nil`/`bool`/`int` is compiled to native x86-64 the first time it is called. A compile-time optimizer folds constants and applies them as machine immediates (`i * 2` becomes one `shl`), a comparison that only feeds the branch after it becomes `cmp; jcc`, and a web-based register allocator with copy coalescing gives each value its own register (a copy whose ends do not interfere disappears, and a slot only keeps its stack slot when the seven-register pool runs out), so a tight integer loop runs about 420x faster than the interpreter and within ~1.08x of a hand-written `-O2` C++ loop. Everything else keeps running on the interpreter, so results never change. It is a development-engine feature only: `oskel build` and the generated binary never contain it (`oskel --no-jit` disables it).
-- There are no interfaces or inheritance; maps and closures replace them. A `struct` (data only, no methods) is a named map shape checked at compile time. A `class` (fields plus methods, PHASE 6.8) is the method-carrying form: it is parser sugar over a map plus closures capturing an explicit `self`, instantiated by calling the class name (no `new`), with no inheritance.
+- There is no inheritance; composition and interfaces replace it. A `struct` (data only, no methods) is a named map shape checked at compile time. A `class` (fields plus methods, PHASE 6.8) is the method-carrying form: it is parser sugar over a map plus closures capturing an explicit `self`, instantiated by calling the class name (no `new`). An `interface` or `trait` (PHASE 12.1) declares a compile-time contract and `class ... implements ...` validates it; there is no runtime interface value and no default method body. An interface can be imported like an enum (PHASE 12.2): selective and wildcard imports expose its name, a qualified import exposes `alias.Interface`.
 - There is no `try`/`catch` *statement* or catchable exceptions. Errors are values: `error(message, code?)` builds a first-class error value and `isError(value)` detects it. `pcall(fn, ...)` turns a raised runtime error into a `{ok, value, error}` map instead of aborting. Two operators work on error values: `try expr` propagates one to the caller (Rust's `?`) and `expr catch default` recovers locally (Zig's `catch`). `panic()` is for unrecoverable errors.
 - Modules use Java-style `import` (`import std.math;`, `import std.math.*;`, `import std.math as m;`, `import { sqrt } from std.math;`) with compile-time conflict detection for `.*` and a reserved `std.` prefix. There is no `require`; modules are loaded eagerly and a cyclic import is a compile error.
 - There is no `++`/`--` or default parameters. `switch` on literals and integer ranges is supported, with no fallthrough, and so is the post-test loop `do { ... } while (cond);`.
 - `defer { ... }` runs a block when its scope exits, in LIFO order, on fall-through, `return` and `break`/`continue` alike; it compiles to no new opcode.
 - Optional types and nullability are compile-time only and are erased before the bytecode; a union (`T | E`) has no C representation, so it is rejected in `extern "C"`/`native fn` signatures and struct fields.
-- FFI **callbacks** use a small x86-64 closure stub in the development engine, available on the System V ABI (Linux and x86-64 macOS). On Windows and arm64 a callback declaration is rejected with a clear compile-time message; the AOT backend emits its own callback stub on System V.
+- FFI **callbacks** use a small x86-64 closure stub in the development engine and in the hosted AOT backend, available on the System V ABI (Linux and x86-64 macOS). On Windows and arm64 a callback declaration is rejected with a clear compile-time message.
 - Map keys are always strings. Map literals accept identifier, string, scalar (`int`, `true`, `false`, `nil`) and computed `[expr]` keys; non-string keys are canonicalized to their string form.
 - The body of `if`, `while`, `for` and `for-in` may be a block or a single statement without braces; a brace-less body is wrapped in a block, so its bytecode and scoping match the brace form. `switch` arms always require braces.
 - Slicing syntax works for strings and arrays (`s[1:3]`, `a[2:]`, `a[:-1]`), with negative bounds counted from the end and an optional step (`a[::2]`, `a[::-1]` reverses); `substr`/`slice` remain available.
-- `upper` and `lower` only transform ASCII letters.
+- `upper` and `lower` apply the Unicode simple case mapping; `trim*` and word splitting still treat ASCII whitespace as whitespace.
 - The maximum call depth is 2000.
-- Memory is managed with reference counting plus a cycle collector (`src/core/gc.h`) that reclaims unreachable cycles, such as a function stored in the scope it closes over. A cycle that runs through state captured by a native method (`a.f = a.push`) is never collected.
+- Memory is managed with reference counting plus a cycle collector (`src/core/gc.h`) that reclaims unreachable cycles, including a bound native method stored in its own receiver (`a.f = a.push`).
 
 Ideas for future versions:
 
-- Completing the AOT backend (PHASE 7): the core of the language already
-  compiles to native code; the standard library builtins and file I/O are next.
+- Completing the remaining AOT targets and container work (PHASE 7/10):
+  the portable language and library surface already compiles to native code.
 - User-defined methods on structs.
-- Better Unicode support (upper/lower case and graphemes).
+- Better Unicode support (grapheme clusters and locale-aware case mapping).
 - More tooling: formatter and debugger.
 
 Editor support: a VS Code syntax-highlighting extension lives in

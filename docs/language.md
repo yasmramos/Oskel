@@ -1,6 +1,6 @@
 # Oskel Language Reference
 
-Language version: **0.1.0**
+Language version: **0.3.0**
 
 This guide describes the syntax and semantics of Oskel as implemented by the compiler and the register-based VM included in this repository.
 
@@ -12,9 +12,9 @@ The language surface this reference documents is implemented on the development 
 | --- | --- | --- |
 | Language core: functions, closures, control flow, collections | ✅ | ✅ (subset the lowerer covers) |
 | Types, nullability, `struct`, `class`, `enum`, variadics, `import`, `switch`, `defer` (PHASE 6.5/6.8/6.9) | ✅ | ✅ (all are compile-time; `struct`/`class` are erased, `enum` members fold to `LOADK`, `switch`/`defer` lower to existing opcodes) |
-| `async fn` / `await` (PHASE 11.1) | ✅ | ✅ (a future is a map built with existing opcodes; no backend change) |
+| `async fn` / `await` (PHASE 11.1 + 11.2.1) | 🔶 eager surface, opaque `Future`, no scheduler | 🔶 same surface (a future is a map built with existing opcodes; no backend change) |
 | `native fn` (PHASE 6.5) | ✅ | 🔶 only for the curated stubs the backend seeds; anything else fails the build (PHASE 7f) |
-| FFI with C (PHASE 6.6) | ✅ | 🔶 scalar `extern "C"` in `--mode hosted` only; FFI is hosted-only by design (PHASE 7f, §4.5) |
+| FFI with C (PHASE 6.6) | ✅ | 🔶 `--mode hosted` only; scalars, `cstring`/`ptr`, structs by value and C variadics, with callbacks on System V (PHASE 7f, §4.5) |
 | Error values, `pcall`, `try`/`catch`, unions, `@MustUse` (PHASE 6.7) | ✅ | ✅ `error` values, `try`/`catch` and `pcall` (PHASE 7c.5c/7c.5d); a raised error with no active `pcall` exits 70 |
 | JIT (PHASE 8) | 🔶 integer leaf protos (slices 1-4) | — (never) |
 
@@ -57,7 +57,7 @@ A Oskel program is a UTF-8 text file (extension `.oskl`). The pipeline is:
 3. **Compiler**: translates the AST to bytecode (39 opcodes today, register-based, under a hard budget of 40).
 4. **VM**: executes the bytecode.
 
-The AST is never executed: the `oskel` executable compiles source to bytecode and runs it on the register-based VM. The compiler and the VM implement the whole language surface this reference documents — functions, closures and control flow, collections, the type system with nullability, `struct` and `class` (PHASE 6.5/6.8), FFI with C (PHASE 6.6) and error values with `pcall`, `try`/`catch`, unions and `@MustUse` (PHASE 6.7). The AOT backend (PHASE 7) compiles a subset of the same programs to a native binary through `oskelc` (also reachable as `oskel build`); §16 lists the constructs it does not yet lower.
+The AST is never executed: the `oskel` executable compiles source to bytecode and runs it on the register-based VM. The compiler and the VM implement the whole language surface this reference documents — functions, closures and control flow, collections, the type system with nullability, `struct` and `class` (PHASE 6.5/6.8), FFI with C (PHASE 6.6) and error values with `pcall`, `try`/`catch`, unions and `@MustUse` (PHASE 6.7). The AOT backend (PHASE 7) compiles the same source to a native binary through `oskelc` (also reachable as `oskel build`); §16 lists the host- and target-specific limits.
 
 The program runs from top to bottom in the global scope. Simple statements end with `;`. Statements with a block (`if`, `while`, `for`, `fn`) close with `}` and optionally accept a `;` after it.
 
@@ -491,9 +491,9 @@ print(loadByte(buf, 0));    // 65
 free(buf);
 ```
 
-The AOT backend (PHASE 7) is to lower the same handles to real C pointers, but
-that is not implemented yet (PHASE 7f): a program that passes a pointer to a
-native does not compile with `oskel build` today.
+The AOT backend lowers the same handle model on every target, and a hosted
+build can pass the handle to a real C function (PHASE 7f). The WASM backend
+keeps the handle and its bytes inside linear memory.
 
 **FFI is hosted-only under `oskel build`.** The decision (PHASE 7f) is that a
 program using `extern "C"` compiles with `oskel build --mode hosted`, which
@@ -588,29 +588,34 @@ print(d.quot);   // 3
 print(d.rem);    // 2
 ```
 
-The ABI classifies a small struct as up to two **eightbytes**, each INTEGER (a
+System V classifies a small struct as up to two **eightbytes**, each INTEGER (a
 general-purpose register) or SSE (an xmm register); a `{int; int}` struct comes
 back wholly in `rax`, a `{double; double}` in `xmm0`/`xmm1`, and a mixed
 `{int; double}` in `rax` + `xmm0`. A struct argument is flattened to the same
 eightbytes and passed in the registers the ABI assigns it, so the callee reads
 back the exact bytes of the struct.
 
-A struct of **more than 16 bytes** is class MEMORY: it is passed in the outgoing
-stack-argument area and returned through a hidden `sret` buffer the caller
-supplies in `rdi` (which shifts every integer argument one register along). The
-development engine expresses both directions through its x86-64 descriptor stub,
-so a class-MEMORY struct needs the System V AMD64 ABI; elsewhere (Windows, arm64)
-the declaration is rejected at compile time with a clear message instead of a
-wrong call. A struct field must be an FFI scalar type (an integer, `float`/
-`double`, `ptr`/`cstring` or `bool`); a nested struct field is rejected.
+A struct of **more than 16 bytes** is class MEMORY on System V: it is passed in
+the outgoing stack-argument area and returned through a hidden `sret` buffer the
+caller supplies in `rdi` (which shifts every integer argument one register
+along). The development engine expresses both directions through its x86-64
+descriptor stub. Microsoft x64 has no class MEMORY, but it uses the same
+by-reference rule for any aggregate that is not 1, 2, 4 or 8 bytes: the caller
+passes a pointer to a copy and a return of that size goes through a hidden
+`sret` pointer in `rcx`, which shifts every declared argument one position. A
+non-x86-64 host (arm64) rejects the declaration at compile time with a clear
+message instead of a wrong call. A struct field must be an FFI scalar type (an
+integer, `float`/`double`, `ptr`/`cstring` or `bool`); a nested struct field is
+rejected.
 
-Structs by value are **System V AMD64 only**. The register classification above
-is the System V ABI's; the Microsoft x64 ABI (Windows) passes a struct larger
-than 8 bytes through a hidden pointer instead, a shape the register thunks
-cannot express. On such a target the declaration is rejected at compile time
-with `a struct cannot cross the C boundary by value on this target`. Scalar
-arguments and results stay portable: the call goes through a typed function
-pointer, so the host compiler applies whichever ABI it targets.
+Structs by value cross **both x86-64 ABIs**. System V classifies up to two
+eightbytes and passes or returns them in the registers it assigns. Microsoft x64
+passes a 1/2/4/8-byte aggregate in one integer register and returns it in
+`rax`; any other size travels by reference with the hidden `sret` return above.
+A host that is not x86-64 rejects the declaration at compile time with
+`a struct cannot cross the C boundary by value on this target`. Scalar arguments
+and results stay portable: the call goes through a typed function pointer, so
+the host compiler applies whichever ABI it targets.
 
 **Callbacks.** A parameter typed `fn(paramTypes): returnType` is a C function
 pointer. A Oskel function (or a closure) passed for it is callable from C, and a
@@ -971,12 +976,14 @@ fn Point(x: int, y: int) {
 ```
 
 Every field becomes a key of the instance map (each starting `nil`), every
-method becomes a closure assigned to that key, and `self` is the local that
-those closures capture. A method's declared return type rides on the desugared
-lambda, so the body's `return` is still checked even though a lambda the user
-writes has no return-annotation position. An instance **is a map at runtime**, so
-the whole map surface applies: member access, `in`, `len`, `for ... in`,
-indexing, `type(p)` reports `"map"`, and instances nest and live in collections.
+method becomes a closure in the instance's method table, and `self` is the local
+that those closures capture. A method's declared return type rides on the
+desugared lambda, so the body's `return` is still checked even though a lambda
+the user writes has no return-annotation position. An instance behaves like a
+closed object: member access and `in` see the fields, `len(p)` counts them,
+`for ... in` walks them, `type(p)` reports the class name, and instances nest and
+live in collections. Indexing (`p["x"]`) and adding an undeclared key are
+rejected.
 
 `init` is optional and defines the constructor's parameters: the arguments the
 caller writes after the class name are forwarded to `init`, so the arity of
@@ -1093,11 +1100,12 @@ cases stay unchecked, by design:
 - a compound assignment (`self.x += 1`) has a result type the compiler does not
   track statically.
 
-Writing a key the class never declared (`p.added = ...`) is allowed, because an
-instance is a map and the map surface stays open. A name within two edits of a
-declared field is far more likely a typo than a deliberate new key — the typo
-would add a field while every read of the real one keeps returning its old value
-— so it is reported as a **warning** and the program still runs:
+Writing a key the class never declared (`p.added = ...`) is a runtime error:
+the instance is closed over its declared fields, so a typo cannot silently add
+a second field while every read of the real one keeps returning its old value.
+The compiler still warns when the name is within two edits of a declared field,
+to point at the likely typo, and the runtime error names both the class and the
+field:
 
 ```oskl
 class Counter {
@@ -1105,8 +1113,8 @@ class Counter {
   fn init() { self.count = 0; }
 }
 let c = Counter();
-c.cont = 5;    // warning: 'cont' is not a field of class 'Counter'
-               //          (did you mean 'count'?); the assignment adds a new key
+c.cont = 5;    // warning: did you mean 'count'?
+               // runtime error: class 'Counter' has no field 'cont'
 ```
 
 The declared type name itself is validated as a known type (or a declared
@@ -1156,6 +1164,69 @@ instead when it wants to keep the class itself private.
 
 `class` is a **reserved word** from 0.1.0 on: a variable or function named
 `class` no longer parses.
+
+### 4.8.1 `interface` and `trait`
+
+An `interface` declares a **compile-time contract**: a set of method names and
+their arities. `trait` is a spelling alias for the same declaration. Interfaces
+add no runtime value and no bytecode; they exist so a class can state what it
+provides and the parser can reject a class that does not:
+
+```oskel
+interface Shape {
+  fn area(): double;
+  fn name(): string;
+}
+
+trait Describable {
+  fn describe(): string;
+}
+
+class Circle implements Shape, Describable {
+  r: double;
+  fn init(r: double) { self.r = r; }
+  fn area(): double { return 3.0 * self.r * self.r; }
+  fn name(): string { return "circle"; }
+  fn describe(): string { return self.name() + ":" + str(self.area()); }
+}
+```
+
+`implements` accepts a comma-separated list. Every listed interface must be
+declared or imported somewhere in the module (an interface may come after the
+class that implements it) and the class must provide every method with the
+declared arity.
+A missing method, a wrong arity, a variadic mismatch or an unknown interface is
+a compile error, so the contract cannot drift silently.
+
+**Across modules.** An interface is a compile-time export of its module. A
+selective or wildcard import makes it visible by its own name; a qualified
+import makes it visible as `alias.Interface`:
+
+```oskel
+import { Shape, Named } from modules.geometry;
+
+class A implements Shape, Named { /* ... */ }
+```
+
+A qualified import (`import modules.geometry as geo;`) exposes it as
+`geo.Shape` (and `import modules.geometry;` as `modules.geometry.Shape`, or
+`geometry.Shape` through the short leaf); a wildcard import
+(`import modules.geometry.*;`) exposes it by its own name. The three forms
+are alternatives for one module, not a combination: importing the same module
+several ways would bind its values repeatedly.
+
+The import binds no runtime value: an interface has no table entry, so a
+selective import of one emits no `GETTABLE`/`SETTABLE`. It is still a valid
+export name, which is what lets the compiler accept it in the selective list.
+A module that imports an interface may itself implement it in a class, but it
+does not re-export the interface to its own consumers.
+
+Interfaces are **not** a runtime type. A class instance is still the class
+desugaring (a field map plus a method table), and `type(instance)` reports the
+class name. Polymorphism is dynamic: a list may
+hold instances of different classes and a call dispatches to the receiver's own
+method table. There is **no inheritance** and no default method body; a class
+that needs shared code composes it (a field or a free function) instead.
 
 ### 4.9 `enum`
 
@@ -1260,7 +1331,12 @@ not as a runtime global.
 
 ---
 
-### 4.10 `async fn` and `await`
+### 4.10 `async fn` and `await` (partial)
+
+> **PHASE 11.1 is a language surface, not a scheduler.** The body runs eagerly
+> and `await` never suspends. A complete async runtime (pending futures, an
+> event loop, `then`/`catch`, `spawn`/`join`, async lambdas) is PHASE 11.2 and
+> is not implemented.
 
 An `async fn` is a function whose call returns a `Future`; the declared return
 type is the payload type. `await` consumes a future and yields its payload, and
@@ -1297,16 +1373,25 @@ main();
   any other call: `await obj.m()`. A method replacement must match its
   asyncness.
 - `async fn init` is rejected: the constructor is called without `await`.
-- At run time a future is a map with the fields `state` (`"fulfilled"`,
+- The compiler treats `Future` as opaque (PHASE 11.2.1): indexing, slicing,
+  iterating and reading or assigning a member on a `Future`-typed value are
+  compile errors. A local alias, a parameter and a returned future keep the
+  type, so only `await` reads the payload.
+- At run time a future is still a map with the fields `state` (`"fulfilled"`,
   `"rejected"` or `"pending"`), `value` and `error`; `type(future)` is `"map"`.
   A `"pending"` future is not produced by this phase, and awaiting one raises a
   runtime error. `"rejected"` is reserved for a future that carries an error.
+  A value erased to `any` can bypass the compiler check until PHASE 11.2.5 adds
+  a runtime tag.
 - The feature adds **no opcode and no builtin**: `NEWTABLE`/`SETTABLE`/
   `GETTABLE` and the existing `panic` implement it, so the VM, the AOT backend
   and WASM agree by construction.
 
 A future is not a promise with `then`/`catch`; an error value crosses the
-boundary as the payload and can be inspected with `isError`.
+boundary as the payload and can be inspected with `isError`. `Future` is opaque
+to the type checker but not yet a runtime tag: the value is an ordinary map, so
+code that erases the type to `any` can still inspect or mutate its fields until
+PHASE 11.2.5.
 
 ---
 
@@ -2865,8 +2950,8 @@ the development VM, under `oskel build` and on WebAssembly.
 
 `std.io` adds **in-memory text streams**: a `StringReader` that walks a string
 by code point and a `StringWriter` that accumulates text. They are ordinary
-classes (§4.8), so an instance is a map with methods and can be passed to a
-function like any other value.
+classes (§4.8), so an instance is a value with fields and methods and can be
+passed to a function like any other value.
 
 The module is split into focused files. The two classes are **class modules**
 (§18.6): their PascalCase file name is the class name, so a qualified import
@@ -2963,8 +3048,8 @@ a run of non-whitespace, so `int(r.readToken())` parses a number without a
 second scanner. `StringWriter` stores chunks and concatenates them with a
 balanced tree in `toString`, so a long sequence of small writes does not copy
 the prefix once per write; still call it once when the text is complete.
-Because an instance is a map, `len(writer)` is the number of chunks, not the
-text length; use `size()`.
+Because a class instance is closed over its fields, `len(writer)` is `2` (the
+`chunks` and `count` fields), not the text length; use `size()`.
 
 The module is pure Oskel over strings and classes, so it behaves identically on
 the development VM, under `oskel build` and on WebAssembly.
@@ -3135,8 +3220,9 @@ development VM, under `oskel build` and on WebAssembly.
 `std.decimal` provides `BigDecimal`, an arbitrary-precision decimal in the
 spirit of Java's `java.math.BigDecimal`. It is a **class**, not a primitive: a
 value is a Java-style object with an arbitrary-precision unscaled integer and a
-32-bit scale, so `type(value)` reports `"map"`, exactly as every Oskel class
-does. Use its methods; `print(value)` prints the object map, so print
+32-bit scale, so `type(value)` reports `"BigDecimal"`, exactly as every Oskel
+class reports its class name. Use its methods; `print(value)` prints the object
+map, so print
 `value.toPlainString()` when the text matters.
 
 ```oskl
@@ -3255,7 +3341,7 @@ Process exit codes:
 | --- | --- |
 | `0` | Success. |
 | `64` | Incorrect command-line usage. |
-| `65` | Compile error. |
+| `65` | Compile, type-check or lowering error. |
 | `66` | The file could not be read. |
 | `70` | Runtime error. |
 | other | Code given to `exit(n)`. |
@@ -3635,13 +3721,13 @@ future work. `-c` is implemented; the `.oskc` format is specified in §19.1.
 
 - Dynamic typing. The `oskel` executable compiles source to bytecode and runs it on the register-based VM; the AST is never executed. The compiler and the VM implement the whole language surface this reference documents (PHASE 6 and its 6.5/6.6/6.7 additions).
 - The JIT covers only a narrow integer subset, and only in the development engine. `oskel` (a script run, `-e` and the REPL) compiles a *leaf* function whose body only manipulates `nil`/`bool`/`int` to native x86-64 the first time it is called (PHASE 8, slices 1-4: constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing). Everything else keeps running on the interpreter, so results never change, and `oskel build` and the generated binary never contain the JIT. `oskel --no-jit` disables it.
-- Classes are supported (see §4.8): a `class` declares a named shape with methods, desugared by the parser into a top-level constructor function (a map plus closures capturing an explicit `self`), so it needs no new opcode. There is **no inheritance** and no interfaces; composition replaces them. A `struct` (data only, no methods) is the method-less form (see §4.7). Both are named map shapes checked at compile time.
+- Classes are supported (see §4.8): a `class` declares a named shape with methods, desugared by the parser into a top-level constructor function (a map plus closures capturing an explicit `self`), so it needs no new opcode. `interface`/`trait` declarations (see §4.8.1) are compile-time contracts checked by `implements`; there is **no inheritance**, no default method body and no runtime interface value. A `struct` (data only, no methods) is the method-less form (see §4.7). Both are named map shapes checked at compile time.
 - No `try`/`catch` *statement* and no catchable exceptions. Error handling is value-based: `nil` (not found), `pcall(fn, ...)` to turn a raised runtime error into a `{ok, value, error}` map (see §13.1), and the error-value operators `try expr` (propagate, Rust's `?`) and `expr catch default` (recover locally, Zig's `catch`, see §13.3). `panic()` is for unrecoverable errors. A raised runtime error is not a value and is not caught by `catch`; use `pcall` for that.
 - Modules use Java-style `import` (see §18). `import` is only allowed at the top level of a module: nesting an import inside a function or block is a compile error. `require` (Lua-style) is dropped — `import` is the only module form. A module is loaded once, eagerly, when the program is compiled, and a cyclic import is a compile error rather than a crash.
 - No `++`, `--` or default parameters. A trailing `rest...` parameter makes a function variadic (see §7.1). `switch` on literals and ranges is supported (see §6.10), and so is the post-test loop `do { ... } while (cond);` (see §6.4).
 - Optional types and nullability are implemented for declarations and expressions (PHASE 6.5). Type annotations (`let x: int = 5`), local inference, the nullable `T?` annotation, and the null-safe expressions `?.`, `??` and `!!` are checked at compile time. `struct` is implemented (see §4.7) and so is `native fn` (see §7.6), the typed declaration of a host-provided function.
 - FFI with C is implemented for the development engine (PHASE 6.6). C functions are declared with `extern "C" { ... }` blocks or the single-line `extern fn ...;` form (implicit `"C"` ABI); both desugar to the same representation. The FFI type vocabulary is documented in §4.6: the compiler validates each signature, records it on the proto, and the engine resolves the symbol through `Platform::lookupSymbol` and binds it to a marshalling native. The call marshals its arguments and result across the host C ABI without a host FFI library for scalars and register structs; a class-MEMORY struct, a C variadic and a callback go through a small x86-64 descriptor/closure stub emitted by the engine. A `fn(P...): R` parameter is a callback: the development engine builds a closure stub that re-enters the VM (its `R` may be a scalar or a struct by value); it is available on x86-64 System V (Linux, x86-64 macOS), not on Windows or arm64. A trailing bare `...` declares a C variadic (`fn printf(fmt: cstring, ...): int`), which applies the C default argument promotions and goes through the descriptor stub on either x86-64 ABI (System V AMD64 or Microsoft x64); it is rejected at compile time on a non-x86-64 host.
-- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.11 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux, Windows and macOS x86-64), where the program is linked against the host C library; the freestanding mode, which is the default on Linux and Windows, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — both register-class and class-MEMORY — are lowered on the System V targets (Linux and macOS, 7f.6, 7f.7); the Windows x86-64 backend supports the scalar, `cstring` and `ptr` classes and rejects a struct or a callback with a dedicated message. A C variadic is lowered on all three hosted targets: System V continues the independent GPR/SSE counters, Win64 continues the argument positions (a floating value in a register position goes in both its SSE and integer register, and position four onward spills to the outgoing stack area past the shadow space). `native fn` declarations the backend has no stub for fail the build with a dedicated message. Callbacks are lowered on System V (7f.8): a scalar parameter or return crosses through a generated stub, and a struct return by value is rebuilt into the C return registers or the hidden `sret` buffer (7f.11). A struct parameter is rejected by both engines with a dedicated message.
+- FFI in the AOT backend is partial (PHASE 7f, slices 7f.1-7f.11 done). A scalar `extern "C"` call resolves in the **hosted** link mode (`oskel build --mode hosted`, Linux, Windows and macOS x86-64), where the program is linked against the host C library; the freestanding mode, which is the default on Linux and Windows, still reports the unresolved symbol and exits 65. This is the intended design, not a defect: FFI is **hosted-only** under `oskel build` (see §4.5), because a freestanding image has no host to resolve a symbol against. Pointers, `cstring` returns and structs by value — register-class on System V and by-reference on Win64 — are lowered on all three hosted x86-64 targets (7f.6, 7f.7); the Windows backend also supports the scalar, `cstring`, `ptr` and C variadic classes, and rejects only a callback with a dedicated message. A C variadic is lowered on all three hosted targets: System V continues the independent GPR/SSE counters, Win64 continues the argument positions (a floating value in a register position goes in both its SSE and integer register, and position four onward spills to the outgoing stack area past the shadow space). `native fn` declarations the backend has no stub for fail the build with a dedicated message. Callbacks are lowered on System V (7f.8): a scalar parameter or return crosses through a generated stub, and a struct return by value is rebuilt into the C return registers or the hidden `sret` buffer (7f.11). A struct parameter is rejected by both engines with a dedicated message.
 - A function's text representation is the same on both engines: `<fn name>` for a named function, `<native fn name>` for a host binding (a builtin, a `native fn`, an `extern "C"` symbol or a bound collection method such as `<native fn array.map>`), and `<fn <anonymous>>` for a lambda. The AOT closure carries a `display` pointer to a static `AotString` with that exact text, so `print`, `repr`, `str` and string interpolation all agree byte for byte (BACKLOG §6.22, `tests/native_build_function_repr.oskl`).
 - The first UI layer is `std/ui.oskl` (`docs/ui.md`): a declarative widget
   tree, deterministic layout, a `rect`/`text` display list and button hit
@@ -3649,7 +3735,7 @@ future work. `-c` is implemented; the `.oskc` format is specified in §19.1.
   through `std/internal/skia_ui.oskl` (`docs/cxxbind.md`); `std.ui.window`
   presents it in an SDL3 window and runs the event loop. Input widgets, real
   font metrics, text wrapping and dirty-region redraw are post-1.0 work.
-- No async/await, generics, full pattern matching, generators, or transactions. These are out of scope (see `DEVELOPMENT.md`).
+- No generics, full pattern matching, generators or transactions. These are out of scope (see `DEVELOPMENT.md`). `async fn`/`await` is only the PHASE 11.1 eager surface: there is no scheduler, no promise chaining and no async lambda, and `await` on the reserved `"pending"` state is a runtime error.
 - Map keys are always strings. Literals accept identifier, string, scalar (`int`, `float`, `double`, `true`, `false`, `nil`) and computed `[expr]` keys; non-string keys are canonicalized to their string form.
 - A body of `if`, `while`, `for` or `for-in` may be a block or a single statement without braces; a brace-less body is wrapped in a block, so its bytecode and scoping match the brace form. `switch` arms always require braces.
 - `for ... in` accepts the loop variable and the iterable with or without parentheses (`for x in xs` and `for (x in xs)`).
@@ -3894,7 +3980,7 @@ there is no package reader and no native-library loader.
 | `myapp` | Native binary (Linux/macOS) | (GraalVM) `.exe` | ✅ |
 | `myapp.exe` | Native binary (Windows) | (GraalVM) `.exe` | ✅ |
 
-**`.oskpkg` format** (ZIP) — planned, not implemented in 0.1.0:
+**`.oskpkg` format** (ZIP) — planned, not implemented in 0.3.0:
 
 ```text
 myapp.oskpkg
@@ -3964,9 +4050,9 @@ oskelc: app.oskc: the bytecode needs FFI support this target lacks: structs by v
 ```
 
 That is what makes an image portable in a meaningful sense: a chunk built on
-Linux that marshals a struct by value is refused by the Windows build, because
-the Microsoft x64 thunk does not carry a struct — instead of being lowered into
-code that would marshal the wrong registers.
+Linux that passes a callback is refused by the Windows build, because the
+Microsoft x64 thunk does not carry one — instead of being lowered into code that
+would marshal the wrong registers.
 
 **Requirement bits**: bit 0 needs SDL3, bit 1 needs the Skia shim. They record
 what the chunk needs from the UI backend, which the chunk alone cannot say: the

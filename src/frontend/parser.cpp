@@ -139,25 +139,35 @@ Parser::TopLevelScope::~TopLevelScope() { flag_ = previous_; }
 StmtPtr Parser::parseProgram() {
   TopLevelScope topLevel(atTopLevel_);
   // A `struct` name is visible to the whole module, like a hoisted `fn`, so a
-  // literal or an annotation may appear before the declaration. `struct` is a
-  // keyword, so the only `struct Name` sequence is a declaration; a name that
-  // is never declared this way stays out of the set, keeping `name { ... }` a
-  // variable followed by a block.
-  for (size_t i = 0; i + 1 < tokens_.size(); ++i) {
-    if (tokens_[i].type == Tok::Struct && tokens_[i + 1].type == Tok::Ident) {
+  // literal or an annotation may appear before the declaration. The pre-scan
+  // requires the `{` every declaration needs: a malformed `struct Name` must
+  // not make `Name { ... }` parse as a literal elsewhere, and the declaration
+  // itself reports the missing brace.
+  auto declaresType = [&](size_t i, Tok kind) {
+    return tokens_[i].type == kind && i + 2 < tokens_.size() &&
+           tokens_[i + 1].type == Tok::Ident && tokens_[i + 2].type == Tok::LBrace;
+  };
+  for (size_t i = 0; i + 2 < tokens_.size(); ++i) {
+    if (declaresType(i, Tok::Struct)) {
       structNames_.insert(tokens_[i + 1].lexeme);
     }
     // A `class` name is visible to the whole module too, so an annotation
     // written before the declaration is still accepted. It is kept apart from
     // `structNames_` so `Name { ... }` stays a struct literal only for a real
     // `struct` (a class is instantiated by calling its name, not with braces).
-    if (tokens_[i].type == Tok::Class && tokens_[i + 1].type == Tok::Ident) {
+    if (declaresType(i, Tok::Class)) {
       classNames_.insert(tokens_[i + 1].lexeme);
     }
     // An `enum` name is visible to the whole module too: `Color.RED` may be
     // written before the declaration, and `Color` is a valid annotation.
-    if (tokens_[i].type == Tok::Enum && tokens_[i + 1].type == Tok::Ident) {
+    if (declaresType(i, Tok::Enum)) {
       enumNames_.insert(tokens_[i + 1].lexeme);
+    }
+    // An interface is a type annotation too, and a class may implement one
+    // declared later in the file. The contract itself is validated at the end
+    // of the parse, but the name must be accepted as a type from the start.
+    if (declaresType(i, Tok::Interface) || declaresType(i, Tok::Trait)) {
+      classNames_.insert(tokens_[i + 1].lexeme);
     }
   }
   // Imported enums are visible to the whole module too (PHASE 6.9 across
@@ -178,11 +188,12 @@ StmtPtr Parser::parseProgram() {
   // available to every subsequent const initializer. Re-running the pass is
   // idempotent (the parser state was consumed by the first pass).
   resolveTopLevelConsts(program);
+  validateInterfaces();
   return program;
 }
 
 void Parser::prescanImportedEnums() {
-  if (!enumScanner_) return;
+  if (!enumScanner_ && !interfaceScanner_) return;
   // Imports are top-level only, so the scan ignores everything inside braces.
   // It reads the import grammar from the token vector instead of consuming the
   // main parser state: the statements are parsed afterwards, in source order.
@@ -223,7 +234,10 @@ void Parser::prescanImportedEnums() {
             j += 2;
           }
         }
-        if (!path.empty()) seedImportedEnums(path, names, "", false);
+        if (!path.empty()) {
+          seedImportedEnums(path, names, "", false);
+          seedImportedInterfaces(path, names, "", false);
+        }
       }
       i = j;
       continue;
@@ -242,6 +256,7 @@ void Parser::prescanImportedEnums() {
     if (j + 1 < tokens_.size() && tokens_[j].type == Tok::Dot &&
         tokens_[j + 1].type == Tok::Star) {
       seedImportedEnums(path, {}, "", true);
+      seedImportedInterfaces(path, {}, "", true);
       i = j + 1;
       continue;
     }
@@ -253,8 +268,10 @@ void Parser::prescanImportedEnums() {
     }
     if (!alias.empty()) {
       seedImportedEnums(path, {}, alias, false);
+      seedImportedInterfaces(path, {}, alias, false);
     } else {
       seedImportedEnums(path, {}, path, false);
+      seedImportedInterfaces(path, {}, path, false);
       // `import a.b;` also binds the short name `b` (the compiler does the
       // same), so `b.Enum.MEMBER` is valid as well as `a.b.Enum.MEMBER`.
       const size_t dot = path.rfind('.');
@@ -262,6 +279,7 @@ void Parser::prescanImportedEnums() {
         const std::string shortName = path.substr(dot + 1);
         if (shortName != path.substr(0, path.find('.'))) {
           seedImportedEnums(path, {}, shortName, false);
+          seedImportedInterfaces(path, {}, shortName, false);
         }
       }
     }
@@ -295,6 +313,37 @@ void Parser::seedImportedEnums(const std::string& module,
       if (entry.first.empty() || entry.first[0] == '_') continue;
       seedEnum(alias + "." + entry.first, entry.second, false);
     }
+  }
+}
+
+void Parser::seedImportedInterfaces(const std::string& module,
+                                    const std::vector<std::string>& selected,
+                                    const std::string& alias, bool wildcard) {
+  if (!interfaceScanner_) return;
+  const auto interfaces = interfaceScanner_(module);
+  if (interfaces.empty()) return;
+  auto seed = [&](const std::string& visibleName, const InterfaceInfo& info) {
+    if (visibleName.empty() || visibleName[0] == '_') return;
+    // A declaration in this file owns the name, and the first import that
+    // binds a name owns it too, like `seedEnum`.
+    if (declaredInterfaceNames_.count(visibleName) != 0) return;
+    if (interfaces_.count(visibleName) != 0) return;
+    interfaces_[visibleName] = info;
+    if (visibleName.find('.') == std::string::npos) classNames_.insert(visibleName);
+  };
+  if (!selected.empty()) {
+    for (const std::string& name : selected) {
+      auto found = interfaces.find(name);
+      if (found != interfaces.end()) seed(name, found->second);
+    }
+    return;
+  }
+  if (wildcard) {
+    for (const auto& entry : interfaces) seed(entry.first, entry.second);
+    return;
+  }
+  if (!alias.empty()) {
+    for (const auto& entry : interfaces) seed(alias + "." + entry.first, entry.second);
   }
 }
 
@@ -541,6 +590,7 @@ StmtPtr Parser::parseStatement() {
   if (match(Tok::Native)) return parseNativeDecl();
   if (match(Tok::Extern)) return parseExternDecl();
   if (match(Tok::Struct)) return parseStructDecl();
+  if (match(Tok::Interface) || match(Tok::Trait)) return parseInterfaceDecl();
   if (match(Tok::Class)) return parseClassDecl();
   if (match(Tok::Enum)) return parseEnumDecl();
   if (match(Tok::If)) return parseIf();
@@ -1423,6 +1473,96 @@ static SelfWrites collectSelfWrites(const Stmt& stmt) {
   return out;
 }
 
+StmtPtr Parser::parseInterfaceDecl() {
+  const Token& keyword = previous();
+  if (nestingDepth_ > 0) {
+    throw CompileError{"an interface is only allowed at the top level of a module",
+                       keyword.line, keyword.col};
+  }
+  const Token& name = consume(Tok::Ident, "expected an interface name");
+  if (declaredInterfaceNames_.count(name.lexeme) != 0) {
+    throw CompileError{"interface '" + name.lexeme + "' is already declared", name.line,
+                       name.col};
+  }
+  if (declaredClasses_.count(name.lexeme) != 0) {
+    throw CompileError{"'" + name.lexeme + "' is already declared as a class", name.line,
+                       name.col};
+  }
+  if (declaredStructs_.count(name.lexeme) != 0) {
+    throw CompileError{"'" + name.lexeme + "' is already declared as a struct", name.line,
+                       name.col};
+  }
+  consume(Tok::LBrace, "expected '{' to start the interface body");
+  InterfaceInfo info;
+  info.name = name.lexeme;
+  info.line = name.line;
+  info.col = name.col;
+  while (!check(Tok::RBrace)) {
+    if (check(Tok::Eof)) error(peek(), "expected '}' to close the interface body");
+    if (match(Tok::Semicolon)) continue;
+    consume(Tok::Fn, "expected 'fn' in an interface body");
+    const Token& methodName = consume(Tok::Ident, "expected a method name");
+    std::vector<Param> params = parseParams();
+    parseTypeAnnotation(/*allowVoid=*/true);
+    consume(Tok::Semicolon, "expected ';' after an interface method");
+    if (info.methods.count(methodName.lexeme) != 0) {
+      throw CompileError{"duplicate method '" + methodName.lexeme + "' in interface '" +
+                             name.lexeme + "'",
+                         methodName.line, methodName.col};
+    }
+    InterfaceMethodInfo method;
+    method.name = methodName.lexeme;
+    method.arity = params.size();
+    for (const Param& param : params) method.variadic = method.variadic || param.variadic;
+    method.line = methodName.line;
+    method.col = methodName.col;
+    info.methods[method.name] = std::move(method);
+  }
+  consume(Tok::RBrace, "expected '}' to close the interface body");
+  match(Tok::Semicolon);
+  interfaces_[name.lexeme] = std::move(info);
+  declaredInterfaceNames_.insert(name.lexeme);
+  // An interface is a valid type annotation, like a class name.
+  classNames_.insert(name.lexeme);
+  // The declaration is compile-time metadata only.
+  return makeStmt(BlockStmt{}, keyword.line, keyword.col);
+}
+
+void Parser::validateInterfaces() const {
+  for (const PendingImplementation& pending : pendingImplementations_) {
+    for (const std::string& interfaceName : pending.interfaceNames) {
+      const auto found = interfaces_.find(interfaceName);
+      if (found == interfaces_.end()) {
+        throw CompileError{"class '" + pending.className + "' implements unknown interface '" +
+                               interfaceName + "'",
+                           pending.line, pending.col};
+      }
+      for (const auto& entry : found->second.methods) {
+        const InterfaceMethodInfo& required = entry.second;
+        const auto method = pending.methods.find(required.name);
+        if (method == pending.methods.end()) {
+          throw CompileError{"class '" + pending.className + "' does not implement interface '" +
+                                 interfaceName + "': missing method '" + required.name + "'",
+                             pending.line, pending.col};
+        }
+        if (method->second.arity != required.arity) {
+          throw CompileError{"method '" + required.name + "' of class '" + pending.className +
+                                 "' takes " + std::to_string(method->second.arity) +
+                                 " argument(s), but interface '" + interfaceName +
+                                 "' requires " + std::to_string(required.arity),
+                             method->second.line, method->second.col};
+        }
+        if (method->second.variadic != required.variadic) {
+          throw CompileError{"method '" + required.name + "' of class '" + pending.className +
+                                 "' does not match the variadic signature of interface '" +
+                                 interfaceName + "'",
+                             method->second.line, method->second.col};
+        }
+      }
+    }
+  }
+}
+
 StmtPtr Parser::parseClassDecl() {
   const Token& keyword = previous();
   if (nestingDepth_ > 0) {
@@ -1438,6 +1578,25 @@ StmtPtr Parser::parseClassDecl() {
   if (declaredStructs_.count(name.lexeme) != 0) {
     throw CompileError{"'" + name.lexeme + "' is already declared as a struct", name.line,
                        name.col};
+  }
+  if (declaredInterfaceNames_.count(name.lexeme) != 0) {
+    throw CompileError{"'" + name.lexeme + "' is already declared as an interface", name.line,
+                       name.col};
+  }
+  std::vector<std::string> implementedInterfaces;
+  if (match(Tok::Implements)) {
+    do {
+      const Token& first = consume(Tok::Ident, "expected an interface name");
+      std::string interfaceName = first.lexeme;
+      // A qualified import binds `alias.Interface` (PHASE 12.2); the parser
+      // seeds exactly that key, so the dotted spelling is the lookup name.
+      while (match(Tok::Dot)) {
+        const Token& part = consume(Tok::Ident, "expected an interface name after '.'");
+        interfaceName += ".";
+        interfaceName += part.lexeme;
+      }
+      implementedInterfaces.push_back(std::move(interfaceName));
+    } while (match(Tok::Comma));
   }
   consume(Tok::LBrace, "expected '{' to start the class body");
 
@@ -1542,6 +1701,23 @@ StmtPtr Parser::parseClassDecl() {
                          method.line, method.col};
     }
   }
+  if (!implementedInterfaces.empty()) {
+    PendingImplementation pending;
+    pending.className = name.lexeme;
+    pending.interfaceNames = implementedInterfaces;
+    pending.line = name.line;
+    pending.col = name.col;
+    for (const Method& method : methods) {
+      InterfaceMethodInfo info;
+      info.name = method.name;
+      info.arity = method.params.size();
+      for (const Param& param : method.params) info.variadic = info.variadic || param.variadic;
+      info.line = method.line;
+      info.col = method.col;
+      pending.methods[method.name] = std::move(info);
+    }
+    pendingImplementations_.push_back(std::move(pending));
+  }
 
   // `init` defines the constructor: its parameters are the ones the caller
   // writes after the class name. A variadic `init` cannot be forwarded (the
@@ -1608,28 +1784,40 @@ StmtPtr Parser::parseClassDecl() {
     binding.init = makeExpr(std::move(map), keyword.line, keyword.col);
     body.push_back(makeStmt(std::move(binding), keyword.line, keyword.col));
   }
-  // 2. `self.method = (params): ret => { ... };` for every method. The lambda
-  //    captures `self`, which is why the receiver is explicit in the body.
-  for (const Method& method : methods) {
-    LambdaExpr lambda;
-    lambda.params = method.params;
-    lambda.body = method.body;
-    lambda.name = name.lexeme + "." + method.name;
-    lambda.returnType = method.returnType;
-    lambda.ownerClass = name.lexeme;
-    lambda.isAsync = method.isAsync;
-    ExprPtr target = makeExpr(
-        MemberExpr{makeExpr(VariableExpr{"self"}, method.line, method.col), method.name, false},
-        method.line, method.col);
-    AssignExpr assign;
-    assign.target = std::move(target);
-    assign.op = Tok::Eq;
-    assign.value = makeExpr(std::move(lambda), method.line, method.col);
-    assign.opLine = method.line;
-    assign.opCol = method.col;
-    body.push_back(
-        makeStmt(ExprStmt{makeExpr(std::move(assign), method.line, method.col)}, method.line,
-                 method.col));
+  // 2. `let $methods = { method: (params): ret => { ... }, ... };`. The
+  //    lambdas capture `self`, which is why the receiver is explicit in the
+  //    body. Methods live in their own table, not in the instance fields.
+  {
+    MapExpr methodMap;
+    for (const Method& method : methods) {
+      LambdaExpr lambda;
+      lambda.params = method.params;
+      lambda.body = method.body;
+      lambda.name = name.lexeme + "." + method.name;
+      lambda.returnType = method.returnType;
+      lambda.ownerClass = name.lexeme;
+      lambda.isAsync = method.isAsync;
+      MapEntry entry;
+      entry.literalKey = method.name;
+      entry.value = makeExpr(std::move(lambda), method.line, method.col);
+      methodMap.entries.push_back(std::move(entry));
+    }
+    LetStmt binding;
+    binding.name = "$methods";
+    binding.kind = Tok::Let;
+    binding.init = makeExpr(std::move(methodMap), keyword.line, keyword.col);
+    body.push_back(makeStmt(std::move(binding), keyword.line, keyword.col));
+
+    // 2b. `$setClass(self, "Persona", $methods);`: attach the class identity
+    // and the method table. A hidden `$` name cannot collide with user code.
+    CallExpr setClass;
+    setClass.callee = makeExpr(VariableExpr{"$setClass"}, keyword.line, keyword.col);
+    setClass.args.push_back(makeExpr(VariableExpr{"self"}, keyword.line, keyword.col));
+    setClass.args.push_back(
+        makeExpr(LiteralExpr{Value(name.lexeme)}, keyword.line, keyword.col));
+    setClass.args.push_back(makeExpr(VariableExpr{"$methods"}, keyword.line, keyword.col));
+    body.push_back(makeStmt(ExprStmt{makeExpr(std::move(setClass), keyword.line, keyword.col)},
+                            keyword.line, keyword.col));
   }
   // 3. `self.init(<constructor arguments>);`
   if (init != nullptr) {
@@ -1969,6 +2157,12 @@ StmtPtr Parser::parseImport() {
       while (true) {
         if (check(Tok::RBrace)) break;
         const Token& name = consume(Tok::Ident, "expected an imported name");
+        // `from` is the contextual keyword that follows the list, not a name
+        // the import may introduce: allowing it would make the declaration
+        // ambiguous with a user binding named `from`.
+        if (name.lexeme == "from") {
+          error(name, "'from' cannot be used as an imported name");
+        }
         // An imported enum is a name the import introduces, not a binding that
         // shadows one; a local enum of the same name still wins and is rejected.
         if (importedEnumNames_.count(name.lexeme) == 0) rejectEnumNameAsBinding(name);
@@ -1981,6 +2175,12 @@ StmtPtr Parser::parseImport() {
       error(peek(), "expected 'from' after the imported names");
     }
     advance();
+    // A module path that starts with `from` is the same identifier as the
+    // keyword that just preceded it, so `import { x } from from;` is
+    // ambiguous. Reject it instead of guessing which `from` is the module.
+    if (check(Tok::Ident) && peek().lexeme == "from") {
+      error(peek(), "'from' cannot be used as a module name in a selective import");
+    }
     stmt.module = parseImportPath();
     consume(Tok::Semicolon, "expected ';' after the import declaration");
     return makeStmt(std::move(stmt), keyword.line, keyword.col);

@@ -44,8 +44,8 @@ constexpr std::int64_t kPcRelativeAddend = -4;
 // `.rodata` is a zero-length section, not an omission), so the section header
 // table never has to renumber its links.
 constexpr std::uint16_t kSecText = 1;
-constexpr std::uint16_t kSecRelaText = 2;
-constexpr std::uint16_t kSecRodata = 3;
+[[maybe_unused]] constexpr std::uint16_t kSecRelaText = 2;
+[[maybe_unused]] constexpr std::uint16_t kSecRodata = 3;
 constexpr std::uint16_t kSecSymtab = 4;
 constexpr std::uint16_t kSecStrtab = 5;
 constexpr std::uint16_t kSecShstrtab = 6;

@@ -116,7 +116,9 @@ std::vector<std::uint8_t> buildStaticElf(const Target& target,
     write32(ehdr, 0);                     // e_flags
     write16(ehdr, 64);                    // e_ehsize
     write16(ehdr, 56);                    // e_phentsize
-    write16(ehdr, 2);                     // e_phnum = 2
+    // Only the headers that are written are described: without rodata the
+    // second slot would stay a zeroed PT_NULL entry.
+    write16(ehdr, rodata.empty() ? 1 : 2);  // e_phnum
     write16(ehdr, 64);                    // e_shentsize
     write16(ehdr, 0);                     // e_shnum = 0
     write16(ehdr, 0);                     // e_shstrndx = 0

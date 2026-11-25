@@ -176,9 +176,9 @@ constexpr std::uint8_t kFaultExitCode = 0xFD;
 // .bss layout, all relative to kBMDataBase: the page tables first, then a
 // page of kernel data (the tick counter the timer handler owns), the boot stack
 // (which grows down toward them) and the arena at the top.
-constexpr std::uint64_t kBMPml4Offset = 0x0000;
-constexpr std::uint64_t kBMPdptOffset = 0x1000;
-constexpr std::uint64_t kBMPdOffset = 0x2000;
+[[maybe_unused]] constexpr std::uint64_t kBMPml4Offset = 0x0000;
+[[maybe_unused]] constexpr std::uint64_t kBMPdptOffset = 0x1000;
+[[maybe_unused]] constexpr std::uint64_t kBMPdOffset = 0x2000;
 constexpr std::uint64_t kBMKernelDataOffset = 0x3000;  // 4 KiB of kernel state
 constexpr std::uint64_t kBMStackTopOffset = 0x8000;    // 16 KiB stack, top address
 constexpr std::uint64_t kBMArenaOffset = 0x8000;       // arena sits right above

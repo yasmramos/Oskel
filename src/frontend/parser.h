@@ -97,6 +97,58 @@ class Parser {
           const std::string& modulePath)>;
   void setEnumScanner(EnumScanner scanner) { enumScanner_ = std::move(scanner); }
 
+  // An `interface`/`trait` declaration (PHASE 12.1). Methods are name plus
+  // arity; a class that says `implements` must provide each of them.
+  struct InterfaceMethodInfo {
+    std::string name;
+    std::size_t arity = 0;
+    bool variadic = false;
+    int line = 1;
+    int col = 1;
+  };
+  struct InterfaceInfo {
+    std::string name;
+    std::unordered_map<std::string, InterfaceMethodInfo> methods;
+    int line = 1;
+    int col = 1;
+  };
+
+  // Supplies the interfaces a module declares without making the parser depend
+  // on the filesystem (PHASE 12.2 across modules). The CLI wires it to a
+  // resolver-backed scanner, so an imported interface is a valid
+  // `implements` target before the compiler loads its module. The returned map
+  // holds only the module's own declarations, not the interfaces it imports.
+  using InterfaceScanner =
+      std::function<std::unordered_map<std::string, InterfaceInfo>(
+          const std::string& modulePath)>;
+  void setInterfaceScanner(InterfaceScanner scanner) {
+    interfaceScanner_ = std::move(scanner);
+  }
+
+  // Makes interfaces visible to a later REPL entry (a declaration or an
+  // imported interface). They are not marked as declared in this parse, so a
+  // later entry may replace one by re-declaring it.
+  void seedInterfaces(const std::unordered_map<std::string, InterfaceInfo>& interfaces) {
+    for (const auto& entry : interfaces) interfaces_[entry.first] = entry.second;
+  }
+
+  // Every interface visible here, including imported ones. A REPL keeps this
+  // map between entries.
+  const std::unordered_map<std::string, InterfaceInfo>& visibleInterfaces() const {
+    return interfaces_;
+  }
+
+  // The interfaces this parse actually declared, so a module scanner returns
+  // its own contracts and not the ones it imported.
+  std::unordered_map<std::string, InterfaceInfo> declaredInterfaces() const {
+    std::unordered_map<std::string, InterfaceInfo> result;
+    for (const std::string& name : declaredInterfaceNames_) {
+      auto found = interfaces_.find(name);
+      if (found != interfaces_.end()) result.emplace(name, found->second);
+    }
+    return result;
+  }
+
   const std::string& where() const { return where_; }
 
   // Non-fatal diagnostics raised while folding `const` initializers. An integer
@@ -143,6 +195,21 @@ class Parser {
   // not share a name, and the two sets are checked against each other in both
   // declaration orders.
   std::unordered_set<std::string> declaredClasses_;
+  std::unordered_map<std::string, InterfaceInfo> interfaces_;
+  // Names of the interfaces declared during this parse, so the module scanner
+  // can return them without re-exporting the interfaces this module imported.
+  std::unordered_set<std::string> declaredInterfaceNames_;
+  // A class and the interfaces it claims, validated after the whole module is
+  // parsed so an interface may be declared after the class that implements it.
+  struct PendingImplementation {
+    std::string className;
+    std::vector<std::string> interfaceNames;
+    std::unordered_map<std::string, InterfaceMethodInfo> methods;
+    int line = 1;
+    int col = 1;
+  };
+  std::vector<PendingImplementation> pendingImplementations_;
+  void validateInterfaces() const;
   // Names of the `class` types visible as type annotations. Pre-scanned in
   // `parseProgram` (like `structNames_`) so an annotation written before the
   // declaration is accepted, and seeded by the REPL across entries.
@@ -170,6 +237,7 @@ class Parser {
   // a type annotation or a switch label written before the import statement
   // is still accepted (PHASE 6.9 across modules). Null when no scanner is set.
   EnumScanner enumScanner_;
+  InterfaceScanner interfaceScanner_;
   // Seeds the enums of every top-level import in the token stream. Runs once
   // at the start of `parseProgram`, before any statement is parsed.
   void prescanImportedEnums();
@@ -181,6 +249,13 @@ class Parser {
   void seedImportedEnums(const std::string& module,
                          const std::vector<std::string>& selected,
                          const std::string& alias, bool wildcard);
+  // Seeds the interfaces an import makes visible (PHASE 12.2). The binding
+  // rules match `seedImportedEnums`: selective and wildcard imports expose the
+  // interface by its own name, a qualified import exposes it as
+  // `alias.Interface`.
+  void seedImportedInterfaces(const std::string& module,
+                              const std::vector<std::string>& selected,
+                              const std::string& alias, bool wildcard);
   // Registers one visible enum and its members in the parser's folding state.
   // `bare` also makes the members resolvable without the enum prefix.
   void seedEnum(const std::string& visibleName, const std::vector<EnumMember>& members,
@@ -280,6 +355,9 @@ class Parser {
   // top-level constructor function, so no AST node, opcode, compiler or VM
   // change is involved (see the definition).
   StmtPtr parseClassDecl();
+  // `interface Name { fn method(params): ret; ... }` (PHASE 12.1). A bodyless
+  // contract; `trait` is accepted as an alias. Emits no bytecode.
+  StmtPtr parseInterfaceDecl();
   // Body that follows a `=>`: a `{ ... }` block, or a single expression that
   // is desugared into a block holding one `return`. `arrow` is the `=>` token.
   StmtPtr parseFunctionBody(const Token& arrow);

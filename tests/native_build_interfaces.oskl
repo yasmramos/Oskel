@@ -1,0 +1,61 @@
+// PHASE 12.1/12.2: interfaces and traits on the VM, the AOT backend and WASM,
+// including an interface implemented inside an imported module.
+import { NestedSquare } from modules.interface_nested;
+import modules.interface_geom as geom;
+
+interface Shape {
+  fn area(): double;
+  fn name(): string;
+}
+
+trait Describable {
+  fn describe(): string;
+}
+
+class Circle implements Shape, Describable {
+  r: double;
+  fn init(r: double) { self.r = r; }
+  fn area(): double { return 3.0 * self.r * self.r; }
+  fn name(): string { return "circle"; }
+  fn describe(): string { return self.name() + ":" + str(self.area()); }
+}
+
+class ImportedCircle implements geom.Shape {
+  r: double;
+  fn init(r: double) { self.r = r; }
+  fn area(): double { return 3.0 * self.r * self.r; }
+  fn name(): string { return "imported-circle"; }
+}
+
+class Square implements Shape, Describable {
+  side: double;
+  fn init(side: double) { self.side = side; }
+  fn area(): double { return self.side * self.side; }
+  fn name(): string { return "square"; }
+  fn describe(): string { return self.name() + ":" + str(self.area()); }
+}
+
+// An interface may follow the class that implements it.
+class Late implements Later {
+  fn ping(): int { return 7; }
+}
+interface Later {
+  fn ping(): int;
+}
+
+let shapes = [Circle(2.0), Square(3.0)];
+for shape in shapes {
+  print(type(shape));
+  print(shape.name());
+  print(shape.area());
+  print(shape.describe());
+}
+print(shapes[0] == shapes[0]);
+print(shapes[0] == Circle(2.0));
+print(Late().ping());
+let nested = NestedSquare(4.0);
+print(nested.name());
+print(nested.area());
+let imported = ImportedCircle(2.0);
+print(imported.name());
+print(imported.area());

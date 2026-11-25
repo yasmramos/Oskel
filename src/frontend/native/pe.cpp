@@ -7,7 +7,7 @@
 namespace {
 
 constexpr std::uint16_t kDosMagic = 0x5A4D;
-constexpr std::uint32_t kPeSignature = 0x00004550;
+[[maybe_unused]] constexpr std::uint32_t kPeSignature = 0x00004550;
 constexpr std::uint16_t kMachineAmd64 = 0x8664;
 constexpr std::uint16_t kOptionalMagicPe32Plus = 0x020B;
 constexpr std::uint32_t kSectionAlignment = 0x1000;

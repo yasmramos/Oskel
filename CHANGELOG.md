@@ -51,7 +51,9 @@ may change between minor versions.
   async too. The body runs eagerly in this phase: a future is a plain map
   `{state, value, error}`, so the feature adds no opcode and no builtin and the
   VM, the AOT backend and the WASM backend agree by construction. A pending
-  future has no producer yet, and awaiting one is a runtime error. Covered by
+  future has no producer yet, and awaiting one is a runtime error. This is the
+  PHASE 11.1 surface, not a scheduler: `await` never suspends and PHASE 11.2
+  (pending futures, event loop, `spawn`/`join`, async lambda) is not started. Covered by
   `tests/65_async.oskl`, `tests/65_async_modules.oskl`, the `oskel.build_binary_async`
   and `oskel.build_wasm_async` fixtures and the `tests/errors/async_*.oskl`
   diagnostics.
@@ -94,6 +96,14 @@ may change between minor versions.
   the CLI.
 
 ### Changed
+
+- **`Future` is opaque to the type checker (PHASE 11.2.1).** Indexing,
+  slicing, iterating and reading or assigning a member on a `Future`-typed
+  value are compile errors, so user code cannot read or forge the
+  `state`/`value`/`error` protocol that `await` owns. A local alias, a
+  parameter and a returned future keep the type. A future is still a map at run
+  time, so a value erased to `any` can bypass the check until PHASE 11.2.5 adds
+  a runtime tag. `tests/errors/async_future_*.oskl` pin every rejected form.
 
 ### Fixed
 

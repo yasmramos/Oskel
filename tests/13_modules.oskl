@@ -24,6 +24,11 @@ import { square, cube } from modules.util;
 print(square(7));
 print(cube(2));
 
+// `from` is a contextual keyword, not a reserved word: outside an import it is
+// still an ordinary identifier.
+let from = 7;
+print(from);
+
 // --- wildcard: `import path.*;` -> unqualified access ----------------------
 import modules.other.*;
 print(triple(4));

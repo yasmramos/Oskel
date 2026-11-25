@@ -71,8 +71,9 @@ class JitFunction {
 
   int numParams() const { return numParams_; }
 
-  // Runs the native code. `args` must hold exactly `numParams` integers; the
-  // caller (the VM) guarantees both before calling.
+  // Runs the native code. `args` must hold exactly `numParams` integers. The
+  // count is checked here and a mismatch throws `std::logic_error`; that every
+  // argument is an integer stays the caller's contract (`VM::jitFor` checks it).
   Value call(const std::vector<Value>& args) const;
 
  private:

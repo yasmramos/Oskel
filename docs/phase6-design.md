@@ -1,7 +1,7 @@
 # PHASE 6 design — functions, closures, collections and iteration
 
-Status: **approved and in progress**. Slices 6a.0 and 6a are implemented; the
-rest is queued.
+Status: **implemented** (PHASE 6 complete). This page is kept as the design
+record for slices 6a-6f; `DEVELOPMENT.md` §3-§4 is the current status.
 
 Scope (from `DEVELOPMENT.md` §4, PHASE 6): `CALL`, `RETURN`, `CLOSURE`, `GETUPVAL`,
 `SETUPVAL`, per-function protos, a call stack with per-frame registers,
@@ -21,12 +21,12 @@ backend). They come after parity is proven.
 | 6a.0 | ✅ done | `Runtime` bridge and `src/ops.{h,cpp}` extraction |
 | 6a | ✅ done | protos, `CALL`/`RETURN`/`CLOSURE`, 0 upvalues |
 | 6b | ✅ done | `GETUPVAL`/`SETUPVAL`, upvalue descriptors, lambdas, escaping closures |
-| 6c-6f | pending | tables, `ITER`, callbacks, parity gate |
+| 6c-6f | ✅ done | tables, `ITER`, callbacks, parity gate; `PRINT` retired |
 
 The 40-opcode consolidation (D1) is done: `Bytecode::constants` replaces the
 `numbers`/`strings` pools and `UNOP` replaces `NEG`/`NOT`/`BNOT`. `CALL`,
-`RETURN` and `CLOSURE` execute in the VM; the table, upvalue, `ITER` and `IN`
-cases still reject with "opcode not implemented yet" until their slice.
+`RETURN`, `CLOSURE`, the table ops, `ITER` and `IN` execute in the VM, and
+`PRINT` was retired at the 6f gate, leaving 39 active opcodes.
 
 Decisions taken while implementing 6a.0, superseding the text below:
 
@@ -270,7 +270,7 @@ into `parity_test`, never into `oskel`. PHASE 4 deletes it together with the
 `--ast` flag once the VM is the dev engine. There is no state in which the
 interpreter remains a supported execution mode.
 
-## 3. Final opcode set (39 + `IN` = 40)
+## 3. Final opcode set (39 active; `IN` added, `PRINT` retired)
 
 ```
 load      LOADK MOVE
@@ -284,7 +284,6 @@ functions CALL RETURN CLOSURE GETUPVAL SETUPVAL
 tables    NEWTABLE GETTABLE SETTABLE
 iteration ITER
 membership IN
-io        PRINT             (temporary; deleted at 6f, DEVELOPMENT.md §3.6)
 end       HALT
 ```
 

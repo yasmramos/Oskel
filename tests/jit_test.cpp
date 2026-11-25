@@ -9,6 +9,7 @@
 
 #include <cstdio>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -21,13 +22,13 @@
 #include "vm.h"
 
 // The JIT emits x86-64 for the System V ABI and maps it with `mmap`, so it only
-// runs on Linux x86-64 (`jitHostSupported` in `src/runtime/jit/jit.cpp`). On any other
+// runs on x86-64 Linux and macOS (`jitHostSupported` in `src/runtime/jit/jit.cpp`). On any other
 // host `jitCompile` returns nullptr and the VM keeps interpreting, so the
 // differential checks have nothing to compare against. Like `codegen_test`,
 // `lower_test` and `freestanding_test`, the suite is skipped there.
-#if !(defined(__linux__) && defined(__x86_64__))
+#if !((defined(__linux__) || defined(__APPLE__)) && defined(__x86_64__))
 int main() {
-  std::printf("skipped: the JIT requires Linux x86-64\n");
+  std::printf("skipped: the JIT requires x86-64 Linux or macOS\n");
   return 0;
 }
 #else
@@ -434,6 +435,32 @@ int main() {
     check(jitted.second >= 1, "the JIT compiles an accepted proto while enabled");
   }
 
+  // --- A direct call with the wrong argument count is rejected --------------
+  {
+    Bytecode bc = compileSource("fn add(a, b) { return a + b; }\n");
+    std::shared_ptr<const Bytecode> proto = findProto(bc, "add");
+    std::unique_ptr<JitFunction> fn = proto ? jitCompile(*proto) : nullptr;
+    check(fn != nullptr, "arity guard: the two-parameter proto compiles");
+    if (fn) {
+      auto throwsOnCount = [&](const std::vector<Value>& args) {
+        try {
+          fn->call(args);
+        } catch (const std::logic_error&) {
+          return true;
+        }
+        return false;
+      };
+      check(throwsOnCount({}), "call with no arguments throws");
+      check(throwsOnCount({Value(static_cast<int64_t>(1))}), "call with too few arguments throws");
+      check(throwsOnCount({Value(static_cast<int64_t>(1)), Value(static_cast<int64_t>(2)),
+                           Value(static_cast<int64_t>(3))}),
+            "call with too many arguments throws");
+      check(fn->call({Value(static_cast<int64_t>(2)), Value(static_cast<int64_t>(3))})
+                .equals(Value(static_cast<int64_t>(5))),
+            "call with the exact argument count still returns the result");
+    }
+  }
+
   // --- Differential fuzz over random integer leaf functions ------------------
   {
     Rng rng;
@@ -448,4 +475,4 @@ int main() {
   return 0;
 }
 
-#endif  // Linux x86-64
+#endif  // x86-64 Linux or macOS

@@ -745,6 +745,11 @@ Value VM::runFrames(std::size_t stopDepth) {
       }
 
       case OpCode::GETTABLE: {
+        // A safe point: a long-running loop that only mutates self-referencing
+        // tables creates cycles without allocating a new table or closure, so
+        // without this point the collector never runs. The operands live in
+        // registers, so the collector sees them.
+        gcCollectIfNeeded();
         const Value& object = getReg(instruction.b);
         if (instruction.c >= 0) {
           const Value& index = getReg(instruction.c);
@@ -757,6 +762,9 @@ Value VM::runFrames(std::size_t stopDepth) {
       }
 
       case OpCode::SETTABLE: {
+        // The write half of the table safe point above: a cycle born here is
+        // collected even when the program creates no further table.
+        gcCollectIfNeeded();
         Value value = getReg(instruction.a);
         const Value& object = getReg(instruction.b);
         if (instruction.c >= 0) {

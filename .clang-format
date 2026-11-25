@@ -1,0 +1,21 @@
+# Oskel C++ style: Google, 100 columns.
+#
+# The existing sources already follow it closely (about a quarter of the files
+# are byte-identical to its output and the rest differ in small ways), so CI
+# only checks the lines a pull request changes, with `git clang-format`; it does
+# not reformat the whole tree. Format your own changes with:
+#
+#   git clang-format <base-branch>      # for example `develop`
+#
+# CI pins clang-format to the version in .github/workflows/format.yml; use the
+# same one locally (`pip install clang-format==<version>`) so the results agree.
+BasedOnStyle: Google
+ColumnLimit: 100
+# Keep the author's include order: reordering includes can change which
+# declaration a header sees first, and a formatter must not change meaning.
+SortIncludes: Never
+# The tree writes `Type& name` and `Type* name`. Google's default derives the
+# alignment from each file, which asks for `Type &name` in files where a few
+# declarations lean the other way, so fix it instead.
+DerivePointerAlignment: false
+PointerAlignment: Left

@@ -1,0 +1,23 @@
+// PHASE 12.2: an interface exported from a module. Its declarations are
+// compile-time metadata, so a consumer imports the name but no runtime value is
+// bound for it.
+
+interface Shape {
+  fn area(): double;
+  fn name(): string;
+}
+
+trait Named {
+  fn name(): string;
+}
+
+class ModuleCircle implements Shape, Named {
+  r: double;
+  fn init(r: double) { self.r = r; }
+  fn area(): double { return 3.0 * self.r * self.r; }
+  fn name(): string { return "module-circle"; }
+}
+
+fn makeModuleCircle(r: double): ModuleCircle {
+  return ModuleCircle(r);
+}

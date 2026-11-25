@@ -1724,6 +1724,18 @@ void registerBuiltins(Runtime& in) {
     if (args[0].isNil()) in.fail("unexpected nil (non-null assertion '!!' failed)");
     return args[0];
   });
+  // Private helper the class desugaring calls to attach a class identity and
+  // its method table to the instance map (PHASE 12). Methods live outside
+  // `entries`, so iteration, `len` and printing see fields only.
+  in.addNative("$setClass", [](Runtime& in, Args args) -> Value {
+    need(in, "$setClass", args, 3);
+    if (!args[0].isMap()) in.fail("$setClass() expects a map instance");
+    if (!args[1].isStr()) in.fail("$setClass() expects a class name string");
+    if (!args[2].isMap()) in.fail("$setClass() expects a method map");
+    args[0].map().className = args[1].asStr();
+    args[0].map().methods = args[2].mapPtr();
+    return Value();
+  });
 
   // Private helper for slice literals (`obj[start:end:step]`). A nil bound
   // means "from the start" / "to the end"; a negative bound counts from the

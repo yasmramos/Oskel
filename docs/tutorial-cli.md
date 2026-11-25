@@ -108,37 +108,44 @@ $ ldd wordcount
 
 ## 3. What the AOT backend supports today
 
-`oskel build` is complete for the **core of the language**. A program that stays
-inside this set compiles to native code:
+`oskel build` covers the **core of the language** and the portable standard
+library. Every language construct the VM implements lowers to native code:
 
 - literals: `nil`, `true`/`false`, integers, floats/doubles, strings;
 - arithmetic (`+ - * / % **`), bitwise (`& | ^ << >>`), unary (`- ! ~`) and
   every comparison;
 - `if`/`else`, `while`, classic `for`, `for-in` (including `for k, v in map`),
-  `break`, `continue`, ternary;
+  `break`, `continue`, ternary, `switch`, `defer`;
 - functions, recursion, mutual recursion, closures and lambdas that capture
-  their environment;
+  their environment, variadic `rest...`, `struct`, `class`, interfaces and the
+  eager `async fn`/`await` surface (no scheduler);
 - arrays and maps as **data**: `[...]`, `{...}`, indexing (`xs[i]`, `xs[-1]`),
-  members (`m.name`), `in` for arrays, maps and strings;
-- `print`, `write` and `eprint` (the builtins the embedded runtime provides);
+  members (`m.name`), `in` for arrays, maps and strings, and all bound
+  array/map/string/range methods;
+- every builtin the VM registers, gated only by what the target can back
+  (`print`, `write`, `eprint`, `len`, `type`, `range`, `args`, `exit`, the
+  conversions and math builtins, random, pointers, and the file families);
 - string interpolation.
 
-A few things the development engine offers are **not** in the AOT backend yet.
-`oskel build` reports them as a lowering error instead of emitting a broken
-binary — for example `args()`, `exit()`, `type()`, `len()`, `range()`, the
-array/map/string methods (`concat`, `slice`, `sorted`, `keys`, `upper`, …) and
-FFI declarations (`extern "C"` and `native fn`, which need a host to resolve the
-symbol):
+The remaining limits are properties of the **target**, not missing language
+features. `extern "C"` and `native fn` need a host, so they work in
+`--mode hosted`; the default freestanding image reports the unresolved symbol
+and exits 65 instead of emitting a broken binary:
 
 ```sh
-$ echo 'print(range(3));' > r.oskl && oskel build r.oskl
-lowering: global 'range' is read but never assigned
+$ printf 'extern "C" { fn getpid(): int; }\nprint(getpid());\n' > f.oskl
+$ oskel build f.oskl
+lowering: extern "C" symbol 'getpid' cannot be resolved by the AOT backend (PHASE 7f)
+$ oskel build --mode hosted f.oskl -o f   # links libc
 ```
 
-That is a deliberate design choice (§3 of `DEVELOPMENT.md`: no VM-only features), not
-a crash: the program is rejected at compile time, never mis-compiled. Until the
-rest of the standard library is lowered, keep `args()` and file I/O in the
-development engine, or pass data in as literals.
+The streaming and directory file builtins need a filesystem, so bare metal
+rejects them by name; `args()` is available where the entry point receives an
+argument vector; `memSize()` is bare-metal only; `std.ui.window` needs the
+bundled SDL3 and Skia bridge and a hosted build. A `native fn` with no backend
+stub fails the build with a dedicated message. This is the "no VM-only
+features" rule (§3 of `DEVELOPMENT.md`): a construct is compiled or rejected
+cleanly, never mis-compiled.
 
 ### 3.1 How the binary grows
 

@@ -42,10 +42,11 @@ assertEq(p.x, 6);
 assertEq(p.y, 8);
 assertEq(p.lenSquared(), 100);
 
-// The instance is a map at runtime, so the map surface works on it.
-assertEq(type(p), "map");
+// An instance carries its class name as its runtime type, and `len` counts
+// only the declared fields (methods live in a separate method table).
+assertEq(type(p), "Point");
 assert("x" in p);
-assertEq(len(p), 5);  // x, y, init, lenSquared, scaled
+assertEq(len(p), 2);  // x, y
 
 // A class name is a valid type annotation.
 let q: Point = Point(1, 1);
@@ -149,10 +150,11 @@ m.anything = "free-form";
 m.anything = 42;
 assertEq(m.anything, 42);
 
-// A class instance is a map, so a key the class never declared can still be
-// added (unlike a struct literal, which must name every declared field).
-m.added = "later";
-assertEq(m.added, "later");
+// A class instance is closed over its declared fields: a key the class never
+// declared is rejected at run time, so a typo cannot silently add a field.
+let added = pcall(() => { m.added = "later"; });
+assertEq(added.ok, false);
+assertEq(added.error.message, "class 'Mixed' has no field 'added'");
 
 // A lambda written inside a method captures that method's `self`, so a field
 // write there is checked against the same annotation.

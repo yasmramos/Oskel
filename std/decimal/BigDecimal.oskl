@@ -43,7 +43,7 @@ class BigDecimal {
       self._sign = parsed.sign;
       self._digits = parsed.digits;
       self._scale = parsed.scale;
-    } else if (type(value) == "map" && value._digits != nil && value._scale != nil) {
+    } else if (type(value) == "BigDecimal" && value._digits != nil && value._scale != nil) {
       self._sign = value._sign;
       self._digits = value._digits;
       self._scale = value._scale;
@@ -214,7 +214,7 @@ class BigDecimal {
 
   // Java's `equals`: both the numeric value and the scale must match.
   fn equals(other) {
-    if (type(other) != "map" || other._digits == nil || other._scale == nil) {
+    if (type(other) != "BigDecimal" || other._digits == nil || other._scale == nil) {
       return false;
     }
     return self._scale == other._scale && _compare(self._big(), other._big()) == 0;
@@ -310,7 +310,7 @@ fn _make(big, scale) {
 }
 
 fn _coerce(value) {
-  if (type(value) == "map" && value._digits != nil && value._scale != nil) {
+  if (type(value) == "BigDecimal" && value._digits != nil && value._scale != nil) {
     return value;
   }
   return BigDecimal(value);

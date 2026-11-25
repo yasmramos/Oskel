@@ -1,0 +1,30 @@
+// Microsoft x64 by-value struct marshalling (PHASE 10.3). The helper is
+// `tests/hosted/win64_struct_helper.c`, compiled with the Windows compiler and
+// passed with `--link-object`; the fixture checks both directions and both
+// Win64 classes (1/2/4/8 bytes in one GPR, 16 bytes by reference with `sret`).
+struct Pair {
+  a: int32;
+  b: int32;
+}
+struct Big {
+  a: int64;
+  b: int64;
+}
+extern "C" {
+  fn pair_sum(p: Pair): int;
+  fn pair_make(a: int, b: int): Pair;
+  fn big_sum(b: Big): int64;
+  fn big_make(a: int64, b: int64): Big;
+}
+
+let p = pair_make(7, 11);
+assertEq(p.a, 7);
+assertEq(p.b, 11);
+assertEq(pair_sum({a: 20, b: 22}), 42);
+
+let b = big_make(10000000000, 20000000000);
+assertEq(b.a, 10000000000);
+assertEq(b.b, 20000000000);
+assertEq(big_sum({a: 3, b: 4}), 7);
+
+print("win64 ffi struct by value ok");
