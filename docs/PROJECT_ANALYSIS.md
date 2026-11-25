@@ -19,8 +19,8 @@ tests and no CI).
 
 | Area | Status | Evidence |
 |------|--------|----------|
-| Lexer / Parser / AST | Working, tested | `src/frontend/lexer.cpp`, `src/frontend/parser.cpp` (2,780 L), `src/frontend/ast.h` |
-| Compiler AST→bytecode | PHASE 6.9 and 12.1/12.2 complete | `src/frontend/compiler.cpp` (4,379 L): literals, locals/globals, control flow, closures, collections, types, modules, interfaces |
+| Lexer / Parser / AST | Working, tested | `src/frontend/lexer.cpp`, `src/frontend/parser.cpp` (2,800 L), `src/frontend/ast.h` |
+| Compiler AST→bytecode | PHASE 6.9 and 12.1/12.2 complete | `src/frontend/compiler.cpp` (4,787 L): literals, locals/globals, control flow, closures, collections, types, modules, interfaces |
 | Register-based VM | PHASE 6 complete | `src/runtime/vm.cpp` (935 L); **39/40 opcodes** (`static_assert(kOpcodeCount <= 40)` in `include/bytecode.h`) |
 | AST interpreter | **Retired** | no `src/interpreter.cpp`; the VM is the only engine |
 | Shared runtime | Working | `src/core/value.cpp`, `src/runtime/ops.cpp` (operators), `src/runtime/builtins.cpp` (1,936 L), `src/core/gc.cpp` |
