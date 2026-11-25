@@ -14,15 +14,19 @@
 #else
 #include <sys/mman.h>
 #include <unistd.h>
+#if !defined(MAP_ANONYMOUS) && defined(MAP_ANON)
+#define MAP_ANONYMOUS MAP_ANON
+#endif
 #endif
 
 namespace {
 
-// The JIT emits x86-64 for the System V ABI only, like the AOT backend. On any
-// other host there is nothing to run, so `jitCompile` bails out immediately
-// instead of producing bytes the process cannot execute.
+// The JIT emits x86-64 for the System V ABI only, like the AOT backend. Linux
+// and macOS on x86-64 both use that ABI. On any other host (Windows, or arm64
+// such as Apple Silicon) there is nothing to run, so `jitCompile` bails out
+// immediately instead of producing bytes the process cannot execute.
 constexpr bool jitHostSupported() {
-#if defined(__linux__) && (defined(__x86_64__) || defined(__amd64__))
+#if (defined(__linux__) || defined(__APPLE__)) && (defined(__x86_64__) || defined(__amd64__))
   return true;
 #else
   return false;

@@ -185,7 +185,12 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    **Done**: not reachable. Each cache entry holds a `shared_ptr` to its proto,
    so the address cannot be reused while the entry exists (`include/jit/jit.h`
    documents it). The cache's unbounded growth is item 2.
-5. **[P1]** `jitHostSupported()` does not cover macOS; add `defined(__APPLE__)`.
+5. **[P1] [done]** `jitHostSupported()` does not cover macOS. **Done**: it now
+   covers x86-64 macOS (the same System V ABI as Linux), and `jit_test` runs
+   there. Apple Silicon is arm64 and stays on the interpreter. The executable
+   mapping was already W^X (`mmap` read-write, then `mprotect` read-execute),
+   which an unsigned binary may do on macOS; if the OS refuses it, `assign`
+   returns false and the VM keeps interpreting.
 6. **[P1]** On Windows `JitCode::assign` always returns false; the user gets no
    JIT and no message. Report it at startup.
 7. **[P2]** `emitProto` does not handle `MOD`/`POW` (`i % 2` in a loop is
