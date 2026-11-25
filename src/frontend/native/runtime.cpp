@@ -2113,9 +2113,9 @@ void emitAlloc(CodeGen& cg, CodeGen::Label label, CodeGen::Label growLabel) {
   cg.andReg(Rax, R10);      // rax = cursor aligned up to 8
   cg.movReg(R11, Rax);
   cg.addReg(R11, Rdi);      // r11 = new cursor
-  cg.jcc(Jcc::B, overflow);         // wrapped: size was absurd
+  cg.jcc(Jcc::B, overflow);  // wrapped: size was absurd
   cg.cmpReg(R11, kAotArenaEnd);
-  cg.jcc(Jcc::A, exhausted);        // past the end of this chunk
+  cg.jcc(Jcc::A, exhausted);  // past the end of this chunk
   cg.movReg(kAotArenaCursor, R11);
   cg.retInsn();
   cg.bind(exhausted);
@@ -2125,8 +2125,8 @@ void emitAlloc(CodeGen& cg, CodeGen::Label label, CodeGen::Label growLabel) {
   cg.push(Rcx);
   cg.push(R8);
   cg.push(R9);
-  cg.subRegImm32(Rsp, 8);           // six pushes leave rsp at 8 mod 16; this lands it on 0
-  cg.callLabel(growLabel);          // rax = 1 when a new chunk is in place
+  cg.subRegImm32(Rsp, 8);   // six pushes leave rsp at 8 mod 16; this lands it on 0
+  cg.callLabel(growLabel);  // rax = 1 when a new chunk is in place
   cg.addImm32(Rsp, 8);
   cg.pop(R9);
   cg.pop(R8);

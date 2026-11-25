@@ -118,11 +118,11 @@ std::uint64_t emitFreestandingRuntime(CodeGen& code, const RuntimeHandles& handl
     code.jcc(Jcc::Ae, haveLength);
     code.movImm(X64Reg::Rsi, kAotArenaChunkSize);
     code.bind(haveLength);
-    code.xorReg(X64Reg::Rdi, X64Reg::Rdi);            // addr = NULL
-    code.movImm(X64Reg::Rdx, kProtReadWrite);         // prot
-    code.movImm(X64Reg::R10, kMapPrivateAnonymous);   // flags (syscall arg 4)
-    code.movImm(X64Reg::R8, -1);                      // fd = -1
-    code.xorReg(X64Reg::R9, X64Reg::R9);              // offset = 0
+    code.xorReg(X64Reg::Rdi, X64Reg::Rdi);           // addr = NULL
+    code.movImm(X64Reg::Rdx, kProtReadWrite);        // prot
+    code.movImm(X64Reg::R10, kMapPrivateAnonymous);  // flags (syscall arg 4)
+    code.movImm(X64Reg::R8, -1);                     // fd = -1
+    code.xorReg(X64Reg::R9, X64Reg::R9);             // offset = 0
     code.movImm(X64Reg::Rax, kSysMmap);
     code.syscallInsn();
     // A failure is a negative errno in [-4095, -1], and a null map is not a
@@ -700,9 +700,9 @@ std::uint64_t emitWindowsRuntime(CodeGen& code, const RuntimeHandles& handles,
     code.bind(haveLength);
     // The length must survive the call, and rdx is caller-saved.
     code.movToMem(X64Reg::Rbp, -(kWinShadowSpace + 8), X64Reg::Rdx);
-    code.xorReg(X64Reg::Rcx, X64Reg::Rcx);                    // lpAddress = NULL
-    code.movImm(X64Reg::R8, kWinMemCommitReserve);            // flAllocationType
-    code.movImm(X64Reg::R9, kWinPageReadWrite);               // flProtect
+    code.xorReg(X64Reg::Rcx, X64Reg::Rcx);          // lpAddress = NULL
+    code.movImm(X64Reg::R8, kWinMemCommitReserve);  // flAllocationType
+    code.movImm(X64Reg::R9, kWinPageReadWrite);     // flProtect
     callImport(code, PeImport::VirtualAlloc);
     code.testReg(X64Reg::Rax);
     code.jcc(Jcc::Eq, failed);
