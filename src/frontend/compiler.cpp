@@ -516,52 +516,25 @@ bool Compiler::lookupGlobalType(const std::string& name, TypeRef& out) const {
 // is unknown/`any`, when the types match, or when `from` is `int` widening to
 // `float`. `nil` only fits a nullable target. This is the single place the
 // assignment rule lives, shared by declarations, plain assignments and
-// parameters.
-void Compiler::checkAssignable(const TypeRef& from, const TypeRef& to,
-                               const std::string& context, int line, int col) {
-  // Union source (PHASE 6.7.4): every alternative must fit the target, so a
-  // value read out of the union never surprises the destination. Recursing per
-  // member also makes union-to-union fall out for free.
-  if (from.isUnion()) {
-    for (const std::string& member : from.members()) {
-      checkAssignable(TypeRef{member, from.nullable}, to, context, line, col);
-    }
-    return;
-  }
-
-  // Union target: the value may take any alternative, so it fits when it fits
-  // at least one. `nil` fits only when the union is nullable, and a nullable
-  // source needs a nullable target (the `?` of one member does not cover the
-  // whole union), so both are decided before probing.
-  if (to.isUnion()) {
-    if (from.name == "nil") {
-      if (to.nullable) return;
-      fail("cannot assign 'nil' to '" + describeType(to) + "' in " + context +
-               ": a nullable value is not allowed here (add '| nil' or '?')",
-           line, col);
-    }
-    if (from.nullable && !to.nullable) {
-      fail("cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " +
-               context + ": a nullable value is not allowed here (add '| nil' or '?')",
-           line, col);
-    }
-    TypeRef plain = from;
-    plain.nullable = false;
-    for (const std::string& member : to.members()) {
-      if (assignError(plain, TypeRef{member, false}, context).empty()) return;
-    }
-    fail("cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " +
-             context,
-         line, col);
-  }
-
+// parameters: it asks `assignError` for the verdict and reports it.
+void Compiler::checkAssignable(const TypeRef& from, const TypeRef& to, const std::string& context,
+                               int line, int col) {
   std::string error = assignError(from, to, context);
   if (!error.empty()) fail(error, line, col);
 }
 
-// The single-assignment rule without the union case, as a message ("" means the
-// assignment is allowed). Kept separate so the union path can probe members
-// without aborting the compilation on the first miss.
+// The hint that turns a rejected nullable value into something actionable: a
+// plain target can name its own nullable spelling, a union cannot, so it offers
+// both. Shared by the `nil` case and the nullable-source case so the two
+// cannot drift apart.
+static std::string nullableHint(const TypeRef& to) {
+  if (to.isUnion()) return "a nullable value is not allowed here (add '| nil' or '?')";
+  return "a nullable value is not allowed here (use '" + to.name + "?')";
+}
+
+// The assignment rule as a message ("" means the assignment is allowed). It
+// covers unions by recursion, so the plain and the union cases are one rule
+// rather than two that can disagree.
 std::string Compiler::assignError(const TypeRef& from, const TypeRef& to,
                                   const std::string& context) const {
   if (!to.isPresent() || !from.isPresent()) return "";  // any / unknown
@@ -583,8 +556,39 @@ std::string Compiler::assignError(const TypeRef& from, const TypeRef& to,
   // annotation is not written nullable (`native fn free(p: ptr); free(nil);`).
   if (from.name == "nil") {
     if (to.nullable || isPointerTypeName(to.name) || to.isCallback()) return "";
-    return "cannot assign 'nil' to '" + describeType(to) + "' in " + context +
-           ": a nullable value is not allowed here (use '" + to.name + "?')";
+    return "cannot assign 'nil' to '" + describeType(to) + "' in " + context + ": " +
+           nullableHint(to);
+  }
+
+  // A nullable value needs a nullable target, union or not: the `?` of one
+  // alternative does not cover the whole union, so this is decided before the
+  // members are probed.
+  if (from.nullable && !to.nullable) {
+    return "cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " +
+           context + ": " + nullableHint(to);
+  }
+
+  // Union source (PHASE 6.7.4): every alternative must fit the target, so a
+  // value read out of the union never surprises the destination. The rejection
+  // names the union as a whole: no single member is what the caller wrote.
+  if (from.isUnion()) {
+    for (const std::string& member : from.members()) {
+      if (assignError(TypeRef{member, from.nullable}, to, context).empty()) continue;
+      return "cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " +
+             context;
+    }
+    return "";
+  }
+
+  // Union target: the value may take any alternative, so it fits when it fits
+  // at least one.
+  if (to.isUnion()) {
+    TypeRef plain = from;
+    plain.nullable = false;
+    for (const std::string& member : to.members()) {
+      if (assignError(plain, TypeRef{member, false}, context).empty()) return "";
+    }
+    return "cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " + context;
   }
 
   // A Oskel function is the value behind a callback (`fn(int, int): int`): any
@@ -599,14 +603,7 @@ std::string Compiler::assignError(const TypeRef& from, const TypeRef& to,
   // -- or an enum and a plain int -- is a mistake the compiler can catch. The
   // value can be turned into an int explicitly with `int(...)`.
   if (isEnumTypeName(from.name) || isEnumTypeName(to.name)) {
-    if (from.name == to.name) {
-      if (from.nullable && !to.nullable) {
-        return "cannot assign '" + describeType(from) + "' to '" + describeType(to) +
-               "' in " + context + ": a nullable value is not allowed here (use '" +
-               to.name + "?')";
-      }
-      return "";
-    }
+    if (from.name == to.name) return "";
     if (isEnumTypeName(from.name) && isEnumTypeName(to.name)) {
       return "cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " +
              context + ": different enum types";
@@ -615,16 +612,7 @@ std::string Compiler::assignError(const TypeRef& from, const TypeRef& to,
            context + ": an enum value is not an int (convert it explicitly with 'int(...)')";
   }
 
-  if (from.name == to.name) {
-    // Same type; a nullable value does not fit a non-nullable slot unless the
-    // value is provably non-nil (which `from.nullable` already encodes).
-    if (from.nullable && !to.nullable) {
-      return "cannot assign '" + describeType(from) + "' to '" + describeType(to) +
-             "' in " + context + ": a nullable value is not allowed here (use '" +
-             to.name + "?')";
-    }
-    return "";
-  }
+  if (from.name == to.name) return "";
 
   // FFI pointers (PHASE 6.6): a `cstring` is also a `ptr` (upcast to `void*`);
   // the reverse needs an explicit cast, so it is not implicit. A Oskel `string`

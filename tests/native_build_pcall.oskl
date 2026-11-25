@@ -59,3 +59,12 @@ var addOffset = (x) => x + offset;
 var captured = pcall(addOffset, 5);
 print(captured.ok);
 print(captured.value);
+
+// Structural equality is what makes an error value comparable, and the AOT
+// backend must compare the same shapes the VM does: a map holding an array, an
+// array holding a map, and a mismatch in either direction.
+print("eq map", {a: 1, b: [2, 3]} == {a: 1, b: [2, 3]});
+print("eq map bad", {a: 1, b: [2, 3]} == {a: 1, b: [2, 4]});
+print("eq arr", [1, {k: "v"}] == [1, {k: "v"}]);
+print("eq arr bad", [1, {k: "v"}] == [1, {k: "w"}]);
+print("eq err", error("x", 2) == error("x", 2), error("x", 2) == error("x"));

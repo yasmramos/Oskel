@@ -170,6 +170,7 @@ StmtPtr Parser::parseProgram() {
       classNames_.insert(tokens_[i + 1].lexeme);
     }
   }
+  rejectMalformedTypeDeclarations();
   // Imported enums are visible to the whole module too (PHASE 6.9 across
   // modules), so they are seeded before the first statement is parsed. The
   // compiler registers the same names when it compiles the imports.
@@ -190,6 +191,63 @@ StmtPtr Parser::parseProgram() {
   resolveTopLevelConsts(program);
   validateInterfaces();
   return program;
+}
+
+void Parser::rejectMalformedTypeDeclarations() const {
+  // Only a declaration at brace depth 0 is checked: inside a body the
+  // declaration is already an error for a different reason, and reporting it
+  // here would hide that message. A `{` may also come from a map literal or a
+  // function body, so the depth is the only cheap signal the token stream
+  // carries.
+  int depth = 0;
+  for (size_t i = 0; i + 1 < tokens_.size(); ++i) {
+    const Token& token = tokens_[i];
+    if (token.type == Tok::LBrace) {
+      ++depth;
+      continue;
+    }
+    if (token.type == Tok::RBrace) {
+      if (depth > 0) --depth;
+      continue;
+    }
+    if (depth != 0) continue;
+    const bool isTypeKeyword =
+        token.type == Tok::Struct || token.type == Tok::Class || token.type == Tok::Enum;
+    if (!isTypeKeyword) continue;
+    const char* keyword = token.type == Tok::Struct  ? "struct"
+                          : token.type == Tok::Class ? "class"
+                                                     : "enum";
+    const Token& name = tokens_[i + 1];
+    if (name.type != Tok::Ident) {
+      throw CompileError{std::string("expected a ") + keyword + " name", name.line, name.col};
+    }
+    // A class may carry an `implements A, b.C` clause before its body, so the
+    // brace is not necessarily the token that follows the name.
+    size_t next = i + 2;
+    if (token.type == Tok::Class && next < tokens_.size() &&
+        tokens_[next].type == Tok::Implements) {
+      ++next;
+      while (next < tokens_.size()) {
+        if (tokens_[next].type != Tok::Ident) break;
+        ++next;
+        while (next + 1 < tokens_.size() && tokens_[next].type == Tok::Dot &&
+               tokens_[next + 1].type == Tok::Ident) {
+          next += 2;
+        }
+        if (next < tokens_.size() && tokens_[next].type == Tok::Comma) {
+          ++next;
+          continue;
+        }
+        break;
+      }
+    }
+    if (next >= tokens_.size() || tokens_[next].type != Tok::LBrace) {
+      const Token& found = next < tokens_.size() ? tokens_[next] : name;
+      throw CompileError{
+          std::string("expected '{' to start the ") + keyword + " body, found " + describe(found),
+          found.line, found.col};
+    }
+  }
 }
 
 void Parser::prescanImportedEnums() {
@@ -2179,7 +2237,7 @@ StmtPtr Parser::parseImport() {
     // keyword that just preceded it, so `import { x } from from;` is
     // ambiguous. Reject it instead of guessing which `from` is the module.
     if (check(Tok::Ident) && peek().lexeme == "from") {
-      error(peek(), "'from' cannot be used as a module name in a selective import");
+      error(peek(), "'from' is a keyword and cannot name a module in a selective import");
     }
     stmt.module = parseImportPath();
     consume(Tok::Semicolon, "expected ';' after the import declaration");
@@ -2207,6 +2265,15 @@ StmtPtr Parser::parseImport() {
 }
 
 std::string Parser::parseImportPath() {
+  // `from` is the separator of the selective form, so a module literally named
+  // `from` would make `import { x } from from;` unreadable. Reject it here, at
+  // the one place a module path is read, so every import form agrees.
+  if (check(Tok::Ident) && peek().lexeme == "from") {
+    throw CompileError{
+        "'from' is a keyword and cannot name a module; rename the module or "
+        "import it under another name",
+        peek().line, peek().col};
+  }
   const Token& first = consume(Tok::Ident, "expected a module name");
   std::string path = first.lexeme;
   while (check(Tok::Dot)) {
@@ -2214,6 +2281,12 @@ std::string Parser::parseImportPath() {
     // dot belongs to the caller (the wildcard `.*` case).
     if (!peek(1).is(Tok::Ident)) break;
     advance();  // '.'
+    // `m.from` is as ambiguous as a bare `from`, and it silently became a
+    // module named "m.from" before.
+    if (peek().lexeme == "from") {
+      throw CompileError{"'from' is a keyword and cannot be a module path segment", peek().line,
+                         peek().col};
+    }
     path += '.';
     path += advance().lexeme;
   }

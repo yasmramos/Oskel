@@ -610,8 +610,8 @@ class Compiler {
   // names the target for the message.
   void checkAssignable(const TypeRef& from, const TypeRef& to, const std::string& context,
                        int line, int col);
-  // The non-union part of the assignment rule, as a message ("" means allowed).
-  // The union path in `checkAssignable` probes members with it without failing.
+  // The assignment rule as a message ("" means allowed), unions included. It is
+  // the single implementation: `checkAssignable` only reports its verdict.
   std::string assignError(const TypeRef& from, const TypeRef& to,
                           const std::string& context) const;
 

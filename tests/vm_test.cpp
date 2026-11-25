@@ -679,6 +679,33 @@ void testNullUpvalueIsRejected() {
   assert(message == "undefined upvalue: 0");
 }
 
+// SETUPVAL shares the GETUPVAL guard: writing through a null cell must raise
+// the same "undefined upvalue" instead of dereferencing it.
+void testNullUpvalueWriteIsRejected() {
+  TEST_SCOPE();
+  auto proto = std::make_shared<Bytecode>();
+  proto->name = "u";
+  proto->numRegisters = 1;
+  proto->constants = {Value(int64_t{5})};
+  proto->code = {Instruction{OpCode::LOADK, 0, 0, 0, -1, 0, 0},
+                 Instruction{OpCode::SETUPVAL, 0, 0, 0, -1, 0, 0},
+                 Instruction{OpCode::HALT, 0, 0, 0, -1, 0, 0}};
+
+  auto function = makeRef<Function>();
+  function->name = "u";
+  function->proto = proto;
+  function->upvalues.push_back(CellPtr{});  // null cell
+
+  VM vm;
+  std::string message;
+  try {
+    vm.call(Value(function), {}, 1, 1);
+  } catch (const RuntimeError& error) {
+    message = error.message;
+  }
+  assert(message == "undefined upvalue: 0");
+}
+
 // A `RETURN` in the root chunk has no caller: it must behave like `HALT`
 // instead of leaving the frame stack inconsistent.
 void testRootReturnBehavesLikeHalt() {
@@ -2677,6 +2704,7 @@ int main() {
   testRegisterCount();
   testVariadicWithoutParamsIsRejected();
   testNullUpvalueIsRejected();
+  testNullUpvalueWriteIsRejected();
   testRootReturnBehavesLikeHalt();
   testFailOutsideCallLeavesVmClean();
   testIfElseExecution();

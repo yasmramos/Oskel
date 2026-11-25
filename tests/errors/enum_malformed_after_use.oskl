@@ -1,0 +1,6 @@
+// expect-exit: 65
+// expect-message: expected '\{' to start the enum body, found end of input
+// `enum` follows the same `keyword Name {` shape as `struct` (BACKLOG §5
+// item 5), so a malformed one is reported where it is written.
+print(Color.RED);
+enum Color

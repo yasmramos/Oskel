@@ -241,6 +241,17 @@ class Parser {
   // Seeds the enums of every top-level import in the token stream. Runs once
   // at the start of `parseProgram`, before any statement is parsed.
   void prescanImportedEnums();
+
+  // `parseProgram` registers a `struct`/`class`/`enum` name before the
+  // declaration is reached, so a use written earlier still parses. A
+  // declaration that does not have the `keyword Name {` shape cannot be
+  // registered, and a use before it would then fail with a message about the
+  // use (a `;` where a struct literal was expected) instead of the real
+  // problem. This reports the declaration itself. It runs before parsing, so
+  // it can only look at the token shape, not at nesting: a declaration inside
+  // a block still reaches its own `'struct' is only allowed at the top level`
+  // message from `parseStructDecl`.
+  void rejectMalformedTypeDeclarations() const;
   // Seeds the enums an import makes visible. `selected` is the selective list
   // (empty for a qualified/wildcard import); `alias` is the qualified binding
   // path (`geom`, `g`, `pkg.geom`), empty for selective/wildcard. A bare enum

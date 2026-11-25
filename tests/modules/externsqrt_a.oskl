@@ -1,0 +1,7 @@
+// Fixture for the compatible-extern-across-modules test: declares the C symbol
+// `sqrt` with the integer-compatible signature its sibling module uses too.
+extern "C" { fn sqrt(x: double): double; }
+
+fn rootOf(v: double): double {
+  return sqrt(v);
+}
