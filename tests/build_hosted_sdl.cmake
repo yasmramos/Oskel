@@ -34,8 +34,10 @@ set(out "${CMAKE_CURRENT_BINARY_DIR}/${OSKEL_TEST_NAME}${exe_suffix}")
 file(REMOVE "${out}")
 
 if(CXX_COMPILER)
-  set(ENV{CC} "${CXX_COMPILER}")
+  set(OSKEL_CC "${CXX_COMPILER}")
 endif()
+include("${CMAKE_CURRENT_LIST_DIR}/hosted_cc.cmake")
+oskel_prepare_hosted_cc()
 
 set(sdl3_link_args "")
 if(SDL3_LIBRARY_DIR)
