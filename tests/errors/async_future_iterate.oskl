@@ -1,0 +1,15 @@
+// expect-exit: 65
+// Iterating a Future would walk the keys of the await protocol.
+async fn value(): int {
+  return 1;
+}
+
+async fn main(): int {
+  let future: Future = value();
+  for key in future {
+    print(key);
+  }
+  return 0;
+}
+
+main();

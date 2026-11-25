@@ -87,6 +87,14 @@ may change between minor versions.
 
 ### Changed
 
+- **`Future` is opaque to the type checker (PHASE 11.2.1).** Indexing,
+  slicing, iterating and reading or assigning a member on a `Future`-typed
+  value are compile errors, so user code cannot read or forge the
+  `state`/`value`/`error` protocol that `await` owns. A local alias, a
+  parameter and a returned future keep the type. A future is still a map at run
+  time, so a value erased to `any` can bypass the check until PHASE 11.2.5 adds
+  a runtime tag. `tests/errors/async_future_*.oskl` pin every rejected form.
+
 ### Fixed
 
 - **`oskelint` missed an `enum` shadow and reported a bodyless parameter.** An

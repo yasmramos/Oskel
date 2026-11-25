@@ -1,0 +1,13 @@
+// expect-exit: 65
+// Slicing is indexing under another spelling, so a Future rejects it too.
+async fn value(): int {
+  return 1;
+}
+
+async fn main(): int {
+  let future: Future = value();
+  print(future[0:1]);
+  return 0;
+}
+
+main();
