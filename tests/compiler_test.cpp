@@ -638,6 +638,53 @@ void testDeferNestedConstructsCompile() {
       "}\n");
 }
 
+void testDeferRunsBeforeTryPropagation() {
+  // `try` propagates by emitting a RETURN, so it leaves the enclosing block
+  // early. The block's deferred call must be emitted before that RETURN, which
+  // is the same order `return` gets (tests/70_try_defer.oskl pins the run-time
+  // behaviour, this pins the emission order).
+  Bytecode bc = compileSource(
+      "fn fails() { return error(\"x\"); }\n"
+      "fn f() {\n"
+      "  if (true) {\n"
+      "    defer { print(\"cleanup\"); }\n"
+      "    let v = try fails();\n"
+      "  }\n"
+      "  return 1;\n"
+      "}\n");
+  const Bytecode* fProto = nullptr;
+  for (const auto& child : bc.children) {
+    if (child->name == "f") fProto = child.get();
+  }
+  assert(fProto != nullptr);
+  // `try` emits RETURN, so the proto has the propagation one and `return 1`.
+  // The deferred CALL must immediately precede the propagation RETURN.
+  size_t firstReturn = fProto->code.size();
+  for (size_t i = 0; i < fProto->code.size(); ++i) {
+    if (fProto->code[i].op == OpCode::RETURN) {
+      firstReturn = i;
+      break;
+    }
+  }
+  assert(firstReturn > 0 && "try must emit a RETURN");
+  assert(fProto->code[firstReturn - 1].op == OpCode::CALL &&
+         "the block's defer must run before the try propagation RETURN");
+}
+
+void testCatchKeepsDeferInScope() {
+  // `catch` does not leave the scope (it is `$isError` + a conditional MOVE),
+  // so a `defer` in the same block still runs at the block's normal exit, after
+  // the recovered value is produced.
+  expectCompiles(
+      "fn f() {\n"
+      "  {\n"
+      "    defer { print(\"cleanup\"); }\n"
+      "    let v = error(\"x\") catch 0;\n"
+      "  }\n"
+      "  return 1;\n"
+      "}\n");
+}
+
 void testBlockScopingBytecode() {
   Bytecode bc = compileSource(
       "{\n"
@@ -1884,6 +1931,8 @@ int main() {
   testDeferRunsOnFallThrough();
   testDeferErrors();
   testDeferNestedConstructsCompile();
+  testDeferRunsBeforeTryPropagation();
+  testCatchKeepsDeferInScope();
   testBlockScopingBytecode();
   testShadowingSlots();
   testLocalImmutableAssignment();

@@ -1307,9 +1307,17 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `testRootReturnBehavesLikeHalt` the root `RETURN`. The write was missing:
    `testNullUpvalueWriteIsRejected` runs a `SETUPVAL` through a null cell and
    asserts the same "undefined upvalue: 0" (removing the guard segfaults it).
-10. **[P1]** Add `compiler_test.cpp` cases for a `Point` alias plus a
+10. **[P1] [done]** Add `compiler_test.cpp` cases for a `Point` alias plus a
     `struct Point`, `try` inside a block with a `defer`, and `catch` with a
-    fallback block that has a `defer`.
+    fallback block that has a `defer`. **Done**: the alias/struct collision is
+    covered by `testStructImportNameConflict` (§3.5, both source orders and all
+    import forms). The two `defer` cases are now
+    `testDeferRunsBeforeTryPropagation` (the block's deferred CALL is the
+    instruction before the RETURN that `try` emits, so the cleanup runs on the
+    propagation path) and `testCatchKeepsDeferInScope` (`catch` is `$isError` +
+    a conditional MOVE, so it does not leave the scope and the deferred block
+    still runs at the normal exit). `tests/70_try_defer.oskl` pins the same
+    ordering at run time, in the VM and in the AOT binary.
 11. **[P1] [done]** Add `module_test.cpp` cases for two `extern "C"` of the
     same name in different modules and for `import` with `from` as a user
     variable. **Done**: `testConflictingExternAcrossModules` already covered the
