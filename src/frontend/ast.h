@@ -36,7 +36,7 @@ struct TypeRef {
   // here; it folds into `nullable`, so `int | string | nil` is the union
   // `int | string` with `nullable = true`. Like every type, unions are erased
   // before the bytecode (DEVELOPMENT.md §3).
-  std::vector<std::string> alternatives;
+  std::vector<std::string> alternatives = {};
 
   // Callback signature (PHASE 6.6): when `name == "fn"`, the parameter and
   // return type names of a C function pointer. Only scalar FFI types are

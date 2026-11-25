@@ -1293,8 +1293,8 @@ void emitArith(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
 // musl `pow` and re-tags the result, so a float/float result rounds back to
 // binary32 exactly like the hosted `makeNumeric`. A non-number operand is the
 // unsupported-operand error.
-void emitPow(CodeGen& cg, CodeGen::Label label, CodeGen::Label fail,
-             const DataBlob& msgPow, const DataBlob& separator, CodeGen::Label mathPow) {
+void emitPow(CodeGen& cg, CodeGen::Label label, CodeGen::Label /*fail*/, const DataBlob& msgPow,
+             const DataBlob& separator, CodeGen::Label mathPow) {
   CodeGen::Label bad = cg.newLabel();
   CodeGen::Label floatPath = cg.newLabel();
   CodeGen::Label floatFloat = cg.newLabel();
@@ -7282,7 +7282,6 @@ void emitMapMemberGet(CodeGen& cg, const CollectionEnv& env, CodeGen::Label memb
   // is checked before the built-in map members, so a method named `length`
   // wins over the map length, exactly like the hosted `ops::memberGet`.
   CodeGen::Label noMethods = cg.newLabel();
-  CodeGen::Label methodFound = cg.newLabel();
   cg.movFromMem(Rdi, R12, kTableMethodsOffset);
   cg.testReg(Rdi);
   cg.jcc(Jcc::Eq, noMethods);

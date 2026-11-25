@@ -1,0 +1,31 @@
+{
+  "problemMatcher": [
+    {
+      "owner": "oskel-gcc-clang",
+      "pattern": [
+        {
+          "regexp": "^(.+?):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "message": 5
+        }
+      ]
+    },
+    {
+      "owner": "oskel-msvc",
+      "pattern": [
+        {
+          "regexp": "^(.+?)\\((\\d+)(?:,(\\d+))?\\):\\s+(warning|error)\\s+(C\\d+):\\s+(.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "severity": 4,
+          "code": 5,
+          "message": 6
+        }
+      ]
+    }
+  ]
+}
