@@ -55,8 +55,9 @@ may change between minor versions.
   `{state, value, error}`, so the feature adds no opcode and no builtin and the
   VM, the AOT backend and the WASM backend agree by construction. A pending
   future has no producer yet, and awaiting one is a runtime error. This is the
-  PHASE 11.1 surface, not a scheduler: `await` never suspends and PHASE 11.2
-  (pending futures, event loop, `spawn`/`join`, async lambda) is not started. Covered by
+  PHASE 11.1 surface, not a scheduler: `await` never suspends. The 11.2.2
+  entry above adds the pending futures, `spawn` and `yield`; suspension, a
+  `join` and an async lambda are still open. Covered by
   `tests/65_async.oskl`, `tests/65_async_modules.oskl`, the `oskel.build_binary_async`
   and `oskel.build_wasm_async` fixtures and the `tests/errors/async_*.oskl`
   diagnostics.
