@@ -1,0 +1,65 @@
+// Arena growth (PHASE 7c.1c): the AOT bump allocator must serve more than the
+// 1 MiB region `_start` maps.
+//
+// Each section below allocates past that region on its own, so the image failed
+// with "out of memory" while the arena was fixed. Growing it is not enough: the
+// growth path runs inside `oskel_alloc`, whose contract is to clobber only rax
+// and r10/r11, and a helper that reads its operands after an allocation (string
+// concatenation is the one) crashes the moment the slow path runs. Both halves
+// are pinned here, because the VM has real memory and is the reference the
+// binary must match.
+
+fn buildArray(n) {
+  var xs = [];
+  // One bound closure for the whole loop: `xs.push(i)` would allocate a closure
+  // per iteration and reach the growth path for the wrong reason.
+  var push = xs.push;
+  var i = 0;
+  while (i < n) {
+    push(i);
+    i += 1;
+  }
+  return xs;
+}
+
+fn main() {
+  // 1. An array whose blocks double past the initial region (~6 MiB in total).
+  var xs = buildArray(200000);
+  var sum = 0;
+  for x in xs {
+    sum += x;
+  }
+
+  // 2. Many small concatenations, each one an allocation: `+` reads both
+  //    operands *after* the allocation, so this is the path the growth slow path
+  //    used to corrupt. The operands are locals so the compiler cannot fold the
+  //    concatenation into a constant.
+  var left = "ab";
+  var right = "cd";
+  var text = "";
+  var i = 0;
+  while (i < 100000) {
+    text = left + right;
+    i += 1;
+  }
+
+  // 3. A map with string keys: one key string and one entry per insert.
+  var m = {};
+  i = 0;
+  while (i < 30000) {
+    m["key${i}"] = i;
+    i += 1;
+  }
+  var keySum = 0;
+  i = 0;
+  while (i < 30000) {
+    keySum += m["key${i}"];
+    i += 1;
+  }
+
+  // The print itself allocates (interpolation, number formatting) after the
+  // last growth.
+  print("arena ${sum} ${xs.length} ${text} ${keySum} ${m.length}");
+}
+
+main();

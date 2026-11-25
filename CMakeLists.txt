@@ -579,6 +579,15 @@ if(BUILD_TESTING)
         "-DOSKEL_EXPECTED_OUTPUT=2 <one><two words>"
         "-DOSKEL_ARGS=one;two words"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_windows.cmake")
+    # The hosted arena grows with the UCRT's `malloc`, a different thunk from the
+    # freestanding `VirtualAlloc` one, so the same allocation-heavy fixture runs
+    # here too.
+    add_test(NAME oskel.build_hosted_own_windows_arena_growth
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_arena_growth.oskl"
+        "-DOSKEL_EXPECTED_OUTPUT=arena 19999900000 200000 abcd 449985000 30000"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_windows.cmake")
   endif()
   oskel_add_cpp_test(pe_test)
   oskel_add_cpp_test(lower_test)
@@ -1027,6 +1036,20 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_concat.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # The arena is a bump region: when it runs out, `oskel_alloc` maps a fresh
+    # chunk (`oskel_arena_grow`) instead of failing. The fixture allocates ~8 MiB
+    # across an array, a concatenation loop and a map, so a fixed 1 MiB region
+    # reports "out of memory"; it also pins the allocator's contract that only
+    # rax and r10/r11 are clobbered, because a helper that reads its operands
+    # after an allocation (string concatenation) crashed the first time the slow
+    # path ran.
+    add_test(NAME oskel.build_binary_arena_growth
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_arena_growth"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_arena_growth.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `arr.push`/`arr.pop` are bound methods: the receiver is captured, `push`
     # returns the array and `pop` the removed item. Checked against the VM here
     # because the script tests that cover them only run on the hosted engine,
@@ -1302,6 +1325,7 @@ if(BUILD_TESTING)
       # must match the VM byte for byte.
       foreach(own_fixture
           native_build_hello
+          native_build_arena_growth
           native_build_extern_hosted
           native_build_extern_ptr_return
           native_build_extern_struct)

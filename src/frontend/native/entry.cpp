@@ -100,6 +100,48 @@ std::uint64_t emitFreestandingRuntime(CodeGen& code, const RuntimeHandles& handl
   code.addImm32(kAotArenaEnd, static_cast<std::int32_t>(kAotArenaSize));
   code.retInsn();
 
+  // --- long oskel_arena_grow(long size) ---
+  // mmap(NULL, max(size + kAotArenaFirstOffset, kAotArenaChunkSize),
+  //      PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) and repoint the
+  // allocator state at the new region, so `oskel_alloc` can retry. Returns 1 on
+  // success and 0 when the kernel refuses (the allocator then reports "out of
+  // memory"). The exhausted chunk is abandoned: a bump region has no free, and
+  // that is the trade for a ceiling that no longer exists.
+  code.bind(handles.arenaGrow);
+  {
+    CodeGen::Label haveLength = code.newLabel();
+    CodeGen::Label failed = code.newLabel();
+    CodeGen::Label done = code.newLabel();
+    code.movReg(X64Reg::Rsi, X64Reg::Rdi);  // length = size + first offset
+    code.addImm32(X64Reg::Rsi, static_cast<std::int32_t>(kAotArenaFirstOffset));
+    code.cmpImm32(X64Reg::Rsi, static_cast<std::int32_t>(kAotArenaChunkSize));
+    code.jcc(Jcc::Ae, haveLength);
+    code.movImm(X64Reg::Rsi, kAotArenaChunkSize);
+    code.bind(haveLength);
+    code.xorReg(X64Reg::Rdi, X64Reg::Rdi);           // addr = NULL
+    code.movImm(X64Reg::Rdx, kProtReadWrite);        // prot
+    code.movImm(X64Reg::R10, kMapPrivateAnonymous);  // flags (syscall arg 4)
+    code.movImm(X64Reg::R8, -1);                     // fd = -1
+    code.xorReg(X64Reg::R9, X64Reg::R9);             // offset = 0
+    code.movImm(X64Reg::Rax, kSysMmap);
+    code.syscallInsn();
+    // A failure is a negative errno in [-4095, -1], and a null map is not a
+    // usable region either. `rsi` (the length) survives the syscall.
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::S, failed);
+    code.jcc(Jcc::Eq, failed);
+    code.movReg(kAotArenaCursor, X64Reg::Rax);
+    code.addImm32(kAotArenaCursor, static_cast<std::int32_t>(kAotArenaFirstOffset));
+    code.movReg(kAotArenaEnd, X64Reg::Rax);
+    code.addReg(kAotArenaEnd, X64Reg::Rsi);
+    code.movImm(X64Reg::Rax, 1);
+    code.jmp(done);
+    code.bind(failed);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.bind(done);
+    code.retInsn();
+  }
+
   // --- long oskel_time(void) ---
   // `time(NULL)`: seconds since the Unix epoch, in rax. The kernel returns the
   // current UTC wall clock, so no timezone shift is applied here (a local time
@@ -635,6 +677,49 @@ std::uint64_t emitWindowsRuntime(CodeGen& code, const RuntimeHandles& handles,
   code.movReg(X64Reg::Rsp, X64Reg::Rbp);
   code.pop(X64Reg::Rbp);
   code.retInsn();
+
+  // --- long oskel_arena_grow(long size) ---
+  // VirtualAlloc(NULL, max(size + first offset, kAotArenaChunkSize),
+  //              MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE) and repoint the
+  // allocator state at the new region. Returns 1 on success and 0 when Windows
+  // refuses, which `oskel_alloc` reports as "out of memory". The exhausted
+  // chunk is abandoned, exactly like the Linux prelude's.
+  code.bind(handles.arenaGrow);
+  {
+    CodeGen::Label haveLength = code.newLabel();
+    CodeGen::Label failed = code.newLabel();
+    CodeGen::Label done = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.subRegImm32(X64Reg::Rsp, kWinShadowSpace + 16);
+    code.movReg(X64Reg::Rdx, X64Reg::Rdi);
+    code.addImm32(X64Reg::Rdx, static_cast<std::int32_t>(kAotArenaFirstOffset));
+    code.cmpImm32(X64Reg::Rdx, static_cast<std::int32_t>(kAotArenaChunkSize));
+    code.jcc(Jcc::Ae, haveLength);
+    code.movImm(X64Reg::Rdx, kAotArenaChunkSize);
+    code.bind(haveLength);
+    // The length must survive the call, and rdx is caller-saved.
+    code.movToMem(X64Reg::Rbp, -(kWinShadowSpace + 8), X64Reg::Rdx);
+    code.xorReg(X64Reg::Rcx, X64Reg::Rcx);          // lpAddress = NULL
+    code.movImm(X64Reg::R8, kWinMemCommitReserve);  // flAllocationType
+    code.movImm(X64Reg::R9, kWinPageReadWrite);     // flProtect
+    callImport(code, PeImport::VirtualAlloc);
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, failed);
+    code.movReg(kAotArenaCursor, X64Reg::Rax);
+    code.addImm32(kAotArenaCursor, static_cast<std::int32_t>(kAotArenaFirstOffset));
+    code.movReg(kAotArenaEnd, X64Reg::Rax);
+    code.movFromMem(X64Reg::Rdx, X64Reg::Rbp, -(kWinShadowSpace + 8));
+    code.addReg(kAotArenaEnd, X64Reg::Rdx);
+    code.movImm(X64Reg::Rax, 1);
+    code.jmp(done);
+    code.bind(failed);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.bind(done);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
 
   // --- long oskel_time(void) ---
   // GetSystemTimeAsFileTime writes a FILETIME: 100-nanosecond intervals since
@@ -1252,6 +1337,43 @@ std::uint64_t emitHostedRuntime(CodeGen& code, const RuntimeHandles& handles,
   code.pop(X64Reg::Rbp);
   code.retInsn();
 
+  // --- long oskel_arena_grow(long size) ---
+  // `malloc(max(size + first offset, kAotArenaChunkSize))` and repoint the
+  // allocator state at the new block. libc owns the block and frees it at exit;
+  // the previous chunk stays allocated (a bump region has no free), which is the
+  // price of having no ceiling. Returns 1 on success and 0 on a failed malloc.
+  code.bind(handles.arenaGrow);
+  {
+    CodeGen::Label haveLength = code.newLabel();
+    CodeGen::Label failed = code.newLabel();
+    CodeGen::Label done = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.subRegImm32(X64Reg::Rsp, 16);
+    code.addImm32(X64Reg::Rdi, static_cast<std::int32_t>(kAotArenaFirstOffset));
+    code.cmpImm32(X64Reg::Rdi, static_cast<std::int32_t>(kAotArenaChunkSize));
+    code.jcc(Jcc::Ae, haveLength);
+    code.movImm(X64Reg::Rdi, kAotArenaChunkSize);
+    code.bind(haveLength);
+    code.movToMem(X64Reg::Rbp, -8, X64Reg::Rdi);  // the length, across the call
+    code.callExternal("malloc");
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, failed);
+    code.movReg(kAotArenaCursor, X64Reg::Rax);
+    code.addImm32(kAotArenaCursor, static_cast<std::int32_t>(kAotArenaFirstOffset));
+    code.movReg(kAotArenaEnd, X64Reg::Rax);
+    code.movFromMem(X64Reg::Rdi, X64Reg::Rbp, -8);
+    code.addReg(kAotArenaEnd, X64Reg::Rdi);
+    code.movImm(X64Reg::Rax, 1);
+    code.jmp(done);
+    code.bind(failed);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.bind(done);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
+
   // --- long oskel_time(void) ---
   // libc `time(NULL)`: seconds since the Unix epoch. The hosted mode links
   // against libc by construction (that is the point of the mode), so the wall
@@ -1702,6 +1824,43 @@ std::uint64_t emitWindowsHostedRuntime(CodeGen& code, const RuntimeHandles& hand
   code.movReg(X64Reg::Rsp, X64Reg::Rbp);
   code.pop(X64Reg::Rbp);
   code.retInsn();
+
+  // --- long oskel_arena_grow(long size) ---
+  // The UCRT's `malloc`, reached with the Microsoft x64 ABI: the size goes in
+  // rcx and the call gets 32 bytes of shadow space. Same contract as the other
+  // preludes -- 1 when the new block is in place, 0 when malloc fails.
+  code.bind(handles.arenaGrow);
+  {
+    CodeGen::Label haveLength = code.newLabel();
+    CodeGen::Label failed = code.newLabel();
+    CodeGen::Label done = code.newLabel();
+    code.push(X64Reg::Rbp);
+    code.movReg(X64Reg::Rbp, X64Reg::Rsp);
+    code.subRegImm32(X64Reg::Rsp, kWinShadowSpace + 16);
+    code.movReg(X64Reg::Rcx, X64Reg::Rdi);
+    code.addImm32(X64Reg::Rcx, static_cast<std::int32_t>(kAotArenaFirstOffset));
+    code.cmpImm32(X64Reg::Rcx, static_cast<std::int32_t>(kAotArenaChunkSize));
+    code.jcc(Jcc::Ae, haveLength);
+    code.movImm(X64Reg::Rcx, kAotArenaChunkSize);
+    code.bind(haveLength);
+    code.movToMem(X64Reg::Rbp, -(kWinShadowSpace + 8), X64Reg::Rcx);
+    code.callExternal("malloc");
+    code.testReg(X64Reg::Rax);
+    code.jcc(Jcc::Eq, failed);
+    code.movReg(kAotArenaCursor, X64Reg::Rax);
+    code.addImm32(kAotArenaCursor, static_cast<std::int32_t>(kAotArenaFirstOffset));
+    code.movReg(kAotArenaEnd, X64Reg::Rax);
+    code.movFromMem(X64Reg::Rcx, X64Reg::Rbp, -(kWinShadowSpace + 8));
+    code.addReg(kAotArenaEnd, X64Reg::Rcx);
+    code.movImm(X64Reg::Rax, 1);
+    code.jmp(done);
+    code.bind(failed);
+    code.xorReg(X64Reg::Rax, X64Reg::Rax);
+    code.bind(done);
+    code.movReg(X64Reg::Rsp, X64Reg::Rbp);
+    code.pop(X64Reg::Rbp);
+    code.retInsn();
+  }
 
   // --- long oskel_time(void) ---
   // UCRT `_time64(NULL)`: seconds since the Unix epoch. `time` is an inline
