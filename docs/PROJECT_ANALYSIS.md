@@ -25,7 +25,7 @@ tests and no CI).
 | AST interpreter | **Retired** | no `src/interpreter.cpp`; the VM is the only engine |
 | Shared runtime | Working | `src/core/value.cpp`, `src/runtime/ops.cpp` (operators), `src/runtime/builtins.cpp` (1,936 L), `src/core/gc.cpp` |
 | AOT backend | PHASE 7 in progress (7f.11 and 7g done); PHASE 9/10 backends landed | `src/frontend/native/*` (codegen, lower, runtime, dtoa, mathlib, parse_float, elf, pe, macho, link, pe_link, object, wasm, arena, freestanding platform, entry) |
-| Tests | 168 `.oskl` under `tests/` (80 numbered, 85 `native_build_*` AOT fixtures, 3 named) + 170 under `tests/errors/` + 12 under `tests/check/` + 18 top-level examples (+ 4 subdirectory demos) + 32 C++ test sources | `tests/`, `tests/errors/`, `tests/check/`, `examples/`, wired into CTest (505 cases) |
+| Tests | 171 `.oskl` under `tests/` (82 numbered, 86 `native_build_*` AOT fixtures, 3 named) + 172 under `tests/errors/` + 12 under `tests/check/` + 18 top-level examples (+ 4 subdirectory demos) + 32 C++ test sources | `tests/`, `tests/errors/`, `tests/check/`, `examples/`, wired into CTest (520 cases) |
 | CI | Two workflows | `.github/workflows/{cmake-multi-platform,artifacts}.yml` (Linux, Windows, macOS) |
 
 Build (`sh build.sh`) and the full CTest suite run clean on Linux x86-64;

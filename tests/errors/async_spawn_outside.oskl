@@ -1,0 +1,8 @@
+// expect-exit: 65
+// `spawn` needs a scheduler, so it is only valid inside an async body.
+fn main(): void {
+  let f = spawn work();
+  print(f);
+}
+
+main();

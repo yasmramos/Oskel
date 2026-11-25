@@ -147,7 +147,7 @@
       "patterns": [
         {
           "name": "keyword.control.oskl",
-          "match": "\\b(?:if|else|while|do|for|in|break|continue|return|switch|case|default|try|catch|defer|await)\\b"
+          "match": "\\b(?:if|else|while|do|for|in|break|continue|return|switch|case|default|try|catch|defer|await|spawn|yield)\\b"
         },
         {
           "name": "storage.type.oskl",

@@ -11,6 +11,19 @@ may change between minor versions.
 
 ### Added
 
+- **The async scheduler (PHASE 11.2.2): pending futures, `spawn`, `yield`.**
+  Calling an `async fn` now returns a pending `Future` and enqueues its task;
+  `spawn f()` enqueues explicitly, `yield()` lets the other ready tasks run,
+  and `await` drains the queue when the future is pending before reading the
+  result. A script drains its queue before exiting, so `async fn main` runs
+  without a top-level `await`. The factory/step split and the scheduler are
+  ordinary Oskel over maps and arrays, so the VM, `oskel build` and WASM agree
+  and no opcode or builtin is added. The body is still one eager step: real
+  suspension at `await` is PHASE 11.2.3, top-level `await` is 11.2.4. Covered
+  by `tests/71_async_scheduler.oskl`,
+  `tests/native_build_async_scheduler.oskl` and the
+  `tests/errors/async_{spawn_outside,yield_outside,spawn_non_future}.oskl`
+  diagnostics.
 - **The release SDK bundles SDL3 and Skia.** `std.ui` and `std.ui.window` no
   longer depend on libraries the user installs. The artifacts workflow builds a
   shared SDL3 and a static Skia with vcpkg, links the static archive into

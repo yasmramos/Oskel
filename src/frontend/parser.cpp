@@ -2517,6 +2517,26 @@ ExprPtr Parser::parseUnary() {
     auto operand = parseUnary();
     return makeExpr(AwaitExpr{std::move(operand)}, op.line, op.col);
   }
+  // `spawn expr` (PHASE 11.2.2): start an async call as a task. It binds like
+  // `await`, so `spawn f()` spawns the call, not a member of its result.
+  if (check(Tok::Spawn)) {
+    const Token& op = advance();
+    if (asyncDepth_ == 0) {
+      throw CompileError{"'spawn' is only allowed inside an 'async fn'", op.line, op.col};
+    }
+    auto operand = parseUnary();
+    return makeExpr(SpawnExpr{std::move(operand)}, op.line, op.col);
+  }
+  // `yield()` (PHASE 11.2.2): hand control to the ready queue. The empty
+  // parentheses are optional in statement position, so `yield;` is accepted.
+  if (check(Tok::Yield)) {
+    const Token& op = advance();
+    if (asyncDepth_ == 0) {
+      throw CompileError{"'yield' is only allowed inside an 'async fn'", op.line, op.col};
+    }
+    if (match(Tok::LParen)) consume(Tok::RParen, "expected ')' after 'yield('");
+    return makeExpr(YieldExpr{}, op.line, op.col);
+  }
   // `try expr` (PHASE 6.7.3): prefix propagation. It binds like the other
   // prefix operators (`-`, `!`, `~`), so it applies to the whole postfix
   // operand: `try f().x` propagates the result of the member access.
