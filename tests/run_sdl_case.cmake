@@ -21,11 +21,17 @@ endif()
 set(ENV{SDL_VIDEODRIVER} "dummy")
 set(ENV{SDL_AUDIODRIVER} "dummy")
 
+if(WIN32)
+  set(empty_input "NUL")
+else()
+  set(empty_input "/dev/null")
+endif()
+
 execute_process(
   COMMAND "${OSKEL_EXE}" "${OSKEL_SCRIPT}"
   # Never inherit the developer's terminal: an SDL test must not block on
   # stdin, and an interactive `ctest` must take the same path as CI.
-  INPUT_FILE "/dev/null"
+  INPUT_FILE "${empty_input}"
   RESULT_VARIABLE actual_exit
   OUTPUT_VARIABLE script_stdout
   ERROR_VARIABLE script_stderr

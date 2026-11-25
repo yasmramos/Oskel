@@ -21,6 +21,16 @@ may change between minor versions.
   same pair with `tools/prepare_ui_deps.py`; the `install_stdlib` test runs the
   real shim from the installed tree. The Windows and macOS artifacts now build
   the UI backend instead of silently omitting it.
+- **The Skia and SDL3 end-to-end tests run on Windows and macOS.** `cxxbind.skia`
+  now registers wherever CMake finds Skia, not only on Linux: the VM half runs
+  on every platform, and the hosted x86-64 half builds and runs on Linux,
+  Windows and Intel macOS. `oskel.build_hosted_sdl` follows the same rule, so a
+  Windows or macOS regression in the FFI or the UI linker no longer hides
+  behind a Linux-only test. The harness passes `CC`, copies the Windows import
+  libraries and uses the platform's executable suffix, `NUL` and `otool -L`
+  instead of assuming POSIX. The artifacts matrix adds `oskel-macos-x64` on the
+  Intel runner, so that hosted half runs in CI; the vcpkg cache key now includes
+  the runner architecture, and only the arm64 job builds the macOS installers.
 - **`oskelp` supports multi-member workspaces.** A root `oskel.toml` with a
   `[workspace] members = [...]` table shares one `oskel.lock`, one
   `.oskel/deps` and one `target/` across every member. `build`, `check` and

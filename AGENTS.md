@@ -1052,7 +1052,11 @@ it as a caveat:
   C++; the native backend emits x86-64 (Linux, Windows and hosted macOS, plus
   bare metal), and its execution tests run only where that image can run. The
   macOS arm64 runner builds the hosted Mach-O image and checks its libSystem
-  dependency, but skips running it (that needs Rosetta).
+  dependency, but skips running it (that needs Rosetta). The artifacts matrix
+  also has `macos-15-intel`, which runs the hosted half of `cxxbind.skia` and
+  `oskel.build_hosted_sdl`; the vcpkg cache key includes `runner.arch` so the
+  arm64 and x64 install trees never collide. Only the arm64 job builds the
+  `.pkg`/`.dmg`, because both jobs would otherwise write the same file name.
 - To verify the release path without a real release, push a throwaway tag
   (`v0.1.0-<something>test`), confirm the assets and `sha256sum -c SHA256SUMS`,
   then delete the release *and* the tag. A failed run can leave a draft release
