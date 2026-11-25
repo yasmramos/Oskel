@@ -783,8 +783,21 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     file. The PE side has the matching `testContainerStructure`: section raw
     ranges in the file, page-aligned non-overlapping RVAs inside
     `SizeOfImage`, the entry point in `.text`, every data directory inside the
-    image and a NULL-terminated import descriptor array. Still open here: the
-    ad-hoc signature and ARM64.
+    image and a NULL-terminated import descriptor array. **Verified end to end**
+    on this host (not only in the unit tests): `oskel build --target
+    x86_64-macos-sysv --mode hosted --emit-object` writes a valid `MH_OBJECT`
+    and `oskelld --target x86_64-macos-sysv` closes it into an `MH_EXECUTE`
+    whose 12 load commands walk to exactly `sizeofcmds`; the bind stream is
+    `SET_DYLIB_ORDINAL_IMM(1) SET_SYMBOL(...) SET_TYPE_IMM(1) SEG2_OFF(n)
+    DO_BIND` per import, 19 `DO_BIND` for 19 imports, ending on `DONE`, with
+    `SEG2` (0x72) naming `__DATA`; `__stubs` carries `reserved1 = 0` and
+    `__got` `reserved1 = imports.size()`, the correct indirect-table split.
+    Segment protections are `__TEXT` 5, `__DATA` 3, `__LINKEDIT` 1, their VM
+    ranges do not overlap and every `fileoff`/`filesize` lies in the file. The
+    PE side produces a PE32+ whose entry point sits in `.text`, whose section
+    raw ranges and RVAs stay inside the file and `SizeOfImage`, and whose
+    import descriptor array is NULL-terminated. Still open here: the ad-hoc
+    signature (required before an arm64 macOS image can run) and ARM64.
 
 31. **[P0] [done]** VM/AOT divergence in reading a global before it is assigned:
     the VM fails with `runtime error: undefined variable '<name>'` and exit 70,

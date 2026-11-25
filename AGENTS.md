@@ -282,7 +282,14 @@ it as a caveat:
   value it captured at entry, so it reports elapsed time -- not the VM's CPU
   time, but the same observable shape (a non-negative, non-decreasing double).
   A `divUnsigned` in the AOT emitters zeroes `rdx`, so a divisor must never live
-  there. A thunk that reaches a Windows API with five or more arguments must
+  there. A string's `for-in` cursor is a **byte offset** in all three engines
+  (VM, AOT, WASM): a step reads the lead byte at the cursor and skips its
+  continuation bytes. It used to be a code-point index, which forced the VM to
+  rebuild `utf8Chars` and the AOT step to call `utf8CharAt` -- a scan from byte
+  0 -- on every turn, so `for c in s` was O(n^2) (200 000 chars: 17s on the VM,
+  24s in a binary). Never reintroduce an index that has to be resolved by
+  walking from the start; the cursor is internal to the compiler, so no program
+  observes its representation. A thunk that reaches a Windows API with five or more arguments must
   keep its saved state *above* the outgoing stack slots (`[rbp-16]` in a 72-byte
   frame), never at `[rbp-48]`, and must read a length out of `rdx` before reusing
   `rdx` for `lpBuffer` -- both were real bugs in the file thunks.
