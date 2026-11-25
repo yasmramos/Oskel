@@ -211,8 +211,8 @@ void Parser::rejectMalformedTypeDeclarations() const {
       continue;
     }
     if (depth != 0) continue;
-    const bool isTypeKeyword = token.type == Tok::Struct || token.type == Tok::Class ||
-                               token.type == Tok::Enum;
+    const bool isTypeKeyword =
+        token.type == Tok::Struct || token.type == Tok::Class || token.type == Tok::Enum;
     if (!isTypeKeyword) continue;
     const char* keyword = token.type == Tok::Struct  ? "struct"
                           : token.type == Tok::Class ? "class"
@@ -224,7 +224,8 @@ void Parser::rejectMalformedTypeDeclarations() const {
     // A class may carry an `implements A, b.C` clause before its body, so the
     // brace is not necessarily the token that follows the name.
     size_t next = i + 2;
-    if (token.type == Tok::Class && next < tokens_.size() && tokens_[next].type == Tok::Implements) {
+    if (token.type == Tok::Class && next < tokens_.size() &&
+        tokens_[next].type == Tok::Implements) {
       ++next;
       while (next < tokens_.size()) {
         if (tokens_[next].type != Tok::Ident) break;
@@ -242,9 +243,9 @@ void Parser::rejectMalformedTypeDeclarations() const {
     }
     if (next >= tokens_.size() || tokens_[next].type != Tok::LBrace) {
       const Token& found = next < tokens_.size() ? tokens_[next] : name;
-      throw CompileError{std::string("expected '{' to start the ") + keyword + " body, found " +
-                             describe(found),
-                         found.line, found.col};
+      throw CompileError{
+          std::string("expected '{' to start the ") + keyword + " body, found " + describe(found),
+          found.line, found.col};
     }
   }
 }
@@ -2268,9 +2269,10 @@ std::string Parser::parseImportPath() {
   // `from` would make `import { x } from from;` unreadable. Reject it here, at
   // the one place a module path is read, so every import form agrees.
   if (check(Tok::Ident) && peek().lexeme == "from") {
-    throw CompileError{"'from' is a keyword and cannot name a module; rename the module or "
-                       "import it under another name",
-                       peek().line, peek().col};
+    throw CompileError{
+        "'from' is a keyword and cannot name a module; rename the module or "
+        "import it under another name",
+        peek().line, peek().col};
   }
   const Token& first = consume(Tok::Ident, "expected a module name");
   std::string path = first.lexeme;
@@ -2282,8 +2284,8 @@ std::string Parser::parseImportPath() {
     // `m.from` is as ambiguous as a bare `from`, and it silently became a
     // module named "m.from" before.
     if (peek().lexeme == "from") {
-      throw CompileError{"'from' is a keyword and cannot be a module path segment",
-                         peek().line, peek().col};
+      throw CompileError{"'from' is a keyword and cannot be a module path segment", peek().line,
+                         peek().col};
     }
     path += '.';
     path += advance().lexeme;

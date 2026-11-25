@@ -149,8 +149,8 @@ int runChunk(const Bytecode &bytecode, const std::string &name,
   vm.scriptArgs = scriptArgs;
   vm.setJitEnabled(useJit);
   if (useJit && !jitHostSupported()) {
-    std::cerr << "oskel: the JIT is unavailable on this host ("
-              << jitUnsupportedReason() << "); running interpreted\n";
+    std::cerr << "oskel: the JIT is unavailable on this host (" << jitUnsupportedReason()
+              << "); running interpreted\n";
   }
   registerBuiltins(vm);
   try {
@@ -348,8 +348,8 @@ void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, 
   vm.scriptArgs = scriptArgs;
   vm.setJitEnabled(useJit);
   if (useJit && !jitHostSupported()) {
-    std::cerr << "oskel: the JIT is unavailable on this host ("
-              << jitUnsupportedReason() << "); running interpreted\n";
+    std::cerr << "oskel: the JIT is unavailable on this host (" << jitUnsupportedReason()
+              << "); running interpreted\n";
   }
   registerBuiltins(vm);
 

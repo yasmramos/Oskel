@@ -435,10 +435,10 @@ int main() {
     // Fill past the cap with distinct protos. A REPL entry creates a fresh
     // `Bytecode`, so distinct protos are the real workload; the cache must not
     // grow with the session (BACKLOG §5 item 2).
-    std::vector<std::shared_ptr<const Bytecode>> protos;
+    std::vector<std::shared_ptr<const Bytecode> > protos;
     for (std::size_t i = 0; i < Jit::kMaxEntries + 10; ++i) {
-      const std::string source = "fn f" + std::to_string(i) + "(a) { return a + " +
-                                 std::to_string(i) + "; }\n";
+      const std::string source =
+          "fn f" + std::to_string(i) + "(a) { return a + " + std::to_string(i) + "; }\n";
       Bytecode bc = compileSource(source);
       protos.push_back(findProto(bc, "f" + std::to_string(i)));
       jit.get(protos.back());

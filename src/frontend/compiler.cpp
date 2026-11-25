@@ -517,8 +517,8 @@ bool Compiler::lookupGlobalType(const std::string& name, TypeRef& out) const {
 // `float`. `nil` only fits a nullable target. This is the single place the
 // assignment rule lives, shared by declarations, plain assignments and
 // parameters: it asks `assignError` for the verdict and reports it.
-void Compiler::checkAssignable(const TypeRef& from, const TypeRef& to,
-                               const std::string& context, int line, int col) {
+void Compiler::checkAssignable(const TypeRef& from, const TypeRef& to, const std::string& context,
+                               int line, int col) {
   std::string error = assignError(from, to, context);
   if (!error.empty()) fail(error, line, col);
 }
@@ -564,8 +564,8 @@ std::string Compiler::assignError(const TypeRef& from, const TypeRef& to,
   // alternative does not cover the whole union, so this is decided before the
   // members are probed.
   if (from.nullable && !to.nullable) {
-    return "cannot assign '" + describeType(from) + "' to '" + describeType(to) +
-           "' in " + context + ": " + nullableHint(to);
+    return "cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " +
+           context + ": " + nullableHint(to);
   }
 
   // Union source (PHASE 6.7.4): every alternative must fit the target, so a
@@ -574,8 +574,8 @@ std::string Compiler::assignError(const TypeRef& from, const TypeRef& to,
   if (from.isUnion()) {
     for (const std::string& member : from.members()) {
       if (assignError(TypeRef{member, from.nullable}, to, context).empty()) continue;
-      return "cannot assign '" + describeType(from) + "' to '" + describeType(to) +
-             "' in " + context;
+      return "cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " +
+             context;
     }
     return "";
   }
@@ -588,8 +588,7 @@ std::string Compiler::assignError(const TypeRef& from, const TypeRef& to,
     for (const std::string& member : to.members()) {
       if (assignError(plain, TypeRef{member, false}, context).empty()) return "";
     }
-    return "cannot assign '" + describeType(from) + "' to '" + describeType(to) +
-           "' in " + context;
+    return "cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " + context;
   }
 
   // A Oskel function is the value behind a callback (`fn(int, int): int`): any

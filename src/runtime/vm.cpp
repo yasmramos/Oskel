@@ -830,7 +830,8 @@ Value VM::runFrames(std::size_t stopDepth) {
           } else {
             std::size_t end = static_cast<std::size_t>(offset) + 1;
             while (end < size && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) ++end;
-            item = Value(text.substr(static_cast<std::size_t>(offset), end - static_cast<std::size_t>(offset)));
+            item = Value(text.substr(static_cast<std::size_t>(offset),
+                                     end - static_cast<std::size_t>(offset)));
             cursor = Value(static_cast<int64_t>(end));
           }
         } else if (iterable.isMap()) {

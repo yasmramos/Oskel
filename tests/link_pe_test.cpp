@@ -230,12 +230,12 @@ void testArchive() {
 void testContainerStructure() {
   const std::vector<std::uint8_t> text = {0x48, 0x83, 0xEC, 0x28, 0xE8,
                                           0x00, 0x00, 0x00, 0x00, 0xC3};
-  const std::vector<std::uint8_t> object = buildRelocatableObject(
-      Target::winX64(), text, {}, {{5, "printf", true}}, {{"main", 0}});
+  const std::vector<std::uint8_t> object =
+      buildRelocatableObject(Target::winX64(), text, {}, {{5, "printf", true}}, {{"main", 0}});
   LinkOptions options;
   options.target = Target::winX64();
-  const std::vector<std::uint8_t> pe = linkHostedExecutable(
-      std::vector<LinkInput>{{"structure.obj", object}}, options);
+  const std::vector<std::uint8_t> pe =
+      linkHostedExecutable(std::vector<LinkInput>{{"structure.obj", object}}, options);
   if (pe.size() < 0x200) {
     check(false, "the PE has a DOS and NT header");
     return;
@@ -244,8 +244,7 @@ void testContainerStructure() {
   const std::uint32_t sizeOfImage = read32(pe, 0x58 + 56);
   const std::uint32_t sizeOfHeaders = read32(pe, 0x58 + 60);
   const std::uint32_t entry = read32(pe, 0x58 + 16);
-  check(sizeOfHeaders != 0 && sizeOfHeaders <= pe.size(),
-        "SizeOfHeaders fits in the file");
+  check(sizeOfHeaders != 0 && sizeOfHeaders <= pe.size(), "SizeOfHeaders fits in the file");
   check(read16(pe, 0x58 + 108) == 16, "sixteen data directories");
 
   // Walk the section table: every section must lie inside the file and inside
@@ -262,8 +261,7 @@ void testContainerStructure() {
     const std::uint32_t address = read32(pe, base + 12);
     const std::uint32_t rawSize = read32(pe, base + 16);
     const std::uint32_t rawOffset = read32(pe, base + 20);
-    if (rawSize != 0 &&
-        (rawOffset > pe.size() || rawSize > pe.size() - rawOffset)) {
+    if (rawSize != 0 && (rawOffset > pe.size() || rawSize > pe.size() - rawOffset)) {
       sectionsOk = false;
     }
     if (address % 0x1000 != 0) aligned = false;
@@ -281,8 +279,7 @@ void testContainerStructure() {
   if (textSection != 0) {
     const std::uint32_t textRva = read32(pe, textSection + 12);
     const std::uint32_t textSize = read32(pe, textSection + 8);
-    check(entry >= textRva && entry < textRva + textSize,
-          "the entry point lies in .text");
+    check(entry >= textRva && entry < textRva + textSize, "the entry point lies in .text");
   }
 
   // Each non-empty data directory must name a mapped range.

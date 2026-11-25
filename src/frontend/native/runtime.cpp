@@ -9203,22 +9203,22 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   // n-character string costs O(n) instead of rescanning from the start on every
   // turn. `utf8CharAt` walks from byte 0 each call, which made the loop O(n^2)
   // -- 200 000 characters took 24s. The WASM backend already steps this way.
-  cg.movFromMem(R9, R12, 0);        // string byte length
-  cg.movFromMem(R10, Rbp, -32);     // offset (cursor)
+  cg.movFromMem(R9, R12, 0);     // string byte length
+  cg.movFromMem(R10, Rbp, -32);  // offset (cursor)
   cg.cmpReg(R10, R9);
-  cg.jcc(Jcc::Ae, doneTrue);        // offset >= length: past the last byte
+  cg.jcc(Jcc::Ae, doneTrue);  // offset >= length: past the last byte
   cg.movReg(R11, R10);
-  cg.addImm32(R11, 1);              // end = offset + 1, then the continuations
+  cg.addImm32(R11, 1);  // end = offset + 1, then the continuations
   cg.bind(strSkip);
   cg.cmpReg(R11, R9);
   cg.jcc(Jcc::Ae, strSkipDone);
   cg.movReg(Rax, R12);
   cg.addReg(Rax, R11);
-  cg.movzxFromMem(Rax, Rax, kStringDataOffset);   // text[end]
+  cg.movzxFromMem(Rax, Rax, kStringDataOffset);  // text[end]
   cg.movReg(Rcx, Rax);
   cg.andImm32(Rcx, 0xC0);
   cg.cmpImm32(Rcx, 0x80);
-  cg.jcc(Jcc::Ne, strSkipDone);     // not a continuation byte: the char ends
+  cg.jcc(Jcc::Ne, strSkipDone);  // not a continuation byte: the char ends
   cg.addImm32(R11, 1);
   cg.jmp(strSkip);
   cg.bind(strSkipDone);
@@ -9265,7 +9265,7 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.movFromMem(R9, Rbp, -32);
   cg.movImmToMem(Rbx, 0, kTagInt);
   cg.movToMem(Rbx, 8, R9);
-  cg.xorReg(R8, R8);                // done = false
+  cg.xorReg(R8, R8);  // done = false
   cg.jmp(done);
 
   cg.bind(doneTrue);

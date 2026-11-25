@@ -56,8 +56,7 @@ void expectCompileError(const std::string& source, const char* what) {
 // Like `expectCompileError`, but the message must also contain `needle`. The
 // assignment rule is written twice (a union probe and the plain path), so a
 // message pin keeps the two from drifting apart while they are unified.
-void expectCompileErrorContaining(const std::string& source, const char* needle,
-                                  const char* what) {
+void expectCompileErrorContaining(const std::string& source, const char* needle, const char* what) {
   try {
     compileSource(source);
   } catch (const CompileError& error) {
@@ -69,8 +68,6 @@ void expectCompileErrorContaining(const std::string& source, const char* needle,
   std::fprintf(stderr, "expected CompileError for %s\n", what);
   std::exit(1);
 }
-
-
 
 void expectCompiles(const std::string& source) {
   try {
@@ -369,8 +366,7 @@ void testAssignmentErrorsAreSpecific() {
   expectCompileErrorContaining("let x: int? = nil;\nlet y: int = x;\n",
                                "a nullable value is not allowed here (use 'int?')",
                                "a nullable value into a plain int");
-  expectCompileErrorContaining("let x: int = nil;\n",
-                               "cannot assign 'nil' to 'int'",
+  expectCompileErrorContaining("let x: int = nil;\n", "cannot assign 'nil' to 'int'",
                                "nil into a plain int");
   expectCompileErrorContaining("let s: string = nil;\n",
                                "a nullable value is not allowed here (use 'string?')",
@@ -388,8 +384,7 @@ void testAssignmentErrorsAreSpecific() {
   // A union whose members all miss reports the union as a whole: naming one
   // member ('string') points at a type the caller never wrote at that site.
   expectCompileErrorContaining("let u: int|string = 1;\nlet v: int = u;\n",
-                               "cannot assign 'int | string' to 'int'",
-                               "a union into an int");
+                               "cannot assign 'int | string' to 'int'", "a union into an int");
 
   // The nullable union and the union-to-union cases are allowed.
   expectCompiles("let x: int|string|nil = nil;\nprint(x);\n");

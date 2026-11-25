@@ -171,7 +171,7 @@ void testHello() {
           while (cursor < end && pe[cursor] != 0) ++cursor;
           ++cursor;
           break;
-        case 0x70:  // SET_SEGMENT_AND_OFFSET_ULEB
+        case 0x70:                                    // SET_SEGMENT_AND_OFFSET_ULEB
           wellFormed = wellFormed && immediate == 2;  // __DATA
           while (cursor < end && (pe[cursor] & 0x80) != 0) ++cursor;
           ++cursor;
@@ -204,12 +204,12 @@ void testHello() {
 void testDataImport() {
   // `lea rax, [rip+0]` then `ret`.
   const std::vector<std::uint8_t> text = {0x48, 0x8D, 0x05, 0, 0, 0, 0xC3};
-  const std::vector<std::uint8_t> object = buildRelocatableObject(
-      Target::macX64(), text, {}, {{3, "stdout", false}}, {{"main", 0}});
+  const std::vector<std::uint8_t> object =
+      buildRelocatableObject(Target::macX64(), text, {}, {{3, "stdout", false}}, {{"main", 0}});
   LinkOptions options;
   options.target = Target::macX64();
-  const std::vector<std::uint8_t> pe = linkHostedExecutable(
-      std::vector<LinkInput>{{"data.obj", object}}, options);
+  const std::vector<std::uint8_t> pe =
+      linkHostedExecutable(std::vector<LinkInput>{{"data.obj", object}}, options);
 
   const MachSection textSection = findSection(pe, "__text");
   const MachSection stubs = findSection(pe, "__stubs");
@@ -293,12 +293,11 @@ void testContainerStructure() {
   const std::vector<std::uint8_t> text = {0xE8, 0, 0, 0, 0, 0xC3};
   const std::vector<std::uint8_t> data = {0x41, 0x42};
   const std::vector<std::uint8_t> object = buildRelocatableObject(
-      Target::macX64(), text, data, {{1, "write", true}, {1, "exit", true}},
-      {{"main", 0}});
+      Target::macX64(), text, data, {{1, "write", true}, {1, "exit", true}}, {{"main", 0}});
   LinkOptions options;
   options.target = Target::macX64();
-  const std::vector<std::uint8_t> image = linkHostedExecutable(
-      std::vector<LinkInput>{{"structure.obj", object}}, options);
+  const std::vector<std::uint8_t> image =
+      linkHostedExecutable(std::vector<LinkInput>{{"structure.obj", object}}, options);
   if (image.size() < 0x20) {
     check(false, "the image has a header");
     return;
@@ -306,8 +305,7 @@ void testContainerStructure() {
 
   const std::uint32_t commandCount = read32(image, 16);
   const std::uint32_t commandsSize = read32(image, 20);
-  check(commandsSize != 0 && 0x20u + commandsSize <= image.size(),
-        "sizeofcmds fits in the file");
+  check(commandsSize != 0 && 0x20u + commandsSize <= image.size(), "sizeofcmds fits in the file");
 
   // Walk the load commands by their own `cmdsize` and require the walk to land
   // exactly on `0x20 + sizeofcmds`; a command whose size is wrong, or an
@@ -347,16 +345,14 @@ void testContainerStructure() {
       segment.initprot = read32(image, cursor + 60);
       segments.push_back(segment);
       if (segment.filesize != 0 &&
-          (segment.fileoff > image.size() ||
-           segment.filesize > image.size() - segment.fileoff)) {
+          (segment.fileoff > image.size() || segment.filesize > image.size() - segment.fileoff)) {
         allInFile = false;
       }
     }
     cursor += size;
   }
   check(walkOk, "every load command fits in sizeofcmds");
-  check(cursor == 0x20u + commandsSize,
-        "the load commands sum to exactly sizeofcmds");
+  check(cursor == 0x20u + commandsSize, "the load commands sum to exactly sizeofcmds");
   check(allInFile, "every segment's file range lies in the file");
 
   const bool hasText = segments.size() > 1 && segments[1].name == "__TEXT";
@@ -376,8 +372,7 @@ void testContainerStructure() {
           "__DATA does not overlap __TEXT");
     check(segments[3].vmaddr >= segments[2].vmaddr + segments[2].vmsize,
           "__LINKEDIT does not overlap __DATA");
-    check(segments[3].filesize != 0 &&
-              segments[3].fileoff + segments[3].filesize <= image.size(),
+    check(segments[3].filesize != 0 && segments[3].fileoff + segments[3].filesize <= image.size(),
           "__LINKEDIT carries the tables and lies in the file");
   }
 
@@ -386,8 +381,7 @@ void testContainerStructure() {
   check(mainCommand != 0, "LC_MAIN is present");
   if (mainCommand != 0 && textSection.found) {
     const std::uint64_t entry = read64(image, mainCommand + 8);
-    check(entry >= textSection.offset &&
-              entry < textSection.offset + textSection.size,
+    check(entry >= textSection.offset && entry < textSection.offset + textSection.size,
           "LC_MAIN enters __text");
   }
 
@@ -423,8 +417,7 @@ void testContainerStructure() {
     // Each indirect entry indexes the symbol table's undefined block, so an
     // entry must name one of the two imports.
     const std::size_t symtabCommand = findCommand(image, 0x2);
-    const std::uint32_t nsyms =
-        symtabCommand == 0 ? 0 : read32(image, symtabCommand + 12);
+    const std::uint32_t nsyms = symtabCommand == 0 ? 0 : read32(image, symtabCommand + 12);
     bool inRange = true;
     for (std::uint32_t i = 0; i < indirectCount; ++i) {
       if (read32(image, indirectOff + i * 4) >= nsyms) inRange = false;

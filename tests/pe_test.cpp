@@ -63,8 +63,7 @@ static constexpr std::size_t kSh = kOh + 240;   // first section header offset
 // assertion: a caller that asks for an unsupported target or an empty/too-short
 // text section gets a message instead of a malformed image.
 static bool throwsWith(const char* needle, const Target& target,
-                       const std::vector<std::uint8_t>& text,
-                       std::uint64_t entryOffset) {
+                       const std::vector<std::uint8_t>& text, std::uint64_t entryOffset) {
   try {
     buildStaticPe(target, text, {}, entryOffset);
   } catch (const std::runtime_error& error) {
@@ -233,13 +232,11 @@ int main() {
 #endif
 
   // The error paths are part of the contract.
-  check(throwsWith("only x86_64-windows-win64 is supported", Target::linuxX64(),
-                   exitProgram(), 0),
+  check(throwsWith("only x86_64-windows-win64 is supported", Target::linuxX64(), exitProgram(), 0),
         "a non-Windows target throws");
-  check(throwsWith("text section is empty", Target::winX64(), {}, 0),
-        "empty text throws");
-  check(throwsWith("entry offset out of range", Target::winX64(),
-                   exitProgram(), exitProgram().size()),
+  check(throwsWith("text section is empty", Target::winX64(), {}, 0), "empty text throws");
+  check(throwsWith("entry offset out of range", Target::winX64(), exitProgram(),
+                   exitProgram().size()),
         "an out-of-range entry offset throws");
 
   if (g_failures != 0) {

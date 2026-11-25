@@ -259,9 +259,7 @@ std::shared_ptr<void> retainingPin(GcNode& node) {
                                [](void* p) { delete static_cast<Ref<Map>*>(p); });
 }
 
-std::size_t plainRefCount(const GcNode& node) {
-  return static_cast<const Map&>(node).refs;
-}
+std::size_t plainRefCount(const GcNode& node) { return static_cast<const Map&>(node).refs; }
 
 void mapVisitChildren(const GcNode& node, GcNode::Visitor visitor, void* context) {
   for (const auto& entry : static_cast<const Map&>(node).entries) {
@@ -269,8 +267,8 @@ void mapVisitChildren(const GcNode& node, GcNode::Visitor visitor, void* context
   }
 }
 
-const GcNode::Ops allocatingMapOps = {plainRefCount, mapVisitChildren,
-                                      allocatingClear, retainingPin};
+const GcNode::Ops allocatingMapOps = {plainRefCount, mapVisitChildren, allocatingClear,
+                                      retainingPin};
 
 void testObjectsCreatedDuringCollection() {
   const std::size_t base = settledCount();

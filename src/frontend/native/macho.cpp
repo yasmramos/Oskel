@@ -509,10 +509,9 @@ std::vector<std::uint8_t> linkMachOExecutable(
     // `imports.size()` entries describe the stubs, the next block the GOT
     // pointers. `reserved1` is the index of the section's first entry, so it is
     // `imports.size()`, not 0 -- 0 would name the stub block.
-    writeSection("__got", "__DATA", dataVmaddr, gotSize,
-                 static_cast<std::uint32_t>(dataFileOffset), 3,
-                 kSectionTypeNonLazySymbolPointers,
-                 static_cast<std::uint32_t>(imports.size()), 0);
+    writeSection("__got", "__DATA", dataVmaddr, gotSize, static_cast<std::uint32_t>(dataFileOffset),
+                 3, kSectionTypeNonLazySymbolPointers, static_cast<std::uint32_t>(imports.size()),
+                 0);
   }
   segment("__LINKEDIT", linkeditVmaddr, linkeditVmsize, linkeditFileOffset,
           linkeditSize, 1, 1, 0);
