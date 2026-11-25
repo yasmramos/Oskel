@@ -14,3 +14,8 @@ ColumnLimit: 100
 # Keep the author's include order: reordering includes can change which
 # declaration a header sees first, and a formatter must not change meaning.
 SortIncludes: Never
+# The tree writes `Type& name` and `Type* name`. Google's default derives the
+# alignment from each file, which asks for `Type &name` in files where a few
+# declarations lean the other way, so fix it instead.
+DerivePointerAlignment: false
+PointerAlignment: Left
