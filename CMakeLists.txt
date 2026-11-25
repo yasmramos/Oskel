@@ -834,7 +834,9 @@ if(BUILD_TESTING)
   # The module is always installed; these tests need the development engine to
   # have SDL3 loaded, which CMake arranges above when it finds the library.
   # `run_sdl_case.cmake` sets SDL_VIDEODRIVER=dummy, so no display is needed.
-  # The hosted fixture is Linux x86-64 only, like every hosted AOT test.
+  # The hosted fixture is Linux x86-64 only because it links the SDL3
+  # library from the build tree; the general hosted AOT suite also runs on
+  # Windows.
   add_test(NAME sdl.bindgen
     COMMAND ${CMAKE_COMMAND}
       "-DBINDGEN=$<TARGET_FILE:bindgen>"
@@ -2571,6 +2573,18 @@ if(BUILD_TESTING)
       "-DOSKEL_ARGS=one two three"
       -DEXPECTED_EXIT=0
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_oskel_case.cmake")
+
+  # `native_build_fs.oskl` is run by three tests (the VM glob, the
+  # freestanding build and the hosted build) and they all use the same relative
+  # fixture paths in the build directory. Serialize them so a parallel `ctest`
+  # cannot delete a file while another run reads it.
+  foreach(test_name oskel.native_build_fs oskel.build_binary_fs
+                    oskel.build_fs_hosted)
+    if(TEST "${test_name}")
+      set_tests_properties("${test_name}" PROPERTIES
+        RESOURCE_LOCK oskel_fs_fixture)
+    endif()
+  endforeach()
 
   # --- examples/*.oskl (auto-detected) ---
   file(GLOB oskel_examples CONFIGURE_DEPENDS

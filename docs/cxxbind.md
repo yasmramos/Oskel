@@ -300,8 +300,8 @@ window API. SDL3 owns the window and events, Skia owns the pixels.
 | CTest name | What it proves |
 | --- | --- |
 | `cxxbind.generate` | The counter, factory and Skia descriptors generate the module, header and shim; `oskel -c` accepts the modules; unknown types and every ownership mistake exit 65. Runs on every platform. |
-| `cxxbind.end_to_end` | The counter and factory shims compile with the host `c++`; the VM (via `LD_PRELOAD`) and the hosted AOT binary both print `cxx bridge ok` / `cxx factory ok`. Linux only, like every hosted AOT test. |
-| `cxxbind.skia` | The real Skia shim builds from the bundled `unofficial::skia::skia` target; `skia_test.oskl` clears, draws and reads pixels back in bulk, `skia_ui_test.oskl` renders a `std.ui` tree, and `skia_window_test.oskl` presents it through an SDL3 dummy window. All agree on the VM and the hosted AOT binary. Registered when CMake finds Skia; the window half also needs SDL3. See `bindings/skia/README.md`. |
+| `cxxbind.end_to_end` | The counter and factory shims compile with the host `c++`; the VM (via `LD_PRELOAD`) and the hosted AOT binary both print `cxx bridge ok` / `cxx factory ok`. Linux x86-64 only, because the runner relies on `LD_PRELOAD`; `cxxbind.generate` covers every platform. |
+| `cxxbind.skia` | The real Skia shim builds from the bundled `unofficial::skia::skia` target; `skia_test.oskl` clears, draws and reads pixels back in bulk, `skia_ui_test.oskl` renders a `std.ui` tree, and `skia_window_test.oskl` presents it through an SDL3 dummy window. All agree on the VM and the hosted AOT binary. Registered on Linux x86-64 when CMake finds Skia; the window half also needs SDL3. See `bindings/skia/README.md`. |
 
 Fixtures: `tests/cxxbind/counter.*` (constructor/destructor and a free
 function), `tests/cxxbind/factory.*` (factory objects, `sp`/`value`/`borrow`/

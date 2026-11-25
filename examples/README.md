@@ -18,8 +18,9 @@ oskel build examples/calc.oskl -o calc
 ./calc
 ```
 
-`oskel build` targets `x86_64-linux-sysv` only. The examples below note which
-ones build.
+`oskel build` emits Linux x86-64 freestanding/hosted, Windows x86-64, bare
+metal and WebAssembly images; hosted macOS x86-64 is supported too. The examples
+below note which ones build.
 
 ## Programs
 
@@ -40,10 +41,9 @@ recursion between the parser's precedence levels), arrays and maps, `for-in`,
 `assert`, ternaries and the full operator set. It also carries its own
 `assert`-based checks, so it doubles as a test.
 
-**AOT-clean.** It avoids string/array methods and the `int()`/`float()`
-conversions (PHASE 7c work) so that `oskel build` produces a native binary that
-agrees with the VM byte for byte. This is checked by the
-`oskel.build_binary_calc` test.
+**AOT-clean.** It stays on the portable primitive surface, so `oskel build`
+produces a native binary that agrees with the VM byte for byte. This is checked
+by the `oskel.build_binary_calc` test.
 
 ### `mandelbrot.oskl` — the Mandelbrot set in ASCII
 
@@ -65,8 +65,8 @@ the native binary print the same image.
 ### `tui_editor.oskl` — a minimal terminal text editor
 
 A real interactive application: it opens a file, edits it with the arrow keys,
-and saves with `:w`/`:wq`. It is the showcase for the features the native
-backend cannot compile yet.
+and saves with `:w`/`:wq`. It showcases FFI, pointer buffers, file I/O and
+`args()` together in one program.
 
 ```sh
 oskel examples/tui_editor.oskl notes.txt   # interactive
@@ -76,11 +76,13 @@ echo "" | oskel examples/tui_editor.oskl   # self-test (no tty)
 Keys: arrows to move, `Enter` and `Backspace` to edit, `Ctrl-S` to save,
 `Ctrl-C` to quit, `:` to enter a command (`:w`, `:q`, `:wq`, `:h`).
 
-**Not AOT-clean (yet).** It uses `extern "C"` FFI (`system`, `isatty`, `read`),
-pointers and buffers, file I/O, and `args()` — none of which the freestanding
-backend supports today (PHASE 7c). It also exercises `struct`, closures for
-undo/redo, `defer` to restore the terminal, `switch`, optional types and unions,
-`@MustUse` and variadic parameters.
+**Hosted AOT, not freestanding.** It uses POSIX `extern "C"` FFI (`system`,
+`isatty`, `read`), pointer buffers, file I/O and `args()`. The AOT backend
+supports all of these in `--mode hosted`, but a freestanding image has no host
+to resolve the symbols. The suite runs it on the VM because it needs a tty; it
+also exercises `struct`, closures for undo/redo, `defer` to restore the
+terminal, `switch`, optional types and unions, `@MustUse` and variadic
+parameters.
 
 When stdin is not a terminal — a pipe, or CTest — it runs a deterministic
 self-test instead of the interactive loop, so `examples.tui_editor` verifies it
@@ -90,8 +92,10 @@ drives the terminal through POSIX C functions.
 ## Desktop UI (`examples/ui/`, `examples/sdl/`)
 
 These demos open a real window, so they need SDL3 and the Skia shim. The
-widget layer itself is pure Oskel and stays testable without a display; only
-the presentation path needs the libraries.
+release SDK bundles both; a source build fetches the same pair with
+`python3 tools/prepare_ui_deps.py` (or points at its own copies through
+`OSKEL_UI_LIBDIR`). The widget layer itself is pure Oskel and stays testable
+without a display; only the presentation path needs the libraries.
 
 ### `ui/todo.oskl` — a task list with buttons
 
@@ -101,22 +105,23 @@ button, and the toolbar adds a sample task or clears the finished ones. The
 tree is rebuilt in place, so the window reflects every click.
 
 ```sh
-LD_PRELOAD=bindings/skia/build/libskia_shim.so oskel examples/ui/todo.oskl
+# after `python3 tools/prepare_ui_deps.py` and a CMake build
+OSKEL_UI_LIBDIR=build-cmake/ui ./build-cmake/oskel examples/ui/todo.oskl
 ```
 
 A numeric argument bounds the run and drives one pointer click headlessly, so
 the same file can be exercised without a device:
 
 ```sh
-LD_PRELOAD=bindings/skia/build/libskia_shim.so oskel examples/ui/todo.oskl 2
+OSKEL_UI_LIBDIR=build-cmake/ui ./build-cmake/oskel examples/ui/todo.oskl 2
 ```
 
-The native form needs the hosted link mode:
+The native form is a hosted build; the compiler selects it from the imported
+UI modules and links the bundle:
 
 ```sh
-LIBRARY_PATH=bindings/skia/build oskel build examples/ui/todo.oskl \
-  --mode hosted --link-lib SDL3 --link-lib skia_shim -o oskel-todo
-LD_LIBRARY_PATH=bindings/skia/build ./oskel-todo
+OSKEL_UI_LIBDIR=build-cmake/ui ./build-cmake/oskel build examples/ui/todo.oskl -o oskel-todo
+./oskel-todo
 ```
 
 ### `ui/window.oskl` — the minimal window

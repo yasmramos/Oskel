@@ -14,7 +14,7 @@ architecture rules and the development phases.
 | **Extension** | `.oskl` |
 | **Philosophy** | Simple like Python, fast like Lua, compiles to native, no runtime to install |
 | **Implementation** | C++17 (standard library only; no host FFI library) |
-| **Initial platform** | Linux x86-64 (musl static), then Windows/macOS |
+| **Platforms** | Linux x86-64, Windows x64, macOS x86-64 (hosted), bare metal x86-64 and WebAssembly |
 | **Architecture** | Register-based bytecode + VM (dev engine) + AOT backend (production) |
 | **Niche** | Desktop apps, CLI, UI (not systems, not backend, not data science) |
 
@@ -32,12 +32,12 @@ those are not priorities.
 ```
 
 The VM is a development tool (REPL, fast iteration, differential testing).
-oskelc produces a self-contained native binary (musl static by default,
-no runtime to install); end users never install Oskel or any runtime.
+oskelc produces a self-contained native binary (freestanding by default:
+no libc and no runtime to install, or hosted when FFI/UI needs the host); end users never install Oskel or any runtime.
 
 The bytecode is designed from day one to be compiled to native. It is
-low-level (40 opcodes, 1:1 or 1:2 lowering to x86-64) so the AOT backend can
-generate efficient native code. Do NOT repeat Java's mistake (high-level
+low-level (39 active opcodes under a hard ceiling of 40, 1:1 or 1:2 lowering to
+x86-64) so the AOT backend can generate efficient native code. Do NOT repeat Java's mistake (high-level
 bytecode that later turns out to be impossible to compile efficiently).
 
 ### Modules and responsibilities
@@ -50,6 +50,7 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `frontend/lexer.cpp` | source text | `Token[]` | ✅ |
 | `frontend/parser.cpp` | `Token[]` | `Node*` (AST) | ✅ |
 | `frontend/bytecode.cpp` | `Bytecode` | basic operations | ✅ |
+| `frontend/bytecode_io.cpp` | `Bytecode*` | `.oskc` reader/writer | ✅ PHASE 6i |
 | `frontend/compiler.cpp` | `Node*` | `Bytecode*` | ✅ |
 | `frontend/module_resolver.cpp` | dotted module path | source file path | ✅ |
 | `frontend/diagnostic.cpp` | `CompileError`, `Warning`, `RuntimeError` | stderr output | ✅ |
@@ -62,11 +63,17 @@ bytecode that later turns out to be impossible to compile efficiently).
 | `frontend/native/pe.cpp` | text + rdata | static PE32+ bytes (imports) | ✅ PHASE 7e |
 | `frontend/native/arena.cpp` | block + size | aligned allocations | ✅ PHASE 7c.0 |
 | `frontend/native/platform_freestanding.cpp` | `Platform` ops | direct Linux syscalls | ✅ PHASE 7c.0 |
-| `frontend/native/entry.cpp` | program entry label | `_start`/entry + prelude (Linux syscalls, Windows kernel32) | ✅ PHASE 7c.0/7e |
+| `frontend/native/entry.cpp` | program entry label | `_start`/entry + prelude (Linux syscalls, Windows kernel32, hosted libc, Mach-O) | ✅ PHASE 7c.0/7e |
+| `frontend/native/link.cpp` | relocatable objects | own ELF executable / `-r` relocatable | ✅ PHASE 10.1/10.2 |
+| `frontend/native/pe_link.cpp` | COFF objects / archives | own PE32+ executable / `-r` COFF | ✅ PHASE 10.3a/10.3b |
+| `frontend/native/macho.cpp` | Mach-O object | hosted Mach-O executable | ✅ PHASE 10.3d |
+| `frontend/native/object.cpp` | target container | ELF/Mach-O/COFF relocatable object | ✅ PHASE 7f.4/10.2 |
+| `frontend/native/wasm.cpp` | bytecode | WebAssembly module | ✅ PHASE 9 |
+| `frontend/native/mathlib.cpp`, `parse_float.cpp` | math and float parsing | machine-code helpers | ✅ PHASE 7 |
 | `frontend/native/bare_metal.cpp` | code + entry | multiboot ELF32/i386 kernel (bare-metal prelude + trampoline) | ✅ PHASE 7g |
 | `runtime/vm.cpp` | `Bytecode*` | execution | ✅ |
 | `runtime/builtins.cpp` / `runtime/ops.cpp` | native builtins, shared operators | runtime library | ✅ |
-| `runtime/ffi.cpp` | `extern "C"` declarations | marshalling natives | ✅ PHASE 6.6 |
+| `runtime/ffi.cpp`, `runtime/ffi_trampoline.cpp` | `extern "C"` declarations | marshalling natives and x86-64 stubs | ✅ PHASE 6.6/7f |
 | `runtime/jit/jit.cpp` | integer leaf proto | native x86-64 (dev engine only) | 🔶 slices 1-4 |
 | `main.cpp` | CLI | full pipeline | ✅ (VM as dev engine, PHASE 4) |
 | `oskelc.cpp` | CLI | full pipeline, AOT only | ✅ (host compiler, no VM) |
@@ -92,37 +99,51 @@ The binaries:
   project's own `native/codegen.h` emitter, not AsmJIT).
 - `oskelc` host compiler (`oskelc file.oskl -o app`). Links core + front end
   alone, so the shipped compiler carries no VM, no JIT and no builtins. Reads
-  sources and writes the ELF with the project's own `native/codegen.cpp` and
-  `native/elf.cpp` (no AsmJIT, no ELFIO).
+  sources and writes the target's container (ELF, PE, hosted Mach-O or WASM)
+  with the project's own `native/codegen.cpp` and container writers (no AsmJIT,
+  no ELFIO).
+- `oskelld` standalone linker (PHASE 10). It links the relocatable objects
+  `--emit-object` writes and shares the one implementation with
+  `oskel build --linker own` and `oskelc --linker own`.
 - `oskel build` is a thin alias: both commands call `runBuildCommand` in
   `src/frontend/cli.cpp`, so their flags, defaults, diagnostics and exit codes
   cannot drift. `oskelc` is the same AOT pipeline with a shorter command line.
 
-`oskelc` has no bytecode serializer yet, so `-c` (`.oskc`) and `-pkg`
-(`.oskpkg`) are refused by name with exit 64 instead of being read as a typo.
-Those are the documented next steps for the compiler, not implemented features.
+`oskelc -c` writes a portable `.oskc` image (`frontend/bytecode_io.cpp`), and
+`oskelc app.oskc -o app` lowers it. `-pkg` (`.oskpkg`) is still refused by name
+with exit 64 instead of being read as a typo; the package format is planned.
 
-A third, standalone binary ships alongside them: `bindgen`, the C binding
+A fourth, standalone binary ships alongside them: `bindgen`, the C binding
 generator (`docs/bindgen.md`). It reads a C header and writes an Oskel
 `extern "C"` module. It is a pure text transformation, so it does not link
 `oskel_lib` (or the runtime, the compiler, the VM or a host FFI library): its sources live
 under `tools/`, outside the three `src/` globs that build the engine, so it can
 be built and shipped on its own.
 
-A fourth standalone binary is `oskelp`, the project and package manager
+A fifth standalone binary is `oskelp`, the project and package manager
 (`docs/oskelp.md`). Like `bindgen` it lives under `tools/` and links no engine
 code; it drives `oskel`/`oskelc` as child processes. It owns the manifest
 (`oskel.toml`), the lockfile, path-dependency resolution and the
-`new`/`build`/`run`/`check`/`test` workflow. The only compiler-side hook is
-`OSKEL_MODULE_ROOT`: `resolverFor` honours it so a package's `src/` is the
-module root, and both engines resolve imports identically.
+`new`/`build`/`run`/`check`/`test` workflow. The compiler-side hooks are
+`OSKEL_MODULE_ROOT` and `OSKEL_PACKAGES`: `resolverFor` honours them so a
+package's `src/` is the module root and its materialised dependencies are
+reachable, and both engines resolve imports identically.
 
-A fifth binary is `oskelint`, the linter (`docs/oskelint.md`). It lives under
+A sixth binary is `oskelint`, the linter (`docs/oskelint.md`). It lives under
 `tools/` too, but unlike the other two it links `oskel_lib`: its first rule
 (`builtin-shadow`) asks the engine which names `registerBuiltins` installs, so
 the rule cannot drift from the standard library. It never runs a program, so the
 boundary rule below is untouched and `nm build/oskel | grep oskelint` stays
 empty.
+
+Shadowing a builtin is a deliberate language rule, not a gap: a builtin is an
+ordinary global, so any declaration of the same name (`let`, `var`, `const`,
+`fn`, an import, an `extern "C"` or `native fn` name) replaces it for its scope,
+in both engines. The standard library relies on it, and
+`tests/native_build_builtin_shadow.oskl` and its `_error` fixture pin the
+behavior. The compiler therefore never rejects a collision; the `builtin-shadow`
+lint rule is the single place that reports one, including the name an `extern`
+block declares.
 
 Boundary rule: no source in `src/frontend/` may include `vm.h`, `jit/jit.h`,
 `builtins.h`, `ops.h`, `ffi_marshal.h` or a host FFI library, and `src/frontend/compiler.*`
@@ -991,7 +1012,7 @@ binary prints byte for byte what the VM prints).
   ambiguity, overflow, plus the import mismatch, unknown member and
   non-exhaustive cases).
 
-### PHASE 7 — Bytecode → native backend (AOT, freestanding) 🔶 in progress
+### PHASE 7 — Bytecode → native backend (AOT) 🔶 in progress
 - New module `src/frontend/native/` + `include/native/`: lowering of every opcode to
   x86-64 following the bytecode → native lowering table of §3.
 - **Own machine-code and static ELF executable emitter** (~500-1000 lines:
@@ -1471,8 +1492,8 @@ binary prints byte for byte what the VM prints).
       so it links into the freestanding binary. Covered by
       `tests/freestanding_test.cpp` (each builtin and every failure path under
       the real `_start`) and the `oskel build` fixture.
-    - **7c.5b** (done, except the VM-only builtins listed in BACKLOG §6)
-      — the remaining builtins. **7c.5b.1** (done) adds
+    - **7c.5b** (done) — the remaining builtins, including the host-backed
+      file, clock, args and raw-memory families (BACKLOG §6 item 25). **7c.5b.1** (done) adds
       the numeric conversions `int`/`float`/`double` for a numeric or boolean
       operand: `int` truncates toward zero (returning an int unchanged, a bool
       as 0/1, and a float/double after a finiteness and a `-2^63 <= x < 2^63`
@@ -2091,6 +2112,10 @@ whether the JIT ran. There is **no** inline caching, **no** superinstruction and
 `include/native/codegen.h` emitter (the project's own, so §5.1 keeps its
 zero-external-dependency rule; AsmJIT is not required).
 
+The JIT runs on x86-64 Linux and macOS, which share the System V ABI it emits;
+on any other host (Windows, arm64) `jitCompile` returns `nullptr` and the VM
+interprets.
+
 Slice 1 (done) is the smallest useful tier: a **leaf proto over the integer
 subset**. A proto is compiled when its body only touches `nil`, `bool` and
 `int` values, has no calls, no upvalues, no globals, no collections and no
@@ -2559,24 +2584,26 @@ Phase 2: ✅ completed
 Phase 3: ✅ completed
 Phase 4: ✅ completed (VM as the dev engine: `oskel`, `oskel -e` and the REPL compile to bytecode and run on the VM; the AST interpreter and its `--ast` flag are gone)
 Phase 5: ✅ completed and tested
-Phase 6: ✅ completed (6a, 6b, 6c, 6d, 6f done)
+Phase 6: ✅ completed (6a-6f done)
 Phase 6.5: ✅ completed (Java-style `import`, `switch`, `defer`, type annotations/inference/nullable `T?` and nullability expressions `?.`/`??`/`!!`, `struct`, `native fn`, variadic `rest...` parameters and the `std.math` module). Post-6.5 additions: slicing syntax `obj[start:end:step]` for strings and arrays with an optional step (still one `$slice` helper call, no new opcode), the short-circuiting compound assignments `&&=`, `||=` and `??=` (existing `EQ`/`NEQ`/`JMP_IF_*`/`MOVE` opcodes, no new opcode), the post-test loop `do { ... } while (cond);` (existing `JMP`/`JMP_IF_TRUE` opcodes, no new opcode), optional parentheses in `for ... in` (`for (x in xs)`, told apart from the classic header by a `( name in` lookahead), the key/value form `for k, v in map` (a second loop variable after a comma binds the value of each pair, which `ITER` now yields directly, no new opcode and no helper call) and brace-less single-statement bodies for `if`/`else`/`while`/`for`/`for-in` (a single statement wrapped in a block, so the bytecode is unchanged). The compound bitwise assignments `&=`, `|=`, `^=`, `<<=` and `>>=` close the last gap in the assignment operators: five new tokens in the lexer, one case each in `isAssignOp` and `compoundOpCode`, and the existing `BAND`/`BOR`/`BXOR`/`SHL`/`SHR` opcodes behind the same `GET; op; SET` shape as `+=` (no new opcode, VM and AOT in the same change).
 Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalling, pointers, structs by value and callbacks)
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
 Phase 6.9: ✅ completed (`enum`: a scoped set of integer constants, folded by the parser; no opcode, no engine code, and identical on the VM, the AOT backend and WASM)
 Phase 11: 🔶 in progress (11.1 `async fn`/`await`/`Future` done: a future is a plain map, so no opcode and no builtin is added; eager bodies, no scheduler yet)
+Phase 12.1/12.2: ✅ completed (`interface`/`trait`, `class ... implements`, and imported interfaces; see the section above)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.11 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY), callbacks (including a struct return) and a stored callback resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr`/struct-by-value surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
 Phase 10: 🔶 in progress (10.1, 10.2, 10.2b and 10.3a done: `oskelld`, `--linker own`, `--emit-object`, `-L`, `--link-object`, multi-object/`ar`, `-r`, `.data`/`.bss`, the common x86-64 ELF relocations, and the Windows COFF→PE32+ path with UCRT/kernel32 imports. 10.3b `-r` COFF, `.lib`, `args` and the `.pdata`/TLS rejection done, and 10.3d first slice done (`-r`, ad-hoc signature and ARM64 pending))
-Post-1.0: 🔶 package manager MVP (`oskelp`) landed; UI, Cosmopolitan, registry, VM embedded pending
+Post-1.0: 🔶 package manager (`oskelp`), local registry, UI backend and linter landed; Cosmopolitan, network registry and embedded VM pending
 2.0: ⬜ future (static with `@Dynamic`)
 
 Bugs are tracked in the git history and the regression tests; there is no
 separate bug log file.
 
-Distribution model: musl static by default (self-contained, no runtime).
-Optional: newlib (bare-metal), freestanding (no libc).
+Distribution model: freestanding ELF/PE by default (self-contained, no
+runtime to install); a hosted build links the host C library. Optional:
+newlib (bare metal), WebAssembly (no host C ABI).
 
 VM = dev engine only. The AST interpreter was retired at the 6f parity gate
 and is no longer in the tree.
@@ -2631,7 +2658,7 @@ and is no longer in the tree.
 | Superinstructions | Violate the 40-opcode ceiling |
 | Inline caching | Changes the bytecode contract |
 | Runtime specialization | Changes the bytecode contract |
-| `async`/`await`, generics, full pattern matching, generators, transactions | Out of scope (2.0 monomorphizes concrete, annotated types only; no user-defined generics) |
+| Generics, full pattern matching, generators, transactions | Out of scope (2.0 monomorphizes concrete, annotated types only; no user-defined generics). `async`/`await` is implemented in PHASE 11.1. |
 
 **Note**: there is **no** host FFI dependency. The development engine emits its
 own x86-64 descriptor/closure stubs; the machine-code emitter, the static
@@ -2669,46 +2696,64 @@ none of them.**
 | `myapp` | Native binary (Linux/macOS) | (GraalVM) `.exe` |
 | `myapp.exe` | Native binary (Windows) | (GraalVM) `.exe` |
 
-**`.oskpkg` format** (ZIP) — **planned; not implemented in 0.1.0**:
+**`.oskpkg` format** (ZIP) — **planned; not implemented in 0.3.0**:
+
+```text
 myapp.oskpkg
 ├── META-INF/MANIFEST.MF
 ├── bin/main.oskc
 ├── lib/mylib.osklib
 ├── resources/icon.png
 └── README.md
+```
 
+**`.oskc` format** (binary) — **implemented** (PHASE 6i). The reader and writer
+live in `include/bytecode_io.h` and `src/frontend/bytecode_io.cpp`; that header
+is the single source of truth for the layout. The commands are:
 
-**`.oskc` format** (binary) — **planned; not implemented in 0.1.0**. The compiler
-holds a `Bytecode` in memory and the AOT backend lowers it directly; nothing
-serializes it to disk yet, and no command writes or reads a `.oskc` file. The
-layout below is the target format, not the current behaviour:
-+--------+--------+--------+--------+
-| 'J' | 'O' | 'L' | 'C' | magic
-+--------+--------+--------+--------+
-| version (u32) |
-+--------+--------+--------+--------+
-| flags (u32) |
-+--------+--------+--------+--------+
-| name_len (u32) + name |
-+--------+--------+--------+--------+
-| numParams, numRegisters, numLocals|
-+--------+--------+--------+--------+
-| code_size + code |
-+--------+--------+--------+--------+
-| constants_size + constants |
-+--------+--------+--------+--------+
-| children_size + children |
-+--------+--------+--------+--------+
-| upvalues_size + upvalues |
-+--------+--------+--------+--------+
-| checksum (u32) |
-+--------+--------+--------+--------+
+```sh
+oskelc -c app.oskl -o app.oskc    # compile source to an image
+oskel app.oskc                    # run the image on the VM
+oskelc app.oskc -o app            # lower the image to a native binary
+oskel build app.oskc -o app       # the same, through the alias
+```
 
+A `.oskc` is the same `Bytecode` tree the compiler builds in memory, with every
+field written explicitly little-endian (no `memcpy` of a C++ struct and no
+`sizeof`), so a file written on x86-64 reads on arm64. The fixed 20-byte header
+is:
 
-**Bytecode verification** (on `.oskc` load) — **planned; not implemented in
-0.1.0** (there is no `.oskc` loader yet):
-- **Level 1 (structural)**: mandatory. Magic, version, ranges, valid opcodes,
-  operands in range, checksum.
-- **Level 2 (semantic)**: optional. Jumps to valid instructions, registers
-  initialized.
+| Offset | Size | Field |
+|--------|------|-------|
+| 0 | 4 | Magic `OSKC` |
+| 4 | 4 | Format version (`kOskcVersion`, currently 1) |
+| 8 | 4 | Reserved flags, must be 0 |
+| 12 | 4 | FFI capability bits the chunk needs |
+| 16 | 4 | Requirement bits (SDL3 / Skia) |
+
+The body is the root proto, recursively: name, frame counts, variadic flag,
+instruction stream (with source line and column), constant pool, child protos,
+upvalue descriptors, `extern "C"` declarations and the compiler bookkeeping
+(`nativeFns`, `nativeUses`, `usedMethods`). Constants are tagged `nil`, `bool`,
+`int`, `float`, `double` or `str`; the writer refuses a value `LOADK` could not
+rebuild.
+
+The FFI capability bits are derived from the chunk's `extern "C"` signatures,
+not from the superset the compiler supports: bit 0 structs by value, bit 1
+class-MEMORY structs, bit 2 C variadics, bit 3 callbacks. The loader compares
+them with the destination's capabilities and refuses a file that needs one the
+target lacks, naming it. The requirement bits record what the chunk needs from
+the UI backend (bit 0 SDL3, bit 1 Skia), because the modules that pull it in
+cannot be recovered from the chunk alone.
+
+**Bytecode verification** (on `.oskc` load) — **implemented** in
+`src/frontend/bytecode_io.cpp`:
+
+- **Level 1 (structural)**: mandatory. Magic, version, non-zero flags, every
+  index (opcode, constant, child, upvalue, jump target), frame ranges, nesting
+  depth and trailing bytes. A malformed image is a `BytecodeIoError`, never a
+  crash.
+- **Level 2 (semantic)**: not yet implemented; the compiler is the only writer
+  and the loader trusts the structural checks plus the ABI and requirement
+  bits.
 - **Digital signature**: post-1.0, if the threat model requires it.
