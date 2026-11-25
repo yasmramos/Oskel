@@ -124,6 +124,15 @@ the rule cannot drift from the standard library. It never runs a program, so the
 boundary rule below is untouched and `nm build/oskel | grep oskelint` stays
 empty.
 
+Shadowing a builtin is a deliberate language rule, not a gap: a builtin is an
+ordinary global, so any declaration of the same name (`let`, `var`, `const`,
+`fn`, an import, an `extern "C"` or `native fn` name) replaces it for its scope,
+in both engines. The standard library relies on it, and
+`tests/native_build_builtin_shadow.oskl` and its `_error` fixture pin the
+behavior. The compiler therefore never rejects a collision; the `builtin-shadow`
+lint rule is the single place that reports one, including the name an `extern`
+block declares.
+
 Boundary rule: no source in `src/frontend/` may include `vm.h`, `jit/jit.h`,
 `builtins.h`, `ops.h`, `ffi_marshal.h` or a host FFI library, and `src/frontend/compiler.*`
 plus `src/frontend/native/*` must also stay clear of `interpreter.h`. Enforced

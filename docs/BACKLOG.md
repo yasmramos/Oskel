@@ -112,14 +112,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `fn` (named declarations only) can put a block inside an expression, so no
    `defer` can sit on that path. Revisit if the language ever gains a block
    expression or an anonymous `fn`.
-8. **[P1]** `compileExternBlock` does not reject a symbol that collides with a
-   builtin (`print`, `len`, ...), which then shadows it silently. **Needs a
-   decision**: shadowing a builtin is how the language behaves today for every
-   declaration (a user `fn len(x)` shadows it, and `tests/29_extern_c.oskl`
-   declares `sqrt` and `abs` as `extern`), so rejecting it only for `extern`
-   would be inconsistent and would break that test. Either reject collisions
-   for all declarations or record in `DEVELOPMENT.md` that shadowing is
-   intended.
+8. **[P1] [done]** `compileExternBlock` does not reject a symbol that collides
+   with a builtin (`print`, `len`, ...), which then shadows it silently.
+   **Done**: by design, recorded in `DEVELOPMENT.md` (the `oskelint`
+   paragraph). Shadowing a builtin is legal for every declaration (a user
+   `fn len(x)` does it, and `tests/29_extern_c.oskl` declares `sqrt` and
+   `abs`), so the compiler does not reject it. The `builtin-shadow` lint rule
+   reports it, including an `extern` block's declaration name
+   (`tests/oskelint_test.cpp`, "extern declaration name").
 9. **[P2]** `inferExprType` for a `CatchExpr` with one unknown side returns
    untyped, losing check opportunities. Infer the known side when possible.
 10. **[P2]** `compileSwitch` emits `EQ` + `JMP_IF_TRUE` + `JMP` for the
