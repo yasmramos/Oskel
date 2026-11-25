@@ -752,6 +752,42 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     `docs/phase11-async-design.md`; 11.2.1 is done and 11.2.2-11.2.5 have not
     started.
 
+33. **[P1] [done]** The emitted arena was one fixed 1 MiB region, mapped at
+    entry and never grown, so a program that allocated more -- 10 000
+    `arr.push` calls, a 20 000-part `join`, a 30 000-key map -- died with
+    "oskel: out of memory" while the VM ran the same program. `oskel_alloc` now
+    calls `oskel_arena_grow` when the current chunk cannot satisfy the request:
+    `mmap` on freestanding Linux, `VirtualAlloc` on freestanding Windows,
+    `malloc` in the hosted modes; the new chunk is the request or
+    `kAotArenaChunkSize` (1 MiB), whichever is larger, and the cursor/end pair
+    (r13/r14) is repointed at it before the request is retried. The exhausted
+    chunk is abandoned -- a bump region has no free -- so peak memory is the sum
+    of the chunks; that is the accepted trade for removing the ceiling, and it
+    is documented in `include/native/entry.h`. Bare metal has no page allocator:
+    its grow thunk returns 0 and the `.bss` region stays the ceiling, which is
+    why `tests/native_build_arena_growth.oskl` runs on the freestanding and
+    hosted images and not as a kernel fixture.
+34. **[P2]** `oskel_alloc`'s contract -- clobber only rax and the r10/r11
+    scratch pair, preserve everything else -- is what the emitted helpers are
+    written against, and the growth path now enforces it by saving rdi, rsi,
+    rdx, rcx, r8 and r9 around `oskel_arena_grow`. The trap is the opposite
+    edit: making the allocator follow System V and expecting callers to save
+    their own state. `tests/native_build_arena_growth.oskl` is the guard,
+    because it allocates past the first chunk in three different shapes (array
+    blocks, string concatenation, map inserts) and string concatenation reads
+    its operands after the allocation. Any new allocating helper belongs in that
+    fixture.
+35. **[P2]** A bound method read allocates. `xs.push(i)` evaluates `xs.push`
+    (an `AotClosure` plus the captured cell) *before* every call, and the arena
+    never reclaims it, so the closure is pure overhead in a loop. Measured on a
+    standalone loop while fixing item 33: the direct form exhausted the old
+    1 MiB region at ~7 000 iterations while `var push = xs.push; push(i)`
+    reached ~16 000 (where the array's own blocks are the limit), i.e. ~130
+    bytes per iteration of avoidable allocation. Caching the bound closure per
+    (receiver, selector) at the call site, or lowering a direct
+    `recv.method(args)` to the method body with the receiver passed implicitly,
+    removes it. Not a correctness bug, so no fixture pins it.
+
 ---
 
 ## 7. FFI (`src/runtime/ffi.cpp`)

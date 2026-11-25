@@ -872,6 +872,15 @@ void emitBareMetalRuntime(CodeGen& code, const RuntimeHandles& handles) {
               static_cast<std::int64_t>(kBMDataBase + kBMArenaOffset + kAotArenaSize));
   code.retInsn();
 
+  // --- long oskel_arena_grow(long size) ---
+  // The kernel image has no page allocator: its arena is the `.bss` region the
+  // boot loader zeroed, and there is no `mmap`/`malloc` to ask for another one.
+  // Returning 0 keeps the allocator's contract -- `oskel_alloc` reports "out of
+  // memory" -- instead of handing out a region past the segment.
+  code.bind(handles.arenaGrow);
+  code.xorReg(X64Reg::Rax, X64Reg::Rax);
+  code.retInsn();
+
   // --- long oskel_read(char* buf, long len) ---
   // The input counterpart to `oskel_write`: it fills `buf` with one line and
   // returns the byte count, consuming the terminating newline. The bytes come

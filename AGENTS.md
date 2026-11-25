@@ -159,7 +159,26 @@ it as a caveat:
   positional `{...}` initialiser by hand; a short one silently left the new
   labels unbound and `oskel build` failed with "codegen: binding an unknown
   label". A new non-label field must trip the `static_assert`, not shift every
-  handle by one.
+  handle by one. `RuntimeHandles` (`include/native/entry.h`, the prelude's
+  handles) had the same hand-written list and now uses the same sweep.
+- The AOT arena is not a fixed region: when an allocation no longer fits,
+  `oskel_alloc` calls `oskel_arena_grow`, which maps a fresh chunk
+  (`mmap` freestanding Linux, `VirtualAlloc` freestanding Windows, `malloc`
+  hosted, the same chunk size as the initial 1 MiB unless the request is
+  larger), repoints the r13/r14 cursor/end pair at it and retries. The
+  exhausted chunk is abandoned, so peak memory is the sum of the chunks -- a
+  bump region has no free -- but no region size caps a program any more. Bare
+  metal has no page allocator and binds the grow handle to a thunk that returns
+  0, so its `.bss` region stays the hard ceiling and the allocator reports
+  "out of memory" there, never a pointer past the segment.
+- `oskel_alloc` clobbers **only** rax (the result) and the r10/r11 scratch pair;
+  every other register survives. That is not the System V convention, but the
+  emitted helpers are written against it -- `oskel_concat` reads the second
+  operand out of rsi *after* the allocation -- so the growth path saves rdi,
+  rsi, rdx, rcx, r8 and r9 around `oskel_arena_grow`. Turning the allocator
+  into a leaf that follows the C ABI instead is what made every string-building
+  program crash the moment the first growth ran; if a helper needs to follow
+  System V across an allocation, it must save its own state first.
 - The AOT backend has two link modes (`LinkMode`, PHASE 7f.3/7f.4), chosen on
   the command line and never in the source: `freestanding` (the default on
   Linux and Windows) is the self-contained image (no libc, no linker, `ldd`

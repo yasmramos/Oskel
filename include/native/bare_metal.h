@@ -55,7 +55,11 @@ constexpr std::uint32_t kMultibootFlags = kMultibootFlagMemory;
 constexpr std::uint64_t kBMPreambleHeaderBytes = 12;
 
 // Size of the `.bss` region the image reserves: the page tables, a page of
-// kernel data, the boot stack and the arena.
+// kernel data, the boot stack and the arena. The kernel prelude binds
+// `oskel_arena_grow` to a thunk that reports failure -- there is no page
+// allocator to map more -- so this region is the target's hard ceiling and the
+// allocator answers "out of memory" rather than handing out memory past the
+// segment. The Linux, Windows and hosted images grow instead.
 constexpr std::uint64_t kBMBssBytes =
     (0x3000 /* page tables */ + 0x1000 /* kernel data */ +
      0x4000 /* 16 KiB stack */) +
