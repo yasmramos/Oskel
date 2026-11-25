@@ -745,7 +745,8 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     AOT/WASM backends carry a state machine, so it stays out of scope here.
     `tests/65_async.oskl`, `tests/65_async_modules.oskl` and the
     `oskel.build_binary_async`/`oskel.build_wasm_async` fixtures pin the current
-    surface.
+    surface. The scheduler/suspension design and its slices are in
+    `docs/phase11-async-design.md`; 11.2.1 has not started.
 
 ---
 
@@ -1175,8 +1176,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    one go: about a quarter of the files already match, and a full pass would
    rewrite roughly 19,000 of 108,000 lines. A one-time reformat is a separate
    decision.
-2. **[P1]** Add `-Werror` to the build (at least in CI) so warnings cannot
-   accumulate.
+2. **[P1] [done for Linux gcc and clang]** Add `-Werror` to the build (at
+   least in CI) so warnings cannot accumulate. **Done**: the `OSKEL_WERROR`
+   CMake option (off by default) is on for the Linux Release jobs (gcc and
+   clang) and the ASan/UBSan job, after clearing every `-Wall -Wextra` warning
+   in `src`, `tools` and `tests` for gcc 13 and clang 18. **Still open**:
+   MSVC (`/W4`) and AppleClang stay warn-only, because their output was not
+   cleaned; the CI problem matcher annotates their warnings on the PR so they
+   can be fixed, then `OSKEL_WERROR` can be widened.
 3. **[P1] Done.** `Env` (`src/env.h`/`src/env.cpp`) was deleted: the VM keeps
    locals in reference-counted `Cell`s, so `Env` and `Function::closure` were
    dead code kept only by `tests/gc_test.cpp`. The three `gc_test.cpp` cases

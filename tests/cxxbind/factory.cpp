@@ -23,7 +23,11 @@ void Canvas::drawRect(const Rect&, uint32_t color) {
 void Canvas::drawBox(const Box&) { ++count_; }
 int Canvas::count() const { return count_; }
 
-Surface::Surface(int w, int h) : w_(w), h_(h) {}
+Surface::Surface(int w, int h) : w_(w), h_(h) {
+  // The fixture only needs a class with private state; nothing reads the size.
+  (void)w_;
+  (void)h_;
+}
 Surface::~Surface() = default;
 std::unique_ptr<Surface> Surface::make(int w, int h) {
   return std::unique_ptr<Surface>(new Surface(w, h));

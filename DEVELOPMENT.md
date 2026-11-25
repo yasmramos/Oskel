@@ -2431,6 +2431,8 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
 
 ### PHASE 11 — `async` / `await` 🔶 in progress
 
+Design for the scheduler and suspension: `docs/phase11-async-design.md`.
+
 - **11.1 (done, surface only) — `async fn`, `await` and `Future`.** An `async fn` is a
   function whose call returns a `Future`; the declared return type is the
   payload, so `async fn f(): int` returns `Future<int>` at the type level and

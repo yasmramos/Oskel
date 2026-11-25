@@ -1347,7 +1347,7 @@ void testLogicalAssignmentBytecode() {
   // `x ??= v` (PHASE 6.5 operators, compound form): read the target once,
   // compare against nil with NEQ, and short-circuit with JMP_IF_TRUE. No new
   // opcode: the same `LOADK nil` + `NEQ` + jump shape as `??`.
-  Bytecode coalesce = compileSource("var x = nil;\nx ??= 1;\n");
+  Bytecode coalesce = compileSource("var x = nil;\nx ?\?= 1;\n");
   bool sawNeq = false;
   bool sawJmpIfTrue = false;
   bool sawSetGlobal = false;
@@ -1356,9 +1356,9 @@ void testLogicalAssignmentBytecode() {
     if (ins.op == OpCode::JMP_IF_TRUE) sawJmpIfTrue = true;
     if (ins.op == OpCode::SETGLOBAL) sawSetGlobal = true;
   }
-  assert(sawNeq && "??= must compare the target against nil");
-  assert(sawJmpIfTrue && "??= must skip the write-back when the target is not nil");
-  assert(sawSetGlobal && "??= must write the target back");
+  assert(sawNeq && "?\?= must compare the target against nil");
+  assert(sawJmpIfTrue && "?\?= must skip the write-back when the target is not nil");
+  assert(sawSetGlobal && "?\?= must write the target back");
 
   // `x ||= v` tests truthiness: JMP_IF_TRUE skips the assignment.
   Bytecode orAssign = compileSource("var x = 0;\nx ||= 1;\n");
@@ -1379,7 +1379,7 @@ void testLogicalAssignmentBytecode() {
   // On an index target the element is read once (GETTABLE) and written back
   // once (SETTABLE). The array literal `[nil]` itself contributes one SETTABLE,
   // so the assignment adds exactly one of each.
-  Bytecode indexed = compileSource("var a = [nil];\na[0] ??= 1;\n");
+  Bytecode indexed = compileSource("var a = [nil];\na[0] ?\?= 1;\n");
   int getTable = 0;
   int setTable = 0;
   for (const Instruction& ins : indexed.code) {
@@ -1396,7 +1396,7 @@ void testLogicalAssignmentBytecode() {
   }
   assert(getGlobal == 1 && "the variable target must be read once");
 
-  expectCompiles("var x = nil;\nx ??= 1;\n");
+  expectCompiles("var x = nil;\nx ?\?= 1;\n");
   expectCompiles("var x = false;\nx ||= true;\n");
   expectCompiles("var x = true;\nx &&= false;\n");
 }
@@ -1404,7 +1404,7 @@ void testLogicalAssignmentBytecode() {
 void testLogicalAssignmentErrors() {
   // The target must be assignable and mutable, exactly like `=`.
   expectCompileError("let x = 1;\nx ||= 2;\n", "||= on an immutable binding");
-  expectCompileError("let m = {a: nil};\nm?.a ??= 2;\n", "??= on a safe member access");
+  expectCompileError("let m = {a: nil};\nm?.a ?\?= 2;\n", "?\?= on a safe member access");
 }
 
 void testNullCoalesceBytecode() {
