@@ -128,9 +128,15 @@ endif()
 # outside the source tree, so name the standard library explicitly.
 set(skia_env "OSKEL_UI_LIBDIR=${BUILD_DIR}" "OSKEL_STDLIB=${SOURCE_DIR}/std")
 if(CXX_COMPILER)
-  # `oskel build` invokes `$CC` for the hosted link; CMake knows the exact
-  # compiler path even when `cl` is not on PATH (the Windows runner).
-  list(APPEND skia_env "CC=${CXX_COMPILER}")
+  set(OSKEL_CC "${CXX_COMPILER}")
+endif()
+include("${CMAKE_CURRENT_LIST_DIR}/hosted_cc.cmake")
+oskel_prepare_hosted_cc()
+if(DEFINED ENV{CC} AND NOT "$ENV{CC}" STREQUAL "")
+  # `oskel build` invokes `$CC` for the hosted link. On Windows the helper
+  # returns a wrapper that loads the MSVC environment first; a bare cl.exe
+  # path makes the link fail with "cannot open libcmt.lib".
+  list(APPEND skia_env "CC=$ENV{CC}")
 endif()
 if(UNIX AND NOT APPLE)
   execute_process(
