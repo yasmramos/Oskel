@@ -126,6 +126,16 @@ may change between minor versions.
   `ctest -LE gc-stress-slow` — 520 of 522 tests in 21s. The label is applied
   unconditionally, so renaming a fixture breaks every configure rather than
   only the stress job.
+- **The assignment rule is one function (BACKLOG §3 item 1).** `checkAssignable`
+  carried its own copy of the union cases — a per-member recursion plus the
+  `nil` and nullable probes — next to `assignError`'s plain path, so a change in
+  one could be missed in the other. `assignError` now covers unions by
+  recursing through itself and `checkAssignable` only reports its verdict. The
+  nullable hint is a single helper, so the plain form (`use 'int?'`) and the
+  union form (`add '| nil' or '?'`) cannot drift apart.
+  `testAssignmentErrorsAreSpecific` pins both hints and both union directions,
+  including the union-to-union and nullable-union cases that must still
+  compile.
 
 ### Fixed
 
@@ -148,6 +158,13 @@ may change between minor versions.
   on Windows. Bare metal has no page allocator, so its `.bss` region stays the
   ceiling and the allocator keeps reporting `out of memory` there.
 
+- **A failed union assignment names the union, not one of its members.** When a
+  value of type `int | string` did not fit a plain target, the diagnostic
+  reported the last member the union probe tried — `cannot assign 'string' to
+  'int'` — pointing at a type the caller never wrote at that site. It now
+  reports `cannot assign 'int | string' to 'int'`. The rejection is decided by
+  the unified `assignError` (see Changed), so a union that fails reports the
+  same shape a plain assignment would.
 - **A malformed `struct`/`class`/`enum` declaration is now reported at the
   declaration.** `parseProgram` registers type names in a prescan so a literal
   or annotation written before the declaration still parses, but it took any
