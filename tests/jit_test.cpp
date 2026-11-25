@@ -22,13 +22,13 @@
 #include "vm.h"
 
 // The JIT emits x86-64 for the System V ABI and maps it with `mmap`, so it only
-// runs on Linux x86-64 (`jitHostSupported` in `src/runtime/jit/jit.cpp`). On any other
+// runs on x86-64 Linux and macOS (`jitHostSupported` in `src/runtime/jit/jit.cpp`). On any other
 // host `jitCompile` returns nullptr and the VM keeps interpreting, so the
 // differential checks have nothing to compare against. Like `codegen_test`,
 // `lower_test` and `freestanding_test`, the suite is skipped there.
-#if !(defined(__linux__) && defined(__x86_64__))
+#if !((defined(__linux__) || defined(__APPLE__)) && defined(__x86_64__))
 int main() {
-  std::printf("skipped: the JIT requires Linux x86-64\n");
+  std::printf("skipped: the JIT requires x86-64 Linux or macOS\n");
   return 0;
 }
 #else
@@ -475,4 +475,4 @@ int main() {
   return 0;
 }
 
-#endif  // Linux x86-64
+#endif  // x86-64 Linux or macOS

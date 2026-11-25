@@ -2112,6 +2112,10 @@ whether the JIT ran. There is **no** inline caching, **no** superinstruction and
 `include/native/codegen.h` emitter (the project's own, so §5.1 keeps its
 zero-external-dependency rule; AsmJIT is not required).
 
+The JIT runs on x86-64 Linux and macOS, which share the System V ABI it emits;
+on any other host (Windows, arm64) `jitCompile` returns `nullptr` and the VM
+interprets.
+
 Slice 1 (done) is the smallest useful tier: a **leaf proto over the integer
 subset**. A proto is compiled when its body only touches `nil`, `bool` and
 `int` values, has no calls, no upvalues, no globals, no collections and no
