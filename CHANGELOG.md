@@ -115,6 +115,17 @@ may change between minor versions.
   keys measure 0.006s against 0.053s for the scan.
   `tests/native_build_map_index.oskl` pins the parity with the VM byte for
   byte.
+- **The test suite runs under `OSKEL_GC_STRESS` in CI (BACKLOG §20 item 7).**
+  A `gc-stress` job builds with `-DOSKEL_GC_STRESS=ON`, where the collector runs
+  at every safe point instead of only when enough objects were allocated, so a
+  root the collector forgets shows up as a failure instead of surviving until a
+  sanitizer run. Two fixtures build ~200k objects one at a time
+  (`tests/11_cycles.oskl`, `tests/47_deep_container_teardown.oskl`); a
+  collection per safe point is quadratic in the object count there and each
+  takes minutes, so both carry the `gc-stress-slow` label and the job runs
+  `ctest -LE gc-stress-slow` — 520 of 522 tests in 21s. The label is applied
+  unconditionally, so renaming a fixture breaks every configure rather than
+  only the stress job.
 
 ### Fixed
 

@@ -2762,4 +2762,14 @@ if(BUILD_TESTING)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_check_case.cmake")
   endforeach()
 
+  # `OSKEL_GC_STRESS` collects at every safe point instead of when enough
+  # objects were allocated. These two build a structure one object at a time
+  # (~200k), so a collection per safe point is quadratic in the object count and
+  # each takes minutes. The label lets the stress job run the rest of the suite
+  # (`ctest -LE gc-stress-slow`) instead of dropping the stress run entirely. It
+  # is set unconditionally so a rename breaks every configure, not just the
+  # stress job.
+  set_tests_properties(oskel.11_cycles oskel.47_deep_container_teardown
+    PROPERTIES LABELS "gc-stress-slow")
+
 endif()

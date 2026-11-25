@@ -1280,7 +1280,15 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    registered for AOT (`oskel.build_binary_double_format`) as well as WASM.
    The WASM `parseDoubleStr` accepts the same non-finite spellings, so the
    shared fixture passes on all three engines.
-7. **[P1]** Add an `OSKEL_GC_STRESS` test run.
+7. **[P1] [done]** Add an `OSKEL_GC_STRESS` test run. **Done**: a `gc-stress`
+   CI job configures with `-DOSKEL_GC_STRESS=ON` and runs the whole suite, so a
+   missed root surfaces instead of waiting for a sanitizer run. Two fixtures
+   build ~200k objects one at a time (`tests/11_cycles.oskl`,
+   `tests/47_deep_container_teardown.oskl`); a collection at every safe point is
+   quadratic in the object count there, so they are labelled `gc-stress-slow`
+   and the job runs `ctest -LE gc-stress-slow` (520 of 522, 21s). The label is
+   set unconditionally, so a renamed fixture breaks every configure rather than
+   only the stress job.
 8. **[P1] [done]** Add `lower_test.cpp` cases for `RETURN` in the root chunk
    and for a `JMP` to exactly `size`. **Done**: `RETURN` in the root chunk was
    already covered by `testRootReturnLowers` and `testRootReturnBehavesLikeHalt`
