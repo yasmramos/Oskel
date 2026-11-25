@@ -9089,6 +9089,9 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   CodeGen::Label map = cg.newLabel();
   CodeGen::Label mapNoValue = cg.newLabel();
   CodeGen::Label str = cg.newLabel();
+  CodeGen::Label strSkip = cg.newLabel();
+  CodeGen::Label strSkipDone = cg.newLabel();
+  CodeGen::Label strStoreCursor = cg.newLabel();
   CodeGen::Label range = cg.newLabel();
   CodeGen::Label rangeAsc = cg.newLabel();
   CodeGen::Label rangeAscIncl = cg.newLabel();
@@ -9195,13 +9198,38 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.jmp(storeCursor);
 
   cg.bind(str);
-  cg.movReg(Rdi, R12);
-  cg.movFromMem(Rsi, Rbp, -32);
-  cg.callLabel(env.utf8CharAt);
-  cg.testReg(Rax);
-  cg.jcc(Jcc::Eq, doneTrue);
+  // The cursor is a byte offset, not a character index: the step reads the lead
+  // byte at the cursor and skips its continuation bytes, so a loop over an
+  // n-character string costs O(n) instead of rescanning from the start on every
+  // turn. `utf8CharAt` walks from byte 0 each call, which made the loop O(n^2)
+  // -- 200 000 characters took 24s. The WASM backend already steps this way.
+  cg.movFromMem(R9, R12, 0);        // string byte length
+  cg.movFromMem(R10, Rbp, -32);     // offset (cursor)
+  cg.cmpReg(R10, R9);
+  cg.jcc(Jcc::Ae, doneTrue);        // offset >= length: past the last byte
+  cg.movReg(R11, R10);
+  cg.addImm32(R11, 1);              // end = offset + 1, then the continuations
+  cg.bind(strSkip);
+  cg.cmpReg(R11, R9);
+  cg.jcc(Jcc::Ae, strSkipDone);
+  cg.movReg(Rax, R12);
+  cg.addReg(Rax, R11);
+  cg.movzxFromMem(Rax, Rax, kStringDataOffset);   // text[end]
+  cg.movReg(Rcx, Rax);
+  cg.andImm32(Rcx, 0xC0);
+  cg.cmpImm32(Rcx, 0x80);
+  cg.jcc(Jcc::Ne, strSkipDone);     // not a continuation byte: the char ends
+  cg.addImm32(R11, 1);
+  cg.jmp(strSkip);
+  cg.bind(strSkipDone);
+  cg.movReg(Rax, R12);
+  cg.addReg(Rax, R10);
+  cg.addImm32(Rax, static_cast<std::int32_t>(kStringDataOffset));  // char pointer
+  cg.movReg(Rdx, R11);
+  cg.subReg(Rdx, R10);              // char byte length
   cg.movToMem(Rbp, -40, Rax);       // char pointer
   cg.movToMem(Rbp, -48, Rdx);       // char byte length
+  cg.movToMem(Rbp, -32, R11);       // next cursor = end (stored by strStoreCursor)
   cg.movReg(Rdi, Rdx);
   cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
   cg.callLabel(env.alloc);
@@ -9218,7 +9246,7 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.movImm(Rax, kTagStr);
   // Without this jump the char just built would fall through into the range
   // code below, which overwrites rax:rdx with the cursor index.
-  cg.jmp(storeCursor);
+  cg.jmp(strStoreCursor);
 
   emitIterNextRange(cg, range, rangeAsc, rangeAscIncl, rangeDescIncl, rangeEmit,
                     rangeDescNext, rangeStoreCursor, doneTrue, done);
@@ -9226,6 +9254,15 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.bind(storeCursor);
   cg.movFromMem(R9, Rbp, -32);
   cg.addImm32(R9, 1);
+  cg.movImmToMem(Rbx, 0, kTagInt);
+  cg.movToMem(Rbx, 8, R9);
+  cg.xorReg(R8, R8);                // done = false
+  cg.jmp(done);
+
+  // A string's cursor is already the next byte offset (`end`), not an index to
+  // advance, so it is stored as it stands.
+  cg.bind(strStoreCursor);
+  cg.movFromMem(R9, Rbp, -32);
   cg.movImmToMem(Rbx, 0, kTagInt);
   cg.movToMem(Rbx, 8, R9);
   cg.xorReg(R8, R8);                // done = false

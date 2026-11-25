@@ -313,16 +313,19 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    over 300 keys: 0.006s against 0.053s for the scan. `tests/native_build_map_index.oskl`
    pins the parity byte for byte.
 (fix: reject 'from' as a module name and path segment)
-7. **[P1]** VM/AOT divergence in string iteration: AOT allocates one
+7. **[P1] [done]** VM/AOT divergence in string iteration: AOT allocates one
    `AotString` per character; a 1M-char string means 1M arena allocations.
    Measured: `for c in s` over a 40 000-char string prints 40000 on the VM and
    dies with `oskel: out of memory` in AOT. The per-character allocation is not
-   the whole story — the arena is a fixed 1 MiB that never reclaims, so any
-   loop that builds values exhausts it. Reusing one buffer across iterations is
-   *not* the fix: `for c in s { arr.push(c) }` would alias every entry to the
-   last character, which the VM does not. The fix is either a real allocator
-   with a free list in AOT, or a per-loop character buffer that is copied when
-   the value escapes. Both are PHASE 7g (arena growth).
+   the whole story — the arena was a fixed 1 MiB that never reclaimed, so any
+   loop that builds values exhausted it. **Done**: the arena grows now (the
+   `fix(native): grow the AOT arena` change), so the 40 000-char loop and even
+   the 1M-char one complete on both engines. Reusing one buffer was never the
+   fix and was not used: `for c in s { arr.push(c) }` still copies each
+   character, and the fixture pins that every entry keeps its own value.
+   `tests/native_build_string_iteration.oskl` compares the VM and the binary
+   byte for byte over ASCII, multibyte, empty, `break` and 20 000-character
+   strings.
 8. **[P1] [done]** `emitContains` for arrays uses `AotCompareOp::Eq`, which
    used to be identity for arrays/maps; now that equality is structural, `in`
    over an array of arrays matches the VM (fixed with item 2).
@@ -332,8 +335,18 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `contains`, `indexOf`, `substr`, `repeat`, `reversed`, `padStart`,
    `padEnd`). `tests/native_build_string_methods.oskl` and
    `oskel.build_wasm_string_methods` pin the AOT and WASM paths against the VM.
-10. **[P1]** `emitIterNext` for `str` allocates a string per character — same
-    as item 7, and blocked on the same arena limit.
+10. **[P1] [done]** `emitIterNext` for `str` allocates a string per character —
+    same as item 7, and blocked on the same arena limit. **Done** with item 7,
+    plus a second defect the growth exposed: the step was O(n) *per character*
+    in every engine that walked it, so the loop was O(n^2). The VM rebuilt the
+    whole `utf8Chars` vector on each turn and the AOT `emitIterNext` called
+    `utf8CharAt`, which scans from byte 0 every time; only WASM already stepped
+    a byte offset. The cursor is now a byte offset in the VM and in AOT (as it
+    always was in WASM): each step reads the lead byte and skips its
+    continuation bytes. 200 000 characters went from 17s to 9ms on the VM and
+    from 24s to 9ms in the binary; 1M characters, which used to hang, run in
+    217ms and 37ms. The cursor is internal to the compiler, so no program can
+    observe the change, and `nil` still means "start at the first byte".
 11. ~~**[P1]** `collectGlobals` does not detect name-resolution cycles: a
     `GETGLOBAL` of a name assigned only inside a never-called function is
     accepted and reads nil at run time. Report it.~~ **Done**: the read is

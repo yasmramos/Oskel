@@ -816,13 +816,22 @@ Value VM::runFrames(std::size_t stopDepth) {
           if (!cursor.isNil() && !cursor.isInt()) {
             fail("invalid string iteration state", line, col);
           }
-          const std::vector<std::string> chars = utf8Chars(iterable.asStr());
-          const int64_t index = cursor.isNil() ? 0 : cursor.asInt();
-          if (index < 0 || static_cast<std::size_t>(index) >= chars.size()) {
+          // The cursor is a byte offset, not a character index: the step only
+          // reads the lead byte at the cursor and skips its continuation bytes,
+          // so a loop over an n-character string costs O(n) rather than
+          // rescanning from the start (and rebuilding the whole character
+          // vector) on every turn, which was O(n^2). The WASM backend has
+          // always used this shape. `nil` still means "start at the first byte".
+          const std::string& text = iterable.asStr();
+          const std::size_t size = text.size();
+          const int64_t offset = cursor.isNil() ? 0 : cursor.asInt();
+          if (offset < 0 || static_cast<std::size_t>(offset) >= size) {
             done = true;
           } else {
-            item = Value(chars[static_cast<std::size_t>(index)]);
-            cursor = Value(static_cast<int64_t>(index + 1));
+            std::size_t end = static_cast<std::size_t>(offset) + 1;
+            while (end < size && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) ++end;
+            item = Value(text.substr(static_cast<std::size_t>(offset), end - static_cast<std::size_t>(offset)));
+            cursor = Value(static_cast<int64_t>(end));
           }
         } else if (iterable.isMap()) {
           if (!cursor.isNil() && !cursor.isInt()) {

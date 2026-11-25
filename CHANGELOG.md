@@ -139,6 +139,22 @@ may change between minor versions.
 
 ### Fixed
 
+- **String iteration is linear and works on both engines (BACKLOG §6 items 7
+  and 10).** `for c in s` was O(n^2) everywhere: the VM rebuilt the whole
+  character vector on every turn and the AOT step called `utf8CharAt`, which
+  scans from byte 0 each time; only the WASM backend already stepped a byte
+  offset. The cursor is now a byte offset in the VM and in AOT too — each step
+  reads the lead byte and skips its continuation bytes — so 200 000 characters
+  went from 17s to 9ms on the VM and from 24s to 9ms in the binary, and the
+  1M-character loop that used to hang runs in 217ms and 37ms. Combined with the
+  arena growth above, the 40 000-character loop that used to die with
+  `oskel: out of memory` under `oskel build` now completes. The cursor is
+  internal to the compiler, so no program observes the change, and `nil` still
+  means "start at the first byte". `tests/native_build_string_iteration.oskl`
+  is the first test of string iteration at all: it pins ASCII, multibyte,
+  empty, `break` and the `arr.push(c)` non-aliasing case against the VM byte
+  for byte.
+
 - **The AOT arena no longer stops at 1 MiB.** A compiled binary mapped one fixed
   region at entry and never grew it, so a program that allocated more than that
   -- ten thousand `arr.push` calls, a twenty-thousand-part `join`, a map with
