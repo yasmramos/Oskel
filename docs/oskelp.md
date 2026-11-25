@@ -368,7 +368,14 @@ both cases. In a workspace it reports the whole graph; a direct requirement
 comes from the member that declares it (distinct requirements are listed
 together).
 
-### `oskelp build [--package <name>]`
+### `oskelp yank <name> --version <version> [--undo] [--registry <dir>]`
+
+Writes or removes a `.yanked` marker in `<registry>/<name>/<version>/`. A
+yanked version is skipped by `add`, `update` and `outdated`, while an existing
+lockfile pin keeps working; `update --precise` that names a yanked version
+fails instead of silently choosing another.
+
+### `oskelp build [--target <name>] [--mode <name>] [--locked] [--package <name>]`
 
 Resolves the graph, writes or checks the lockfile, materialises
 `.oskel/deps`, and runs `oskelc` on the entry point. The binary is
@@ -379,20 +386,20 @@ If `oskelc` is not installed, `oskelp` falls back to `oskel build`, which is
 the same pipeline. At a virtual workspace root it builds every member into the
 shared `target/`; `--package` narrows it to one.
 
-### `oskelp run [--native] [--package <name>] [-- <args>...]`
+### `oskelp run [--native] [--target <name>] [--mode <name>] [--locked] [--package <name>] [-- <args>...]`
 
 Runs the entry point on the VM (`oskel`), which is the fast development loop.
 `--native` builds first and runs the native binary. Arguments after `--` are
 passed to the program. In a workspace it needs one member: `--package`, the
 member it runs in, or the only member.
 
-### `oskelp check [--package <name>]`
+### `oskelp check [--locked] [--package <name>]`
 
 Runs `oskel -c` on the entry point, so syntax, type and import errors are
 reported without executing anything. At a virtual workspace root it checks
 every member.
 
-### `oskelp test [--native] [--package <name>]`
+### `oskelp test [--native] [--target <name>] [--mode <name>] [--locked] [--package <name>]`
 
 Runs every `.oskl` file under `tests/`, recursively, in sorted order. A test
 passes when its process exits with `0`; any other exit code is a failure. The
@@ -440,9 +447,10 @@ oskelp build --manifest-path ../hello/oskel.toml
 | `OSKEL_PACKAGES` | The installed-packages root; `oskelp` sets it to `<project>/.oskel/deps`. |
 | `OSKEL_REGISTRY` | The local registry root: `<root>/<name>/<version>/`. Required by a registry dependency, by `add` without `--version`, by `outdated`, by `update --precise`, and by `publish` unless `--registry` is given. |
 
-`OSKEL_MODULE_ROOT` is the only compiler-side hook the tool relies on. Both
-engines go through `resolverFor`, so the VM and the AOT backend resolve
-imports identically.
+`OSKEL_MODULE_ROOT` and `OSKEL_PACKAGES` are the two compiler-side hooks the
+tool relies on. Both engines go through `resolverFor`, so the VM and the AOT
+backend resolve a package's own `src/` and its materialised dependencies
+identically.
 
 ## Exit codes
 

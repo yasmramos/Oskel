@@ -1,6 +1,6 @@
 # Oskel Language Reference
 
-Language version: **0.1.0**
+Language version: **0.3.0**
 
 This guide describes the syntax and semantics of Oskel as implemented by the compiler and the register-based VM included in this repository.
 
@@ -14,7 +14,7 @@ The language surface this reference documents is implemented on the development 
 | Types, nullability, `struct`, `class`, `enum`, variadics, `import`, `switch`, `defer` (PHASE 6.5/6.8/6.9) | ✅ | ✅ (all are compile-time; `struct`/`class` are erased, `enum` members fold to `LOADK`, `switch`/`defer` lower to existing opcodes) |
 | `async fn` / `await` (PHASE 11.1) | ✅ | ✅ (a future is a map built with existing opcodes; no backend change) |
 | `native fn` (PHASE 6.5) | ✅ | 🔶 only for the curated stubs the backend seeds; anything else fails the build (PHASE 7f) |
-| FFI with C (PHASE 6.6) | ✅ | 🔶 scalar `extern "C"` in `--mode hosted` only; FFI is hosted-only by design (PHASE 7f, §4.5) |
+| FFI with C (PHASE 6.6) | ✅ | 🔶 `--mode hosted` only; scalars, `cstring`/`ptr`, structs by value and C variadics, with callbacks on System V (PHASE 7f, §4.5) |
 | Error values, `pcall`, `try`/`catch`, unions, `@MustUse` (PHASE 6.7) | ✅ | ✅ `error` values, `try`/`catch` and `pcall` (PHASE 7c.5c/7c.5d); a raised error with no active `pcall` exits 70 |
 | JIT (PHASE 8) | 🔶 integer leaf protos (slices 1-4) | — (never) |
 
@@ -57,7 +57,7 @@ A Oskel program is a UTF-8 text file (extension `.oskl`). The pipeline is:
 3. **Compiler**: translates the AST to bytecode (39 opcodes today, register-based, under a hard budget of 40).
 4. **VM**: executes the bytecode.
 
-The AST is never executed: the `oskel` executable compiles source to bytecode and runs it on the register-based VM. The compiler and the VM implement the whole language surface this reference documents — functions, closures and control flow, collections, the type system with nullability, `struct` and `class` (PHASE 6.5/6.8), FFI with C (PHASE 6.6) and error values with `pcall`, `try`/`catch`, unions and `@MustUse` (PHASE 6.7). The AOT backend (PHASE 7) compiles a subset of the same programs to a native binary through `oskelc` (also reachable as `oskel build`); §16 lists the constructs it does not yet lower.
+The AST is never executed: the `oskel` executable compiles source to bytecode and runs it on the register-based VM. The compiler and the VM implement the whole language surface this reference documents — functions, closures and control flow, collections, the type system with nullability, `struct` and `class` (PHASE 6.5/6.8), FFI with C (PHASE 6.6) and error values with `pcall`, `try`/`catch`, unions and `@MustUse` (PHASE 6.7). The AOT backend (PHASE 7) compiles the same source to a native binary through `oskelc` (also reachable as `oskel build`); §16 lists the host- and target-specific limits.
 
 The program runs from top to bottom in the global scope. Simple statements end with `;`. Statements with a block (`if`, `while`, `for`, `fn`) close with `}` and optionally accept a `;` after it.
 
@@ -491,9 +491,9 @@ print(loadByte(buf, 0));    // 65
 free(buf);
 ```
 
-The AOT backend (PHASE 7) is to lower the same handles to real C pointers, but
-that is not implemented yet (PHASE 7f): a program that passes a pointer to a
-native does not compile with `oskel build` today.
+The AOT backend lowers the same handle model on every target, and a hosted
+build can pass the handle to a real C function (PHASE 7f). The WASM backend
+keeps the handle and its bytes inside linear memory.
 
 **FFI is hosted-only under `oskel build`.** The decision (PHASE 7f) is that a
 program using `extern "C"` compiles with `oskel build --mode hosted`, which
@@ -3327,7 +3327,7 @@ Process exit codes:
 | --- | --- |
 | `0` | Success. |
 | `64` | Incorrect command-line usage. |
-| `65` | Compile error. |
+| `65` | Compile, type-check or lowering error. |
 | `66` | The file could not be read. |
 | `70` | Runtime error. |
 | other | Code given to `exit(n)`. |
@@ -3721,7 +3721,7 @@ future work. `-c` is implemented; the `.oskc` format is specified in §19.1.
   through `std/internal/skia_ui.oskl` (`docs/cxxbind.md`); `std.ui.window`
   presents it in an SDL3 window and runs the event loop. Input widgets, real
   font metrics, text wrapping and dirty-region redraw are post-1.0 work.
-- No async/await, generics, full pattern matching, generators, or transactions. These are out of scope (see `DEVELOPMENT.md`).
+- No generics, full pattern matching, generators or transactions. These are out of scope (see `DEVELOPMENT.md`). `async fn`/`await` exists (PHASE 11.1) but is eager: there is no scheduler, no promise chaining and no async lambda, and `await` on the reserved `"pending"` state is a runtime error.
 - Map keys are always strings. Literals accept identifier, string, scalar (`int`, `float`, `double`, `true`, `false`, `nil`) and computed `[expr]` keys; non-string keys are canonicalized to their string form.
 - A body of `if`, `while`, `for` or `for-in` may be a block or a single statement without braces; a brace-less body is wrapped in a block, so its bytecode and scoping match the brace form. `switch` arms always require braces.
 - `for ... in` accepts the loop variable and the iterable with or without parentheses (`for x in xs` and `for (x in xs)`).
@@ -3966,7 +3966,7 @@ there is no package reader and no native-library loader.
 | `myapp` | Native binary (Linux/macOS) | (GraalVM) `.exe` | ✅ |
 | `myapp.exe` | Native binary (Windows) | (GraalVM) `.exe` | ✅ |
 
-**`.oskpkg` format** (ZIP) — planned, not implemented in 0.1.0:
+**`.oskpkg` format** (ZIP) — planned, not implemented in 0.3.0:
 
 ```text
 myapp.oskpkg

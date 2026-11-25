@@ -35,7 +35,7 @@ sh build.sh
 ./build/oskel examples/hello.oskl
 ```
 
-`build.sh` builds all five binaries into `build/`:
+`build.sh` builds all six binaries into `build/`:
 
 | Binary | Purpose |
 | --- | --- |
@@ -44,6 +44,7 @@ sh build.sh
 | `oskelld` | the project's own linker (PHASE 10) |
 | `bindgen` | C binding generator (standalone) |
 | `oskelp` | project and package manager (standalone) |
+| `oskelint` | linter (standalone; links the runtime for the builtin names) |
 
 Choose the compiler and flags with environment variables:
 

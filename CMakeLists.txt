@@ -834,7 +834,9 @@ if(BUILD_TESTING)
   # The module is always installed; these tests need the development engine to
   # have SDL3 loaded, which CMake arranges above when it finds the library.
   # `run_sdl_case.cmake` sets SDL_VIDEODRIVER=dummy, so no display is needed.
-  # The hosted fixture is Linux x86-64 only, like every hosted AOT test.
+  # The hosted fixture is Linux x86-64 only because it links the SDL3
+  # library from the build tree; the general hosted AOT suite also runs on
+  # Windows.
   add_test(NAME sdl.bindgen
     COMMAND ${CMAKE_COMMAND}
       "-DBINDGEN=$<TARGET_FILE:bindgen>"

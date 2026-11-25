@@ -1190,7 +1190,8 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    resolver rejects cycles, two locations for one package name and a name that
    disagrees with its manifest, and resolves a local-registry dependency from
    `$OSKEL_REGISTRY`. The tool is standalone and drives `oskel`/`oskelc` as
-   child processes; `OSKEL_MODULE_ROOT` is the only compiler-side hook.
+   child processes; `OSKEL_MODULE_ROOT` and `OSKEL_PACKAGES` are the
+   compiler-side hooks.
 8. **[P3]** Add a "hello world with UI" tutorial. The widget layer
    (`std/ui.oskl`) and the public window loop (`std.ui.window`) exist now, so
    the tutorial can use `examples/ui/window.oskl` as its starting point.

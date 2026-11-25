@@ -1,10 +1,11 @@
 # Oskel — Project Analysis
 
-Date: 2026-11-23 · Branch: `develop` · Language version: **0.1.0**
+Date: 2026-11-24 · Branch: `develop` · Language version: **0.3.0**
 
-This analysis reflects the **actual code in the repository** (about 12,300
-lines of engine C++ under `src/` and `include/`, plus about 6,300 lines for the
-AOT backend under `src/frontend/native/` and `include/native/`). The project mirrors the
+This analysis reflects the **actual code in the repository** (about 26,500
+lines of engine C++ outside the native backend, plus about 56,200 lines for the
+AOT, linker and WebAssembly backends under `src/frontend/native/` and
+`include/native/`, plus the 247-line UI runtime loader in `src/core/`). The project mirrors the
 Lua / LuaJIT pipeline: `source → lexer → parser → AST → compiler →
 register-based bytecode → VM`, with an AOT backend in progress (PHASE 7).
 
@@ -18,19 +19,19 @@ tests and no CI).
 
 | Area | Status | Evidence |
 |------|--------|----------|
-| Lexer / Parser / AST | Working, tested | `src/frontend/lexer.cpp`, `src/frontend/parser.cpp` (1,742 L), `src/ast.h` |
-| Compiler AST→bytecode | PHASE 6.7 complete | `src/frontend/compiler.cpp` (2,853 L): literals, locals/globals, control flow, closures, collections, types, modules |
-| Register-based VM | PHASE 6 complete | `src/runtime/vm.cpp` (815 L); **39/40 opcodes** (`static_assert(kOpcodeCount <= 40)`) |
+| Lexer / Parser / AST | Working, tested | `src/frontend/lexer.cpp`, `src/frontend/parser.cpp` (2,780 L), `src/frontend/ast.h` |
+| Compiler AST→bytecode | PHASE 6.9 and 12.1/12.2 complete | `src/frontend/compiler.cpp` (4,379 L): literals, locals/globals, control flow, closures, collections, types, modules, interfaces |
+| Register-based VM | PHASE 6 complete | `src/runtime/vm.cpp` (935 L); **39/40 opcodes** (`static_assert(kOpcodeCount <= 40)` in `include/bytecode.h`) |
 | AST interpreter | **Retired** | no `src/interpreter.cpp`; the VM is the only engine |
-| Shared runtime | Working | `src/value.cpp`, `src/ops.cpp` (operators), `src/runtime/builtins.cpp` (1,524 L), `src/gc.cpp` |
-| AOT backend | PHASE 7 in progress (7f.11 done) | `src/frontend/native/*` (codegen, lower, runtime, dtoa, elf, pe, arena, freestanding platform, entry) |
+| Shared runtime | Working | `src/core/value.cpp`, `src/runtime/ops.cpp` (operators), `src/runtime/builtins.cpp` (1,936 L), `src/core/gc.cpp` |
+| AOT backend | PHASE 7 in progress (7f.11 and 7g done); PHASE 9/10 backends landed | `src/frontend/native/*` (codegen, lower, runtime, dtoa, mathlib, parse_float, elf, pe, macho, link, pe_link, object, wasm, arena, freestanding platform, entry) |
 | Tests | 168 `.oskl` under `tests/` (80 numbered, 85 `native_build_*` AOT fixtures, 3 named) + 170 under `tests/errors/` + 12 under `tests/check/` + 18 top-level examples (+ 4 subdirectory demos) + 32 C++ test sources | `tests/`, `tests/errors/`, `tests/check/`, `examples/`, wired into CTest (505 cases) |
 | CI | Two workflows | `.github/workflows/{cmake-multi-platform,artifacts}.yml` (Linux, Windows, macOS) |
 
-Build (`sh build.sh`) and the full CTest suite run clean on Linux x86-64, and
-`tests/run.sh` now mirrors CTest: it runs the same `.oskl` scripts (including
-`examples/` and the `-c` check tests) and skips `32_ffi_callback.oskl` when
-the x86-64 FFI stub is absent (see §3.1).
+Build (`sh build.sh`) and the full CTest suite run clean on Linux x86-64;
+CI covers Linux, Windows and macOS. `tests/run.sh` mirrors CTest: it runs the
+same `.oskl` scripts (including `examples/` and the `-c` check tests) and skips
+a test whose `// requires:` capability is absent (see §3.1).
 
 ---
 
@@ -43,12 +44,12 @@ The old report feared that `RefCounted`'s virtual destructor would leave cycles
 uncollected. The design changed: `RefCounted` no longer has a virtual
 destructor; it stores a per-type `destroy` hook and objects are freed through
 `destroyRefCounted`, which walks a work list iteratively so a deep structure is
-released with constant C++ stack depth. A cycle collector (`src/gc.cpp`)
+released with constant C++ stack depth. A cycle collector (`src/core/gc.cpp`)
 reclaims the cycles counting cannot, and `Cell`s register lazily. Covered by
 `tests/11_cycles.oskl` and the `gc_test`/`vm_test` suites.
 
 ### 2.2 Duplicated arithmetic semantics — **resolved**
-Arithmetic now lives in one place, `src/ops.cpp` (`intPow`, `add`, comparisons,
+Arithmetic now lives in one place, `src/runtime/ops.cpp` (`intPow`, `add`, comparisons,
 …), shared by the VM and the builtins. The retired interpreter's copy is gone.
 Integer `const`-fold overflow is now reported with a warning instead of wrapping
 silently (see `docs/language.md` §4.1).
@@ -57,7 +58,7 @@ silently (see `docs/language.md` §4.1).
 `intPow` wraps through `uint64_t` (defined behavior). The negative-exponent
 "huge loop count" landmine the old report flagged is not reachable: `intPow` is
 only called when the integer exponent is `>= 0`; a negative exponent takes the
-`std::pow` float path (`src/ops.cpp`). The chosen semantics (Oskel wraps silently
+`std::pow` float path (`src/runtime/ops.cpp`). The chosen semantics (Oskel wraps silently
 on `int` overflow; `const` folding warns) are documented.
 
 ### 2.4 Braceless single-statement bodies — **resolved**
@@ -67,11 +68,12 @@ match). `switch` arms still require braces. See `docs/language.md` §6 and
 `tests/38_braceless_bodies.oskl`.
 
 ### 2.5 Collection API consistency — **open (minor)**
-Maps expose `keys`/`values`/`entries`/`has`/`get`/`set`/`delete` and arrays
-expose `push`/`pop`/`shift`/`unshift`/`insert`/`removeAt`/`slice`/`concat`/
-`join`/`sort`/`sorted`/`reversed`/`contains`/`indexOf`/`map`/`filter`/`reduce`/
-`each`/`find`/`any`/`all`. Neither exposes a `len`/`size`/`length` method; the
-global `len(x)` is the only length accessor. Picking one convention (for example
+Maps expose `keys`/`values`/`entries`/`has`/`get`/`set`/`delete`/`clear`/
+`merge`/`clone` and arrays expose `push`/`pop`/`shift`/`unshift`/`insert`/
+`removeAt`/`slice`/`concat`/`join`/`sort`/`sorted`/`reversed`/`contains`/
+`indexOf`/`map`/`filter`/`reduce`/`each`/`find`/`any`/`all`/`sum`/`clone`/
+`clear`. Neither exposes a `len`/`size`/`length` method; the global `len(x)` is
+the only length accessor. Picking one convention (for example
 a `len` method mirroring the global) and applying it to both types would remove
 the asymmetry. Low priority.
 

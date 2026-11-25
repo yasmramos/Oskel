@@ -1004,9 +1004,9 @@ it as a caveat:
   imports no `vscode`, which is why `node --test` can cover it
   (`tests/check_vscode_diagnostics.cmake`, CTest `vscode_diagnostics`, skipped
   where Node is absent). Two traps: the binary must be `oskel`, because
-  `oskelc -c` is not implemented and exits 64 — a stale path there would look
-  like "no problems", so a non-zero exit with nothing parsed becomes a
-  diagnostic of its own; and an error inside an imported module is reported
+  `oskelc -c` means "write a `.oskc` image", not "check" — a stale path there
+  would look like "no problems", so a non-zero exit with nothing parsed becomes
+  a diagnostic of its own; and an error inside an imported module is reported
   under the *root* file's name with the module's line and column, so the parser
   clamps a position that falls past the end of the open document instead of
   dropping it. A third trap is the **unit**: the compiler counts its column in
@@ -1213,9 +1213,10 @@ it as a caveat:
   standalone executable under `tools/`. It links no engine code and drives
   `oskel`/`oskelc` as child processes; `nm build/oskel | grep oskelp` must stay
   empty. Every packaging format must ship it (`/usr/bin/oskelp`,
-  `/usr/local/bin/oskelp`, `{app}\bin\oskelp.exe`). The only compiler-side hook
-  is `OSKEL_MODULE_ROOT`, honoured by `resolverFor`, which makes a package's
-  `src/` the module root for both engines. `oskelp` generates `oskel.lock`,
+  `/usr/local/bin/oskelp`, `{app}\bin\oskelp.exe`). The compiler-side hooks
+  are `OSKEL_MODULE_ROOT` and `OSKEL_PACKAGES`, honoured by `resolverFor`: the
+  first makes a package's `src/` the module root, the second points at the
+  materialised dependency tree, for both engines. `oskelp` generates `oskel.lock`,
   `target/` and `.oskel/deps/`; the last two belong in `.gitignore`, while
   `oskel.lock` is committed. Dependencies are either `path` tables or a
   version requirement string resolved from the **local registry** named by
