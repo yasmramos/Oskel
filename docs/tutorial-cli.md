@@ -117,8 +117,8 @@ library. Every language construct the VM implements lowers to native code:
 - `if`/`else`, `while`, classic `for`, `for-in` (including `for k, v in map`),
   `break`, `continue`, ternary, `switch`, `defer`;
 - functions, recursion, mutual recursion, closures and lambdas that capture
-  their environment, variadic `rest...`, `struct`, `class`, interfaces and
-  `async fn`/`await`;
+  their environment, variadic `rest...`, `struct`, `class`, interfaces and the
+  eager `async fn`/`await` surface (no scheduler);
 - arrays and maps as **data**: `[...]`, `{...}`, indexing (`xs[i]`, `xs[-1]`),
   members (`m.name`), `in` for arrays, maps and strings, and all bound
   array/map/string/range methods;
