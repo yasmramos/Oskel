@@ -63,6 +63,19 @@ else()
   set(OSKEL_WARNINGS -Wall -Wextra)
 endif()
 
+# Turn compiler warnings into errors so they cannot accumulate. Off by default
+# (a newer compiler must not break a user's local build); CI turns it on for the
+# Linux gcc and clang jobs. Not available for MSVC yet: its /W4 output has not
+# been cleaned.
+option(OSKEL_WERROR "Treat compiler warnings as errors (GCC/Clang only)" OFF)
+if(OSKEL_WERROR)
+  if(MSVC)
+    message(WARNING "OSKEL_WERROR is not supported for MSVC; warnings stay non-fatal")
+  else()
+    list(APPEND OSKEL_WARNINGS -Werror)
+  endif()
+endif()
+
 # Testing aid: run the cycle collector at every safe point instead of only when
 # enough objects were allocated. Slow; meant for sanitizer runs.
 option(OSKEL_GC_STRESS "Collect cycles at every safe point (testing only)" OFF)

@@ -77,7 +77,14 @@ jobs:
         -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }}
         -DCMAKE_C_COMPILER=${{ matrix.c_compiler }}
         -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+        -DOSKEL_WERROR=${{ runner.os == 'Linux' && 'ON' || 'OFF' }}
         -S ${{ github.workspace }}
+
+    - name: Show compiler warnings as annotations
+      # Registers the problem matcher, so every warning in the Build step is
+      # annotated on the pull request even where it is not fatal (macOS, MSVC).
+      shell: bash
+      run: echo "::add-matcher::.github/problem-matchers/compiler.json"
 
     - name: Build
       # Build your program with the given configuration. Note that --config is needed because the default Windows generator is a multi-config generator (Visual Studio generator).
@@ -138,7 +145,11 @@ jobs:
         -DCMAKE_CXX_COMPILER=g++
         -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -g"
         -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+        -DOSKEL_WERROR=ON
         -S ${{ github.workspace }}
+
+    - name: Show compiler warnings as annotations
+      run: echo "::add-matcher::.github/problem-matchers/compiler.json"
 
     - name: Build
       run: cmake --build build-asan --parallel
