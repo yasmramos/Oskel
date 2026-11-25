@@ -12,7 +12,7 @@ The language surface this reference documents is implemented on the development 
 | --- | --- | --- |
 | Language core: functions, closures, control flow, collections | ✅ | ✅ (subset the lowerer covers) |
 | Types, nullability, `struct`, `class`, `enum`, variadics, `import`, `switch`, `defer` (PHASE 6.5/6.8/6.9) | ✅ | ✅ (all are compile-time; `struct`/`class` are erased, `enum` members fold to `LOADK`, `switch`/`defer` lower to existing opcodes) |
-| `async fn` / `await` (PHASE 11.1) | ✅ | ✅ (a future is a map built with existing opcodes; no backend change) |
+| `async fn` / `await` (PHASE 11.1) | 🔶 eager surface only, no scheduler | 🔶 same surface (a future is a map built with existing opcodes; no backend change) |
 | `native fn` (PHASE 6.5) | ✅ | 🔶 only for the curated stubs the backend seeds; anything else fails the build (PHASE 7f) |
 | FFI with C (PHASE 6.6) | ✅ | 🔶 `--mode hosted` only; scalars, `cstring`/`ptr`, structs by value and C variadics, with callbacks on System V (PHASE 7f, §4.5) |
 | Error values, `pcall`, `try`/`catch`, unions, `@MustUse` (PHASE 6.7) | ✅ | ✅ `error` values, `try`/`catch` and `pcall` (PHASE 7c.5c/7c.5d); a raised error with no active `pcall` exits 70 |
@@ -1331,7 +1331,12 @@ not as a runtime global.
 
 ---
 
-### 4.10 `async fn` and `await`
+### 4.10 `async fn` and `await` (partial)
+
+> **PHASE 11.1 is a language surface, not a scheduler.** The body runs eagerly
+> and `await` never suspends. A complete async runtime (pending futures, an
+> event loop, `then`/`catch`, `spawn`/`join`, async lambdas) is PHASE 11.2 and
+> is not implemented.
 
 An `async fn` is a function whose call returns a `Future`; the declared return
 type is the payload type. `await` consumes a future and yields its payload, and
@@ -1377,7 +1382,9 @@ main();
   and WASM agree by construction.
 
 A future is not a promise with `then`/`catch`; an error value crosses the
-boundary as the payload and can be inspected with `isError`.
+boundary as the payload and can be inspected with `isError`. `Future` is a
+compile-time name, not an opaque runtime type: the value is an ordinary map,
+so code that ignores the annotation can inspect or mutate its fields.
 
 ---
 
@@ -3721,7 +3728,7 @@ future work. `-c` is implemented; the `.oskc` format is specified in §19.1.
   through `std/internal/skia_ui.oskl` (`docs/cxxbind.md`); `std.ui.window`
   presents it in an SDL3 window and runs the event loop. Input widgets, real
   font metrics, text wrapping and dirty-region redraw are post-1.0 work.
-- No generics, full pattern matching, generators or transactions. These are out of scope (see `DEVELOPMENT.md`). `async fn`/`await` exists (PHASE 11.1) but is eager: there is no scheduler, no promise chaining and no async lambda, and `await` on the reserved `"pending"` state is a runtime error.
+- No generics, full pattern matching, generators or transactions. These are out of scope (see `DEVELOPMENT.md`). `async fn`/`await` is only the PHASE 11.1 eager surface: there is no scheduler, no promise chaining and no async lambda, and `await` on the reserved `"pending"` state is a runtime error.
 - Map keys are always strings. Literals accept identifier, string, scalar (`int`, `float`, `double`, `true`, `false`, `nil`) and computed `[expr]` keys; non-string keys are canonicalized to their string form.
 - A body of `if`, `while`, `for` or `for-in` may be a block or a single statement without braces; a brace-less body is wrapped in a block, so its bytecode and scoping match the brace form. `switch` arms always require braces.
 - `for ... in` accepts the loop variable and the iterable with or without parentheses (`for x in xs` and `for (x in xs)`).
