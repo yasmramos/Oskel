@@ -14,6 +14,18 @@
       ]
     },
     {
+      "owner": "oskel-gcc-inlined",
+      "pattern": [
+        {
+          "regexp": "^\\s*(inlined from .+ at (.+?):(\\d+):(\\d+)):$",
+          "message": 1,
+          "file": 2,
+          "line": 3,
+          "column": 4
+        }
+      ]
+    },
+    {
       "owner": "oskel-msvc",
       "pattern": [
         {
