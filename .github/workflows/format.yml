@@ -1,0 +1,41 @@
+# Checks that the lines a pull request changes follow `.clang-format`.
+#
+# Only changed lines are checked (`git clang-format`), so the existing tree,
+# which follows the style closely but not exactly, does not have to be
+# reformatted in one go. To fix a failure locally:
+#
+#   pip install clang-format==<CLANG_FORMAT_VERSION below>
+#   git clang-format origin/<base branch>
+name: Format
+
+on:
+  pull_request:
+    branches: [ "main", "develop" ]
+
+permissions:
+  contents: read
+
+env:
+  # Pinned: clang-format output changes between releases, and an unpinned
+  # version would make an unrelated PR fail the day a new release lands.
+  CLANG_FORMAT_VERSION: "23.1.5"
+
+jobs:
+  clang-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install clang-format
+        run: python3 -m pip install "clang-format==${CLANG_FORMAT_VERSION}"
+
+      - name: Check the changed lines
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # `--diff` prints the needed changes and exits 1 when there are any.
+          # Generated sources are excluded: they are rewritten by their script.
+          git clang-format --binary clang-format --diff --extensions c,cc,cpp,h,hpp \
+            "$BASE_SHA" -- . ':(exclude)src/core/unicode_case.cpp' ':(exclude)include/unicode_case.h'

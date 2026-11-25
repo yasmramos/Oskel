@@ -2607,6 +2607,11 @@ and is no longer in the tree.
 7. **Every new `.cpp`** has its `.h` in `include/`.
 8. **No mutable global variables** except the VM's globals table.
 9. **Build with**: `g++ -std=c++17 -Wall -Wextra -O2`.
+    Format C++ with the committed `.clang-format` (Google style, 100
+    columns). CI (`.github/workflows/format.yml`) checks only the lines a pull
+    request changes, so the tree is not reformatted in one go; run
+    `git clang-format <base-branch>` before pushing, with the clang-format
+    version pinned in that workflow.
 10. **Reference cycles**: values are reference counted and `gc.cpp` reclaims
     the cycles counting cannot. Anything that can own a `Value` and be
     reachable from itself is a `GcNode`, and its `visit` operation must report

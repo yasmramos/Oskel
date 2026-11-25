@@ -1163,7 +1163,13 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 20. Tooling and project
 
-1. **[P1]** Add `clang-format` with a committed config and a check in CI.
+1. **[P1] [done]** Add `clang-format` with a committed config and a check in
+   CI. **Done**: `.clang-format` (Google, 100 columns, include order kept) and
+   `.github/workflows/format.yml`, which runs `git clang-format --diff` with a
+   pinned version over the lines a PR changes. The tree is not reformatted in
+   one go: about a quarter of the files already match, and a full pass would
+   rewrite roughly 19,000 of 108,000 lines. A one-time reformat is a separate
+   decision.
 2. **[P1]** Add `-Werror` to the build (at least in CI) so warnings cannot
    accumulate.
 3. **[P1] Done.** `Env` (`src/env.h`/`src/env.cpp`) was deleted: the VM keeps
