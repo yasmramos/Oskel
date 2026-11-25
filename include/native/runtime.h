@@ -57,7 +57,9 @@ struct AotRuntimeHandles {
   CodeGen::Label truthy;         // long      oskel_truthy(AotValue a)
   // Bump allocation from the arena seeded by `oskel_init_arena`: returns an
   // 8-byte-aligned pointer, or null when the region is exhausted. The size is
-  // in rdi.
+  // in rdi. It grows by mapping a new chunk (`entry.arenaGrow`) and preserves
+  // every register except rax and the r10/r11 scratch pair -- the contract the
+  // emitted helpers are written against, not the System V one.
   CodeGen::Label alloc;          // void* oskel_alloc(long size)
   // String concatenation: allocates `lenA + lenB + 8` bytes, writes the
   // combined length and bytes, and returns an `AotValue` (tag Str). Used by

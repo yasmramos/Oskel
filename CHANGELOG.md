@@ -97,6 +97,24 @@ may change between minor versions.
 
 ### Fixed
 
+- **The AOT arena no longer stops at 1 MiB.** A compiled binary mapped one fixed
+  region at entry and never grew it, so a program that allocated more than that
+  -- ten thousand `arr.push` calls, a twenty-thousand-part `join`, a map with
+  thirty thousand keys -- died with `oskel: out of memory` while the VM ran the
+  same source. `oskel_alloc` now maps a fresh chunk when the current one cannot
+  satisfy the request (`mmap` on freestanding Linux, `VirtualAlloc` on
+  freestanding Windows, `malloc` in the hosted modes) and retries; the
+  exhausted chunk is abandoned, because a bump region has no free, so peak
+  memory is the sum of the chunks rather than a hard ceiling. The allocator's
+  register contract is now explicit and enforced: it clobbers only `rax` and the
+  `r10`/`r11` scratch pair, which is what the emitted helpers are written
+  against -- string concatenation reads an operand out of `rsi` after the
+  allocation, so the growth path saves the caller-saved registers instead of
+  corrupting them. `tests/native_build_arena_growth.oskl` allocates ~8 MiB
+  across an array, a concatenation loop and a map and is compared with the VM on
+  the freestanding image, on the hosted image (`oskel.build_hosted_own_*`) and
+  on Windows. Bare metal has no page allocator, so its `.bss` region stays the
+  ceiling and the allocator keeps reporting `out of memory` there.
 - **`oskelint` missed an `enum` shadow and reported a bodyless parameter.** An
   `enum len { A, B }` binds a global named `len` — the compiler accepts it and
   the builtin is replaced — but the walker never visited `EnumDeclStmt`, so the
