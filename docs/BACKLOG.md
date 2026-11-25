@@ -93,8 +93,16 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 3. Compiler (`src/frontend/compiler.cpp`)
 
-1. **[P1]** `checkAssignable` and `assignError` duplicate logic; a change in
-   one can be missed in the other. Unify the path.
+1. **[P1] [done]** `checkAssignable` and `assignError` duplicate logic; a change
+   in one can be missed in the other. **Done**: `assignError` is now the whole
+   rule, unions included, and `checkAssignable` only reports its verdict, so
+   there is no second copy to miss. The union probe recurses through the same
+   function instead of a parallel block, and the nullable hint moved into
+   `nullableHint` (a plain target names its `?` spelling, a union offers both).
+   The unification fixed a diagnostic: assigning `int | string` to `int` used to
+   report `cannot assign 'string' to 'int'`, naming a member the caller never
+   wrote; it now names the union. `testAssignmentErrorsAreSpecific` pins both
+   hints and both union directions.
 2. **[P1]** `compileBlockBody` concentrates hoisting, slot pre-reservation,
    visibility restore, nil-cell creation and three passes over `block.stmts`;
    it is the place a capture bug will hurt. Split it.

@@ -53,6 +53,24 @@ void expectCompileError(const std::string& source, const char* what) {
   std::fprintf(stderr, "expected CompileError for %s\n", what);
   std::exit(1);
 }
+// Like `expectCompileError`, but the message must also contain `needle`. The
+// assignment rule is written twice (a union probe and the plain path), so a
+// message pin keeps the two from drifting apart while they are unified.
+void expectCompileErrorContaining(const std::string& source, const char* needle,
+                                  const char* what) {
+  try {
+    compileSource(source);
+  } catch (const CompileError& error) {
+    if (error.message.find(needle) != std::string::npos) return;
+    std::fprintf(stderr, "expected %s in the error for %s, got: %s\n", needle, what,
+                 error.message.c_str());
+    std::exit(1);
+  }
+  std::fprintf(stderr, "expected CompileError for %s\n", what);
+  std::exit(1);
+}
+
+
 
 void expectCompiles(const std::string& source) {
   try {
@@ -339,6 +357,44 @@ void testAssignment() {
   assert(bc.code[1].a == 0 && bc.code[1].b == 1);
   assert(bc.code[2].op == OpCode::HALT);
   assert(bc.numRegisters == 1);
+}
+
+// The assignment rule has two entry points: the plain path and the union
+// probe, which calls `assignError` per member instead of aborting on the first
+// miss. They are duplicated today (BACKLOG §3 item 1), so the messages are
+// pinned here: a union that fails must report the same diagnostic a plain
+// assignment would, and the two nullable hints must not drift apart.
+void testAssignmentErrorsAreSpecific() {
+  // Plain target: the hint names the target type.
+  expectCompileErrorContaining("let x: int? = nil;\nlet y: int = x;\n",
+                               "a nullable value is not allowed here (use 'int?')",
+                               "a nullable value into a plain int");
+  expectCompileErrorContaining("let x: int = nil;\n",
+                               "cannot assign 'nil' to 'int'",
+                               "nil into a plain int");
+  expectCompileErrorContaining("let s: string = nil;\n",
+                               "a nullable value is not allowed here (use 'string?')",
+                               "nil into a plain string");
+
+  // Union target: the hint cannot name one alternative, so it offers both
+  // spellings.
+  expectCompileErrorContaining("let x: int? = nil;\nlet y: int|string = x;\n",
+                               "a nullable value is not allowed here (add '| nil' or '?')",
+                               "a nullable value into a non-nullable union");
+  expectCompileErrorContaining("let x: int|string = nil;\n",
+                               "a nullable value is not allowed here (add '| nil' or '?')",
+                               "nil into a non-nullable union");
+
+  // A union whose members all miss reports the union as a whole: naming one
+  // member ('string') points at a type the caller never wrote at that site.
+  expectCompileErrorContaining("let u: int|string = 1;\nlet v: int = u;\n",
+                               "cannot assign 'int | string' to 'int'",
+                               "a union into an int");
+
+  // The nullable union and the union-to-union cases are allowed.
+  expectCompiles("let x: int|string|nil = nil;\nprint(x);\n");
+  expectCompiles("let u: int|string = 1;\nlet v: int|string = u;\nprint(v);\n");
+  expectCompiles("let x: int|string = 1;\nlet y: int|string|nil = x;\nprint(y);\n");
 }
 
 void testConstantDeduplication() {
@@ -1914,6 +1970,7 @@ int main() {
   testCompoundBitwiseAssignment();
   testLetReassignment();
   testAssignment();
+  testAssignmentErrorsAreSpecific();
   testConstantDeduplication();
   testIfElseJumps();
   testIfWithoutElse();
