@@ -1,0 +1,16 @@
+// expect-exit: 65
+// A Future parameter is opaque too, not only a local binding.
+async fn value(): int {
+  return 1;
+}
+
+fn peek(future: Future): string {
+  return future["state"];
+}
+
+async fn main(): int {
+  print(peek(value()));
+  return 0;
+}
+
+main();

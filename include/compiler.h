@@ -519,6 +519,13 @@ class Compiler {
   // when the type cannot be determined, which means "no check".
   TypeRef inferExprType(const Expr& expr) const;
 
+  // Rejects indexing, slicing, iteration and member access on a `Future`-typed
+  // value (PHASE 11.2.1). A future is a map at run time, so without this check
+  // user code could read or overwrite the `state`/`value` protocol that `await`
+  // owns. A value erased to `any` still reaches the map; the runtime tag that
+  // closes that hole is PHASE 11.2.5.
+  void checkFutureAccess(const Expr& object, int line, int col) const;
+
   // Capture list of the frame currently being compiled, keyed by variable
   // name and parallel to `bc_.upvalues`.
   std::unordered_map<std::string, int> currentUpvalueNames_;

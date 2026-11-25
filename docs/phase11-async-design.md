@@ -1,9 +1,10 @@
 # PHASE 11.2 design — scheduler and suspension
 
-Status: **design only**. PHASE 11.1 provides `async fn`, `await` and `Future`,
-but the body runs eagerly: a future is already settled when the caller receives
-it, `await` never suspends and there is no pending-future producer. This page
-records the design for the real async runtime. It is not implemented.
+Status: **11.2.1 implemented; 11.2.2-11.2.5 design only.** PHASE 11.1 provides
+`async fn`, `await` and `Future`, but the body runs eagerly: a future is already
+settled when the caller receives it, `await` never suspends and there is no
+pending-future producer. 11.2.1 makes `Future` opaque to the compiler; the
+scheduler, suspension and top-level `await` below are not implemented.
 
 `DEVELOPMENT.md` §PHASE 11 is the current status; this page is the design
 record for the slices that follow.
@@ -291,7 +292,7 @@ the first candidate is a retirement, not a 41st opcode.
 
 | Slice | Scope | Exit criterion |
 |-------|-------|----------------|
-| 11.2.1 | Compiler-enforced `Future` opacity and state transitions; no scheduler yet | Direct indexing/member access on a `Future` is rejected, pending/fulfilled/rejected are distinguishable |
+| 11.2.1 | ✅ Compiler-enforced `Future` opacity; no scheduler yet | Direct indexing/slicing/iteration/member access on a `Future` is rejected; `tests/errors/async_future_*.oskl` |
 | 11.2.2 | Task frame, factory/body split, `spawn`, `yield`, ready queue | A spawned task runs after the spawner reaches `await`; VM/AOT/WASM order matches |
 | 11.2.3 | Split at `await`, spill/restore, suspension | A task suspends at a pending future and resumes after it settles; interleaving order is asserted |
 | 11.2.4 | Top-level `await`, unhandled rejection, deadlock diagnostics | Scripts can await at top level; stuck and unhandled cases have tests |

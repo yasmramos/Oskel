@@ -2450,6 +2450,11 @@ Design for the scheduler and suspension: `docs/phase11-async-design.md`.
   state a future would hold before it settles. There is no API that creates a
   pending future in this phase, so `await` on one is a runtime error
   ("await on a pending Future is not supported yet") rather than a silent nil.
+- **Opaque at compile time (11.2.1).** The compiler rejects indexing, slicing,
+  iteration and member access (read or write) on a `Future`-typed value, so the
+  `state`/`value`/`error` protocol is not user-visible through a typed binding,
+  a parameter or a local alias. A value erased to `any` can still reach the map;
+  the runtime tag that closes that hole is PHASE 11.2.5.
 - **Typing.** `Future` joins the built-in type vocabulary. A call to an async
   function returns `Future`, so `let f: Future = f();` type-checks and
   `let n: int = await f();` checks the payload. `await` outside an `async fn`
@@ -2484,10 +2489,11 @@ Design for the scheduler and suspension: `docs/phase11-async-design.md`.
   never pending and `await` does not suspend the caller; there is no event
   loop, no promise chaining (`then`) and no async lambda. `type(future)` says
   `"map"`, because the representation is a map and the type checker erases
-  `Future`; a future can therefore be passed to code expecting a map, which is
-  the deliberate trade-off of not adding a runtime tag. A scheduler, a
-  `spawn`/`join` surface and a `Future`-specific runtime type are PHASE 11.2,
-  which is not started. The feature is therefore a language surface, not a
+  `Future`; a value erased to `any` can still be passed to code expecting a map,
+  which is the deliberate trade-off of not adding a runtime tag. A scheduler, a
+  `spawn`/`join` surface and a `Future`-specific runtime tag are PHASE 11.2;
+  11.2.1 (compiler-enforced opacity) is done and 11.2.2-11.2.5 are not started.
+  The feature is therefore a language surface with an opaque type, not a
   finished async runtime.
 
 ### Post-1.0 — UI library
@@ -2594,7 +2600,7 @@ Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalli
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
 Phase 6.9: ✅ completed (`enum`: a scoped set of integer constants, folded by the parser; no opcode, no engine code, and identical on the VM, the AOT backend and WASM)
-Phase 11: 🔶 in progress (11.1 `async fn`/`await`/`Future` surface done: a future is a plain map, so no opcode and no builtin is added; eager bodies, no scheduler. 11.2 scheduler, pending futures and `spawn`/`join` not started)
+Phase 11: 🔶 in progress (11.1 `async fn`/`await`/`Future` surface done: a future is a plain map, so no opcode and no builtin is added; eager bodies, no scheduler. 11.2.1 compiler-enforced `Future` opacity done; 11.2.2-11.2.5 scheduler, pending futures, `spawn`/`join` and top-level `await` not started)
 Phase 12.1/12.2: ✅ completed (`interface`/`trait`, `class ... implements`, and imported interfaces; see the section above)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.11 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY), callbacks (including a struct return) and a stored callback resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr`/struct-by-value surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
@@ -2667,7 +2673,7 @@ and is no longer in the tree.
 | Superinstructions | Violate the 40-opcode ceiling |
 | Inline caching | Changes the bytecode contract |
 | Runtime specialization | Changes the bytecode contract |
-| Generics, full pattern matching, generators, transactions | Out of scope (2.0 monomorphizes concrete, annotated types only; no user-defined generics). `async`/`await` stops at the PHASE 11.1 eager surface; PHASE 11.2 (scheduler, pending futures, `spawn`/`join`) is not implemented. |
+| Generics, full pattern matching, generators, transactions | Out of scope (2.0 monomorphizes concrete, annotated types only; no user-defined generics). `async`/`await` stops at the PHASE 11.1 eager surface plus 11.2.1 opaque `Future`; PHASE 11.2.2-11.2.5 (scheduler, pending futures, `spawn`/`join`, top-level `await`) are not implemented. |
 
 **Note**: there is **no** host FFI dependency. The development engine emits its
 own x86-64 descriptor/closure stubs; the machine-code emitter, the static

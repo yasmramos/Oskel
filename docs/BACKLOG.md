@@ -737,16 +737,20 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     creates them, and `await` on a pending future raises "await on a pending
     Future is not supported yet". There is no event loop, no `then`/`catch`
     chaining, no `spawn`/`join`, no async lambda and no async `init`. The future
-    is a plain map, so `type(future)` is `"map"` and a future can be passed to
-    code expecting a map; a dedicated runtime tag would be a new value kind in
-    all three engines. A scheduler that suspends a call and resumes it would
-    need a coroutine/continuation representation, which is a larger change than
-    this phase: it would turn the bytecode into a resumable frame and make the
-    AOT/WASM backends carry a state machine, so it stays out of scope here.
-    `tests/65_async.oskl`, `tests/65_async_modules.oskl` and the
+    is a plain map, so `type(future)` is `"map"` and a value erased to `any`
+    can still be passed to code expecting a map; a dedicated runtime tag would
+    be a new value kind in all three engines. PHASE 11.2.1 makes the type
+    checker enforce opacity: indexing, slicing, iteration and member access
+    (read or write) on a `Future`-typed value are compile errors, and the
+    `tests/errors/async_future_*.oskl` fixtures pin them. A scheduler that
+    suspends a call and resumes it would need a coroutine/continuation
+    representation, which is a larger change than this phase: it would turn the
+    bytecode into a resumable frame and make the AOT/WASM backends carry a
+    state machine. `tests/65_async.oskl`, `tests/65_async_modules.oskl` and the
     `oskel.build_binary_async`/`oskel.build_wasm_async` fixtures pin the current
     surface. The scheduler/suspension design and its slices are in
-    `docs/phase11-async-design.md`; 11.2.1 has not started.
+    `docs/phase11-async-design.md`; 11.2.1 is done and 11.2.2-11.2.5 have not
+    started.
 
 ---
 

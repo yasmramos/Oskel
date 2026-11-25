@@ -12,7 +12,7 @@ The language surface this reference documents is implemented on the development 
 | --- | --- | --- |
 | Language core: functions, closures, control flow, collections | ✅ | ✅ (subset the lowerer covers) |
 | Types, nullability, `struct`, `class`, `enum`, variadics, `import`, `switch`, `defer` (PHASE 6.5/6.8/6.9) | ✅ | ✅ (all are compile-time; `struct`/`class` are erased, `enum` members fold to `LOADK`, `switch`/`defer` lower to existing opcodes) |
-| `async fn` / `await` (PHASE 11.1) | 🔶 eager surface only, no scheduler | 🔶 same surface (a future is a map built with existing opcodes; no backend change) |
+| `async fn` / `await` (PHASE 11.1 + 11.2.1) | 🔶 eager surface, opaque `Future`, no scheduler | 🔶 same surface (a future is a map built with existing opcodes; no backend change) |
 | `native fn` (PHASE 6.5) | ✅ | 🔶 only for the curated stubs the backend seeds; anything else fails the build (PHASE 7f) |
 | FFI with C (PHASE 6.6) | ✅ | 🔶 `--mode hosted` only; scalars, `cstring`/`ptr`, structs by value and C variadics, with callbacks on System V (PHASE 7f, §4.5) |
 | Error values, `pcall`, `try`/`catch`, unions, `@MustUse` (PHASE 6.7) | ✅ | ✅ `error` values, `try`/`catch` and `pcall` (PHASE 7c.5c/7c.5d); a raised error with no active `pcall` exits 70 |
@@ -1373,18 +1373,25 @@ main();
   any other call: `await obj.m()`. A method replacement must match its
   asyncness.
 - `async fn init` is rejected: the constructor is called without `await`.
-- At run time a future is a map with the fields `state` (`"fulfilled"`,
+- The compiler treats `Future` as opaque (PHASE 11.2.1): indexing, slicing,
+  iterating and reading or assigning a member on a `Future`-typed value are
+  compile errors. A local alias, a parameter and a returned future keep the
+  type, so only `await` reads the payload.
+- At run time a future is still a map with the fields `state` (`"fulfilled"`,
   `"rejected"` or `"pending"`), `value` and `error`; `type(future)` is `"map"`.
   A `"pending"` future is not produced by this phase, and awaiting one raises a
   runtime error. `"rejected"` is reserved for a future that carries an error.
+  A value erased to `any` can bypass the compiler check until PHASE 11.2.5 adds
+  a runtime tag.
 - The feature adds **no opcode and no builtin**: `NEWTABLE`/`SETTABLE`/
   `GETTABLE` and the existing `panic` implement it, so the VM, the AOT backend
   and WASM agree by construction.
 
 A future is not a promise with `then`/`catch`; an error value crosses the
-boundary as the payload and can be inspected with `isError`. `Future` is a
-compile-time name, not an opaque runtime type: the value is an ordinary map,
-so code that ignores the annotation can inspect or mutate its fields.
+boundary as the payload and can be inspected with `isError`. `Future` is opaque
+to the type checker but not yet a runtime tag: the value is an ordinary map, so
+code that erases the type to `any` can still inspect or mutate its fields until
+PHASE 11.2.5.
 
 ---
 
