@@ -1382,8 +1382,13 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    (floats, strings, the boxed runtime, calls), not a freeze.
 5. **[P2] [done]** `CHANGELOG.md` exists and follows Keep a Changelog; keep it
    updated before each tag (see `docs/RELEASING.md`).
-6. **[P2]** Add `CONTRIBUTING.md` (the rules now live only in
-   `DEVELOPMENT.md`/`AGENTS.md`).
+6. **[P2] [done]** Add `CONTRIBUTING.md` (the rules now live only in
+   `DEVELOPMENT.md`/`AGENTS.md`). **Done**: `CONTRIBUTING.md` covers the
+   mechanical half of a contribution — the build and test commands, adding a
+   builtin, adding a `.oskl` test, the 40-opcode budget, and the commit/PR
+   rules — and points at `DEVELOPMENT.md` for the language and the phases and
+   at `CONVENTIONS.md` for the git workflow, so the three guides have one job
+   each instead of repeating one another.
 7. **[P2] [done]** Add an `oskel.toml` for native dependencies.
    `oskelp` (the project and package manager) landed with `oskel.toml`,
    `oskel.lock`, path dependencies and
