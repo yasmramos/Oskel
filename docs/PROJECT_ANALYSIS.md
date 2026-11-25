@@ -20,12 +20,12 @@ tests and no CI).
 | Area | Status | Evidence |
 |------|--------|----------|
 | Lexer / Parser / AST | Working, tested | `src/frontend/lexer.cpp`, `src/frontend/parser.cpp` (2,780 L), `src/frontend/ast.h` |
-| Compiler AST→bytecode | PHASE 6.9 and 12.1/12.2 complete | `src/frontend/compiler.cpp` (4,379 L): literals, locals/globals, control flow, closures, collections, types, modules, interfaces |
+| Compiler AST→bytecode | PHASE 6.9 and 12.1/12.2 complete | `src/frontend/compiler.cpp` (4,403 L): literals, locals/globals, control flow, closures, collections, types, modules, interfaces |
 | Register-based VM | PHASE 6 complete | `src/runtime/vm.cpp` (935 L); **39/40 opcodes** (`static_assert(kOpcodeCount <= 40)` in `include/bytecode.h`) |
 | AST interpreter | **Retired** | no `src/interpreter.cpp`; the VM is the only engine |
 | Shared runtime | Working | `src/core/value.cpp`, `src/runtime/ops.cpp` (operators), `src/runtime/builtins.cpp` (1,936 L), `src/core/gc.cpp` |
 | AOT backend | PHASE 7 in progress (7f.11 and 7g done); PHASE 9/10 backends landed | `src/frontend/native/*` (codegen, lower, runtime, dtoa, mathlib, parse_float, elf, pe, macho, link, pe_link, object, wasm, arena, freestanding platform, entry) |
-| Tests | 168 `.oskl` under `tests/` (80 numbered, 85 `native_build_*` AOT fixtures, 3 named) + 170 under `tests/errors/` + 12 under `tests/check/` + 18 top-level examples (+ 4 subdirectory demos) + 32 C++ test sources | `tests/`, `tests/errors/`, `tests/check/`, `examples/`, wired into CTest (505 cases) |
+| Tests | 169 `.oskl` under `tests/` (81 numbered, 85 `native_build_*` AOT fixtures, 3 named) + 177 under `tests/errors/` + 12 under `tests/check/` + 18 top-level examples (+ 4 subdirectory demos) + 32 C++ test sources | `tests/`, `tests/errors/`, `tests/check/`, `examples/`, wired into CTest (513 cases) |
 | CI | Two workflows | `.github/workflows/{cmake-multi-platform,artifacts}.yml` (Linux, Windows, macOS) |
 
 Build (`sh build.sh`) and the full CTest suite run clean on Linux x86-64;
