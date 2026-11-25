@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "native/pe.h"
@@ -56,6 +58,20 @@ static std::uint64_t read64(const std::vector<std::uint8_t>& data, std::size_t o
 
 static constexpr std::size_t kOh = 0x44 + 20;   // optional header offset
 static constexpr std::size_t kSh = kOh + 240;   // first section header offset
+
+// The emitter's rejections are part of its contract, not an internal
+// assertion: a caller that asks for an unsupported target or an empty/too-short
+// text section gets a message instead of a malformed image.
+static bool throwsWith(const char* needle, const Target& target,
+                       const std::vector<std::uint8_t>& text,
+                       std::uint64_t entryOffset) {
+  try {
+    buildStaticPe(target, text, {}, entryOffset);
+  } catch (const std::runtime_error& error) {
+    return std::string(error.what()).find(needle) != std::string::npos;
+  }
+  return false;
+}
 
 // Machine code that calls ExitProcess(0) through its IAT slot:
 //   sub rsp, 0x28            ; shadow space (32) + alignment
@@ -215,6 +231,16 @@ int main() {
 #else
   std::printf("skipped: execution test requires Windows\n");
 #endif
+
+  // The error paths are part of the contract.
+  check(throwsWith("only x86_64-windows-win64 is supported", Target::linuxX64(),
+                   exitProgram(), 0),
+        "a non-Windows target throws");
+  check(throwsWith("text section is empty", Target::winX64(), {}, 0),
+        "empty text throws");
+  check(throwsWith("entry offset out of range", Target::winX64(),
+                   exitProgram(), exitProgram().size()),
+        "an out-of-range entry offset throws");
 
   if (g_failures != 0) {
     std::printf("%d test(s) failed\n", g_failures);

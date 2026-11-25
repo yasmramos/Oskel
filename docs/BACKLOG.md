@@ -1330,7 +1330,11 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     body once".
 13. **[P2]** Add `elf_test.cpp` for non-empty `rodata`, `entryOffset != 0` and
     the error paths.
-14. **[P2]** Add `pe_test.cpp` error-path tests.
+14. **[P2] [done]** Add `pe_test.cpp` error-path tests. **Done**: the three
+    rejections the emitter documents are now asserted — a non-Windows target
+    ("only x86_64-windows-win64 is supported"), an empty `.text` and an entry
+    offset equal to the text size. Each check names the message it expects, so
+    a reworded or dropped rejection fails the test instead of passing silently.
 15. **[P2]** Add `codegen_test.cpp` for `callRel`, `emitBytes`, `ucomisd`,
     all-register `push`/`pop`, and execution of the x87 ops.
 16. **[P3]** Remove the debug `printf`s in `vm_test.cpp`
