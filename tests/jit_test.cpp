@@ -407,10 +407,13 @@ int main() {
     const std::string reason = jitUnsupportedReason();
     check(supported == reason.empty(),
           "jitUnsupportedReason is empty exactly when the backend exists");
-#if defined(__linux__) && (defined(__x86_64__) || defined(__amd64__))
-    check(supported, "the JIT backend is available on x86-64 Linux");
+    // The same condition `jitHostSupported` compiles in: x86-64 Linux and
+    // x86-64 macOS have a backend (BACKLOG §5 item 5), everything else does
+    // not. An `#if` that names only Linux fails on the Intel macOS runner.
+#if (defined(__linux__) || defined(__APPLE__)) && (defined(__x86_64__) || defined(__amd64__))
+    check(supported, "the JIT backend is available on x86-64 Linux and macOS");
 #else
-    check(!supported, "no JIT backend outside x86-64 Linux");
+    check(!supported, "no JIT backend outside x86-64 Linux and macOS");
 #endif
   }
 
