@@ -313,10 +313,19 @@ class ModuleBuilder {
   std::uint32_t arenaStart = 0;
   std::uint32_t memoryPages = 1;
 
+  static bool sameTypes(const std::vector<std::uint8_t>& left,
+                        const std::vector<std::uint8_t>& right) {
+    if (left.size() != right.size()) return false;
+    for (std::size_t i = 0; i < left.size(); ++i) {
+      if (left[i] != right[i]) return false;
+    }
+    return true;
+  }
+
   std::uint32_t typeFor(const std::vector<std::uint8_t>& params,
                         const std::vector<std::uint8_t>& results) {
     for (std::size_t i = 0; i < types.size(); ++i) {
-      if (types[i].params == params && types[i].results == results) {
+      if (sameTypes(types[i].params, params) && sameTypes(types[i].results, results)) {
         return static_cast<std::uint32_t>(i);
       }
     }

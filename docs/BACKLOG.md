@@ -745,7 +745,8 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     AOT/WASM backends carry a state machine, so it stays out of scope here.
     `tests/65_async.oskl`, `tests/65_async_modules.oskl` and the
     `oskel.build_binary_async`/`oskel.build_wasm_async` fixtures pin the current
-    surface.
+    surface. The scheduler/suspension design and its slices are in
+    `docs/phase11-async-design.md`; 11.2.1 has not started.
 
 ---
 
