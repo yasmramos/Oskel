@@ -6,7 +6,8 @@
 #                                 installed next to the standard library
 #                                 (`std/`), the layout `standardLibraryDir`
 #                                 looks for, so `import std.math` resolves from
-#                                 the unpacked archive.
+#                                 the unpacked archive. Linux x64, Windows x64,
+#                                 macOS arm64 and macOS x64.
 #   2. oskel-windows-x64-setup   - an Inno Setup installer that puts the engine
 #                                 in `Program Files`, adds it to the system
 #                                 PATH and optionally associates `.oskl` files.
@@ -52,10 +53,15 @@ jobs:
             archive: oskel-windows-x64.zip
           # `macos-latest` is the Apple Silicon image (macOS 26, arm64). The
           # dev engine is portable C++, so this builds natively; the native
-          # backend stays x86-64 Linux only (see DEVELOPMENT.md PHASE 7).
+          # backend stays x86-64 (see DEVELOPMENT.md PHASE 7).
           - os: macos-latest
             artifact: oskel-macos-arm64
             archive: oskel-macos-arm64.tar.gz
+          # The Intel image runs the hosted AOT half of `cxxbind.skia` and
+          # `oskel.build_hosted_sdl`, which the arm64 image can only skip.
+          - os: macos-15-intel
+            artifact: oskel-macos-x64
+            archive: oskel-macos-x64.tar.gz
 
     steps:
       - uses: actions/checkout@v4
@@ -73,9 +79,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .vcpkg-cache
-          key: vcpkg-ui-${{ runner.os }}-${{ hashFiles('tools/prepare_ui_deps.py', 'cmake/triplets/**') }}
+          key: vcpkg-ui-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/prepare_ui_deps.py', 'cmake/triplets/**') }}
           restore-keys: |
-            vcpkg-ui-${{ runner.os }}-
+            vcpkg-ui-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Prepare bundled UI dependencies
         # Builds shared SDL3 and static Skia into .vcpkg, then exports the two
@@ -103,9 +109,10 @@ jobs:
         run: cmake --build build --config Release
 
       - name: Test
-        # Linux-only execution checks skip themselves on macOS and Windows; the
-        # FFI callback and struct-by-value tests are excluded by the build when
-        # their capability is missing (see CMakeLists.txt).
+        # The FFI callback and struct-by-value tests are excluded by the build
+        # when their capability is missing (see CMakeLists.txt). The UI and
+        # SDL3 end-to-end tests run on every x86-64 job, including the Intel
+        # macOS runner; arm64 macOS runs their VM half only.
         working-directory: build
         run: ctest --build-config Release --output-on-failure
 
@@ -196,13 +203,16 @@ jobs:
           retention-days: 30
 
       - name: Build the macOS packages
-        if: runner.os == 'macOS'
+        # One installer per architecture; the Intel job proves the AOT tests
+        # and publishes an archive, not a second `.pkg`/`.dmg` with the same
+        # name as the arm64 one.
+        if: runner.os == 'macOS' && matrix.artifact == 'oskel-macos-arm64'
         # `pkgbuild`/`productbuild`/`hdiutil` come with the Xcode command-line
         # tools on the image. The `.pkg` is unsigned.
         run: bash packaging/macos/package-macos.sh "${{ steps.version.outputs.version }}" stage dist
 
       - name: Upload the macOS packages
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && matrix.artifact == 'oskel-macos-arm64'
         uses: actions/upload-artifact@v4
         with:
           name: oskel-macos-packages

@@ -692,19 +692,29 @@ if(BUILD_TESTING)
   endif()
 
   if(OSKEL_SKIA_FOUND AND
-     CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
-     CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+     (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32 OR
+      CMAKE_SYSTEM_NAME STREQUAL "Darwin"))
     set(OSKEL_TEST_SDL3_LIBRARY "")
+    set(OSKEL_TEST_SDL3_LINK_LIBRARY "")
     if(TARGET SDL3::SDL3)
       set(OSKEL_TEST_SDL3_LIBRARY "$<TARGET_FILE:SDL3::SDL3>")
+      set(OSKEL_TEST_SDL3_LINK_LIBRARY "$<TARGET_LINKER_FILE:SDL3::SDL3>")
+    endif()
+    # The hosted AOT image is x86-64. The VM half still runs on arm64 macOS;
+    # the native half is skipped there because Rosetta is not a test dependency.
+    set(OSKEL_SKIA_AOT_RUNNABLE OFF)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+      set(OSKEL_SKIA_AOT_RUNNABLE ON)
     endif()
     set(OSKEL_SKIA_TEST_ARGS
       "-DSKIA_DIR=${OSKEL_SKIA_DIR}"
       "-DSKIA_LIB=${OSKEL_SKIA_LIB}"
-      "-DSKIA_LIBS=${OSKEL_SKIA_LIBS}")
+      "-DSKIA_LIBS=${OSKEL_SKIA_LIBS}"
+      "-DRUN_AOT=${OSKEL_SKIA_AOT_RUNNABLE}")
     if(TARGET skia_shim)
       list(APPEND OSKEL_SKIA_TEST_ARGS
-        "-DSKIA_SHIM=$<TARGET_FILE:skia_shim>")
+        "-DSKIA_SHIM=$<TARGET_FILE:skia_shim>"
+        "-DSKIA_SHIM_LINK=$<TARGET_LINKER_FILE:skia_shim>")
     endif()
     add_test(NAME cxxbind.skia
       COMMAND ${CMAKE_COMMAND}
@@ -716,6 +726,7 @@ if(BUILD_TESTING)
         ${OSKEL_SKIA_TEST_ARGS}
         "-DSDL3_FOUND=${OSKEL_SDL3_FOUND}"
         "-DSDL3_LIBRARY=${OSKEL_TEST_SDL3_LIBRARY}"
+        "-DSDL3_LINK_LIBRARY=${OSKEL_TEST_SDL3_LINK_LIBRARY}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_skia_case.cmake")
   endif()
 
@@ -856,9 +867,8 @@ if(BUILD_TESTING)
   # The module is always installed; these tests need the development engine to
   # have SDL3 loaded, which CMake arranges above when it finds the library.
   # `run_sdl_case.cmake` sets SDL_VIDEODRIVER=dummy, so no display is needed.
-  # The hosted fixture is Linux x86-64 only because it links the SDL3
-  # library from the build tree; the general hosted AOT suite also runs on
-  # Windows.
+  # The hosted fixture runs on x86-64 Linux, Windows and Intel macOS; the
+  # macOS arm64 runner has no x86-64 AOT image to execute.
   add_test(NAME sdl.bindgen
     COMMAND ${CMAKE_COMMAND}
       "-DBINDGEN=$<TARGET_FILE:bindgen>"
@@ -871,13 +881,21 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/sdl_bindings.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_sdl_case.cmake")
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+    if((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32 OR
+        CMAKE_SYSTEM_NAME STREQUAL "Darwin") AND
        CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+      set(OSKEL_TEST_SDL3_LIBRARY_DIR "")
+      if(TARGET SDL3::SDL3)
+        set(OSKEL_TEST_SDL3_LIBRARY_DIR
+            "$<TARGET_LINKER_FILE_DIR:SDL3::SDL3>")
+      endif()
       add_test(NAME oskel.build_hosted_sdl
         COMMAND ${CMAKE_COMMAND}
           "-DOSKEL_TEST_NAME=oskel.build_hosted_sdl"
           "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/sdl_bindings.oskl"
+          "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+          "-DSDL3_LIBRARY_DIR=${OSKEL_TEST_SDL3_LIBRARY_DIR}"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_sdl.cmake")
     endif()
   endif()
