@@ -32,8 +32,8 @@ constexpr X64Reg R9 = X64Reg::R9;
 constexpr X64Reg R10 = X64Reg::R10;
 constexpr X64Reg R11 = X64Reg::R11;
 constexpr X64Reg R12 = X64Reg::R12;
-constexpr X64Reg R13 = X64Reg::R13;
-constexpr int Xmm0 = kXmmBase + 0;
+[[maybe_unused]] constexpr X64Reg R13 = X64Reg::R13;
+[[maybe_unused]] constexpr int Xmm0 = kXmmBase + 0;
 
 constexpr std::int64_t kStride = 8;
 constexpr std::int64_t kWO = static_cast<std::int64_t>(offsetof(Bignum, w));
@@ -59,13 +59,14 @@ constexpr std::int64_t offBoundary = O(boundary);
 constexpr std::int64_t offOddM = O(oddM);
 constexpr std::int64_t offLow = O(low);
 constexpr std::int64_t offHigh = O(high);
-constexpr std::int64_t offOutLen = O(outLen);
+[[maybe_unused]] constexpr std::int64_t offOutLen = O(outLen);
 constexpr std::int64_t offD = O(d);
 constexpr std::int64_t offPos = O(pos);
 constexpr std::int64_t offTmp = O(tmp);
 constexpr std::int64_t offOutp = O(outp);
 constexpr std::int64_t kScratchBytes = static_cast<std::int64_t>(sizeof(Scratch));
-constexpr std::int64_t kScratchAligned = (kScratchBytes + 15) & ~static_cast<std::int64_t>(15);
+[[maybe_unused]] constexpr std::int64_t kScratchAligned =
+    (kScratchBytes + 15) & ~static_cast<std::int64_t>(15);
 #undef O
 
 // Plain `ret` for the bignum helpers, which save no frame (the generator and

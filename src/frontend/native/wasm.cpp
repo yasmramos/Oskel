@@ -585,7 +585,7 @@ class Func {
   }
 
  private:
-  ModuleBuilder& module_;
+  [[maybe_unused]] ModuleBuilder& module_;
   Body& body_;
   std::uint32_t localBase_;
 };
@@ -3072,6 +3072,7 @@ std::uint32_t Runtime::emitIterStep() {
                 vPayload = f.addLocal(kI64), items = f.addLocal(kI32),
                 entries = f.addLocal(kI32), entry = f.addLocal(kI32),
                 idx = f.addLocal(kI32);
+  (void)idx;  // declared to reserve the local slot, never read
   f.i64c(static_cast<std::int64_t>(kNil));
   f.lset(itemTag);
   f.i64c(0);
@@ -4031,6 +4032,7 @@ std::uint32_t Runtime::emitCompare(int op) {
   std::uint32_t index = m.reserveFunction(tBin);
   Func f(m, index, {kI64, kI64, kI64, kI64});
   std::uint32_t addrA = f.addLocal(kI32), addrB = f.addLocal(kI32);
+  (void)addrB;  // declared to reserve the local slot, never read
 
   if (op == 0) {  // equality
     f.lget(0);
@@ -11669,6 +11671,7 @@ std::uint32_t Runtime::emitSlice() {
                 itemAddr = f.addLocal(kI32), resTag = f.addLocal(kI64),
                 resPay = f.addLocal(kI64), out = f.addLocal(kI32),
                 cpay = f.addLocal(kI64);
+  (void)addr;  // declared to reserve the local slot, never read
 
   f.lget(0);
   f.i64c(static_cast<std::int64_t>(kArray));

@@ -120,10 +120,13 @@ void runOrFail(VM& vm, const Bytecode& bytecode) {
 // Records the active test name for the diagnostics above.
 #define TEST_SCOPE() TestScope _testScope(__func__)
 
-const Value& requireGlobal(const VM& vm, const std::string& name) {
+// `name` is a `const char*`, not a `const std::string&`: a string literal would otherwise
+// bind a temporary to a reference parameter of a function that returns a reference, which
+// GCC reports as a possibly dangling reference (-Wdangling-reference).
+const Value& requireGlobal(const VM& vm, const char* name) {
   const Value* value = vm.findGlobal(name);
   if (!value) {
-    std::fprintf(stderr, "missing global: %s\n", name.c_str());
+    std::fprintf(stderr, "missing global: %s\n", name);
     std::exit(1);
   }
   return *value;
