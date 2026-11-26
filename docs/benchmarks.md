@@ -8,21 +8,21 @@ the reason -- and `n/a` that its runtime is not installed here.
 - measured: 2026-11-26 on AMD EPYC 9B14, Linux 6.8.0-1055-gke
 - engine: `/workspace/project/Oskel/build/oskel`
 
-| benchmark | oskel-vm | oskel-nojit | oskel-aot | oskel-wasm | c | python | node | lua | luajit |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| startup | 1.9 | 1.6 | 0.3 | 31.0 | 0.7 | 12.5 | 29.3 | 0.9 | 1.0 |
-| fib | 735.8 | 702.2 | 44.0 | 83.7 | 2.0 | 106.9 | 40.8 | 46.3 | 8.0 |
-| arrays | 115.2 | 119.3 | 20.9 | 61.8 | 1.6 | 33.1 | 44.5 | 11.9 | 3.2 |
-| strings | 22.7 | 22.9 | 6.0 | 44.8 | 2.6 | 19.9 | 40.1 | 11.3 | 6.8 |
+| benchmark | oskel-vm | oskel-nojit | oskel-aot | oskel-wasm | c | python | node |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| startup | 2.8 | 1.9 | 0.3 | 30.9 | 0.7 | 12.9 | 30.9 |
+| fib | 725.4 | 707.7 | 46.0 | 84.2 | 2.1 | 107.4 | 40.8 |
+| arrays | 115.0 | 116.2 | 12.7 | 62.8 | 1.7 | 35.8 | 46.3 |
+| strings | 22.8 | 23.3 | 5.2 | 43.4 | 2.6 | 19.4 | 38.2 |
 
 Same numbers relative to `oskel-aot` (lower is better):
 
-| benchmark | oskel-vm | oskel-nojit | oskel-wasm | c | python | node | lua | luajit |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| startup | x7.47 | x6.34 | x121.58 | x2.71 | x49.21 | x114.93 | x3.51 | x3.90 |
-| fib | x16.73 | x15.97 | x1.90 | x0.04 | x2.43 | x0.93 | x1.05 | x0.18 |
-| arrays | x5.52 | x5.72 | x2.96 | x0.08 | x1.58 | x2.13 | x0.57 | x0.15 |
-| strings | x3.78 | x3.81 | x7.46 | x0.43 | x3.30 | x6.67 | x1.89 | x1.13 |
+| benchmark | oskel-vm | oskel-nojit | oskel-wasm | c | python | node |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| startup | x11.06 | x7.44 | x121.23 | x2.59 | x50.59 | x121.18 |
+| fib | x15.78 | x15.40 | x1.83 | x0.05 | x2.34 | x0.89 |
+| arrays | x9.07 | x9.16 | x4.95 | x0.13 | x2.83 | x3.65 |
+| strings | x4.37 | x4.47 | x8.32 | x0.50 | x3.72 | x7.32 |
 
 Commands:
 
@@ -33,8 +33,6 @@ Commands:
 - `c`: `<build>/startup_c`
 - `python`: `/usr/local/bin/python3 /workspace/project/Oskel/benchmarks/startup.py`
 - `node`: `/usr/local/bin/node /workspace/project/Oskel/benchmarks/startup.js`
-- `lua`: `/tmp/srctools/lua-5.4.7/src/lua /workspace/project/Oskel/benchmarks/startup.lua`
-- `luajit`: `/tmp/srctools/luajit-src/src/luajit /workspace/project/Oskel/benchmarks/startup.lua`
 
 Runtimes:
 
@@ -42,5 +40,3 @@ Runtimes:
 - `c`: cc (Debian 14.2.0-19) 14.2.0
 - `python`: Python 3.13.15
 - `node`: v24.22.2
-- `lua`: Lua 5.4.7  Copyright (C) 1994-2024 Lua.org, PUC-Rio
-- `luajit`: LuaJIT 2.1.1795687819 -- Copyright (C) 2005-2026 Mike Pall. https://luajit.org/

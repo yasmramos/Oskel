@@ -7369,10 +7369,36 @@ void emitMapMemberGet(CodeGen& cg, const CollectionEnv& env, CodeGen::Label memb
   cg.xorReg(Rdx, Rdx);
 }
 
-// `AotValue oskel_member_get(AotValue obj, AotValue name)`: the constant-name
-// form `obj.name`. Arrays, maps, strings, ranges and errors each answer their
-// own members; anything else is "type has no member".
-void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
+// How the member-resolution body below is used (BACKLOG §6 item 35).
+enum class MemberUse {
+  Value,  // `obj.name`: return the member; a bound method becomes a closure
+  Call,   // `obj.name(...)`: call a method's body directly, binding nothing
+};
+
+// The constant-name form `obj.name`. Arrays, maps, strings, ranges and errors
+// each answer their own members; anything else is "type has no member".
+//
+// `MemberUse::Call` resolves the same names with two differences, neither of
+// them observable: a bound method's body is called with a stack-built `self`
+// instead of being bound to a closure over a heap cell, and any member that is
+// not a method is handed to `oskel_call` -- the very same call the closure form
+// made one instruction later, so `arr.length()` and a class method stored in a
+// map fail or run exactly as before. Nothing is allocated on the method path:
+// `xs.push(i)` in a loop used to allocate a cell and a closure per iteration,
+// ~44 ns of overhead per call against 37 ns for the push itself.
+void emitMemberGetBody(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env, MemberUse use) {
+  // Slots: the member name, the call's argument count and window (`Call` only),
+  // and the cell plus `self` a `Call` tail hands to a method body. `self` is an
+  // `AotClosure` whose single upvalue slot points at the cell, which is the
+  // only field a method body reads.
+  constexpr std::int64_t kName = -24;
+  constexpr std::int64_t kArgc = -32;
+  constexpr std::int64_t kArgs = -40;
+  constexpr std::int64_t kCellTag = -72;
+  constexpr std::int64_t kCellPayload = -64;
+  constexpr std::int64_t kSelf = -112;  // 32-byte header, upvalue[0] at -80
+  constexpr std::int32_t kFrameSize = 96;
+
   CodeGen::Label map = cg.newLabel();
   CodeGen::Label arr = cg.newLabel();
   CodeGen::Label str = cg.newLabel();
@@ -7387,7 +7413,6 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   CodeGen::Label rangeNotLength = cg.newLabel();
   CodeGen::Label bindToArray = cg.newLabel();
   CodeGen::Label bindRangeContains = cg.newLabel();
-  CodeGen::Label bindRange = cg.newLabel();
   CodeGen::Label mapMiss = cg.newLabel();
   CodeGen::Label isLength = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
@@ -7417,7 +7442,7 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   CodeGen::Label bindJoin = cg.newLabel();
   CodeGen::Label bindSort = cg.newLabel();
   CodeGen::Label bindSorted = cg.newLabel();
-  CodeGen::Label bind = cg.newLabel();
+  CodeGen::Label valueDone = cg.newLabel();
   // The string methods, in selector order: the names are what `member_get`
   // compares against and the labels are where each match binds its closure.
   // The order is the order `bindStringMethod`'s method table uses, so the
@@ -7433,14 +7458,41 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   for (auto& l : strBind) l = cg.newLabel();
   CodeGen::Label strMethods = cg.newLabel();
 
+  // A bound method: bind it, or call the body it selects.
+  auto methodTail = [&](CodeGen::Label body, CodeGen::Label binder, std::int64_t which,
+                        std::int64_t tag) {
+    if (use == MemberUse::Value) {
+      cg.movImm(Rdx, which);
+      cg.movImm(Rdi, tag);
+      cg.movReg(Rsi, R12);
+      cg.callLabel(binder);
+    } else {
+      cg.movToMem(Rbp, kCellTag, Rbx);
+      cg.movToMem(Rbp, kCellPayload, R12);
+      cg.leaMem(Rax, Rbp, kCellTag);
+      // `self` is an `AotClosure`: its single upvalue slot, past the header,
+      // points at the cell the body reads the receiver from.
+      cg.movToMem(Rbp, kSelf + static_cast<std::int64_t>(kAotClosureHeaderSize), Rax);
+      cg.movFromMem(Rdi, Rbp, kArgs);
+      cg.movFromMem(Rsi, Rbp, kArgc);
+      cg.leaMem(Rdx, Rbp, kSelf);
+      cg.callLabel(body);
+    }
+    cg.jmp(done);
+  };
+
   cg.bind(label);
   prologue(cg);
   cg.push(Rbx);
   cg.push(R12);
-  cg.subRegImm32(Rsp, 16);
-  cg.movReg(Rbx, Rdi);          // obj tag
-  cg.movReg(R12, Rsi);          // obj payload
-  cg.movToMem(Rbp, -24, Rcx);   // name payload (AotString*)
+  cg.subRegImm32(Rsp, kFrameSize);
+  cg.movReg(Rbx, Rdi);           // obj tag
+  cg.movReg(R12, Rsi);           // obj payload
+  cg.movToMem(Rbp, kName, Rcx);  // name payload (AotString*)
+  if (use == MemberUse::Call) {
+    cg.movToMem(Rbp, kArgc, R8);
+    cg.movToMem(Rbp, kArgs, R9);
+  }
   cg.cmpImm32(Rbx, static_cast<std::int32_t>(kTagMap));
   cg.jcc(Jcc::Eq, map);
   cg.cmpImm32(Rbx, static_cast<std::int32_t>(kTagArray));
@@ -7471,11 +7523,11 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.bind(errorMessage);
   cg.movFromMem(Rdx, R12, kErrorMessageOffset);
   cg.movImm(Rax, kTagStr);
-  cg.jmp(done);
+  cg.jmp(valueDone);
   cg.bind(errorCode);
   cg.movFromMem(Rdx, R12, kErrorCodeOffset);
   cg.movImm(Rax, kTagInt);
-  cg.jmp(done);
+  cg.jmp(valueDone);
 
   cg.bind(map);
   cg.movReg(Rdi, R12);
@@ -7488,10 +7540,10 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.addReg(R10, Rax);
   cg.movFromMem(Rax, R10, kMapEntryValueOffset);
   cg.movFromMem(Rdx, R10, kMapEntryValueOffset + 8);
-  cg.jmp(done);
+  cg.jmp(valueDone);
   cg.bind(mapMiss);
-  emitMapMemberGet(cg, env, done);
-  cg.jmp(done);
+  emitMapMemberGet(cg, env, valueDone);
+  cg.jmp(valueDone);
 
   cg.bind(arr);
   cg.movFromMem(Rdi, Rbp, -24);
@@ -7503,7 +7555,7 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   // closure over the receiver, exactly like the hosted `bindArray`. The
   // selector is the method's index in `bindArrayMethod`'s table; any other
   // name is "no such member".
-  cg.movFromMem(Rdi, Rbp, -24);
+  cg.movFromMem(Rdi, Rbp, kName);
   cg.leaRipLabel(Rsi, env.pushConst);
   cg.callLabel(env.strEq);
   cg.testReg(Rax);
@@ -7625,84 +7677,31 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.jcc(Jcc::Ne, bindSorted);
   cg.jmp(failMember);
 
-  // Every `bind*` block loads the receiver (r12), sets the selector in rdx and
-  // calls the shared binder.
-  cg.bind(bindPush);
-  cg.movImm(Rdx, 0);            // push
-  cg.jmp(bind);
-  cg.bind(bindPop);
-  cg.movImm(Rdx, 1);            // pop
-  cg.jmp(bind);
-  cg.bind(bindShift);
-  cg.movImm(Rdx, 2);            // shift
-  cg.jmp(bind);
-  cg.bind(bindUnshift);
-  cg.movImm(Rdx, 3);            // unshift
-  cg.jmp(bind);
-  cg.bind(bindInsert);
-  cg.movImm(Rdx, 4);            // insert
-  cg.jmp(bind);
-  cg.bind(bindRemoveAt);
-  cg.movImm(Rdx, 5);            // removeAt
-  cg.jmp(bind);
-  cg.bind(bindContains);
-  cg.movImm(Rdx, 6);            // contains
-  cg.jmp(bind);
-  cg.bind(bindIndexOf);
-  cg.movImm(Rdx, 7);            // indexOf
-  cg.jmp(bind);
-  cg.bind(bindClear);
-  cg.movImm(Rdx, 8);            // clear
-  cg.jmp(bind);
-  cg.bind(bindSlice);
-  cg.movImm(Rdx, 9);            // slice
-  cg.jmp(bind);
-  cg.bind(bindConcat);
-  cg.movImm(Rdx, 10);           // concat
-  cg.jmp(bind);
-  cg.bind(bindReversed);
-  cg.movImm(Rdx, 11);           // reversed
-  cg.jmp(bind);
-  cg.bind(bindClone);
-  cg.movImm(Rdx, 12);           // clone
-  cg.jmp(bind);
-  cg.bind(bindMap);
-  cg.movImm(Rdx, 13);           // map
-  cg.jmp(bind);
-  cg.bind(bindFilter);
-  cg.movImm(Rdx, 14);           // filter
-  cg.jmp(bind);
-  cg.bind(bindEach);
-  cg.movImm(Rdx, 15);           // each
-  cg.jmp(bind);
-  cg.bind(bindFind);
-  cg.movImm(Rdx, 16);           // find
-  cg.jmp(bind);
-  cg.bind(bindAny);
-  cg.movImm(Rdx, 17);           // any
-  cg.jmp(bind);
-  cg.bind(bindAll);
-  cg.movImm(Rdx, 18);           // all
-  cg.jmp(bind);
-  cg.bind(bindReduce);
-  cg.movImm(Rdx, 19);           // reduce
-  cg.jmp(bind);
-  cg.bind(bindSum);
-  cg.movImm(Rdx, 20);           // sum
-  cg.jmp(bind);
-  cg.bind(bindJoin);
-  cg.movImm(Rdx, 21);           // join
-  cg.jmp(bind);
-  cg.bind(bindSort);
-  cg.movImm(Rdx, 22);           // sort
-  cg.jmp(bind);
-  cg.bind(bindSorted);
-  cg.movImm(Rdx, 23);           // sorted
-  cg.bind(bind);
-  cg.movImm(Rdi, kTagArray);
-  cg.movReg(Rsi, R12);
-  cg.callLabel(env.bindArrayMethod);
-  cg.jmp(done);
+  // Each `bind*` block is the method's selector in `bindArrayMethod`'s table;
+  // `methodTail` either binds it or calls the body.
+  struct ArrayTail {
+    CodeGen::Label branch;
+    CodeGen::Label body;
+    std::int64_t which;
+  };
+  const std::array<ArrayTail, 24> arrayTails = {{
+      {bindPush, env.pushMethod, 0},         {bindPop, env.popMethod, 1},
+      {bindShift, env.shiftMethod, 2},       {bindUnshift, env.unshiftMethod, 3},
+      {bindInsert, env.insertMethod, 4},     {bindRemoveAt, env.removeAtMethod, 5},
+      {bindContains, env.containsMethod, 6}, {bindIndexOf, env.indexOfMethod, 7},
+      {bindClear, env.clearMethod, 8},       {bindSlice, env.sliceMethod, 9},
+      {bindConcat, env.concatMethod, 10},    {bindReversed, env.reversedMethod, 11},
+      {bindClone, env.cloneMethod, 12},      {bindMap, env.mapMethod, 13},
+      {bindFilter, env.filterMethod, 14},    {bindEach, env.eachMethod, 15},
+      {bindFind, env.findMethod, 16},        {bindAny, env.anyMethod, 17},
+      {bindAll, env.allMethod, 18},          {bindReduce, env.reduceMethod, 19},
+      {bindSum, env.sumMethod, 20},          {bindJoin, env.joinMethod, 21},
+      {bindSort, env.sortMethod, 22},        {bindSorted, env.sortedMethod, 23},
+  }};
+  for (const ArrayTail& tail : arrayTails) {
+    cg.bind(tail.branch);
+    methodTail(tail.body, env.bindArrayMethod, tail.which, kTagArray);
+  }
 
   cg.bind(str);
   cg.movFromMem(Rdi, Rbp, -24);
@@ -7714,7 +7713,7 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.callLabel(env.utf8Len);
   cg.movReg(Rdx, Rax);
   cg.movImm(Rax, kTagInt);
-  cg.jmp(done);
+  cg.jmp(valueDone);
 
   // A string method: the twelve bound names, tried in selector order. Each
   // comparison goes through `strEq`; a match binds the closure and the call
@@ -7728,19 +7727,23 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
     cg.jcc(Jcc::Ne, strBind[i]);
   }
   cg.jmp(failMember);
-  for (std::size_t i = 0; i < kStringMethodConsts.size(); ++i) {
+  const std::array<CodeGen::Label, 19> kStringMethodBodies = {
+      env.stringUpperMethod,      env.stringLowerMethod,        env.stringTrimMethod,
+      env.stringTrimStartMethod,  env.stringTrimEndMethod,      env.stringContainsMethod,
+      env.stringStartsWithMethod, env.stringEndsWithMethod,     env.stringIndexOfMethod,
+      env.stringSubstrMethod,     env.stringReversedMethod,     env.stringRepeatMethod,
+      env.stringSplitMethod,      env.stringLinesMethod,        env.stringCharsMethod,
+      env.stringReplaceMethod,    env.stringReplaceFirstMethod, env.stringPadStartMethod,
+      env.stringPadEndMethod};
+  for (std::size_t i = 0; i < strBind.size(); ++i) {
     cg.bind(strBind[i]);
-    cg.movImm(Rdi, kTagStr);
-    cg.movReg(Rsi, R12);
-    cg.movImm(Rdx, static_cast<std::int64_t>(i));
-    cg.callLabel(env.bindStringMethod);
-    cg.jmp(done);
+    methodTail(kStringMethodBodies[i], env.bindStringMethod, static_cast<std::int64_t>(i), kTagStr);
   }
 
   cg.bind(isLength);
   cg.movFromMem(Rdx, R12, kTableLengthOffset);
   cg.movImm(Rax, kTagInt);
-  cg.jmp(done);
+  cg.jmp(valueDone);
 
   // A range's `.length`: the distance between the bounds, plus one when
   // inclusive, saturated at INT64_MAX so an overflowing span stays defined.
@@ -7781,7 +7784,7 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.bind(rangeUse);
   cg.movReg(Rdx, R10);
   cg.movImm(Rax, kTagInt);
-  cg.jmp(done);
+  cg.jmp(valueDone);
 
   // The two bound range methods. The receiver travels in the closure's single
   // upvalue cell, exactly like the array and string methods, so the binder is
@@ -7799,18 +7802,25 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.jcc(Jcc::Ne, bindRangeContains);
   cg.jmp(failMember);
   cg.bind(bindToArray);
-  cg.movImm(Rdx, 0);               // toArray
-  cg.jmp(bindRange);
+  methodTail(env.rangeToArrayMethod, env.bindRangeMethod, 0, kTagRange);
   cg.bind(bindRangeContains);
-  cg.movImm(Rdx, 1);               // contains
-  cg.bind(bindRange);
-  cg.movImm(Rdi, kTagRange);
-  cg.movReg(Rsi, R12);
-  cg.callLabel(env.bindRangeMethod);
-  cg.jmp(done);
+  methodTail(env.rangeContainsMethod, env.bindRangeMethod, 1, kTagRange);
 
+  // A member that is not a method: the closure form returns it, so the call
+  // form hands it to `oskel_call` and gets the same "cannot call a value of
+  // type ..." the program saw through the closure, while a class method reached
+  // through a map still runs.
+  cg.bind(valueDone);
+  if (use == MemberUse::Call) {
+    cg.movReg(Rdi, Rax);
+    cg.movReg(Rcx, Rdx);  // the payload, parked while rdx takes the count
+    cg.movFromMem(Rdx, Rbp, kArgc);
+    cg.movReg(Rsi, Rcx);
+    cg.movFromMem(Rcx, Rbp, kArgs);
+    cg.callLabel(env.call);
+  }
   cg.bind(done);
-  cg.addImm32(Rsp, 16);
+  cg.addImm32(Rsp, kFrameSize);
   cg.pop(R12);
   cg.pop(Rbx);
   epilogue(cg);
@@ -7821,6 +7831,14 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   emitTypeQuoteFail(cg, *env.msgBadIndex, Rbx, R12);
 }
 
+// The two entry points over one resolution body: `oskel_member_get` returns the
+// member, `oskel_bound_call` calls a method without binding it. Both instances
+// share the name comparisons; only the tails differ.
+void emitMemberGet(CodeGen& cg, CodeGen::Label valueLabel, CodeGen::Label callLabel,
+                   const CollectionEnv& env) {
+  emitMemberGetBody(cg, valueLabel, env, MemberUse::Value);
+  emitMemberGetBody(cg, callLabel, env, MemberUse::Call);
+}
 
 // `long oskel_str_hash(AotString* s)`: FNV-1a over the bytes. A leaf, and the
 // exact hash is private to the AOT runtime: `strEq` still decides equality.
@@ -18954,7 +18972,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitTableNew(cg, handles.tableNew, env);
   emitPackRest(cg, handles.packRest, env);
   emitTableGet(cg, handles.tableGet, env);
-  emitMemberGet(cg, handles.memberGet, env);
+  emitMemberGet(cg, handles.memberGet, handles.boundCall, env);
   emitTableSet(cg, handles.tableSet, env);
   emitMemberSet(cg, handles.memberSet, env);
   emitContains(cg, handles.contains, env);

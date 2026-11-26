@@ -1,0 +1,140 @@
+// A method call allocates nothing (BACKLOG §6 item 35).
+//
+// `xs.push(i)` compiles to `GETTABLE` (the bound method) plus `CALL`, and the
+// bound method used to be an `AotClosure` over a fresh heap cell -- ~44 ns of
+// allocation per call, more than the push itself, and unbounded arena growth in
+// a loop. The AOT lowerer now recognises the pair and calls the method body
+// directly; the VM, the AOT binary and the WebAssembly module must still agree
+// byte for byte, which is what this fixture pins. It also keeps the *unfused*
+// shapes honest: a method read as a value still binds a closure, a member that
+// is not a method is still not callable, and a class method reached through a
+// map still runs.
+
+class Counter {
+  value: int;
+
+  fn init(start: int) {
+    self.value = start;
+  }
+
+  fn bump(by: int): int {
+    self.value = self.value + by;
+    return self.value;
+  }
+}
+
+fn makeArray(): array {
+  return [10, 20];
+}
+
+fn main() {
+  var xs = [3, 1, 2];
+
+  // Arrays: one call per selector, so a mis-numbered selector table shows up.
+  print(xs.push(4));
+  print(xs.length);
+  print(xs.pop());
+  print(xs.shift());
+  print(xs.unshift(9));
+  print(xs.insert(1, 7));
+  print(xs.removeAt(0));
+  print(xs.contains(7));
+  print(xs.indexOf(7));
+  print(xs.slice(0, 2).join("/"));
+  print(xs.concat([5, 6]).length);
+  print(xs.reversed().join(""));
+  print(xs.clone().length);
+  print(xs.map((v) => v * 10).join(""));
+  print(xs.filter((v) => v > 1).length);
+  var seen = 0;
+  xs.each((v) => { seen += v; });
+  print(seen);
+  print(xs.find((v) => v == 2));
+  print(xs.any((v) => v == 1));
+  print(xs.all((v) => v > 0));
+  print(xs.reduce((acc, v) => acc + v, 0));
+  print(xs.sum());
+  print(xs.join("-"));
+  print(xs.sorted((a, b) => a > b).join(""));
+  xs.sort((a, b) => a < b);
+  print(xs.join(""));
+  print(xs.clear().length);
+
+  // Strings and ranges go through the same resolution.
+  print("  MiXeD  ".trim().lower());
+  print("a,b,c".split(",").length);
+  print("abc".upper().contains("BC"));
+  print("abc".startsWith("ab"));
+  print("abc".endsWith("bc"));
+  print("abc".indexOf("c"));
+  print("abcdef".substr(1, 3));
+  print("ab".repeat(3));
+  print("abc".reversed());
+  print("abc".chars().length);
+  print("a\nb".lines().length);
+  print("abc".replace("b", "X"));
+  print("abc".replaceFirst("b", "Y"));
+  print("ab".padStart(4, "."));
+  print("ab".padEnd(4, "."));
+  print("  pad  ".trimStart());
+  print("  pad  ".trimEnd());
+  print((1..3).toArray().join(""));
+  print((1..=4).contains(4));
+
+  // Maps: `get`/`set`/... still bind, and a class method stored in the map is
+  // reached as a value and then called.
+  var m = {"k": 1};
+  m.set("j", 2);
+  print(m.get("j"));
+  print(m.has("k"));
+  print(m.keys().length);
+  print(m.values().length);
+  print(m.entries().length);
+  print(m.merge({"z": 3}).length);
+  print(m.clone().length);
+  print(m.delete("j"));
+  print(m.length);
+  var c = Counter(5);
+  print(c.bump(2));
+  print(c.bump(3));
+  print(c.value);
+
+  // Shapes that must keep working around the fusion: a receiver that is an
+  // expression, a call inside a branch or a loop condition, a nested call in
+  // the argument list, and a method read as a value (never fused, so it binds a
+  // closure that outlives the read).
+  print(makeArray().push(30).length);
+  print(makeArray().length);
+  var i = 0;
+  while (i < 3) {
+    xs.push(i);
+    i += 1;
+  }
+  print(xs.join(""));
+  if (xs.contains(1)) {
+    print("branch");
+  }
+  print(xs.contains(1) ? "yes" : "no");
+  print(xs.length > 2 && xs.any((v) => v == 2));
+  xs.push(xs.length);
+  print(xs.join(""));
+  var bound = xs.push;
+  print(type(bound));
+  print(bound(99).length);
+  print(xs.length);
+
+  // A long run of calls on one receiver: no closure per call, and the result
+  // must be the same count the VM reaches.
+  var counts = [];
+  var n = 0;
+  while (n < 5000) {
+    counts.push(n);
+    n += 1;
+  }
+  print(counts.length);
+  print(counts.contains(4999));
+  print(counts.indexOf(4999));
+  print(counts.sum());
+}
+
+main();

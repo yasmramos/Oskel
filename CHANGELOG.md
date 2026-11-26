@@ -187,6 +187,24 @@ may change between minor versions.
 
 ### Fixed
 
+- **A bound method call no longer allocates in the native binary.** `xs.push(i)`
+  compiles to a member read plus a `CALL`, and the member read built an
+  `AotClosure` over a fresh heap cell before every call: ~44 ns of allocation
+  per call -- more than the push itself -- and unbounded arena growth in a loop.
+  The lowerer now recognises the pair (`GETTABLE` with a constant name whose
+  result the next `CALL` consumes) and hands the receiver, the name, the count
+  and the argument window to `oskel_bound_call`, which resolves the name through
+  the same comparisons `oskel_member_get` uses and calls the method body with a
+  stack-built `self`. Nothing is bound, nothing is allocated, and the member's
+  value still behaves as before: a member that is not a method goes to
+  `oskel_call` (so `arr.length()` reports the same "cannot call a value of type
+  'int'"), a missing member reports the same message, and a method *read* as a
+  value (`var p = xs.push`) still binds a closure, so `xs.push == xs.push`
+  stays `false` as in the VM. `benchmarks/arrays.oskl` drops from 20.9 ms to
+  12.5 ms (200 000 pushes), and the 5 000-call loop in
+  `tests/native_build_bound_call.oskl` runs the same as the VM;
+  `oskel.build_binary_bound_call` compares every method of the four families
+  with the VM byte for byte. `docs/BACKLOG.md` §6 item 35.
 - **`join` is linear in the AOT and WebAssembly backends.** Both built the
   result by concatenating the accumulator with one item at a time, and a
   concatenation allocates a fresh string, so joining n parts allocated O(n^2)
