@@ -1008,6 +1008,70 @@ std::unordered_set<std::size_t> checkedGlobalReads(
   return checked;
 }
 
+// Whether `ins` overwrites R[reg]. A conservative answer only costs a fusion, so
+// an opcode that reads `a` without storing it is still reported as a write.
+bool writesRegister(const Instruction& ins, int reg) {
+  switch (ins.op) {
+    case OpCode::JMP:
+    case OpCode::JMP_IF_FALSE:
+    case OpCode::JMP_IF_TRUE:
+    case OpCode::SETTABLE:
+    case OpCode::RETURN:
+    case OpCode::HALT:
+      return false;
+    case OpCode::ITER:
+      return ins.a == reg || ins.d == reg || ins.e == reg;
+    default:
+      return ins.a == reg;
+  }
+}
+
+// Bound-method call fusion (BACKLOG §6 item 35). A method call compiles to
+// `R[a] = R[b].<const name>` followed by the argument evaluations and
+// `CALL R[a], n`, so the two instructions are *not* adjacent. `fused[i]` holds
+// the name's constant index (`-c - 1`) for both instructions of such a pair and
+// 0 for everything else (a member name always has `c <= -1`).
+//
+// The pairing is the last write of R[a] before the `CALL`: the callee slot is
+// live from the `GETTABLE` to the call, so nothing else writes it, and a window
+// bounded by the first overwrite, a jump target or a control-flow instruction
+// keeps the peephole honest. `lowerInstruction` then parks the receiver in R[a]
+// instead of building a closure and hands it to `oskel_bound_call`, which
+// resolves the name and calls a method body directly: `xs.push(i)` in a loop
+// allocated a cell and a closure per iteration, ~44 ns against the push's own
+// 37 ns. The parked register is unobservable -- the `CALL` result overwrites it
+// and a member value is never read as a closure.
+std::vector<int> fusedMemberCalls(const Bytecode& proto,
+                                  const std::unordered_set<std::size_t>& targets) {
+  constexpr std::size_t kWindow = 32;
+  std::vector<int> fused(proto.code.size() + 1, 0);
+  for (std::size_t i = 0; i < proto.code.size(); ++i) {
+    const Instruction& get = proto.code[i];
+    if (get.op != OpCode::GETTABLE || get.c >= 0) {
+      continue;
+    }
+    for (std::size_t j = i + 1; j < proto.code.size() && j <= i + kWindow; ++j) {
+      if (targets.count(j) != 0) {
+        break;  // control can enter the window
+      }
+      const Instruction& ins = proto.code[j];
+      if (ins.op == OpCode::JMP || ins.op == OpCode::JMP_IF_FALSE ||
+          ins.op == OpCode::JMP_IF_TRUE || ins.op == OpCode::RETURN || ins.op == OpCode::HALT) {
+        break;  // control leaves the window
+      }
+      if (!writesRegister(ins, get.a)) {
+        continue;
+      }
+      if (ins.op == OpCode::CALL && ins.a == get.a) {
+        fused[i] = get.c;
+        fused[j] = get.c;
+      }
+      break;  // R[a] was rewritten by something else
+    }
+  }
+  return fused;
+}
+
 void lowerInstruction(std::size_t index, const Instruction& instr, const Bytecode& proto,
                       CodeGen& cg, const std::vector<CodeGen::Label>& labels,
                       const AotRuntimeHandles& rt, const GlobalSlots& globals,
@@ -1016,7 +1080,7 @@ void lowerInstruction(std::size_t index, const Instruction& instr, const Bytecod
                       const std::unordered_map<const Bytecode*, CodeGen::Label>& displayOf,
                       std::vector<StringConstant>& stringConstants,
                       const std::unordered_set<std::size_t>& checkedReads, int& lastPublishedLine,
-                      bool isJumpTarget) {
+                      bool isJumpTarget, const std::vector<int>& fusedMembers) {
   const int fileRegisters = frame.fileRegisters;
   // At a jump target the previous instruction emitted may belong to a
   // different path, so a deduplicated store could leave a stale line behind
@@ -1254,6 +1318,20 @@ void lowerInstruction(std::size_t index, const Instruction& instr, const Bytecod
       // Pass the callee (rdi:rsi), the count (rdx) and the argument window's
       // address (rcx) to `oskel_call`, which checks the callee is a function and
       // dispatches it. The result comes back in rax:rdx, straight into R[a].
+      if (fusedMembers.at(index) != 0) {
+        // The partner `GETTABLE` parked the receiver here. Pass it with the
+        // member name, the count and the window (r8:r9) to `oskel_bound_call`,
+        // which calls a method body directly and hands any other member to
+        // `oskel_call`, so no closure is built on the way.
+        loadValue(cg, instr.a, X64Reg::Rdi, X64Reg::Rsi);
+        loadMemberName(cg, proto, fusedMembers.at(index), X64Reg::Rdx, X64Reg::Rcx,
+                       stringConstants);
+        cg.movImm(X64Reg::R8, instr.b);
+        cg.leaMem(X64Reg::R9, kFileBase, slotOffset(instr.a + 1));
+        cg.callLabel(rt.boundCall);
+        storeValue(cg, instr.a, X64Reg::Rax, X64Reg::Rdx);
+        break;
+      }
       loadValue(cg, instr.a, X64Reg::Rdi, X64Reg::Rsi);
       cg.movImm(X64Reg::Rdx, instr.b);
       cg.leaMem(X64Reg::Rcx, kFileBase, slotOffset(instr.a + 1));
@@ -1348,6 +1426,14 @@ void lowerInstruction(std::size_t index, const Instruction& instr, const Bytecod
       // R[a] = R[b][R[c]] (dynamic index) or R[b].<name> (constant member name,
       // encoded as `-c - 1`). The name form loads the string constant into
       // rdx:rcx as a value, so both paths share one helper.
+      if (fusedMembers.at(index) != 0) {
+        // `obj.name(...)`: park the receiver in R[a] for the `CALL` below, which
+        // resolves the name and calls a method body without binding a closure
+        // (BACKLOG §6 item 35). The call's result overwrites R[a].
+        loadValue(cg, instr.b, X64Reg::Rax, X64Reg::Rdx);
+        storeValue(cg, instr.a, X64Reg::Rax, X64Reg::Rdx);
+        break;
+      }
       loadValue(cg, instr.b, X64Reg::Rdi, X64Reg::Rsi);
       if (instr.c >= 0) {
         loadValue(cg, instr.c, X64Reg::Rdx, X64Reg::Rcx);
@@ -1889,11 +1975,12 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto, const CodeG
     // not what this frame published, so the first instruction always stores.
     int lastPublishedLine = 0;
     const std::unordered_set<std::size_t> jumpTargets = jumpTargetIndices(proto);
+    const std::vector<int> rootFusedMembers = fusedMemberCalls(proto, jumpTargets);
     for (std::size_t i = 0; i < proto.code.size(); ++i) {
       cg.bind(labels[i]);
       lowerInstruction(i, proto.code[i], proto, cg, labels, rt, globals, frame, protoEntry,
                        displayOf, stringConstants, checked, lastPublishedLine,
-                       jumpTargets.count(i) != 0);
+                       jumpTargets.count(i) != 0, rootFusedMembers);
     }
     // Falling off the end of the root chunk is an implicit nil result.
     cg.bind(labels.back());
@@ -1992,10 +2079,12 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto, const CodeG
     if (!checked.empty()) needsGlobalGetChecked = true;
     int lastPublishedLine = 0;
     const std::unordered_set<std::size_t> jumpTargets = jumpTargetIndices(fn);
+    const std::vector<int> fnFusedMembers = fusedMemberCalls(fn, jumpTargets);
     for (std::size_t i = 0; i < fn.code.size(); ++i) {
       cg.bind(labels[i]);
       lowerInstruction(i, fn.code[i], fn, cg, labels, rt, globals, frame, protoEntry, displayOf,
-                       stringConstants, checked, lastPublishedLine, jumpTargets.count(i) != 0);
+                       stringConstants, checked, lastPublishedLine, jumpTargets.count(i) != 0,
+                       fnFusedMembers);
     }
     // Falling off the end of a function body is an implicit `return nil`.
     cg.bind(labels.back());

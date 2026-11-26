@@ -894,16 +894,24 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     blocks, string concatenation, map inserts) and string concatenation reads
     its operands after the allocation. Any new allocating helper belongs in that
     fixture.
-35. **[P2]** A bound method read allocates. `xs.push(i)` evaluates `xs.push`
-    (an `AotClosure` plus the captured cell) *before* every call, and the arena
-    never reclaims it, so the closure is pure overhead in a loop. Measured on a
-    standalone loop while fixing item 33: the direct form exhausted the old
-    1 MiB region at ~7 000 iterations while `var push = xs.push; push(i)`
-    reached ~16 000 (where the array's own blocks are the limit), i.e. ~130
-    bytes per iteration of avoidable allocation. Caching the bound closure per
-    (receiver, selector) at the call site, or lowering a direct
-    `recv.method(args)` to the method body with the receiver passed implicitly,
-    removes it. Not a correctness bug, so no fixture pins it.
+35. **[P2] [done]** A bound method read allocated. `xs.push(i)` evaluated
+    `xs.push` (an `AotClosure` plus the captured cell) *before* every call, and
+    the arena never reclaims it, so the closure was pure overhead in a loop:
+    ~130 bytes and ~44 ns per iteration against 37 ns for the push itself.
+    Caching the bound closure was rejected -- two reads of `xs.push` would then
+    be the same object, and the VM reports `xs.push == xs.push` as `false` -- so
+    the lowerer fuses the call instead: `fusedMemberCalls` pairs the
+    `GETTABLE` of a constant member name with the `CALL` that consumes it (the
+    argument evaluations sit between them), the `GETTABLE` parks the receiver in
+    its own register, and the `CALL` reaches `oskel_bound_call`, which is the
+    same name resolution as `oskel_member_get` with each method tail calling the
+    body instead of binding it, over a stack-built `self`. A member that is not
+    a method goes to `oskel_call`, so `arr.length()` and a class method stored in
+    a map behave exactly as before, and a method *read* as a value still binds a
+    closure (identity included). `benchmarks/arrays.oskl` at 200 000 pushes goes
+    from 20.9 ms to 12.5 ms and `xs.push(i)` in a loop from 82 ns to 42 ns per
+    call; `tests/native_build_bound_call.oskl` pins every selector of the four
+    families against the VM. The WebAssembly backend still binds (item 39).
 36. **[P1] [done]** `join` allocated quadratically in the AOT and WebAssembly
     backends. Both built the result by concatenating the accumulator with one
     item at a time, and `concat` allocates a fresh string each time, so joining n
@@ -931,7 +939,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     and 2 GB, so CI cannot afford it, and once item 36 removes the accidental
     trigger a cheap pin would have to force the address directly.
 
-36. **[P1] [done, partial]** A runtime error in a generated binary printed a
+38. **[P1] [done, partial]** A runtime error in a generated binary printed a
     bare `oskel: <message>`, with no file or line, while the VM named both --
     the one place where the VM was strictly better than the AOT binary. PHASE
     7g.3 closes it: the lowering publishes the source line into a hidden global
@@ -944,6 +952,17 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     stays exact; `--no-source-positions` reproduces the pre-7g.3 image byte for
     byte. Remaining, tracked in `docs/aot-diagnostics.md` §4: the column, the
     stack trace and the source snippet.
+
+39. **[P2]** The WebAssembly backend still binds a closure per method call, the
+    shape item 35 removed from the native binary: `xs.push(i)` costs ~120 ns per
+    call there against ~52 ns through a closure read once into a variable, so
+    `benchmarks/arrays.oskl` spends ~30 ms of its 61.8 ms (31 ms of which is
+    Node's startup) on the binding. The fix is the same fusion --
+    `tests/native_build_bound_call.oskl` is already the fixture, and it passes on
+    the module because the behaviour is identical, only the allocation is not --
+    but the WASM method values are receiver-capturing closures built by
+    `emitMethodValue`, so the direct call needs a body-dispatch path in
+    `wasm.cpp` next to `emitMemberGet`, not a reuse of the AOT helper.
 
 ---
 

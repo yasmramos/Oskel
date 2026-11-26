@@ -1153,6 +1153,21 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_join_large.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # A method call allocates nothing (BACKLOG §6 item 35). `xs.push(i)` used to
+    # bind a closure over a fresh heap cell before every call; the lowerer now
+    # recognises the `GETTABLE`+`CALL` pair and calls the method body directly.
+    # The fixture walks every selector of the four families, the shapes around
+    # the fusion (a receiver that is an expression, a call in a branch or a loop
+    # condition, a nested call in the argument list) and the unfused ones -- a
+    # method read as a value still binds a closure, and a class method reached
+    # through a map still runs.
+    add_test(NAME oskel.build_binary_bound_call
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_bound_call"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_bound_call.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `sort`/`sorted` (PHASE 7c.3j): the only collection methods whose comparator
     # is arbitrary program code, so the AOT body calls back through `oskel_call`
     # from inside a bottom-up stable merge sort. Checked against the VM, so the
@@ -2475,6 +2490,18 @@ if(BUILD_TESTING)
         "-DOSKEL_TEST_NAME=oskel.build_wasm_join_large"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_join_large.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # The same fixture on the module, so the three engines share the expectations
+    # (the WebAssembly backend still binds a closure per call; item 39 tracks it).
+    add_test(NAME oskel.build_wasm_bound_call
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_bound_call"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_bound_call.oskl"
         "-DNODE_EXE=${OSKEL_NODE_EXE}"
         "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"

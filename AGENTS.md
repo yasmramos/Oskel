@@ -391,6 +391,27 @@ it as a caveat:
   to a callback is rejected by both engines, and a struct through a C variadic
   is still PHASE 7f work; the callback and variadic surfaces themselves are
   done.
+- A bound method call allocates nothing (BACKLOG §6 item 35). `xs.push(i)`
+  compiles to `GETTABLE R[a], R[b], <const name>` plus the argument evaluations
+  and `CALL R[a], n`, so the two instructions are **not** adjacent;
+  `fusedMemberCalls` in `lower.cpp` pairs them by scanning for the first write of
+  the callee register (the slot is live from the read to the call, so only the
+  `CALL` writes it) and refuses to fuse across a jump target or a control-flow
+  instruction. The `GETTABLE` then parks the receiver value in R[a] and the
+  `CALL` reaches `oskel_bound_call`, which is `oskel_member_get`'s own body
+  emitted a second time with `MemberUse::Call`: the same name comparisons, but
+  each method tail calls the body with a stack-built `self` whose upvalue slot
+  points at a stack cell, and any member that is not a method goes to
+  `oskel_call`. Two rules follow. `self` is an `AotClosure`, so the cell pointer
+  lives at `kAotClosureHeaderSize` (32), not at 16 -- the wrong offset made the
+  body read the closure's `upvalueCount` as a cell pointer and crash on the first
+  push. And the fusion must stay invisible: caching the bound closure instead
+  would make `xs.push == xs.push` true, where the VM (and the unfused AOT path)
+  says `false`, which is why a method *read* as a value still binds a closure.
+  `tests/native_build_bound_call.oskl` walks every selector of the four families
+  plus the shapes around the fusion (a receiver that is an expression, a call in
+  a branch or a loop condition, a nested call in the argument list, a class
+  method reached through a map) and compares all three engines byte for byte.
 - A builtin whose argument window the AOT backend walks by hand has to read
   `args[i]` **downward**: `slotOffset` is `-16 * (index + 1)`, so `args[1]` sits
   16 bytes *below* `args[0]` (`-16` tag, `-8` payload), not at `+16`/`+24`. A

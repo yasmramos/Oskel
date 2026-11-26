@@ -125,6 +125,15 @@ struct AotRuntimeHandles {
   CodeGen::Label tableNew;   // AotValue oskel_table_new(long kind)
   CodeGen::Label tableGet;   // AotValue oskel_table_get(AotValue obj, AotValue index)
   CodeGen::Label memberGet;  // AotValue oskel_member_get(AotValue obj, AotValue name)
+  // `AotValue oskel_bound_call(AotValue recv, AotValue name, long argc,
+  // AotValue* args)`: the same constant-name resolution as `memberGet`, but a
+  // bound method's body is called directly instead of being bound to a fresh
+  // closure over a heap cell. `lower.cpp` reaches it from the fused
+  // `GETTABLE`+`CALL` pair, so `xs.push(i)` allocates nothing per call
+  // (BACKLOG §6 item 35). Anything that is not a method is handed to
+  // `oskel_call`, and every error message is `memberGet`'s.
+  CodeGen::Label boundCall;  // AotValue oskel_bound_call(AotValue recv, AotValue name, long argc,
+                             // AotValue* args)
   CodeGen::Label tableSet;   // void oskel_table_set(AotValue obj, AotValue index, AotValue value)
   CodeGen::Label memberSet;  // void oskel_member_set(AotValue obj, AotValue name, AotValue value)
   CodeGen::Label contains;   // AotValue oskel_contains(AotValue needle, AotValue haystack)
