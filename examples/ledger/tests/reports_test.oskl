@@ -1,0 +1,33 @@
+// The text reports render the same numbers the core computes.
+
+import ledger.reports;
+import ledger.demo;
+
+let book = demo.book();
+
+let trial = reports.trialBalance(book, false);
+assertEq(trial.contains("Trial balance"), true);
+assertEq(trial.contains("20,150.00"), true);
+assertEq(trial.contains("Balanced: yes"), true);
+assertEq(trial.contains("\u001b["), false);
+
+let colored = reports.trialBalance(book, true);
+assertEq(colored.contains("\u001b["), true);
+
+let income = reports.incomeStatement(book, false);
+assertEq(income.contains("Net income"), true);
+assertEq(income.contains("5,650.00"), true);
+
+let sheet = reports.balanceSheet(book, false);
+assertEq(sheet.contains("Total liabilities and equity"), true);
+assertEq(sheet.contains("33,850.00"), true);
+
+let account = reports.accountReport(book, "1000", false);
+assertEq(account.contains("Cash"), true);
+assertEq(account.contains("20,150.00"), true);
+
+let journal = reports.journal(book, false);
+assertEq(journal.contains("Owner investment"), true);
+assertEq(journal.contains("2026-01-25"), true);
+
+print("reports_test: ok");

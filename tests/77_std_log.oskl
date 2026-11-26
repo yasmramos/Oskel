@@ -1,0 +1,60 @@
+// `std.log`: levels, fields, the fixed-clock record format, child
+// loggers, custom sinks and the rejected options.
+import std.log.*;
+import std.io.StringWriter as SW;
+
+let w = SW();
+let logger = create({
+  name: "app",
+  level: "info",
+  clock: () => 1700000000,
+  sink: (record) => w.writeln(format(record)),
+});
+
+print("level =", logger.level(), logger.levelValue(), logger.name());
+print("enabled =", logger.enabled("debug"), logger.enabled("warn"), logger.enabled("error"));
+logger.debug("hidden");
+logger.info("started");
+logger.warn("slow request", {ms: 120, path: "/a", note: "hello world", ok: true, none: nil});
+logger.error("failed", {code: 500});
+print("-- captured --");
+print(w.toString());
+
+logger.setLevel("debug");
+logger.debug("visible now");
+logger.setLevel("error");
+logger.info("hidden again");
+logger.error("only this");
+print("-- after levels --");
+print(w.toString());
+
+let db = logger.child("db");
+print("child =", db.name(), db.level());
+db.error("child failed", {query: "select *"});
+print("-- child --");
+print(w.toString());
+
+print("log method =", logger.log("warn", "via log", {x: 1}));
+print("-- log method --");
+print(w.toString());
+
+print("levelOf =", levelOf("TRACE"), levelOf("warning"), levelOf("err"), levelOf("off"), levelOf(42));
+print("levelName =", levelName(10), levelName(40), levelName(100), levelName(42));
+
+let r = {level: "warn", name: "x", message: "m", time: 0, fields: {a: "b c", d: 2}};
+print("format =", format(r));
+print("format no time =", format({level: 30, message: "m"}));
+
+let seen = [];
+let l2 = create({level: "debug", name: "cap", clock: () => 0, sink: (rec) => { seen[len(seen)] = rec; }});
+l2.info("one", {a: 1});
+l2.error("two");
+print("records =", seen);
+
+print("off =", pcall(() => { let l = create({level: "off", clock: () => 0, sink: (r) => print("SHOULD NOT PRINT")}); l.error("x"); }).ok);
+print("bad level =", pcall(() => create({level: "nope"})).ok);
+print("bad fields =", pcall(() => l2.info("x", 42)).ok);
+print("bad options =", pcall(() => create("nope")).ok);
+print("bad clock =", pcall(() => create({clock: 1})).ok);
+print("bad sink =", pcall(() => create({sink: 1})).ok);
+print("log ok");

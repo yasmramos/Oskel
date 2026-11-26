@@ -11,6 +11,15 @@ may change between minor versions.
 
 ### Added
 
+- **A complete accounting project: `examples/ledger`.** Scaffolded with
+  `oskelp new` and built from the standard library alone, it posts balanced
+  journal entries against a chart of accounts and prints a trial balance, an
+  income statement and a balance sheet. Amounts are `std.decimal` values scaled
+  to cents, the ledger persists as JSON and exchanges its journal as CSV, and
+  the command line is `std.cli` with `std.log` diagnostics and optional
+  `std.terminal` colour. `oskelp run`, `oskelp test` and `oskelp build` drive
+  it; `oskelp.example_ledger` runs the VM and native trial balances byte for
+  byte.
 - **`std.csv`: RFC 4180 parsing and serialization.** `parse`/`parseWith` read
   records as arrays of field strings, with quoted fields, doubled quotes,
   embedded delimiters and newlines, and `\r\n`/`\n`/`\r` separators;
@@ -36,6 +45,15 @@ may change between minor versions.
   from an image emits the same bytes as a build from the source and
   `oskc_parity` stays exact. `--no-source-positions` drops the store and the
   path and reproduces the pre-7g.3 freestanding image byte for byte.
+- **Seven application modules in the standard library.** `std.hash` (SHA-256,
+  SHA-1, HMAC-SHA256, CRC-32 and a constant-time comparison), `std.uuid`
+  (v4/v5, parsing and formatting), `std.url` (RFC 3986 parsing, resolution,
+  percent codecs and query strings), `std.cli` (flags, typed options, lists,
+  positionals and help), `std.log` (levels, fields, child loggers and a sink),
+  `std.semver` (SemVer precedence and npm-style ranges) and `std.terminal`
+  (SGR/OSC 8 styling, stripping and visible length). Each is plain Oskel over
+  the portable primitive surface, so the VM, `oskel build` and WebAssembly
+  agree byte for byte; each has a VM test and a shared AOT/WASM fixture.
 - **A benchmark suite in `benchmarks/`.** Four programs -- an empty one, naive
   `fib(30)`, an array of 200 000 integers and a 5 000-part `join`/`split` --
   written once per language and compared against the VM's output byte for byte

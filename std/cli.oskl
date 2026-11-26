@@ -1,0 +1,483 @@
+// Standard library: command-line argument parsing.
+//
+// Imported as `import std.cli;` (qualified: `std.cli.parse`),
+// `import std.cli.*;` (unqualified: `parse`), `import std.cli as cli;` or
+// `import { parse, usage } from std.cli;`.
+//
+// A specification is a map:
+//
+//   let spec = {
+//     name: "mytool",
+//     description: "Does things.",
+//     options: [
+//       {name: "verbose", short: "v", kind: "flag", help: "..."},
+//       {name: "output", short: "o", kind: "string", def: "out.txt"},
+//       {name: "count", short: "n", kind: "int", def: 1},
+//       {name: "tag", kind: "list"},
+//     ],
+//     positionals: [
+//       {name: "input", required: true},
+//       {name: "rest", variadic: true},
+//     ],
+//   };
+//   let result = parse(args(), spec);
+//
+// `result` is `{ok, options, positionals, errors, help}`. `options` is a map
+// keyed by `name`, `positionals` is an array in declaration order (a variadic
+// positional is an array), `errors` is an array of messages and `ok` is true
+// when it is empty. `parse` never exits or prints: the caller decides what to
+// do with `errors` and `help`, and `usage(spec)` returns the help text.
+//
+// Long options accept `--name value` and `--name=value`; short options accept
+// `-n value`, `-n=value`, `-n5` and a cluster of flags (`-vv`), and a value
+// option ends the cluster (`-vn5` is `-v -n 5`). `--` ends option parsing, a
+// bare `-` is a positional, and the last occurrence of a value option wins
+// unless its kind is `list`.
+//
+// The module is plain Oskel over arrays, maps, strings and closures, so it
+// behaves identically on the development VM, under `oskel build` and on
+// WebAssembly.
+
+// --- validation -------------------------------------------------------------
+
+let _KINDS = ["flag", "string", "int", "double", "list"];
+
+@MustUse
+fn _kindOf(option) {
+  if (option.kind == nil) {
+    return "string";
+  }
+  return str(option.kind);
+}
+
+fn _checkSpec(spec) {
+  if (type(spec) != "map") {
+    panic("std.cli: the specification must be a map");
+  }
+  if (spec.options != nil && type(spec.options) != "array") {
+    panic("std.cli: spec.options must be an array");
+  }
+  if (spec.positionals != nil && type(spec.positionals) != "array") {
+    panic("std.cli: spec.positionals must be an array");
+  }
+  var names = {};
+  var shorts = {};
+  if (spec.options != nil) {
+    for option in spec.options {
+      if (type(option) != "map" || type(option.name) != "string") {
+        panic("std.cli: every option needs a string name");
+      }
+      if (names[option.name] != nil) {
+        panic("std.cli: duplicate option name '" + option.name + "'");
+      }
+      names[option.name] = true;
+      let kind = _kindOf(option);
+      if (!_KINDS.contains(kind)) {
+        panic("std.cli: option '" + option.name + "' has unknown kind '" + kind + "'");
+      }
+      if (option.short != nil) {
+        if (type(option.short) != "string" || len(option.short) != 1) {
+          panic("std.cli: option '" + option.name + "' needs a one-character short name");
+        }
+        if (shorts[option.short] != nil) {
+          panic("std.cli: duplicate short option '-" + option.short + "'");
+        }
+        shorts[option.short] = true;
+      }
+      if (kind == "list" && option.def != nil && type(option.def) != "array") {
+        panic("std.cli: the default of list option '" + option.name + "' must be an array");
+      }
+    }
+  }
+  if (spec.positionals != nil) {
+    var variadic = false;
+    for positional in spec.positionals {
+      if (type(positional) != "map" || type(positional.name) != "string") {
+        panic("std.cli: every positional needs a string name");
+      }
+      if (variadic) {
+        panic("std.cli: a variadic positional must be the last one");
+      }
+      if (positional.variadic == true) {
+        variadic = true;
+      }
+    }
+  }
+}
+
+// --- value conversion -------------------------------------------------------
+
+// True when `text` is an optional sign followed by digits.
+@MustUse
+fn _isIntText(text) {
+  if (len(text) == 0) {
+    return false;
+  }
+  var i = 0;
+  if (text[0] == "+" || text[0] == "-") {
+    i = 1;
+  }
+  if (i >= len(text)) {
+    return false;
+  }
+  while (i < len(text)) {
+    if (text[i] < "0" || text[i] > "9") {
+      return false;
+    }
+    i = i + 1;
+  }
+  return true;
+}
+
+// True when `text` is a decimal double: an optional sign, digits with an
+// optional fraction and an optional exponent.
+@MustUse
+fn _isDoubleText(text) {
+  if (len(text) == 0) {
+    return false;
+  }
+  var i = 0;
+  if (text[0] == "+" || text[0] == "-") {
+    i = 1;
+  }
+  var digits = 0;
+  while (i < len(text) && text[i] >= "0" && text[i] <= "9") {
+    digits = digits + 1;
+    i = i + 1;
+  }
+  if (i < len(text) && text[i] == ".") {
+    i = i + 1;
+    while (i < len(text) && text[i] >= "0" && text[i] <= "9") {
+      digits = digits + 1;
+      i = i + 1;
+    }
+  }
+  if (digits == 0) {
+    return false;
+  }
+  if (i < len(text) && (text[i] == "e" || text[i] == "E")) {
+    i = i + 1;
+    if (i < len(text) && (text[i] == "+" || text[i] == "-")) {
+      i = i + 1;
+    }
+    var exponent = 0;
+    while (i < len(text) && text[i] >= "0" && text[i] <= "9") {
+      exponent = exponent + 1;
+      i = i + 1;
+    }
+    if (exponent == 0) {
+      return false;
+    }
+  }
+  return i == len(text);
+}
+
+// Sets `option`'s value from `text`, appending an error when the text is not
+// the declared kind. A list replaces its default the first time an explicit
+// value arrives.
+fn _assign(option, text, values, errors, seen) {
+  let kind = _kindOf(option);
+  if (kind == "list") {
+    if (seen[option.name] != true) {
+      values[option.name] = [];
+      seen[option.name] = true;
+    }
+    values[option.name][len(values[option.name])] = text;
+    return;
+  }
+  if (kind == "int") {
+    if (!_isIntText(text)) {
+      errors[len(errors)] = "option '--" + option.name + "' expects an int, got '" + text + "'";
+      return;
+    }
+    values[option.name] = int(text);
+    return;
+  }
+  if (kind == "double") {
+    if (!_isDoubleText(text)) {
+      errors[len(errors)] = "option '--" + option.name + "' expects a double, got '" + text + "'";
+      return;
+    }
+    values[option.name] = double(text);
+    return;
+  }
+  values[option.name] = text;
+}
+
+// --- parsing ----------------------------------------------------------------
+
+// The default value of an option before the arguments are read.
+@MustUse
+fn _defaultOf(option) {
+  let kind = _kindOf(option);
+  if (option.def != nil) {
+    if (kind == "list") {
+      return option.def[0:len(option.def)];
+    }
+    return option.def;
+  }
+  if (kind == "flag") {
+    return false;
+  }
+  if (kind == "list") {
+    return [];
+  }
+  return nil;
+}
+
+// Parses `arguments` (usually `args()`) against `spec`. The result is
+// `{ok, options, positionals, errors, help}` and never aborts on user input.
+@MustUse
+fn parse(arguments, spec) {
+  _checkSpec(spec);
+  if (type(arguments) != "array") {
+    panic("std.cli: the arguments must be an array of strings");
+  }
+  let options = spec.options != nil ? spec.options : [];
+  let positionals = spec.positionals != nil ? spec.positionals : [];
+  var long = {};
+  var short = {};
+  var values = {};
+  var seen = {};
+  for option in options {
+    long[option.name] = option;
+    if (option.short != nil) {
+      short[option.short] = option;
+    }
+    values[option.name] = _defaultOf(option);
+  }
+  var errors = [];
+  var rest = [];
+  var help = false;
+  var ended = false;
+  var i = 0;
+  while (i < len(arguments) && !help) {
+    let argument = str(arguments[i]);
+    if (!ended && argument == "--") {
+      ended = true;
+      i = i + 1;
+      continue;
+    }
+    if (!ended && (argument == "--help" || argument == "-h")
+        && long["help"] == nil && short["h"] == nil) {
+      help = true;
+      i = i + 1;
+      continue;
+    }
+    if (!ended && argument.startsWith("--") && len(argument) > 2) {
+      let body = argument[2:len(argument)];
+      let eq = body.indexOf("=");
+      let name = eq < 0 ? body : body[0:eq];
+      let inline = eq < 0 ? nil : body[eq + 1:len(body)];
+      let option = long[name];
+      if (option == nil) {
+        errors[len(errors)] = "unknown option '--" + name + "'";
+        i = i + 1;
+        continue;
+      }
+      if (_kindOf(option) == "flag") {
+        if (inline != nil) {
+          errors[len(errors)] = "option '--" + name + "' does not take a value";
+        } else {
+          values[option.name] = true;
+        }
+        i = i + 1;
+        continue;
+      }
+      var value = inline;
+      if (value == nil) {
+        if (i + 1 >= len(arguments)) {
+          errors[len(errors)] = "option '--" + name + "' needs a value";
+          i = i + 1;
+          continue;
+        }
+        value = str(arguments[i + 1]);
+        i = i + 1;
+      }
+      _assign(option, value, values, errors, seen);
+      i = i + 1;
+      continue;
+    }
+    if (!ended && len(argument) > 1 && argument[0] == "-" && argument != "-") {
+      var j = 1;
+      while (j < len(argument)) {
+        let letter = argument[j];
+        let option = short[letter];
+        if (option == nil) {
+          errors[len(errors)] = "unknown option '-" + letter + "'";
+          j = j + 1;
+          continue;
+        }
+        if (_kindOf(option) == "flag") {
+          values[option.name] = true;
+          j = j + 1;
+          continue;
+        }
+        var value = nil;
+        if (j + 1 < len(argument)) {
+          value = argument[j + 1:len(argument)];
+          if (len(value) > 0 && value[0] == "=") {
+            value = value[1:len(value)];
+          }
+          j = len(argument);
+        } else {
+          if (i + 1 >= len(arguments)) {
+            errors[len(errors)] = "option '--" + option.name + "' needs a value";
+            j = len(argument);
+            continue;
+          }
+          value = str(arguments[i + 1]);
+          i = i + 1;
+          j = len(argument);
+        }
+        _assign(option, value, values, errors, seen);
+      }
+      i = i + 1;
+      continue;
+    }
+    rest[len(rest)] = argument;
+    i = i + 1;
+  }
+  var positionalValues = [];
+  if (!help) {
+    var p = 0;
+    for positional in positionals {
+      if (positional.variadic == true) {
+        let tail = rest[p:len(rest)];
+        if (positional.required == true && len(tail) == 0) {
+          errors[len(errors)] = "missing required argument '<" + positional.name + ">'";
+        }
+        positionalValues[len(positionalValues)] = tail;
+        p = len(rest);
+      } else if (p < len(rest)) {
+        positionalValues[len(positionalValues)] = rest[p];
+        p = p + 1;
+      } else {
+        if (positional.required == true) {
+          errors[len(errors)] = "missing required argument '<" + positional.name + ">'";
+        }
+        positionalValues[len(positionalValues)] = nil;
+      }
+    }
+    if (p < len(rest)) {
+      errors[len(errors)] = "unexpected argument '" + rest[p] + "'";
+    }
+  }
+  return {
+    ok: len(errors) == 0,
+    options: values,
+    positionals: positionalValues,
+    errors: errors,
+    help: help,
+  };
+}
+
+// --- help -------------------------------------------------------------------
+
+// The `-s, --name` label of an option, with its value placeholder.
+@MustUse
+fn _optionLabel(option) {
+  var label = "";
+  if (option.short != nil) {
+    label = "-" + option.short + ", ";
+  }
+  label = label + "--" + option.name;
+  let kind = _kindOf(option);
+  if (kind == "int") {
+    label = label + " <int>";
+  } else if (kind == "double") {
+    label = label + " <double>";
+  } else if (kind == "string") {
+    label = label + " <string>";
+  } else if (kind == "list") {
+    label = label + " <string>...";
+  }
+  return label;
+}
+
+// The help text for `spec`: a usage line, the description and one line per
+// option and positional.
+@MustUse
+fn usage(spec) {
+  _checkSpec(spec);
+  let name = spec.name != nil ? str(spec.name) : "program";
+  let options = spec.options != nil ? spec.options : [];
+  let positionals = spec.positionals != nil ? spec.positionals : [];
+  var line = "Usage: " + name;
+  if (len(options) > 0) {
+    line = line + " [options]";
+  }
+  for positional in positionals {
+    if (positional.variadic == true) {
+      line = line + (positional.required == true
+        ? " <" + positional.name + ">..." : " [<" + positional.name + ">...]");
+    } else {
+      line = line + (positional.required == true
+        ? " <" + positional.name + ">" : " [<" + positional.name + ">]");
+    }
+  }
+  var out = line;
+  if (spec.description != nil) {
+    out = out + "\n\n" + str(spec.description);
+  }
+  var rows = [];
+  var width = 0;
+  for option in options {
+    let label = _optionLabel(option);
+    rows[len(rows)] = {label: label, text: option.help != nil ? str(option.help) : "",
+      def: option.def};
+    if (len(label) > width) {
+      width = len(label);
+    }
+  }
+  let builtinHelp = _hasLong(options, "help") || _hasShort(options, "h");
+  if (!builtinHelp) {
+    rows[len(rows)] = {label: "-h, --help", text: "Show this help.", def: nil};
+    if (len("-h, --help") > width) {
+      width = len("-h, --help");
+    }
+  }
+  if (len(rows) > 0) {
+    out = out + "\n\nOptions:";
+    for row in rows {
+      var text = row.text;
+      if (row.def != nil) {
+        text = text + (len(text) > 0 ? " " : "") + "(default: " + str(row.def) + ")";
+      }
+      out = out + "\n  " + row.label.padEnd(width) + "  " + text;
+    }
+  }
+  if (len(positionals) > 0) {
+    out = out + "\n\nArguments:";
+    for positional in positionals {
+      var text = positional.help != nil ? str(positional.help) : "";
+      if (positional.required == true) {
+        text = text + (len(text) > 0 ? " " : "") + "(required)";
+      }
+      out = out + "\n  " + positional.name + "  " + text;
+    }
+  }
+  return out;
+}
+
+// True when an option list declares `name`.
+@MustUse
+fn _hasLong(options, name) {
+  for option in options {
+    if (option.name == name) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// True when an option list declares the short name `short`.
+@MustUse
+fn _hasShort(options, short) {
+  for option in options {
+    if (option.short == short) {
+      return true;
+    }
+  }
+  return false;
+}

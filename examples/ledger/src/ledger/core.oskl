@@ -1,0 +1,225 @@
+// The ledger core: a chart of accounts plus the posted journal entries.
+//
+// A ledger is an ordinary map `{chart, byCode, entries}`. `post` validates an
+// entry against the chart and appends it; the reports read the entries back.
+// Nothing here mutates an amount, so the trial balance is exact.
+
+import std.collections;
+import ledger.money;
+import ledger.account;
+import ledger.journal;
+
+fn create(chart: array) {
+  return {
+    chart: account.sorted(chart),
+    byCode: account.chartByCode(chart),
+    entries: [],
+  };
+}
+
+fn addAccount(book, value) {
+  account.validate(value);
+  if (book.byCode[value.code] != nil) {
+    panic("ledger: account '" + value.code + "' already exists");
+  }
+  book.chart[len(book.chart)] = value;
+  book.chart = account.sorted(book.chart);
+  book.byCode[value.code] = value;
+  return book;
+}
+
+fn accountOf(book, code: string) {
+  let value = book.byCode[code];
+  if (value == nil) {
+    panic("ledger: unknown account '" + code + "'");
+  }
+  return value;
+}
+
+fn post(book, entry) {
+  journal.validate(entry, book.byCode);
+  book.entries[len(book.entries)] = entry;
+  return book;
+}
+
+fn postSimple(book, date: string, memo: string, debitCode: string, creditCode: string, amount) {
+  let entry = journal.entry(date, memo, [
+    journal.debitLine(debitCode, amount),
+    journal.creditLine(creditCode, amount),
+  ]);
+  return post(book, entry);
+}
+
+// The signed net of an account: debits minus credits. An asset with 100 in
+// debits and 20 in credits is `80`; an income account with 100 in credits is
+// `-100`, which the reports negate for presentation.
+fn net(book, code: string) {
+  accountOf(book, code);
+  var total = money.zero();
+  for entry in book.entries {
+    for line in entry.lines {
+      if (line.account == code) {
+        total = total.add(line.debit).subtract(line.credit);
+      }
+    }
+  }
+  return total;
+}
+
+fn balance(book, code: string) {
+  return net(book, code);
+}
+
+// The non-zero accounts with their signed net, in chart order.
+fn balances(book) {
+  var rows = [];
+  for value in book.chart {
+    let amount = net(book, value.code);
+    if (!money.isZero(amount)) {
+      rows[len(rows)] = {
+        code: value.code,
+        name: value.name,
+        type: value.type,
+        normal: value.normal,
+        net: amount,
+      };
+    }
+  }
+  return rows;
+}
+
+// The classic trial balance: every non-zero account on its normal side, and
+// the two totals, which must agree.
+fn trialBalance(book) {
+  var rows = [];
+  var debitTotal = money.zero();
+  var creditTotal = money.zero();
+  for value in book.chart {
+    let amount = net(book, value.code);
+    if (money.isZero(amount)) {
+      continue;
+    }
+    if (money.isNegative(amount)) {
+      let credit = money.abs(amount);
+      rows[len(rows)] = {
+        code: value.code,
+        name: value.name,
+        debit: money.zero(),
+        credit: credit,
+      };
+      creditTotal = creditTotal.add(credit);
+    } else {
+      rows[len(rows)] = {
+        code: value.code,
+        name: value.name,
+        debit: amount,
+        credit: money.zero(),
+      };
+      debitTotal = debitTotal.add(amount);
+    }
+  }
+  return {
+    rows: rows,
+    debitTotal: debitTotal,
+    creditTotal: creditTotal,
+    balanced: money.equals(debitTotal, creditTotal),
+  };
+}
+
+fn incomeStatement(book) {
+  var revenue = [];
+  var expenses = [];
+  var totalRevenue = money.zero();
+  var totalExpenses = money.zero();
+  for value in book.chart {
+    let amount = net(book, value.code);
+    if (value.type == account.AccountType.Income) {
+      let earned = money.negate(amount);
+      if (!money.isZero(earned)) {
+        revenue[len(revenue)] = {code: value.code, name: value.name, amount: earned};
+        totalRevenue = totalRevenue.add(earned);
+      }
+    } else if (value.type == account.AccountType.Expense) {
+      if (!money.isZero(amount)) {
+        expenses[len(expenses)] = {code: value.code, name: value.name, amount: amount};
+        totalExpenses = totalExpenses.add(amount);
+      }
+    }
+  }
+  return {
+    revenue: revenue,
+    expenses: expenses,
+    totalRevenue: totalRevenue,
+    totalExpenses: totalExpenses,
+    netIncome: totalRevenue.subtract(totalExpenses),
+  };
+}
+
+// The balance sheet at the end of the period. The current period's net income
+// is presented as retained earnings, so the equation holds without a closing
+// entry: assets = liabilities + equity + net income.
+fn balanceSheet(book) {
+  var assets = [];
+  var liabilities = [];
+  var equity = [];
+  var totalAssets = money.zero();
+  var totalLiabilities = money.zero();
+  var totalEquity = money.zero();
+  for value in book.chart {
+    let amount = net(book, value.code);
+    if (value.type == account.AccountType.Asset) {
+      if (!money.isZero(amount)) {
+        assets[len(assets)] = {code: value.code, name: value.name, amount: amount};
+        totalAssets = totalAssets.add(amount);
+      }
+    } else if (value.type == account.AccountType.Liability) {
+      let owed = money.negate(amount);
+      if (!money.isZero(owed)) {
+        liabilities[len(liabilities)] = {code: value.code, name: value.name, amount: owed};
+        totalLiabilities = totalLiabilities.add(owed);
+      }
+    } else if (value.type == account.AccountType.Equity) {
+      let owned = money.negate(amount);
+      if (!money.isZero(owned)) {
+        equity[len(equity)] = {code: value.code, name: value.name, amount: owned};
+        totalEquity = totalEquity.add(owned);
+      }
+    }
+  }
+  let income = incomeStatement(book);
+  let retained = income.netIncome;
+  let equityWithIncome = totalEquity.add(retained);
+  return {
+    assets: assets,
+    liabilities: liabilities,
+    equity: equity,
+    retainedEarnings: retained,
+    totalAssets: totalAssets,
+    totalLiabilities: totalLiabilities,
+    totalEquity: equityWithIncome,
+    balanced: money.equals(totalAssets, totalLiabilities.add(equityWithIncome)),
+  };
+}
+
+// The entries that touch an account, oldest first.
+fn entriesFor(book, code: string) {
+  accountOf(book, code);
+  var found = [];
+  for entry in book.entries {
+    for line in entry.lines {
+      if (line.account == code) {
+        found[len(found)] = entry;
+        break;
+      }
+    }
+  }
+  return collections.sortBy(found, (left, right) => left.date < right.date);
+}
+
+fn sortedEntries(book) {
+  return collections.sortBy(book.entries, (left, right) => left.date < right.date);
+}
+
+fn entryCount(book) {
+  return len(book.entries);
+}

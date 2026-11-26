@@ -1,0 +1,53 @@
+// `std.url`: the RFC 3986 parsing and resolution examples, the query
+// form and the percent codecs, plus the rejected authorities.
+import std.url.*;
+import std.url as u;
+
+let x = "https://ada:secret@example.com:8443/a/b?q=1&x=2#top";
+let p = parse(x);
+print("scheme =", p.scheme, "user =", p.user, "pass =", p.password);
+print("host =", p.host, "port =", p.port);
+print("path =", p.path, "query =", p.query, "fragment =", p.fragment);
+print("format =", format(p));
+print("round =", format(p) == x);
+
+print("no scheme =", parse("//host/path"));
+print("mailto =", parse("mailto:user@example.com"));
+print("ipv6 =", parse("http://[::1]:8080/x"));
+print("empty =", parse(""));
+print("query only =", parse("?a=1"));
+print("frag only =", parse("#f"));
+
+let base = "http://a/b/c/d;p?q";
+for ref in ["g", "./g", "g/", "/g", "//g", "?y", "#s", "g?y#s", "..", "../g", "../../g", "../../../g", "../../../../g", ".", "./", "..", "../", "../..", "../../"] {
+  print("resolve", ref, "=", resolve(base, ref));
+}
+
+print("encode =", encodeComponent("a b/c?d=é"));
+print("decode =", decodeComponent("a%20b%2Fc%3Fd%3D%C3%A9"));
+print("encodePath =", encodePath("/a b/c:d"));
+print("encodeQuery =", encodeQueryComponent("a b+c"));
+print("decodeQuery =", decodeQueryComponent("a+b%2Bc"));
+
+print("query =", parseQuery("a=1&b=hello+world&c=%C3%A9&flag&a=2"));
+print("queryMap =", parseQueryMap("a=1&b=hello+world&c=%C3%A9&flag&a=2"));
+print("queryAll =", parseQueryAll("a=1&b=hello+world&c=%C3%A9&flag&a=2"));
+print("queryGet =", queryGet("a=1&a=2", "a"), queryGet("a=1", "z"));
+print("queryGetAll =", queryGetAll("a=1&a=2", "a"));
+print("buildQuery =", buildQuery([{name: "q", value: "a b"}, {name: "x", value: "1+2"}]));
+print("buildEmpty =", buildQuery([]));
+
+print("dots1 =", removeDotSegments("/a/b/../c"));
+print("dots2 =", removeDotSegments("/a//b/./c/.."));
+print("dots3 =", removeDotSegments("a/../../b"));
+print("dots4 =", removeDotSegments("/a/."));
+print("dots5 =", removeDotSegments("/a/.."));
+
+print("origin =", origin(x), origin("mailto:a@b"), origin("/rel"));
+print("absolute =", isAbsolute(x), isAbsolute("g"));
+print("valid =", isValid("http://x"), isValid("http://x:abc/"), isValid("http://x:99999/"));
+print("tryBad =", tryParse("http://x:abc/").ok, tryParse("http://x:abc/").error);
+print("tryBad2 =", tryParse("http://[::1/").error);
+print("pcall =", pcall(() => parse("http://x:abc/")).ok);
+print("pcall2 =", pcall(() => decodeComponent("%ZZ")).ok);
+print("url ok");

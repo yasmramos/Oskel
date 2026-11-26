@@ -1,0 +1,135 @@
+// The chart of accounts.
+//
+// An account is an ordinary map: `{id, code, name, type, normal}`. `type` is
+// the `AccountType` enum, and `normal` is the side that increases the account
+// (`debit` for an asset or an expense, `credit` for a liability, equity or
+// income). `id` is a name-based UUID, so the same code always gets the same id
+// across a save and a load.
+
+import std.uuid;
+
+enum AccountType { Asset, Liability, Equity, Income, Expense }
+
+fn typeName(kind: AccountType): string {
+  switch (kind) {
+    case AccountType.Asset: { return "asset"; }
+    case AccountType.Liability: { return "liability"; }
+    case AccountType.Equity: { return "equity"; }
+    case AccountType.Income: { return "income"; }
+    case AccountType.Expense: { return "expense"; }
+  }
+  return "unknown";
+}
+
+fn tryParseType(text) {
+  if (type(text) != "string") {
+    return {ok: false, value: nil, error: "account: the type must be a string"};
+  }
+  let key = text.lower();
+  if (key == "asset") {
+    return {ok: true, value: AccountType.Asset, error: nil};
+  }
+  if (key == "liability") {
+    return {ok: true, value: AccountType.Liability, error: nil};
+  }
+  if (key == "equity") {
+    return {ok: true, value: AccountType.Equity, error: nil};
+  }
+  if (key == "income" || key == "revenue") {
+    return {ok: true, value: AccountType.Income, error: nil};
+  }
+  if (key == "expense") {
+    return {ok: true, value: AccountType.Expense, error: nil};
+  }
+  return {ok: false, value: nil,
+    error: "account: unknown type '" + text + "' (expected asset, liability, equity, income or expense)"};
+}
+
+fn parseType(text: string): AccountType {
+  let result = tryParseType(text);
+  if (!result.ok) {
+    panic(result.error);
+  }
+  return result.value;
+}
+
+fn isDebitNormal(kind: AccountType): bool {
+  return kind == AccountType.Asset || kind == AccountType.Expense;
+}
+
+fn normal(kind: AccountType): string {
+  return isDebitNormal(kind) ? "debit" : "credit";
+}
+
+fn create(code: string, name: string, kind: AccountType) {
+  if (len(code) == 0) {
+    panic("account: the code must not be empty");
+  }
+  if (len(name) == 0) {
+    panic("account: the name must not be empty");
+  }
+  return {
+    id: uuid.v5(uuid.NAMESPACE_OID, "account:" + code),
+    code: code,
+    name: name,
+    type: kind,
+    normal: normal(kind),
+  };
+}
+
+fn validate(account) {
+  if (type(account) != "map") {
+    panic("account: expected a map");
+  }
+  if (type(account.code) != "string" || len(account.code) == 0) {
+    panic("account: the code must be a non-empty string");
+  }
+  if (type(account.name) != "string" || len(account.name) == 0) {
+    panic("account: the name must be a non-empty string");
+  }
+  if (type(account.type) != "int" || account.type < 0 || account.type > 4) {
+    panic("account: the type must be an AccountType");
+  }
+  if (account.normal != normal(account.type)) {
+    panic("account: the normal side does not match the type");
+  }
+  return account;
+}
+
+// The chart a new ledger starts with: a small service business.
+fn defaultChart() {
+  return [
+    create("1000", "Cash", AccountType.Asset),
+    create("1100", "Accounts Receivable", AccountType.Asset),
+    create("1200", "Inventory", AccountType.Asset),
+    create("1500", "Equipment", AccountType.Asset),
+    create("2000", "Accounts Payable", AccountType.Liability),
+    create("2100", "Sales Tax Payable", AccountType.Liability),
+    create("3000", "Owner's Equity", AccountType.Equity),
+    create("4000", "Sales Revenue", AccountType.Income),
+    create("5000", "Cost of Goods Sold", AccountType.Expense),
+    create("5100", "Rent Expense", AccountType.Expense),
+    create("5200", "Salaries Expense", AccountType.Expense),
+    create("5300", "Utilities Expense", AccountType.Expense),
+  ];
+}
+
+// `code -> account`, the lookup every journal validation uses.
+fn chartByCode(accounts) {
+  var byCode = {};
+  for account in accounts {
+    validate(account);
+    if (byCode[account.code] != nil) {
+      panic("account: duplicate code '" + account.code + "'");
+    }
+    byCode[account.code] = account;
+  }
+  return byCode;
+}
+
+// The accounts ordered by code, so a report is deterministic.
+fn sorted(accounts) {
+  let ordered = accounts.clone();
+  ordered.sort((left, right) => left.code < right.code);
+  return ordered;
+}

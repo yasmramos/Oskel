@@ -1,0 +1,199 @@
+// Text reports over a ledger.
+//
+// The builder is a small class over `std.io.StringWriter`: a report is a
+// sequence of headings, aligned rows and totals, and `toString` returns the
+// whole text. `color` only changes the headings, so a redirected report stays
+// plain text and a terminal gets the styled one.
+
+import std.io.StringWriter;
+import std.strings;
+import std.terminal;
+import ledger.money;
+import ledger.account;
+import ledger.core;
+
+class ReportBuilder {
+  writer;
+  color: bool;
+
+  fn init(color: bool) {
+    self.writer = StringWriter();
+    self.color = color;
+  }
+
+  fn heading(text: string) {
+    if (self.color) {
+      self.writer.writeln(terminal.style(text, "bold", "cyan"));
+    } else {
+      self.writer.writeln(text);
+    }
+    self.writer.writeln("");
+  }
+
+  fn line(text: string) {
+    self.writer.writeln(text);
+  }
+
+  fn blank() {
+    self.writer.writeln("");
+  }
+
+  fn separator() {
+    self.writer.writeln("----------------------------------------------------------------------");
+  }
+
+  fn row(code: string, name: string, debit, credit) {
+    let label = strings.truncate(name, 30, "...").padEnd(30);
+    let left = money.isZero(debit) ? "".padStart(14) : money.formatGrouped(debit).padStart(14);
+    let right = money.isZero(credit) ? "".padStart(14) : money.formatGrouped(credit).padStart(14);
+    self.writer.writeln(code.padEnd(6) + "  " + label + "  " + left + "  " + right);
+  }
+
+  fn amountRow(code: string, name: string, amount) {
+    let label = strings.truncate(name, 34, "...").padEnd(34);
+    self.writer.writeln(code.padEnd(6) + "  " + label + "  "
+      + money.formatGrouped(amount).padStart(14));
+  }
+
+  fn total(label: string, amount) {
+    self.writer.writeln(label.padEnd(40) + "  " + money.formatGrouped(amount).padStart(14));
+  }
+
+  fn toString() {
+    return self.writer.toString();
+  }
+}
+
+fn _status(balanced: bool) {
+  return balanced ? "yes" : "no";
+}
+
+fn _normalAmount(row) {
+  if (row.normal == "debit") {
+    return row.net;
+  }
+  return money.negate(row.net);
+}
+
+fn trialBalance(book, color: bool) {
+  let report = ReportBuilder(color);
+  let trial = core.trialBalance(book);
+  report.heading("Trial balance");
+  report.line("Code    Account                             Debit          Credit");
+  report.separator();
+  for row in trial.rows {
+    report.row(row.code, row.name, row.debit, row.credit);
+  }
+  report.separator();
+  report.line("".padEnd(6) + "  " + "Total".padEnd(30) + "  "
+    + money.formatGrouped(trial.debitTotal).padStart(14) + "  "
+    + money.formatGrouped(trial.creditTotal).padStart(14));
+  report.blank();
+  report.line("Balanced: " + _status(trial.balanced));
+  return report.toString();
+}
+
+fn incomeStatement(book, color: bool) {
+  let report = ReportBuilder(color);
+  let income = core.incomeStatement(book);
+  report.heading("Income statement");
+  report.line("Revenue");
+  for row in income.revenue {
+    report.amountRow(row.code, row.name, row.amount);
+  }
+  report.total("Total revenue", income.totalRevenue);
+  report.blank();
+  report.line("Expenses");
+  for row in income.expenses {
+    report.amountRow(row.code, row.name, row.amount);
+  }
+  report.total("Total expenses", income.totalExpenses);
+  report.blank();
+  report.total("Net income", income.netIncome);
+  return report.toString();
+}
+
+fn balanceSheet(book, color: bool) {
+  let report = ReportBuilder(color);
+  let sheet = core.balanceSheet(book);
+  report.heading("Balance sheet");
+  report.line("Assets");
+  for row in sheet.assets {
+    report.amountRow(row.code, row.name, row.amount);
+  }
+  report.total("Total assets", sheet.totalAssets);
+  report.blank();
+  report.line("Liabilities");
+  for row in sheet.liabilities {
+    report.amountRow(row.code, row.name, row.amount);
+  }
+  report.total("Total liabilities", sheet.totalLiabilities);
+  report.blank();
+  report.line("Equity");
+  for row in sheet.equity {
+    report.amountRow(row.code, row.name, row.amount);
+  }
+  report.amountRow("", "Retained earnings", sheet.retainedEarnings);
+  report.total("Total equity", sheet.totalEquity);
+  report.blank();
+  report.total("Total liabilities and equity",
+    money.add(sheet.totalLiabilities, sheet.totalEquity));
+  report.blank();
+  report.line("Balanced: " + _status(sheet.balanced));
+  return report.toString();
+}
+
+fn balances(book, color: bool) {
+  let report = ReportBuilder(color);
+  report.heading("Account balances");
+  report.line("Code    Account                             Balance");
+  report.separator();
+  for row in core.balances(book) {
+    let amount = _normalAmount(row);
+    report.amountRow(row.code, row.name, amount);
+  }
+  return report.toString();
+}
+
+fn accountReport(book, code: string, color: bool) {
+  let value = core.accountOf(book, code);
+  let report = ReportBuilder(color);
+  report.heading(value.code + "  " + value.name);
+  report.line("Type: " + account.typeName(value.type) + "   Normal side: " + value.normal);
+  report.total("Balance", core.balance(book, code));
+  report.blank();
+  report.line("Journal entries");
+  for entry in core.entriesFor(book, code) {
+    report.line(entry.date + "  " + entry.id + "  " + entry.memo);
+    for line in entry.lines {
+      if (line.account == code) {
+        let debit = money.isZero(line.debit) ? "" : money.formatGrouped(line.debit);
+        let credit = money.isZero(line.credit) ? "" : money.formatGrouped(line.credit);
+        report.line("    debit " + debit.padEnd(14) + " credit " + credit);
+      }
+    }
+  }
+  return report.toString();
+}
+
+fn journal(book, color: bool) {
+  let report = ReportBuilder(color);
+  report.heading("Journal");
+  for entry in core.sortedEntries(book) {
+    report.line(entry.date + "  " + entry.id + "  " + entry.memo);
+    for line in entry.lines {
+      let value = core.accountOf(book, line.account);
+      let debit = money.isZero(line.debit) ? "" : money.formatGrouped(line.debit);
+      let credit = money.isZero(line.credit) ? "" : money.formatGrouped(line.credit);
+      report.line("    " + line.account.padEnd(6) + "  " + strings.truncate(value.name, 30, "...").padEnd(30)
+        + "  " + debit.padStart(14) + "  " + credit.padStart(14));
+    }
+    report.blank();
+  }
+  return report.toString();
+}
+
+fn summary(book, color: bool) {
+  return trialBalance(book, color) + "\n" + incomeStatement(book, color) + "\n"
+    + balanceSheet(book, color);
+}

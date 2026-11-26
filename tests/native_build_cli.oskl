@@ -1,0 +1,55 @@
+// VM/AOT/WASM parity for `std.cli`.
+import std.cli.*;
+import std.cli as cli;
+
+let spec = {
+  name: "mytool",
+  description: "Does things.",
+  options: [
+    {name: "verbose", short: "v", kind: "flag", help: "Be loud."},
+    {name: "output", short: "o", kind: "string", def: "out.txt", help: "Output file."},
+    {name: "count", short: "n", kind: "int", def: 1, help: "How many."},
+    {name: "ratio", kind: "double", def: 0.5, help: "A ratio."},
+    {name: "tag", kind: "list", def: ["d"], help: "A tag."},
+  ],
+  positionals: [
+    {name: "input", required: true, help: "Input file."},
+    {name: "rest", variadic: true, help: "Extra values."},
+  ],
+};
+
+fn show(label, args) {
+  let r = parse(args, spec);
+  print(label, "ok =", r.ok, "help =", r.help);
+  print(label, "options =", r.options);
+  print(label, "positionals =", r.positionals);
+  print(label, "errors =", r.errors);
+}
+
+show("a", ["-v", "--output=o.txt", "-n5", "in", "a", "b"]);
+show("b", ["-vn5", "in"]);
+show("c", ["--count", "7", "--ratio=1.5", "--tag", "x", "--tag=y", "in"]);
+show("d", ["-o", "o", "in"]);
+show("e", ["-o=o", "in"]);
+show("f", ["--", "-v", "in"]);
+show("g", ["in"]);
+show("h", []);
+show("i", ["--nope", "in"]);
+show("j", ["--count", "x", "in"]);
+show("k", ["--verbose=1", "in"]);
+show("l", ["--count"]);
+show("m", ["in", "a", "b", "c"]);
+show("n", ["--help"]);
+show("o", ["-h"]);
+show("p", ["-vv", "-", "in"]);
+show("q", ["--tag", "x", "in"]);
+show("r", ["in"]);
+
+let plain = {name: "plain", options: [{name: "x", short: "x", kind: "flag"}], positionals: [{name: "a", required: true}]};
+print("plain extra =", parse(["a", "b"], plain).errors);
+print("plain ok =", parse(["a"], plain).ok);
+
+print("usage:");
+print(usage(spec));
+
+print("cli ok");

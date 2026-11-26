@@ -1,0 +1,173 @@
+// Journal entries: the unit the ledger posts.
+//
+// An entry is an ordinary map `{id, date, memo, lines}`. A line is
+// `{account, debit, credit}`, and exactly one of the two amounts is positive.
+// `entry` normalizes the amounts to cents and derives the id from the content
+// with SHA-256, so the same entry loaded from JSON keeps a recognizable id.
+
+import std.hash;
+import std.datetime;
+import ledger.money;
+
+// Parses an ISO-8601 date (or date-time); a journal prints only the day.
+fn tryParseDate(text) {
+  if (type(text) != "string") {
+    return {ok: false, value: nil, error: "journal: the date must be a string"};
+  }
+  let result = datetime.tryParse(text);
+  if (!result.ok) {
+    return {ok: false, value: nil, error: "journal: " + result.error};
+  }
+  return result;
+}
+
+fn parseDate(text: string) {
+  let result = tryParseDate(text);
+  if (!result.ok) {
+    panic(result.error);
+  }
+  return result.value;
+}
+
+fn dateText(value) {
+  return datetime.format(value, "%Y-%m-%d");
+}
+
+fn _amount(value) {
+  if (type(value) == "BigDecimal") {
+    return value.setScale(2);
+  }
+  if (type(value) == "string") {
+    return money.parse(value);
+  }
+  panic("journal: an amount must be a money value or a decimal string");
+}
+
+fn line(accountCode: string, debit, credit) {
+  if (len(accountCode) == 0) {
+    panic("journal: a line needs an account code");
+  }
+  return {account: accountCode, debit: _amount(debit), credit: _amount(credit)};
+}
+
+fn debitLine(accountCode: string, amount) {
+  return line(accountCode, amount, money.zero());
+}
+
+fn creditLine(accountCode: string, amount) {
+  return line(accountCode, money.zero(), amount);
+}
+
+fn _id(entry) {
+  var parts = [entry.date, entry.memo];
+  for line in entry.lines {
+    parts[len(parts)] = line.account + ":" + money.format(line.debit) + ":" + money.format(line.credit);
+  }
+  return hash.sha256Hex(parts.join("|"))[0:12];
+}
+
+// Builds an entry, normalizing the date and the amounts. It does not validate
+// the accounts or the balance; `validate` does that once the chart is known.
+fn entry(date: string, memo: string, lines) {
+  let parsed = parseDate(date);
+  if (len(memo) == 0) {
+    panic("journal: the memo must not be empty");
+  }
+  var normalized = [];
+  for item in lines {
+    normalized[len(normalized)] = line(item.account, item.debit, item.credit);
+  }
+  let result = {id: "", date: dateText(parsed), memo: memo, lines: normalized};
+  result.id = _id(result);
+  return result;
+}
+
+fn totalDebit(entry) {
+  var total = money.zero();
+  for line in entry.lines {
+    total = total.add(line.debit);
+  }
+  return total;
+}
+
+fn totalCredit(entry) {
+  var total = money.zero();
+  for line in entry.lines {
+    total = total.add(line.credit);
+  }
+  return total;
+}
+
+fn isBalanced(entry) {
+  return money.equals(totalDebit(entry), totalCredit(entry));
+}
+
+// Validates an entry against a `code -> account` chart. A journal that does
+// not balance, names an unknown account, or puts an amount on both sides is
+// rejected before it reaches the ledger.
+fn validate(entry, chart) {
+  if (type(entry) != "map") {
+    panic("journal: expected an entry map");
+  }
+  if (type(entry.date) != "string") {
+    panic("journal: the date must be a string");
+  }
+  parseDate(entry.date);
+  if (type(entry.memo) != "string" || len(entry.memo) == 0) {
+    panic("journal: the memo must be a non-empty string");
+  }
+  if (type(entry.lines) != "array" || len(entry.lines) < 2) {
+    panic("journal: an entry needs at least two lines");
+  }
+  for line in entry.lines {
+    if (type(line) != "map") {
+      panic("journal: every line must be a map");
+    }
+    if (chart[line.account] == nil) {
+      panic("journal: unknown account '" + str(line.account) + "'");
+    }
+    if (type(line.debit) != "BigDecimal" || type(line.credit) != "BigDecimal") {
+      panic("journal: every line needs money amounts");
+    }
+    if (money.isNegative(line.debit) || money.isNegative(line.credit)) {
+      panic("journal: an amount must not be negative; put it on the other side");
+    }
+    let debit = money.isPositive(line.debit);
+    let credit = money.isPositive(line.credit);
+    if (debit == credit) {
+      panic("journal: a line must have exactly one positive amount");
+    }
+  }
+  if (!isBalanced(entry)) {
+    panic("journal: the entry does not balance (debits " + money.format(totalDebit(entry))
+      + ", credits " + money.format(totalCredit(entry)) + ")");
+  }
+  return entry;
+}
+
+fn toJson(entry) {
+  var lines = [];
+  for line in entry.lines {
+    lines[len(lines)] = {
+      account: line.account,
+      debit: money.format(line.debit),
+      credit: money.format(line.credit),
+    };
+  }
+  return {id: entry.id, date: entry.date, memo: entry.memo, lines: lines};
+}
+
+fn fromJson(data) {
+  if (type(data) != "map") {
+    panic("journal: expected an entry object");
+  }
+  var lines = [];
+  for item in data.lines {
+    lines[len(lines)] = line(item.account, item.debit, item.credit);
+  }
+  return entry(data.date, data.memo, lines);
+}
+
+fn describe(entry) {
+  return entry.date + "  " + entry.id + "  " + entry.memo;
+}

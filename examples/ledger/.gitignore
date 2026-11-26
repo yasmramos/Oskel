@@ -1,0 +1,4 @@
+/target
+/.oskel
+/data/*.json
+/data/*.csv

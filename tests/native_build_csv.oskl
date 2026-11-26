@@ -31,7 +31,7 @@ print("writeEmpty =", stringify([]));
 print("writeSimple =", stringify([["a", "b"], ["c", "d"]]));
 print("writeQuoted =", stringify([["a,b", "a\"b", "a\nb", ""]]));
 print("writeValues =", stringify([[1, true, nil, 1.5]]));
-print("writeWith =", stringifyWith([["a", "b"], ["c", "d"]], "\t", "\r\n"));
+print("writeWith =", repr(stringifyWith([["a", "b"], ["c", "d"]], "\t", "\r\n")));
 print("writeCustom =", c.stringify([["x", "y"]]));
 
 let tricky = [
