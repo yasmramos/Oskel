@@ -11,6 +11,18 @@ may change between minor versions.
 
 ### Added
 
+- **A compiled binary names the position of a runtime error (PHASE 7g.3).**
+  `oskel build app.oskl` now reports `oskel: app.oskl:12: <message>` instead of
+  a bare `oskel: <message>`, so a failure in the generated program is locatable
+  without a debugger — the last gap between the VM and the AOT backend on
+  debuggability. The lowering publishes the source line into a hidden global
+  before each instruction runs, deduplicated per line change and always
+  republished at a jump target, because a fall-through path can skip the store
+  that published and an `if` inside a loop would otherwise report a stale line.
+  The source path travels in the `.oskc` chunk (image format v2), so a build
+  from an image emits the same bytes as a build from the source and
+  `oskc_parity` stays exact. `--no-source-positions` drops the store and the
+  path and reproduces the pre-7g.3 freestanding image byte for byte.
 - **A benchmark suite in `benchmarks/`.** Four programs -- an empty one, naive
   `fib(30)`, an array of 200 000 integers and a 5 000-part `join`/`split` --
   written once per language and compared against the VM's output byte for byte
@@ -24,7 +36,7 @@ may change between minor versions.
   `docs/benchmarks.md` is the recorded run; the suite is not in CI, because it
   needs `cc`, `node`, `lua` and `luajit` and a timing test on a shared runner is
   a flaky test.
-- **`std.ui` adds a checkbox widget.** `ui.checkbox(label, checked, onChange)`
+- **`std.ui` adds a checkbox widget.** `ui.Checkbox(label, checked, onChange)`
   measures as a 16 px box plus the label, paints the box in its normal, hover
   and pressed shades, fills an inner square when checked, and calls
   `onChange(checked)` after a click toggles the state. The widget is Oskel over
@@ -145,6 +157,18 @@ may change between minor versions.
 
 ### Changed
 
+- **`std.ui` widgets are classes (breaking).** The lowercase widget
+  constructors are gone. `Window`, `Column`, `Row`, `Padding`, `Spacer`, `Text`,
+  `Button` and `Checkbox` are classes, and each owns its `measure`, `place`,
+  `collect`, `hitTest` and pointer-state methods through the `Widget` contract;
+  `Button` and `Checkbox` also implement `Interactive.activate`. `Text` exposes
+  `withColor`, and `Button` exposes `withStyle`/`withStates`, replacing
+  `textColor`, `buttonStyle` and `buttonStates`. A widget no longer carries a
+  `kind`: use `type(node)` (`"Checkbox"`, `"Button"`, ...). `layout`,
+  `commands`, `layoutWith` and the pointer functions keep their names, and the
+  display list still uses `kind` because it is the backend protocol. Classes
+  desugar to maps with a method table, so the VM and `oskel build` stay in step;
+  `native_build_ui.oskl` and the Skia fixtures cover both engines.
 - **`Future` is opaque to the type checker (PHASE 11.2.1).** Indexing,
   slicing, iterating and reading or assigning a member on a `Future`-typed
   value are compile errors, so user code cannot read or forge the

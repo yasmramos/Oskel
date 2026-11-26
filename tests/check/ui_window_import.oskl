@@ -6,8 +6,8 @@ import std.ui as ui;
 import std.ui.window as ui_window;
 
 fn main() {
-  let root = ui.window("Demo", 320, 200,
-    ui.column(8, [ui.text("Hello", 24)]));
+  let root = ui.Window("Demo", 320, 200,
+    ui.Column(8, [ui.Text("Hello", 24)]));
   ui.layout(root, 320, 200);
   if (ui_window.click(root, 10, 10)) {
     ui.layout(root, 320, 200);

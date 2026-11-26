@@ -2183,6 +2183,7 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.oskl"
         "-DOSKEL_EXPECTED_EXIT=70"
+        "-DOSKEL_CHECK_NO_POSITIONS=1"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.cmake")
 
     # A read of a global before the assignment that fills it must fail at run
@@ -2495,7 +2496,7 @@ if(BUILD_TESTING)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
 
     # The same fixture on the module, so the three engines share the expectations
-    # (the WebAssembly backend still binds a closure per call; item 38 tracks it).
+    # (the WebAssembly backend still binds a closure per call; item 39 tracks it).
     add_test(NAME oskel.build_wasm_bound_call
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_TEST_NAME=oskel.build_wasm_bound_call"

@@ -129,6 +129,19 @@ void emitFunctionEpilogue(CodeGen& cg) {
   cg.retInsn();
 }
 
+// PHASE 7g.3: publishes `line` in the hidden global at `slot` so the one
+// runtime-error sink can print `FILE:LINE: `. One store, and only when the line
+// changed since the previous instruction, so a straight-line block costs
+// nothing extra. `lastLine` is the value already published for this function;
+// a negative `slot` disables the tracking entirely and leaves the image
+// byte-for-byte what it was before this existed.
+void emitSourceLine(CodeGen& cg, int slot, int line, int& lastLine, bool force) {
+  if (slot < 0 || line <= 0 || (!force && line == lastLine)) return;
+  lastLine = line;
+  cg.movImm(X64Reg::Rax, static_cast<std::int64_t>(line));
+  cg.movToMem(kAotGlobalBase, 16LL * slot + 8, X64Reg::Rax);
+}
+
 // Loads register `index` into `tag`:`payload`. Two moves, the tagged load the
 // lowering table budgets.
 void loadValue(CodeGen& cg, int index, X64Reg tag, X64Reg payload) {
@@ -217,6 +230,22 @@ void callBinary(CodeGen& cg, CodeGen::Label helper, int lhs, int rhs, int dst) {
   loadValue(cg, rhs, X64Reg::Rdx, X64Reg::Rcx);
   cg.callLabel(helper);
   storeValue(cg, dst, X64Reg::Rax, X64Reg::Rdx);
+}
+
+// Every instruction a jump can land on, per proto. A store emitted for the
+// fall-through path may be skipped on the jumping path, so these indices
+// publish their line unconditionally (PHASE 7g.3).
+std::unordered_set<std::size_t> jumpTargetIndices(const Bytecode& proto) {
+  std::unordered_set<std::size_t> targets;
+  for (const Instruction& instr : proto.code) {
+    const bool isJump = instr.op == OpCode::JMP || instr.op == OpCode::JMP_IF_FALSE ||
+                        instr.op == OpCode::JMP_IF_TRUE;
+    if (!isJump) continue;
+    if (instr.jump >= 0 && static_cast<std::size_t>(instr.jump) <= proto.code.size()) {
+      targets.insert(static_cast<std::size_t>(instr.jump));
+    }
+  }
+  return targets;
 }
 
 // `labels` carries one entry per instruction plus a trailing one for
@@ -843,6 +872,9 @@ struct FrameInfo {
   // The root chunk's shared callback arena-state slot, or -1. A child proto
   // never runs the root epilogue, so it stays -1 there.
   int callbackStateSlot = -1;
+  // PHASE 7g.3: the hidden global the current source line is published in, or
+  // -1 when the caller asked for no diagnostics.
+  int sourceLineSlot = -1;
   std::unordered_set<int> capturedSlots;
 };
 
@@ -976,21 +1008,6 @@ std::unordered_set<std::size_t> checkedGlobalReads(
   return checked;
 }
 
-// The offsets a jump can land on, so a peephole that reads the surrounding
-// instructions knows whether control can enter there some other way.
-std::vector<bool> jumpTargetsOf(const Bytecode& proto) {
-  std::vector<bool> targets(proto.code.size() + 1, false);
-  for (const Instruction& ins : proto.code) {
-    if (ins.op != OpCode::JMP && ins.op != OpCode::JMP_IF_FALSE && ins.op != OpCode::JMP_IF_TRUE) {
-      continue;
-    }
-    if (ins.jump >= 0 && static_cast<std::size_t>(ins.jump) < targets.size()) {
-      targets[static_cast<std::size_t>(ins.jump)] = true;
-    }
-  }
-  return targets;
-}
-
 // Whether `ins` overwrites R[reg]. A conservative answer only costs a fusion, so
 // an opcode that reads `a` without storing it is still reported as a write.
 bool writesRegister(const Instruction& ins, int reg) {
@@ -1024,9 +1041,9 @@ bool writesRegister(const Instruction& ins, int reg) {
 // allocated a cell and a closure per iteration, ~44 ns against the push's own
 // 37 ns. The parked register is unobservable -- the `CALL` result overwrites it
 // and a member value is never read as a closure.
-std::vector<int> fusedMemberCalls(const Bytecode& proto) {
+std::vector<int> fusedMemberCalls(const Bytecode& proto,
+                                  const std::unordered_set<std::size_t>& targets) {
   constexpr std::size_t kWindow = 32;
-  const std::vector<bool> targets = jumpTargetsOf(proto);
   std::vector<int> fused(proto.code.size() + 1, 0);
   for (std::size_t i = 0; i < proto.code.size(); ++i) {
     const Instruction& get = proto.code[i];
@@ -1034,7 +1051,7 @@ std::vector<int> fusedMemberCalls(const Bytecode& proto) {
       continue;
     }
     for (std::size_t j = i + 1; j < proto.code.size() && j <= i + kWindow; ++j) {
-      if (targets[j]) {
+      if (targets.count(j) != 0) {
         break;  // control can enter the window
       }
       const Instruction& ins = proto.code[j];
@@ -1062,9 +1079,14 @@ void lowerInstruction(std::size_t index, const Instruction& instr, const Bytecod
                       const std::unordered_map<const Bytecode*, CodeGen::Label>& protoEntry,
                       const std::unordered_map<const Bytecode*, CodeGen::Label>& displayOf,
                       std::vector<StringConstant>& stringConstants,
-                      const std::unordered_set<std::size_t>& checkedReads,
-                      const std::vector<int>& fusedMembers) {
+                      const std::unordered_set<std::size_t>& checkedReads, int& lastPublishedLine,
+                      bool isJumpTarget, const std::vector<int>& fusedMembers) {
   const int fileRegisters = frame.fileRegisters;
+  // At a jump target the previous instruction emitted may belong to a
+  // different path, so a deduplicated store could leave a stale line behind
+  // (`if` inside a loop is enough to reach this). Publishing unconditionally
+  // there costs one store per loop header and per merge point.
+  emitSourceLine(cg, frame.sourceLineSlot, instr.line, lastPublishedLine, isJumpTarget);
   switch (instr.op) {
     case OpCode::LOADK: {
       const Value& value = proto.constants.at(static_cast<std::size_t>(instr.b));
@@ -1469,8 +1491,8 @@ void lowerInstruction(std::size_t index, const Instruction& instr, const Bytecod
 
 }  // namespace
 
-LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
-                        const CodeGen& /*codegen*/, LinkMode mode) {
+LoweredChunk lowerToX64(const Target& target, const Bytecode& proto, const CodeGen& /*codegen*/,
+                        LinkMode mode, const DebugSource& debug) {
   requireSupportedTarget(target);
   requireSupportedLinkMode(target, mode);
 
@@ -1797,6 +1819,16 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     globals.slotOfName[kAotArgsGlobal] = argsSlot;
   }
 
+  // PHASE 7g.3: a runtime error names its source position. The current line
+  // lives in a hidden global the sink reads, and the lowering stores it before
+  // each instruction (only when it changes). A caller that passes no source
+  // path gets no slot and no tracking, so its image stays byte for byte what it
+  // was.
+  int sourceLineSlot = -1;
+  if (!debug.path.empty()) {
+    sourceLineSlot = globals.count++;
+  }
+
   // A callback crosses a C boundary, where the C caller expects r13/r14/r15 to
   // be preserved. Those are the Oskel arena cursor/end and global base, so the
   // callback body parks them in a shared state block. The slot exists only when
@@ -1930,6 +1962,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     frame.fileLocals = rootLocals;
     frame.hasSelf = false;
     frame.callbackStateSlot = callbackStateSlot;
+    frame.sourceLineSlot = sourceLineSlot;
     frame.capturedSlots = capturedLocalSlots(proto);
     std::vector<CodeGen::Label> labels;
     labels.reserve(proto.code.size() + 1);
@@ -1938,11 +1971,16 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     const std::unordered_set<std::size_t> checked =
         checkedGlobalReads(proto, globals, unsetCandidates);
     if (!checked.empty()) needsGlobalGetChecked = true;
-    const std::vector<int> rootFusedMembers = fusedMemberCalls(proto);
+    // `lastPublishedLine` is per function: the previous function's last line is
+    // not what this frame published, so the first instruction always stores.
+    int lastPublishedLine = 0;
+    const std::unordered_set<std::size_t> jumpTargets = jumpTargetIndices(proto);
+    const std::vector<int> rootFusedMembers = fusedMemberCalls(proto, jumpTargets);
     for (std::size_t i = 0; i < proto.code.size(); ++i) {
       cg.bind(labels[i]);
       lowerInstruction(i, proto.code[i], proto, cg, labels, rt, globals, frame, protoEntry,
-                       displayOf, stringConstants, checked, rootFusedMembers);
+                       displayOf, stringConstants, checked, lastPublishedLine,
+                       jumpTargets.count(i) != 0, rootFusedMembers);
     }
     // Falling off the end of the root chunk is an implicit nil result.
     cg.bind(labels.back());
@@ -2007,6 +2045,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     frame.fileRegisters = fnRegisters;
     frame.fileLocals = fnLocals;
     frame.hasSelf = true;
+    frame.sourceLineSlot = sourceLineSlot;
     frame.capturedSlots = capturedLocalSlots(fn);
 
     // Copy the fixed arguments into the register file. `args` points at the
@@ -2038,11 +2077,14 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     const std::unordered_set<std::size_t> checked =
         checkedGlobalReads(fn, globals, unsetCandidates);
     if (!checked.empty()) needsGlobalGetChecked = true;
-    const std::vector<int> fnFusedMembers = fusedMemberCalls(fn);
+    int lastPublishedLine = 0;
+    const std::unordered_set<std::size_t> jumpTargets = jumpTargetIndices(fn);
+    const std::vector<int> fnFusedMembers = fusedMemberCalls(fn, jumpTargets);
     for (std::size_t i = 0; i < fn.code.size(); ++i) {
       cg.bind(labels[i]);
       lowerInstruction(i, fn.code[i], fn, cg, labels, rt, globals, frame, protoEntry, displayOf,
-                       stringConstants, checked, fnFusedMembers);
+                       stringConstants, checked, lastPublishedLine, jumpTargets.count(i) != 0,
+                       fnFusedMembers);
     }
     // Falling off the end of a function body is an implicit `return nil`.
     cg.bind(labels.back());
@@ -2107,6 +2149,8 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   extras.platformName = osName(target.os);
   extras.archName = archName(target.arch);
   extras.needsGlobalGetChecked = needsGlobalGetChecked;
+  extras.sourcePath = debug.path.empty() ? nullptr : debug.path.c_str();
+  extras.sourceLineSlot = sourceLineSlot;
   emitAotRuntime(cg, rt, entry, externThunks.empty() ? nullptr : &externThunks,
                  mode == LinkMode::Hosted, hasInput,
                  target.os == Os::Freestanding, randomStateSlot, pcallHandlerSlot,

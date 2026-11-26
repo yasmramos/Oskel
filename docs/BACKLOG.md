@@ -911,7 +911,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     closure (identity included). `benchmarks/arrays.oskl` at 200 000 pushes goes
     from 20.9 ms to 12.5 ms and `xs.push(i)` in a loop from 82 ns to 42 ns per
     call; `tests/native_build_bound_call.oskl` pins every selector of the four
-    families against the VM. The WebAssembly backend still binds (item 38).
+    families against the VM. The WebAssembly backend still binds (item 39).
 36. **[P1] [done]** `join` allocated quadratically in the AOT and WebAssembly
     backends. Both built the result by concatenating the accumulator with one
     item at a time, and `concat` allocates a fresh string each time, so joining n
@@ -939,7 +939,21 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     and 2 GB, so CI cannot afford it, and once item 36 removes the accidental
     trigger a cheap pin would have to force the address directly.
 
-38. **[P2]** The WebAssembly backend still binds a closure per method call, the
+38. **[P1] [done, partial]** A runtime error in a generated binary printed a
+    bare `oskel: <message>`, with no file or line, while the VM named both --
+    the one place where the VM was strictly better than the AOT binary. PHASE
+    7g.3 closes it: the lowering publishes the source line into a hidden global
+    before the instruction runs, and the single sink (`emitFailDynamic`) prints
+    `oskel: FILE:LINE: ` before the message. The store is deduplicated per line
+    change and forced at every jump target, since a fall-through path can skip
+    the store (an `if` inside a loop reported a stale line without it). The
+    source path travels in the `.oskc` chunk (format v2), so building from an
+    image emits the same bytes as building from the source and `oskc_parity`
+    stays exact; `--no-source-positions` reproduces the pre-7g.3 image byte for
+    byte. Remaining, tracked in `docs/aot-diagnostics.md` §4: the column, the
+    stack trace and the source snippet.
+
+39. **[P2]** The WebAssembly backend still binds a closure per method call, the
     shape item 35 removed from the native binary: `xs.push(i)` costs ~120 ns per
     call there against ~52 ns through a closure read once into a variable, so
     `benchmarks/arrays.oskl` spends ~30 ms of its 61.8 ms (31 ms of which is
@@ -1508,8 +1522,8 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `bindings/skia/skia.oskelbind` compiles against a real Skia build; the
    opt-in `cxxbind.skia` test draws, reads pixels and renders a widget tree on
    the VM and the hosted AOT binary. `std/ui.oskl` is the first declarative
-   layer (`window`, `column`, `row`, `padding`, `spacer`, `text`, `button`,
-   `checkbox`; layout, `rect`/`text` display list and hit testing), and
+   layer (`Window`, `Column`, `Row`, `Padding`, `Spacer`, `Text`, `Button`,
+   `Checkbox`; layout, `rect`/`text` display list and hit testing), and
    `std/internal/skia_ui.oskl` renders it. `std.ui.window` now presents the
    raster surface through a streaming `SDL_Texture`, runs the event loop and
    dispatches left clicks through `hitTest`; `std.internal.sdl` and the Skia

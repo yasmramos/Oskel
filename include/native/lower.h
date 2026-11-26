@@ -68,6 +68,14 @@ struct LoweredChunk {
   std::vector<ExportedSymbol> exports;
 };
 
+// Where the source of a lowered program came from, so a runtime error can name
+// it. `path` is the spelling the command line used. An empty `path` keeps the
+// image exactly as it was before this existed: the sink prints its message with
+// no position prefix, which is what a direct caller (the tests) gets.
+struct DebugSource {
+  std::string path;
+};
+
 // Lowers `proto` to x86-64 machine code. The lowering assumes the System V
 // AMD64 ABI (Linux x86-64). Windows x86-64 support is deferred to PHASE 7e.
 //
@@ -76,6 +84,11 @@ struct LoweredChunk {
 // while `Hosted` exports the program's entry as the C `main` and reaches the
 // system through libc, leaving the undefined symbols for the object emitter and
 // the linker to resolve. The default keeps every existing caller freestanding.
-LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
-                        const CodeGen& codegen,
-                        LinkMode mode = LinkMode::Freestanding);
+//
+// `debug` is PHASE 7g.3: with a non-empty path the code tracks the source line
+// of the instruction it is about to execute, and the one runtime-error sink
+// prints `path:LINE: `. It is off by default so a caller that asks for no
+// diagnostics gets the byte-identical image the freestanding contract promises.
+LoweredChunk lowerToX64(const Target& target, const Bytecode& proto, const CodeGen& codegen,
+                        LinkMode mode = LinkMode::Freestanding,
+                        const DebugSource& debug = DebugSource{});
