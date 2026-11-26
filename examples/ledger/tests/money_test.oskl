@@ -1,0 +1,27 @@
+// Money is exact and refuses a value that would lose a cent.
+
+import ledger.money;
+
+assertEq(money.format(money.parse("1.5")), "1.50");
+assertEq(money.format(money.parse("1.50")), "1.50");
+assertEq(money.format(money.parse("-0.25")), "-0.25");
+assertEq(money.format(money.parse("+1.00")), "1.00");
+assertEq(money.formatGrouped(money.parse("20150")), "20,150.00");
+assertEq(money.formatGrouped(money.parse("-1234567.8")), "-1,234,567.80");
+assertEq(money.format(money.add(money.parse("0.10"), money.parse("0.20"))), "0.30");
+assertEq(money.format(money.subtract(money.parse("1.00"), money.parse("0.25"))), "0.75");
+assertEq(money.format(money.sum([money.parse("1.00"), money.parse("2.50"), money.parse("3.25")])), "6.75");
+assertEq(money.format(money.negate(money.parse("1.25"))), "-1.25");
+assertEq(money.format(money.abs(money.parse("-1.25"))), "1.25");
+assertEq(money.compare(money.parse("1.00"), money.parse("2.00")), -1);
+assertEq(money.equals(money.parse("1.5"), money.parse("1.50")), true);
+assertEq(money.isZero(money.parse("0.00")), true);
+assertEq(money.isNegative(money.parse("-0.01")), true);
+assertEq(money.isPositive(money.parse("0.01")), true);
+assertEq(money.format(money.fromCents(1234)), "12.34");
+assertEq(money.toCents(money.parse("12.34")), 1234);
+assertEq(money.tryParse("1.234").ok, false);
+assertEq(money.tryParse("1e3").ok, false);
+assertEq(money.tryParse("abc").ok, false);
+assertEq(money.tryParse("1.2").ok, true);
+print("money_test: ok");

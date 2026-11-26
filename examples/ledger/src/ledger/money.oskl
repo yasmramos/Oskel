@@ -1,0 +1,157 @@
+// Money: exact decimal amounts with two fractional digits.
+//
+// The ledger never uses a `double` for an amount. Every value is a
+// `std.decimal.BigDecimal` scaled to two places, so `0.10 + 0.20` is exactly
+// `0.30` and a trial balance compares equal without an epsilon. `parse`
+// rejects a value with more than two fractional digits instead of rounding it:
+// a journal that silently loses a cent is worse than one that refuses to post.
+
+import { decimal } from std.decimal;
+
+const SCALE = 2;
+
+// True for an optional sign, at least one integer digit and at most two
+// fractional digits. An exponent is not accepted, because a user typing an
+// amount should see the exact decimal they meant.
+fn _valid(text) {
+  if (type(text) != "string" || len(text) == 0) {
+    return false;
+  }
+  var i = 0;
+  if (text[0] == "-" || text[0] == "+") {
+    i = 1;
+  }
+  if (i >= len(text)) {
+    return false;
+  }
+  var digits = 0;
+  while (i < len(text) && text[i] >= "0" && text[i] <= "9") {
+    digits = digits + 1;
+    i = i + 1;
+  }
+  if (digits == 0) {
+    return false;
+  }
+  if (i == len(text)) {
+    return true;
+  }
+  if (text[i] != ".") {
+    return false;
+  }
+  i = i + 1;
+  var fraction = 0;
+  while (i < len(text) && text[i] >= "0" && text[i] <= "9") {
+    fraction = fraction + 1;
+    i = i + 1;
+  }
+  return fraction > 0 && fraction <= SCALE && i == len(text);
+}
+
+// The `{ok, value, error}` form; a malformed amount is a value, not an abort.
+fn tryParse(text) {
+  if (!_valid(text)) {
+    return {ok: false, value: nil,
+      error: "money: expected a decimal amount with at most 2 fractional digits"};
+  }
+  return {ok: true, value: decimal(text).setScale(SCALE), error: nil};
+}
+
+// Parses an amount, aborting on a malformed value.
+fn parse(text) {
+  let result = tryParse(text);
+  if (!result.ok) {
+    panic(result.error);
+  }
+  return result.value;
+}
+
+// The additive identity, scaled to cents.
+fn zero() {
+  return decimal("0").setScale(SCALE);
+}
+
+// The canonical `1234.50` text.
+fn format(amount) {
+  return amount.setScale(SCALE).toPlainString();
+}
+
+// The same text with thousands separators: `1,234.50`. A negative sign stays
+// in front of the grouped digits.
+fn formatGrouped(amount) {
+  var text = format(amount);
+  var negative = false;
+  if (text.startsWith("-")) {
+    negative = true;
+    text = text[1:len(text)];
+  }
+  let dot = text.indexOf(".");
+  let whole = text[0:dot];
+  let fraction = text[dot:len(text)];
+  var grouped = "";
+  var count = 0;
+  var i = len(whole) - 1;
+  while (i >= 0) {
+    if (count > 0 && count % 3 == 0) {
+      grouped = "," + grouped;
+    }
+    grouped = whole[i] + grouped;
+    count = count + 1;
+    i = i - 1;
+  }
+  return (negative ? "-" : "") + grouped + fraction;
+}
+
+fn add(left, right) {
+  return left.add(right).setScale(SCALE);
+}
+
+fn subtract(left, right) {
+  return left.subtract(right).setScale(SCALE);
+}
+
+fn sum(amounts) {
+  var total = zero();
+  for amount in amounts {
+    total = total.add(amount);
+  }
+  return total.setScale(SCALE);
+}
+
+fn negate(amount) {
+  return amount.negate().setScale(SCALE);
+}
+
+fn abs(amount) {
+  return amount.abs().setScale(SCALE);
+}
+
+fn compare(left, right) {
+  return left.compareTo(right);
+}
+
+fn equals(left, right) {
+  return left.compareTo(right) == 0;
+}
+
+fn isZero(amount) {
+  return amount.signum() == 0;
+}
+
+fn isNegative(amount) {
+  return amount.signum() < 0;
+}
+
+fn isPositive(amount) {
+  return amount.signum() > 0;
+}
+
+// `1234` cents is `12.34`.
+fn fromCents(cents) {
+  return decimal(cents).divide(decimal(100)).setScale(SCALE);
+}
+
+// The exact number of cents. The amount must be a whole number of cents, which
+// every value built by this module is.
+fn toCents(amount) {
+  return amount.setScale(SCALE).multiply(decimal(100)).intValue();
+}

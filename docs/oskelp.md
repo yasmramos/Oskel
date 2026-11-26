@@ -437,6 +437,25 @@ manifest's directory, so a script does not have to `cd` first:
 oskelp build --manifest-path ../hello/oskel.toml
 ```
 
+## Worked example: `examples/ledger`
+
+The repository ships a complete project built with `oskelp new`:
+`examples/ledger` is a double-entry accounting command line. It has a manifest,
+a lockfile, `src/ledger/` modules and a `tests/` suite, and it uses only the
+standard library.
+
+```sh
+oskelp run --manifest-path examples/ledger/oskel.toml      # the demo
+oskelp test --manifest-path examples/ledger/oskel.toml     # the project's tests
+oskelp build --manifest-path examples/ledger/oskel.toml    # target/ledger
+```
+
+The demo prints a trial balance, an income statement and a balance sheet. The
+commands add accounts, post balanced entries, import and export CSV, and
+persist the ledger as JSON; `examples/ledger/README.md` documents them. The
+`oskelp.example_ledger` CTest drives the real binary through the same workflow
+and compares the VM and native trial balances byte for byte.
+
 ## Environment variables
 
 | Variable | Meaning |

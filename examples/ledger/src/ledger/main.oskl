@@ -1,0 +1,6 @@
+// The `ledger` entry point. `oskelp run` runs it on the VM; `oskelp build`
+// compiles the same file to target/ledger.
+
+import ledger.cli;
+
+exit(cli.run(args()));

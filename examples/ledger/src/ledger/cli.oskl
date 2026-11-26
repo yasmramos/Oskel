@@ -1,0 +1,294 @@
+// The command-line front end.
+//
+// `run` parses the global options with `std.cli`, dispatches the command and
+// returns the process exit code. The commands that mutate a ledger load it,
+// apply one operation, save it and print a one-line confirmation; the report
+// commands only read it.
+
+import std.cli;
+import { exists, readText } from std.fs;
+import std.log;
+import std.semver;
+import std.terminal;
+import ledger.money;
+import ledger.account;
+import ledger.journal;
+import ledger.core;
+import ledger.reports;
+import ledger.storage;
+import ledger.demo;
+
+const VERSION = "0.1.0";
+
+let _COMMANDS = ["account", "post", "list", "balance", "trial", "income", "sheet", "import", "export"];
+
+fn spec() {
+  return {
+    name: "ledger",
+    description: "A double-entry accounting example.",
+    options: [
+      {name: "data", short: "d", kind: "string", def: "data/ledger.json",
+        help: "Ledger file (default data/ledger.json)."},
+      {name: "color", kind: "flag", help: "Colour the report headings."},
+      {name: "verbose", short: "v", kind: "flag", help: "Log loaded and posted entries."},
+    ],
+    positionals: [
+      {name: "command"},
+      {name: "args", variadic: true},
+    ],
+  };
+}
+
+fn usage() {
+  return cli.usage(spec()) + "\n"
+    + "Commands:\n"
+    + "  demo                         Print a sample ledger (the default).\n"
+    + "  init                         Create data/ledger.json with the default chart.\n"
+    + "  account add <code> <name> <type>   Add an account (asset, liability, equity, income, expense).\n"
+    + "  post <date> <memo> <code>:<debit>:<credit> ...   Post a balanced entry.\n"
+    + "  list                         Print the journal.\n"
+    + "  balance [code]               Print every balance, or one account.\n"
+    + "  trial                        Print the trial balance.\n"
+    + "  income                       Print the income statement.\n"
+    + "  sheet                        Print the balance sheet.\n"
+    + "  import <file.csv>            Import journal lines from CSV.\n"
+    + "  export <file.csv>            Export the journal to CSV.\n"
+    + "  version                      Print the version.\n"
+    + "  help                         Print this help.\n"
+    + "\n"
+    + "A post line writes the account code, then the debit and the credit;\n"
+    + "leave one side empty, for example `1000:25000:` or `3000::25000`.\n";
+}
+
+fn _amount(text) {
+  if (text == nil || text == "") {
+    return {ok: true, value: money.zero(), error: nil};
+  }
+  return money.tryParse(text);
+}
+
+fn _fail(message: string, code: int) {
+  eprint("ledger: " + message);
+  return code;
+}
+
+fn _version(color: bool) {
+  let value = semver.parse(VERSION);
+  let line = "ledger " + semver.format(value) + "  (major " + str(value.major)
+    + ", minor " + str(value.minor) + ", patch " + str(value.patch) + ")";
+  print(color ? terminal.bold(line) : line);
+  return 0;
+}
+
+fn _init(dataPath: string) {
+  if (exists(dataPath)) {
+    print("ledger: already initialized at '" + dataPath + "'");
+    return 0;
+  }
+  let book = core.create(account.defaultChart());
+  storage.save(book, dataPath);
+  print("initialized " + dataPath + " with " + str(len(book.chart)) + " accounts");
+  return 0;
+}
+
+fn _account(book, args, dataPath: string) {
+  if (len(args) < 1 || args[0] != "add") {
+    return _fail("usage: ledger account add <code> <name> <type>", 2);
+  }
+  if (len(args) != 4) {
+    return _fail("usage: ledger account add <code> <name> <type>", 2);
+  }
+  let code = args[1];
+  let name = args[2];
+  if (len(code) == 0 || len(name) == 0) {
+    return _fail("the account code and name must not be empty", 2);
+  }
+  let kind = account.tryParseType(args[3]);
+  if (!kind.ok) {
+    return _fail(kind.error, 2);
+  }
+  if (book.byCode[code] != nil) {
+    return _fail("account '" + code + "' already exists", 1);
+  }
+  let value = account.create(code, name, kind.value);
+  core.addAccount(book, value);
+  storage.save(book, dataPath);
+  print("added account " + code + " " + name + " (" + account.typeName(kind.value) + ")");
+  return 0;
+}
+
+fn _post(book, args, dataPath: string) {
+  if (len(args) < 3) {
+    return _fail("usage: ledger post <date> <memo> <code>:<debit>:<credit> ...", 2);
+  }
+  let date = args[0];
+  let memo = args[1];
+  let parsedDate = journal.tryParseDate(date);
+  if (!parsedDate.ok) {
+    return _fail(parsedDate.error, 2);
+  }
+  if (len(memo) == 0) {
+    return _fail("the memo must not be empty", 2);
+  }
+  var lines = [];
+  var debitTotal = money.zero();
+  var creditTotal = money.zero();
+  for lineSpec in args[2:len(args)] {
+    let parts = lineSpec.split(":");
+    if (len(parts) != 3) {
+      return _fail("expected <code>:<debit>:<credit>, got '" + lineSpec + "'", 2);
+    }
+    let code = parts[0];
+    if (book.byCode[code] == nil) {
+      return _fail("unknown account '" + code + "'", 1);
+    }
+    let debit = _amount(parts[1]);
+    if (!debit.ok) {
+      return _fail(debit.error, 2);
+    }
+    let credit = _amount(parts[2]);
+    if (!credit.ok) {
+      return _fail(credit.error, 2);
+    }
+    let debitPositive = money.isPositive(debit.value);
+    let creditPositive = money.isPositive(credit.value);
+    if (debitPositive == creditPositive) {
+      return _fail("each line needs exactly one positive amount", 2);
+    }
+    lines[len(lines)] = journal.line(code, debit.value, credit.value);
+    debitTotal = debitTotal.add(debit.value);
+    creditTotal = creditTotal.add(credit.value);
+  }
+  if (!money.equals(debitTotal, creditTotal)) {
+    return _fail("the entry does not balance (debits " + money.format(debitTotal)
+      + ", credits " + money.format(creditTotal) + ")", 1);
+  }
+  let entry = journal.entry(date, memo, lines);
+  core.post(book, entry);
+  storage.save(book, dataPath);
+  print("posted " + entry.id + "  " + memo);
+  return 0;
+}
+
+fn _balance(book, args, color: bool) {
+  if (len(args) == 0) {
+    print(reports.balances(book, color));
+    return 0;
+  }
+  if (len(args) != 1) {
+    return _fail("usage: ledger balance [code]", 2);
+  }
+  if (book.byCode[args[0]] == nil) {
+    return _fail("unknown account '" + args[0] + "'", 1);
+  }
+  print(reports.accountReport(book, args[0], color));
+  return 0;
+}
+
+fn _import(book, args, dataPath: string) {
+  if (len(args) != 1) {
+    return _fail("usage: ledger import <file.csv>", 2);
+  }
+  let source = args[0];
+  if (!exists(source)) {
+    return _fail("no file at '" + source + "'", 1);
+  }
+  let count = storage.importCsv(book, readText(source));
+  storage.save(book, dataPath);
+  print("imported " + str(count) + " entries from " + source);
+  return 0;
+}
+
+fn _export(book, args) {
+  if (len(args) != 1) {
+    return _fail("usage: ledger export <file.csv>", 2);
+  }
+  storage.saveCsv(book, args[0]);
+  print("exported " + str(core.entryCount(book)) + " entries to " + args[0]);
+  return 0;
+}
+
+fn run(argv) {
+  let parsed = cli.parse(argv, spec());
+  if (parsed.help) {
+    print(usage());
+    return 0;
+  }
+  if (!parsed.ok) {
+    for message in parsed.errors {
+      eprint("ledger: " + message);
+    }
+    return 2;
+  }
+  let options = parsed.options;
+  let command = parsed.positionals[0] == nil ? "demo" : parsed.positionals[0];
+  let args = parsed.positionals[1];
+  let color = options.color == true;
+  let logger = log.create({
+    name: "ledger",
+    level: options.verbose == true ? "debug" : "warn",
+    sink: (record) => eprint(log.format(record)),
+  });
+
+  if (command == "demo") {
+    print(demo.text(demo.book(), color));
+    return 0;
+  }
+  if (command == "version") {
+    return _version(color);
+  }
+  if (command == "help") {
+    print(usage());
+    return 0;
+  }
+
+  let dataPath = options.data;
+  if (command == "init") {
+    return _init(dataPath);
+  }
+  if (!_COMMANDS.contains(command)) {
+    eprint("ledger: unknown command '" + command + "'");
+    eprint(usage());
+    return 2;
+  }
+  if (!exists(dataPath)) {
+    return _fail("no ledger at '" + dataPath + "'; run 'ledger init'", 1);
+  }
+  let book = storage.load(dataPath);
+  logger.debug("loaded ledger", {path: dataPath, entries: core.entryCount(book)});
+
+  if (command == "account") {
+    return _account(book, args, dataPath);
+  }
+  if (command == "post") {
+    return _post(book, args, dataPath);
+  }
+  if (command == "list") {
+    print(reports.journal(book, color));
+    return 0;
+  }
+  if (command == "balance") {
+    return _balance(book, args, color);
+  }
+  if (command == "trial") {
+    print(reports.trialBalance(book, color));
+    return 0;
+  }
+  if (command == "income") {
+    print(reports.incomeStatement(book, color));
+    return 0;
+  }
+  if (command == "sheet") {
+    print(reports.balanceSheet(book, color));
+    return 0;
+  }
+  if (command == "import") {
+    return _import(book, args, dataPath);
+  }
+  if (command == "export") {
+    return _export(book, args);
+  }
+  eprint("ledger: unknown command '" + command + "'");
+  eprint(usage());
+  return 2;
+}

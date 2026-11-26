@@ -1,0 +1,38 @@
+// JSON is the durable form; CSV is the interchange form.
+
+import { exists } from std.fs;
+import ledger.money;
+import ledger.account;
+import ledger.core;
+import ledger.storage;
+import ledger.demo;
+
+let book = demo.book();
+let data = storage.toJson(book);
+assertEq(data.version, 1);
+assertEq(len(data.accounts), 12);
+assertEq(len(data.entries), 8);
+
+let back = storage.fromJson(data);
+assertEq(core.entryCount(back), 8);
+assertEq(money.format(core.balance(back, "1000")), "20150.00");
+assertEq(money.format(core.balance(back, "4000")), "-12500.00");
+
+let file = "data/test-ledger.json";
+storage.save(book, file);
+assertEq(exists(file), true);
+let loaded = storage.load(file);
+assertEq(core.entryCount(loaded), 8);
+assertEq(money.format(core.balance(loaded, "1100")), "2500.00");
+
+let csv = storage.exportCsv(book);
+assertEq(csv.contains("entry,date,memo,account,debit,credit"), true);
+assertEq(csv.contains("Owner investment"), true);
+
+let imported = core.create(account.defaultChart());
+let count = storage.importCsv(imported, csv);
+assertEq(count, 8);
+assertEq(core.entryCount(imported), 8);
+assertEq(money.format(core.balance(imported, "1000")), "20150.00");
+
+print("storage_test: ok");

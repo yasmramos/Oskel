@@ -22,6 +22,27 @@ oskel build examples/calc.oskl -o calc
 metal and WebAssembly images; hosted macOS x86-64 is supported too. The examples
 below note which ones build.
 
+## Full projects
+
+### `ledger/` — a double-entry accounting CLI
+
+A complete project scaffolded with `oskelp new`, not a single file: a chart of
+accounts, balanced journal entries, a trial balance, an income statement, a
+balance sheet, JSON persistence, CSV import/export and a `std.cli` command
+line. Amounts are exact `std.decimal` values, and the VM and native binaries
+print the same reports.
+
+```sh
+oskelp run --manifest-path examples/ledger/oskel.toml
+oskelp test --manifest-path examples/ledger/oskel.toml
+oskelp build --manifest-path examples/ledger/oskel.toml && ./examples/ledger/target/ledger
+```
+
+See [`ledger/README.md`](ledger/README.md) for the commands, the data formats
+and the modules it exercises. The `oskelp.example_ledger` CTest runs the demo,
+the project's tests and the file-backed commands, and compares the native
+trial balance with the VM's.
+
 ## Programs
 
 ### `calc.oskl` — an arithmetic expression evaluator

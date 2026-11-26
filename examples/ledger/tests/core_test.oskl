@@ -1,0 +1,48 @@
+// The ledger arithmetic: trial balance, income statement, balance sheet.
+
+import ledger.money;
+import ledger.account;
+import ledger.core;
+
+let book = core.create(account.defaultChart());
+core.postSimple(book, "2026-01-02", "Owner investment", "1000", "3000", money.parse("25000.00"));
+core.postSimple(book, "2026-01-03", "Equipment purchase", "1500", "1000", money.parse("8000.00"));
+core.postSimple(book, "2026-01-05", "Consulting invoice", "1100", "4000", money.parse("12500.00"));
+core.postSimple(book, "2026-01-10", "Client payment", "1000", "1100", money.parse("10000.00"));
+core.postSimple(book, "2026-01-15", "January rent", "5100", "1000", money.parse("2000.00"));
+core.postSimple(book, "2026-01-20", "January salaries", "5200", "1000", money.parse("4500.00"));
+core.postSimple(book, "2026-01-22", "Inventory on credit", "1200", "2000", money.parse("3200.00"));
+core.postSimple(book, "2026-01-25", "January utilities", "5300", "1000", money.parse("350.00"));
+
+assertEq(core.entryCount(book), 8);
+assertEq(money.format(core.balance(book, "1000")), "20150.00");
+assertEq(money.format(core.balance(book, "1100")), "2500.00");
+assertEq(money.format(core.balance(book, "4000")), "-12500.00");
+
+let trial = core.trialBalance(book);
+assertEq(money.format(trial.debitTotal), "40700.00");
+assertEq(money.format(trial.creditTotal), "40700.00");
+assertEq(trial.balanced, true);
+assertEq(len(trial.rows), 10);
+
+let income = core.incomeStatement(book);
+assertEq(money.format(income.totalRevenue), "12500.00");
+assertEq(money.format(income.totalExpenses), "6850.00");
+assertEq(money.format(income.netIncome), "5650.00");
+
+let sheet = core.balanceSheet(book);
+assertEq(money.format(sheet.totalAssets), "33850.00");
+assertEq(money.format(sheet.totalLiabilities), "3200.00");
+assertEq(money.format(sheet.totalEquity), "30650.00");
+assertEq(money.format(sheet.retainedEarnings), "5650.00");
+assertEq(sheet.balanced, true);
+
+assertEq(len(core.entriesFor(book, "1000")), 6);
+assertEq(len(core.sortedEntries(book)), 8);
+assertEq(core.sortedEntries(book)[0].date, "2026-01-02");
+
+core.addAccount(book, account.create("1300", "Prepaid Rent", account.AccountType.Asset));
+assertEq(len(book.chart), 13);
+assertEq(pcall(() => core.addAccount(book, account.create("1300", "Dup", account.AccountType.Asset))).ok, false);
+
+print("core_test: ok");
