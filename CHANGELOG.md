@@ -11,6 +11,14 @@ may change between minor versions.
 
 ### Added
 
+- **`std.ui` adds a checkbox widget.** `ui.checkbox(label, checked, onChange)`
+  measures as a 16 px box plus the label, paints the box in its normal, hover
+  and pressed shades, fills an inner square when checked, and calls
+  `onChange(checked)` after a click toggles the state. The widget is Oskel over
+  the portable primitive surface, so the VM and `oskel build` share the same
+  layout, display list and pointer behavior; `native_build_ui.oskl` and the
+  Skia fixtures pin the toggle, the cancellation on an outside release and the
+  checked/unchecked pixels.
 - **A macOS image carries its own ad-hoc code signature (PHASE 10.3d.3).** The
   Mach-O linker now closes the executable with an `LC_CODE_SIGNATURE` over a
   `CS_SuperBlob` holding a SHA-256 CodeDirectory and an empty requirements blob,

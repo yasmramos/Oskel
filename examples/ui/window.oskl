@@ -25,6 +25,9 @@ let root = ui.window("Oskel UI", 420, 240,
       clicks = clicks + 1;
       print("clicked " + str(clicks));
     }),
+    ui.checkbox("Track clicks", false, (checked) => {
+      print("tracking " + str(checked));
+    }),
   ]));
 
 // maxFrames <= 0 runs until the window closes or Escape is pressed.

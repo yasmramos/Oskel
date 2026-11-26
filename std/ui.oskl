@@ -15,6 +15,7 @@
 //     ui.column(8, [
 //       ui.text("Hello", 24),
 //       ui.button("OK", () => print("clicked")),
+//       ui.checkbox("Accept", false, (checked) => print(checked)),
 //     ]));
 //   ui.layout(root, 320, 200);
 //   for cmd in ui.commands(root) {
@@ -131,6 +132,32 @@ fn buttonStates(label, onClick, background, hoverBackground, pressedBackground,
   };
 }
 
+// A checkbox with a label. A click toggles `checked` and calls
+// `onChange(checked)`; the callback sees the new state.
+@MustUse
+fn checkbox(label, checked, onChange) {
+  return {
+    kind: "checkbox",
+    label: label,
+    checked: checked,
+    onChange: onChange,
+    size: 14,
+    box: 16,
+    gap: 8,
+    background: 0xFFE5E7EB,
+    hoverBackground: 0xFFD1D5DB,
+    pressedBackground: 0xFF9CA3AF,
+    checkedColor: 0xFF2563EB,
+    color: 0xFF000000,
+    hover: false,
+    pressed: false,
+    x: 0,
+    y: 0,
+    w: 0,
+    h: 0,
+  };
+}
+
 // --- measurement ------------------------------------------------------------
 
 fn _max(a, b) {
@@ -155,6 +182,11 @@ fn _measure(node, maxWidth, measure) {
   }
   if (node.kind == "button") {
     return [measure(node.label, node.size) + 24, int(node.size * 1.4) + 16];
+  }
+  if (node.kind == "checkbox") {
+    let labelWidth = measure(node.label, node.size);
+    return [node.box + node.gap + labelWidth,
+            _max(node.box, int(node.size * 1.4))];
   }
   if (node.kind == "spacer") {
     return [0, node.height];
@@ -282,6 +314,22 @@ fn _collect(node, out) {
     _push(out, "rect", node.x, node.y, node.w, node.h, fill, "", 0);
     _push(out, "text", node.x + 12, node.y + int((node.h + node.size) / 2),
           node.w - 24, node.size, node.color, node.label, node.size);
+  } else if (node.kind == "checkbox") {
+    var fill = node.background;
+    if (node.pressed) {
+      fill = node.pressedBackground;
+    } else if (node.hover) {
+      fill = node.hoverBackground;
+    }
+    _push(out, "rect", node.x, node.y, node.box, node.box, fill, "", 0);
+    if (node.checked) {
+      let inset = int(node.box / 4);
+      _push(out, "rect", node.x + inset, node.y + inset,
+            node.box - inset * 2, node.box - inset * 2, node.checkedColor, "", 0);
+    }
+    _push(out, "text", node.x + node.box + node.gap,
+          node.y + int((node.h + node.size) / 2), node.w - node.box - node.gap,
+          node.size, node.color, node.label, node.size);
   }
 }
 
@@ -299,13 +347,14 @@ fn _contains(node, x, y) {
   return x >= node.x && x < node.x + node.w && y >= node.y && y < node.y + node.h;
 }
 
-// The deepest button under `(x, y)`, or nil.
+// The deepest interactive widget (`button` or `checkbox`) under `(x, y)`, or
+// nil.
 @MustUse
 fn hitTest(node, x, y) {
   if (!_contains(node, x, y)) {
     return nil;
   }
-  if (node.kind == "button") {
+  if (node.kind == "button" || node.kind == "checkbox") {
     return node;
   }
   if (node.kind == "window" || node.kind == "padding") {
@@ -326,7 +375,7 @@ fn hitTest(node, x, y) {
 
 fn _setHover(node, x, y): bool {
   var changed = false;
-  if (node.kind == "button") {
+  if (node.kind == "button" || node.kind == "checkbox") {
     let next = _contains(node, x, y);
     if (node.hover != next) {
       node.hover = next;
@@ -346,7 +395,7 @@ fn _setHover(node, x, y): bool {
 
 fn _setPressed(node, x, y): bool {
   var changed = false;
-  if (node.kind == "button") {
+  if (node.kind == "button" || node.kind == "checkbox") {
     let next = _contains(node, x, y);
     if (node.pressed != next) {
       node.pressed = next;
@@ -366,7 +415,7 @@ fn _setPressed(node, x, y): bool {
 
 fn _clearPressed(node): bool {
   var changed = false;
-  if (node.kind == "button") {
+  if (node.kind == "button" || node.kind == "checkbox") {
     if (node.pressed) {
       node.pressed = false;
       changed = true;
@@ -383,14 +432,15 @@ fn _clearPressed(node): bool {
   return changed;
 }
 
-// Updates the hovered button under `(x, y)`. Returns whether a button changed
-// state, so a caller can decide to redraw.
+// Updates the hovered interactive widget under `(x, y)`. Returns whether a
+// widget changed state, so a caller can decide to redraw.
 @MustUse
 fn pointerMove(root, x, y): bool {
   return _setHover(root, x, y);
 }
 
-// Marks the button under `(x, y)` as pressed and clears every other button.
+// Marks the interactive widget under `(x, y)` as pressed and clears every
+// other one.
 @MustUse
 fn pointerDown(root, x, y): bool {
   let hovered = _setHover(root, x, y);
@@ -399,7 +449,7 @@ fn pointerDown(root, x, y): bool {
 }
 
 // Clears hover and pressed when the pointer leaves the window or the window
-// loses focus, so no button keeps a stale highlight.
+// loses focus, so no widget keeps a stale highlight.
 @MustUse
 fn pointerCancel(root): bool {
   let hovered = _setHover(root, -1, -1);
@@ -407,8 +457,9 @@ fn pointerCancel(root): bool {
   return hovered || pressed;
 }
 
-// Releases the pointer. The handler runs only when the press and the release
-// land on the same button; the pressed state is always cleared.
+// Releases the pointer. A button's `onClick` or a checkbox's `onChange` runs
+// only when the press and the release land on the same widget; the pressed
+// state is always cleared.
 @MustUse
 fn pointerUp(root, x, y): bool {
   _setHover(root, x, y);
@@ -421,13 +472,19 @@ fn pointerUp(root, x, y): bool {
   if (!pressed) {
     return false;
   }
+  if (hit.kind == "checkbox") {
+    hit.checked = !hit.checked;
+    let handler = hit.onChange;
+    handler(hit.checked);
+    return true;
+  }
   let handler = hit.onClick;
   handler();
   return true;
 }
 
 // A complete press/release at one point, for headless callers. Returns whether
-// the button's handler ran.
+// a handler ran or a checkbox changed state.
 @MustUse
 fn click(root, x, y): bool {
   _ = pointerDown(root, x, y);

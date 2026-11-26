@@ -46,8 +46,8 @@ fn frame(root, width, height, surface, canvas, pixels, texture, renderer): bool 
 }
 
 // Dispatch a complete press/release at window coordinates to the deepest
-// button. Returns true when a handler ran, so the caller can lay the tree out
-// again.
+// interactive widget. Returns true when a handler ran, so the caller can lay
+// the tree out again.
 fn click(root, x, y): bool {
   return ui.click(root, x, y);
 }
