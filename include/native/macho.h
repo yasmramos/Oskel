@@ -11,7 +11,9 @@
 // (one `__TEXT` segment with `__text` and, when present, `__const`, plus the
 // pcrel relocations of every `extern "C"` reference). The output is a
 // non-PIE `MH_EXECUTE` that imports libSystem through a non-lazy `__got` and
-// a `__stubs` entry per symbol, and enters at `main` through `LC_MAIN`.
+// a `__stubs` entry per symbol, enters at `main` through `LC_MAIN`, and ends
+// with an ad-hoc code signature (`LC_CODE_SIGNATURE`) over every page, because
+// the kernel refuses to start an image that carries none.
 //
 // A call reaches an import through `__stubs` (`X86_64_RELOC_BRANCH`) and a data
 // reference reaches the import's non-lazy pointer in `__got`

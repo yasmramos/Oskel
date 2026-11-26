@@ -19,6 +19,19 @@ may change between minor versions.
   layout, display list and pointer behavior; `native_build_ui.oskl` and the
   Skia fixtures pin the toggle, the cancellation on an outside release and the
   checked/unchecked pixels.
+- **A macOS image carries its own ad-hoc code signature (PHASE 10.3d.3).** The
+  Mach-O linker now closes the executable with an `LC_CODE_SIGNATURE` over a
+  `CS_SuperBlob` holding a SHA-256 CodeDirectory and an empty requirements blob,
+  the pair `ld64.lld` writes when it signs off-macOS. An unsigned image cannot
+  start on arm64 macOS, and on both architectures the signature is what lets
+  the kernel map a page executable. The gap was hidden by the test suite: the
+  macOS end-to-end case re-signed the image with `codesign --force --sign -`
+  before running it, so the linker never had to sign. It now runs `codesign
+  --verify --strict`, which recomputes every page hash and rejects one that does
+  not match. `native/codesign.h` is standalone (no engine code), `sha256` is
+  pinned against three FIPS 180-4 vectors, and `testCodeSignature` re-derives
+  every page hash from the finished file on every host, since a hash taken over
+  a stale buffer is invisible to a structural parse. ARM64 remains open.
 - **The async scheduler (PHASE 11.2.2): pending futures, `spawn`, `yield`.**
   Calling an `async fn` now returns a pending `Future` and enqueues its task;
   `spawn f()` enqueues explicitly, `yield()` lets the other ready tasks run,

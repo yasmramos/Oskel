@@ -1,5 +1,7 @@
 #include "native/macho.h"
 
+#include "native/codesign.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -25,6 +27,8 @@ constexpr std::uint32_t kUuid = 0x1B;
 constexpr std::uint32_t kBuildVersion = 0x32;
 constexpr std::uint32_t kMain = 0x80000028;
 constexpr std::uint32_t kDyldInfoOnly = 0x80000022;
+constexpr std::uint32_t kCodeSignature = 0x1D;
+constexpr std::uint32_t kLinkeditDataCommandSize = 16;
 constexpr std::uint32_t kHeaderSize = 32;
 constexpr std::uint32_t kSegmentCommandSize = 72;
 constexpr std::uint32_t kSectionSize = 80;
@@ -44,6 +48,9 @@ constexpr std::uint8_t kNExt = 0x01;
 constexpr std::uint8_t kNUndef = 0x00;
 constexpr std::uint8_t kNSect = 0x0E;
 constexpr std::uint8_t kRelocBranch = 2;
+// The identity an ad-hoc signature records. It is a label, not a certificate:
+// nothing signs it, and `codesign -dv` reports it as the image's identifier.
+constexpr const char* kSignatureIdentifier = "oskel";
 
 std::uint64_t alignUp(std::uint64_t value, std::uint64_t alignment) {
   return (value + alignment - 1) / alignment * alignment;
@@ -278,7 +285,7 @@ std::vector<std::uint8_t> linkMachOExecutable(
   const std::uint32_t sizeofcmds =
       kSegmentCommandSize + (kSegmentCommandSize + kSectionSize * textSections) +
       (kSegmentCommandSize + kSectionSize * dataSections) + kSegmentCommandSize + 24 +
-      dylinkerSize + dylibSize + 24 + 24 + 24 + 80 + 48;
+      dylinkerSize + dylibSize + 24 + 24 + 24 + 80 + 48 + kLinkeditDataCommandSize;
 
   const std::uint64_t textFileOffset = alignUp(kHeaderSize + sizeofcmds, 16);
   const std::uint64_t constFileOffset =
@@ -423,15 +430,24 @@ std::vector<std::uint8_t> linkMachOExecutable(
   const std::uint64_t stroff = symoff + symtab.size();
   const std::uint64_t indirectsymoff = stroff + strtab.size();
   const std::uint64_t bindoff = indirectsymoff + indirect.size();
-  const std::uint64_t linkeditSize = bindoff + bind.size() - linkeditFileOffset;
+  // The signature is the tail of __LINKEDIT, and its offset is also the
+  // CodeDirectory's `codeLimit`: it begins after every table it describes, so
+  // the offset is known before the signature is built and the slot count
+  // follows from it. That is the fixed point, and it settles in one step
+  // because nothing below the signature depends on its size.
+  const std::uint64_t signatureOffset = codesign::alignSignatureOffset(bindoff + bind.size());
+  const std::uint32_t signatureSlots = codesign::codeSlots(signatureOffset);
+  const std::uint64_t signatureBytes =
+      codesign::signatureSize(kSignatureIdentifier, signatureSlots);
+  const std::uint64_t linkeditSize = signatureOffset + signatureBytes - linkeditFileOffset;
   const std::uint64_t linkeditVmsize = alignUp(linkeditSize, kPageSize);
 
-  std::vector<std::uint8_t> out(static_cast<std::size_t>(linkeditFileOffset + linkeditSize), 0);
+  std::vector<std::uint8_t> out(static_cast<std::size_t>(signatureOffset + signatureBytes), 0);
   put32(out, 0, kMagic64);
   put32(out, 4, kCpuX86_64);
   put32(out, 8, kCpuSubtypeX86_64All);
   put32(out, 12, kFileTypeExecute);
-  put32(out, 16, 12);  // ncmds
+  put32(out, 16, 13);  // ncmds
   put32(out, 20, sizeofcmds);
   put32(out, 24, kMhFlags);
   put32(out, 28, 0);
@@ -587,6 +603,12 @@ std::vector<std::uint8_t> linkMachOExecutable(
   put32(out, cmd + 36, 0);
   put32(out, cmd + 40, 0);
   put32(out, cmd + 44, 0);
+  cmd += 48;
+  put32(out, cmd, kCodeSignature);
+  put32(out, cmd + 4, kLinkeditDataCommandSize);
+  put32(out, cmd + 8, static_cast<std::uint32_t>(signatureOffset));
+  put32(out, cmd + 12, static_cast<std::uint32_t>(signatureBytes));
+  cmd += kLinkeditDataCommandSize;
 
   std::memcpy(out.data() + textFileOffset, text.data(), text.size());
   if (hasConst) std::memcpy(out.data() + constFileOffset, object.rodata.data(), object.rodata.size());
@@ -596,6 +618,20 @@ std::vector<std::uint8_t> linkMachOExecutable(
   std::memcpy(out.data() + stroff, strtab.data(), strtab.size());
   if (!indirect.empty()) std::memcpy(out.data() + indirectsymoff, indirect.data(), indirect.size());
   if (!bind.empty()) std::memcpy(out.data() + bindoff, bind.data(), bind.size());
+
+  // The header, every load command and every table above are final, so the
+  // pages can be hashed. `code` is the image up to the signature, with its
+  // `LC_CODE_SIGNATURE` fields already written: they were derivable before the
+  // hash, so no field has to be zeroed or patched afterwards.
+  const std::vector<std::uint8_t> code(out.begin(), out.begin() + signatureOffset);
+  // The main executable starts at the beginning of __TEXT and spans the same
+  // pages; the kernel reads the entry point from these on arm64.
+  const std::vector<std::uint8_t> signature = codesign::adHocSignature(
+      code, kSignatureIdentifier, 0, textFileSize, codesign::kExecSegMainBinary);
+  if (signature.size() != signatureBytes) {
+    throw LinkError("internal: the signature size moved between layout and emission");
+  }
+  std::memcpy(out.data() + signatureOffset, signature.data(), signature.size());
   return out;
 }
 

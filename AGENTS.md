@@ -293,6 +293,21 @@ it as a caveat:
   keep its saved state *above* the outgoing stack slots (`[rbp-16]` in a 72-byte
   frame), never at `[rbp-48]`, and must read a length out of `rdx` before reusing
   `rdx` for `lpBuffer` -- both were real bugs in the file thunks.
+- A macOS image carries its own ad-hoc code signature (PHASE 10.3d.3) and the
+  end-to-end test must *verify* it, never add it. `build_hosted_own_macos` used
+  to run `codesign --force --sign -` on the linked image before executing it,
+  which made the suite green while the linker emitted no `LC_CODE_SIGNATURE` at
+  all -- a gap that only shows on a host that refuses an unsigned binary (arm64
+  macOS). A test step that patches the artifact it is about to check hides the
+  defect it should catch; `codesign --verify --strict` recomputes every page
+  hash, which no structural parse can do. The signature lives in
+  `native/codesign.h`, which is standalone like `bindgen` (no engine code), so
+  it can be unit-tested on Linux and its `sha256` is pinned against the FIPS
+  180-4 vectors. The layout is a fixed point: the signature starts at its own
+  `codeLimit`, so its offset follows from the tables already placed, and the
+  `LC_CODE_SIGNATURE` `dataoff`/`datasize` are written *before* hashing because
+  both derive from the image length -- never zero or patch a field after
+  hashing it, or the hash no longer covers the bytes on disk.
 - The hosted image is an object plus a link (PHASE 7f.4/7f.9), not a closed
   binary the emitter writes. `native/object.h` emits the target's container:
   ELF64 `ET_REL` on Linux (`.rela.text`, `R_X86_64_PLT32` for a call and

@@ -34,8 +34,11 @@
 // objects, `.pdata`/`.xdata` and `.tls` sections are rejected (PHASE 10.3b.4).
 // The macOS Mach-O container is PHASE 10.3d: it links a hosted `MH_EXECUTE`
 // from one `MH_OBJECT`, and `-r` combines several `MH_OBJECT` inputs into a new
-// `MH_OBJECT`. The ad-hoc code signature and ARM64 remain later slices. An
-// input this module does not understand is reported, never mis-linked.
+// `MH_OBJECT`. The executable carries its own ad-hoc code signature
+// (`native/codesign.h`, PHASE 10.3d.3): an `LC_CODE_SIGNATURE` over a SHA-256
+// CodeDirectory of every page, so no external `codesign` step stands between
+// the linker and a runnable image. ARM64 remains a later slice. An input this
+// module does not understand is reported, never mis-linked.
 struct LinkError : std::exception {
   explicit LinkError(std::string message) : message(std::move(message)) {}
   std::string message;
