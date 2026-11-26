@@ -905,6 +905,20 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     `recv.method(args)` to the method body with the receiver passed implicitly,
     removes it. Not a correctness bug, so no fixture pins it.
 
+36. **[P1] [done, partial]** A runtime error in a generated binary printed a
+    bare `oskel: <message>`, with no file or line, while the VM named both --
+    the one place where the VM was strictly better than the AOT binary. PHASE
+    7g.3 closes it: the lowering publishes the source line into a hidden global
+    before the instruction runs, and the single sink (`emitFailDynamic`) prints
+    `oskel: FILE:LINE: ` before the message. The store is deduplicated per line
+    change and forced at every jump target, since a fall-through path can skip
+    the store (an `if` inside a loop reported a stale line without it). The
+    source path travels in the `.oskc` chunk (format v2), so building from an
+    image emits the same bytes as building from the source and `oskc_parity`
+    stays exact; `--no-source-positions` reproduces the pre-7g.3 image byte for
+    byte. Remaining, tracked in `docs/aot-diagnostics.md` §4: the column, the
+    stack trace and the source snippet.
+
 ---
 
 ## 7. FFI (`src/runtime/ffi.cpp`)

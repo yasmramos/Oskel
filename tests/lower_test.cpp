@@ -80,6 +80,40 @@ static bool loweringThrows(const Bytecode& proto, const char* needle) {
 
 // --- Structural tests ---
 
+// PHASE 7g.3: position tracking is opt-in at lowering time. The invariant that
+// matters is that the *line numbers* in the bytecode cannot reach the image
+// unless the caller supplies a source path -- otherwise `AGENTS.md`'s
+// byte-for-byte guarantee for the freestanding output would depend on whatever
+// the compiler happened to record. So: lower one proto with real lines and one
+// with every line zeroed, no `DebugSource`, and require identical bytes. With a
+// source path, the same pair must differ (the stores are emitted).
+static void testDiagnosticsAreOptIn() {
+  Instruction load = instr(OpCode::LOADK, 0, 0);
+  Instruction jump = instr(OpCode::JMP, 0, 0, 0, 2);
+  Instruction halt = instr(OpCode::HALT);
+  Instruction plainLoad = load;
+  Instruction plainJump = jump;
+  Instruction plainHalt = halt;
+  load.line = 1;
+  jump.line = 2;
+  halt.line = 3;
+
+  const Bytecode withLines = makeProto({load, jump, halt},
+                                       {Value(static_cast<int64_t>(1))}, 1);
+  const Bytecode withoutLines = makeProto({plainLoad, plainJump, plainHalt},
+                                          {Value(static_cast<int64_t>(1))}, 1);
+
+  check(lowerToX64(Target::linuxX64(), withLines, CodeGen{}).code ==
+            lowerToX64(Target::linuxX64(), withoutLines, CodeGen{}).code,
+        "without a source path the line numbers must not reach the image");
+
+  check(lowerToX64(Target::linuxX64(), withLines, CodeGen{},
+                   LinkMode::Freestanding, DebugSource{"prog.oskl"}).code !=
+            lowerToX64(Target::linuxX64(), withoutLines, CodeGen{},
+                       LinkMode::Freestanding, DebugSource{"prog.oskl"}).code,
+        "with a source path the line numbers must reach the image");
+}
+
 static void testImageIsSelfContained() {
   // The image carries the program, the runtime and `_start`, so it is larger
   // than the program alone and both entry points are inside it.
@@ -1316,6 +1350,7 @@ static void testExecCompiledCapture() {
 #endif  // LOWER_EXEC_TESTS
 
 int main() {
+  testDiagnosticsAreOptIn();
   testImageIsSelfContained();
   testMemSizeTargetGate();
   testBackingTargetGates();

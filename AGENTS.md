@@ -179,6 +179,17 @@ it as a caveat:
   into a leaf that follows the C ABI instead is what made every string-building
   program crash the moment the first growth ran; if a helper needs to follow
   System V across an allocation, it must save its own state first.
+- A runtime error in a compiled binary names the source position
+  (`oskel: FILE:LINE: <message>`), so a failure is locatable without a
+  debugger (PHASE 7g.3). The lowering publishes the line into a hidden global
+  before the instruction runs, deduplicated per line change **and always
+  republished at a jump target** — a fall-through path can skip the store that
+  published, so an `if` inside a loop would otherwise report a stale line. The
+  path travels in the `.oskc` chunk, which is what makes a build from the image
+  emit the same bytes as a build from the source. `--no-source-positions`
+  drops both the store and the path and reproduces the historical freestanding
+  image byte for byte; that flag is the frozen-image escape hatch, and removing
+  it breaks the byte-for-byte contract below.
 - The AOT backend has two link modes (`LinkMode`, PHASE 7f.3/7f.4), chosen on
   the command line and never in the source: `freestanding` (the default on
   Linux and Windows) is the self-contained image (no libc, no linker, `ldd`
@@ -188,8 +199,10 @@ it as a caveat:
   Windows and bare metal; hosted: Linux, Windows and macOS x86-64) and an
   unsupported pair is reported, never emitted. macOS has no freestanding image,
   so `runBuildCommand` defaults its mode to `hosted` there (and an explicit
-  `--mode freestanding` is reported as unsupported). A change to the
-  freestanding path must keep the emitted binary byte for byte identical;
+  `--mode freestanding` is reported as unsupported). The freestanding program
+  code itself is never restructured; position tracking only adds stores and
+  blobs on top of it, and `--no-source-positions` reproduces the pre-7g.3
+  image byte for byte, which is how the frozen-output contract is checked.
   `oskel build --mode freestanding` is the explicit form.
 - A standard-library module that must work on both engines stays on the
   **portable primitive surface**: indexing and slicing (`s[i]`, `s[a:b]`),

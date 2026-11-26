@@ -2156,6 +2156,7 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.oskl"
         "-DOSKEL_EXPECTED_EXIT=70"
+        "-DOSKEL_CHECK_NO_POSITIONS=1"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/aot_runtime_error.cmake")
 
     # A read of a global before the assignment that fills it must fail at run

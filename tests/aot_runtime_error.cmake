@@ -76,3 +76,65 @@ if(NOT run_stderr MATCHES "${expected_message}")
     "the generated binary does not report the expected error:\n"
     "--- expected (regex) ---\n${expected_message}\n--- stderr ---\n${run_stderr}")
 endif()
+
+# PHASE 7g.3: the binary must name the source position, like the VM does, so a
+# runtime error is locatable without a debugger. The reference is the VM's own
+# report, which the harness already ran: `FILE:LINE:` there, `oskel: FILE:LINE:`
+# here.
+if(NOT vm_stderr STREQUAL "")
+  string(REGEX MATCH "^[:\n]*([^:\n]*):([0-9]+):" vm_position "${vm_stderr}")
+  if(vm_position)
+    set(vm_line "${CMAKE_MATCH_2}")
+    get_filename_component(vm_file "${OSKEL_SCRIPT}" NAME)
+    if(NOT run_stderr MATCHES "oskel: [^:\n]*${vm_file}:${vm_line}:")
+      message(FATAL_ERROR
+        "the generated binary does not name the failing position "
+        "(${vm_file}:${vm_line}):\n--- stderr ---\n${run_stderr}")
+    endif()
+  endif()
+endif()
+
+# `--no-source-positions` is the escape hatch that reproduces the frozen
+# freestanding image byte for byte (AGENTS.md). It must drop the position from
+# the report *and* change the emitted bytes -- a flag that silently did nothing
+# would leave the frozen-image guarantee untested.
+if(DEFINED OSKEL_CHECK_NO_POSITIONS)
+  set(frozen "${CMAKE_CURRENT_BINARY_DIR}/${OSKEL_TEST_NAME}-frozen${exe_suffix}")
+  file(REMOVE "${frozen}")
+  execute_process(
+    COMMAND "${OSKEL_EXE}" build "${OSKEL_SCRIPT}" -o "${frozen}"
+            --no-source-positions
+    RESULT_VARIABLE frozen_build_exit
+    OUTPUT_VARIABLE frozen_build_stdout
+    ERROR_VARIABLE frozen_build_stderr
+  )
+  if(NOT frozen_build_exit EQUAL 0)
+    message(FATAL_ERROR
+      "oskel build --no-source-positions exited ${frozen_build_exit}\n"
+      "--- stderr ---\n${frozen_build_stderr}")
+  endif()
+  execute_process(
+    COMMAND "${frozen}"
+    RESULT_VARIABLE frozen_exit
+    OUTPUT_VARIABLE frozen_stdout
+    ERROR_VARIABLE frozen_stderr
+  )
+  if(NOT frozen_exit EQUAL OSKEL_EXPECTED_EXIT)
+    message(FATAL_ERROR
+      "the frozen binary exited ${frozen_exit}, expected ${OSKEL_EXPECTED_EXIT}")
+  endif()
+  if(frozen_stderr MATCHES "oskel: [^:\n]*:[0-9]+:")
+    message(FATAL_ERROR
+      "--no-source-positions still names a position:\n${frozen_stderr}")
+  endif()
+  if(NOT frozen_stderr MATCHES "oskel: ")
+    message(FATAL_ERROR
+      "the frozen binary lost the position but not the tool prefix:\n"
+      "${frozen_stderr}")
+  endif()
+  file(SIZE "${out}" debug_size)
+  file(SIZE "${frozen}" frozen_size)
+  if(debug_size EQUAL frozen_size)
+    message(FATAL_ERROR "--no-source-positions did not change the image")
+  endif()
+endif()

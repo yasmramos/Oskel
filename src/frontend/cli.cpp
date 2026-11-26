@@ -729,12 +729,12 @@ int linkHostedObject(const std::string &objectPath, const std::string &output,
 // Returns 0 on success, 65 for a lowering error and 74 for a write failure.
 int emitNativeImage(const Bytecode &bytecode, const std::string &output,
                     const Target &target, LinkMode mode, Linker linker,
-                    bool emitObject, bool autoHostedForUi,
+                    bool emitObject, bool autoHostedForUi, bool sourcePositions,
                     const UiRequirements &ui,
                     const std::vector<std::string> &linkLibs,
                     const std::vector<std::string> &libraryPaths,
                     const std::vector<std::string> &linkObjects,
-                    const std::string &tool) {
+                    const std::string &tool, const std::string &sourceName) {
   std::vector<std::uint8_t> image;
   const bool usesUi = ui.any() && !isWasmTarget(target);
   std::vector<std::string> effectiveLinkLibs = linkLibs;
@@ -784,7 +784,16 @@ int emitNativeImage(const Bytecode &bytecode, const std::string &output,
       }
       return 0;
     }
-    LoweredChunk chunk = lowerToX64(target, bytecode, CodeGen{}, mode);
+    // A runtime error names the source the program was compiled from
+    // (PHASE 7g.3). The chunk's own `sourcePath` wins: when the input is an
+    // `.oskc` image, `sourceName` is the image's path, but the program's
+    // position belongs to the `.oskl` the image was compiled from. Building
+    // from the image and from the source therefore emit the same binary.
+    const std::string &origin =
+        bytecode.sourcePath.empty() ? sourceName : bytecode.sourcePath;
+    LoweredChunk chunk = lowerToX64(
+        target, bytecode, CodeGen{}, mode,
+        DebugSource{sourcePositions ? origin : std::string()});
     if (mode == LinkMode::Hosted) {
       // The hosted image is an object a linker closes against libc (PHASE 7f.4).
       // The object emitter turns the code buffer's external references into
@@ -888,7 +897,7 @@ int emitNativeImage(const Bytecode &bytecode, const std::string &output,
 int buildBinary(const std::string &source, const std::string &name,
                 const std::string &output, const std::string &argv0,
                 const Target &target, LinkMode mode, Linker linker,
-                bool emitObject, bool autoHostedForUi,
+                bool emitObject, bool autoHostedForUi, bool sourcePositions,
                 const std::vector<std::string> &linkLibs,
                 const std::vector<std::string> &libraryPaths,
                 const std::vector<std::string> &linkObjects,
@@ -932,6 +941,10 @@ int buildBinary(const std::string &source, const std::string &name,
   try {
     compiler.setImportLoader(makeImportLoader(resolver));
     bytecode = compiler.compile(program);
+    // The chunk remembers where it came from: a runtime error in a generated
+    // binary names this path, and the `.oskc` image carries it so building from
+    // the image reproduces the same binary (PHASE 7g.3).
+    bytecode.sourcePath = name;
   } catch (const CompileError &error) {
     printCompileError(name, source, error, platformPosix());
     return 65;
@@ -942,8 +955,8 @@ int buildBinary(const std::string &source, const std::string &name,
 
   return emitNativeImage(
       bytecode, output, target, mode, linker, emitObject, autoHostedForUi,
-      uiRequirements(compiler.loadedModulePaths(), bytecode), linkLibs,
-      libraryPaths, linkObjects, tool);
+      sourcePositions, uiRequirements(compiler.loadedModulePaths(), bytecode),
+      linkLibs, libraryPaths, linkObjects, tool, name);
 }
 
 // Reads a `.oskc` image and prepares it for a destination.
@@ -1015,7 +1028,7 @@ bool loadBytecodeImage(const std::string &path, const ffi::AbiCapabilities &dest
 // malformed file and 74 for a write failure.
 int buildBinaryFromBytecode(const std::string &path, const std::string &output,
                             const Target &target, LinkMode mode, Linker linker,
-                            bool emitObject,
+                            bool emitObject, bool sourcePositions,
                             const std::vector<std::string> &linkLibs,
                             const std::vector<std::string> &libraryPaths,
                             const std::vector<std::string> &linkObjects,
@@ -1025,9 +1038,9 @@ int buildBinaryFromBytecode(const std::string &path, const std::string &output,
   if (!loadBytecodeImage(path, targetAbiCapabilities(target), chunk, needs, tool))
     return 66;
   return emitNativeImage(chunk, output, target, mode, linker, emitObject,
-                         /*autoHostedForUi=*/true,
+                         /*autoHostedForUi=*/true, sourcePositions,
                          UiRequirements::fromBits(needs), linkLibs,
-                         libraryPaths, linkObjects, tool);
+                         libraryPaths, linkObjects, tool, path);
 }
 
 // Compiles `source` to a `.oskc` image and writes it to `output`.
@@ -1080,6 +1093,10 @@ int emitBytecodeFile(const std::string &source, const std::string &name,
   try {
     compiler.setImportLoader(makeImportLoader(resolver));
     bytecode = compiler.compile(program);
+    // The chunk remembers where it came from: a runtime error in a generated
+    // binary names this path, and the `.oskc` image carries it so building from
+    // the image reproduces the same binary (PHASE 7g.3).
+    bytecode.sourcePath = name;
   } catch (const CompileError &error) {
     printCompileError(name, source, error, platformPosix());
     return 65;
@@ -1162,6 +1179,7 @@ int runBuildCommand(const std::vector<std::string> &arguments,
   Target buildTarget = hostTarget();
   LinkMode buildMode = LinkMode::Freestanding;
   bool buildModeExplicit = false;
+  bool buildSourcePositions = true;
   Linker buildLinker = Linker::Host;
   bool buildEmitObject = false;
   std::vector<std::string> buildLinkLibs;
@@ -1192,6 +1210,10 @@ int runBuildCommand(const std::vector<std::string> &arguments,
                   << targetName(Target::wasm32()) << ")\n";
         return 64;
       }
+      continue;
+    }
+    if (arg == "--no-source-positions") {
+      buildSourcePositions = false;
       continue;
     }
     if (arg == "--mode") {
@@ -1350,7 +1372,8 @@ int runBuildCommand(const std::vector<std::string> &arguments,
   // use anywhere" path -- the file written on one machine builds on another.
   if (isBytecodeImagePath(buildFile)) {
     return buildBinaryFromBytecode(buildFile, buildOutput, buildTarget, buildMode,
-                                   buildLinker, buildEmitObject, buildLinkLibs,
+                                   buildLinker, buildEmitObject,
+                                   buildSourcePositions, buildLinkLibs,
                                    buildLibraryPaths, buildLinkObjects, tool);
   }
   std::string buildSource;
@@ -1360,6 +1383,6 @@ int runBuildCommand(const std::vector<std::string> &arguments,
   }
   return buildBinary(buildSource, buildFile, buildOutput, argv0, buildTarget,
                      buildMode, buildLinker, buildEmitObject,
-                     !buildModeExplicit, buildLinkLibs, buildLibraryPaths,
-                     buildLinkObjects, tool);
+                     !buildModeExplicit, buildSourcePositions, buildLinkLibs,
+                     buildLibraryPaths, buildLinkObjects, tool);
 }

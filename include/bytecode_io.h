@@ -76,7 +76,10 @@
 // the values `LOADK` can load, and the serializer rejects anything else instead
 // of writing a file the loader could not rebuild.
 
-constexpr std::uint32_t kOskcVersion = 1;
+// Version 2 adds the chunk's `sourcePath`, so a binary built from an image
+// reports the same source position as one built from the source (PHASE 7g.3).
+// The header stays fixed width: the path is a chunk field, not a header one.
+constexpr std::uint32_t kOskcVersion = 2;
 
 // The header is fixed width: magic, version, reserved flags, ABI bits and
 // requirement bits. The tests and any external reader use this rather than a
