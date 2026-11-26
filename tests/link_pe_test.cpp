@@ -10,6 +10,12 @@
 
 namespace {
 
+// COFF characteristics and DLL characteristics this image relies on; spelled
+// out here so the test states the loader contract rather than importing it.
+constexpr std::uint16_t kRelocsStripped = 0x0001;
+constexpr std::uint16_t kNxCompat = 0x0100;
+constexpr std::uint16_t kDynamicBase = 0x0040;
+
 int failures = 0;
 
 void check(bool condition, const std::string& message) {
@@ -247,6 +253,15 @@ void testContainerStructure() {
   check(sizeOfHeaders != 0 && sizeOfHeaders <= pe.size(), "SizeOfHeaders fits in the file");
   check(read16(pe, 0x58 + 108) == 16, "sixteen data directories");
 
+  // A fixed-base image: the emitter resolves every reference at link time and
+  // strips the relocation table, so the loader must not try to move it. Setting
+  // DYNAMIC_BASE alongside RELOCS_STRIPPED asks for exactly that and the process
+  // is terminated with a relocation error before main runs.
+  check(read16(pe, 0x56) & kRelocsStripped, "the relocation table is stripped");
+  check((read16(pe, 0x58 + 70) & kDynamicBase) == 0,
+        "a stripped image does not claim to be relocatable");
+  check(read16(pe, 0x58 + 70) & kNxCompat, "the image asks for a non-executable stack");
+
   // Walk the section table: every section must lie inside the file and inside
   // the image, and its RVA must be page aligned.
   const std::size_t sectionCount = read16(pe, 0x46);
@@ -314,6 +329,13 @@ void testContainerStructure() {
         break;
       }
       if (name < idataRva || name >= idataRva + idataSize) {
+        terminated = false;
+        break;
+      }
+      // The loader binds through FirstThunk; a descriptor that names a DLL but
+      // carries no address table imports nothing and the image faults on the
+      // first call.
+      if (firstThunk < idataRva || firstThunk >= idataRva + idataSize) {
         terminated = false;
         break;
       }
