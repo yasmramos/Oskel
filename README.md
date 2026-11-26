@@ -36,6 +36,12 @@ for language in languages {
 - Error handling as values: `error(message, code?)`, `isError`, `pcall`, `try`/`catch` and `@MustUse`.
 - Modules with Java-style `import`, and C interop via `extern "C"` / `native fn`.
 - Built-in standard library: strings, arrays, maps, math, files, console and utilities.
+- **SQLite3 (`std.sqlite`)**: a `Database`/`Statement` wrapper over
+  `bindgen`-generated C declarations, with positional parameters,
+  transactions and TEXT/BLOB round trips. It is a host binding: the VM links
+  SQLite3 when CMake finds it, a native binary uses
+  `oskel build --mode hosted --link-lib sqlite3`, and a freestanding image
+  rejects the used symbols with exit 65. See [SQLite](docs/sqlite.md).
 - Interactive REPL with session state, commands and expression evaluation.
 - **Ahead-of-time native compilation**: `oskel build file.oskl` emits a
   self-contained static executable (no libc, no runtime to install; `ldd`
@@ -460,10 +466,15 @@ needs the bundled SDL3 and Skia libraries.
 - The streaming and directory file builtins need a filesystem. They are seeded
   on Linux freestanding, Windows freestanding and hosted builds; bare metal
   rejects a use by name.
-- `args()` is available where the entry point receives an argument vector
-  (Linux and Windows, freestanding or hosted). `memSize()` is bare-metal only.
+- `args()` is available where the entry point receives an argument vector:
+  Linux freestanding and hosted, and Windows hosted. The freestanding Windows
+  image has no command line. `memSize()` is bare-metal only.
 - `std.ui` is pure Oskel and portable. `std.ui.window` needs the bundled SDL3
   and Skia bridge and therefore a hosted build.
+- `std.sqlite` is a host binding over SQLite3: the VM links the library when
+  CMake finds it, a native binary needs `--mode hosted --link-lib sqlite3`, and
+  a freestanding image rejects the used symbols with exit 65. WASM has no
+  binding.
 - WASM imports `oskel.write`, `oskel.exit`, `oskel.time` and `oskel.clock`;
   a WASM host supplies them.
 

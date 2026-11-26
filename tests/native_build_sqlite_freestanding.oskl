@@ -1,0 +1,8 @@
+// `std.sqlite` is a host binding: the freestanding AOT image has no host, so
+// a used `sqlite3_*`/`memcpy` symbol must be a build error with the dedicated
+// message and exit 65, never a mis-compiled image. Driven by
+// `tests/build_error.cmake` as `oskel.build_sqlite_freestanding`.
+import std.sqlite;
+
+let db = sqlite.Database(":memory:");
+db.close();
