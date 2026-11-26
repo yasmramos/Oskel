@@ -3564,6 +3564,7 @@ oskelc <file.oskl>         the same compiler without the interpreter
 | `-o`, `--output <file>` | Output path for `build`/`oskelc` (default: the script's base name). |
 | `--target <name>` | Build target for `build`/`oskelc` (default: the host). |
 | `--mode <name>` | Link mode for `build`/`oskelc` (default: `freestanding`). |
+| `--no-source-positions` | Omits `FILE:LINE` from a runtime error so the binary reproduces the frozen freestanding image byte for byte. |
 | `--link-lib <name>` | Library for the hosted link (repeatable), e.g. `SDL3`. |
 | `-L`, `--library-path <dir>` | Where the hosted link finds `lib<name>.so` (repeatable). |
 | `--link-object <file>` | Extra object or `ar` archive for the hosted link (repeatable). Requires `--mode hosted`; not with `--emit-object`. |
@@ -3658,6 +3659,15 @@ oskel build app.oskl --mode hosted         # links libc (FFI; PHASE 7f.4)
 oskel build app.oskl -o app                # std.ui: hosted + bundled SDL3/Skia
 oskel build app.oskl --mode hosted --link-lib SDL3 -o app   # custom SDL3
 ```
+
+`--no-source-positions` drops the source position from a runtime error: the
+binary then reports `oskel: <message>` instead of
+`oskel: FILE:LINE: <message>`. The position costs one hidden global store per
+line change and the path bytes, so this is the switch that reproduces the
+freestanding image byte for byte when the freestanding emitter must stay frozen.
+It is the only reason the image is not identical by default: without it, the
+emitted code carries the position, which is what makes a compiled program
+debuggable.
 
 `--link-lib <name>` adds a library to the hosted link as `-l<name>`, which is
 how an `extern "C"` symbol that lives in a third-party library resolves. It is
@@ -4025,7 +4035,7 @@ oskel build app.oskc -o app        # the same, through the alias
 | Offset | Size | Field |
 |--------|------|-------|
 | 0 | 4 | Magic `OSKC` |
-| 4 | 4 | Format version (`kOskcVersion`, currently 1) |
+| 4 | 4 | Format version (`kOskcVersion`, currently 2) |
 | 8 | 4 | Reserved flags, must be 0 |
 | 12 | 4 | FFI capability bits the chunk needs (see below) |
 | 16 | 4 | Requirement bits (see below) |
@@ -4038,10 +4048,17 @@ layout and therefore the version.
 length and its bytes), its frame counts, its variadic flag, its instruction
 stream, its constant pool, its child protos, its upvalue descriptors, its
 `extern "C"` declarations and its compiler bookkeeping (`nativeFns`,
-`nativeUses`, `usedMethods`). Every instruction records its source line and
-column, so a runtime error in a program loaded from an image still names the
-place in the original source. The source text itself is not stored; the name is,
-which is what the diagnostics print.
+`nativeUses`, `usedMethods`), then the path of the source it was compiled from.
+Every instruction records its source line and column, so a runtime error in a
+program loaded from an image still names the place in the original source. The
+source text itself is not stored; the name is, which is what the diagnostics
+print.
+
+The per-proto source path matters to the AOT backend: a generated binary embeds
+it, and a runtime error prints `oskel: FILE:LINE: <message>`. Storing it in the
+image is what makes `oskel build app.oskl` and `oskel build app.oskc` emit the
+same bytes -- without it the image build would name the `.oskc`, and the parity
+test would catch the difference.
 
 A constant is tagged by kind — `nil`, `bool`, `int`, `float`, `double`, `str` —
 and the writer refuses a value `LOADK` could not rebuild (an array, a map), so a

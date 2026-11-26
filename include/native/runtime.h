@@ -702,6 +702,13 @@ struct AotRuntimeExtras {
   // when some `GETGLOBAL` can reach a slot nothing has assigned, so a program
   // that assigns before it reads keeps its image byte for byte.
   bool needsGlobalGetChecked = false;
+  // PHASE 7g.3: the source path a runtime error names. Null (or empty) leaves
+  // the sink exactly as it was -- `oskel: <message>` with no position -- so a
+  // caller that wants no diagnostics gets the byte-identical image.
+  const char* sourcePath = nullptr;
+  // The hidden global the lowering publishes the current source line into, or
+  // -1 when no position tracking is emitted.
+  int sourceLineSlot = -1;
 };
 
 void emitAotRuntime(CodeGen& code, const AotRuntimeHandles& handles,

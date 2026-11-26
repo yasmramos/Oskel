@@ -150,8 +150,10 @@ struct Instruction {
   // longer overloads it as an output register.
   int d = 0;
   int e = 0;
-  // Source position, used only for runtime diagnostics. Native codegen in
-  // PHASE 7 ignores these fields.
+  // Source position, used only for runtime diagnostics. The VM draws its carets
+  // from it; the native backend publishes the line into a hidden global so a
+  // runtime error in the generated binary can name it (PHASE 7g.3), and ignores
+  // `col`.
   int line = 0;
   int col = 0;
 };
@@ -240,6 +242,13 @@ struct Bytecode {
   int numRegisters = 0;
   // Number of local cells the frame needs.
   int numLocals = 0;
+  // The source file this chunk was compiled from, as the command line spelled
+  // it (PHASE 7g.3). A runtime error in an AOT binary names it, and an `.oskc`
+  // image carries it so a binary built from the image reports the same
+  // position -- and is byte for byte the binary built from the source. Empty
+  // for a chunk built by hand (the compiler tests), which keeps those images
+  // unchanged.
+  std::string sourcePath;
 };
 
 // Resets the bytecode while keeping the capacity of its containers.

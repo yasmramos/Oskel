@@ -490,6 +490,30 @@ void emitWriteToFd(CodeGen& cg, CodeGen::Label writeLabel, std::int64_t fd) {
   }
 }
 
+// Emits a write of the decimal form of `reg` (taken as non-negative) to fd 2.
+// It builds the digits downward from `[rbp - 16]`, which the caller must have
+// covered by lowering `rsp` past it first. Clobbers rdi, rsi, rdx, r10, rax,
+// rcx and r8.
+void emitWriteUnsignedDecimal(CodeGen& cg, CodeGen::Label writeLabel, X64Reg reg) {
+  constexpr std::int32_t kScratch = -16;  // one past the last digit
+  CodeGen::Label loop = cg.newLabel();
+
+  cg.movReg(Rax, reg);
+  cg.leaMem(R8, Rbp, kScratch);
+  cg.bind(loop);
+  cg.movImm(Rcx, 10);
+  cg.divUnsigned(Rcx);  // rax /= 10, rdx = digit (rdx pre-zeroed)
+  cg.addImm32(Rdx, static_cast<std::int32_t>('0'));
+  cg.subRegImm32(R8, 1);
+  cg.movByteToMem(R8, 0, Rdx);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, loop);
+  cg.movReg(Rdi, R8);
+  cg.leaMem(Rsi, Rbp, kScratch);
+  cg.subReg(Rsi, R8);
+  emitWriteToFd(cg, writeLabel, 2);
+}
+
 // Emits `call fail(message)`: loads the message address and length, then calls
 // the shared fail helper. Never returns.
 void emitFailCall(CodeGen& cg, CodeGen::Label fail, const DataBlob& message) {
@@ -11939,6 +11963,19 @@ void emitChrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
   emitArityFailCall(cg, msgArgc);
 }
 
+// The blobs and the hidden global a diagnostic-enabled sink needs to print
+// `oskel: FILE:LINE: ` before the message (PHASE 7g.3). The line is read from
+// `lineSlot` at the moment of the failure: the lowering stores the source line
+// of the instruction it is about to run there before it runs it, so the value
+// the sink sees is the line of the failing instruction. All four blobs live in
+// the image and are addressed by label, like every other message.
+struct DebugSink {
+  int lineSlot = -1;   // hidden global holding the current source line
+  DataBlob path;       // the source path as the command line spelled it
+  DataBlob separator;  // `:` before the number and `: ` after it, split
+  DataBlob tail;       // so the digits can go in between
+};
+
 // `void oskel_fail_dynamic(char* text, long length)`: the one runtime-error
 // sink. It writes `oskel: ` + text + newline to stderr and exits 70 -- unless a
 // `pcall` is active, in which case it hands the text to the innermost one and
@@ -11951,9 +11988,9 @@ void emitChrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
 // record, restores the `pcall` frame's `rsp`/`rbp` and jumps to its resume
 // address. That is the one non-local return in the AOT runtime (BACKLOG §6 item
 // 4). A program that never calls `pcall` keeps a sink with no handler check.
-void emitFailDynamic(CodeGen& cg, CodeGen::Label label, CodeGen::Label write,
-                     CodeGen::Label exit, const DataBlob& prefix, const DataBlob& newline,
-                     int handlerSlot) {
+void emitFailDynamic(CodeGen& cg, CodeGen::Label label, CodeGen::Label write, CodeGen::Label exit,
+                     const DataBlob& prefix, const DataBlob& newline, int handlerSlot,
+                     const DebugSink* debug = nullptr) {
   CodeGen::Label toHandler = cg.newLabel();
 
   cg.bind(label);
@@ -11969,9 +12006,36 @@ void emitFailDynamic(CodeGen& cg, CodeGen::Label label, CodeGen::Label write,
     cg.jcc(Jcc::Ne, toHandler);
   }
 
-  cg.leaRipLabel(Rdi, prefix.label);
-  cg.movImm(Rsi, static_cast<std::int64_t>(prefix.text.size()));
-  emitWriteToFd(cg, write, 2);
+  if (debug != nullptr) {
+    // `oskel: ` first, so the line still starts with the word every existing
+    // fixture greps for, then the position: `FILE:` `LINE` `: `.
+    cg.leaRipLabel(Rdi, prefix.label);
+    cg.movImm(Rsi, static_cast<std::int64_t>(prefix.text.size()));
+    emitWriteToFd(cg, write, 2);
+    cg.leaRipLabel(Rdi, debug->path.label);
+    cg.movImm(Rsi, static_cast<std::int64_t>(debug->path.text.size()));
+    emitWriteToFd(cg, write, 2);
+    cg.leaRipLabel(Rdi, debug->separator.label);
+    cg.movImm(Rsi, static_cast<std::int64_t>(debug->separator.text.size()));
+    emitWriteToFd(cg, write, 2);
+    // The formatter builds its digits below rbp, so the space has to be
+    // reserved: a `call` would otherwise push a return address over them. The
+    // line is loaded into rax immediately before the formatter, which moves it
+    // to rax itself, so no register has to hold it across a call (r13 is the
+    // arena cursor and must not be reused here).
+    cg.subRegImm32(Rsp, 32);
+    cg.movFromMem(Rax, kAotGlobalBase, 16LL * debug->lineSlot + 8);
+    emitWriteUnsignedDecimal(cg, write, Rax);
+    cg.addImm32(Rsp, 32);
+    cg.leaRipLabel(Rdi, debug->tail.label);
+    cg.movImm(Rsi, static_cast<std::int64_t>(debug->tail.text.size()));
+    emitWriteToFd(cg, write, 2);
+  } else {
+    cg.leaRipLabel(Rdi, prefix.label);
+    cg.movImm(Rsi, static_cast<std::int64_t>(prefix.text.size()));
+    emitWriteToFd(cg, write, 2);
+  }
+
   cg.movReg(Rdi, Rbx);
   cg.movReg(Rsi, R12);
   emitWriteToFd(cg, write, 2);
@@ -19065,8 +19129,17 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
 
   // The public builtins (PHASE 7c.5a). `str` and `isError` reuse the `$str` and
   // `$isError` code: the public names are just two more seeds of the same entry.
+  DebugSink debugSink;
+  const bool wantsDebug =
+      extras.sourcePath != nullptr && extras.sourcePath[0] != '\0' && extras.sourceLineSlot >= 0;
+  if (wantsDebug) {
+    debugSink.lineSlot = extras.sourceLineSlot;
+    debugSink.path = addText(extras.sourcePath);
+    debugSink.separator = addText(":");
+    debugSink.tail = addText(": ");
+  }
   emitFailDynamic(cg, failDynamic, entry.write, entry.exit, textOskelPrefix, textNewline,
-                  pcallHandlerSlot);
+                  pcallHandlerSlot, wantsDebug ? &debugSink : nullptr);
   emitLenBuiltin(cg, handles.lenBuiltin, env, msgLenType, msgLenArgc);
   emitTypeBuiltin(cg, handles.typeBuiltin, handles.alloc, fail, msgOom, typeNameNil,
                   typeNameBool, typeNameInt, typeNameFloat, typeNameDouble, typeNameStr,

@@ -33,7 +33,7 @@
 
 namespace {
 
-const char *kUsage =
+const char* kUsage =
     "usage:\n"
     "  oskel                      start the interactive REPL\n"
     "  oskel <file.oskl> [args]   run a script\n"
@@ -54,6 +54,8 @@ const char *kUsage =
     "                            wasm32-freestanding-wasm (WebAssembly)\n"
     "  --mode <name>             link mode for `build` (default: freestanding);\n"
     "                            freestanding (self-contained) or hosted (links libc)\n"
+    "  --no-source-positions     omit FILE:LINE from a runtime error (frozen\n"
+    "                            freestanding image)\n"
     "  --link-lib <name>         library for the hosted link (repeatable), e.g. SDL3\n"
     "  -L, --library-path <dir>  where the hosted link finds lib<name>.so (repeatable)\n"
     "  --link-object <file>      extra object or ar archive for the hosted link (repeatable)\n"
