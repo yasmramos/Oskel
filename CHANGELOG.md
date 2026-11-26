@@ -11,6 +11,14 @@ may change between minor versions.
 
 ### Added
 
+- **`std.ui` adds a checkbox widget.** `ui.checkbox(label, checked, onChange)`
+  measures as a 16 px box plus the label, paints the box in its normal, hover
+  and pressed shades, fills an inner square when checked, and calls
+  `onChange(checked)` after a click toggles the state. The widget is Oskel over
+  the portable primitive surface, so the VM and `oskel build` share the same
+  layout, display list and pointer behavior; `native_build_ui.oskl` and the
+  Skia fixtures pin the toggle, the cancellation on an outside release and the
+  checked/unchecked pixels.
 - **The async scheduler (PHASE 11.2.2): pending futures, `spawn`, `yield`.**
   Calling an `async fn` now returns a pending `Future` and enqueues its task;
   `spawn f()` enqueues explicitly, `yield()` lets the other ready tasks run,
