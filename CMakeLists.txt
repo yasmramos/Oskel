@@ -278,6 +278,43 @@ if(OSKEL_ENABLE_SDL3)
   endif()
 endif()
 
+# --------------------------------------------------------------------------- SQLite3 (optional)
+# `std/sqlite.oskl` binds SQLite3's C API through
+# `std/internal/sqlite_bindings.oskl`. The module is always installed; the
+# engine links SQLite3 when CMake finds it, so the development VM can resolve
+# the `sqlite3_*` symbols through `Platform::lookupSymbol`. A program that does
+# not import `std.sqlite` never touches the library. A native binary needs
+# `oskel build --mode hosted --link-lib sqlite3`.
+option(OSKEL_ENABLE_SQLITE "Enable SQLite3 for std.sqlite" ON)
+set(OSKEL_SQLITE_FOUND FALSE)
+if(OSKEL_ENABLE_SQLITE)
+  find_package(SQLite3 QUIET)
+  if(SQLite3_FOUND)
+    set(OSKEL_SQLITE_FOUND TRUE)
+    if(UNIX AND NOT APPLE)
+      # The engine resolves the symbols with `dlsym(RTLD_DEFAULT)`; a library
+      # nothing references at link time would otherwise be dropped by
+      # `--as-needed`, and the symbols would be absent from the process.
+      target_link_libraries(oskel PRIVATE "-Wl,--no-as-needed" SQLite::SQLite3)
+    else()
+      target_link_libraries(oskel PRIVATE SQLite::SQLite3)
+    endif()
+    # The VM reaches the symbols through the platform lookup (on Windows a
+    # static SQLite is in the executable, so its symbols must be exported).
+    set_target_properties(oskel PROPERTIES ENABLE_EXPORTS ON)
+    if(WIN32)
+      add_custom_command(TARGET oskel POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:SQLite::SQLite3>"
+                "$<TARGET_FILE_DIR:oskel>"
+        VERBATIM)
+    endif()
+    message(STATUS "SQLite3 found: std.sqlite enabled in the development engine")
+  else()
+    message(STATUS "SQLite3 not found: std.sqlite runtime tests skipped (set OSKEL_ENABLE_SQLITE=OFF to silence)")
+  endif()
+endif()
+
 # --------------------------------------------------------------------------- Skia (optional)
 # `std/internal/skia.oskl` is the raster backend for `std.ui`. The checked-in
 # module needs no Skia to compile; building the C++ shim needs Skia headers and
@@ -923,6 +960,47 @@ if(BUILD_TESTING)
           "-DSDL3_LIBRARY_DIR=${OSKEL_TEST_SDL3_LIBRARY_DIR}"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_sdl.cmake")
     endif()
+  endif()
+
+  # --- SQLite3 bindings (`std/internal/sqlite_bindings.oskl`) ---
+  # The generated module and the public wrapper compile on every platform; the
+  # runtime tests need the development engine linked against SQLite3.
+  add_test(NAME sqlite.bindgen
+    COMMAND ${CMAKE_COMMAND}
+      "-DBINDGEN=$<TARGET_FILE:bindgen>"
+      "-DHEADER=bindings/sqlite/sqlite3_subset.h"
+      "-DMODULE=${CMAKE_CURRENT_SOURCE_DIR}/std/internal/sqlite_bindings.oskl"
+      "-DWORKING_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/check_sqlite_bindings.cmake")
+  if(OSKEL_SQLITE_FOUND)
+    # `80_std_sqlite` is registered by the script glob below; this is the
+    # hosted AOT parity run. It needs an x86-64 host and a C toolchain; the
+    # Windows runner has no SQLite3 package, so the block stays on Linux and
+    # macOS. `oskel.build_sqlite_freestanding` still runs on Windows.
+    if((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin") AND
+       CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+      add_test(NAME oskel.build_hosted_sqlite
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_hosted_sqlite"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/80_std_sqlite.oskl"
+          "-DC_COMPILER=${CMAKE_C_COMPILER}"
+          "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_sqlite.cmake")
+    endif()
+  endif()
+
+  # The freestanding image has no host, so a used `std.sqlite` symbol must fail
+  # with the dedicated message and exit 65, never emit a mis-compiled image.
+  if((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32) AND
+     CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    add_test(NAME oskel.build_sqlite_freestanding
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_sqlite_freestanding"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_sqlite_freestanding.oskl"
+        "-DEXPECTED_MESSAGE=memcpy|sqlite3_"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_error.cmake")
   endif()
 
   # --- `oskel build`: compile to a native binary and run it (PHASE 7d/7e) ---
@@ -2672,6 +2750,16 @@ if(BUILD_TESTING)
     # registered above with its own runner, and skipped when the build has no
     # SDL3.
     if(name STREQUAL "sdl_bindings")
+      continue()
+    endif()
+    # `std.sqlite` needs SQLite3 linked into the development engine; a build
+    # without the library must skip the runtime fixture, not fail it.
+    if(name STREQUAL "80_std_sqlite" AND NOT OSKEL_SQLITE_FOUND)
+      continue()
+    endif()
+    # `native_build_sqlite_freestanding` is a `oskel build` rejection fixture,
+    # not a VM test: running it would need SQLite3 loaded.
+    if(name STREQUAL "native_build_sqlite_freestanding")
       continue()
     endif()
     # `native_build_sdl_freestanding` is a `oskel build` rejection fixture, not
