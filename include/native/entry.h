@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <utility>
 
 #include "native/codegen.h"
 
@@ -21,6 +23,14 @@ struct RuntimeHandles {
   CodeGen::Label write;      // long oskel_write(long fd, const char* buf, long len)
   CodeGen::Label exit;       // void oskel_exit(long code)   (never returns)
   CodeGen::Label initArena;  // void oskel_init_arena(void)  (maps the bump region)
+  // `long oskel_arena_grow(long size)`: map a fresh chunk of at least `size`
+  // bytes and repoint the allocator at it (the cursor/end pair then describes
+  // the new chunk). Returns 1 on success and 0 when the target cannot map more
+  // memory, which `oskel_alloc` reports as a null allocation. It is what keeps
+  // the initial region from being a hard ceiling: a bump allocator cannot
+  // reclaim, so growth abandons the exhausted chunk instead of freeing it.
+  // Bare metal has no page allocator and always returns 0.
+  CodeGen::Label arenaGrow;  // long oskel_arena_grow(long size)
   // `long oskel_time(void)`: whole seconds since the Unix epoch, UTC. It is the
   // wall clock the `time()` builtin reads, and the anchor `std.datetime` builds
   // civil dates on. Each prelude reaches it differently -- a raw syscall on
@@ -86,14 +96,19 @@ struct RuntimeHandles {
   CodeGen::Label cwd;
 };
 
+template <std::size_t... I>
+inline RuntimeHandles makeRuntimeHandles(CodeGen& code, std::index_sequence<I...>) {
+  return RuntimeHandles{(static_cast<void>(I), code.newLabel())...};
+}
+
+// Every field is a `CodeGen::Label`, so the aggregate initialiser takes one
+// label per field and the count comes from the struct, not from a hand-written
+// list: a positional initialiser that fell one short value-initialised the tail
+// and only failed later, as "binding an unknown label" at the end of codegen.
 inline RuntimeHandles newRuntimeHandles(CodeGen& code) {
-  return RuntimeHandles{code.newLabel(), code.newLabel(), code.newLabel(),
-                        code.newLabel(), code.newLabel(), code.newLabel(),
-                        code.newLabel(), code.newLabel(), code.newLabel(),
-                        code.newLabel(), code.newLabel(), code.newLabel(),
-                        code.newLabel(), code.newLabel(), code.newLabel(),
-                        code.newLabel(), code.newLabel(), code.newLabel(),
-                        code.newLabel(), code.newLabel(), code.newLabel()};
+  static_assert(sizeof(RuntimeHandles) % sizeof(CodeGen::Label) == 0);
+  constexpr std::size_t kHandles = sizeof(RuntimeHandles) / sizeof(CodeGen::Label);
+  return makeRuntimeHandles(code, std::make_index_sequence<kHandles>{});
 }
 
 // The generated binary's bump arena (PHASE 7c.1c). `_start` maps a region and
@@ -109,6 +124,12 @@ inline RuntimeHandles newRuntimeHandles(CodeGen& code) {
 // state, not a preserved register, and only `oskel_alloc` and its callers read
 // them. The runtime helpers use none of r12-r15, so the arena and the register
 // file on the stack never collide.
+//
+// The pair describes the *current chunk*, not the whole lifetime: when an
+// allocation no longer fits, `oskel_alloc` calls `oskel_arena_grow`, which maps
+// a new region and repoints both registers at it. The exhausted chunk is
+// abandoned -- a bump allocator has no free -- so a program's peak footprint is
+// the sum of its chunks, but no fixed region caps how much it can allocate.
 constexpr X64Reg kAotArenaCursor = X64Reg::R13;
 constexpr X64Reg kAotArenaEnd = X64Reg::R14;
 
@@ -120,9 +141,16 @@ constexpr X64Reg kAotArenaEnd = X64Reg::R14;
 // file never collide.
 constexpr X64Reg kAotGlobalBase = X64Reg::R15;
 
-// Region `_start` maps for the arena, and the offset of the first allocation
-// (so a live pointer is never null, which is the allocator's failure value).
-constexpr std::int64_t kAotArenaSize = 1 << 20;  // 1 MiB
+// Region `_start` maps for the arena, the offset of the first allocation (so a
+// live pointer is never null, which is the allocator's failure value), and the
+// smallest chunk `oskel_arena_grow` maps when the region runs out. Growth asks
+// for the larger of the request and `kAotArenaChunkSize`, so one big allocation
+// (an array whose block doubles past the region) is satisfied with one map
+// instead of a series of them. The initial region stays small because a program
+// that allocates little should not reserve more: `mmap` and `malloc` are lazy,
+// but the commit charge on Windows is not.
+constexpr std::int64_t kAotArenaSize = 1 << 20;       // 1 MiB
+constexpr std::int64_t kAotArenaChunkSize = 1 << 20;  // 1 MiB
 constexpr std::int64_t kAotArenaFirstOffset = 16;
 
 // Appends `oskel_write`, `oskel_exit` and `_start` to `code`, binding the
@@ -134,7 +162,7 @@ std::uint64_t emitFreestandingRuntime(CodeGen& code, const RuntimeHandles& handl
                                       CodeGen::Label programEntry);
 
 // Windows x86-64 entry prelude (PHASE 7e). Same contract as
-// `emitFreestandingRuntime` -- it binds the same three handles and returns the
+// `emitFreestandingRuntime` -- it binds the same handles and returns the
 // offset of the entry point -- but it reaches the system through the Windows
 // API instead of Linux syscalls: `oskel_write` marshals to
 // `GetStdHandle`+`WriteFile`, `oskel_exit` to `ExitProcess` and
@@ -151,10 +179,11 @@ std::uint64_t emitWindowsRuntime(CodeGen& code, const RuntimeHandles& handles,
 // Hosted entry prelude (PHASE 7f.4). It provides no `_start`: the C runtime
 // does, and it calls the `main` symbol this prelude exports (the lowering's
 // program entry, whose shape -- no arguments, an `int` result -- is already a
-// valid `main`). The three handles reach the system through libc -- `write`,
-// `exit` and `malloc` -- instead of a raw syscall, so the object it belongs to
-// must be linked against the host C library. That link is the whole point of
-// the hosted mode: it is what lets an `extern "C"` symbol resolve.
+// valid `main`). The handles reach the system through libc -- `write`, `exit`
+// and `malloc` (the initial arena and every growth chunk) -- instead of a raw
+// syscall, so the object it belongs to must be linked against the host C
+// library. That link is the whole point of the hosted mode: it is what lets an
+// `extern "C"` symbol resolve.
 //
 // Returns the offset of the exported `main`, which the caller may record as the
 // program entry; the object's real entry point is the linker's `_start`.

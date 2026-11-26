@@ -166,3 +166,35 @@ jobs:
       env:
         UBSAN_OPTIONS: print_stacktrace=1
       run: ctest --output-on-failure
+
+  gc-stress:
+    # `OSKEL_GC_STRESS` collects at every safe point instead of when enough
+    # objects were allocated, so a missed root (an object the collector frees
+    # while a value still points at it) shows up here instead of months later.
+    # The two fixtures labelled `gc-stress-slow` build ~200k objects one at a
+    # time, which is quadratic under this mode, so they are excluded; every
+    # other test runs unchanged.
+    name: GC stress (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure CMake
+      run: >
+        cmake -B build-gc-stress
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_C_COMPILER=gcc
+        -DCMAKE_CXX_COMPILER=g++
+        -DOSKEL_GC_STRESS=ON
+        -DOSKEL_WERROR=ON
+        -S ${{ github.workspace }}
+
+    - name: Show compiler warnings as annotations
+      run: echo "::add-matcher::.github/problem-matchers/compiler.json"
+
+    - name: Build
+      run: cmake --build build-gc-stress --parallel
+
+    - name: Test
+      working-directory: build-gc-stress
+      run: ctest --output-on-failure -LE gc-stress-slow

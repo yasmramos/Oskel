@@ -1,0 +1,43 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): the collection access
+// rules BACKLOG §13 items 4-6 ask to settle. Both engines already agree, and
+// this fixture is what keeps them agreeing:
+//
+//   - a missing map key reads as `nil` through indexing and through a member
+//     (`m["missing"]`, `m.missing`), JS-style, not as an error;
+//   - `has` reports `false` and `get` returns `nil` (or its default);
+//   - writing a missing key adds it, through indexing and through a member;
+//   - a missing *array* index still raises -- an array is not a map, so the
+//     lenient rule does not extend to it.
+
+let m = {"a": 1};
+print("indexGet", m["missing"]);
+print("memberGet", m.missing);
+print("has", m.has("missing"));
+print("get", m.get("missing"));
+print("getDefault", m.get("missing", 42));
+
+print("indexSet", m["b"] = 2);
+print(m);
+print("memberSet", m.c = 3);
+print(m);
+
+// The lenient rule is a map rule only: an out-of-range array index raises.
+let a = [1, 2];
+print("inRange", a[1]);
+let indexOf = (arr, i) => arr[i];
+print(pcall(indexOf, a, 5));
+
+// Writing at `index == length` pushes (Lua-style); beyond that raises.
+a[2] = 3;
+print("push", a);
+a[3] = 4;
+print("push", a);
+let setAt = (arr, i, v) => arr[i] = v;
+print(pcall(setAt, a, 10, 99));
+print(pcall(setAt, a, 4, 99));
+print(a);
+
+// A negative index writes from the end; it is not a push.
+let b = [1, 2];
+print(pcall(setAt, b, -1, 9));
+print(b);

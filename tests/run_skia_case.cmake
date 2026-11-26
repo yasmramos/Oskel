@@ -1,9 +1,9 @@
 # End-to-end test for the real Skia bridge.
 #
 # The descriptor and `oskel -c` half needs no Skia. Compiling the shim and
-# running the VM/AOT halves needs a Skia root with headers and a built libskia;
-# CMake registers this test only when `OSKEL_SKIA_DIR` and `OSKEL_SKIA_LIB`
-# point at one, so a checkout without Skia keeps the suite green.
+# running the VM/AOT halves needs a Skia target (the bundled `skia_shim` or an
+# `OSKEL_SKIA_DIR`/`OSKEL_SKIA_LIB` pair), so CMake registers this test only
+# when it finds one; a checkout without Skia keeps the suite green.
 #
 # Inputs:
 #   BINDGEN_EXE, OSKEL_EXE, CXX_COMPILER, SOURCE_DIR, BUILD_DIR
@@ -12,17 +12,33 @@
 #   SKIA_LIBS   extra link arguments (default: -lpthread -ldl -lm)
 #   SKIA_SHIM   optional prebuilt shim; when set, the script uses the CMake
 #               target instead of compiling a second one
+#   SKIA_SHIM_LINK  the shim's link input on Windows (`skia_shim.lib`)
 #   SDL3_FOUND  whether the build found SDL3 (enables the window half)
 #   SDL3_LIBRARY path to the SDL3 shared library, copied into BUILD_DIR so the
 #               engine's lazy UI loader finds it
+#   SDL3_LINK_LIBRARY  the SDL3 import library on Windows (`SDL3.lib`)
+#   CXX_COMPILER  the compiler `oskel build` should use for the hosted link
+#   RUN_AOT     whether the hosted x86-64 binary can be built and run here
 
 file(MAKE_DIRECTORY "${BUILD_DIR}")
+
+if(NOT DEFINED RUN_AOT)
+  set(RUN_AOT ON)
+endif()
+
+set(exe_suffix "")
+if(WIN32)
+  set(exe_suffix ".exe")
+endif()
 
 if(SKIA_SHIM)
   if(NOT EXISTS "${SKIA_SHIM}")
     message(FATAL_ERROR "SKIA_SHIM does not exist: ${SKIA_SHIM}")
   endif()
   file(COPY "${SKIA_SHIM}" DESTINATION "${BUILD_DIR}")
+  if(WIN32 AND SKIA_SHIM_LINK AND EXISTS "${SKIA_SHIM_LINK}")
+    file(COPY "${SKIA_SHIM_LINK}" DESTINATION "${BUILD_DIR}")
+  endif()
 else()
   if(NOT EXISTS "${SKIA_DIR}/include/core/SkSurface.h")
     message(FATAL_ERROR "SKIA_DIR does not contain include/core/SkSurface.h: ${SKIA_DIR}")
@@ -93,12 +109,17 @@ file(COPY "${SOURCE_DIR}/tests/cxxbind/skia_test.oskl" DESTINATION "${BUILD_DIR}
 # loader asks for; create the two names a normal installation has.
 if(SDL3_FOUND AND SDL3_LIBRARY AND EXISTS "${SDL3_LIBRARY}")
   file(COPY "${SDL3_LIBRARY}" DESTINATION "${BUILD_DIR}")
-  get_filename_component(sdl3_name "${SDL3_LIBRARY}" NAME)
-  if(NOT sdl3_name STREQUAL "libSDL3.so.0")
-    file(CREATE_LINK "${sdl3_name}" "${BUILD_DIR}/libSDL3.so.0" SYMBOLIC)
+  if(WIN32 AND SDL3_LINK_LIBRARY AND EXISTS "${SDL3_LINK_LIBRARY}")
+    file(COPY "${SDL3_LINK_LIBRARY}" DESTINATION "${BUILD_DIR}")
   endif()
-  if(NOT sdl3_name STREQUAL "libSDL3.so")
-    file(CREATE_LINK "libSDL3.so.0" "${BUILD_DIR}/libSDL3.so" SYMBOLIC)
+  if(UNIX AND NOT APPLE)
+    get_filename_component(sdl3_name "${SDL3_LIBRARY}" NAME)
+    if(NOT sdl3_name STREQUAL "libSDL3.so.0")
+      file(CREATE_LINK "${sdl3_name}" "${BUILD_DIR}/libSDL3.so.0" SYMBOLIC)
+    endif()
+    if(NOT sdl3_name STREQUAL "libSDL3.so")
+      file(CREATE_LINK "libSDL3.so.0" "${BUILD_DIR}/libSDL3.so" SYMBOLIC)
+    endif()
   endif()
 endif()
 
@@ -106,14 +127,27 @@ endif()
 # `LD_PRELOAD`, `LD_LIBRARY_PATH` or `--link-lib` is set. The build tree may be
 # outside the source tree, so name the standard library explicitly.
 set(skia_env "OSKEL_UI_LIBDIR=${BUILD_DIR}" "OSKEL_STDLIB=${SOURCE_DIR}/std")
-execute_process(
-  COMMAND ldd "${OSKEL_EXE}"
-  OUTPUT_VARIABLE oskel_ldd
-  ERROR_QUIET
-)
-if(oskel_ldd MATCHES "libasan\\.so[^ ]* => " OR
-   oskel_ldd MATCHES "libclang_rt\\.asan[^ ]* => ")
-  list(APPEND skia_env "ASAN_OPTIONS=detect_leaks=0")
+if(CXX_COMPILER)
+  set(OSKEL_CC "${CXX_COMPILER}")
+endif()
+include("${CMAKE_CURRENT_LIST_DIR}/hosted_cc.cmake")
+oskel_prepare_hosted_cc()
+if(DEFINED ENV{CC} AND NOT "$ENV{CC}" STREQUAL "")
+  # `oskel build` invokes `$CC` for the hosted link. On Windows the helper
+  # returns a wrapper that loads the MSVC environment first; a bare cl.exe
+  # path makes the link fail with "cannot open libcmt.lib".
+  list(APPEND skia_env "CC=$ENV{CC}")
+endif()
+if(UNIX AND NOT APPLE)
+  execute_process(
+    COMMAND ldd "${OSKEL_EXE}"
+    OUTPUT_VARIABLE oskel_ldd
+    ERROR_QUIET
+  )
+  if(oskel_ldd MATCHES "libasan\\.so[^ ]* => " OR
+     oskel_ldd MATCHES "libclang_rt\\.asan[^ ]* => ")
+    list(APPEND skia_env "ASAN_OPTIONS=detect_leaks=0")
+  endif()
 endif()
 
 execute_process(
@@ -133,36 +167,38 @@ if(NOT vm_stdout MATCHES "skia ok")
   message(FATAL_ERROR "the Skia VM test printed '${vm_stdout}', expected 'skia ok'")
 endif()
 
-execute_process(
-  COMMAND "${CMAKE_COMMAND}" -E env ${skia_env}
-          "${OSKEL_EXE}" build "${BUILD_DIR}/skia_test.oskl"
-          -o "${BUILD_DIR}/skia_test"
-  WORKING_DIRECTORY "${BUILD_DIR}"
-  RESULT_VARIABLE build_exit
-  OUTPUT_VARIABLE build_stdout
-  ERROR_VARIABLE build_stderr
-)
-if(NOT build_exit EQUAL 0)
-  message(FATAL_ERROR
-    "oskel build (Skia) exited ${build_exit}\n"
-    "--- stdout ---\n${build_stdout}\n--- stderr ---\n${build_stderr}")
-endif()
+if(RUN_AOT)
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env ${skia_env}
+            "${OSKEL_EXE}" build "${BUILD_DIR}/skia_test.oskl"
+            -o "${BUILD_DIR}/skia_test${exe_suffix}"
+    WORKING_DIRECTORY "${BUILD_DIR}"
+    RESULT_VARIABLE build_exit
+    OUTPUT_VARIABLE build_stdout
+    ERROR_VARIABLE build_stderr
+  )
+  if(NOT build_exit EQUAL 0)
+    message(FATAL_ERROR
+      "oskel build (Skia) exited ${build_exit}\n"
+      "--- stdout ---\n${build_stdout}\n--- stderr ---\n${build_stderr}")
+  endif()
 
-execute_process(
-  COMMAND "${BUILD_DIR}/skia_test"
-  RESULT_VARIABLE native_exit
-  OUTPUT_VARIABLE native_stdout
-  ERROR_VARIABLE native_stderr
-)
-if(NOT native_exit EQUAL 0)
-  message(FATAL_ERROR
-    "the hosted Skia binary exited ${native_exit}\n--- stdout ---\n${native_stdout}\n"
-    "--- stderr ---\n${native_stderr}")
-endif()
-if(NOT native_stdout STREQUAL vm_stdout)
-  message(FATAL_ERROR
-    "the hosted Skia binary disagrees with the VM\n--- vm ---\n${vm_stdout}\n"
-    "--- binary ---\n${native_stdout}")
+  execute_process(
+    COMMAND "${BUILD_DIR}/skia_test${exe_suffix}"
+    RESULT_VARIABLE native_exit
+    OUTPUT_VARIABLE native_stdout
+    ERROR_VARIABLE native_stderr
+  )
+  if(NOT native_exit EQUAL 0)
+    message(FATAL_ERROR
+      "the hosted Skia binary exited ${native_exit}\n--- stdout ---\n${native_stdout}\n"
+      "--- stderr ---\n${native_stderr}")
+  endif()
+  if(NOT native_stdout STREQUAL vm_stdout)
+    message(FATAL_ERROR
+      "the hosted Skia binary disagrees with the VM\n--- vm ---\n${vm_stdout}\n"
+      "--- binary ---\n${native_stdout}")
+  endif()
 endif()
 
 # --- 2. The widget layer: std.ui -> display list -> Skia. ---
@@ -183,36 +219,38 @@ if(NOT ui_vm_stdout MATCHES "skia ui ok")
   message(FATAL_ERROR "the Skia UI VM test printed '${ui_vm_stdout}', expected 'skia ui ok'")
 endif()
 
-execute_process(
-  COMMAND "${CMAKE_COMMAND}" -E env ${skia_env}
-          "${OSKEL_EXE}" build "${SOURCE_DIR}/tests/cxxbind/skia_ui_test.oskl"
-          -o "${BUILD_DIR}/skia_ui_test"
-  WORKING_DIRECTORY "${BUILD_DIR}"
-  RESULT_VARIABLE ui_build_exit
-  OUTPUT_VARIABLE ui_build_stdout
-  ERROR_VARIABLE ui_build_stderr
-)
-if(NOT ui_build_exit EQUAL 0)
-  message(FATAL_ERROR
-    "oskel build (Skia UI) exited ${ui_build_exit}\n"
-    "--- stdout ---\n${ui_build_stdout}\n--- stderr ---\n${ui_build_stderr}")
-endif()
+if(RUN_AOT)
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env ${skia_env}
+            "${OSKEL_EXE}" build "${SOURCE_DIR}/tests/cxxbind/skia_ui_test.oskl"
+            -o "${BUILD_DIR}/skia_ui_test${exe_suffix}"
+    WORKING_DIRECTORY "${BUILD_DIR}"
+    RESULT_VARIABLE ui_build_exit
+    OUTPUT_VARIABLE ui_build_stdout
+    ERROR_VARIABLE ui_build_stderr
+  )
+  if(NOT ui_build_exit EQUAL 0)
+    message(FATAL_ERROR
+      "oskel build (Skia UI) exited ${ui_build_exit}\n"
+      "--- stdout ---\n${ui_build_stdout}\n--- stderr ---\n${ui_build_stderr}")
+  endif()
 
-execute_process(
-  COMMAND "${BUILD_DIR}/skia_ui_test"
-  RESULT_VARIABLE ui_native_exit
-  OUTPUT_VARIABLE ui_native_stdout
-  ERROR_VARIABLE ui_native_stderr
-)
-if(NOT ui_native_exit EQUAL 0)
-  message(FATAL_ERROR
-    "the hosted Skia UI binary exited ${ui_native_exit}\n"
-    "--- stdout ---\n${ui_native_stdout}\n--- stderr ---\n${ui_native_stderr}")
-endif()
-if(NOT ui_native_stdout STREQUAL ui_vm_stdout)
-  message(FATAL_ERROR
-    "the hosted Skia UI binary disagrees with the VM\n--- vm ---\n${ui_vm_stdout}\n"
-    "--- binary ---\n${ui_native_stdout}")
+  execute_process(
+    COMMAND "${BUILD_DIR}/skia_ui_test${exe_suffix}"
+    RESULT_VARIABLE ui_native_exit
+    OUTPUT_VARIABLE ui_native_stdout
+    ERROR_VARIABLE ui_native_stderr
+  )
+  if(NOT ui_native_exit EQUAL 0)
+    message(FATAL_ERROR
+      "the hosted Skia UI binary exited ${ui_native_exit}\n"
+      "--- stdout ---\n${ui_native_stdout}\n--- stderr ---\n${ui_native_stderr}")
+  endif()
+  if(NOT ui_native_stdout STREQUAL ui_vm_stdout)
+    message(FATAL_ERROR
+      "the hosted Skia UI binary disagrees with the VM\n--- vm ---\n${ui_vm_stdout}\n"
+      "--- binary ---\n${ui_native_stdout}")
+  endif()
 endif()
 
 # --- 3. The window loop: std.ui.window -> Skia -> SDL3 texture. ---
@@ -239,37 +277,39 @@ if(SDL3_FOUND)
       "the Skia window VM test printed '${window_vm_stdout}', expected 'skia window ok'")
   endif()
 
-  execute_process(
-    COMMAND "${CMAKE_COMMAND}" -E env ${skia_env}
-            "${OSKEL_EXE}" build "${SOURCE_DIR}/tests/cxxbind/skia_window_test.oskl"
-            -o "${BUILD_DIR}/skia_window_test"
-    WORKING_DIRECTORY "${BUILD_DIR}"
-    RESULT_VARIABLE window_build_exit
-    OUTPUT_VARIABLE window_build_stdout
-    ERROR_VARIABLE window_build_stderr
-  )
-  if(NOT window_build_exit EQUAL 0)
-    message(FATAL_ERROR
-      "oskel build (Skia window) exited ${window_build_exit}\n"
-      "--- stdout ---\n${window_build_stdout}\n--- stderr ---\n${window_build_stderr}")
-  endif()
+  if(RUN_AOT)
+    execute_process(
+      COMMAND "${CMAKE_COMMAND}" -E env ${skia_env}
+              "${OSKEL_EXE}" build "${SOURCE_DIR}/tests/cxxbind/skia_window_test.oskl"
+              -o "${BUILD_DIR}/skia_window_test${exe_suffix}"
+      WORKING_DIRECTORY "${BUILD_DIR}"
+      RESULT_VARIABLE window_build_exit
+      OUTPUT_VARIABLE window_build_stdout
+      ERROR_VARIABLE window_build_stderr
+    )
+    if(NOT window_build_exit EQUAL 0)
+      message(FATAL_ERROR
+        "oskel build (Skia window) exited ${window_build_exit}\n"
+        "--- stdout ---\n${window_build_stdout}\n--- stderr ---\n${window_build_stderr}")
+    endif()
 
-  execute_process(
-    COMMAND "${CMAKE_COMMAND}" -E env
-            "SDL_VIDEODRIVER=dummy" "SDL_AUDIODRIVER=dummy"
-            "${BUILD_DIR}/skia_window_test"
-    RESULT_VARIABLE window_native_exit
-    OUTPUT_VARIABLE window_native_stdout
-    ERROR_VARIABLE window_native_stderr
-  )
-  if(NOT window_native_exit EQUAL 0)
-    message(FATAL_ERROR
-      "the hosted Skia window binary exited ${window_native_exit}\n"
-      "--- stdout ---\n${window_native_stdout}\n--- stderr ---\n${window_native_stderr}")
-  endif()
-  if(NOT window_native_stdout STREQUAL window_vm_stdout)
-    message(FATAL_ERROR
-      "the hosted Skia window binary disagrees with the VM\n--- vm ---\n${window_vm_stdout}\n"
-      "--- binary ---\n${window_native_stdout}")
+    execute_process(
+      COMMAND "${CMAKE_COMMAND}" -E env
+              "SDL_VIDEODRIVER=dummy" "SDL_AUDIODRIVER=dummy"
+              "${BUILD_DIR}/skia_window_test${exe_suffix}"
+      RESULT_VARIABLE window_native_exit
+      OUTPUT_VARIABLE window_native_stdout
+      ERROR_VARIABLE window_native_stderr
+    )
+    if(NOT window_native_exit EQUAL 0)
+      message(FATAL_ERROR
+        "the hosted Skia window binary exited ${window_native_exit}\n"
+        "--- stdout ---\n${window_native_stdout}\n--- stderr ---\n${window_native_stderr}")
+    endif()
+    if(NOT window_native_stdout STREQUAL window_vm_stdout)
+      message(FATAL_ERROR
+        "the hosted Skia window binary disagrees with the VM\n--- vm ---\n${window_vm_stdout}\n"
+        "--- binary ---\n${window_native_stdout}")
+    endif()
   endif()
 endif()

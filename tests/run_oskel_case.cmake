@@ -5,6 +5,7 @@
 #   -DEXPECTED_EXIT=<exit code declared by the script, 0 by default>
 # Optional:
 #   -DOSKEL_ARGS=<extra arguments passed to the script, shell-quoted>
+#   -DEXPECTED_MESSAGE=<regex the stderr must match; empty means "any">
 
 if(NOT DEFINED OSKEL_EXE OR NOT DEFINED OSKEL_SCRIPT OR NOT DEFINED EXPECTED_EXIT)
   message(FATAL_ERROR "run_oskel_case.cmake requires OSKEL_EXE, OSKEL_SCRIPT and EXPECTED_EXIT")
@@ -33,4 +34,12 @@ if(NOT actual_exit EQUAL EXPECTED_EXIT)
     "${OSKEL_SCRIPT}: expected exit ${EXPECTED_EXIT}, got ${actual_exit}\n"
     "--- stdout ---\n${script_stdout}\n"
     "--- stderr ---\n${script_stderr}")
+endif()
+
+if(DEFINED EXPECTED_MESSAGE AND NOT EXPECTED_MESSAGE STREQUAL "")
+  if(NOT script_stderr MATCHES "${EXPECTED_MESSAGE}")
+    message(FATAL_ERROR
+      "${OSKEL_SCRIPT}: the error does not match '${EXPECTED_MESSAGE}'\n"
+      "--- stderr ---\n${script_stderr}")
+  endif()
 endif()

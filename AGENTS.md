@@ -159,7 +159,26 @@ it as a caveat:
   positional `{...}` initialiser by hand; a short one silently left the new
   labels unbound and `oskel build` failed with "codegen: binding an unknown
   label". A new non-label field must trip the `static_assert`, not shift every
-  handle by one.
+  handle by one. `RuntimeHandles` (`include/native/entry.h`, the prelude's
+  handles) had the same hand-written list and now uses the same sweep.
+- The AOT arena is not a fixed region: when an allocation no longer fits,
+  `oskel_alloc` calls `oskel_arena_grow`, which maps a fresh chunk
+  (`mmap` freestanding Linux, `VirtualAlloc` freestanding Windows, `malloc`
+  hosted, the same chunk size as the initial 1 MiB unless the request is
+  larger), repoints the r13/r14 cursor/end pair at it and retries. The
+  exhausted chunk is abandoned, so peak memory is the sum of the chunks -- a
+  bump region has no free -- but no region size caps a program any more. Bare
+  metal has no page allocator and binds the grow handle to a thunk that returns
+  0, so its `.bss` region stays the hard ceiling and the allocator reports
+  "out of memory" there, never a pointer past the segment.
+- `oskel_alloc` clobbers **only** rax (the result) and the r10/r11 scratch pair;
+  every other register survives. That is not the System V convention, but the
+  emitted helpers are written against it -- `oskel_concat` reads the second
+  operand out of rsi *after* the allocation -- so the growth path saves rdi,
+  rsi, rdx, rcx, r8 and r9 around `oskel_arena_grow`. Turning the allocator
+  into a leaf that follows the C ABI instead is what made every string-building
+  program crash the moment the first growth ran; if a helper needs to follow
+  System V across an allocation, it must save its own state first.
 - The AOT backend has two link modes (`LinkMode`, PHASE 7f.3/7f.4), chosen on
   the command line and never in the source: `freestanding` (the default on
   Linux and Windows) is the self-contained image (no libc, no linker, `ldd`
@@ -263,7 +282,14 @@ it as a caveat:
   value it captured at entry, so it reports elapsed time -- not the VM's CPU
   time, but the same observable shape (a non-negative, non-decreasing double).
   A `divUnsigned` in the AOT emitters zeroes `rdx`, so a divisor must never live
-  there. A thunk that reaches a Windows API with five or more arguments must
+  there. A string's `for-in` cursor is a **byte offset** in all three engines
+  (VM, AOT, WASM): a step reads the lead byte at the cursor and skips its
+  continuation bytes. It used to be a code-point index, which forced the VM to
+  rebuild `utf8Chars` and the AOT step to call `utf8CharAt` -- a scan from byte
+  0 -- on every turn, so `for c in s` was O(n^2) (200 000 chars: 17s on the VM,
+  24s in a binary). Never reintroduce an index that has to be resolved by
+  walking from the start; the cursor is internal to the compiler, so no program
+  observes its representation. A thunk that reaches a Windows API with five or more arguments must
   keep its saved state *above* the outgoing stack slots (`[rbp-16]` in a 72-byte
   frame), never at `[rbp-48]`, and must read a length out of `rdx` before reusing
   `rdx` for `lpBuffer` -- both were real bugs in the file thunks.
@@ -920,25 +946,45 @@ it as a caveat:
   `cxxbind.end_to_end` fixture is the other guard: a non-UI binding whose
   symbols share the Skia names must stay a freestanding build.
 
-## `async` / `await` (PHASE 11.1)
+## `async` / `await` (PHASE 11.2.2)
 
-- `async fn` declares an **eager** function whose call returns a `Future`; the
-  annotation is the payload, so `async fn f(): int` returns `Future<int>` at the
-  type level. `await` is a prefix expression, valid only inside an `async fn`
-  body. There is no scheduler: the body runs when called and the future is
-  already settled when the caller sees it.
-- A future is a **plain map**, not a value tag: `compileMakeFuture` emits
-  `NEWTABLE` + `SETTABLE` for `{state: "fulfilled", value: <payload>, error:
-  nil}`, and `compileAwait` reads it with `GETTABLE`/`EQ`/`JMP_IF_FALSE`/`JMP`
-  plus the existing `panic` call. No opcode, no builtin and no backend change is
-  involved, which is why the VM, `oskel build` and WASM agree by construction.
-  `type(future)` is `"map"`, and a future can be passed to map code; that is the
-  deliberate trade-off of not adding a runtime tag (BACKLOG §6 item 32).
+- An `async fn` compiles to a **factory** and a **step** proto. The factory
+  builds a pending future `{ "$future": true, state: "pending", value: nil,
+  error: nil, task: <task frame>, waiters: [] }`, stores the step closure and
+  the arguments in the task frame, enqueues the task and returns the future.
+  The step binds its parameters from `task["args"]`, runs the original body and
+  returns `{ kind: "done", value: ... }`. The annotation is the payload, so
+  `async fn f(): int` returns `Future<int>` at the type level.
+- `spawn expr` and `yield()` are prefix expressions parsed in `parseUnary` and
+  guarded by `asyncDepth_`, exactly like `await`; `yield` accepts empty
+  parentheses or a bare form. `spawn` lowers to `__oskel_async_spawn` and
+  `yield` to `__oskel_async_yield`, so both are ordinary helper calls and add no
+  opcode. `spawn` checks its operand's static type when it is known.
+- The scheduler is ordinary Oskel emitted by `compileAsyncPrelude` once per
+  compilation session (the helpers are globals): a ready array plus
+  `__oskel_async_settle`, `__oskel_async_reject`, `__oskel_async_step`,
+  `__oskel_async_spawn`, `__oskel_async_drain`, `__oskel_async_await` and
+  `__oskel_async_yield`. No backend change, no builtin and no opcode is
+  involved, which is why the VM, `oskel build` and WASM agree by
+  construction. The prelude is emitted only when the session mentions async,
+  so a non-async image stays byte-identical.
+- The body is still one eager step. `await` on a pending future drains the
+  ready queue and re-reads the state; it does not suspend the current body.
+  `yield()` drains the queue and then the current body continues. Real
+  suspension is 11.2.3; top-level `await` is 11.2.4.
+- The end of a top-level chunk calls `__oskel_async_drain` before `HALT`, so
+  `async fn main` runs without a top-level `await`. `compileModuleBody` does
+  not drain, so a module's tasks wait for the root chunk.
 - `compileAwait` must leave its result in the **operand's own register**, like
   `a!!`, and free only the registers above it. Allocating a fresh result
   register makes a call argument list non-contiguous and fails with "internal
   compiler error: call arguments are not contiguous" as soon as `print(await f())`
-  is compiled.
+  is compiled. The pending path jumps back to the state read, so the state,
+  fulfilled/rejected constants and comparison registers are allocated once.
+- `currentAsyncBody_` (not `currentIsAsync_`) wraps a return in
+  `compileMakeStatus("done", ...)`. `compileFunctionProto(..., asyncBody=true)`
+  saves/restores it, so a nested lambda inside a step does not inherit the
+  status wrapping.
 - The parser tracks `asyncDepth_`: an async function body increments it and a
   lambda **resets it to zero**, so `() => await x` is rejected even inside an
   async function. There is no top-level `await`, and `async fn init` is rejected
@@ -946,21 +992,21 @@ it as a caveat:
 - `asyncReturnTypes_` holds the payload type of every async function in scope.
   `compileFnDecl` puts `Future` in `functionReturnTypes_` (the call-site type)
   and the annotation in `asyncReturnTypes_`; `inferExprType` uses the latter to
-  type `await f()` for a direct call. The table is part of `SessionSnapshot` and
-  is saved/restored around `importModule`, like `functionReturnTypes_`.
-- `currentIsAsync_` wraps every `return` value and the implicit nil epilogue in
-  a future. It is saved/restored by `compileFunctionProto` for the same reason
-  `currentReturnType_` is, so a nested lambda compiled inside an async body does
-  not inherit the wrapping.
+  type `await f()` for a direct call, and gives `spawn` the `Future` type. The
+  table is part of `SessionSnapshot` and is saved/restored around `importModule`,
+  like `functionReturnTypes_`.
 - `ClassMethodSig::isAsync` makes a replacement match the method's asyncness; a
   non-async lambda for an async method is a compile error, because `await
-  obj.m()` would otherwise await a payload.
+  obj.m()` would otherwise await a payload. An async method is still a factory
+  closure in the instance map.
 - Tests: `tests/65_async.oskl` (payloads, recursion, values, methods, error
-  values) and `tests/65_async_modules.oskl` (imported async functions) run on
-  the VM and are compared byte for byte by `oskel.build_binary_async`,
-  `oskel.build_binary_async_modules`, `oskel.build_wasm_async` and
-  `oskel.build_wasm_async_modules`. The diagnostics live in
-  `tests/errors/async_*.oskl`.
+  values), `tests/65_async_modules.oskl` (imported async functions) and
+  `tests/71_async_scheduler.oskl` (spawn, yield, order, async main) run on the
+  VM; `oskel.build_binary_async*` and `oskel.build_wasm_async*` compare them
+  byte for byte, and `tests/native_build_async_scheduler.oskl` adds the
+  scheduler order for VM/AOT/WASM. The compile diagnostics live in
+  `tests/errors/async_*.oskl` (`async_spawn_outside`, `async_yield_outside`,
+  `async_spawn_non_future`).
 
 ## The VS Code extension
 
@@ -1059,7 +1105,11 @@ it as a caveat:
   C++; the native backend emits x86-64 (Linux, Windows and hosted macOS, plus
   bare metal), and its execution tests run only where that image can run. The
   macOS arm64 runner builds the hosted Mach-O image and checks its libSystem
-  dependency, but skips running it (that needs Rosetta).
+  dependency, but skips running it (that needs Rosetta). The artifacts matrix
+  also has `macos-15-intel`, which runs the hosted half of `cxxbind.skia` and
+  `oskel.build_hosted_sdl`; the vcpkg cache key includes `runner.arch` so the
+  arm64 and x64 install trees never collide. Only the arm64 job builds the
+  `.pkg`/`.dmg`, because both jobs would otherwise write the same file name.
 - To verify the release path without a real release, push a throwaway tag
   (`v0.1.0-<something>test`), confirm the assets and `sha256sum -c SHA256SUMS`,
   then delete the release *and* the tag. A failed run can leave a draft release

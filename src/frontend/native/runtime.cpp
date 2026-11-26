@@ -2087,23 +2087,56 @@ void emitCompare(CodeGen& cg, CodeGen::Label label, const DataBlob& message,
 // `void* oskel_alloc(long size)`: bump allocation from the arena seeded by
 // `oskel_init_arena`. The cursor and end live in r13/r14 (see `native/entry.h`);
 // this helper reads and advances the cursor only. Returns an 8-byte-aligned
-// pointer, or null when the region is exhausted (mirroring `Arena::allocate`).
-void emitAlloc(CodeGen& cg, CodeGen::Label label) {
+// pointer, or null when the current chunk is exhausted and `oskel_arena_grow`
+// cannot map another one (mirroring `Arena::allocate`).
+//
+// Contract: it clobbers only rax (the result) and the r10/r11 scratch pair;
+// every other register survives. That is *not* System V, but the whole emitted
+// runtime is written against it -- `oskel_concat` reads the second operand out
+// of rsi after the allocation, for one -- so the growth path has to keep the
+// promise the leaf version made by accident. It saves rdi, rsi, rdx, rcx, r8
+// and r9 around `oskel_arena_grow`; the cost is one slow path per chunk.
+//
+// Growth is invisible to the caller: the exhausted chunk is abandoned, the
+// cursor/end pair is repointed at a fresh region and the request is retried
+// from its base.
+void emitAlloc(CodeGen& cg, CodeGen::Label label, CodeGen::Label growLabel) {
+  CodeGen::Label retry = cg.newLabel();
+  CodeGen::Label overflow = cg.newLabel();
   CodeGen::Label exhausted = cg.newLabel();
 
   cg.bind(label);
+  cg.bind(retry);
   cg.movReg(Rax, kAotArenaCursor);
   cg.addImm32(Rax, 7);
   cg.movImm(R10, -8);
   cg.andReg(Rax, R10);      // rax = cursor aligned up to 8
   cg.movReg(R11, Rax);
   cg.addReg(R11, Rdi);      // r11 = new cursor
-  cg.jcc(Jcc::B, exhausted);        // wrapped: size was absurd
+  cg.jcc(Jcc::B, overflow);  // wrapped: size was absurd
   cg.cmpReg(R11, kAotArenaEnd);
-  cg.jcc(Jcc::A, exhausted);        // past the end
+  cg.jcc(Jcc::A, exhausted);  // past the end of this chunk
   cg.movReg(kAotArenaCursor, R11);
   cg.retInsn();
   cg.bind(exhausted);
+  cg.push(Rdi);
+  cg.push(Rsi);
+  cg.push(Rdx);
+  cg.push(Rcx);
+  cg.push(R8);
+  cg.push(R9);
+  cg.subRegImm32(Rsp, 8);   // six pushes leave rsp at 8 mod 16; this lands it on 0
+  cg.callLabel(growLabel);  // rax = 1 when a new chunk is in place
+  cg.addImm32(Rsp, 8);
+  cg.pop(R9);
+  cg.pop(R8);
+  cg.pop(Rcx);
+  cg.pop(Rdx);
+  cg.pop(Rsi);
+  cg.pop(Rdi);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, retry);
+  cg.bind(overflow);
   cg.xorReg(Rax, Rax);
   cg.retInsn();
 }
@@ -9056,6 +9089,9 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   CodeGen::Label map = cg.newLabel();
   CodeGen::Label mapNoValue = cg.newLabel();
   CodeGen::Label str = cg.newLabel();
+  CodeGen::Label strSkip = cg.newLabel();
+  CodeGen::Label strSkipDone = cg.newLabel();
+  CodeGen::Label strStoreCursor = cg.newLabel();
   CodeGen::Label range = cg.newLabel();
   CodeGen::Label rangeAsc = cg.newLabel();
   CodeGen::Label rangeAscIncl = cg.newLabel();
@@ -9162,13 +9198,38 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.jmp(storeCursor);
 
   cg.bind(str);
-  cg.movReg(Rdi, R12);
-  cg.movFromMem(Rsi, Rbp, -32);
-  cg.callLabel(env.utf8CharAt);
-  cg.testReg(Rax);
-  cg.jcc(Jcc::Eq, doneTrue);
+  // The cursor is a byte offset, not a character index: the step reads the lead
+  // byte at the cursor and skips its continuation bytes, so a loop over an
+  // n-character string costs O(n) instead of rescanning from the start on every
+  // turn. `utf8CharAt` walks from byte 0 each call, which made the loop O(n^2)
+  // -- 200 000 characters took 24s. The WASM backend already steps this way.
+  cg.movFromMem(R9, R12, 0);     // string byte length
+  cg.movFromMem(R10, Rbp, -32);  // offset (cursor)
+  cg.cmpReg(R10, R9);
+  cg.jcc(Jcc::Ae, doneTrue);  // offset >= length: past the last byte
+  cg.movReg(R11, R10);
+  cg.addImm32(R11, 1);  // end = offset + 1, then the continuations
+  cg.bind(strSkip);
+  cg.cmpReg(R11, R9);
+  cg.jcc(Jcc::Ae, strSkipDone);
+  cg.movReg(Rax, R12);
+  cg.addReg(Rax, R11);
+  cg.movzxFromMem(Rax, Rax, kStringDataOffset);  // text[end]
+  cg.movReg(Rcx, Rax);
+  cg.andImm32(Rcx, 0xC0);
+  cg.cmpImm32(Rcx, 0x80);
+  cg.jcc(Jcc::Ne, strSkipDone);  // not a continuation byte: the char ends
+  cg.addImm32(R11, 1);
+  cg.jmp(strSkip);
+  cg.bind(strSkipDone);
+  cg.movReg(Rax, R12);
+  cg.addReg(Rax, R10);
+  cg.addImm32(Rax, static_cast<std::int32_t>(kStringDataOffset));  // char pointer
+  cg.movReg(Rdx, R11);
+  cg.subReg(Rdx, R10);              // char byte length
   cg.movToMem(Rbp, -40, Rax);       // char pointer
   cg.movToMem(Rbp, -48, Rdx);       // char byte length
+  cg.movToMem(Rbp, -32, R11);       // next cursor = end (stored by strStoreCursor)
   cg.movReg(Rdi, Rdx);
   cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
   cg.callLabel(env.alloc);
@@ -9185,7 +9246,7 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.movImm(Rax, kTagStr);
   // Without this jump the char just built would fall through into the range
   // code below, which overwrites rax:rdx with the cursor index.
-  cg.jmp(storeCursor);
+  cg.jmp(strStoreCursor);
 
   emitIterNextRange(cg, range, rangeAsc, rangeAscIncl, rangeDescIncl, rangeEmit,
                     rangeDescNext, rangeStoreCursor, doneTrue, done);
@@ -9196,6 +9257,15 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.movImmToMem(Rbx, 0, kTagInt);
   cg.movToMem(Rbx, 8, R9);
   cg.xorReg(R8, R8);                // done = false
+  cg.jmp(done);
+
+  // A string's cursor is already the next byte offset (`end`), not an index to
+  // advance, so it is stored as it stands.
+  cg.bind(strStoreCursor);
+  cg.movFromMem(R9, Rbp, -32);
+  cg.movImmToMem(Rbx, 0, kTagInt);
+  cg.movToMem(Rbx, 8, R9);
+  cg.xorReg(R8, R8);  // done = false
   cg.jmp(done);
 
   cg.bind(doneTrue);
@@ -18636,7 +18706,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
 
   emitFail(cg, fail, failDynamic);
   emitWriteInt(cg, writeInt, entry.write);
-  emitAlloc(cg, handles.alloc);
+  emitAlloc(cg, handles.alloc, entry.arenaGrow);
   emitConcat(cg, handles.concat, handles.alloc, fail, msgOom);
   emitArrayConcat(cg, handles.arrayConcat, handles.alloc, env.blockEnsure, fail, msgOom);
   emitBindArrayMethod(cg, handles.bindArrayMethod, handles.cellNew, handles.closure,

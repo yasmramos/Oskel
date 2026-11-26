@@ -508,16 +508,28 @@ if(BUILD_TESTING)
   # first-line `// expect-exit: N` comment, defaulting to 0.
   function(oskel_add_script_test name script)
     set(expected 0)
-    file(STRINGS "${script}" first_line LIMIT_COUNT 1)
-    string(REGEX MATCH "expect-exit:[ \t]*([0-9]+)" declared_exit "${first_line}")
-    if(declared_exit)
-      set(expected "${CMAKE_MATCH_1}")
-    endif()
+    set(expected_message "")
+    # A fixture declares its expectations in the leading comment block, so the
+    # same script documents why it fails and the runner can check it.
+    file(STRINGS "${script}" header_lines LIMIT_COUNT 3)
+    foreach(line IN LISTS header_lines)
+      if(line MATCHES "^[ \t]*//")
+        string(REGEX MATCH "expect-exit:[ \t]*([0-9]+)" declared_exit "${line}")
+        if(declared_exit)
+          set(expected "${CMAKE_MATCH_1}")
+        endif()
+        string(REGEX MATCH "expect-message:[ \t]*(.+)$" declared_message "${line}")
+        if(declared_message)
+          set(expected_message "${CMAKE_MATCH_1}")
+        endif()
+      endif()
+    endforeach()
     add_test(NAME "${name}"
       COMMAND ${CMAKE_COMMAND}
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${script}"
         "-DEXPECTED_EXIT=${expected}"
+        "-DEXPECTED_MESSAGE=${expected_message}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_oskel_case.cmake")
   endfunction()
 
@@ -578,6 +590,15 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_link_windows_args.oskl"
         "-DOSKEL_EXPECTED_OUTPUT=2 <one><two words>"
         "-DOSKEL_ARGS=one;two words"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_windows.cmake")
+    # The hosted arena grows with the UCRT's `malloc`, a different thunk from the
+    # freestanding `VirtualAlloc` one, so the same allocation-heavy fixture runs
+    # here too.
+    add_test(NAME oskel.build_hosted_own_windows_arena_growth
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_arena_growth.oskl"
+        "-DOSKEL_EXPECTED_OUTPUT=arena 19999900000 200000 abcd 449985000 30000"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_own_windows.cmake")
   endif()
   oskel_add_cpp_test(pe_test)
@@ -683,19 +704,29 @@ if(BUILD_TESTING)
   endif()
 
   if(OSKEL_SKIA_FOUND AND
-     CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
-     CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+     (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32 OR
+      CMAKE_SYSTEM_NAME STREQUAL "Darwin"))
     set(OSKEL_TEST_SDL3_LIBRARY "")
+    set(OSKEL_TEST_SDL3_LINK_LIBRARY "")
     if(TARGET SDL3::SDL3)
       set(OSKEL_TEST_SDL3_LIBRARY "$<TARGET_FILE:SDL3::SDL3>")
+      set(OSKEL_TEST_SDL3_LINK_LIBRARY "$<TARGET_LINKER_FILE:SDL3::SDL3>")
+    endif()
+    # The hosted AOT image is x86-64. The VM half still runs on arm64 macOS;
+    # the native half is skipped there because Rosetta is not a test dependency.
+    set(OSKEL_SKIA_AOT_RUNNABLE OFF)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+      set(OSKEL_SKIA_AOT_RUNNABLE ON)
     endif()
     set(OSKEL_SKIA_TEST_ARGS
       "-DSKIA_DIR=${OSKEL_SKIA_DIR}"
       "-DSKIA_LIB=${OSKEL_SKIA_LIB}"
-      "-DSKIA_LIBS=${OSKEL_SKIA_LIBS}")
+      "-DSKIA_LIBS=${OSKEL_SKIA_LIBS}"
+      "-DRUN_AOT=${OSKEL_SKIA_AOT_RUNNABLE}")
     if(TARGET skia_shim)
       list(APPEND OSKEL_SKIA_TEST_ARGS
-        "-DSKIA_SHIM=$<TARGET_FILE:skia_shim>")
+        "-DSKIA_SHIM=$<TARGET_FILE:skia_shim>"
+        "-DSKIA_SHIM_LINK=$<TARGET_LINKER_FILE:skia_shim>")
     endif()
     add_test(NAME cxxbind.skia
       COMMAND ${CMAKE_COMMAND}
@@ -707,6 +738,7 @@ if(BUILD_TESTING)
         ${OSKEL_SKIA_TEST_ARGS}
         "-DSDL3_FOUND=${OSKEL_SDL3_FOUND}"
         "-DSDL3_LIBRARY=${OSKEL_TEST_SDL3_LIBRARY}"
+        "-DSDL3_LINK_LIBRARY=${OSKEL_TEST_SDL3_LINK_LIBRARY}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_skia_case.cmake")
   endif()
 
@@ -847,9 +879,8 @@ if(BUILD_TESTING)
   # The module is always installed; these tests need the development engine to
   # have SDL3 loaded, which CMake arranges above when it finds the library.
   # `run_sdl_case.cmake` sets SDL_VIDEODRIVER=dummy, so no display is needed.
-  # The hosted fixture is Linux x86-64 only because it links the SDL3
-  # library from the build tree; the general hosted AOT suite also runs on
-  # Windows.
+  # The hosted fixture runs on x86-64 Linux, Windows and Intel macOS; the
+  # macOS arm64 runner has no x86-64 AOT image to execute.
   add_test(NAME sdl.bindgen
     COMMAND ${CMAKE_COMMAND}
       "-DBINDGEN=$<TARGET_FILE:bindgen>"
@@ -862,13 +893,21 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/sdl_bindings.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_sdl_case.cmake")
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+    if((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32 OR
+        CMAKE_SYSTEM_NAME STREQUAL "Darwin") AND
        CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+      set(OSKEL_TEST_SDL3_LIBRARY_DIR "")
+      if(TARGET SDL3::SDL3)
+        set(OSKEL_TEST_SDL3_LIBRARY_DIR
+            "$<TARGET_LINKER_FILE_DIR:SDL3::SDL3>")
+      endif()
       add_test(NAME oskel.build_hosted_sdl
         COMMAND ${CMAKE_COMMAND}
           "-DOSKEL_TEST_NAME=oskel.build_hosted_sdl"
           "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
           "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/sdl_bindings.oskl"
+          "-DCXX_COMPILER=${CMAKE_CXX_COMPILER}"
+          "-DSDL3_LIBRARY_DIR=${OSKEL_TEST_SDL3_LIBRARY_DIR}"
           -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_hosted_sdl.cmake")
     endif()
   endif()
@@ -1007,6 +1046,20 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_TEST_NAME=oskel.build_binary_array_concat"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_array_concat.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The arena is a bump region: when it runs out, `oskel_alloc` maps a fresh
+    # chunk (`oskel_arena_grow`) instead of failing. The fixture allocates ~8 MiB
+    # across an array, a concatenation loop and a map, so a fixed 1 MiB region
+    # reports "out of memory"; it also pins the allocator's contract that only
+    # rax and r10/r11 are clobbered, because a helper that reads its operands
+    # after an allocation (string concatenation) crashed the first time the slow
+    # path ran.
+    add_test(NAME oskel.build_binary_arena_growth
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_arena_growth"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_arena_growth.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
     # `arr.push`/`arr.pop` are bound methods: the receiver is captured, `push`
@@ -1284,6 +1337,7 @@ if(BUILD_TESTING)
       # must match the VM byte for byte.
       foreach(own_fixture
           native_build_hello
+          native_build_arena_growth
           native_build_extern_hosted
           native_build_extern_ptr_return
           native_build_extern_struct)
@@ -1631,6 +1685,38 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_call_checks.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # A wrong arity through a function value (BACKLOG §12 item 3). A direct
+    # call is rejected at compile time, so the runtime guard is only reachable
+    # through a value; `pcall` turns its message into a comparable value, which
+    # pins the wording on both engines instead of only the exit code.
+    add_test(NAME oskel.build_binary_arity
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_arity"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_arity.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The operator edge cases BACKLOG §13 items 1-3 ask about: `-INT64_MIN`
+    # wrapping, `2 ** -1` yielding a double, and a shift count outside 0..63
+    # raising. Reached through function values so the compiler cannot fold the
+    # operands, and wrapped in `pcall` so the message is compared too.
+    add_test(NAME oskel.build_binary_operators
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_operators"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_operators.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The collection access rules BACKLOG §13 items 4-6 ask to settle: a missing
+    # map key reads as `nil` (indexing and member alike), `has` says false,
+    # writing adds the key, and an out-of-range *array* index still raises.
+    add_test(NAME oskel.build_binary_map_access
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_map_access"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_map_access.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `std.json` is plain Oskel over the portable primitive surface, so it must
     # build to a native binary and agree with the VM. The fixture is the guard
     # that keeps the module off the collection/string methods and
@@ -1869,6 +1955,15 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_TEST_NAME=oskel.build_binary_async_modules"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/65_async_modules.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # The scheduler (PHASE 11.2.2) is ordinary Oskel over maps and arrays, so
+    # the VM, a native binary and WASM must produce the same task order.
+    add_test(NAME oskel.build_binary_async_scheduler
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_async_scheduler"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_async_scheduler.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
     # The pointer builtins (BACKLOG §6 item 25): `cstring`/`cstr`/`buffer`/
@@ -2176,6 +2271,16 @@ if(BUILD_TESTING)
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
 
+    add_test(NAME oskel.build_wasm_async_scheduler
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_async_scheduler"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_async_scheduler.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
     # `range` takes one or two bounds: `range(5)` starts at 0. The fixture also
     # pins `assertEq` and `exit`, so a wrong arity check in the WASM builtin
     # cannot pass unnoticed.
@@ -2432,7 +2537,7 @@ if(BUILD_TESTING)
       oskel.build_wasm_collections oskel.build_wasm_strings
       oskel.build_wasm_string_methods oskel.build_wasm_range_methods
       oskel.build_wasm_pointers oskel.build_wasm_async
-      oskel.build_wasm_async_modules
+      oskel.build_wasm_async_modules oskel.build_wasm_async_scheduler
       oskel.build_wasm_io oskel.build_wasm_math
       oskel.build_wasm_double_format oskel.build_wasm_tree_shake PROPERTIES TIMEOUT 120)
   endif()
@@ -2675,5 +2780,15 @@ if(BUILD_TESTING)
         "-DEXPECTED_EXIT=${expected}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_check_case.cmake")
   endforeach()
+
+  # `OSKEL_GC_STRESS` collects at every safe point instead of when enough
+  # objects were allocated. These two build a structure one object at a time
+  # (~200k), so a collection per safe point is quadratic in the object count and
+  # each takes minutes. The label lets the stress job run the rest of the suite
+  # (`ctest -LE gc-stress-slow`) instead of dropping the stress run entirely. It
+  # is set unconditionally so a rename breaks every configure, not just the
+  # stress job.
+  set_tests_properties(oskel.11_cycles oskel.47_deep_container_teardown
+    PROPERTIES LABELS "gc-stress-slow")
 
 endif()

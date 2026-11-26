@@ -178,11 +178,11 @@ build.
   events and runs the handler on release over the pressed button.
 - The window loop redraws on every frame and sleeps 16 ms; it has no dirty-region
   optimisation, resize handling or keyboard focus yet.
-- `std.ui.window` runs on the VM wherever the installed SDK ships SDL3 and the
-  Skia shim, and it builds as a hosted AOT binary on Linux, Windows and
-  x86-64 macOS. The end-to-end `cxxbind.skia` test runs on Linux x86-64; the
-  release artifacts build the UI backend on every platform, and the arm64
-  macOS runner builds it but does not execute it without Rosetta.
+- The native backend emits x86-64, so `std.ui.window` builds and runs with the
+  hosted linker on Linux, Windows and Intel macOS. The macOS arm64 runner runs
+  the VM half of `cxxbind.skia`; its AOT half is skipped because Rosetta is not
+  a test dependency. The VM path works wherever the installed SDK ships the
+  bundled SDL3 and Skia shim.
 
 ## Tests
 
@@ -191,4 +191,4 @@ build.
 | `oskel.native_build_ui` | The widget tree, layout, display list and hit test run on the VM. |
 | `oskel.build_binary_ui` | The same fixture builds with `oskel build` and prints exactly the VM's output. |
 | `install_stdlib` | The installed tree contains `lib/oskel/ui`, and the installed engine runs `skia_ui_test.oskl` with no `OSKEL_UI_LIBDIR`. |
-| `cxxbind.skia` | Real-Skia test: the bundled bridge renders the display list to a raster surface, checks pixels in the VM and the hosted AOT binary, runs `skia_ui_test.oskl`, and drives `skia_window_test.oskl` through the SDL dummy driver. Registered on Linux x86-64 when CMake finds Skia (the bundled target or `OSKEL_SKIA_DIR`); the window half also needs SDL3. |
+| `cxxbind.skia` | Real-Skia test: the bundled bridge renders the display list to a raster surface, checks pixels in the VM and the hosted AOT binary, runs `skia_ui_test.oskl`, and drives `skia_window_test.oskl` through the SDL dummy driver. Registered when CMake finds Skia (the bundled target or `OSKEL_SKIA_DIR`) on Linux, Windows and macOS; the AOT half runs on x86-64 hosts, while macOS arm64 runs the VM half only. The window half also needs SDL3. |

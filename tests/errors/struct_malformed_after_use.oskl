@@ -1,0 +1,7 @@
+// expect-exit: 65
+// expect-message: expected a struct name
+// A use of a struct name written before a malformed declaration must report the
+// declaration, not the use (BACKLOG §5 item 5). Without the shape check the
+// prescan skipped `struct` (no name) and the error pointed at line 4 instead.
+let v = Point { x: 1 };
+struct

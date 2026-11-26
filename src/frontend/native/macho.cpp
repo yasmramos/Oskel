@@ -347,8 +347,12 @@ std::vector<std::uint8_t> linkMachOExecutable(
       const std::string name = "_" + imports[i];
       bind.insert(bind.end(), name.begin(), name.end());
       bind.push_back(0);
-      bind.push_back(0x51);  // SET_TYPE_IMM, pointer
-      bind.push_back(0x32);  // SET_SEGMENT_AND_OFFSET_ULEB, __DATA
+      bind.push_back(0x51);  // SET_TYPE_IMM, BIND_TYPE_POINTER
+      // SET_SEGMENT_AND_OFFSET_ULEB with segment index 2 (__PAGEZERO, __TEXT,
+      // __DATA, __LINKEDIT -- see the segment() calls below). The opcode
+      // carries the index in its low nibble; 0x32 is SET_DYLIB_SPECIAL_IMM and
+      // would desynchronise the whole stream.
+      bind.push_back(0x72);
       std::uint64_t value = i * 8;
       do {
         std::uint8_t byte = static_cast<std::uint8_t>(value & 0x7F);
@@ -487,20 +491,27 @@ std::vector<std::uint8_t> linkMachOExecutable(
                  0, 0);
   }
   if (hasImports) {
+    // `reserved1` of a stub section is the index of its first entry in the
+    // indirect symbol table, which starts with the stub block, so it is 0.
+    // `reserved2` is the stub's stride, which dyld needs to walk the section.
     writeSection("__stubs", "__TEXT", kTextVmaddr + stubsFileOffset, stubsSize,
                  static_cast<std::uint32_t>(stubsFileOffset), 1,
                  kSectionTypeSymbolStubs | kSectionAttributesPureInstructions |
                      kSectionAttributesSomeInstructions,
-                 static_cast<std::uint32_t>(imports.size()), kStubSize);
+                 0, kStubSize);
   }
   const std::size_t dataCommand = segment("__DATA", dataVmaddr, dataFileSize,
                                           dataFileOffset, dataFileSize, 3, 3,
                                           dataSections);
   section = dataCommand + kSegmentCommandSize;
   if (hasImports) {
-    writeSection("__got", "__DATA", dataVmaddr, gotSize,
-                 static_cast<std::uint32_t>(dataFileOffset), 3,
-                 kSectionTypeNonLazySymbolPointers, 0, 0);
+    // `__got` follows `__stubs` in the indirect symbol table: the first
+    // `imports.size()` entries describe the stubs, the next block the GOT
+    // pointers. `reserved1` is the index of the section's first entry, so it is
+    // `imports.size()`, not 0 -- 0 would name the stub block.
+    writeSection("__got", "__DATA", dataVmaddr, gotSize, static_cast<std::uint32_t>(dataFileOffset),
+                 3, kSectionTypeNonLazySymbolPointers, static_cast<std::uint32_t>(imports.size()),
+                 0);
   }
   segment("__LINKEDIT", linkeditVmaddr, linkeditVmsize, linkeditFileOffset,
           linkeditSize, 1, 1, 0);
