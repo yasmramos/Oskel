@@ -1,0 +1,424 @@
+// Standard library: CSV (RFC 4180) parsing and serialization.
+//
+// Imported as `import std.csv;` (qualified: `std.csv.parse`),
+// `import std.csv.*;` (unqualified: `parse`), `import std.csv as c;` or
+// `import { parse, stringify } from std.csv;`.
+//
+// A record is an array of field strings, so `parse` returns an array of arrays
+// and `stringify` accepts the same shape. No new runtime type is added, and
+// the module composes with `std.collections` (`map`, `filter`, ...) and
+// `std.bytes`.
+//
+// The reader accepts the quoting rules of RFC 4180:
+//
+//   - a record is separated by `\r\n`, `\n` or a lone `\r`;
+//   - a field is separated by `,` (or the delimiter passed to `parseWith`);
+//   - a field may be quoted with `"`, in which case it may contain the
+//     delimiter, a newline and a doubled quote (`""` for one `"`);
+//   - a `"` inside an unquoted field is an ordinary character.
+//
+// After a closing quote only a delimiter, a newline or the end of the input is
+// accepted. That strictness is deliberate: `"a"b` is a malformed record, not
+// a field named `ab`, so a typo is reported instead of silently swallowed.
+//
+// The writer quotes a field when it is empty or contains the delimiter, a
+// quote, a carriage return or a line feed, so every value round-trips through
+// `parse`. An empty field is always written as `""` because an unquoted empty
+// field in a one-field record would be indistinguishable from no record at
+// all. A record must have at least one field: CSV has no spelling for a
+// zero-field record, so writing one is a runtime error instead of a silent
+// loss.
+//
+// The module is written in plain Oskel over the portable primitive surface
+// (indexing, slicing, `len`, `type`, `str`, `panic`, `for ... in`, closures),
+// so it behaves identically on the development VM, under `oskel build` and on
+// WebAssembly. `stringify` assembles its output with `std.io.StringWriter`, a
+// pure-Oskel class whose balanced tree keeps a large table linear instead of
+// copying the prefix once per field.
+
+import std.io.StringWriter;
+
+// --- parsing ----------------------------------------------------------------
+
+// Records the first error the scanner meets and returns nil, so a helper can
+// `return _fail(...)` without a second statement.
+fn _fail(state, message) {
+  if (state.error == nil) {
+    state.error = message;
+  }
+  return nil;
+}
+
+// The 1-based line and column of `pos`. `pos` is a code-point index, the unit
+// the scanner uses, and a newline advances the line.
+fn _lineColumn(text, pos) {
+  var line = 1;
+  var last = -1;
+  var i = 0;
+  while (i < pos && i < len(text)) {
+    if (text[i] == "\n") {
+      line = line + 1;
+      last = i;
+    }
+    i = i + 1;
+  }
+  return {line: line, column: pos - last};
+}
+
+// The delimiter must be one code point and must not collide with the quote or
+// the record separators.
+fn _checkDelimiter(delimiter) {
+  if (type(delimiter) != "string") {
+    panic("std.csv: the delimiter must be a single character");
+  }
+  if (len(delimiter) != 1) {
+    panic("std.csv: the delimiter must be a single character");
+  }
+  if (delimiter == "\"" || delimiter == "\r" || delimiter == "\n") {
+    panic("std.csv: the delimiter must not be a quote or a newline");
+  }
+}
+
+// Consumes one record separator: `\r\n` as a pair, otherwise one character.
+fn _consumeNewline(state) {
+  if (state.text[state.pos] == "\r"
+      && state.pos + 1 < len(state.text)
+      && state.text[state.pos + 1] == "\n") {
+    state.pos = state.pos + 2;
+  } else {
+    state.pos = state.pos + 1;
+  }
+}
+
+// A quoted field: the opening quote is at `state.pos`. A doubled quote is a
+// literal quote; the closing quote must be followed by a delimiter, a newline
+// or the end of the input.
+fn _parseQuoted(state) {
+  state.pos = state.pos + 1;
+  var out = "";
+  var start = state.pos;
+  while (state.pos < len(state.text)) {
+    if (state.text[state.pos] == "\"") {
+      if (state.pos + 1 < len(state.text)
+          && state.text[state.pos + 1] == "\"") {
+        out = out + state.text[start:state.pos] + "\"";
+        state.pos = state.pos + 2;
+        start = state.pos;
+        continue;
+      }
+      out = out + state.text[start:state.pos];
+      state.pos = state.pos + 1;
+      if (state.pos >= len(state.text)) {
+        return out;
+      }
+      let c = state.text[state.pos];
+      if (c == state.delimiter || c == "\r" || c == "\n") {
+        return out;
+      }
+      let at = _lineColumn(state.text, state.pos);
+      _fail(state, "unexpected character after a closing quote (line "
+        + str(at.line) + ", column " + str(at.column) + ")");
+      return out;
+    }
+    state.pos = state.pos + 1;
+  }
+  let at = _lineColumn(state.text, len(state.text));
+  _fail(state, "unterminated quoted field (line "
+    + str(at.line) + ", column " + str(at.column) + ")");
+  return out;
+}
+
+// One field. A field that starts with `"` is quoted; every other field is the
+// run up to the next delimiter or record separator, and a quote inside it is
+// an ordinary character.
+fn _parseField(state) {
+  if (state.pos < len(state.text) && state.text[state.pos] == "\"") {
+    return _parseQuoted(state);
+  }
+  let start = state.pos;
+  while (state.pos < len(state.text)) {
+    let c = state.text[state.pos];
+    if (c == state.delimiter || c == "\r" || c == "\n") {
+      break;
+    }
+    state.pos = state.pos + 1;
+  }
+  return state.text[start:state.pos];
+}
+
+// One record, consuming its separator. A trailing delimiter therefore leaves
+// one empty field at the end, as RFC 4180 requires.
+fn _parseRecord(state) {
+  var row = [];
+  while (true) {
+    let field = _parseField(state);
+    if (state.error != nil) {
+      return row;
+    }
+    row[len(row)] = field;
+    if (state.pos >= len(state.text)) {
+      return row;
+    }
+    let c = state.text[state.pos];
+    if (c == state.delimiter) {
+      state.pos = state.pos + 1;
+      continue;
+    }
+    if (c == "\r" || c == "\n") {
+      _consumeNewline(state);
+      return row;
+    }
+    _fail(state, "unexpected character in a record");
+    return row;
+  }
+}
+
+// Every record. A separator at the very end of the input closes the last
+// record without adding an empty one; an empty input has no records at all.
+fn _parseAll(state) {
+  var rows = [];
+  if (len(state.text) == 0) {
+    return rows;
+  }
+  while (state.pos < len(state.text) && state.error == nil) {
+    let row = _parseRecord(state);
+    if (state.error != nil) {
+      return rows;
+    }
+    rows[len(rows)] = row;
+  }
+  return rows;
+}
+
+// Parses `text` with a one-character `delimiter`. Malformed input is a runtime
+// error naming the line and column; use `tryParse` to test without aborting.
+@MustUse
+fn parseWith(text, delimiter) {
+  _checkDelimiter(delimiter);
+  if (type(text) != "string") {
+    panic("std.csv.parse: expected a string");
+  }
+  let state = {text: text, pos: 0, delimiter: delimiter, error: nil};
+  let rows = _parseAll(state);
+  if (state.error != nil) {
+    panic("std.csv.parse: " + state.error);
+  }
+  return rows;
+}
+
+// Parses comma-separated text.
+@MustUse
+fn parse(text) {
+  return parseWith(text, ",");
+}
+
+// Parses `text` with a custom delimiter without aborting: the result is
+// `{ok, value, error}`, where `value` is the array of records on success and
+// `error` is a message (or nil) on failure. Mirrors `std.json.tryParse`.
+@MustUse
+fn tryParseWith(text, delimiter) {
+  _checkDelimiter(delimiter);
+  if (type(text) != "string") {
+    panic("std.csv.parse: expected a string");
+  }
+  let state = {text: text, pos: 0, delimiter: delimiter, error: nil};
+  let rows = _parseAll(state);
+  if (state.error != nil) {
+    return {ok: false, value: nil, error: state.error};
+  }
+  return {ok: true, value: rows, error: nil};
+}
+
+// Parses comma-separated text without aborting.
+@MustUse
+fn tryParse(text) {
+  return tryParseWith(text, ",");
+}
+
+// True when `text` is well-formed comma-separated input.
+@MustUse
+fn isValid(text) {
+  return tryParse(text).ok;
+}
+
+// --- writing ----------------------------------------------------------------
+
+// A value as a CSV field. `nil` is the empty field and every other value uses
+// its `str` form, so a map of mixed values serializes without a cast.
+fn _fieldText(value) {
+  if (value == nil) {
+    return "";
+  }
+  return str(value);
+}
+
+// One field, quoted only when it must be. Empty fields are always quoted so a
+// one-field record made of an empty string survives a round trip.
+fn _escapeField(value, delimiter) {
+  let text = _fieldText(value);
+  var needsQuotes = len(text) == 0;
+  var i = 0;
+  while (i < len(text) && !needsQuotes) {
+    let c = text[i];
+    if (c == delimiter || c == "\"" || c == "\r" || c == "\n") {
+      needsQuotes = true;
+    }
+    i = i + 1;
+  }
+  if (!needsQuotes) {
+    return text;
+  }
+  var out = "\"";
+  var start = 0;
+  i = 0;
+  while (i < len(text)) {
+    if (text[i] == "\"") {
+      out = out + text[start:i] + "\"\"";
+      start = i + 1;
+    }
+    i = i + 1;
+  }
+  return out + text[start:len(text)] + "\"";
+}
+
+// Serializes `rows` with `delimiter` between fields and `eol` between records.
+// `eol` is one of the three separators the reader recognizes (`\n`, `\r\n`,
+// `\r`), so the output always parses back. Records are written without a
+// trailing `eol`; an empty array is the empty string.
+@MustUse
+fn stringifyWith(rows, delimiter, eol) {
+  _checkDelimiter(delimiter);
+  if (type(eol) != "string") {
+    panic("std.csv.stringify: the line ending must be '\\n', '\\r\\n' or '\\r'");
+  }
+  if (eol != "\n" && eol != "\r\n" && eol != "\r") {
+    panic("std.csv.stringify: the line ending must be '\\n', '\\r\\n' or '\\r'");
+  }
+  if (type(rows) != "array") {
+    panic("std.csv.stringify: expected an array of records");
+  }
+  let writer = StringWriter();
+  var r = 0;
+  while (r < len(rows)) {
+    let row = rows[r];
+    if (type(row) != "array") {
+      panic("std.csv.stringify: every record must be an array");
+    }
+    if (len(row) == 0) {
+      panic("std.csv.stringify: every record must have at least one field");
+    }
+    if (r > 0) {
+      writer.write(eol);
+    }
+    var c = 0;
+    while (c < len(row)) {
+      if (c > 0) {
+        writer.write(delimiter);
+      }
+      writer.write(_escapeField(row[c], delimiter));
+      c = c + 1;
+    }
+    r = r + 1;
+  }
+  return writer.toString();
+}
+
+// Serializes `rows` with commas and `\n` between records.
+@MustUse
+fn stringify(rows) {
+  return stringifyWith(rows, ",", "\n");
+}
+
+// --- header records ---------------------------------------------------------
+
+// The first record of `rows` is the header. Returns one map per remaining
+// record, keyed by the header names in order. A short record is padded with
+// empty fields and fields beyond the header are ignored. A duplicate header
+// name is a runtime error, because a map cannot hold it.
+@MustUse
+fn toMaps(rows) {
+  if (type(rows) != "array") {
+    panic("std.csv.toMaps: expected an array of records");
+  }
+  if (len(rows) == 0) {
+    return [];
+  }
+  let header = rows[0];
+  if (type(header) != "array") {
+    panic("std.csv.toMaps: the header record must be an array");
+  }
+  var seen = {};
+  var h = 0;
+  while (h < len(header)) {
+    let name = header[h];
+    if (type(name) != "string") {
+      panic("std.csv.toMaps: every header name must be a string");
+    }
+    if (seen[name] != nil) {
+      panic("std.csv.toMaps: duplicate header name '" + name + "'");
+    }
+    seen[name] = true;
+    h = h + 1;
+  }
+  var out = [];
+  var r = 1;
+  while (r < len(rows)) {
+    let row = rows[r];
+    if (type(row) != "array") {
+      panic("std.csv.toMaps: every record must be an array");
+    }
+    var record = {};
+    var c = 0;
+    while (c < len(header)) {
+      record[header[c]] = c < len(row) ? row[c] : "";
+      c = c + 1;
+    }
+    out[len(out)] = record;
+    r = r + 1;
+  }
+  return out;
+}
+
+// The inverse of `toMaps`: `columns` is the header and each record is looked up
+// by column name. A missing key is the empty field; every other value uses its
+// `str` form. Duplicate column names are a runtime error.
+@MustUse
+fn fromMaps(records, columns) {
+  if (type(records) != "array") {
+    panic("std.csv.fromMaps: expected an array of maps");
+  }
+  if (type(columns) != "array") {
+    panic("std.csv.fromMaps: expected an array of column names");
+  }
+  var seen = {};
+  var c = 0;
+  while (c < len(columns)) {
+    let name = columns[c];
+    if (type(name) != "string") {
+      panic("std.csv.fromMaps: every column name must be a string");
+    }
+    if (seen[name] != nil) {
+      panic("std.csv.fromMaps: duplicate column name '" + name + "'");
+    }
+    seen[name] = true;
+    c = c + 1;
+  }
+  var rows = [];
+  rows[len(rows)] = columns[0:len(columns)];
+  var r = 0;
+  while (r < len(records)) {
+    let record = records[r];
+    if (type(record) != "map") {
+      panic("std.csv.fromMaps: every record must be a map");
+    }
+    var row = [];
+    c = 0;
+    while (c < len(columns)) {
+      row[len(row)] = _fieldText(record[columns[c]]);
+      c = c + 1;
+    }
+    rows[len(rows)] = row;
+    r = r + 1;
+  }
+  return rows;
+}

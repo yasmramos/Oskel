@@ -3298,6 +3298,69 @@ A `BigDecimal` has no C representation, so it is rejected at the FFI boundary.
 The module is pure Oskel over arrays, strings, loops and closures, so the VM,
 `oskel build` and WebAssembly produce the same exact strings.
 
+### 12.19 CSV
+
+`import std.csv;` reads and writes comma-separated values following RFC 4180.
+A record is an ordinary array of field strings, so `parse` returns an array of
+arrays and `stringify` accepts the same shape; no new runtime type is added.
+
+| Function | Description |
+| --- | --- |
+| `parse(text)` | The records of comma-separated text. |
+| `parseWith(text, delimiter)` | The same with a one-character delimiter (for TSV, `"\t"`). |
+| `tryParse(text)` / `tryParseWith(text, delimiter)` | `{ok, value, error}` instead of raising. |
+| `isValid(text)` | `true` when the text is well formed. |
+| `stringify(rows)` | Text with `,` between fields and `\n` between records, without a trailing newline. |
+| `stringifyWith(rows, delimiter, eol)` | The same with a custom delimiter and record separator. |
+| `toMaps(rows)` | Treats the first record as the header and returns one map per data record. |
+| `fromMaps(records, columns)` | The inverse: the header plus one row per map. |
+
+```oskl
+import std.csv.*;
+
+let text = "name,age\n\"Ada, A.\",36\nGrace,85\n";
+let rows = parse(text);
+print(rows[1][0]);       // Ada, A.
+print(rows[1][1]);       // 36
+print(toMaps(rows));     // [{"name": "Ada, A.", "age": "36"}, {"name": "Grace", "age": "85"}]
+print(stringify([["a", "b"], ["c", "d"]])); // a,b\nc,d
+print(tryParse("\"unterminated").ok);       // false
+```
+
+A record is separated by `\r\n`, `\n` or a lone `\r`. A field may be quoted
+with `"`, in which case it may contain the delimiter, a newline and a doubled
+quote (`""` is one `"`). A `"` inside an unquoted field is an ordinary
+character. After a closing quote only a delimiter, a newline or the end of the
+input is accepted, so `"a"b` is reported as malformed instead of being read as
+`ab`. An empty input has no records (`[]`), while a quoted empty field is one
+record with one empty field (`[[""]]`); a trailing record separator closes the
+last record without adding an empty one.
+
+`stringify` quotes a field when it is empty or contains the delimiter, a quote,
+a carriage return or a line feed, so every value round-trips through `parse`.
+An empty field is always written as `""`, because an unquoted empty field in a
+one-field record would be indistinguishable from no record at all. A record
+must have at least one field: a zero-field record has no CSV spelling, so
+`stringify` reports it instead of writing an empty line that would parse back
+as one empty field. A field value may be any type: `nil` becomes the empty
+field and every other value uses its `str` form, so a map of mixed values
+serializes without a cast.
+`stringifyWith` accepts `\n`, `\r\n` or `\r` as the record separator, the three
+forms the reader recognizes; any other value is a runtime error, so the output
+always parses back.
+
+`toMaps` pads a short record with empty fields and ignores fields beyond the
+header; a duplicate header name is a runtime error, because a map cannot hold
+it. `fromMaps` looks each column up by name (a missing key is the empty field)
+and rejects a duplicate column name. `tryParse` mirrors `std.json.tryParse`:
+malformed input is a value, not an abort, and the message names the line and
+column.
+
+The module is pure Oskel over the portable primitive surface, so the VM,
+`oskel build` and WebAssembly produce the same text. `stringify` assembles its
+output with `std.io.StringWriter`, whose balanced tree keeps a large table
+linear instead of copying the prefix once per field.
+
 ---
 
 ## 13. Errors and diagnostics

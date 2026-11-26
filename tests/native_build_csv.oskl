@@ -1,0 +1,85 @@
+// Fixture for `oskel build` (tests/build_binary.cmake) and WebAssembly
+// (tests/wasm_case.cmake): `std.csv` on a compiled target.
+//
+// The module is pure Oskel over the portable primitive surface, so the native
+// binary and the WebAssembly module must agree with the development VM byte
+// for byte. Every line is deterministic and prints a value; the harness
+// compares stdout.
+
+import std.csv;
+import std.csv.*;
+import std.csv as c;
+import { parse, stringify } from std.csv;
+
+// --- reading ----------------------------------------------------------------
+
+print("empty =", parse(""));
+print("simple =", parse("a,b,c"));
+print("records =", parse("a,b\nc,d"));
+print("crlf =", parse("a,b\r\nc,d\r\n"));
+print("cr =", parse("a,b\rc,d"));
+print("emptyFields =", parse(","), parse("a,"), parse(",a"));
+print("emptyQuoted =", parse("\"\""));
+print("quoted =", parse("\"a,b\",\"say \"\"hi\"\"\",\"a\nb\""));
+print("unquotedQuote =", parse("a\"b,c"));
+print("unicode =", parse("hé,\"a€b\"\n😀,x"));
+print("spaces =", parse(" a ,\" b \""));
+
+// --- writing ----------------------------------------------------------------
+
+print("writeEmpty =", stringify([]));
+print("writeSimple =", stringify([["a", "b"], ["c", "d"]]));
+print("writeQuoted =", stringify([["a,b", "a\"b", "a\nb", ""]]));
+print("writeValues =", stringify([[1, true, nil, 1.5]]));
+print("writeWith =", stringifyWith([["a", "b"], ["c", "d"]], "\t", "\r\n"));
+print("writeCustom =", c.stringify([["x", "y"]]));
+
+let tricky = [
+  ["plain", "a,b", "a\"b", "a\nb", "", " hé "],
+  ["", "x", "y", "z", "0", "😀"],
+];
+print("roundTrip =", parse(stringify(tricky)) == tricky);
+print("roundTripTab =", parseWith(stringifyWith(tricky, "\t", "\r\n"), "\t") == tricky);
+
+// --- header records ---------------------------------------------------------
+
+let table = parse("name,age\n\"Ada, A.\",36\nGrace,85\n");
+print("table =", table);
+print("maps =", toMaps(table));
+print("mapsEmpty =", toMaps([]));
+print("mapsShort =", toMaps([["a", "b"], ["1"], ["1", "2", "3"]]));
+print("fromMaps =", fromMaps([{"name": "Ada", "age": 36}], ["name", "age"]));
+print("fromMapsMissing =", fromMaps([{"a": true, "b": nil, "c": 1.5}], ["a", "b", "c", "d"]));
+print("fromMapsEmpty =", fromMaps([], ["a", "b"]));
+print("mapsRoundTrip =", toMaps(fromMaps(toMaps(table), ["name", "age"])) == toMaps(table));
+
+// --- validation and errors --------------------------------------------------
+
+print("valid =", isValid("a,b"), isValid(""), isValid("\"a,b\""));
+print("invalid =", isValid("\"a"), isValid("\"a\"b"));
+
+let ok = tryParse("a,b\nc,d");
+print("tryOk =", ok.ok, ok.value, ok.error);
+let bad = tryParse("\"oops");
+print("tryBad =", bad.ok, bad.value, bad.error);
+print("tryClose =", tryParse("\"a\"b").error);
+print("tryLine =", tryParse("a,b\n\"oops").error);
+print("tryDelimiter =", tryParseWith("a\t\"b", "\t").error);
+print("tryCustom =", tryParseWith("a\tb\nc\td", "\t").value);
+
+// --- a larger table ---------------------------------------------------------
+
+var source = [["id", "text", "note"]];
+var i = 0;
+while (i < 100) {
+  source[len(source)] = [str(i), "a,b " + str(i), "q\"q\nline " + str(i)];
+  i = i + 1;
+}
+let text = stringify(source);
+let decoded = parse(text);
+print("large =", len(decoded), decoded == source);
+print("largeLast =", decoded[100][0], decoded[100][2]);
+print("largeMaps =", len(toMaps(decoded)), toMaps(decoded)[99]["id"]);
+print("largeText =", len(text));
+
+print("std.csv ok");
