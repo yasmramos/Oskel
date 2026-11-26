@@ -363,6 +363,7 @@ In the `examples/` directory (see `examples/README.md` for details):
 | File | Contents |
 | --- | --- |
 | `calc.oskl` | An arithmetic expression evaluator: lexer, parser and evaluator. Builds with `oskel build`. |
+| `ledger/` | A complete double-entry accounting project built with `oskelp new`: chart of accounts, journal, reports, JSON/CSV and a CLI. |
 | `mandelbrot.oskl` | The Mandelbrot set rendered as ASCII art. Builds with `oskel build`. |
 | `tui_editor.oskl` | A minimal terminal text editor (interactive; hosted AOT capable on a POSIX host). |
 | `ui/todo.oskl` | A desktop task list built with `std.ui` and `std.ui.window`; needs the bundled SDL3 and Skia bridge. |

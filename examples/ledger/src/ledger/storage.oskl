@@ -1,0 +1,142 @@
+// Persistence: JSON for the whole ledger, CSV for the journal.
+//
+// The JSON form is the durable one: the chart and the entries, with every
+// amount as a decimal string so a load cannot change a cent. The CSV form is
+// the interchange one: one row per journal line, grouped by an `entry` column.
+
+import std.json;
+import std.csv;
+import { readText, writeText, exists } from std.fs;
+import std.fs.dir as dir;
+import std.path;
+import std.collections;
+import ledger.money;
+import ledger.account;
+import ledger.journal;
+import ledger.core;
+
+const VERSION = 1;
+
+fn toJson(book) {
+  var accounts = [];
+  for value in book.chart {
+    accounts[len(accounts)] = {
+      id: value.id,
+      code: value.code,
+      name: value.name,
+      type: account.typeName(value.type),
+      normal: value.normal,
+    };
+  }
+  var entries = [];
+  for entry in book.entries {
+    entries[len(entries)] = journal.toJson(entry);
+  }
+  return {version: VERSION, accounts: accounts, entries: entries};
+}
+
+fn fromJson(data) {
+  if (type(data) != "map") {
+    panic("storage: expected a ledger object");
+  }
+  if (data.version != VERSION) {
+    panic("storage: unsupported ledger version '" + str(data.version) + "'");
+  }
+  if (type(data.accounts) != "array" || type(data.entries) != "array") {
+    panic("storage: the ledger needs an accounts array and an entries array");
+  }
+  var chart = [];
+  for value in data.accounts {
+    chart[len(chart)] = account.create(value.code, value.name, account.parseType(value.type));
+  }
+  let book = core.create(chart);
+  for entry in data.entries {
+    core.post(book, journal.fromJson(entry));
+  }
+  return book;
+}
+
+// Creates the parent directories of `filePath` one level at a time. The file
+// APIs create a file, not a directory, so a first `init` into `data/` needs
+// this; an existing directory is left alone.
+fn ensureParent(filePath: string) {
+  let parent = path.dirname(filePath);
+  if (parent == "" || parent == "." || parent == "/" || dir.exists(parent)) {
+    return;
+  }
+  ensureParent(parent);
+  dir.makeDir(parent);
+}
+
+fn save(book, filePath: string) {
+  ensureParent(filePath);
+  writeText(filePath, json.stringify(toJson(book), 2));
+}
+
+fn load(filePath: string) {
+  if (!exists(filePath)) {
+    panic("storage: no ledger at '" + filePath + "'");
+  }
+  return fromJson(json.parse(readText(filePath)));
+}
+
+fn _amount(text) {
+  if (text == nil || text == "") {
+    return money.zero();
+  }
+  return money.parse(text);
+}
+
+// Imports a CSV with the columns `entry,date,memo,account,debit,credit`. Rows
+// with the same `entry` become the lines of one journal entry. Returns the
+// number of entries posted.
+fn importCsv(book, text: string) {
+  let rows = csv.toMaps(csv.parse(text));
+  if (len(rows) == 0) {
+    return 0;
+  }
+  if (rows[0].entry == nil) {
+    panic("storage: the CSV needs an entry column");
+  }
+  let groups = collections.groupBy(rows, (row) => row.entry);
+  var count = 0;
+  for key in groups {
+    let group = groups[key];
+    var lines = [];
+    for row in group {
+      lines[len(lines)] = journal.line(row.account, _amount(row.debit), _amount(row.credit));
+    }
+    core.post(book, journal.entry(group[0].date, group[0].memo, lines));
+    count = count + 1;
+  }
+  return count;
+}
+
+// The journal as the same CSV `importCsv` reads.
+fn exportCsv(book) {
+  var rows = [["entry", "date", "memo", "account", "debit", "credit"]];
+  for entry in core.sortedEntries(book) {
+    for line in entry.lines {
+      rows[len(rows)] = [
+        entry.id,
+        entry.date,
+        entry.memo,
+        line.account,
+        money.format(line.debit),
+        money.format(line.credit),
+      ];
+    }
+  }
+  return csv.stringify(rows);
+}
+
+fn saveCsv(book, filePath: string) {
+  ensureParent(filePath);
+  writeText(filePath, exportCsv(book));
+}
+
+fn loadCsv(filePath: string) {
+  let book = core.create(account.defaultChart());
+  importCsv(book, readText(filePath));
+  return book;
+}

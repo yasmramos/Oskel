@@ -1,0 +1,50 @@
+// Journal entries: balance, account lookup, date validation and JSON.
+
+import ledger.money;
+import ledger.account;
+import ledger.journal;
+
+let chart = account.chartByCode(account.defaultChart());
+let entry = journal.entry("2026-01-02", "Owner investment", [
+  journal.debitLine("1000", money.parse("25000.00")),
+  journal.creditLine("3000", money.parse("25000.00")),
+]);
+assertEq(entry.date, "2026-01-02");
+assertEq(entry.memo, "Owner investment");
+assertEq(len(entry.lines), 2);
+assertEq(journal.isBalanced(entry), true);
+assertEq(money.format(journal.totalDebit(entry)), "25000.00");
+assertEq(money.format(journal.totalCredit(entry)), "25000.00");
+journal.validate(entry, chart);
+
+let json = journal.toJson(entry);
+let back = journal.fromJson(json);
+assertEq(back.id, entry.id);
+assertEq(back.date, entry.date);
+assertEq(back.memo, entry.memo);
+assertEq(journal.isBalanced(back), true);
+
+let bad = journal.entry("2026-01-03", "Bad", [
+  journal.debitLine("1000", money.parse("1.00")),
+  journal.creditLine("3000", money.parse("2.00")),
+]);
+assertEq(journal.isBalanced(bad), false);
+assertEq(pcall(() => journal.validate(bad, chart)).ok, false);
+
+let unknown = journal.entry("2026-01-03", "Unknown", [
+  journal.debitLine("9999", money.parse("1.00")),
+  journal.creditLine("3000", money.parse("1.00")),
+]);
+assertEq(pcall(() => journal.validate(unknown, chart)).ok, false);
+
+let both = journal.entry("2026-01-03", "Both", [
+  journal.line("1000", money.parse("1.00"), money.parse("1.00")),
+  journal.creditLine("3000", money.parse("1.00")),
+]);
+assertEq(pcall(() => journal.validate(both, chart)).ok, false);
+
+assertEq(journal.tryParseDate("2026-01-01").ok, true);
+assertEq(journal.tryParseDate("2024-02-29").ok, true);
+assertEq(journal.tryParseDate("2026-02-29").ok, false);
+assertEq(journal.tryParseDate("2026-13-01").ok, false);
+print("journal_test: ok");

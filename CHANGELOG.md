@@ -11,6 +11,15 @@ may change between minor versions.
 
 ### Added
 
+- **A complete accounting project: `examples/ledger`.** Scaffolded with
+  `oskelp new` and built from the standard library alone, it posts balanced
+  journal entries against a chart of accounts and prints a trial balance, an
+  income statement and a balance sheet. Amounts are `std.decimal` values scaled
+  to cents, the ledger persists as JSON and exchanges its journal as CSV, and
+  the command line is `std.cli` with `std.log` diagnostics and optional
+  `std.terminal` colour. `oskelp run`, `oskelp test` and `oskelp build` drive
+  it; `oskelp.example_ledger` runs the VM and native trial balances byte for
+  byte.
 - **`std.csv`: RFC 4180 parsing and serialization.** `parse`/`parseWith` read
   records as arrays of field strings, with quoted fields, doubled quotes,
   embedded delimiters and newlines, and `\r\n`/`\n`/`\r` separators;

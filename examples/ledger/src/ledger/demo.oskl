@@ -1,0 +1,26 @@
+// The demo ledger: a small consulting business in January 2026.
+//
+// It is the default `ledger` command, so `oskelp run` prints a complete set of
+// reports without touching the disk.
+
+import ledger.money;
+import ledger.account;
+import ledger.core;
+import ledger.reports;
+
+fn book() {
+  let value = core.create(account.defaultChart());
+  core.postSimple(value, "2026-01-02", "Owner investment", "1000", "3000", money.parse("25000.00"));
+  core.postSimple(value, "2026-01-03", "Equipment purchase", "1500", "1000", money.parse("8000.00"));
+  core.postSimple(value, "2026-01-05", "Consulting invoice", "1100", "4000", money.parse("12500.00"));
+  core.postSimple(value, "2026-01-10", "Client payment", "1000", "1100", money.parse("10000.00"));
+  core.postSimple(value, "2026-01-15", "January rent", "5100", "1000", money.parse("2000.00"));
+  core.postSimple(value, "2026-01-20", "January salaries", "5200", "1000", money.parse("4500.00"));
+  core.postSimple(value, "2026-01-22", "Inventory on credit", "1200", "2000", money.parse("3200.00"));
+  core.postSimple(value, "2026-01-25", "January utilities", "5300", "1000", money.parse("350.00"));
+  return value;
+}
+
+fn text(value, color: bool) {
+  return reports.summary(value, color);
+}

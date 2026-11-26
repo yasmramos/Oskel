@@ -1,0 +1,7 @@
+entry,date,memo,account,debit,credit
+OPEN,2026-03-01,Owner investment,1000,10000.00,0.00
+OPEN,2026-03-01,Owner investment,3000,0.00,10000.00
+SALE,2026-03-05,Consulting invoice,1100,4000.00,0.00
+SALE,2026-03-05,Consulting invoice,4000,0.00,4000.00
+RENT,2026-03-10,March rent,5100,1200.00,0.00
+RENT,2026-03-10,March rent,1000,0.00,1200.00

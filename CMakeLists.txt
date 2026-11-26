@@ -770,6 +770,19 @@ if(BUILD_TESTING)
       "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/oskelp-e2e"
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_oskelp_case.cmake")
 
+  # End-to-end: the complete `examples/ledger` project. It runs the demo and
+  # the project's tests, exercises the file-backed commands, and compares the
+  # native trial balance with the VM's when the AOT backend can run here.
+  add_test(NAME oskelp.example_ledger
+    COMMAND ${CMAKE_COMMAND}
+      "-DOSKELP_EXE=$<TARGET_FILE:oskelp>"
+      "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+      "-DOSKELC_EXE=$<TARGET_FILE:oskelc>"
+      "-DOSKEL_AOT_RUNNABLE=${OSKELP_AOT_RUNNABLE}"
+      "-DEXAMPLE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/examples/ledger"
+      "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/example-ledger"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/run_example_ledger.cmake")
+
   # --- REPL scripted test (clear) ---
   add_test(NAME repl.clear
     COMMAND ${CMAKE_COMMAND}
