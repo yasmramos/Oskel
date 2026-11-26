@@ -1,0 +1,266 @@
+// Standard library: ANSI terminal styling.
+//
+// Imported as `import std.terminal;` (qualified: `std.terminal.style`),
+// `import std.terminal.*;` (unqualified: `style`), `import std.terminal as t;`
+// or `import { style, red } from std.terminal;`.
+//
+//   print(style("ok", "green", "bold"));
+//   print(red("error") + " " + underline("detail"));
+//   print(hyperlink("docs", "https://example.com"));
+//
+// The module emits SGR (Select Graphic Rendition) and OSC 8 sequences; it does
+// not decide whether the output is a terminal, because the engine has no
+// `isatty`. The caller can disable styling by not calling it, or strip the
+// sequences with `strip` before writing to a file. `visibleLength` measures
+// the text without the sequences.
+//
+// Color names are `black`, `red`, `green`, `yellow`, `blue`, `magenta`,
+// `cyan`, `white`, `gray`, the `bright*` forms, and `bg*`/`bgBright*` for the
+// background. Style names are `bold`, `dim`, `italic`, `underline`, `blink`,
+// `reverse`, `hidden` and `strike`. `rgb`/`bgRgb` take three 0..255 channels.
+//
+// The module is plain Oskel over strings and integer arithmetic, so it behaves
+// identically on the development VM, under `oskel build` and on WebAssembly.
+
+const _ESC = "\u001b";
+const _BEL = "\u0007";
+
+// The SGR number of a style or color name. An unknown name is a runtime error.
+@MustUse
+fn code(name) {
+  if (type(name) == "int") {
+    return str(name);
+  }
+  if (type(name) != "string") {
+    panic("std.terminal: expected a style name or an SGR number");
+  }
+  let key = name.lower();
+  if (key == "bold") {
+    return "1";
+  }
+  if (key == "dim") {
+    return "2";
+  }
+  if (key == "italic") {
+    return "3";
+  }
+  if (key == "underline") {
+    return "4";
+  }
+  if (key == "blink") {
+    return "5";
+  }
+  if (key == "reverse") {
+    return "7";
+  }
+  if (key == "hidden") {
+    return "8";
+  }
+  if (key == "strike") {
+    return "9";
+  }
+  var foreground = true;
+  var color = key;
+  if (key.startsWith("bg")) {
+    foreground = false;
+    color = key[2:len(key)];
+  }
+  var value = -1;
+  if (color == "black") {
+    value = 0;
+  } else if (color == "red") {
+    value = 1;
+  } else if (color == "green") {
+    value = 2;
+  } else if (color == "yellow") {
+    value = 3;
+  } else if (color == "blue") {
+    value = 4;
+  } else if (color == "magenta") {
+    value = 5;
+  } else if (color == "cyan") {
+    value = 6;
+  } else if (color == "white") {
+    value = 7;
+  } else if (color == "gray" || color == "grey" || color == "brightblack") {
+    value = 8;
+  } else if (color == "brightred") {
+    value = 9;
+  } else if (color == "brightgreen") {
+    value = 10;
+  } else if (color == "brightyellow") {
+    value = 11;
+  } else if (color == "brightblue") {
+    value = 12;
+  } else if (color == "brightmagenta") {
+    value = 13;
+  } else if (color == "brightcyan") {
+    value = 14;
+  } else if (color == "brightwhite") {
+    value = 15;
+  }
+  if (value < 0) {
+    panic("std.terminal: unknown style '" + name + "'");
+  }
+  if (value < 8) {
+    return str((foreground ? 30 : 40) + value);
+  }
+  return str((foreground ? 90 : 100) + value - 8);
+}
+
+// The escape sequence that starts `name` (a style or foreground color).
+@MustUse
+fn fg(name) {
+  return _ESC + "[" + code(name) + "m";
+}
+
+// The escape sequence that starts a background color. `bg("red")` is the
+// background red, not the foreground red.
+@MustUse
+fn bg(name) {
+  if (type(name) == "string" && !name.lower().startsWith("bg")) {
+    return _ESC + "[" + code("bg" + name) + "m";
+  }
+  return _ESC + "[" + code(name) + "m";
+}
+
+// A 24-bit foreground color.
+@MustUse
+fn rgb(red, green, blue) {
+  _checkChannel(red);
+  _checkChannel(green);
+  _checkChannel(blue);
+  return _ESC + "[38;2;" + str(red) + ";" + str(green) + ";" + str(blue) + "m";
+}
+
+// A 24-bit background color.
+@MustUse
+fn bgRgb(red, green, blue) {
+  _checkChannel(red);
+  _checkChannel(green);
+  _checkChannel(blue);
+  return _ESC + "[48;2;" + str(red) + ";" + str(green) + ";" + str(blue) + "m";
+}
+
+fn _checkChannel(value) {
+  if (type(value) != "int" || value < 0 || value > 255) {
+    panic("std.terminal: an RGB channel must be an integer in 0..255");
+  }
+}
+
+// The reset sequence.
+@MustUse
+fn reset() {
+  return _ESC + "[0m";
+}
+
+// Wraps `text` in the given styles and a reset. The styles are names or SGR
+// numbers, applied in order: `style("x", "red", "bold")` is `\e[31;1mx\e[0m`.
+@MustUse
+fn style(text, rest...) {
+  if (len(rest) == 0) {
+    return str(text);
+  }
+  var parts = [];
+  for item in rest {
+    parts[len(parts)] = code(item);
+  }
+  return _ESC + "[" + parts.join(";") + "m" + str(text) + reset();
+}
+
+// A red foreground convenience.
+@MustUse
+fn red(text) {
+  return style(text, "red");
+}
+
+// A green foreground convenience.
+@MustUse
+fn green(text) {
+  return style(text, "green");
+}
+
+// A yellow foreground convenience.
+@MustUse
+fn yellow(text) {
+  return style(text, "yellow");
+}
+
+// A blue foreground convenience.
+@MustUse
+fn blue(text) {
+  return style(text, "blue");
+}
+
+// A bold convenience.
+@MustUse
+fn bold(text) {
+  return style(text, "bold");
+}
+
+// An underline convenience.
+@MustUse
+fn underline(text) {
+  return style(text, "underline");
+}
+
+// An OSC 8 hyperlink. Terminals that do not support OSC 8 show only `text`.
+@MustUse
+fn hyperlink(text, url) {
+  return _ESC + "]8;;" + str(url) + _ESC + "\\" + str(text) + _ESC + "]8;;" + _ESC + "\\";
+}
+
+// Removes CSI and OSC escape sequences from `text`.
+@MustUse
+fn strip(text) {
+  if (type(text) != "string") {
+    panic("std.terminal.strip: expected a string");
+  }
+  var out = "";
+  var i = 0;
+  while (i < len(text)) {
+    let c = text[i];
+    if (c != _ESC) {
+      out = out + c;
+      i = i + 1;
+      continue;
+    }
+    i = i + 1;
+    if (i >= len(text)) {
+      break;
+    }
+    if (text[i] == "[") {
+      i = i + 1;
+      while (i < len(text) && !(text[i] >= "@" && text[i] <= "~")) {
+        i = i + 1;
+      }
+      if (i < len(text)) {
+        i = i + 1;
+      }
+    } else if (text[i] == "]") {
+      i = i + 1;
+      while (i < len(text)) {
+        if (text[i] == _BEL) {
+          i = i + 1;
+          break;
+        }
+        if (text[i] == _ESC && i + 1 < len(text) && text[i + 1] == "\\") {
+          i = i + 2;
+          break;
+        }
+        i = i + 1;
+      }
+    } else {
+      i = i + 1;
+    }
+  }
+  return out;
+}
+
+// The number of code points in `text` without the escape sequences. This is
+// the visible length for ASCII and for text whose characters are one column
+// wide; a wide CJK glyph or a combining mark still counts as one.
+@MustUse
+fn visibleLength(text) {
+  return len(strip(text));
+}

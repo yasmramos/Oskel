@@ -1,0 +1,574 @@
+// Standard library: semantic versions (SemVer 2.0.0) and ranges.
+//
+// Imported as `import std.semver;` (qualified: `std.semver.parse`),
+// `import std.semver.*;` (unqualified: `parse`), `import std.semver as semver;`
+// or `import { parse, satisfies } from std.semver;`.
+//
+// A version is a map `{major, minor, patch, prerelease, build}`; the two last
+// fields are arrays of identifiers. `parse` accepts an optional `v` prefix,
+// `format` writes the canonical text and `compare` implements the SemVer
+// precedence rules (build metadata is ignored). `satisfies` accepts the
+// requirement forms a package manifest needs:
+//
+//   exact          1.2.3
+//   comparisons    >=1.2.3  >1.2  <=2.0.0  <2
+//   caret          ^1.2.3  (>=1.2.3 <2.0.0, and ^0.2.3 is >=0.2.3 <0.3.0)
+//   tilde          ~1.2.3  (>=1.2.3 <1.3.0)
+//   wildcards      *  1.x  1.2.x
+//   hyphen range   1.2.3 - 2.3.4
+//   conjunction    >=1.0.0 <2.0.0   (space separated)
+//   disjunction    1.x || >=3.0.0
+//
+// A prerelease version satisfies a range only when a comparator in the range
+// names a prerelease of the same major.minor.patch, which is the rule npm
+// uses. A partial version in a comparison is padded with zeros (`>=1.2` is
+// `>=1.2.0`), while `>` and `<=` on a partial advance to the next wildcard
+// boundary (`>1.2` is `>=1.3.0`, `<=1.2` is `<1.3.0`).
+//
+// A malformed version or requirement is a runtime error; `tryParse` and
+// `isValid` test a version without aborting. The module is plain Oskel over
+// arrays, maps, strings and integer arithmetic, so it behaves identically on
+// the development VM, under `oskel build` and on WebAssembly.
+
+// --- identifiers ------------------------------------------------------------
+
+@MustUse
+fn _isDigit(c) {
+  return c >= "0" && c <= "9";
+}
+
+@MustUse
+fn _isAlphaNum(c) {
+  return _isDigit(c) || (c >= "A" && c <= "Z") || (c >= "a" && c <= "z");
+}
+
+@MustUse
+fn _isDigits(text) {
+  if (len(text) == 0) {
+    return false;
+  }
+  for c in text {
+    if (!_isDigit(c)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// A numeric identifier may not have a leading zero.
+@MustUse
+fn _noLeadingZero(text) {
+  return len(text) == 1 || text[0] != "0";
+}
+
+@MustUse
+fn _isIdentifier(text) {
+  if (len(text) == 0) {
+    return false;
+  }
+  for c in text {
+    if (!(_isAlphaNum(c) || c == "-")) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Splits `text` on `.` and validates every identifier. A numeric identifier
+// in a prerelease may not have a leading zero; a build identifier may.
+@MustUse
+fn _tryIdentifiers(text, numericRule) {
+  var out = [];
+  if (len(text) == 0) {
+    return {ok: true, value: out, error: nil};
+  }
+  for part in text.split(".") {
+    if (!_isIdentifier(part)) {
+      return {ok: false, value: nil, error: "std.semver: invalid identifier '" + part + "'"};
+    }
+    if (numericRule && _isDigits(part) && !_noLeadingZero(part)) {
+      return {ok: false, value: nil,
+        error: "std.semver: a numeric identifier may not have a leading zero"};
+    }
+    out[len(out)] = part;
+  }
+  return {ok: true, value: out, error: nil};
+}
+
+// --- versions ---------------------------------------------------------------
+
+// Parses a version or a partial version without aborting. `requireFull`
+// demands all three components and no wildcard.
+@MustUse
+fn _tryPartial(text, requireFull) {
+  if (type(text) != "string") {
+    return {ok: false, value: nil, error: "std.semver: expected a string"};
+  }
+  var s = text;
+  if (len(s) > 0 && (s[0] == "v" || s[0] == "V")) {
+    s = s[1:len(s)];
+  }
+  var core = s;
+  var preText = "";
+  var buildText = "";
+  let plus = core.indexOf("+");
+  if (plus >= 0) {
+    buildText = core[plus + 1:len(core)];
+    core = core[0:plus];
+  }
+  let dash = core.indexOf("-");
+  if (dash >= 0) {
+    preText = core[dash + 1:len(core)];
+    core = core[0:dash];
+  }
+  if (dash >= 0 && len(preText) == 0) {
+    return {ok: false, value: nil, error: "std.semver: empty prerelease"};
+  }
+  if (plus >= 0 && len(buildText) == 0) {
+    return {ok: false, value: nil, error: "std.semver: empty build metadata"};
+  }
+  let parts = core.split(".");
+  if (len(parts) > 3) {
+    return {ok: false, value: nil, error: "std.semver: too many version components"};
+  }
+  var major = 0;
+  var minor = 0;
+  var patch = 0;
+  var specified = 0;
+  var wildcard = false;
+  var i = 0;
+  for part in parts {
+    if (part == "*" || part == "x" || part == "X") {
+      wildcard = true;
+      break;
+    }
+    if (!_isDigits(part) || !_noLeadingZero(part)) {
+      return {ok: false, value: nil, error: "std.semver: invalid version component '" + part + "'"};
+    }
+    let number = int(part);
+    if (i == 0) {
+      major = number;
+    } else if (i == 1) {
+      minor = number;
+    } else {
+      patch = number;
+    }
+    specified = specified + 1;
+    i = i + 1;
+  }
+  if (requireFull && (specified != 3 || wildcard)) {
+    return {ok: false, value: nil, error: "std.semver: expected major.minor.patch"};
+  }
+  let prerelease = _tryIdentifiers(preText, true);
+  if (!prerelease.ok) {
+    return prerelease;
+  }
+  let build = _tryIdentifiers(buildText, false);
+  if (!build.ok) {
+    return build;
+  }
+  return {ok: true, value: {
+    major: major,
+    minor: minor,
+    patch: patch,
+    specified: specified,
+    wildcard: wildcard,
+    prerelease: prerelease.value,
+    build: build.value,
+  }, error: nil};
+}
+
+// Parses a full version without aborting: `{ok, value, error}`.
+@MustUse
+fn tryParse(text) {
+  return _tryPartial(text, true);
+}
+
+// Parses a full version. A malformed value is a runtime error.
+@MustUse
+fn parse(text) {
+  let result = tryParse(text);
+  if (!result.ok) {
+    panic(result.error);
+  }
+  return result.value;
+}
+
+// True when `text` is a full semantic version.
+@MustUse
+fn isValid(text) {
+  return tryParse(text).ok;
+}
+
+// The map form of a version (a parsed map or a string).
+@MustUse
+fn _version(value) {
+  if (type(value) == "string") {
+    return parse(value);
+  }
+  if (type(value) == "map") {
+    if (type(value.major) != "int" || type(value.minor) != "int" || type(value.patch) != "int") {
+      panic("std.semver: a version map needs integer major, minor and patch fields");
+    }
+    return {
+      major: value.major,
+      minor: value.minor,
+      patch: value.patch,
+      specified: 3,
+      wildcard: false,
+      prerelease: value.prerelease != nil ? value.prerelease : [],
+      build: value.build != nil ? value.build : [],
+    };
+  }
+  panic("std.semver: expected a version string or map");
+}
+
+// The canonical text of a version (a map or a string).
+@MustUse
+fn format(version) {
+  let v = _version(version);
+  var out = str(v.major) + "." + str(v.minor) + "." + str(v.patch);
+  if (len(v.prerelease) > 0) {
+    out = out + "-" + v.prerelease.join(".");
+  }
+  if (len(v.build) > 0) {
+    out = out + "+" + v.build.join(".");
+  }
+  return out;
+}
+
+// Compares two prerelease identifiers. A numeric identifier is lower than a
+// non-numeric one; two numeric identifiers compare numerically.
+@MustUse
+fn _compareIdentifier(left, right) {
+  let a = _isDigits(left);
+  let b = _isDigits(right);
+  if (a && b) {
+    let x = int(left);
+    let y = int(right);
+    return x < y ? -1 : (x > y ? 1 : 0);
+  }
+  if (a) {
+    return -1;
+  }
+  if (b) {
+    return 1;
+  }
+  return left < right ? -1 : (left > right ? 1 : 0);
+}
+
+// Compares two prerelease arrays.
+@MustUse
+fn _comparePrerelease(left, right) {
+  if (len(left) == 0 && len(right) == 0) {
+    return 0;
+  }
+  if (len(left) == 0) {
+    return 1;
+  }
+  if (len(right) == 0) {
+    return -1;
+  }
+  var i = 0;
+  while (i < len(left) && i < len(right)) {
+    let result = _compareIdentifier(left[i], right[i]);
+    if (result != 0) {
+      return result;
+    }
+    i = i + 1;
+  }
+  return len(left) < len(right) ? -1 : (len(left) > len(right) ? 1 : 0);
+}
+
+// The SemVer precedence of two versions: -1, 0 or 1. Build metadata is not
+// part of the precedence.
+@MustUse
+fn compare(left, right) {
+  let a = _version(left);
+  let b = _version(right);
+  if (a.major != b.major) {
+    return a.major < b.major ? -1 : 1;
+  }
+  if (a.minor != b.minor) {
+    return a.minor < b.minor ? -1 : 1;
+  }
+  if (a.patch != b.patch) {
+    return a.patch < b.patch ? -1 : 1;
+  }
+  return _comparePrerelease(a.prerelease, b.prerelease);
+}
+
+// True when the version has a prerelease part.
+@MustUse
+fn isPrerelease(version) {
+  return len(_version(version).prerelease) > 0;
+}
+
+// True when the version has no prerelease part.
+@MustUse
+fn isStable(version) {
+  return !isPrerelease(version);
+}
+
+// The next major, minor or patch version, with the prerelease and build
+// metadata cleared.
+@MustUse
+fn bump(version, part) {
+  let v = _version(version);
+  if (part == "major") {
+    return format({major: v.major + 1, minor: 0, patch: 0, prerelease: [], build: []});
+  }
+  if (part == "minor") {
+    return format({major: v.major, minor: v.minor + 1, patch: 0, prerelease: [], build: []});
+  }
+  if (part == "patch") {
+    return format({major: v.major, minor: v.minor, patch: v.patch + 1, prerelease: [], build: []});
+  }
+  panic("std.semver.bump: unknown part '" + str(part) + "'");
+}
+
+// --- requirements -----------------------------------------------------------
+
+// A partial version as a full version map.
+@MustUse
+fn _partialVersion(partial) {
+  return {
+    major: partial.major,
+    minor: partial.minor,
+    patch: partial.patch,
+    specified: 3,
+    wildcard: false,
+    prerelease: partial.prerelease,
+    build: partial.build,
+  };
+}
+
+// The exclusive upper bound of a wildcard: `1.x` is `<2.0.0`, `1.2.x` is
+// `<1.3.0`. A full version or `*` has no wildcard upper bound.
+@MustUse
+fn _wildcardUpper(partial) {
+  if (partial.specified == 0) {
+    return nil;
+  }
+  if (partial.specified == 1) {
+    return {major: partial.major + 1, minor: 0, patch: 0,
+      specified: 3, wildcard: false, prerelease: [], build: []};
+  }
+  if (partial.specified == 2) {
+    return {major: partial.major, minor: partial.minor + 1, patch: 0,
+      specified: 3, wildcard: false, prerelease: [], build: []};
+  }
+  return nil;
+}
+
+// The exclusive upper bound of `^partial`.
+@MustUse
+fn _caretUpper(partial) {
+  if (partial.specified <= 1) {
+    return {major: partial.major + 1, minor: 0, patch: 0,
+      specified: 3, wildcard: false, prerelease: [], build: []};
+  }
+  if (partial.specified == 2 && partial.major == 0 && partial.minor == 0) {
+    return {major: 0, minor: 1, patch: 0,
+      specified: 3, wildcard: false, prerelease: [], build: []};
+  }
+  if (partial.major > 0) {
+    return {major: partial.major + 1, minor: 0, patch: 0,
+      specified: 3, wildcard: false, prerelease: [], build: []};
+  }
+  if (partial.minor > 0) {
+    return {major: 0, minor: partial.minor + 1, patch: 0,
+      specified: 3, wildcard: false, prerelease: [], build: []};
+  }
+  return {major: 0, minor: 0, patch: partial.patch + 1,
+    specified: 3, wildcard: false, prerelease: [], build: []};
+}
+
+// The exclusive upper bound of `~partial`.
+@MustUse
+fn _tildeUpper(partial) {
+  if (partial.specified <= 1) {
+    return {major: partial.major + 1, minor: 0, patch: 0,
+      specified: 3, wildcard: false, prerelease: [], build: []};
+  }
+  return {major: partial.major, minor: partial.minor + 1, patch: 0,
+    specified: 3, wildcard: false, prerelease: [], build: []};
+}
+
+// One comparator token (`>=1.2`, `^1.2.3`, `1.x`, ...) as zero or more
+// `{op, version}` comparators. An empty array means "any version".
+@MustUse
+fn _parseComparator(text) {
+  var s = text;
+  var op = "=";
+  if (s.startsWith(">=")) {
+    op = ">=";
+    s = s[2:len(s)];
+  } else if (s.startsWith("<=")) {
+    op = "<=";
+    s = s[2:len(s)];
+  } else if (s.startsWith(">")) {
+    op = ">";
+    s = s[1:len(s)];
+  } else if (s.startsWith("<")) {
+    op = "<";
+    s = s[1:len(s)];
+  } else if (s.startsWith("=")) {
+    op = "=";
+    s = s[1:len(s)];
+  } else if (s.startsWith("^")) {
+    op = "^";
+    s = s[1:len(s)];
+  } else if (s.startsWith("~")) {
+    op = "~";
+    s = s[1:len(s)];
+  }
+  if (len(s) == 0) {
+    panic("std.semver: a comparator needs a version");
+  }
+  let partial = _parsePartial(s);
+  if (op == "^") {
+    return [
+      {op: ">=", version: _partialVersion(partial)},
+      {op: "<", version: _caretUpper(partial)},
+    ];
+  }
+  if (op == "~") {
+    return [
+      {op: ">=", version: _partialVersion(partial)},
+      {op: "<", version: _tildeUpper(partial)},
+    ];
+  }
+  if (op == "=") {
+    if (partial.specified == 3 && !partial.wildcard) {
+      return [{op: "=", version: _partialVersion(partial)}];
+    }
+    let upper = _wildcardUpper(partial);
+    if (upper == nil) {
+      return [];
+    }
+    return [
+      {op: ">=", version: _partialVersion(partial)},
+      {op: "<", version: upper},
+    ];
+  }
+  if (partial.specified == 0 || partial.wildcard) {
+    return [];
+  }
+  if (op == ">" && partial.specified < 3) {
+    return [{op: ">=", version: _wildcardUpper(partial)}];
+  }
+  if (op == "<=" && partial.specified < 3) {
+    return [{op: "<", version: _wildcardUpper(partial)}];
+  }
+  return [{op: op, version: _partialVersion(partial)}];
+}
+
+// A partial version, aborting on a malformed value.
+@MustUse
+fn _parsePartial(text) {
+  let result = _tryPartial(text, false);
+  if (!result.ok) {
+    panic(result.error);
+  }
+  return result.value;
+}
+
+// One whitespace- or hyphen-separated group of a requirement.
+@MustUse
+fn _parseGroup(text) {
+  let group = text.trim();
+  if (len(group) == 0 || group == "*") {
+    return [];
+  }
+  let hyphen = group.indexOf(" - ");
+  if (hyphen >= 0) {
+    let lower = _parsePartial(group[0:hyphen].trim());
+    let upper = _parsePartial(group[hyphen + 3:len(group)].trim());
+    var out = [{op: ">=", version: _partialVersion(lower)}];
+    if (upper.specified == 3 && !upper.wildcard) {
+      out[len(out)] = {op: "<=", version: _partialVersion(upper)};
+    } else {
+      let next = _wildcardUpper(upper);
+      if (next != nil) {
+        out[len(out)] = {op: "<", version: next};
+      }
+    }
+    return out;
+  }
+  var out = [];
+  for token in group.replace("\t", " ").split(" ") {
+    if (len(token) == 0) {
+      continue;
+    }
+    for comparator in _parseComparator(token) {
+      out[len(out)] = comparator;
+    }
+  }
+  return out;
+}
+
+// The parsed form of a requirement: `{groups: [[{op, version}, ...], ...]}`,
+// where a group is a conjunction and the outer array is a disjunction.
+@MustUse
+fn parseRequirement(text) {
+  if (type(text) != "string") {
+    panic("std.semver: the requirement must be a string");
+  }
+  var groups = [];
+  for part in text.split("||") {
+    groups[len(groups)] = _parseGroup(part);
+  }
+  return {groups: groups};
+}
+
+// True when `version` satisfies `requirement`.
+@MustUse
+fn satisfies(version, requirement) {
+  let v = _version(version);
+  let range = parseRequirement(requirement);
+  for group in range.groups {
+    if (_satisfiesGroup(v, group)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// True when one conjunction matches. A prerelease candidate needs a comparator
+// that names a prerelease of the same major.minor.patch.
+@MustUse
+fn _satisfiesGroup(version, comparators) {
+  if (len(version.prerelease) > 0) {
+    var allowed = false;
+    for comparator in comparators {
+      let c = comparator.version;
+      if (len(c.prerelease) > 0 && c.major == version.major
+          && c.minor == version.minor && c.patch == version.patch) {
+        allowed = true;
+      }
+    }
+    if (!allowed) {
+      return false;
+    }
+  }
+  for comparator in comparators {
+    let result = compare(version, comparator.version);
+    if (comparator.op == "=" && result != 0) {
+      return false;
+    }
+    if (comparator.op == ">" && result <= 0) {
+      return false;
+    }
+    if (comparator.op == ">=" && result < 0) {
+      return false;
+    }
+    if (comparator.op == "<" && result >= 0) {
+      return false;
+    }
+    if (comparator.op == "<=" && result > 0) {
+      return false;
+    }
+  }
+  return true;
+}

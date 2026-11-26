@@ -590,6 +590,19 @@ previous one.
   type, opcode or builtin is added, so the VM, `oskel build` and WebAssembly
   agree exactly. See `docs/language.md` §12.18, `tests/68_std_decimal.oskl`
   and the AOT/WASM fixture `tests/native_build_decimal.oskl`.
+- **Standard library: application modules** — **done**: seven pure-Oskel
+  modules over the portable primitive surface. `std.hash` (SHA-256, SHA-1,
+  HMAC-SHA256, CRC-32 and `constantTimeEqual`), `std.uuid` (v4 and v5, the
+  accepted input forms and the namespace constants), `std.url` (RFC 3986
+  parsing, relative resolution, percent codecs and query strings), `std.cli`
+  (flags, typed options, lists, positionals, clusters and help), `std.log`
+  (levels, fields, child loggers and a pluggable sink), `std.semver` (SemVer
+  2.0.0 precedence and npm-style ranges) and `std.terminal` (SGR/OSC 8
+  styling, stripping and visible length). No new runtime type, opcode or
+  builtin is added; each module has a VM test and an AOT/WASM fixture. See
+  `docs/language.md` §12.20-§12.26, `tests/73_std_hash.oskl` through
+  `tests/79_std_terminal.oskl` and the matching
+  `tests/native_build_<module>.oskl` fixture.
 - **Standard library: `std.io`** — **done**: in-memory text streams built on
   classes. `StringReader` walks a string by code point (`readLine`, `read`,
   `readChar`, `readToken`, `readWhile`, `lines`, ...); `StringWriter`
@@ -2305,9 +2318,10 @@ because the arena never reclaims. `tests/native_build_wasm_pointers.oskl`
 covers the happy paths; the error paths stay in the AOT fixture because
 `pcall` is VM-only. The standard-library modules stay on the portable
 primitive surface: `std/json`,
-`std/datetime`, `std/collections`, `std/path`, `std/csv` and the bound half of
-`std.math` build and agree with the VM byte for byte; the host clock is what
-lets `std/datetime` read `time()`/`clock()`.
+`std/datetime`, `std/collections`, `std/path`, `std/csv`, `std/hash`,
+`std/uuid`, `std/url`, `std/cli`, `std/log`, `std/semver`, `std/terminal`
+and the bound half of `std.math` build and agree with the VM byte for byte;
+the host clock is what lets `std/datetime` read `time()`/`clock()`.
 
 Still open, and each reported rather than mis-compiled:
 
@@ -2628,7 +2642,7 @@ and `tests/errors/interface_arity.oskl` (rejections). See `docs/language.md`
 - **Cosmopolitan (APE)** for CLI multi-platform (optional).
 - **Dynamic FFI** (`dlopen`, `dlsym`, runtime stubs with the project's own JIT).
 - **Hot reload** (1.1+).
-- **Extended stdlib**: JSON, dates, bytes, CSV, regex, networking.
+- **Extended stdlib**: regex and networking.
 - **Package manager** (`oskelp`, the Cargo-style project layer): the MVP landed
   with `oskel.toml`, `oskel.lock`, path dependencies and
   `new`/`init`/`build`/`run`/`check`/`test`/`clean`/`tree`. The local registry,

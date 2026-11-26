@@ -1,0 +1,242 @@
+// Standard library: UUIDs.
+//
+// Imported as `import std.uuid;` (qualified: `std.uuid.v4`),
+// `import std.uuid.*;` (unqualified: `v4`), `import std.uuid as uuid;` or
+// `import { v4, v5 } from std.uuid;`.
+//
+// A UUID is the canonical 36-character lowercase string
+// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, so no new runtime type is added and
+// the value composes with maps, JSON and the file system. `parse` accepts the
+// canonical form in either case, the 32-digit form without hyphens, a value in
+// braces and the `urn:uuid:` form, and always returns the 16 bytes; `format`
+// goes back to the canonical lowercase text.
+//
+// `v4` is random and needs `random`/`seed`; `v5` is deterministic and is the
+// SHA-1 of the namespace bytes followed by the name bytes, so both engines
+// agree after the same `seed(n)` and on the same input. `v3` (MD5) and `v1`
+// (time and MAC address) are not provided.
+//
+// The module is plain Oskel over the portable primitive surface, so it behaves
+// identically on the development VM, under `oskel build` and on WebAssembly.
+
+import std.bytes as _bytes;
+import std.hash as _hash;
+
+const NAMESPACE_DNS = "6ba7b810-9dad-11d1-80b4-00c04fd430c8";
+const NAMESPACE_URL = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
+const NAMESPACE_OID = "6ba7b812-9dad-11d1-80b4-00c04fd430c8";
+const NAMESPACE_X500 = "6ba7b814-9dad-11d1-80b4-00c04fd430c8";
+const _NIL = "00000000-0000-0000-0000-000000000000";
+
+// The value of one hexadecimal digit, or -1 when `c` is not one.
+@MustUse
+fn _hexValue(c) {
+  if (c >= "0" && c <= "9") {
+    return ord(c) - 48;
+  }
+  if (c >= "a" && c <= "f") {
+    return ord(c) - 87;
+  }
+  if (c >= "A" && c <= "F") {
+    return ord(c) - 55;
+  }
+  return -1;
+}
+
+// Removes the optional `urn:uuid:` prefix and braces. The caller has already
+// checked that `text` is a string.
+@MustUse
+fn _strip(text) {
+  var s = text;
+  if (len(s) >= 9 && s[0:9].lower() == "urn:uuid:") {
+    s = s[9:len(s)];
+  }
+  if (len(s) >= 2 && s[0] == "{" && s[len(s) - 1] == "}") {
+    s = s[1:len(s) - 1];
+  }
+  return s;
+}
+
+// Removes the four hyphens of the canonical form, or returns `s` unchanged
+// when it is already the 32-digit form.
+@MustUse
+fn _stripHyphens(s) {
+  if (len(s) == 36 && s[8] == "-" && s[13] == "-" && s[18] == "-" && s[23] == "-") {
+    return s[0:8] + s[9:13] + s[14:18] + s[19:23] + s[24:36];
+  }
+  return s;
+}
+
+// The canonical lowercase text of 16 bytes.
+@MustUse
+fn _formatBytes(bytes) {
+  let hex = _bytes.hexEncode(bytes);
+  return hex[0:8] + "-" + hex[8:12] + "-" + hex[12:16] + "-"
+    + hex[16:20] + "-" + hex[20:32];
+}
+
+// Parses a UUID without aborting. The result is `{ok, value, error}`, where
+// `value` is the array of 16 bytes on success.
+@MustUse
+fn tryParse(text) {
+  if (type(text) != "string") {
+    return {ok: false, value: nil, error: "std.uuid.parse: expected a string"};
+  }
+  let s = _stripHyphens(_strip(text));
+  if (len(s) != 32) {
+    return {ok: false, value: nil,
+      error: "std.uuid.parse: expected 32 hexadecimal digits"};
+  }
+  var out = [];
+  var i = 0;
+  while (i < 32) {
+    let hi = _hexValue(s[i]);
+    let lo = _hexValue(s[i + 1]);
+    if (hi < 0 || lo < 0) {
+      return {ok: false, value: nil,
+        error: "std.uuid.parse: expected 32 hexadecimal digits"};
+    }
+    out[len(out)] = hi * 16 + lo;
+    i = i + 2;
+  }
+  return {ok: true, value: out, error: nil};
+}
+
+// The 16 bytes of a UUID. A malformed value is a runtime error; use
+// `tryParse` or `isValid` to test without aborting.
+@MustUse
+fn parse(text) {
+  let result = tryParse(text);
+  if (!result.ok) {
+    panic(result.error);
+  }
+  return result.value;
+}
+
+// True when `text` is a UUID in one of the accepted forms.
+@MustUse
+fn isValid(text) {
+  return tryParse(text).ok;
+}
+
+// The canonical lowercase text of `bytes` (an array of 16 bytes).
+@MustUse
+fn format(bytes) {
+  if (!_bytes.isValid(bytes) || len(bytes) != 16) {
+    panic("std.uuid.format: expected an array of 16 bytes");
+  }
+  return _formatBytes(bytes);
+}
+
+// The canonical lowercase text of `text`, or a runtime error when it is not a
+// UUID. The result is the same for `ABCDEF...`, `{...}` and `urn:uuid:...`.
+@MustUse
+fn normalize(text) {
+  return _formatBytes(parse(text));
+}
+
+// The all-zero UUID.
+@MustUse
+fn nilUuid() {
+  return _NIL;
+}
+
+// True when `text` is the all-zero UUID.
+@MustUse
+fn isNil(text) {
+  let bytes = parse(text);
+  for b in bytes {
+    if (b != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// The version nibble (1..5) of a UUID.
+@MustUse
+fn version(text) {
+  let bytes = parse(text);
+  return (bytes[6] >> 4) & 0x0F;
+}
+
+// The variant of a UUID: "ncs", "rfc4122", "microsoft" or "future".
+@MustUse
+fn variant(text) {
+  let b = parse(text)[8];
+  if ((b & 0x80) == 0) {
+    return "ncs";
+  }
+  if ((b & 0xC0) == 0x80) {
+    return "rfc4122";
+  }
+  if ((b & 0xE0) == 0xC0) {
+    return "microsoft";
+  }
+  return "future";
+}
+
+// Compares two UUIDs by their bytes: -1, 0 or 1. Useful as a sort comparator.
+@MustUse
+fn compare(left, right) {
+  let a = parse(left);
+  let b = parse(right);
+  var i = 0;
+  while (i < 16) {
+    if (a[i] < b[i]) {
+      return -1;
+    }
+    if (a[i] > b[i]) {
+      return 1;
+    }
+    i = i + 1;
+  }
+  return 0;
+}
+
+// A random (version 4) UUID. The stream follows `seed(n)`, so two engines that
+// seed the same value produce the same UUID.
+@MustUse
+fn v4() {
+  var bytes = [];
+  var i = 0;
+  while (i < 16) {
+    bytes[len(bytes)] = random(0, 256);
+    i = i + 1;
+  }
+  bytes[6] = (bytes[6] & 0x0F) | 0x40;
+  bytes[8] = (bytes[8] & 0x3F) | 0x80;
+  return _formatBytes(bytes);
+}
+
+// The name bytes of a UUID v5: a string is UTF-8, an array must be bytes.
+@MustUse
+fn _nameBytes(name) {
+  if (type(name) == "string") {
+    return _bytes.fromString(name);
+  }
+  if (!_bytes.isValid(name)) {
+    panic("std.uuid.v5: expected a string or an array of bytes");
+  }
+  return name;
+}
+
+// A deterministic (version 5) UUID: the SHA-1 of the namespace bytes followed
+// by the name bytes, truncated to 16 bytes with the version and variant bits
+// set. `namespace` is any UUID string and `name` is a string or byte array.
+@MustUse
+fn v5(namespace, name) {
+  let ns = parse(namespace);
+  var input = [];
+  for b in ns {
+    input[len(input)] = b;
+  }
+  for b in _nameBytes(name) {
+    input[len(input)] = b;
+  }
+  let digest = _hash.sha1(input);
+  var bytes = digest[0:16];
+  bytes[6] = (bytes[6] & 0x0F) | 0x50;
+  bytes[8] = (bytes[8] & 0x3F) | 0x80;
+  return _formatBytes(bytes);
+}

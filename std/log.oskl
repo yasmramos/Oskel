@@ -1,0 +1,227 @@
+// Standard library: leveled logging.
+//
+// Imported as `import std.log;` (qualified: `std.log.create`),
+// `import std.log.*;` (unqualified: `create`), `import std.log as log;` or
+// `import { create, format } from std.log;`.
+//
+// A logger is a map of closures over a small mutable state:
+//
+//   let logger = create({name: "app", level: "info"});
+//   logger.info("started");
+//   logger.warn("slow request", {ms: 120, path: "/a"});
+//   logger.debug("hidden by the level");
+//
+// The levels are `trace` (10), `debug` (20), `info` (30), `warn` (40) and
+// `error` (50); `off` (100) disables every record. A record below the
+// logger's level is dropped before the clock is read or the sink is called.
+//
+// `create` accepts:
+//
+//   - `level`: a level name or number, `"info"` by default;
+//   - `name`: a label printed after the level;
+//   - `clock`: a `() -> int` function returning epoch seconds, `time` by
+//     default (pass a fixed value in a test);
+//   - `sink`: a `(record) -> nil` function, `print(format(record))` by default.
+//
+// A record is `{level, levelValue, name, message, time, fields}` and `format`
+// renders it as `[2026-11-26T20:38:00Z] INFO  app: started ms=120 path=/a`.
+// `child(name)` returns a logger with the same level, clock and sink and a
+// dotted name (`app.db`), and `enabled(level)` tests a level without building
+// a record.
+//
+// The module is plain Oskel over maps, closures, `time` and `std.datetime`,
+// so it behaves identically on the development VM, under `oskel build` and on
+// WebAssembly.
+
+import std.datetime as _datetime;
+
+const TRACE = 10;
+const DEBUG = 20;
+const INFO = 30;
+const WARN = 40;
+const ERROR = 50;
+const OFF = 100;
+
+// The numeric level of a name or a number. An unknown name is a runtime error.
+@MustUse
+fn levelOf(level) {
+  if (type(level) == "int") {
+    return level;
+  }
+  if (type(level) == "string") {
+    let name = level.lower();
+    if (name == "trace") {
+      return TRACE;
+    }
+    if (name == "debug") {
+      return DEBUG;
+    }
+    if (name == "info") {
+      return INFO;
+    }
+    if (name == "warn" || name == "warning") {
+      return WARN;
+    }
+    if (name == "error" || name == "err") {
+      return ERROR;
+    }
+    if (name == "off" || name == "none") {
+      return OFF;
+    }
+  }
+  panic("std.log: unknown level '" + str(level) + "'");
+}
+
+// The name of a numeric level. An unknown number is `level(<n>)`.
+@MustUse
+fn levelName(level) {
+  if (level == TRACE) {
+    return "trace";
+  }
+  if (level == DEBUG) {
+    return "debug";
+  }
+  if (level == INFO) {
+    return "info";
+  }
+  if (level == WARN) {
+    return "warn";
+  }
+  if (level == ERROR) {
+    return "error";
+  }
+  if (level == OFF) {
+    return "off";
+  }
+  return "level(" + str(level) + ")";
+}
+
+// One field value as `key=value` text. A string is quoted only when it would
+// otherwise be ambiguous (empty, or containing a space, `=`, a quote or a
+// newline).
+@MustUse
+fn _fieldText(value) {
+  if (value == nil) {
+    return "nil";
+  }
+  if (type(value) != "string") {
+    return str(value);
+  }
+  var needsQuotes = len(value) == 0;
+  for c in value {
+    if (c == " " || c == "=" || c == "\"" || c == "\n" || c == "\t") {
+      needsQuotes = true;
+    }
+  }
+  if (!needsQuotes) {
+    return value;
+  }
+  return "\"" + value.replace("\"", "\\\"") + "\"";
+}
+
+// The text of one record: an optional `[ISO-8601]` stamp, the level padded to
+// five characters, the optional `name:`, the message and `key=value` fields.
+@MustUse
+fn format(record) {
+  if (type(record) != "map") {
+    panic("std.log.format: expected a record map");
+  }
+  var line = "";
+  if (record.time != nil) {
+    line = "[" + _datetime.iso(_datetime.fromEpoch(record.time)) + "] ";
+  }
+  var level = "info";
+  if (record.level != nil) {
+    level = type(record.level) == "int" ? levelName(record.level) : str(record.level);
+  }
+  line = line + level.upper().padEnd(5);
+  if (record.name != nil && str(record.name) != "") {
+    line = line + " " + str(record.name) + ":";
+  }
+  if (record.message != nil) {
+    line = line + " " + str(record.message);
+  }
+  if (record.fields != nil && type(record.fields) == "map") {
+    for key in record.fields {
+      line = line + " " + str(key) + "=" + _fieldText(record.fields[key]);
+    }
+  }
+  return line;
+}
+
+// Builds a record and hands it to the sink, unless the level is below the
+// logger's threshold. The optional third argument is a map of fields.
+fn _emit(state, level, message, rest) {
+  if (level < state.level || level >= OFF) {
+    return nil;
+  }
+  var fields = {};
+  if (len(rest) > 0) {
+    if (type(rest[0]) != "map") {
+      panic("std.log: the extra argument must be a map of fields");
+    }
+    fields = rest[0];
+  }
+  let record = {
+    level: levelName(level),
+    levelValue: level,
+    name: state.name,
+    message: str(message),
+    time: state.clock(),
+    fields: fields,
+  };
+  state.sink(record);
+  return nil;
+}
+
+// Creates a logger. See the module header for the options and the record
+// shape; every option is optional.
+@MustUse
+fn create(options) {
+  var config = options;
+  if (config == nil) {
+    config = {};
+  }
+  if (type(config) != "map") {
+    panic("std.log.create: expected an options map");
+  }
+  let level = levelOf(config.level != nil ? config.level : "info");
+  let name = config.name != nil ? str(config.name) : "";
+  var clock = config.clock;
+  if (clock == nil) {
+    clock = () => time();
+  }
+  var sink = config.sink;
+  if (sink == nil) {
+    sink = (record) => print(format(record));
+  }
+  if (type(clock) != "function") {
+    panic("std.log.create: clock must be a function returning epoch seconds");
+  }
+  if (type(sink) != "function") {
+    panic("std.log.create: sink must be a function taking a record");
+  }
+  var state = {level: level, name: name, clock: clock, sink: sink};
+  return {
+    trace: (message, rest...) => _emit(state, TRACE, message, rest),
+    debug: (message, rest...) => _emit(state, DEBUG, message, rest),
+    info: (message, rest...) => _emit(state, INFO, message, rest),
+    warn: (message, rest...) => _emit(state, WARN, message, rest),
+    error: (message, rest...) => _emit(state, ERROR, message, rest),
+    log: (level, message, rest...) => _emit(state, levelOf(level), message, rest),
+    enabled: (level) => levelOf(level) >= state.level,
+    level: () => levelName(state.level),
+    levelValue: () => state.level,
+    setLevel: (level) => {
+      state.level = levelOf(level);
+      return nil;
+    },
+    name: () => state.name,
+    child: (childName) => create({
+      level: levelName(state.level),
+      name: state.name == "" ? str(childName) : state.name + "." + str(childName),
+      clock: state.clock,
+      sink: state.sink,
+    }),
+  };
+}

@@ -1,0 +1,30 @@
+// `std.terminal`: SGR codes, 24-bit colours, hyperlinks, stripping and
+// the visible length, with the rejected names and channels.
+import std.terminal.*;
+import std.bytes as b;
+
+fn hex(s) { return b.hexEncode(b.fromString(s)); }
+
+print("code red =", code("red"), code("bgRed"), code("brightWhite"), code("bgBrightBlack"));
+print("code styles =", code("bold"), code("dim"), code("italic"), code("underline"), code("blink"), code("reverse"), code("hidden"), code("strike"));
+print("code raw =", code(5));
+print("fg red =", hex(fg("red")));
+print("bg red =", hex(bg("red")));
+print("bg bgRed =", hex(bg("bgRed")));
+print("rgb =", hex(rgb(1, 2, 3)));
+print("bgRgb =", hex(bgRgb(255, 0, 128)));
+print("style =", hex(style("hi", "red", "bold")));
+print("style none =", style("hi"));
+print("red =", hex(red("x")), "green =", hex(green("x")), "yellow =", hex(yellow("x")), "blue =", hex(blue("x")));
+print("bold =", hex(bold("x")), "underline =", hex(underline("x")));
+let h = hyperlink("docs", "https://example.com");
+print("hyperlink =", hex(h));
+print("strip hyperlink =", strip(h));
+print("strip style =", strip(style("hello", "red", "bold")));
+print("visible =", visibleLength(style("a" + fg("red") + "é" + reset(), "bold")));
+print("strip mixed =", strip("a" + fg("red") + "b" + reset() + "c"));
+print("strip osc bel =", strip("\u001b]8;;https://x\u0007link\u001b]8;;\u0007"));
+print("unknown =", pcall(() => code("nope")).ok);
+print("bad channel =", pcall(() => rgb(256, 0, 0)).ok, pcall(() => bgRgb(0, -1, 0)).ok);
+print("bad strip =", pcall(() => strip(42)).ok);
+print("terminal ok");

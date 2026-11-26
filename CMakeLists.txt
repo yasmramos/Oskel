@@ -1755,6 +1755,19 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_json.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # The application stdlib modules -- hashing, UUIDs, URLs, CLI parsing,
+    # logging, semantic versions and terminal styling -- are plain Oskel over
+    # the portable primitive surface, so each fixture must build to a native
+    # binary and agree with the VM byte for byte.
+    foreach(std_module hash uuid url cli log semver terminal)
+      add_test(NAME oskel.build_binary_${std_module}
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_TEST_NAME=oskel.build_binary_${std_module}"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_${std_module}.oskl"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+    endforeach()
+
     # `std.datetime` is plain Oskel over the portable primitive surface, plus
     # the `time()` builtin the AOT runtime binds as the `now` handle (a syscall,
     # libc, a Win32 call or the CMOS RTC, one per target). The fixture is the
@@ -2492,6 +2505,20 @@ if(BUILD_TESTING)
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
 
+    # The same application stdlib fixtures on the module: each must agree with
+    # the VM, so the three engines share one set of expectations.
+    foreach(std_module hash uuid url cli log semver terminal)
+      add_test(NAME oskel.build_wasm_${std_module}
+        COMMAND ${CMAKE_COMMAND}
+          "-DOSKEL_TEST_NAME=oskel.build_wasm_${std_module}"
+          "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+          "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_${std_module}.oskl"
+          "-DNODE_EXE=${OSKEL_NODE_EXE}"
+          "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+          "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+          -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+    endforeach()
+
     # The bound string methods (`upper`, `trim`, `split`, `replace`,
     # `padStart`, ...) over ASCII and multibyte UTF-8. The fixture is the same
     # one the AOT backend compares with the VM, so both backends share the
@@ -2616,7 +2643,10 @@ if(BUILD_TESTING)
       oskel.build_wasm_pointers oskel.build_wasm_async
       oskel.build_wasm_async_modules oskel.build_wasm_async_scheduler
       oskel.build_wasm_io oskel.build_wasm_math
-      oskel.build_wasm_double_format oskel.build_wasm_tree_shake PROPERTIES TIMEOUT 120)
+      oskel.build_wasm_double_format oskel.build_wasm_tree_shake
+      oskel.build_wasm_hash oskel.build_wasm_uuid oskel.build_wasm_url
+      oskel.build_wasm_cli oskel.build_wasm_log oskel.build_wasm_semver
+      oskel.build_wasm_terminal PROPERTIES TIMEOUT 120)
   endif()
 
   # --- .oskl script tests (auto-detected) ---

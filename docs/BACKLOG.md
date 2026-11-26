@@ -673,9 +673,10 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     `Target::wasm32()` (`src/frontend/native/wasm.cpp`) covers the scalar core,
     arrays, maps, slicing, variadic functions, the array/map/string/range
     methods, `random`/`seed`, `std/json`, `std/datetime`, `std/collections`,
-    `std/path`, `std/csv` and the bound half of `std.math`, and its `double`
-    printing is the same shortest round-trip form as `std::to_chars`. What is
-    still open:
+    `std/path`, `std/csv`, `std/hash`, `std/uuid`, `std/url`, `std/cli`,
+    `std/log`, `std/semver`, `std/terminal` and the bound half of `std.math`,
+    and its `double` printing is the same shortest round-trip form as
+    `std::to_chars`. What is still open:
     - A builtin with no WASM body is seeded as a trapping closure: declaring it
       is harmless, calling it reports the gap. The unbound names are the
       complement of `supportedBuiltins()`; the transcendental `pow`, `sin`,
