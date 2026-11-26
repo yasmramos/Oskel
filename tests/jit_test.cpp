@@ -397,6 +397,26 @@ int main() {
   expectRejected("fn mk(n) { return (x) => x; }\n", "mk",
                  "a proto with a child closure is rejected");
 
+  // --- Host support is reported, not silently false --------------------------
+  {
+    // `JitCode::assign` fails without a word on a host with no backend, so the
+    // CLI now asks these two and prints the reason. A supported host must
+    // report no reason and an unsupported one must report something; the two
+    // cannot disagree (BACKLOG §5 item 6).
+    const bool supported = jitHostSupported();
+    const std::string reason = jitUnsupportedReason();
+    check(supported == reason.empty(),
+          "jitUnsupportedReason is empty exactly when the backend exists");
+    // The same condition `jitHostSupported` compiles in: x86-64 Linux and
+    // x86-64 macOS have a backend (BACKLOG §5 item 5), everything else does
+    // not. An `#if` that names only Linux fails on the Intel macOS runner.
+#if (defined(__linux__) || defined(__APPLE__)) && (defined(__x86_64__) || defined(__amd64__))
+    check(supported, "the JIT backend is available on x86-64 Linux and macOS");
+#else
+    check(!supported, "no JIT backend outside x86-64 Linux and macOS");
+#endif
+  }
+
   // --- The cache compiles each proto once and stays correct ------------------
   {
     Bytecode bc = compileSource(arith);
@@ -410,6 +430,57 @@ int main() {
       Value out = first->call({Value(20), Value(22)});
       check(out.isInt() && out.asInt() == 42, "the cached function still computes");
     }
+  }
+
+  // --- The cache is bounded and evicts the oldest entry ----------------------
+  {
+    Jit jit;
+    // Fill past the cap with distinct protos. A REPL entry creates a fresh
+    // `Bytecode`, so distinct protos are the real workload; the cache must not
+    // grow with the session (BACKLOG §5 item 2).
+    std::vector<std::shared_ptr<const Bytecode> > protos;
+    for (std::size_t i = 0; i < Jit::kMaxEntries + 10; ++i) {
+      const std::string source =
+          "fn f" + std::to_string(i) + "(a) { return a + " + std::to_string(i) + "; }\n";
+      Bytecode bc = compileSource(source);
+      protos.push_back(findProto(bc, "f" + std::to_string(i)));
+      jit.get(protos.back());
+    }
+    check(jit.size() <= Jit::kMaxEntries, "the cache never exceeds its cap");
+    check(jit.size() == Jit::kMaxEntries, "the cache fills up to the cap");
+
+    // The oldest protos were dropped and the newest are still cached. A dropped
+    // proto is recompiled on demand, so the second `get` must compile again.
+    std::shared_ptr<const Bytecode> oldest = protos.front();
+    std::shared_ptr<const Bytecode> newest = protos.back();
+    const std::size_t before = jit.size();
+    JitFunction* newestAgain = jit.get(newest);
+    check(jit.size() == before, "a cached proto is a hit, not a new entry");
+    check(newestAgain != nullptr, "the newest proto is still cached");
+    JitFunction* oldestAgain = jit.get(oldest);
+    check(oldestAgain != nullptr, "an evicted proto recompiles on demand");
+    check(jit.size() <= Jit::kMaxEntries, "recompiling an evicted proto keeps the cap");
+
+    // The cache keys on the proto address, so it must own each proto it
+    // compiled: otherwise a freed proto could leave a stale key behind and a
+    // different `Bytecode` allocated at the same address would resolve to the
+    // old compiled code (BACKLOG §5 item 4). The entry's `shared_ptr` is what
+    // makes that impossible, so assert the reference count actually rises.
+    {
+      Jit jit;
+      std::shared_ptr<const Bytecode> owned = protos.front();
+      const long before = owned.use_count();
+      jit.get(owned);
+      check(owned.use_count() == before + 1,
+            "the cache holds its own reference to a compiled proto");
+      owned.reset();
+      check(jit.size() == 1, "the entry outlives the caller's reference");
+    }
+
+    // `clear` empties both the map and the insertion order.
+    jit.clear();
+    check(jit.size() == 0, "clear drops every entry");
+    check(jit.compiledCount() == 0, "no compiled function survives clear");
   }
 
   // --- The VM with the JIT enabled must agree with the VM without it ---------

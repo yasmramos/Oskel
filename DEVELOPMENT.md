@@ -1375,7 +1375,8 @@ binary prints byte for byte what the VM prints).
       through `emitMapListMethod` + `emitArrayAlloc`: `keys` yields the key
       strings, `values` the value slots and `entries` a two-element `[key,
       value]` array per entry. `has`/`get`/`delete` share a one-string-key
-      preamble (`emitMapKeyQueryMethod`) and a linear `mapFind`; `set` upserts
+      preamble (`emitMapKeyQueryMethod`) and a `mapFind` that probes a hash
+      index when one is valid (see below); `set` upserts
       and `merge` folds another map in (last writer wins), both returning the
       receiver, and `delete`/`clear` mutate it in place. The list loop keeps its
       state in stack slots, never in r13/r14 (the allocator's cursor and end),
@@ -1387,6 +1388,20 @@ binary prints byte for byte what the VM prints).
       it, so the `.oskc` is untouched. Covered by the freestanding
       `test_map_methods` (values, mutation and the error paths) and the
       `oskel build` fixture `tests/native_build_map_methods.oskl`.
+      The AOT map keeps an insertion-ordered entries array, and `mapFind` used
+      to be a linear scan over it (BACKLOG §6 item 6), so a loop over a large
+      map was O(n²) against the VM's `unordered_map`. The header now carries a
+      fourth word pointing at a lazily built open-addressing index (FNV-1a,
+      linear probing), which `mapFind` builds on the first lookup above
+      `kMapIndexMinEntries` and every append keeps in step; `delete` and
+      `clear` drop it because the entries move. The entries stay the only
+      source of truth: the index is trusted only while its recorded count
+      matches the map's length, so a stale index costs a rebuild and never a
+      wrong answer. An array header stays 24 bytes and a map header is 32, so
+      `emitTableNew` sizes by kind -- writing the index word into an array
+      would land in the next allocation. 120k lookups over 300 keys measure
+      0.006s against 0.053s for the scan; `tests/native_build_map_index.oskl`
+      pins the parity with the VM byte for byte.
     - **7c.3h** (done) — the callback-taking and folding array methods:
       `map`, `filter`, `each`, `find`, `any`, `all`, `reduce`, `sum` and `join`.
       The first six are the first emitted helpers that call *back* into the
@@ -2428,6 +2443,17 @@ linker. The core is `include/native/link.h` + `src/frontend/native/link.cpp`
   pinned by `link_macho_test` on every host; `oskel.build_hosted_own_macos`
   runs on `macos-15-intel` (x86-64) and only checks the `file` type on the arm64
   runner.
+- **The bind stream is dyld opcodes, not a byte blob.** `LC_DYLD_INFO_ONLY`'s
+  bind stream is a sequence of `BIND_OPCODE_*` instructions, and
+  `SET_SEGMENT_AND_OFFSET_ULEB` is `0x70` with the segment index in the low
+  nibble -- `0x72` for `__DATA`, given `__PAGEZERO`/`__TEXT`/`__DATA`/
+  `__LINKEDIT`. Writing `0x32` there means `SET_DYLIB_SPECIAL_IMM`, which
+  consumes no ULEB and desynchronises every following instruction. The symbol
+  names stay in the bytes either way, so a test that only searches for `_write`
+  cannot see it: `link_macho_test` walks the stream the way dyld does and
+  requires it to reach `DONE` at the exact end with one `DO_BIND` per import.
+  That runs on every host, so the container is checked where a Mach-O image
+  cannot even run.
 
 ### PHASE 11 — `async` / `await` 🔶 in progress
 
@@ -2436,20 +2462,33 @@ Design for the scheduler and suspension: `docs/phase11-async-design.md`.
 - **11.1 (done, surface only) — `async fn`, `await` and `Future`.** An `async fn` is a
   function whose call returns a `Future`; the declared return type is the
   payload, so `async fn f(): int` returns `Future<int>` at the type level and
-  `await f()` is an `int`. The body runs eagerly when the function is called,
-  so this phase is the language surface, not a scheduler: a future is already
-  settled by the time the caller sees it.
+  `await f()` is an `int`. In 11.1 the body ran eagerly; 11.2.2 replaces that
+  with a pending future and a cooperative scheduler.
+- **11.2.2 (done) — pending futures, `spawn`, `yield`, ready queue.** An async
+  declaration compiles to a **factory** and a **step** proto: the factory builds
+  a pending future, stores the step closure and the arguments in a task frame,
+  enqueues the task and returns the future. `await f` drains the ready queue
+  when `f` is pending, then re-reads its state; `spawn f()` is the explicit way
+  to enqueue a call, and `yield()` drains the queue before the current body
+  continues. A script drains its queue before `HALT`, so `async fn main` runs
+  without a top-level `await`. The body is still one eager step: real
+  suspension at `await` is 11.2.3.
 - **Representation.** A future is an ordinary map built with the opcodes the
-  language already has: `{ state: "fulfilled", value: <payload>, error: nil }`.
-  `compileMakeFuture` emits `NEWTABLE`, `SETTABLE` and `LOADK`; `compileAwait`
-  reads it with `GETTABLE`/`EQ`/`JMP_IF_FALSE`/`JMP` and raises the carried
-  error through a `panic` helper call. No opcode, no builtin and no runtime
-  tag is added, so the VM, the AOT backend and the WASM backend share one
-  implementation by construction. `state` and `error` reserve the shape for a
-  scheduler: `"rejected"` carries the error in `error`, and `"pending"` is the
-  state a future would hold before it settles. There is no API that creates a
-  pending future in this phase, so `await` on one is a runtime error
-  ("await on a pending Future is not supported yet") rather than a silent nil.
+  language already has: `{ "$future": true, state: "pending", value: nil,
+  error: nil, task: <task frame>, waiters: [] }`. The factory fills it, the
+  generated step returns `{ kind: "done", value: <payload> }` or
+  `{ kind: "failed", error: <error> }`, and `compileMakeStatus` builds that
+  status map. `compileAwait` reads the future with
+  `GETTABLE`/`EQ`/`JMP_IF_FALSE`/`JMP` and calls the scheduler helper when the
+  state is `"pending"`. No opcode, no builtin and no runtime tag is added, so
+  the VM, the AOT backend and the WASM backend share one implementation by
+  construction. The scheduler itself is ordinary Oskel emitted by
+  `compileAsyncPrelude` once per compilation session (the helpers are globals):
+  a ready array,
+  `__oskel_async_spawn`, `__oskel_async_drain`, `__oskel_async_await`,
+  `__oskel_async_yield`, `__oskel_async_step`, `__oskel_async_settle` and
+  `__oskel_async_reject`. A program with no async code emits none of them, so
+  its image stays byte-for-byte identical.
 - **Opaque at compile time (11.2.1).** The compiler rejects indexing, slicing,
   iteration and member access (read or write) on a `Future`-typed value, so the
   `state`/`value`/`error` protocol is not user-visible through a typed binding,
@@ -2468,33 +2507,42 @@ Design for the scheduler and suspension: `docs/phase11-async-design.md`.
   value: `let g = f; await g()` returns the same payload. `async fn init` is
   rejected, because the constructor is called without `await`.
 - **The seven-point checklist.**
-  - Lexer: two keywords, `async` and `await`.
-  - AST: `AwaitExpr`; `FnDeclStmt::isAsync`, `LambdaExpr::isAsync`,
-    `ClassMethodSig::isAsync`; `Future` in `isKnownTypeName`.
+  - Lexer: four keywords, `async`, `await`, `spawn` and `yield`.
+  - AST: `AwaitExpr`, `SpawnExpr`, `YieldExpr`; `FnDeclStmt::isAsync`,
+    `LambdaExpr::isAsync`, `ClassMethodSig::isAsync`; `Future` in
+    `isKnownTypeName`.
   - Parser: `async` before a top-level function, a class method or a lambda;
-    `await` as a prefix expression in `parseUnary`, guarded by `asyncDepth_`
-    so it cannot cross a function boundary; `async init` is rejected.
-  - Bytecode: **no new opcode**. A future is `NEWTABLE`/`SETTABLE`, `await` is
-    `GETTABLE`/`EQ`/`JMP_IF_FALSE`/`JMP` plus the existing `CALL` to `panic`.
-  - VM: no new logic; the map operations and `panic` already exist.
+    `await`/`spawn` as prefix expressions and `yield()` (or a bare `yield`) in
+    `parseUnary`, guarded by `asyncDepth_` so they cannot cross a function
+    boundary; `async init` is rejected.
+  - Bytecode: **no new opcode**. A future and a task are
+    `NEWTABLE`/`SETTABLE`; `await` is `GETTABLE`/`EQ`/`JMP_IF_FALSE`/`JMP` plus
+    the existing `CALL` to `panic` or to the scheduler helper; `spawn` and
+    `yield` are helper `CALL`s.
+  - VM: no new logic; the map operations, calls and `panic` already exist.
   - Compiler: `asyncReturnTypes_` tracks the payload type per function;
-    `compileFunctionProto` wraps every return in `compileMakeFuture` when
-    `currentIsAsync_`; `inferExprType` unwraps an `AwaitExpr` over a direct
-    async call; the module session snapshot carries `asyncReturnTypes_`.
-  - AOT/WASM: no backend change. The fixture `tests/65_async.oskl` is compared
-    with the VM byte for byte by `oskel.build_binary_async` and
-    `oskel.build_wasm_async`; `tests/65_async_modules.oskl` does the same for
-    an imported async function.
-- **Known limits (BACKLOG §6 item 32).** The body is eager, so a future is
-  never pending and `await` does not suspend the caller; there is no event
-  loop, no promise chaining (`then`) and no async lambda. `type(future)` says
-  `"map"`, because the representation is a map and the type checker erases
-  `Future`; a value erased to `any` can still be passed to code expecting a map,
-  which is the deliberate trade-off of not adding a runtime tag. A scheduler, a
-  `spawn`/`join` surface and a `Future`-specific runtime tag are PHASE 11.2;
-  11.2.1 (compiler-enforced opacity) is done and 11.2.2-11.2.5 are not started.
-  The feature is therefore a language surface with an opaque type, not a
-  finished async runtime.
+    `compileAsyncFunctionValue` emits the factory/step pair and
+    `compileFunctionProto(..., asyncBody=true)` wraps every return in
+    `compileMakeStatus("done", ...)`; `compileAsyncPrelude` emits the scheduler
+    once per session; `inferExprType` gives `spawn` the `Future` type and
+    unwraps an `AwaitExpr` over a direct async call; the module session snapshot
+    carries `asyncReturnTypes_`.
+  - AOT/WASM: no backend change. `tests/65_async.oskl` and
+    `tests/65_async_modules.oskl` are compared with the VM byte for byte by
+    `oskel.build_binary_async*` and `oskel.build_wasm_async*`;
+    `tests/native_build_async_scheduler.oskl` adds the scheduler order for the
+    VM, the native binary and WASM.
+- **Known limits (BACKLOG §6 item 32).** A future is pending and the scheduler
+  runs ready tasks, but the body is still one eager step: `await` on a pending
+  future drains the queue and re-reads the state instead of suspending the
+  current body, and `yield()` drains the queue rather than requeueing the
+  current task. There is no top-level `await`, no separate `join`, no promise
+  chaining (`then`), no async lambda and no cancellation; 11.2.3 adds the body
+  splitter and real suspension, 11.2.4 top-level `await`, deadlock and
+  unhandled-rejection diagnostics, and 11.2.5 the runtime tag. `type(future)`
+  still says `"map"`, because the representation is a map and the type checker
+  erases `Future`; a value erased to `any` can still be passed to code
+  expecting a map, the deliberate trade-off of not adding a runtime tag.
 
 ### Post-1.0 — UI library
 
@@ -2600,7 +2648,7 @@ Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalli
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
 Phase 6.9: ✅ completed (`enum`: a scoped set of integer constants, folded by the parser; no opcode, no engine code, and identical on the VM, the AOT backend and WASM)
-Phase 11: 🔶 in progress (11.1 `async fn`/`await`/`Future` surface done: a future is a plain map, so no opcode and no builtin is added; eager bodies, no scheduler. 11.2.1 compiler-enforced `Future` opacity done; 11.2.2-11.2.5 scheduler, pending futures, `spawn`/`join` and top-level `await` not started)
+Phase 11: 🔶 in progress (11.1 `async fn`/`await`/`Future` surface done; 11.2.1 compiler-enforced `Future` opacity done; 11.2.2 pending futures, cooperative scheduler, `spawn`/`yield` and end-of-script drain done; 11.2.3-11.2.5 suspension, top-level `await` and the runtime tag not started)
 Phase 12.1/12.2: ✅ completed (`interface`/`trait`, `class ... implements`, and imported interfaces; see the section above)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.11 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY), callbacks (including a struct return) and a stored callback resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr`/struct-by-value surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
@@ -2673,7 +2721,7 @@ and is no longer in the tree.
 | Superinstructions | Violate the 40-opcode ceiling |
 | Inline caching | Changes the bytecode contract |
 | Runtime specialization | Changes the bytecode contract |
-| Generics, full pattern matching, generators, transactions | Out of scope (2.0 monomorphizes concrete, annotated types only; no user-defined generics). `async`/`await` stops at the PHASE 11.1 eager surface plus 11.2.1 opaque `Future`; PHASE 11.2.2-11.2.5 (scheduler, pending futures, `spawn`/`join`, top-level `await`) are not implemented. |
+| Generics, full pattern matching, generators, transactions | Out of scope (2.0 monomorphizes concrete, annotated types only; no user-defined generics). `async`/`await` stops at the PHASE 11.2.2 scheduler (pending futures, `spawn`/`yield`, eager steps); PHASE 11.2.3-11.2.5 (suspension, top-level `await`, runtime tag) are not implemented. |
 
 **Note**: there is **no** host FFI dependency. The development engine emits its
 own x86-64 descriptor/closure stubs; the machine-code emitter, the static

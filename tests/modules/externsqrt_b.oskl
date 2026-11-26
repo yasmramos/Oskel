@@ -1,0 +1,8 @@
+// Fixture for the compatible-extern-across-modules test: the same `sqrt`
+// declaration as its sibling. Two modules agreeing on one signature must bind
+// one thunk, not fail with a conflict.
+extern "C" { fn sqrt(x: double): double; }
+
+fn otherRootOf(v: double): double {
+  return sqrt(v);
+}

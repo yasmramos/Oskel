@@ -2,6 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <string>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -81,6 +83,17 @@ class JitFunction {
   int numParams_ = 0;
 };
 
+// True when this host has a JIT backend at all: x86-64 Linux and x86-64 macOS,
+// because the emitter produces x86-64 System V code. False everywhere else,
+// including Windows and Apple Silicon, where every proto keeps running on the
+// interpreter.
+bool jitHostSupported();
+
+// Why `jitHostSupported()` is false, phrased for the user; empty when the
+// backend exists. A build that cannot JIT says so at startup instead of
+// silently interpreting (BACKLOG §5 item 6).
+std::string jitUnsupportedReason();
+
 // Compiles `proto` to machine code, or returns nullptr when it is outside the
 // supported subset or this host has no backend. Exposed for tests; production
 // goes through `Jit::get`, which caches the result.
@@ -89,6 +102,13 @@ std::unique_ptr<JitFunction> jitCompile(const Bytecode& proto);
 // Per-VM cache of compiled protos. The cache holds a strong reference to each
 // proto it compiled, so a proto address can never be reused by a different
 // proto while its entry is cached. Single-threaded, like the VM.
+//
+// The cache is bounded: a long REPL session creates a fresh `Bytecode` per
+// entry, and an unbounded cache would hold every one of them (and its
+// executable mapping) alive forever. When the cap is reached the oldest entry
+// is dropped, mapping included; a proto that comes back later is simply
+// recompiled. `get` returns a pointer that stays valid until the next `get`
+// that evicts it, which is all a caller needs — the VM uses it immediately.
 class Jit {
  public:
   Jit() = default;
@@ -98,7 +118,17 @@ class Jit {
   JitFunction* get(const std::shared_ptr<const Bytecode>& proto);
 
   // Drops every compiled function.
-  void clear() { functions_.clear(); }
+  void clear() {
+    functions_.clear();
+    order_.clear();
+  }
+
+  // Entries kept before the oldest is evicted. A REPL entry is small, so this
+  // is far more than a session compiles in practice; it exists to bound a
+  // session that never ends, not to bound a hot path.
+  static constexpr std::size_t kMaxEntries = 256;
+
+  std::size_t size() const { return functions_.size(); }
 
   // Number of protos that were successfully compiled (a proto outside the
   // subset is cached as a miss but not counted).
@@ -116,4 +146,5 @@ class Jit {
     std::unique_ptr<JitFunction> function;
   };
   std::unordered_map<const Bytecode*, Entry> functions_;
+  std::deque<const Bytecode*> order_;  // insertion order, oldest first
 };

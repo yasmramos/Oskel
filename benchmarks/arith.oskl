@@ -1,0 +1,10 @@
+fn arith() {
+  var s = 0;
+  var i = 0;
+  while (i < 20000000) {
+    s = s + i * 2;
+    i = i + 1;
+  }
+  return s;
+}
+print(arith());

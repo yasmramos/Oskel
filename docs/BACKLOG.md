@@ -54,15 +54,27 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    (`Compiler::checkCaseLabelName`) rejects a `var`, an unknown name or a
    captured binding, so the label stays a fixed value. No new opcode.
 4. **[P1] [done]** `parseImport` did not reject `from` being a user variable,
-   so `import { x } from from;` was ambiguous. **Done**: `parseImport` rejects
-   `from` both as an imported name and as the module path of a selective
-   import, while `let from = 7;` outside an import stays an ordinary binding
-   (`tests/errors/import_from_ambiguous.oskl`, `tests/13_modules.oskl`).
+   so `import { x } from from;` was ambiguous, and `import m.from;` silently
+   resolved a module named `m.from`. **Done**: `parseImport` rejects `from`
+   both as an imported name and as the module path of a selective import,
+   `parseImportPath` rejects it as the first segment and as any later segment
+   of a dotted path, and `let from = 7;` outside an import stays an ordinary
+   binding (`tests/errors/import_from_ambiguous.oskl`, `tests/13_modules.oskl`,
+   `tests/module_test.cpp`).
 5. **[P1] [done]** `parseProgram` pre-scanned `structNames_` without requiring
-   `struct` to be followed by `{`, so a malformed declaration could make
-   `Name { ... }` parse as a literal elsewhere. **Done**: the pre-scan requires
-   the `{` for `struct`, `class` and `enum`, and the declaration itself reports
-   the missing brace (`tests/errors/struct_missing_brace.oskl`).
+   `struct` to be followed by `{`, so a malformed declaration was either
+   registered (letting `Name { ... }` parse as a literal) or skipped (making a
+   *use* written before it fail instead, pointing at the wrong line). **Done**
+   in two steps that cover both orders: the pre-scan now requires the `{` for
+   `struct`, `class` and `enum`, so a malformed declaration never seeds the set
+   (`tests/errors/struct_missing_brace.oskl`), and
+   `rejectMalformedTypeDeclarations()` checks the `keyword Name {` shape of
+   every depth-0 declaration up front, so `let v = Point { x: 1 }; struct`
+   reports the declaration and not the use
+   (`tests/errors/struct_malformed_after_use.oskl`). The depth-0 filter keeps
+   the "only allowed at the top level" message for a declaration inside a
+   block. `run_oskel_case.cmake` gained an optional `// expect-message:` header
+   so a fixture pins the message and not just the exit code.
 6. **[P2]** `warn` in `foldConstant` does a linear scan of `warnings_` per
    warning (O(n²) with many overflowing consts). Use a set.
 7. **[P2]** The unary overflow warning uses `expr.line/col` while the binary
@@ -81,8 +93,16 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 3. Compiler (`src/frontend/compiler.cpp`)
 
-1. **[P1]** `checkAssignable` and `assignError` duplicate logic; a change in
-   one can be missed in the other. Unify the path.
+1. **[P1] [done]** `checkAssignable` and `assignError` duplicate logic; a change
+   in one can be missed in the other. **Done**: `assignError` is now the whole
+   rule, unions included, and `checkAssignable` only reports its verdict, so
+   there is no second copy to miss. The union probe recurses through the same
+   function instead of a parallel block, and the nullable hint moved into
+   `nullableHint` (a plain target names its `?` spelling, a union offers both).
+   The unification fixed a diagnostic: assigning `int | string` to `int` used to
+   report `cannot assign 'string' to 'int'`, naming a member the caller never
+   wrote; it now names the union. `testAssignmentErrorsAreSpecific` pins both
+   hints and both union directions.
 2. **[P1]** `compileBlockBody` concentrates hoisting, slot pre-reservation,
    visibility restore, nil-cell creation and three passes over `block.stmts`;
    it is the place a capture bug will hurt. Split it.
@@ -172,9 +192,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 1. **[P1]** The JIT compiles only `nil`/`bool`/`int`: no floats, strings,
    containers, `CALL`, `GETGLOBAL`/`SETGLOBAL`. It accelerates very little.
-2. **[P1]** `Jit::get` caches failures (a null function) with no size cap; the
-   cache grows unbounded in a long REPL. Add an LRU or a cap.
-3. **[P1] [done]** `JitFunction::call` does not validate
+2. **[P1] [done]** `Jit::get` cached failures (a null function) with no size
+   cap, so a long REPL session held every entry's `Bytecode` and executable
+   mapping alive forever. The cache is now bounded at `Jit::kMaxEntries` (256)
+   and evicts the oldest entry, mapping included; a proto that comes back is
+   simply recompiled. A miss is still cached, so a proto outside the subset is
+   analyzed once. Pinned by the bounded-cache case in `tests/jit_test.cpp` (it
+   fails without the eviction loop).
+3. **[P1] [done]** `JitFunction::call` did not validate
    `args.size() == numParams`; `jitFor` checks first, but a direct `call` did
    not, so a shorter vector was an out-of-bounds read (an empty one crashed).
    **Done**: `call` throws `std::logic_error` on a count mismatch
@@ -182,17 +207,23 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    caller's contract (`VM::jitFor`).
 4. **[P1] [done]** `Jit::get` keys on `proto.get()`; if a `Bytecode` is freed
    and another lands at the same address the cache returns the wrong JIT.
-   **Done**: not reachable. Each cache entry holds a `shared_ptr` to its proto,
-   so the address cannot be reused while the entry exists (`include/jit/jit.h`
-   documents it). The cache's unbounded growth is item 2.
+   **Not reachable**: the entry owns the `shared_ptr` (that is what keeps the
+   address stable), and eviction drops the reference together with the entry,
+   so a key never outlives the proto it names. The invariant is now pinned by
+   `jit_test`: `get` raises the proto's `use_count` and the entry outlives the
+   caller's reference.
 5. **[P1] [done]** `jitHostSupported()` does not cover macOS. **Done**: it now
    covers x86-64 macOS (the same System V ABI as Linux), and `jit_test` runs
    there. Apple Silicon is arm64 and stays on the interpreter. The executable
    mapping was already W^X (`mmap` read-write, then `mprotect` read-execute),
    which an unsigned binary may do on macOS; if the OS refuses it, `assign`
    returns false and the VM keeps interpreting.
-6. **[P1]** On Windows `JitCode::assign` always returns false; the user gets no
-   JIT and no message. Report it at startup.
+6. **[P1] [done]** On Windows `JitCode::assign` always returns false; the user
+   gets no JIT and no message. **Done**: `jitHostSupported()` and the new
+   `jitUnsupportedReason()` are public, and `oskel` and the REPL print
+   "the JIT is unavailable on this host (...); running interpreted" once at
+   startup when the JIT is on and the backend does not exist. A test pins that
+   the reason is empty exactly when the backend is present.
 7. **[P2]** `emitProto` does not handle `MOD`/`POW` (`i % 2` in a loop is
    common), `CALL`, `GETGLOBAL`/`SETGLOBAL` or `NEWTABLE`/`GETTABLE`/`SETTABLE`;
    any function using a builtin or a collection is not compiled.
@@ -271,19 +302,30 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `isError`, `err.message`/`err.code`, structural equality, `print`/`repr` and
    string interpolation all agree with the VM. `tests/native_build_error.oskl`
    pins the parity (built and run by `tests/build_binary.cmake`).
-6. **[P1] [done]** VM/AOT divergence in `map.get`: the VM uses
-   `unordered_map` (O(1)) while AOT used a linear scan (O(n)), so a loop over a
-   large map was O(n²). **Done**: the AOT map keeps a lazy open-addressing
-   index over its insertion-ordered entry array (FNV-1a over the key, load
-   factor 7/10, grown and rebuilt on demand). It is built on the first lookup
-   of a map with eight or more entries, so small maps keep the linear scan's
-   cache behaviour. `set`, `delete` and `merge` maintain it; `delete` refills
-   the existing table in place instead of allocating, because a delete loop
-   otherwise exhausted the arena. `tests/native_build_map_hash.oskl` is the
-   2000-entry stress fixture (`oskel.build_binary_map_hash`), and
-   `tests/native_build_map_methods.oskl` pins the method surface.
-7. **[P1]** VM/AOT divergence in string iteration: AOT allocates one
+6. **[P1] [done]** VM/AOT divergence in `map.get`: the VM uses `unordered_map`
+   (O(1)), AOT used a linear scan (O(n)), so a loop over a large map was O(n²).
+   The AOT map now carries a lazily built open-addressing hash index (FNV-1a,
+   linear probing) in a fourth header word, built by `mapFind` on the first
+   lookup above eight entries and kept in step by every append. The entries
+   array stays the only source of truth: the index is trusted only while its
+   recorded count matches the map's length, and `delete`/`clear` drop it, so a
+   stale index costs a rebuild, never a wrong answer. Measured on 120k lookups
+   over 300 keys: 0.006s against 0.053s for the scan. `tests/native_build_map_index.oskl`
+   pins the parity byte for byte.
+(fix: reject 'from' as a module name and path segment)
+7. **[P1] [done]** VM/AOT divergence in string iteration: AOT allocates one
    `AotString` per character; a 1M-char string means 1M arena allocations.
+   Measured: `for c in s` over a 40 000-char string prints 40000 on the VM and
+   dies with `oskel: out of memory` in AOT. The per-character allocation is not
+   the whole story — the arena was a fixed 1 MiB that never reclaimed, so any
+   loop that builds values exhausted it. **Done**: the arena grows now (the
+   `fix(native): grow the AOT arena` change), so the 40 000-char loop and even
+   the 1M-char one complete on both engines. Reusing one buffer was never the
+   fix and was not used: `for c in s { arr.push(c) }` still copies each
+   character, and the fixture pins that every entry keeps its own value.
+   `tests/native_build_string_iteration.oskl` compares the VM and the binary
+   byte for byte over ASCII, multibyte, empty, `break` and 20 000-character
+   strings.
 8. **[P1] [done]** `emitContains` for arrays uses `AotCompareOp::Eq`, which
    used to be identity for arrays/maps; now that equality is structural, `in`
    over an array of arrays matches the VM (fixed with item 2).
@@ -293,8 +335,18 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `contains`, `indexOf`, `substr`, `repeat`, `reversed`, `padStart`,
    `padEnd`). `tests/native_build_string_methods.oskl` and
    `oskel.build_wasm_string_methods` pin the AOT and WASM paths against the VM.
-10. **[P1]** `emitIterNext` for `str` allocates a string per character — same
-    as item 7.
+10. **[P1] [done]** `emitIterNext` for `str` allocates a string per character —
+    same as item 7, and blocked on the same arena limit. **Done** with item 7,
+    plus a second defect the growth exposed: the step was O(n) *per character*
+    in every engine that walked it, so the loop was O(n^2). The VM rebuilt the
+    whole `utf8Chars` vector on each turn and the AOT `emitIterNext` called
+    `utf8CharAt`, which scans from byte 0 every time; only WASM already stepped
+    a byte offset. The cursor is now a byte offset in the VM and in AOT (as it
+    always was in WASM): each step reads the lead byte and skips its
+    continuation bytes. 200 000 characters went from 17s to 9ms on the VM and
+    from 24s to 9ms in the binary; 1M characters, which used to hang, run in
+    217ms and 37ms. The cursor is internal to the compiler, so no program can
+    observe the change, and `nil` still means "start at the first byte".
 11. ~~**[P1]** `collectGlobals` does not detect name-resolution cycles: a
     `GETGLOBAL` of a name assigned only inside a never-called function is
     accepted and reads nil at run time. Report it.~~ **Done**: the read is
@@ -706,7 +758,46 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     zero. Emitting unwind data is future container work. The macOS own linker
     (PHASE 10.3d) closes a hosted `MH_OBJECT` into a non-PIE `MH_EXECUTE` with
     libSystem imports, and `-r` combines Mach-O objects into a new `MH_OBJECT`;
-    a data import, the ad-hoc signature and ARM64 remain for the rest of 10.3d.
+    the `LC_DYLD_INFO_ONLY` bind stream used `0x32` for
+    `SET_SEGMENT_AND_OFFSET_ULEB`, which is `SET_DYLIB_SPECIAL_IMM`; the low
+    nibble of `0x70|segment` carries the segment index, so the correct byte for
+    `__DATA` is `0x72`. The stream desynchronised after the first symbol and only
+    the symbol *names* (which a `memmem`-style check sees) survived.
+    `link_macho_test` walks the stream opcode by opcode and asserts it ends on
+    `DONE` with one `DO_BIND` per import, so the container is checked on every
+    host instead of only where a Mach-O image can run. A data import is covered
+    too (`testDataImport`): a pcrel `X86_64_RELOC_SIGNED` reference reaches the
+    import's non-lazy pointer in `__got`, never a stub. That case exposed a
+    swapped `reserved1` in the two `S_LAZY_SYMBOL_POINTERS`/
+    `S_NON_LAZY_SYMBOL_POINTERS` sections: the indirect symbol table holds the
+    stub block first, so `__stubs` starts at index 0 and `__got` at
+    `imports.size()`. Both were the other way round, which made dyld resolve
+    each GOT slot through the stub block (same symbol, wrong section). The
+    container is also checked structurally on every host:
+    `testContainerStructure` walks the load commands (`ncmds` and `sizeofcmds`
+    must agree with the walk), requires each segment's `fileoff`/`filesize` to
+    lie in the file, asserts `__TEXT` is read+execute, `__DATA` read+write and
+    `__LINKEDIT` read-only with non-overlapping page-aligned VM ranges, and
+    bounds `LC_MAIN`, the `LC_SYMTAB` symbol/string tables, the
+    `LC_DYSYMTAB` indirect table and the `LC_DYLD_INFO_ONLY` bind stream to the
+    file. The PE side has the matching `testContainerStructure`: section raw
+    ranges in the file, page-aligned non-overlapping RVAs inside
+    `SizeOfImage`, the entry point in `.text`, every data directory inside the
+    image and a NULL-terminated import descriptor array. **Verified end to end**
+    on this host (not only in the unit tests): `oskel build --target
+    x86_64-macos-sysv --mode hosted --emit-object` writes a valid `MH_OBJECT`
+    and `oskelld --target x86_64-macos-sysv` closes it into an `MH_EXECUTE`
+    whose 12 load commands walk to exactly `sizeofcmds`; the bind stream is
+    `SET_DYLIB_ORDINAL_IMM(1) SET_SYMBOL(...) SET_TYPE_IMM(1) SEG2_OFF(n)
+    DO_BIND` per import, 19 `DO_BIND` for 19 imports, ending on `DONE`, with
+    `SEG2` (0x72) naming `__DATA`; `__stubs` carries `reserved1 = 0` and
+    `__got` `reserved1 = imports.size()`, the correct indirect-table split.
+    Segment protections are `__TEXT` 5, `__DATA` 3, `__LINKEDIT` 1, their VM
+    ranges do not overlap and every `fileoff`/`filesize` lies in the file. The
+    PE side produces a PE32+ whose entry point sits in `.text`, whose section
+    raw ranges and RVAs stay inside the file and `SizeOfImage`, and whose
+    import descriptor array is NULL-terminated. Still open here: the ad-hoc
+    signature (required before an arm64 macOS image can run) and ARM64.
 
 31. **[P0] [done]** VM/AOT divergence in reading a global before it is assigned:
     the VM fails with `runtime error: undefined variable '<name>'` and exit 70,
@@ -729,28 +820,28 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     and a read after assignment) pin it. A global with *no* assignment anywhere is
     still a lowering error (exit 65), which is a different, compile-time case.
 
-32. **[P1]** `async`/`await` (PHASE 11.1) is the language surface without a
-    scheduler. An `async fn` body runs eagerly when called, so the future is
-    already `"fulfilled"` (or carries an error value in `value`) by the time the
-    caller sees it; `await` reads the map and never suspends. The `"pending"`
-    and `"rejected"` states are reserved in the representation but no API
-    creates them, and `await` on a pending future raises "await on a pending
-    Future is not supported yet". There is no event loop, no `then`/`catch`
-    chaining, no `spawn`/`join`, no async lambda and no async `init`. The future
-    is a plain map, so `type(future)` is `"map"` and a value erased to `any`
-    can still be passed to code expecting a map; a dedicated runtime tag would
-    be a new value kind in all three engines. PHASE 11.2.1 makes the type
-    checker enforce opacity: indexing, slicing, iteration and member access
-    (read or write) on a `Future`-typed value are compile errors, and the
-    `tests/errors/async_future_*.oskl` fixtures pin them. A scheduler that
-    suspends a call and resumes it would need a coroutine/continuation
-    representation, which is a larger change than this phase: it would turn the
-    bytecode into a resumable frame and make the AOT/WASM backends carry a
-    state machine. `tests/65_async.oskl`, `tests/65_async_modules.oskl` and the
-    `oskel.build_binary_async`/`oskel.build_wasm_async` fixtures pin the current
-    surface. The scheduler/suspension design and its slices are in
-    `docs/phase11-async-design.md`; 11.2.1 is done and 11.2.2-11.2.5 have not
-    started.
+32. **[P1]** `async`/`await` has a scheduler (PHASE 11.2.2) but not yet real
+    suspension. Calling an `async fn` returns a pending future and enqueues its
+    task; `spawn` is the explicit enqueue, `yield()` drains the ready queue,
+    and `await` drains it when the future is pending before re-reading the
+    state. A script drains its queue before `HALT`, so `async fn main` runs
+    without a top-level `await`. The body is still one eager step: `await` does
+    not suspend the current body, and `yield()` does not requeue the current
+    task. There is no top-level `await`, no separate `join`, no `then`/`catch`
+    chaining, no async lambda, no cancellation and no async I/O driver; a
+    pending future that can never run reports a deadlock error rather than
+    spinning. The future and task frames are plain maps, so `type(future)` is
+    `"map"` and a value erased to `any` can still reach the keys; PHASE 11.2.5
+    tracks the runtime tag. PHASE 11.2.1 makes the type checker enforce
+    opacity (`tests/errors/async_future_*.oskl`). PHASE 11.2.3 adds the body
+    splitter and real suspension, 11.2.4 top-level `await` plus deadlock and
+    unhandled-rejection diagnostics, and 11.2.5 the runtime tag. Tests:
+    `tests/65_async.oskl`, `tests/65_async_modules.oskl`,
+    `tests/71_async_scheduler.oskl`,
+    `tests/native_build_async_scheduler.oskl`,
+    `tests/errors/async_{spawn_outside,yield_outside,spawn_non_future}.oskl`,
+    and the `oskel.build_binary_async*`/`oskel.build_wasm_async*` fixtures.
+    The design and slice table are in `docs/phase11-async-design.md`.
 
 33. **[P1] [done]** The emitted arena was one fixed 1 MiB region, mapped at
     entry and never grown, so a program that allocated more -- 10 000
@@ -918,11 +1009,21 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    ignored a nested call. **Done**: the flag still short-circuits a release
    build, and a debug build asserts `gcCollect is not reentrant` so a nested
    path is found instead of hidden.
-3. **[P1]** `GcNode::track()` does not validate that the object is not already
-   tracked (`link()` does).
-4. **[P1]** `gcCollect` does not handle objects created during collection: a
-   `clear` that creates an object moves `registryHead` and can invalidate the
-   iterator; pins avoid it but there is no test.
+3. **[P1] [done]** `GcNode::track()` does not validate that the object is not
+   already tracked (`link()` does). **Not a bug**: `track()` is exactly the
+   guarded entry point (`if (!linked) link()`) and `link()` is private, called
+   by the constructors and by `track()`, so nothing outside `gc.cpp` can double
+   link. `tests/gc_test.cpp` now pins it: three `track()` calls leave the
+   registry one entry larger, and removing the guard aborts the test.
+4. **[P1] [done]** `gcCollect` does not handle objects created during
+   collection: a `clear` that creates an object moves `registryHead` and can
+   invalidate the iterator; pins avoid it but there is no test. **Done**: the
+   collector already gathers the garbage into a vector, pins every object and
+   only then calls `clear`, so no pass walks the live registry while it grows.
+   `testObjectsCreatedDuringCollection` gives a map an ops table whose `clear`
+   allocates a tracked array: the pass ends with the array alive and the count
+   honest, and the next pass reclaims it. Replacing the pin-and-clear block with
+   the naive "clear while walking" loop segfaults the test.
 5. **[P2]** `gcCollectIfNeeded` under `OSKEL_GC_STRESS` collects at every safe
    point but is not exercised by any test.
 6. **[P2]** `threshold` grows with `trackedCount` without bound.
@@ -973,9 +1074,14 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
 
 ## 11. Lexer (`src/frontend/lexer.cpp`)
 
-1. **[P1]** `normalizeNewlines` rewrites the whole source before lexing, so
-   `col` counts the normalized source, not the original (`\r\n` is 2 bytes but
-   1 column). Make line/col refer to the original.
+1. **[P1] [done]** `normalizeNewlines` rewrites the whole source before lexing,
+   so `col` counts the normalized source, not the original (`\r\n` is 2 bytes
+   but 1 column). **Not a bug**: `\r` only ever appears at a line end, and
+   folding it there changes the byte count but never a column *within* a line,
+   so the first token of a line and every token after it keep their column.
+   `lineText` breaks on the same three endings, so the snippet agrees with the
+   position. `tests/compiler_test.cpp` compares the (line, col) of every token
+   across LF, CRLF and CR-only sources; it aborts if the fold is removed.
 2. **[P2]** `skipQuoted` for an interpolated string is fragile when a `${...}`
    contains another string with `${...}`.
 3. ~~**[P2]** `readEscape` for `\uXXXX` does not handle surrogates (`\uD800`
@@ -1007,22 +1113,37 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    the compiler's const folding warns; the runtime does not warn. **Decided**:
    the language spec says integer arithmetic wraps, and the warning is a
    compile-time diagnostic for constant expressions only; the runtime has no
-   warning channel, and both engines return the same bit pattern. Pinned by
-   `tests/native_build_compound_ops.oskl`.
+   warning channel, and both engines return the same bit pattern
+   (`-(-9223372036854775808)` is `-9223372036854775808`). Pinned by
+   `tests/native_build_compound_ops.oskl` and, through a function value so the
+   constant folder never runs, by `tests/native_build_operators.oskl`.
 2. **[P1] [done]** `binary` `StarStar` with an int base and a negative exponent
-   falls to `std::pow` and yields a double, not an int. **Decided**: the rank
-   is the widest operand's, so a negative int exponent yields a double in both
-   engines. Pinned by `tests/native_build_compound_ops.oskl`.
-3. **[P1] [done]** `binary` `Shl`/`Shr` reject `b < 0 || b > 63`; the AOT
-   `emitShift` checks the same range before emitting `shl`/`sar`. Pinned by
-   `tests/native_build_compound_ops.oskl`, which drives `-1` and `64` through
-   `pcall` on both engines.
-4. **[P2]** `indexGet` for a map with a missing key returns `nil` (JS-style)
-   while Python raises; decide the language rule and keep VM/AOT in step.
-5. **[P2]** `indexSet` for an array with `index == length` pushes (Lua-style);
-   decide and test.
-6. **[P2]** `memberGet` for a map with a missing non-method member returns
-   `nil`; verify the AOT path matches.
+   falls to `std::pow` and yields a double, not an int. The type rule is
+   documented and implemented in both engines (PHASE 7c.1d.2): rank is the
+   widest operand's, so a negative int exponent yields a double. Keeping it is
+   the decision: an int result would need a separate rule for `2 ** -1` (which
+   has no integer answer), and `2 ** -1` is `0.5` on both engines today. Pinned
+   by `tests/native_build_operators.oskl` (`2^3` is the int `8`, `2^-1` is the
+   double `0.5`, `2^0` is `1`).
+3. **[P1] [done]** `binary` `Shl`/`Shr` reject `b < 0 || b > 63`; the AOT path
+   applies the same rule and raises the same message (`shift count must be
+   between 0 and 63`), verified for `b = -1`, `64` and the in-range `0`/`63`
+   boundaries on both `<<` and `>>`. `tests/native_build_operators.oskl` pins it
+   against the VM.
+4. **[P2] [done]** `indexGet` for a map with a missing key returns `nil`
+   (JS-style) while Python raises; the language rule is now settled: a *map*
+   read of a missing key is `nil`, never an error, and an *array* index out of
+   range still raises (`array index 5 out of range (length 2)`). Both engines
+   already agreed, and `tests/native_build_map_access.oskl` pins it.
+5. **[P2] [done]** `indexSet` for an array with `index == length` pushes
+   (Lua-style); the rule is kept and pinned: `a[len] = v` appends, anything
+   beyond raises (`array index 10 out of range (length 4)`). A negative index
+   is an ordinary write from the end, not a push (`a[-1] = 9` replaces the last
+   element). Both engines agree (`tests/native_build_map_access.oskl`).
+6. **[P2] [done]** `memberGet` for a map with a missing non-method member
+   returns `nil`; the AOT path matches, and so does writing through a member
+   (`m.c = 3` adds the key). Same fixture:
+   `tests/native_build_map_access.oskl`.
 7. **[P2]** `binary` `Plus` on two arrays concatenates; done in PHASE 7c.3b
    (`oskel_array_concat`); the VM is the reference and the AOT path matches it.
 8. **[P3] [done]** `lessThan` for bool (`!left && right`) is correct but
@@ -1157,21 +1278,30 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    recovers, `error()` works and structural equality matches the VM.
    **Done**: `tests/native_build_error.oskl` covers `error()`, `isError`,
    `type`, `.message`/`.code`, equality, `print`/`repr`, interpolation and
-   `catch` recovering a returned error; `tests/native_build_pcall.oskl` covers
-   a success, a caught failure, a nested catch and a closure; and
-   `tests/native_build_runtime_error_messages.oskl` compares the exact text on
-   both engines. All three are built and run against the VM by
-   `tests/build_binary.cmake`.
-3. **[P1] [done]** Add an AOT wrong-arity test. **Done**:
-   `tests/native_build_builtin_arity.oskl` (`oskel.build_binary_builtin_arity`)
-   drives every fixed-arity builtin and a user function (through an indirect
-   `any` call, because a direct call is checked at compile time) through
-   `pcall` and prints the message, so a wrong count cannot diverge silently.
+   `catch` recovering a returned error, and it is built and run against the VM
+   by `tests/build_binary.cmake`. `pcall` is implemented (§6 item 4) and pinned
+   by `tests/native_build_pcall.oskl` (`oskel.build_binary_pcall`): a success,
+   a caught `panic` (the only thing `pcall` catches — a *returned* `error(...)`
+   is a success whose `value` is the error), a nested `pcall`, a closure
+   capture, and structural equality over a map holding an array, an array
+   holding a map and mismatches in both. A wrong arity is pinned by two
+   fixtures between them: `tests/native_build_builtin_arity.oskl` drives every
+   fixed-arity builtin through `pcall`, and `tests/native_build_arity.oskl`
+   calls a function *value* with too few and too many arguments (a direct call
+   is a compile-time error, so the runtime guard is only reachable through a
+   value), printing `two() expects 2 arguments, got 1` and the rest byte for
+   byte identical to the VM (`oskel.build_binary_arity`).
+   calls a function *value* with too few and too many arguments (a direct call
+   is a compile-time error, so the runtime guard is only reachable through a
+   value), printing `two() expects 2 arguments, got 1` and the rest byte for
+   byte identical to the VM (`oskel.build_binary_arity`).
 4. **[P1] [done]** Add `map`/`filter`/`reduce` tests with a VM closure callback.
    **Done**: `tests/native_build_array_callbacks.oskl` covers `map`, `filter`,
-   `each`, `find`, `any` and `all` with lambdas and named functions, and
-   `tests/native_build_array_folds.oskl` covers `reduce`, `sum` and `join`.
-   Both are registered for AOT and WASM and compared with the VM.
+   `each`, `find`, `any` and `all` with a lambda, a named function used as a
+   value, a callback that captures a local and one that recurses, and
+   `tests/native_build_array_folds.oskl` covers `reduce` with and without a
+   seed, `sum` and `join`. Both are registered for AOT and WASM and diffed
+   against the VM byte for byte.
 5. **[P1] [done]** Add an `ITER`-over-a-non-iterable test.
    `tests/errors/for_in_not_iterable.oskl` pins that `for x in 5` is a runtime
    error naming the type (`cannot iterate over a value of type 'int'`), and
@@ -1184,21 +1314,61 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    registered for AOT (`oskel.build_binary_double_format`) as well as WASM.
    The WASM `parseDoubleStr` accepts the same non-finite spellings, so the
    shared fixture passes on all three engines.
-7. **[P1]** Add an `OSKEL_GC_STRESS` test run.
-8. **[P1]** Add `lower_test.cpp` cases for `RETURN` in the root chunk and for a
-   `JMP` to exactly `size`.
-9. **[P1]** Add `vm_test.cpp` cases for `GETUPVAL`/`SETUPVAL` with a null cell,
-   `runFrames` with `fail()` outside `call()`, and `RETURN` in the root chunk.
-10. **[P1]** Add `compiler_test.cpp` cases for a `Point` alias plus a
+7. **[P1] [done]** Add an `OSKEL_GC_STRESS` test run. **Done**: a `gc-stress`
+   CI job configures with `-DOSKEL_GC_STRESS=ON` and runs the whole suite, so a
+   missed root surfaces instead of waiting for a sanitizer run. Two fixtures
+   build ~200k objects one at a time (`tests/11_cycles.oskl`,
+   `tests/47_deep_container_teardown.oskl`); a collection at every safe point is
+   quadratic in the object count there, so they are labelled `gc-stress-slow`
+   and the job runs `ctest -LE gc-stress-slow` (520 of 522, 21s). The label is
+   set unconditionally, so a renamed fixture breaks every configure rather than
+   only the stress job.
+8. **[P1] [done]** Add `lower_test.cpp` cases for `RETURN` in the root chunk
+   and for a `JMP` to exactly `size`. **Done**: `RETURN` in the root chunk was
+   already covered by `testRootReturnLowers` and `testRootReturnBehavesLikeHalt`
+   (RETURN behaves like HALT and yields R0). The `JMP` case was a real VM/AOT
+   divergence, not just a missing test: the VM accepts a target of exactly
+   `code.size()` (the pc passes the last instruction and the next dispatch
+   falls off the end, an implicit `return nil`), while `jumpTarget` rejected
+   it with "outside the code". The lowerer now reserves one extra label per
+   chunk, binds it after the last instruction to `nil` + the frame's epilogue,
+   and accepts `jump == size`. Covered by `testJumpToCodeSizeLowers` and the
+   executing `testExecJumpToEnd`.
+9. **[P1] [done]** Add `vm_test.cpp` cases for `GETUPVAL`/`SETUPVAL` with a
+   null cell, `runFrames` with `fail()` outside `call()`, and `RETURN` in the
+   root chunk. **Done**: `testNullUpvalueIsRejected` covered the read,
+   `testFailOutsideCallLeavesVmClean` the failed run's reset and
+   `testRootReturnBehavesLikeHalt` the root `RETURN`. The write was missing:
+   `testNullUpvalueWriteIsRejected` runs a `SETUPVAL` through a null cell and
+   asserts the same "undefined upvalue: 0" (removing the guard segfaults it).
+10. **[P1] [done]** Add `compiler_test.cpp` cases for a `Point` alias plus a
     `struct Point`, `try` inside a block with a `defer`, and `catch` with a
-    fallback block that has a `defer`.
-11. **[P1]** Add `module_test.cpp` cases for two `extern "C"` of the same name
-    in different modules and for `import` with `from` as a user variable.
+    fallback block that has a `defer`. **Done**: the alias/struct collision is
+    covered by `testStructImportNameConflict` (§3.5, both source orders and all
+    import forms). The two `defer` cases are now
+    `testDeferRunsBeforeTryPropagation` (the block's deferred CALL is the
+    instruction before the RETURN that `try` emits, so the cleanup runs on the
+    propagation path) and `testCatchKeepsDeferInScope` (`catch` is `$isError` +
+    a conditional MOVE, so it does not leave the scope and the deferred block
+    still runs at the normal exit). `tests/70_try_defer.oskl` pins the same
+    ordering at run time, in the VM and in the AOT binary.
+11. **[P1] [done]** Add `module_test.cpp` cases for two `extern "C"` of the
+    same name in different modules and for `import` with `from` as a user
+    variable. **Done**: `testConflictingExternAcrossModules` already covered the
+    disagreeing signatures. The agreeing case is now
+    `testCompatibleExternAcrossModules` (two modules declaring `sqrt` the same
+    way bind one thunk and both calls run), and
+    `testFromIsAnIdentifierOutsideImports` runs a `from` variable beside an
+    import.
 12. **[P2]** Add `repl_test.cpp` for "import X, fail, import X again runs the
     body once".
 13. **[P2]** Add `elf_test.cpp` for non-empty `rodata`, `entryOffset != 0` and
     the error paths.
-14. **[P2]** Add `pe_test.cpp` error-path tests.
+14. **[P2] [done]** Add `pe_test.cpp` error-path tests. **Done**: the three
+    rejections the emitter documents are now asserted — a non-Windows target
+    ("only x86_64-windows-win64 is supported"), an empty `.text` and an entry
+    offset equal to the text size. Each check names the message it expects, so
+    a reworded or dropped rejection fails the test instead of passing silently.
 15. **[P2]** Add `codegen_test.cpp` for `callRel`, `emitBytes`, `ucomisd`,
     all-register `push`/`pop`, and execution of the x87 ops.
 16. **[P3]** Remove the debug `printf`s in `vm_test.cpp`
@@ -1238,8 +1408,13 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    (floats, strings, the boxed runtime, calls), not a freeze.
 5. **[P2] [done]** `CHANGELOG.md` exists and follows Keep a Changelog; keep it
    updated before each tag (see `docs/RELEASING.md`).
-6. **[P2]** Add `CONTRIBUTING.md` (the rules now live only in
-   `DEVELOPMENT.md`/`AGENTS.md`).
+6. **[P2] [done]** Add `CONTRIBUTING.md` (the rules now live only in
+   `DEVELOPMENT.md`/`AGENTS.md`). **Done**: `CONTRIBUTING.md` covers the
+   mechanical half of a contribution — the build and test commands, adding a
+   builtin, adding a `.oskl` test, the 40-opcode budget, and the commit/PR
+   rules — and points at `DEVELOPMENT.md` for the language and the phases and
+   at `CONVENTIONS.md` for the git workflow, so the three guides have one job
+   each instead of repeating one another.
 7. **[P2] [done]** Add an `oskel.toml` for native dependencies.
    `oskelp` (the project and package manager) landed with `oskel.toml`,
    `oskel.lock`, path dependencies and

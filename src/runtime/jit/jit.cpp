@@ -19,19 +19,33 @@
 #endif
 #endif
 
-namespace {
-
 // The JIT emits x86-64 for the System V ABI only, like the AOT backend. Linux
 // and macOS on x86-64 both use that ABI. On any other host (Windows, or arm64
 // such as Apple Silicon) there is nothing to run, so `jitCompile` bails out
 // immediately instead of producing bytes the process cannot execute.
-constexpr bool jitHostSupported() {
+bool jitHostSupported() {
 #if (defined(__linux__) || defined(__APPLE__)) && (defined(__x86_64__) || defined(__amd64__))
   return true;
 #else
   return false;
 #endif
 }
+
+// Why `jitHostSupported()` is false, in the words the CLI reports. The JIT is on
+// by default, so a user on a host without a backend would otherwise get an
+// interpreter with no hint that `--no-jit` changes nothing and that the backend
+// simply does not exist there.
+std::string jitUnsupportedReason() {
+#if !(defined(__linux__) || defined(__APPLE__))
+  return "the JIT backend is built for Linux and x86-64 macOS only";
+#elif !(defined(__x86_64__) || defined(__amd64__))
+  return "the JIT backend emits x86-64 only";
+#else
+  return "";
+#endif
+}
+
+namespace {
 
 // Physical registers a register-resident slot can live in: all caller-saved,
 // and a supported proto is a leaf (no `CALL`), so the body makes no call that
@@ -2184,5 +2198,17 @@ JitFunction* Jit::get(const std::shared_ptr<const Bytecode>& proto) {
   // Cache even a failed compilation (nullptr function) so a proto outside the
   // subset is analyzed once, not on every call.
   functions_.emplace(key, std::move(entry));
+  order_.push_back(key);
+  // Bound the cache. A REPL entry leaves its proto unreferenced, so without a
+  // cap every entry of a long session keeps one `Bytecode` and one executable
+  // mapping alive. The oldest entry goes first; `result` is the one just
+  // inserted, so it is never the evicted key.
+  while (functions_.size() > kMaxEntries && !order_.empty()) {
+    const Bytecode* oldest = order_.front();
+    order_.pop_front();
+    // A key can repeat in `order_` only if it was evicted and recompiled; the
+    // stale entry is already gone, so erasing it again is a no-op.
+    functions_.erase(oldest);
+  }
   return result;
 }

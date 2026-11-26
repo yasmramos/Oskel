@@ -189,6 +189,66 @@ void testAmbiguityIsCompileError() {
         "ambiguity error names both modules");
 }
 
+void testFromCannotNameAModule() {
+  // `from` separates the selective list from the module, so a module named
+  // `from` makes `import { x } from from;` unreadable. Every import form is
+  // rejected at the path, not later with a confusing "module 'from' not found".
+  const char* sources[] = {
+      "import { square } from from;\n",
+      "import from;\n",
+      "import from as f;\n",
+      "import from.*;\n",
+  };
+  for (const char* source : sources) {
+    Compiler compiler;
+    ModuleResolver resolver = fixtureResolver();
+    compiler.setImportLoader(loaderFor(resolver));
+    bool threw = false;
+    std::string message;
+    try {
+      compiler.compile(parseSource(source));
+    } catch (const CompileError& error) {
+      threw = true;
+      message = error.message;
+    }
+    check(threw, "a module named 'from' is a compile error");
+    check(message.find("'from' is a keyword") != std::string::npos,
+          "the error explains that 'from' is a keyword");
+  }
+}
+
+void testFromCannotBeAPathSegment() {
+  Compiler compiler;
+  ModuleResolver resolver = fixtureResolver();
+  compiler.setImportLoader(loaderFor(resolver));
+  bool threw = false;
+  std::string message;
+  try {
+    // Before, this silently became a module named "m.from".
+    compiler.compile(parseSource("import m. from;\n"));
+  } catch (const CompileError& error) {
+    threw = true;
+    message = error.message;
+  }
+  check(threw, "'m.from' is a compile error");
+  check(message.find("'from' is a keyword") != std::string::npos,
+        "'m.from' error explains that 'from' is a keyword");
+}
+
+// `from` is a keyword, but only inside an `import`: it stays a normal
+// identifier everywhere else. A program that names a variable `from` and also
+// imports a module must compile and run, or the keyword would leak into the
+// expression grammar.
+void testFromIsAnIdentifierOutsideImports() {
+  VM vm;
+  compileAndRun(
+      "let from = 5;\n"
+      "import modules.util;\n"
+      "let got = modules.util.answer + from;\n",
+      fixtureResolver(), vm);
+  check(globalInt(vm, "got") == 47, "'from' is an ordinary variable outside an import");
+}
+
 void testModuleRunsOnce() {
   // `modules/counter.oskl` increments the caller's `runs` global at load time.
   // Three imports must run it once, so `runs` ends at 1.
@@ -440,6 +500,20 @@ void testConflictingExternAcrossModules() {
         "the cross-module conflict names the symbol and the problem");
 }
 
+// The same C symbol declared by two modules with the *same* signature is not a
+// conflict: the compiler builds one marshalling thunk per symbol, so the second
+// import reuses it. Only a signature disagreement is rejected (the test above).
+void testCompatibleExternAcrossModules() {
+  VM vm;
+  compileAndRun(
+      "import modules.externsqrt_a;\n"
+      "import modules.externsqrt_b;\n"
+      "let got = int(modules.externsqrt_a.rootOf(9.0) +"
+      " modules.externsqrt_b.otherRootOf(16.0));\n",
+      fixtureResolver(), vm);
+  check(globalInt(vm, "got") == 7, "two modules may declare one extern with the same signature");
+}
+
 // A `struct` name is compile-time metadata, not a value binding, so it is not
 // tracked by `userGlobals_`: an import that takes the same name used to coexist
 // with it silently, `Name { ... }` staying a struct literal and `Name.member`
@@ -586,6 +660,9 @@ int main() {
   testParentChildImportOrder();
   testPrivateNameIsNotExported();
   testAmbiguityIsCompileError();
+  testFromCannotNameAModule();
+  testFromCannotBeAPathSegment();
+  testFromIsAnIdentifierOutsideImports();
   testModuleRunsOnce();
   testNestedImport();
   testRepeatedImportBindsOnce();
@@ -598,6 +675,7 @@ int main() {
   testImportConflictAcrossForms();
   testNonConflictingImportCombinations();
   testConflictingExternAcrossModules();
+  testCompatibleExternAcrossModules();
   testStructImportNameConflict();
 
   if (g_failures != 0) {
