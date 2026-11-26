@@ -1,0 +1,14 @@
+// VM/AOT/WASM parity for `std.hash`.
+import std.hash.*;
+import std.bytes as b;
+
+print("sha256 empty  =", sha256Hex(""));
+print("sha256 abc    =", sha256Hex("abc"));
+print("sha1 empty    =", sha1Hex(""));
+print("sha1 abc      =", sha1Hex("abc"));
+print("hmac key/fox  =", hmacSha256Hex("key", "The quick brown fox jumps over the lazy dog"));
+print("crc32 123456789 =", crc32("123456789"));
+print("sha256 1000a  =", sha256Hex("a".repeat(1000)));
+print("sha1 1000a    =", sha1Hex("a".repeat(1000)));
+print("sha256 bytes  =", sha256Hex([0, 1, 2, 255]));
+print("ct equal      =", constantTimeEqual("abc", "abc"), constantTimeEqual("abc", "abd"), constantTimeEqual("a", "ab"));

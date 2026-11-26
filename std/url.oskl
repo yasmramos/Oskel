@@ -1,0 +1,660 @@
+// Standard library: URLs (RFC 3986).
+//
+// Imported as `import std.url;` (qualified: `std.url.parse`),
+// `import std.url.*;` (unqualified: `parse`), `import std.url as u;` or
+// `import { parse, resolve } from std.url;`.
+//
+// A parsed URL is an ordinary map:
+//
+//   {
+//     scheme: "https" or nil,
+//     user: "ada" or nil,
+//     password: "secret" or nil,
+//     host: "example.com" or nil,
+//     port: 8443 or nil,
+//     path: "/a/b",
+//     query: "q=1&x=2" or nil,
+//     fragment: "top" or nil,
+//   }
+//
+// `parse` keeps the components percent-encoded, so `format(parse(text))` is
+// the input again; the `decode*` helpers turn a component into text. The
+// module covers the generic syntax, relative resolution (RFC 3986 §5.2) and
+// the `application/x-www-form-urlencoded` query form (`+` is a space).
+//
+// It is plain Oskel over indexing, slicing, `len`, `ord`/`chr`, `str`, `type`,
+// `panic`, `split`/`join` and closures, so it behaves identically on the
+// development VM, under `oskel build` and on WebAssembly.
+
+import std.bytes as _bytes;
+
+// --- character helpers ------------------------------------------------------
+
+// A-Z, a-z.
+@MustUse
+fn _isAlpha(c) {
+  return (c >= "A" && c <= "Z") || (c >= "a" && c <= "z");
+}
+
+// A-Z, a-z, 0-9, +, -, .
+@MustUse
+fn _isSchemeChar(c) {
+  return _isAlpha(c) || (c >= "0" && c <= "9") || c == "+" || c == "-" || c == ".";
+}
+
+// 0-9.
+@MustUse
+fn _isDigit(c) {
+  return c >= "0" && c <= "9";
+}
+
+// The value of one hexadecimal digit, or -1.
+@MustUse
+fn _hexValue(c) {
+  if (c >= "0" && c <= "9") {
+    return ord(c) - 48;
+  }
+  if (c >= "a" && c <= "f") {
+    return ord(c) - 87;
+  }
+  if (c >= "A" && c <= "F") {
+    return ord(c) - 55;
+  }
+  return -1;
+}
+
+// True when every character is a digit.
+@MustUse
+fn _allDigits(text) {
+  for c in text {
+    if (!_isDigit(c)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// --- parsing ----------------------------------------------------------------
+
+// Splits an authority at the last `@`, then the userinfo at the first `:`,
+// then the host at the last `:` when the suffix is a port. Returns
+// `{user, password, host, port, error}`; `error` is nil on success.
+@MustUse
+fn _parseAuthority(authority) {
+  var user = nil;
+  var password = nil;
+  var host = nil;
+  var port = nil;
+  var at = -1;
+  var i = 0;
+  while (i < len(authority)) {
+    if (authority[i] == "@") {
+      at = i;
+    }
+    i = i + 1;
+  }
+  var hostPort = authority;
+  if (at >= 0) {
+    let userInfo = authority[0:at];
+    hostPort = authority[at + 1:len(authority)];
+    var colon = -1;
+    i = 0;
+    while (i < len(userInfo)) {
+      if (userInfo[i] == ":") {
+        colon = i;
+        break;
+      }
+      i = i + 1;
+    }
+    if (colon >= 0) {
+      user = userInfo[0:colon];
+      password = userInfo[colon + 1:len(userInfo)];
+    } else {
+      user = userInfo;
+    }
+  }
+  if (len(hostPort) > 0 && hostPort[0] == "[") {
+    var close = -1;
+    i = 1;
+    while (i < len(hostPort)) {
+      if (hostPort[i] == "]") {
+        close = i;
+        break;
+      }
+      i = i + 1;
+    }
+    if (close < 0) {
+      return {user: user, password: password, host: nil, port: nil,
+        error: "std.url.parse: unterminated IPv6 address"};
+    }
+    host = hostPort[0:close + 1];
+    if (close + 1 < len(hostPort)) {
+      if (hostPort[close + 1] != ":") {
+        return {user: user, password: password, host: nil, port: nil,
+          error: "std.url.parse: unexpected character after an IPv6 address"};
+      }
+      let portText = hostPort[close + 2:len(hostPort)];
+      if (len(portText) > 0) {
+        if (!_allDigits(portText)) {
+          return {user: user, password: password, host: nil, port: nil,
+            error: "std.url.parse: the port must be digits"};
+        }
+        let value = int(portText);
+        if (value > 65535) {
+          return {user: user, password: password, host: nil, port: nil,
+            error: "std.url.parse: the port is above 65535"};
+        }
+        port = value;
+      }
+    }
+    return {user: user, password: password, host: host, port: port, error: nil};
+  }
+  var colons = 0;
+  var last = -1;
+  i = 0;
+  while (i < len(hostPort)) {
+    if (hostPort[i] == ":") {
+      colons = colons + 1;
+      last = i;
+    }
+    i = i + 1;
+  }
+  if (colons == 1) {
+    let portText = hostPort[last + 1:len(hostPort)];
+    if (len(portText) > 0) {
+      if (!_allDigits(portText)) {
+        return {user: user, password: password, host: nil, port: nil,
+          error: "std.url.parse: the port must be digits"};
+      }
+      let value = int(portText);
+      if (value > 65535) {
+        return {user: user, password: password, host: nil, port: nil,
+          error: "std.url.parse: the port is above 65535"};
+      }
+      port = value;
+    }
+    host = hostPort[0:last];
+  } else {
+    host = hostPort;
+  }
+  return {user: user, password: password, host: host, port: port, error: nil};
+}
+
+// Parses a URL without aborting. The result is `{ok, value, error}`.
+@MustUse
+fn tryParse(text) {
+  if (type(text) != "string") {
+    return {ok: false, value: nil, error: "std.url.parse: expected a string"};
+  }
+  var i = 0;
+  var scheme = nil;
+  if (len(text) > 0 && _isAlpha(text[0])) {
+    var j = 0;
+    while (j < len(text) && _isSchemeChar(text[j])) {
+      j = j + 1;
+    }
+    if (j < len(text) && text[j] == ":") {
+      scheme = text[0:j];
+      i = j + 1;
+    }
+  }
+  var user = nil;
+  var password = nil;
+  var host = nil;
+  var port = nil;
+  if (i + 1 < len(text) && text[i] == "/" && text[i + 1] == "/") {
+    i = i + 2;
+    var end = i;
+    while (end < len(text) && text[end] != "/" && text[end] != "?" && text[end] != "#") {
+      end = end + 1;
+    }
+    let authority = _parseAuthority(text[i:end]);
+    if (authority.error != nil) {
+      return {ok: false, value: nil, error: authority.error};
+    }
+    user = authority.user;
+    password = authority.password;
+    host = authority.host;
+    port = authority.port;
+    i = end;
+  }
+  var pathEnd = i;
+  while (pathEnd < len(text) && text[pathEnd] != "?" && text[pathEnd] != "#") {
+    pathEnd = pathEnd + 1;
+  }
+  let path = text[i:pathEnd];
+  i = pathEnd;
+  var query = nil;
+  if (i < len(text) && text[i] == "?") {
+    i = i + 1;
+    var end = i;
+    while (end < len(text) && text[end] != "#") {
+      end = end + 1;
+    }
+    query = text[i:end];
+    i = end;
+  }
+  var fragment = nil;
+  if (i < len(text) && text[i] == "#") {
+    fragment = text[i + 1:len(text)];
+  }
+  return {ok: true, value: {
+    scheme: scheme,
+    user: user,
+    password: password,
+    host: host,
+    port: port,
+    path: path,
+    query: query,
+    fragment: fragment,
+  }, error: nil};
+}
+
+// Parses a URL. A malformed value is a runtime error; use `tryParse` or
+// `isValid` to test without aborting.
+@MustUse
+fn parse(text) {
+  let result = tryParse(text);
+  if (!result.ok) {
+    panic(result.error);
+  }
+  return result.value;
+}
+
+// True when `text` is a URL the parser accepts.
+@MustUse
+fn isValid(text) {
+  return tryParse(text).ok;
+}
+
+// --- formatting ------------------------------------------------------------
+
+// The text of a parsed URL. A nil component is omitted; `path` defaults to the
+// empty string.
+@MustUse
+fn format(url) {
+  if (type(url) != "map") {
+    panic("std.url.format: expected a parsed URL map");
+  }
+  var out = "";
+  if (url.scheme != nil) {
+    out = out + str(url.scheme) + ":";
+  }
+  if (url.host != nil || url.user != nil || url.port != nil) {
+    out = out + "//";
+    if (url.user != nil) {
+      out = out + str(url.user);
+      if (url.password != nil) {
+        out = out + ":" + str(url.password);
+      }
+      out = out + "@";
+    }
+    if (url.host != nil) {
+      out = out + str(url.host);
+    }
+    if (url.port != nil) {
+      out = out + ":" + str(url.port);
+    }
+  }
+  if (url.path != nil) {
+    out = out + str(url.path);
+  }
+  if (url.query != nil) {
+    out = out + "?" + str(url.query);
+  }
+  if (url.fragment != nil) {
+    out = out + "#" + str(url.fragment);
+  }
+  return out;
+}
+
+// --- percent encoding ------------------------------------------------------
+
+// True when `c` is an unreserved character (A-Z a-z 0-9 - . _ ~).
+@MustUse
+fn _isUnreserved(c) {
+  return _isAlpha(c) || _isDigit(c) || c == "-" || c == "." || c == "_" || c == "~";
+}
+
+// Percent-encodes `s`, keeping the unreserved characters and every character
+// in `extra`. A character outside ASCII is UTF-8 encoded first.
+@MustUse
+fn _encode(s, extra) {
+  if (type(s) != "string") {
+    panic("std.url.encode: expected a string");
+  }
+  var out = "";
+  for c in s {
+    if (_isUnreserved(c) || (len(extra) > 0 && extra.contains(c))) {
+      out = out + c;
+    } else {
+      for b in _bytes.fromString(c) {
+        out = out + "%" + _bytes.hexEncode([b]).upper();
+      }
+    }
+  }
+  return out;
+}
+
+// Percent-encodes every character outside the unreserved set. A space becomes
+// `%20`; use `encodeQueryComponent` for the form form.
+@MustUse
+fn encodeComponent(s) {
+  return _encode(s, "");
+}
+
+// Percent-encodes a path, keeping `/` and `:` readable.
+@MustUse
+fn encodePath(s) {
+  return _encode(s, "/:");
+}
+
+// Percent-encodes a query name or value; a space becomes `+`.
+@MustUse
+fn encodeQueryComponent(s) {
+  return _encode(s, "").replace("%20", "+");
+}
+
+// Decodes `%XX` sequences. A malformed sequence is a runtime error.
+@MustUse
+fn _decode(s, plusAsSpace) {
+  if (type(s) != "string") {
+    panic("std.url.decode: expected a string");
+  }
+  var bytes = [];
+  var i = 0;
+  while (i < len(s)) {
+    let c = s[i];
+    if (c == "%") {
+      if (i + 2 >= len(s)) {
+        panic("std.url.decode: truncated percent sequence");
+      }
+      let hi = _hexValue(s[i + 1]);
+      let lo = _hexValue(s[i + 2]);
+      if (hi < 0 || lo < 0) {
+        panic("std.url.decode: invalid percent sequence");
+      }
+      bytes[len(bytes)] = hi * 16 + lo;
+      i = i + 3;
+    } else if (plusAsSpace && c == "+") {
+      bytes[len(bytes)] = 32;
+      i = i + 1;
+    } else {
+      for b in _bytes.fromString(c) {
+        bytes[len(bytes)] = b;
+      }
+      i = i + 1;
+    }
+  }
+  return _bytes.toString(bytes);
+}
+
+// Decodes percent sequences; `+` stays a plus.
+@MustUse
+fn decodeComponent(s) {
+  return _decode(s, false);
+}
+
+// Decodes percent sequences; `+` becomes a space (form encoding).
+@MustUse
+fn decodeQueryComponent(s) {
+  return _decode(s, true);
+}
+
+// --- query strings ---------------------------------------------------------
+
+// The `{name, value}` pairs of a query string, decoded. Empty segments and a
+// trailing `&` are ignored; a name without `=` has the empty value.
+@MustUse
+fn parseQuery(query) {
+  var out = [];
+  if (query == nil || len(query) == 0) {
+    return out;
+  }
+  for part in str(query).split("&") {
+    if (len(part) == 0) {
+      continue;
+    }
+    var eq = -1;
+    var i = 0;
+    while (i < len(part)) {
+      if (part[i] == "=") {
+        eq = i;
+        break;
+      }
+      i = i + 1;
+    }
+    if (eq < 0) {
+      out[len(out)] = {name: decodeQueryComponent(part), value: ""};
+    } else {
+      out[len(out)] = {
+        name: decodeQueryComponent(part[0:eq]),
+        value: decodeQueryComponent(part[eq + 1:len(part)]),
+      };
+    }
+  }
+  return out;
+}
+
+// A query map with the last value of each name.
+@MustUse
+fn parseQueryMap(query) {
+  var out = {};
+  for pair in parseQuery(query) {
+    out[pair.name] = pair.value;
+  }
+  return out;
+}
+
+// A query map with every value of each name, in order.
+@MustUse
+fn parseQueryAll(query) {
+  var out = {};
+  for pair in parseQuery(query) {
+    if (out[pair.name] == nil) {
+      out[pair.name] = [];
+    }
+    out[pair.name][len(out[pair.name])] = pair.value;
+  }
+  return out;
+}
+
+// The first value of `name` in a query, or nil.
+@MustUse
+fn queryGet(query, name) {
+  for pair in parseQuery(query) {
+    if (pair.name == name) {
+      return pair.value;
+    }
+  }
+  return nil;
+}
+
+// Every value of `name` in a query, in order.
+@MustUse
+fn queryGetAll(query, name) {
+  var out = [];
+  for pair in parseQuery(query) {
+    if (pair.name == name) {
+      out[len(out)] = pair.value;
+    }
+  }
+  return out;
+}
+
+// Builds a query string from `{name, value}` pairs, form-encoded and joined
+// with `&`. An empty array is the empty string.
+@MustUse
+fn buildQuery(pairs) {
+  if (type(pairs) != "array") {
+    panic("std.url.buildQuery: expected an array of {name, value} pairs");
+  }
+  var parts = [];
+  for pair in pairs {
+    if (type(pair) != "map") {
+      panic("std.url.buildQuery: every pair must be a map");
+    }
+    parts[len(parts)] = encodeQueryComponent(str(pair.name))
+      + "=" + encodeQueryComponent(pair.value == nil ? "" : str(pair.value));
+  }
+  return parts.join("&");
+}
+
+// --- relative resolution ---------------------------------------------------
+
+// RFC 3986 §5.2.4: removes the `.` and `..` segments of a path. The empty
+// segments of `//` are preserved, because they are meaningful in a path.
+@MustUse
+fn removeDotSegments(path) {
+  if (type(path) != "string") {
+    panic("std.url: expected a string path");
+  }
+  var input = path;
+  var output = "";
+  while (len(input) > 0) {
+    if (input[0:3] == "../") {
+      input = input[3:len(input)];
+    } else if (input[0:2] == "./") {
+      input = input[2:len(input)];
+    } else if (input[0:3] == "/./") {
+      input = "/" + input[3:len(input)];
+    } else if (input == "/.") {
+      input = "/";
+    } else if (input[0:4] == "/../") {
+      input = "/" + input[4:len(input)];
+      output = _removeLastSegment(output);
+    } else if (input == "/..") {
+      input = "/";
+      output = _removeLastSegment(output);
+    } else if (input == "." || input == "..") {
+      input = "";
+    } else {
+      var start = 0;
+      if (input[0] == "/") {
+        start = 1;
+      }
+      var slash = -1;
+      var i = start;
+      while (i < len(input)) {
+        if (input[i] == "/") {
+          slash = i;
+          break;
+        }
+        i = i + 1;
+      }
+      if (slash < 0) {
+        output = output + input;
+        input = "";
+      } else {
+        output = output + input[0:slash];
+        input = input[slash:len(input)];
+      }
+    }
+  }
+  return output;
+}
+
+// Drops the last segment of `output`, including its leading slash.
+@MustUse
+fn _removeLastSegment(output) {
+  var i = len(output) - 1;
+  while (i >= 0 && output[i] != "/") {
+    i = i - 1;
+  }
+  if (i < 0) {
+    return "";
+  }
+  return output[0:i];
+}
+
+// RFC 3986 §5.2.3: merges a relative path into the base path.
+@MustUse
+fn _merge(basePath, refPath, baseHasAuthority) {
+  if (baseHasAuthority && basePath == "") {
+    return "/" + refPath;
+  }
+  var i = len(basePath) - 1;
+  while (i >= 0 && basePath[i] != "/") {
+    i = i - 1;
+  }
+  if (i < 0) {
+    return refPath;
+  }
+  return basePath[0:i + 1] + refPath;
+}
+
+// Resolves `reference` against `base` (RFC 3986 §5.2.2). Both arguments are
+// URL strings; the result is the absolute target as text.
+@MustUse
+fn resolve(base, reference) {
+  let b = parse(base);
+  let r = parse(reference);
+  var target = {};
+  if (r.scheme != nil) {
+    target.scheme = r.scheme;
+    target.user = r.user;
+    target.password = r.password;
+    target.host = r.host;
+    target.port = r.port;
+    target.path = removeDotSegments(r.path);
+    target.query = r.query;
+  } else {
+    target.scheme = b.scheme;
+    if (r.host != nil || r.user != nil || r.port != nil) {
+      target.user = r.user;
+      target.password = r.password;
+      target.host = r.host;
+      target.port = r.port;
+      target.path = removeDotSegments(r.path);
+      target.query = r.query;
+    } else {
+      target.user = b.user;
+      target.password = b.password;
+      target.host = b.host;
+      target.port = b.port;
+      if (r.path == "") {
+        target.path = b.path;
+        target.query = r.query != nil ? r.query : b.query;
+      } else {
+        if (r.path[0] == "/") {
+          target.path = removeDotSegments(r.path);
+        } else {
+          target.path = removeDotSegments(_merge(b.path, r.path,
+            b.host != nil || b.user != nil || b.port != nil));
+        }
+        target.query = r.query;
+      }
+    }
+  }
+  target.fragment = r.fragment;
+  return format(target);
+}
+
+// The `scheme://[user[:password]@]host[:port]` part of a URL, or nil when it
+// has no scheme or no host.
+@MustUse
+fn origin(url) {
+  let u = parse(url);
+  if (u.scheme == nil || u.host == nil) {
+    return nil;
+  }
+  var out = str(u.scheme) + "://";
+  if (u.user != nil) {
+    out = out + str(u.user);
+    if (u.password != nil) {
+      out = out + ":" + str(u.password);
+    }
+    out = out + "@";
+  }
+  out = out + str(u.host);
+  if (u.port != nil) {
+    out = out + ":" + str(u.port);
+  }
+  return out;
+}
+
+// True when `text` has a scheme, i.e. it is an absolute URL.
+@MustUse
+fn isAbsolute(text) {
+  return parse(text).scheme != nil;
+}

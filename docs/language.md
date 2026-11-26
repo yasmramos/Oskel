@@ -3298,6 +3298,250 @@ A `BigDecimal` has no C representation, so it is rejected at the FFI boundary.
 The module is pure Oskel over arrays, strings, loops and closures, so the VM,
 `oskel build` and WebAssembly produce the same exact strings.
 
+### 12.20 Hashing
+
+`import std.hash;` computes digests and message authentication codes. Every
+function accepts a string (hashed as its UTF-8 bytes) or an array of bytes in
+`0..255`; the `...Hex` forms return lowercase hexadecimal text.
+
+| Function | Description |
+| --- | --- |
+| `sha256(input)` / `sha256Hex(input)` | The 32-byte SHA-256 digest, or its 64-character hex form. |
+| `sha1(input)` / `sha1Hex(input)` | The 20-byte SHA-1 digest (legacy; use it only for an old protocol or UUID v5). |
+| `hmacSha256(key, message)` / `hmacSha256Hex(key, message)` | The RFC 2104 HMAC-SHA256 tag. A key longer than the 64-byte block is hashed first. |
+| `crc32(input)` | The CRC-32 (IEEE 802.3) checksum as an unsigned 32-bit integer. |
+| `constantTimeEqual(left, right)` | Compares two byte strings without stopping at the first difference. |
+
+```oskl
+import std.hash.*;
+
+print(sha256Hex("abc"));  // ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+print(hmacSha256Hex("key", "The quick brown fox jumps over the lazy dog"));
+print(crc32("123456789")); // 3421780262 (0xCBF43926)
+```
+
+SHA-256, SHA-1 and HMAC are implemented over 32-bit arithmetic, so the module
+is plain Oskel and the three engines agree. It is not a streaming API and not a
+replacement for a vetted crypto library when the threat model needs one; it has
+no SHA-512, no key derivation and no constant-time digest. `constantTimeEqual`
+is the comparison helper for a tag or a digest that an attacker can time.
+
+### 12.21 UUIDs
+
+`import std.uuid;` reads and writes UUIDs as the canonical 36-character
+lowercase text, so a value composes with maps, JSON and the file system.
+
+| Function | Description |
+| --- | --- |
+| `v4()` | A random (version 4) UUID. The stream follows `seed(n)`. |
+| `v5(namespace, name)` | A deterministic (version 5) UUID: SHA-1 of the namespace bytes and the name bytes. |
+| `parse(text)` / `tryParse(text)` / `isValid(text)` | The 16 bytes, the `{ok, value, error}` form, or the check. |
+| `format(bytes)` | The canonical text of 16 bytes. |
+| `normalize(text)` | The canonical lowercase text of any accepted input form. |
+| `nilUuid()` / `isNil(text)` | The all-zero UUID and its check. |
+| `version(text)` / `variant(text)` | The version nibble and `"ncs"`, `"rfc4122"`, `"microsoft"` or `"future"`. |
+| `compare(left, right)` | `-1`, `0` or `1`, for a sort comparator. |
+
+`parse` accepts the canonical form in either case, the 32-digit form without
+hyphens, a value in braces and the `urn:uuid:` form. `NAMESPACE_DNS`,
+`NAMESPACE_URL`, `NAMESPACE_OID` and `NAMESPACE_X500` are the standard
+namespaces.
+
+```oskl
+import std.uuid.*;
+
+print(v5(NAMESPACE_DNS, "python.org")); // 886313e1-3b8a-5372-9b90-0c9aee199e5d
+seed(42);
+print(v4()); // the same value on the VM, `oskel build` and WebAssembly
+```
+
+`v3` (MD5) and `v1` (time and MAC address) are not provided. The module is
+plain Oskel over arrays, strings and integer arithmetic.
+
+### 12.22 URLs
+
+`import std.url;` parses and builds the RFC 3986 generic syntax. A parsed URL
+is an ordinary map with the fields `scheme`, `user`, `password`, `host`, `port`,
+`path`, `query` and `fragment`; an absent component is `nil` and `path` is the
+empty string when the input has none.
+
+```oskl
+let url = parse("https://ada:secret@example.com:8443/a/b?q=1#top");
+print(url.scheme);  // https
+print(url.host);    // example.com
+print(url.port);    // 8443
+print(url.path);    // /a/b
+```
+
+`parse` keeps the components percent-encoded, so `format(parse(text))` is the
+input again. An IPv6 host keeps its brackets (`"[::1]"`).
+
+| Function | Description |
+| --- | --- |
+| `parse(text)` / `tryParse(text)` / `isValid(text)` | The map, the `{ok, value, error}` form, or the check. |
+| `format(url)` | The text of a parsed map. |
+| `resolve(base, reference)` | RFC 3986 §5.2 relative resolution. |
+| `removeDotSegments(path)` | The `.`/`..` normalization alone. |
+| `encodeComponent` / `decodeComponent` | Percent-encoding (`%20` for a space). |
+| `encodePath` / `encodeQueryComponent` / `decodeQueryComponent` | The path form and the `application/x-www-form-urlencoded` form (`+` for a space). |
+| `parseQuery` / `parseQueryMap` / `parseQueryAll` | The decoded `{name, value}` pairs, a last-value map, or a map of arrays. |
+| `queryGet` / `queryGetAll` / `buildQuery` | Lookup and construction. |
+| `origin(url)` / `isAbsolute(text)` | The scheme/authority part, and the scheme test. |
+
+```oskl
+import std.url.*;
+
+let base = "http://a/b/c/d;p?q";
+print(resolve(base, "../g"));       // http://a/b/g
+print(parseQueryMap("a=1&b=hello+world")); // {"a": "1", "b": "hello world"}
+print(encodeComponent("a b/é"));    // a%20b%2F%C3%A9
+```
+
+A malformed authority (a non-numeric port, a port above 65535, an unterminated
+IPv6 address) is reported by `tryParse` and raises in `parse`. The module is
+plain Oskel over indexing, slicing, `split`/`join` and `std.bytes`.
+
+### 12.23 Command-line arguments
+
+`import std.cli;` parses `args()` against a specification map. `parse` never
+exits or prints: it returns `{ok, options, positionals, errors, help}` and the
+caller decides what to do.
+
+```oskl
+import std.cli.*;
+
+let spec = {
+  name: "mytool",
+  description: "Does things.",
+  options: [
+    {name: "verbose", short: "v", kind: "flag", help: "Be loud."},
+    {name: "output", short: "o", kind: "string", def: "out.txt"},
+    {name: "count", short: "n", kind: "int", def: 1},
+    {name: "tag", kind: "list"},
+  ],
+  positionals: [
+    {name: "input", required: true},
+    {name: "rest", variadic: true},
+  ],
+};
+
+let result = parse(args(), spec);
+if (result.help) {
+  print(usage(spec));
+} else if (!result.ok) {
+  for message in result.errors {
+    eprint(message);
+  }
+}
+```
+
+`def` is the default key, not `default`, because `default` is a keyword. The
+kinds are `flag`, `string`, `int`, `double` and `list`; a list replaces its
+default the first time an explicit value arrives. Long options accept
+`--name value` and `--name=value`; short options accept `-n value`, `-n=value`,
+`-n5` and a cluster of flags (`-vv`), where a value option ends the cluster.
+`--` ends option parsing, a bare `-` is a positional, `--help`/`-h` sets
+`help`, and a value option's last occurrence wins. `usage(spec)` renders the
+usage line, the description, the options and the positionals.
+
+### 12.24 Logging
+
+`import std.log;` builds a leveled logger as a map of closures over a small
+mutable state.
+
+```oskl
+import std.log.*;
+
+let logger = create({name: "app", level: "info"});
+logger.info("started");
+logger.warn("slow request", {ms: 120, path: "/a"});
+let db = logger.child("db");
+db.error("failed", {code: 500});
+```
+
+The levels are `trace` (10), `debug` (20), `info` (30), `warn` (40), `error`
+(50) and `off` (100). A record below the level is dropped before the clock is
+read or the sink is called. `create` accepts `level`, `name`, `clock` (a
+`() -> int` returning epoch seconds, `time` by default) and `sink` (a
+`(record) -> nil`, `print(format(record))` by default). A record is
+`{level, levelValue, name, message, time, fields}`; `format` renders
+`[2026-11-26T20:38:00Z] INFO  app: started ms=120 path=/a`. `child(name)` keeps
+the level, clock and sink and prefixes the name; `enabled(level)` tests a level
+without building a record; `setLevel` changes it.
+
+A test passes `clock: () => 1700000000` and a sink that writes to a
+`std.io.StringWriter`, so the output is deterministic. The default sink prints
+to standard output. The module is plain Oskel over maps, closures, `time` and
+`std.datetime`.
+
+### 12.25 Semantic versions
+
+`import std.semver;` parses SemVer 2.0.0 versions and evaluates the range forms
+a package manifest needs. A version is a map
+`{major, minor, patch, prerelease, build}`; the last two are identifier arrays.
+
+| Function | Description |
+| --- | --- |
+| `parse(text)` / `tryParse(text)` / `isValid(text)` | A full version, with an optional `v` prefix. |
+| `format(version)` | The canonical `major.minor.patch[-pre][+build]` text. |
+| `compare(left, right)` | SemVer precedence: `-1`, `0` or `1` (build metadata is ignored). |
+| `satisfies(version, requirement)` | Range membership. |
+| `parseRequirement(text)` | The parsed `{groups: [[{op, version}, ...], ...]}`. |
+| `bump(version, part)` | The next `"major"`, `"minor"` or `"patch"`, with prerelease/build cleared. |
+| `isPrerelease(version)` / `isStable(version)` | The prerelease test and its negation. |
+
+The requirement forms are an exact version, `>=`, `>`, `<=`, `<`, `=`, `^`
+(npm caret semantics, including `^0.2.3` and `^0.0.3`), `~`, wildcards (`*`,
+`1.x`, `1.2.x`), a hyphen range (`1.2.3 - 2.3.4`), a space-separated
+conjunction and `||` disjunction. A partial version in a comparison is padded
+with zeros (`>=1.2` is `>=1.2.0`), while `>` and `<=` on a partial advance to
+the next wildcard boundary (`>1.2` is `>=1.3.0`, `<=1.2` is `<1.3.0`). A
+prerelease version satisfies a range only when a comparator names a prerelease
+of the same `major.minor.patch`, which is the npm rule.
+
+```oskl
+import std.semver.*;
+
+print(compare("1.0.0-beta.2", "1.0.0"));  // -1
+print(satisfies("1.9.9", "^1.2.3"));       // true
+print(satisfies("2.0.0", "^1.2.3"));       // false
+print(bump("1.2.3", "minor"));             // 1.3.0
+```
+
+A malformed version or requirement is a runtime error; `tryParse` and
+`isValid` test a version without aborting.
+
+### 12.26 Terminal styling
+
+`import std.terminal;` emits ANSI SGR and OSC 8 sequences. The engine has no
+`isatty`, so the module does not decide whether the output is a terminal: the
+caller either styles the text or strips it before writing to a file.
+
+```oskl
+import std.terminal.*;
+
+print(style("ok", "green", "bold"));
+print(red("error") + " " + underline("detail"));
+print(hyperlink("docs", "https://example.com"));
+print(visibleLength(style("hi", "red"))); // 2
+```
+
+| Function | Description |
+| --- | --- |
+| `style(text, codes...)` | Wraps the text in the styles and a reset; a code is a name or an SGR number. |
+| `fg(name)` / `bg(name)` | The sequence that starts a foreground or background color. |
+| `rgb(r, g, b)` / `bgRgb(r, g, b)` | A 24-bit color; each channel is `0..255`. |
+| `code(name)` | The SGR number of a style or color name. |
+| `red` / `green` / `yellow` / `blue` / `bold` / `underline` | One-style conveniences. |
+| `hyperlink(text, url)` | An OSC 8 link. |
+| `strip(text)` / `visibleLength(text)` | Removes the sequences, and counts the code points that remain. |
+
+The color names are `black`, `red`, `green`, `yellow`, `blue`, `magenta`,
+`cyan`, `white`, `gray`, the `bright*` forms and the `bg*`/`bgBright*` forms.
+The style names are `bold`, `dim`, `italic`, `underline`, `blink`, `reverse`,
+`hidden` and `strike`. `visibleLength` counts code points, not display columns,
+so a wide CJK glyph or a combining mark still counts as one.
+
 ---
 
 ## 13. Errors and diagnostics
