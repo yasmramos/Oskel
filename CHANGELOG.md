@@ -11,6 +11,19 @@ may change between minor versions.
 
 ### Added
 
+- **The async scheduler (PHASE 11.2.2): pending futures, `spawn`, `yield`.**
+  Calling an `async fn` now returns a pending `Future` and enqueues its task;
+  `spawn f()` enqueues explicitly, `yield()` lets the other ready tasks run,
+  and `await` drains the queue when the future is pending before reading the
+  result. A script drains its queue before exiting, so `async fn main` runs
+  without a top-level `await`. The factory/step split and the scheduler are
+  ordinary Oskel over maps and arrays, so the VM, `oskel build` and WASM agree
+  and no opcode or builtin is added. The body is still one eager step: real
+  suspension at `await` is PHASE 11.2.3, top-level `await` is 11.2.4. Covered
+  by `tests/71_async_scheduler.oskl`,
+  `tests/native_build_async_scheduler.oskl` and the
+  `tests/errors/async_{spawn_outside,yield_outside,spawn_non_future}.oskl`
+  diagnostics.
 - **The release SDK bundles SDL3 and Skia.** `std.ui` and `std.ui.window` no
   longer depend on libraries the user installs. The artifacts workflow builds a
   shared SDL3 and a static Skia with vcpkg, links the static archive into
@@ -52,8 +65,9 @@ may change between minor versions.
   `{state, value, error}`, so the feature adds no opcode and no builtin and the
   VM, the AOT backend and the WASM backend agree by construction. A pending
   future has no producer yet, and awaiting one is a runtime error. This is the
-  PHASE 11.1 surface, not a scheduler: `await` never suspends and PHASE 11.2
-  (pending futures, event loop, `spawn`/`join`, async lambda) is not started. Covered by
+  PHASE 11.1 surface, not a scheduler: `await` never suspends. The 11.2.2
+  entry above adds the pending futures, `spawn` and `yield`; suspension, a
+  `join` and an async lambda are still open. Covered by
   `tests/65_async.oskl`, `tests/65_async_modules.oskl`, the `oskel.build_binary_async`
   and `oskel.build_wasm_async` fixtures and the `tests/errors/async_*.oskl`
   diagnostics.

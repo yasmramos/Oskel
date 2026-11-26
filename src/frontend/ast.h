@@ -294,6 +294,18 @@ struct AwaitExpr {
   ExprPtr operand;
 };
 
+// `spawn expr` (PHASE 11.2.2): start an async call as a task and return its
+// pending future. It binds like `await`, so `spawn f()` is the common form.
+// Only valid inside an `async fn`; the parser enforces that. It lowers to a
+// call to the compiler-emitted scheduler helper, so it adds no opcode.
+struct SpawnExpr {
+  ExprPtr operand;
+};
+
+// `yield()` (PHASE 11.2.2): hand the ready queue to other tasks. Only valid
+// inside an `async fn`; it lowers to a scheduler helper call.
+struct YieldExpr {};
+
 struct RangeExpr {
   // A range is a lazy Value (Range{start, end, inclusive}); it never
   // materializes its elements. Iteration cost depends on the consumer:
@@ -351,10 +363,10 @@ struct LambdaExpr {
   bool isAsync = false;
 };
 
-using ExprNode =
-    std::variant<LiteralExpr, InterpExpr, VariableExpr, ArrayExpr, MapExpr, StructLitExpr,
-                 UnaryExpr, BinaryExpr, AssignExpr, TernaryExpr, CallExpr, IndexExpr, SliceExpr,
-                 MemberExpr, NonNullExpr, AwaitExpr, RangeExpr, TryExpr, CatchExpr, LambdaExpr>;
+using ExprNode = std::variant<LiteralExpr, InterpExpr, VariableExpr, ArrayExpr, MapExpr,
+                              StructLitExpr, UnaryExpr, BinaryExpr, AssignExpr, TernaryExpr,
+                              CallExpr, IndexExpr, SliceExpr, MemberExpr, NonNullExpr, AwaitExpr,
+                              SpawnExpr, YieldExpr, RangeExpr, TryExpr, CatchExpr, LambdaExpr>;
 
 struct Expr {
   // Position convention: every Expr/Stmt carries the line/col of the token
@@ -680,6 +692,8 @@ inline void collectExprChildren(Expr& expr, std::vector<ExprPtr>& exprs,
         } else if constexpr (std::is_same_v<T, NonNullExpr>) {
           pushChild(exprs, node.operand);
         } else if constexpr (std::is_same_v<T, AwaitExpr>) {
+          pushChild(exprs, node.operand);
+        } else if constexpr (std::is_same_v<T, SpawnExpr>) {
           pushChild(exprs, node.operand);
         } else if constexpr (std::is_same_v<T, RangeExpr>) {
           pushChild(exprs, node.start);

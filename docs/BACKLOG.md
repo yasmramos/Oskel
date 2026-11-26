@@ -820,28 +820,28 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     and a read after assignment) pin it. A global with *no* assignment anywhere is
     still a lowering error (exit 65), which is a different, compile-time case.
 
-32. **[P1]** `async`/`await` (PHASE 11.1) is the language surface without a
-    scheduler. An `async fn` body runs eagerly when called, so the future is
-    already `"fulfilled"` (or carries an error value in `value`) by the time the
-    caller sees it; `await` reads the map and never suspends. The `"pending"`
-    and `"rejected"` states are reserved in the representation but no API
-    creates them, and `await` on a pending future raises "await on a pending
-    Future is not supported yet". There is no event loop, no `then`/`catch`
-    chaining, no `spawn`/`join`, no async lambda and no async `init`. The future
-    is a plain map, so `type(future)` is `"map"` and a value erased to `any`
-    can still be passed to code expecting a map; a dedicated runtime tag would
-    be a new value kind in all three engines. PHASE 11.2.1 makes the type
-    checker enforce opacity: indexing, slicing, iteration and member access
-    (read or write) on a `Future`-typed value are compile errors, and the
-    `tests/errors/async_future_*.oskl` fixtures pin them. A scheduler that
-    suspends a call and resumes it would need a coroutine/continuation
-    representation, which is a larger change than this phase: it would turn the
-    bytecode into a resumable frame and make the AOT/WASM backends carry a
-    state machine. `tests/65_async.oskl`, `tests/65_async_modules.oskl` and the
-    `oskel.build_binary_async`/`oskel.build_wasm_async` fixtures pin the current
-    surface. The scheduler/suspension design and its slices are in
-    `docs/phase11-async-design.md`; 11.2.1 is done and 11.2.2-11.2.5 have not
-    started.
+32. **[P1]** `async`/`await` has a scheduler (PHASE 11.2.2) but not yet real
+    suspension. Calling an `async fn` returns a pending future and enqueues its
+    task; `spawn` is the explicit enqueue, `yield()` drains the ready queue,
+    and `await` drains it when the future is pending before re-reading the
+    state. A script drains its queue before `HALT`, so `async fn main` runs
+    without a top-level `await`. The body is still one eager step: `await` does
+    not suspend the current body, and `yield()` does not requeue the current
+    task. There is no top-level `await`, no separate `join`, no `then`/`catch`
+    chaining, no async lambda, no cancellation and no async I/O driver; a
+    pending future that can never run reports a deadlock error rather than
+    spinning. The future and task frames are plain maps, so `type(future)` is
+    `"map"` and a value erased to `any` can still reach the keys; PHASE 11.2.5
+    tracks the runtime tag. PHASE 11.2.1 makes the type checker enforce
+    opacity (`tests/errors/async_future_*.oskl`). PHASE 11.2.3 adds the body
+    splitter and real suspension, 11.2.4 top-level `await` plus deadlock and
+    unhandled-rejection diagnostics, and 11.2.5 the runtime tag. Tests:
+    `tests/65_async.oskl`, `tests/65_async_modules.oskl`,
+    `tests/71_async_scheduler.oskl`,
+    `tests/native_build_async_scheduler.oskl`,
+    `tests/errors/async_{spawn_outside,yield_outside,spawn_non_future}.oskl`,
+    and the `oskel.build_binary_async*`/`oskel.build_wasm_async*` fixtures.
+    The design and slice table are in `docs/phase11-async-design.md`.
 
 33. **[P1] [done]** The emitted arena was one fixed 1 MiB region, mapped at
     entry and never grown, so a program that allocated more -- 10 000

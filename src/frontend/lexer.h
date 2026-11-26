@@ -21,6 +21,8 @@ enum class Tok {
   Fn,
   Async,
   Await,
+  Spawn,
+  Yield,
   If,
   Else,
   While,

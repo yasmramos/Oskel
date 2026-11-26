@@ -1,0 +1,7 @@
+// expect-exit: 65
+// `yield` needs a running task, so it is only valid inside an async body.
+fn main(): void {
+  yield();
+}
+
+main();
