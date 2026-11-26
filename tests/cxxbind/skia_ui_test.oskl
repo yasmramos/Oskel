@@ -46,7 +46,7 @@ surface.close();
 
 // A checkbox paints its box in every pointer state and fills it when checked.
 let control = ui.window("Check", 120, 24,
-  ui.checkbox("Accept", false, () => nil));
+  ui.checkbox("Accept", false, (checked) => nil));
 ui.layout(control, 120, 24);
 let controlSurface = skia.Surfaces.raster(120, 24);
 let controlCanvas = controlSurface.getCanvas();

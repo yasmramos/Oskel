@@ -120,7 +120,7 @@ assertEq(len(ui.commands(control)), 3);
 // A row places the next widget after the checkbox's measured width.
 let measuredCheck = ui.window("Check row", 200, 30,
   ui.row(0, [
-    ui.checkbox("A", false, () => nil),
+    ui.checkbox("A", false, (checked) => nil),
     ui.text("B", 10),
   ]));
 ui.layout(measuredCheck, 200, 30);
