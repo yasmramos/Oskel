@@ -1,0 +1,7 @@
+// Benchmark: an empty program.
+//
+// Every measurement includes process start-up, and that baseline differs by a
+// language (a Node process costs more to start than a static binary). Subtract
+// this row from a result before comparing two runtimes on short workloads; the
+// runner prints it for exactly that reason.
+print("startup 1");

@@ -900,6 +900,28 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     (receiver, selector) at the call site, or lowering a direct
     `recv.method(args)` to the method body with the receiver passed implicitly,
     removes it. Not a correctness bug, so no fixture pins it.
+36. **[P1]** `join` allocates quadratically in the AOT and WebAssembly backends.
+    Both build the result by concatenating the accumulator with one item at a
+    time, and `concat` allocates a fresh string each time, so joining n items of
+    ~L bytes allocates ~n^2*L/2. Measured with `benchmarks/strings.oskl` on the
+    AOT image: n = 1 250 / 2 500 / 5 000 takes 11 / 37 / 147 ms -- a factor of
+    four per doubling -- against 6.8 ms for the VM's linear `std::string`
+    `join`; n = 20 000 needs ~2.2 GB and 22 s under WASM. The VM is the
+    reference: sum the item lengths, allocate one block, copy into it. The
+    per-item `toStr` still allocates (it produces a value); the accumulator must
+    not. `benchmarks/strings.oskl` keeps n at 5 000 until this lands; raise it to
+    20 000 afterwards and add an AOT/WASM fixture that compares a large `join`
+    with the VM.
+37. **[P1] [done]** The WASM host harness truncated a linear-memory address above
+    2 GiB: the JS API passes an `i32` parameter as a *signed* number, so the
+    `ptr` the module handed to `oskel.write` arrived negative once the arena
+    passed 2 GiB, and `new Uint8Array` reported `RangeError: Start offset
+    -232277628 is outside the bounds of the buffer` -- a harness bug that read as
+    a broken module. `tests/run_wasm.cjs` now masks `ptr`, `len` and `fd` with
+    `>>> 0`, verified with a 20 000-part `join` whose ~2.2 GB arena prints the
+    same line as the VM and the native binary. No fixture: the path costs ~22 s
+    and 2 GB, so CI cannot afford it, and once item 36 removes the accidental
+    trigger a cheap pin would have to force the address directly.
 
 ---
 

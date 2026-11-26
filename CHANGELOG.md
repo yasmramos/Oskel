@@ -11,6 +11,19 @@ may change between minor versions.
 
 ### Added
 
+- **A benchmark suite in `benchmarks/`.** Four programs -- an empty one, naive
+  `fib(30)`, an array of 200 000 integers and a 5 000-part `join`/`split` --
+  written once per language and compared against the VM's output byte for byte
+  before anything is timed. `python3 benchmarks/run.py` measures Oskel four ways
+  (the VM with and without its JIT, the freestanding binary `oskel build` emits
+  and the WebAssembly module) against C, CPython, Node, Lua 5.4 and LuaJIT, and
+  writes a Markdown table with the median whole-process time, the environment
+  and the runtimes. It found two real defects on the first run: the AOT and
+  WASM `join` allocate quadratically (`docs/BACKLOG.md` §6 item 36) and the WASM
+  host harness truncated an address above 2 GiB (item 37, fixed here).
+  `docs/benchmarks.md` is the recorded run; the suite is not in CI, because it
+  needs `cc`, `node`, `lua` and `luajit` and a timing test on a shared runner is
+  a flaky test.
 - **`std.ui` adds a checkbox widget.** `ui.checkbox(label, checked, onChange)`
   measures as a 16 px box plus the label, paints the box in its normal, hover
   and pressed shades, fills an inner square when checked, and calls
@@ -174,6 +187,13 @@ may change between minor versions.
 
 ### Fixed
 
+- **The WebAssembly host harness no longer mangles an address above 2 GiB.**
+  The JS API hands an `i32` parameter over as a signed number, so once the arena
+  passed 2 GiB the `ptr` the module passed to `oskel.write` arrived negative and
+  `new Uint8Array` rejected it with `RangeError: Start offset -232277628 ...`,
+  which looked like a broken module. A 20 000-part `join`, whose arena passes
+  2 GiB, now prints the same line as the VM and the native binary.
+  `tests/run_wasm.cjs` masks the three parameters.
 - **String iteration is linear and works on both engines (BACKLOG §6 items 7
   and 10).** `for c in s` was O(n^2) everywhere: the VM rebuilt the whole
   character vector on every turn and the AOT step called `utf8CharAt`, which
