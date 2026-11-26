@@ -787,7 +787,7 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     on this host (not only in the unit tests): `oskel build --target
     x86_64-macos-sysv --mode hosted --emit-object` writes a valid `MH_OBJECT`
     and `oskelld --target x86_64-macos-sysv` closes it into an `MH_EXECUTE`
-    whose 12 load commands walk to exactly `sizeofcmds`; the bind stream is
+    whose 13 load commands walk to exactly `sizeofcmds`; the bind stream is
     `SET_DYLIB_ORDINAL_IMM(1) SET_SYMBOL(...) SET_TYPE_IMM(1) SEG2_OFF(n)
     DO_BIND` per import, 19 `DO_BIND` for 19 imports, ending on `DONE`, with
     `SEG2` (0x72) naming `__DATA`; `__stubs` carries `reserved1 = 0` and
@@ -796,8 +796,30 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     ranges do not overlap and every `fileoff`/`filesize` lies in the file. The
     PE side produces a PE32+ whose entry point sits in `.text`, whose section
     raw ranges and RVAs stay inside the file and `SizeOfImage`, and whose
-    import descriptor array is NULL-terminated. Still open here: the ad-hoc
-    signature (required before an arm64 macOS image can run) and ARM64.
+    import descriptor array is NULL-terminated.
+    The ad-hoc code signature is PHASE 10.3d.3 and is **done**
+    (`native/codesign.h`): the image closes with an `LC_CODE_SIGNATURE` over a
+    `CS_SuperBlob` holding a SHA-256 CodeDirectory (version `0x20400`) plus an
+    empty requirements blob, exactly the pair `ld64.lld` writes when it signs on
+    a non-macOS host. The signature's offset is its own `codeLimit`, so the
+    layout is a fixed point that settles in one pass: every table it describes
+    is already placed when the page count is known, and nothing below the
+    signature depends on its size. The `LC_CODE_SIGNATURE` fields are written
+    *before* hashing, because both derive from the image length, so no region is
+    zeroed or patched afterwards and the hashed bytes are the bytes in the file.
+    This closed a real gap that the test suite was hiding: `build_hosted_own_macos`
+    used to run `codesign --force --sign -` before executing the image, i.e. the
+    linker never emitted a signature and macOS arm64 could not have started the
+    result. It now runs `codesign --verify --strict` and `codesign -d`, which
+    recompute every page hash and report an inconsistent one -- the check a
+    structural parse cannot make. `testCodeSignature` verifies on every host
+    that the superblob, the CodeDirectory magic/version/hash type/page shift,
+    the identifier, `codeLimit == dataoff`, `nCodeSlots` and each page hash all
+    match the finished file, and `testSha256` pins the hash against three
+    FIPS 180-4 vectors (the empty string, `abc` and a two-block message, so the
+    padding path is covered). Still open here: ARM64. Its `execSegBase`/
+    `execSegLimit`/`execSegFlags` and the `CS_EXECSEG_MAIN_BINARY` flag belong to
+    that slice -- the x86-64 image leaves them zero, as `ld64.lld` does.
 
 31. **[P0] [done]** VM/AOT divergence in reading a global before it is assigned:
     the VM fails with `runtime error: undefined variable '<name>'` and exit 70,

@@ -20,12 +20,26 @@ if(NOT vmResult EQUAL 0)
 endif()
 
 if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+  # The image must carry its own ad-hoc signature: the linker writes the
+  # CodeDirectory, so no `codesign` step stands between `oskel build` and a
+  # runnable binary. `codesign --verify` recomputes every page hash and fails
+  # when one does not match, which is the check a structural parse cannot make.
   execute_process(
-    COMMAND codesign --force --sign - "${image}"
-    RESULT_VARIABLE signResult OUTPUT_VARIABLE signOut ERROR_VARIABLE signErr)
-  if(NOT signResult EQUAL 0)
-    message(FATAL_ERROR "codesign failed (${signResult}): ${signErr}")
+    COMMAND codesign --verify --strict "${image}"
+    RESULT_VARIABLE verifyResult OUTPUT_VARIABLE verifyOut ERROR_VARIABLE verifyErr)
+  if(NOT verifyResult EQUAL 0)
+    message(FATAL_ERROR "the image's own signature does not verify (${verifyResult}): ${verifyErr}${verifyOut}")
   endif()
+  execute_process(
+    COMMAND codesign -d --verbose=4 "${image}"
+    RESULT_VARIABLE infoResult OUTPUT_VARIABLE infoOut ERROR_VARIABLE infoErr)
+  if(NOT infoResult EQUAL 0)
+    message(FATAL_ERROR "codesign could not read the signature (${infoResult}): ${infoErr}")
+  endif()
+  if(NOT infoErr MATCHES "Signature=adhoc")
+    message(FATAL_ERROR "the image is not ad-hoc signed:\n${infoErr}")
+  endif()
+
   execute_process(
     COMMAND "${image}"
     RESULT_VARIABLE runResult OUTPUT_VARIABLE runOut ERROR_VARIABLE runErr)

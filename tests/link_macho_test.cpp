@@ -1,9 +1,11 @@
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <string>
 #include <vector>
 
+#include "native/codesign.h"
 #include "native/link.h"
 #include "native/object.h"
 #include "native/target.h"
@@ -106,7 +108,7 @@ void testHello() {
   check(read32(pe, 0) == 0xFEEDFACF, "MH_MAGIC_64");
   check(read32(pe, 4) == 0x01000007, "x86-64");
   check(read32(pe, 12) == 2, "MH_EXECUTE");
-  check(read32(pe, 16) == 12, "twelve load commands");
+  check(read32(pe, 16) == 13, "thirteen load commands");
   check(contains(pe, 0, pe.size(), "libSystem.B.dylib"), "imports libSystem");
   check(contains(pe, 0, pe.size(), "/usr/lib/dyld"), "uses dyld");
   check(contains(pe, 0, pe.size(), "__mh_execute_header"), "exports __mh_execute_header");
@@ -195,6 +197,7 @@ void testHello() {
   }
   const std::size_t dysymtab = findCommand(pe, 0xB);
   check(dysymtab != 0 && read32(pe, dysymtab + 60) == 2, "two indirect symbols");
+  check(findCommand(pe, 0x1D) != 0, "the image carries an LC_CODE_SIGNATURE");
 }
 
 // A data import: a pcrel `X86_64_RELOC_SIGNED` reference (`call = false`) must
@@ -374,6 +377,17 @@ void testContainerStructure() {
           "__LINKEDIT does not overlap __DATA");
     check(segments[3].filesize != 0 && segments[3].fileoff + segments[3].filesize <= image.size(),
           "__LINKEDIT carries the tables and lies in the file");
+    // The signature is the last thing in __LINKEDIT, and the kernel reads it
+    // from there: a dataoff outside the segment is a signature the loader
+    // never finds.
+    const std::size_t signatureCommand = findCommand(image, 0x1D);
+    if (signatureCommand != 0) {
+      const std::uint64_t dataoff = read32(image, signatureCommand + 8);
+      const std::uint64_t datasize = read32(image, signatureCommand + 12);
+      check(dataoff >= segments[3].fileoff &&
+                dataoff + datasize <= segments[3].fileoff + segments[3].filesize,
+            "the signature lies inside __LINKEDIT");
+    }
   }
 
   const MachSection textSection = findSection(image, "__text");
@@ -435,6 +449,119 @@ void testContainerStructure() {
   }
 }
 
+
+std::uint32_t readBig32(const std::vector<std::uint8_t>& bytes, std::size_t offset) {
+  if (offset + 4 > bytes.size()) return 0;
+  return (static_cast<std::uint32_t>(bytes[offset]) << 24) |
+         (static_cast<std::uint32_t>(bytes[offset + 1]) << 16) |
+         (static_cast<std::uint32_t>(bytes[offset + 2]) << 8) |
+         static_cast<std::uint32_t>(bytes[offset + 3]);
+}
+
+std::string hex(const std::vector<std::uint8_t>& bytes) {
+  static const char* digits = "0123456789abcdef";
+  std::string out;
+  for (std::uint8_t byte : bytes) {
+    out.push_back(digits[byte >> 4]);
+    out.push_back(digits[byte & 0x0F]);
+  }
+  return out;
+}
+
+// SHA-256 is the one part of the signature whose correctness is not structural,
+// so it is pinned twice: against the empty string and `abc` published in
+// FIPS 180-4, and against a message longer than one 64-byte block, which is the
+// padding path a single-block vector never reaches.
+void testSha256() {
+  const std::string empty;
+  check(hex(sha256(reinterpret_cast<const std::uint8_t*>(empty.data()), 0)) ==
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "sha256(\"\") matches FIPS 180-4");
+  const std::string abc = "abc";
+  check(hex(sha256(reinterpret_cast<const std::uint8_t*>(abc.data()), abc.size())) ==
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "sha256(\"abc\") matches FIPS 180-4");
+  const std::string block = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+  check(hex(sha256(reinterpret_cast<const std::uint8_t*>(block.data()), block.size())) ==
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
+        "sha256 of the two-block vector matches FIPS 180-4");
+}
+
+// The signature is the last blob in the file, its `codeLimit` is its own
+// offset, and every page hash is the SHA-256 of the bytes actually written.
+// Recomputing them from the finished image is the only check that catches a
+// hash taken over a stale buffer.
+void testCodeSignature() {
+  const std::vector<std::uint8_t> text = {0xE8, 0, 0, 0, 0, 0xC3};
+  const std::vector<std::uint8_t> object = buildRelocatableObject(
+      Target::macX64(), text, {}, {{1, "write", true}}, {{"main", 0}});
+  LinkOptions options;
+  options.target = Target::macX64();
+  const std::vector<std::uint8_t> image =
+      linkHostedExecutable(std::vector<LinkInput>{{"signed.obj", object}}, options);
+
+  const std::size_t command = findCommand(image, 0x1D);
+  check(command != 0, "LC_CODE_SIGNATURE is present");
+  if (command == 0) return;
+  check(read32(image, command + 4) == 16, "LC_CODE_SIGNATURE is a linkedit-data command");
+
+  const std::uint32_t dataoff = read32(image, command + 8);
+  const std::uint32_t datasize = read32(image, command + 12);
+  check(dataoff % 16 == 0, "the signature starts 16-byte aligned");
+  check(static_cast<std::uint64_t>(dataoff) + datasize == image.size(),
+        "the signature is the tail of the file");
+
+  const std::size_t superblobSize = readBig32(image, dataoff + 4);
+  check(superblobSize == datasize, "the superblob length covers the whole signature");
+  check(readBig32(image, dataoff) == 0xFADE0CC0, "CS_SuperBlob magic");
+  check(readBig32(image, dataoff + 8) == 2, "two blobs: CodeDirectory and requirements");
+
+  const std::uint32_t directoryOffset = readBig32(image, dataoff + 16);
+  check(readBig32(image, dataoff + 12) == 0, "the first blob is a CodeDirectory");
+  const std::size_t directory = dataoff + directoryOffset;
+  check(readBig32(image, directory) == 0xFADE0C02, "CS_CodeDirectory magic");
+  check(readBig32(image, directory + 8) == 0x20400, "CodeDirectory version 0x20400");
+  check(readBig32(image, directory + 12) == 2, "CS_ADHOC is the only signature flag");
+  check(image[directory + 37] == 2, "hashes are SHA-256");
+  check(image[directory + 39] == 12, "pages are 4 KiB");
+  const std::uint32_t slots = readBig32(image, directory + 28);
+
+  // CS_CodeDirectory: +16 hashOffset, +20 identOffset. Apple's layout is
+  // header, the code-slot hashes, then the NUL-terminated identifier; a swap
+  // still yields a plausible-looking number, so the positions are pinned
+  // against the documented order rather than just to each other.
+  const std::uint32_t hashOffset = readBig32(image, directory + 16);
+  const std::uint32_t identOffset = readBig32(image, directory + 20);
+  check(hashOffset == codesign::kCodeDirectoryHeaderSize,
+        "the code-slot hashes follow the fixed header");
+  const std::string identifier(
+      reinterpret_cast<const char*>(image.data() + directory + identOffset));
+  check(identifier == "oskel", "the identifier is recorded");
+  check(identOffset == hashOffset + slots * 32, "the identifier follows every hash");
+
+  const std::uint32_t codeLimit = readBig32(image, directory + 32);
+  check(codeLimit == dataoff, "codeLimit is the signature's own offset");
+  check(slots == codesign::codeSlots(dataoff), "nCodeSlots matches the page count");
+
+  // Every recorded hash is the SHA-256 of its page in the finished file.
+  bool everyPageMatches = slots != 0;
+  for (std::uint32_t i = 0; i < slots; ++i) {
+    const std::size_t start = static_cast<std::size_t>(i) * codesign::kPageSize;
+    const std::size_t length = std::min<std::size_t>(codesign::kPageSize, codeLimit - start);
+    const std::vector<std::uint8_t> digest = sha256(image.data() + start, length);
+    for (std::size_t b = 0; b < 32; ++b) {
+      if (image[directory + hashOffset + i * 32 + b] != digest[b]) everyPageMatches = false;
+    }
+  }
+  check(everyPageMatches, "every CodeDirectory hash matches its page in the file");
+
+  const std::size_t requirements = dataoff + readBig32(image, dataoff + 24);
+  check(readBig32(image, requirements) == 0xFADE0C01, "CS_Requirements magic");
+  check(readBig32(image, requirements + 4) == 12, "the requirements blob is 12 bytes");
+  check(readBig32(image, requirements + 8) == 0, "the requirements set is empty");
+  check(requirements + 12 == image.size(), "the requirements blob ends the file");
+}
+
 }  // namespace
 
 int main() {
@@ -442,5 +569,7 @@ int main() {
   testDataImport();
   testRelocatable();
   testContainerStructure();
+  testSha256();
+  testCodeSignature();
   return failures == 0 ? 0 : 1;
 }
