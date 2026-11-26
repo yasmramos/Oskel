@@ -70,6 +70,80 @@ ui.layout(clickable, 80, 30);
 assertEq(ui.click(clickable, 10, 10), true);
 assertEq(clicks, 1);
 
+// A checkbox is an input widget: it toggles on release over the widget and
+// reports the new state to onChange.
+var checks = 0;
+var lastCheck = false;
+fn onCheck(value) {
+  checks = checks + 1;
+  lastCheck = value;
+}
+let control = ui.window("Control", 180, 30,
+  ui.column(0, [ui.checkbox("Accept", false, onCheck)]));
+ui.layout(control, 180, 30);
+let unchecked = ui.commands(control);
+assertEq(len(unchecked), 3);
+assertEq(unchecked[1].kind, "rect");
+assertEq(unchecked[1].w, 16);
+assertEq(unchecked[1].h, 16);
+assertEq(unchecked[1].color, 0xFFE5E7EB);
+assertEq(unchecked[2].kind, "text");
+assertEq(unchecked[2].text, "Accept");
+assertEq(unchecked[2].x, 24);
+assertEq(unchecked[2].color, 0xFF000000);
+let controlHit = ui.hitTest(control, 8, 8);
+assert(controlHit != nil);
+assertEq(controlHit.kind, "checkbox");
+
+assert(ui.pointerMove(control, 8, 8));
+assertEq(ui.commands(control)[1].color, 0xFFD1D5DB);
+assert(ui.pointerDown(control, 8, 8));
+assertEq(ui.commands(control)[1].color, 0xFF9CA3AF);
+assertEq(ui.pointerUp(control, 8, 8), true);
+assertEq(checks, 1);
+assertEq(lastCheck, true);
+assertEq(controlHit.checked, true);
+let checked = ui.commands(control);
+assertEq(len(checked), 4);
+assertEq(checked[1].color, 0xFFD1D5DB);
+assertEq(checked[2].color, 0xFF2563EB);
+assertEq(checked[2].w, 8);
+assertEq(checked[2].h, 8);
+assertEq(checked[3].text, "Accept");
+
+assertEq(ui.click(control, 8, 8), true);
+assertEq(checks, 2);
+assertEq(lastCheck, false);
+assertEq(controlHit.checked, false);
+assertEq(len(ui.commands(control)), 3);
+
+// A row places the next widget after the checkbox's measured width.
+let measuredCheck = ui.window("Check row", 200, 30,
+  ui.row(0, [
+    ui.checkbox("A", false, () => nil),
+    ui.text("B", 10),
+  ]));
+ui.layout(measuredCheck, 200, 30);
+let checkRow = ui.commands(measuredCheck);
+assertEq(checkRow[1].w, 16);
+assertEq(checkRow[2].text, "A");
+assertEq(checkRow[3].text, "B");
+assertEq(checkRow[3].x, 32);
+
+// A release outside the checkbox cancels the press without toggling it.
+assert(ui.pointerDown(control, 8, 8));
+assertEq(ui.pointerUp(control, 150, 25), false);
+assertEq(controlHit.checked, false);
+assertEq(checks, 2);
+
+// Leaving the window clears the pointer state without changing the value.
+_ = ui.pointerMove(control, 8, 8);
+_ = ui.pointerDown(control, 8, 8);
+assert(ui.pointerCancel(control));
+assertEq(controlHit.hover, false);
+assertEq(controlHit.pressed, false);
+assertEq(controlHit.checked, false);
+
 // Explicit state colours.
 let custom = ui.window("Custom", 80, 30,
   ui.buttonStates("X", () => nil, 0xFF111111, 0xFF222222, 0xFF333333,

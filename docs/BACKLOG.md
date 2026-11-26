@@ -1262,13 +1262,13 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `bindings/skia/skia.oskelbind` compiles against a real Skia build; the
    opt-in `cxxbind.skia` test draws, reads pixels and renders a widget tree on
    the VM and the hosted AOT binary. `std/ui.oskl` is the first declarative
-   layer (`window`, `column`, `row`, `padding`, `spacer`, `text`, `button`;
-   layout, `rect`/`text` display list and hit testing), and
+   layer (`window`, `column`, `row`, `padding`, `spacer`, `text`, `button`,
+   `checkbox`; layout, `rect`/`text` display list and hit testing), and
    `std/internal/skia_ui.oskl` renders it. `std.ui.window` now presents the
    raster surface through a streaming `SDL_Texture`, runs the event loop and
    dispatches left clicks through `hitTest`; `std.internal.sdl` and the Skia
-   modules stay internal. Still pending: input widgets beyond a button, real
-   font metrics, text wrapping and a dirty-region redraw.
+   modules stay internal. Still pending: text input and further input widgets,
+   text wrapping, keyboard focus, resize handling and a dirty-region redraw.
 10. **[P3]** Add `dlopen`/`dlsym` as a builtin for dynamic FFI.
 11. **[P1] [done]** `oskelp`: the local registry (`$OSKEL_REGISTRY`) landed
     with semver requirements (exact, `^`, `~`, comparators, wildcards and a

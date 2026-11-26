@@ -11,6 +11,14 @@ may change between minor versions.
 
 ### Added
 
+- **`std.ui` adds a checkbox widget.** `ui.checkbox(label, checked, onChange)`
+  measures as a 16 px box plus the label, paints the box in its normal, hover
+  and pressed shades, fills an inner square when checked, and calls
+  `onChange(checked)` after a click toggles the state. The widget is Oskel over
+  the portable primitive surface, so the VM and `oskel build` share the same
+  layout, display list and pointer behavior; `native_build_ui.oskl` and the
+  Skia fixtures pin the toggle, the cancellation on an outside release and the
+  checked/unchecked pixels.
 - **The release SDK bundles SDL3 and Skia.** `std.ui` and `std.ui.window` no
   longer depend on libraries the user installs. The artifacts workflow builds a
   shared SDL3 and a static Skia with vcpkg, links the static archive into

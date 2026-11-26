@@ -43,4 +43,35 @@ assertEq(skia.imagePixel(image, 10, 40), 0xFF2563EB);
 image.close();
 canvas.close();
 surface.close();
+
+// A checkbox paints its box in every pointer state and fills it when checked.
+let control = ui.window("Check", 120, 24,
+  ui.checkbox("Accept", false, () => nil));
+ui.layout(control, 120, 24);
+let controlSurface = skia.Surfaces.raster(120, 24);
+let controlCanvas = controlSurface.getCanvas();
+skia_ui.render(ui.commands(control), controlCanvas);
+let uncheckedImage = controlSurface.makeImageSnapshot();
+assertEq(skia.imagePixel(uncheckedImage, 8, 8), 0xFFE5E7EB);
+uncheckedImage.close();
+
+_ = ui.pointerMove(control, 8, 8);
+skia_ui.render(ui.commands(control), controlCanvas);
+let hoverImage = controlSurface.makeImageSnapshot();
+assertEq(skia.imagePixel(hoverImage, 8, 8), 0xFFD1D5DB);
+hoverImage.close();
+
+_ = ui.pointerDown(control, 8, 8);
+skia_ui.render(ui.commands(control), controlCanvas);
+let pressedImage = controlSurface.makeImageSnapshot();
+assertEq(skia.imagePixel(pressedImage, 8, 8), 0xFF9CA3AF);
+pressedImage.close();
+
+assert(ui.pointerUp(control, 8, 8));
+skia_ui.render(ui.commands(control), controlCanvas);
+let checkedImage = controlSurface.makeImageSnapshot();
+assertEq(skia.imagePixel(checkedImage, 8, 8), 0xFF2563EB);
+checkedImage.close();
+controlCanvas.close();
+controlSurface.close();
 print("skia ui ok");
