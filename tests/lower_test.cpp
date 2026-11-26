@@ -98,19 +98,19 @@ static void testDiagnosticsAreOptIn() {
   jump.line = 2;
   halt.line = 3;
 
-  const Bytecode withLines = makeProto({load, jump, halt},
-                                       {Value(static_cast<int64_t>(1))}, 1);
-  const Bytecode withoutLines = makeProto({plainLoad, plainJump, plainHalt},
-                                          {Value(static_cast<int64_t>(1))}, 1);
+  const Bytecode withLines = makeProto({load, jump, halt}, {Value(static_cast<int64_t>(1))}, 1);
+  const Bytecode withoutLines =
+      makeProto({plainLoad, plainJump, plainHalt}, {Value(static_cast<int64_t>(1))}, 1);
 
   check(lowerToX64(Target::linuxX64(), withLines, CodeGen{}).code ==
             lowerToX64(Target::linuxX64(), withoutLines, CodeGen{}).code,
         "without a source path the line numbers must not reach the image");
 
-  check(lowerToX64(Target::linuxX64(), withLines, CodeGen{},
-                   LinkMode::Freestanding, DebugSource{"prog.oskl"}).code !=
-            lowerToX64(Target::linuxX64(), withoutLines, CodeGen{},
-                       LinkMode::Freestanding, DebugSource{"prog.oskl"}).code,
+  check(lowerToX64(Target::linuxX64(), withLines, CodeGen{}, LinkMode::Freestanding,
+                   DebugSource{"prog.oskl"})
+                .code != lowerToX64(Target::linuxX64(), withoutLines, CodeGen{},
+                                    LinkMode::Freestanding, DebugSource{"prog.oskl"})
+                             .code,
         "with a source path the line numbers must reach the image");
 }
 

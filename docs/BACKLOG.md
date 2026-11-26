@@ -904,6 +904,32 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     (receiver, selector) at the call site, or lowering a direct
     `recv.method(args)` to the method body with the receiver passed implicitly,
     removes it. Not a correctness bug, so no fixture pins it.
+36. **[P1] [done]** `join` allocated quadratically in the AOT and WebAssembly
+    backends. Both built the result by concatenating the accumulator with one
+    item at a time, and `concat` allocates a fresh string each time, so joining n
+    items of ~L bytes allocated ~n^2*L/2: measured with `benchmarks/strings.oskl`
+    on the AOT image, n = 1 250 / 2 500 / 5 000 took 11 / 37 / 147 ms -- a factor
+    of four per doubling -- against 6.8 ms for the VM's linear `std::string`
+    `join`, and n = 20 000 needed ~2.2 GB and seconds. The AOT body now appends
+    each rendered part to an `AotStringBuilder`, whose growth doubles the block,
+    and the WASM body renders every part once, totals the bytes and copies into
+    one `newStr` (with a guard that rejects a result past the 32-bit address
+    space instead of wrapping the length). n = 20 000 now takes 6.0 ms in the
+    binary and 44.8 ms in the module against 22.7 ms in the VM, so the suite runs
+    that size everywhere. `tests/native_build_join_large.oskl` is the guard:
+    `oskel.build_binary_join_large` and `oskel.build_wasm_join_large` compare a
+    20 000-part join, the separator shapes, multibyte parts, non-string items and
+    a 20 MB result with the VM byte for byte.
+37. **[P1] [done]** The WASM host harness truncated a linear-memory address above
+    2 GiB: the JS API passes an `i32` parameter as a *signed* number, so the
+    `ptr` the module handed to `oskel.write` arrived negative once the arena
+    passed 2 GiB, and `new Uint8Array` reported `RangeError: Start offset
+    -232277628 is outside the bounds of the buffer` -- a harness bug that read as
+    a broken module. `tests/run_wasm.cjs` now masks `ptr`, `len` and `fd` with
+    `>>> 0`, verified with a 20 000-part `join` whose ~2.2 GB arena prints the
+    same line as the VM and the native binary. No fixture: the path costs ~22 s
+    and 2 GB, so CI cannot afford it, and once item 36 removes the accidental
+    trigger a cheap pin would have to force the address directly.
 
 36. **[P1] [done, partial]** A runtime error in a generated binary printed a
     bare `oskel: <message>`, with no file or line, while the VM named both --

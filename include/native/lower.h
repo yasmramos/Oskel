@@ -89,7 +89,6 @@ struct DebugSource {
 // of the instruction it is about to execute, and the one runtime-error sink
 // prints `path:LINE: `. It is off by default so a caller that asks for no
 // diagnostics gets the byte-identical image the freestanding contract promises.
-LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
-                        const CodeGen& codegen,
+LoweredChunk lowerToX64(const Target& target, const Bytecode& proto, const CodeGen& codegen,
                         LinkMode mode = LinkMode::Freestanding,
                         const DebugSource& debug = DebugSource{});

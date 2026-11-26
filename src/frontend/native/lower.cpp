@@ -1009,15 +1009,14 @@ std::unordered_set<std::size_t> checkedGlobalReads(
 }
 
 void lowerInstruction(std::size_t index, const Instruction& instr, const Bytecode& proto,
-                      CodeGen& cg,
-                      const std::vector<CodeGen::Label>& labels,
+                      CodeGen& cg, const std::vector<CodeGen::Label>& labels,
                       const AotRuntimeHandles& rt, const GlobalSlots& globals,
                       const FrameInfo& frame,
                       const std::unordered_map<const Bytecode*, CodeGen::Label>& protoEntry,
                       const std::unordered_map<const Bytecode*, CodeGen::Label>& displayOf,
                       std::vector<StringConstant>& stringConstants,
-                      const std::unordered_set<std::size_t>& checkedReads,
-                      int& lastPublishedLine, bool isJumpTarget) {
+                      const std::unordered_set<std::size_t>& checkedReads, int& lastPublishedLine,
+                      bool isJumpTarget) {
   const int fileRegisters = frame.fileRegisters;
   // At a jump target the previous instruction emitted may belong to a
   // different path, so a deduplicated store could leave a stale line behind
@@ -1406,9 +1405,8 @@ void lowerInstruction(std::size_t index, const Instruction& instr, const Bytecod
 
 }  // namespace
 
-LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
-                        const CodeGen& /*codegen*/, LinkMode mode,
-                        const DebugSource& debug) {
+LoweredChunk lowerToX64(const Target& target, const Bytecode& proto, const CodeGen& /*codegen*/,
+                        LinkMode mode, const DebugSource& debug) {
   requireSupportedTarget(target);
   requireSupportedLinkMode(target, mode);
 
@@ -1893,9 +1891,9 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     const std::unordered_set<std::size_t> jumpTargets = jumpTargetIndices(proto);
     for (std::size_t i = 0; i < proto.code.size(); ++i) {
       cg.bind(labels[i]);
-      lowerInstruction(i, proto.code[i], proto, cg, labels, rt, globals, frame,
-                       protoEntry, displayOf, stringConstants, checked,
-                       lastPublishedLine, jumpTargets.count(i) != 0);
+      lowerInstruction(i, proto.code[i], proto, cg, labels, rt, globals, frame, protoEntry,
+                       displayOf, stringConstants, checked, lastPublishedLine,
+                       jumpTargets.count(i) != 0);
     }
     // Falling off the end of the root chunk is an implicit nil result.
     cg.bind(labels.back());
@@ -1996,9 +1994,8 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     const std::unordered_set<std::size_t> jumpTargets = jumpTargetIndices(fn);
     for (std::size_t i = 0; i < fn.code.size(); ++i) {
       cg.bind(labels[i]);
-      lowerInstruction(i, fn.code[i], fn, cg, labels, rt, globals, frame,
-                       protoEntry, displayOf, stringConstants, checked,
-                       lastPublishedLine, jumpTargets.count(i) != 0);
+      lowerInstruction(i, fn.code[i], fn, cg, labels, rt, globals, frame, protoEntry, displayOf,
+                       stringConstants, checked, lastPublishedLine, jumpTargets.count(i) != 0);
     }
     // Falling off the end of a function body is an implicit `return nil`.
     cg.bind(labels.back());

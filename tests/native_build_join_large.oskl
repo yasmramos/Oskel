@@ -1,0 +1,64 @@
+// `join` is linear (BACKLOG §6 item 36): the AOT and WebAssembly bodies
+// appended each part with a fresh concatenation, so the accumulator was
+// reallocated and copied once per item. A 20 000-part join allocated ~2 GB and
+// took 2.5 s / 22 s there against 22 ms in the VM.
+//
+// Both bodies now render every part once, total the bytes and copy into a
+// single allocation, which makes the shape below as much a correctness test as
+// a speed one: one allocation has to get the length, the separators between the
+// parts (never before the first or after the last), the multibyte copy and the
+// write cursor right.
+//
+// The VM is the reference; `oskel.build_binary_join_large` and
+// `oskel.build_wasm_join_large` compare the binary and the module against it
+// byte for byte.
+
+fn buildParts(n) {
+  var parts = [];
+  // One bound closure for the whole loop: `parts.push(i)` allocates a closure
+  // per iteration (BACKLOG §6 item 35) and would make the join's own cost
+  // harder to see.
+  var push = parts.push;
+  var i = 0;
+  while (i < n) {
+    push("item-${i}");
+    i += 1;
+  }
+  return parts;
+}
+
+fn main() {
+  // 1. The size the benchmark uses: 20 000 parts of ~10 bytes each.
+  var parts = buildParts(20000);
+  var joined = parts.join(",");
+  var back = joined.split(",");
+  var itemTotal = 0;
+  for p in back {
+    itemTotal += len(p);
+  }
+  print("large ${len(joined)} ${len(back)} ${itemTotal}");
+
+  // 2. Every separator shape: absent, empty, one byte, multibyte. A separator
+  // goes between the parts, never before the first or after the last.
+  print("[${[].join(",")}][${["a"].join(",")}][${["a", "b"].join("")}]");
+  print(["a", "b", "c"].join(" | "));
+  print(["α", "β", "γ"].join("→"));
+
+  // 3. Non-string items render through `toString`, one part per item.
+  print([1, 2.5, true, nil, [1, 2], { k: 1 }].join("-"));
+
+  // 4. Long parts: the exact allocation and the cursor advance have to hold
+  // when a single part is bigger than every separator combined.
+  var big = "x".repeat(100000);
+  print("big ${len([big, big].join(","))} ${len([big].join(","))}");
+  var longs = [];
+  var pushLong = longs.push;
+  var i = 0;
+  while (i < 200) {
+    pushLong(big);
+    i += 1;
+  }
+  print("longs ${len(longs.join(""))} ${len(longs.join("::"))}");
+}
+
+main();

@@ -33,7 +33,7 @@
 
 namespace {
 
-const char *kUsage =
+const char* kUsage =
     "usage:\n"
     "  oskel                      start the interactive REPL\n"
     "  oskel <file.oskl> [args]   run a script\n"

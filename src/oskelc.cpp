@@ -16,7 +16,7 @@
 
 namespace {
 
-const char *kUsage =
+const char* kUsage =
     "usage:\n"
     "  oskelc <file.oskl> [-o <out>]   compile to a native binary (AOT)\n"
     "  oskelc -c <file.oskl> [-o <out>]  compile to a portable .oskc image\n"

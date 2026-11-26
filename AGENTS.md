@@ -613,6 +613,45 @@ it as a caveat:
   a value that would differ under a naive cast (`0.0` instead of the real
   number); otherwise the regression the test exists to catch goes unnoticed.
 
+## Benchmarks
+
+- `benchmarks/` holds the suite: `startup`, `fib`, `arrays` and `strings`,
+  each written once per language, all printing the same checksum.
+  `python3 benchmarks/run.py` runs what is installed and prints a Markdown
+  table; `--output docs/benchmarks.md` regenerates the checked-in one. It is
+  not in CI: it needs `cc`, `node`, `lua` and `luajit`, and a timing test on a
+  shared runner is a flaky test, so it is a developer tool run after a change
+  to allocation, the call path, method dispatch or the arena.
+- **The VM's output is the reference.** The runner refuses to time an
+  implementation whose output differs, so a divergence between engines fails
+  the cell (`fail`) instead of becoming a number. A new benchmark therefore
+  needs a checksum that every language computes identically, not a printout
+  that happens to look alike; `n/a` means the runtime is absent and is named in
+  the footnotes, never dropped silently.
+- The measurement is the **whole process** (fork to exit) and the reported
+  value is the median of `--reps` runs after one warm-up. The `startup` row is
+  the baseline: an empty Node process costs ~28 ms against ~0.2 ms for a static
+  Oskel image, so a single-digit-millisecond row is mostly start-up.
+- `join` is **linear** in all three engines, and it is the shape that regressed
+  once (BACKLOG §6 item 36): the AOT body appends to an `AotStringBuilder`,
+  whose growth doubles the block, and the WASM body renders every part once,
+  totals the bytes and copies into one `newStr`. Appending with `oskel_concat`
+  or `concat` per item reallocates and copies the whole accumulator, which made
+  a 20 000-part join cost 2.5 s and ~2 GB instead of 6 ms.
+  `tests/native_build_join_large.oskl` pins a 20 000-part join, the separator
+  shapes, multibyte parts and a 20 MB result on the VM, the binary and the
+  module, so a backend that reverts to per-item concatenation fails on
+  correctness as well as on speed. Any new bulk-string path (an accumulator in
+  a loop) is the same bug waiting to happen: measure it with
+  `python3 benchmarks/run.py --only strings`.
+- `tests/run_wasm.cjs` masks the three `oskel.write` parameters with `>>> 0`.
+  The JS API passes an `i32` as a *signed* number, so an address above 2 GiB
+  arrives negative and `new Uint8Array` rejects it with a `RangeError` that
+  looks like a broken module (item 37). Do not "simplify" the mask away.
+- `arrays` pays for a bound-method closure per `xs.push(i)` in AOT (item 35)
+  and the table shows it. That is the real overhead of the code a user writes;
+  do not make the benchmark cache the closure to flatter the binary.
+
 ## The own linker (PHASE 10)
 
 - The core is `include/native/link.h` + `src/frontend/native/link.cpp`, inside
