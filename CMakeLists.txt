@@ -1141,6 +1141,18 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_string_methods.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
+    # `join` is linear (BACKLOG §6 item 36). The AOT and WASM bodies used to
+    # append each part with a fresh concatenation, so a 20 000-part join
+    # allocated ~2 GB and took 2.5 s / 22 s against 22 ms in the VM. The fixture
+    # pins both halves: the large join and the separators, multibyte parts and
+    # non-string items that one exact-size allocation has to get right.
+    add_test(NAME oskel.build_binary_join_large
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_binary_join_large"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_join_large.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
     # `sort`/`sorted` (PHASE 7c.3j): the only collection methods whose comparator
     # is arbitrary program code, so the AOT body calls back through `oskel_call`
     # from inside a bottom-up stable merge sort. Checked against the VM, so the
@@ -2449,6 +2461,19 @@ if(BUILD_TESTING)
         "-DOSKEL_TEST_NAME=oskel.build_wasm_string_methods"
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_string_methods.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
+    # `join` is linear (BACKLOG §6 item 36) in the module too: the same fixture
+    # the AOT backend compares with the VM, so both backends share the
+    # expectations, including a 20 MB result.
+    add_test(NAME oskel.build_wasm_join_large
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_join_large"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_join_large.oskl"
         "-DNODE_EXE=${OSKEL_NODE_EXE}"
         "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"

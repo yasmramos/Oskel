@@ -6,7 +6,7 @@
 #include <string.h>
 
 int main(void) {
-  const int n = 5000;
+  const int n = 20000;
   char** parts = malloc((size_t)n * sizeof *parts);
   if (parts == NULL) return 70;
   size_t total = 0;

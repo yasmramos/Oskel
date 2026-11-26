@@ -1,7 +1,7 @@
 -- Benchmark: build n short strings, join them with a comma, split them back and
 -- sum their lengths. Same algorithm as `strings.oskl`; the split is written by
 -- hand because Lua has none.
-local n = 5000
+local n = 20000
 local parts = {}
 for i = 0, n - 1 do
   parts[#parts + 1] = "item-" .. i

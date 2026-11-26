@@ -619,9 +619,18 @@ it as a caveat:
   value is the median of `--reps` runs after one warm-up. The `startup` row is
   the baseline: an empty Node process costs ~28 ms against ~0.2 ms for a static
   Oskel image, so a single-digit-millisecond row is mostly start-up.
-- Sizes are bounded by the quadratic AOT/WASM `join` (BACKLOG §6 item 36):
-  `strings` joins 5 000 parts because 20 000 needs ~2.2 GB and 22 s there.
-  Raising it before that item lands measures the allocator, not the language.
+- `join` is **linear** in all three engines, and it is the shape that regressed
+  once (BACKLOG §6 item 36): the AOT body appends to an `AotStringBuilder`,
+  whose growth doubles the block, and the WASM body renders every part once,
+  totals the bytes and copies into one `newStr`. Appending with `oskel_concat`
+  or `concat` per item reallocates and copies the whole accumulator, which made
+  a 20 000-part join cost 2.5 s and ~2 GB instead of 6 ms.
+  `tests/native_build_join_large.oskl` pins a 20 000-part join, the separator
+  shapes, multibyte parts and a 20 MB result on the VM, the binary and the
+  module, so a backend that reverts to per-item concatenation fails on
+  correctness as well as on speed. Any new bulk-string path (an accumulator in
+  a loop) is the same bug waiting to happen: measure it with
+  `python3 benchmarks/run.py --only strings`.
 - `tests/run_wasm.cjs` masks the three `oskel.write` parameters with `>>> 0`.
   The JS API passes an `i32` as a *signed* number, so an address above 2 GiB
   arrives negative and `new Uint8Array` rejects it with a `RangeError` that

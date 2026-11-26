@@ -187,6 +187,20 @@ may change between minor versions.
 
 ### Fixed
 
+- **`join` is linear in the AOT and WebAssembly backends.** Both built the
+  result by concatenating the accumulator with one item at a time, and a
+  concatenation allocates a fresh string, so joining n parts allocated O(n^2)
+  bytes: a 20 000-part `join` cost 2.5 s and ~2 GB in the native binary and 22 s
+  in the WebAssembly module, against 22 ms in the VM, whose `join` is a linear
+  `std::string`. The binary now appends each rendered part to an
+  `AotStringBuilder` (its growth doubles the block) and the module renders every
+  part once, totals the bytes and copies into one allocation, rejecting a result
+  past the 32-bit address space instead of wrapping its length. At 20 000 parts
+  the binary takes 6.0 ms -- faster than Node, Lua and CPython, and 3.8x faster
+  than the VM -- and the module 44.8 ms; `benchmarks/strings.oskl` runs that size
+  on every engine, and `tests/native_build_join_large.oskl` pins the result, the
+  separator shapes and a 20 MB join against the VM on both backends
+  (`docs/BACKLOG.md` §6 item 36).
 - **The WebAssembly host harness no longer mangles an address above 2 GiB.**
   The JS API hands an `i32` parameter over as a signed number, so once the arena
   passed 2 GiB the `ptr` the module passed to `oskel.write` arrived negative and
