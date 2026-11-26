@@ -1,13 +1,13 @@
 // Public: run a `std.ui` tree in an SDL3 window, rendered by Skia.
 //
-// Import it with an alias so `ui.window(...)` keeps naming the widget
-// constructor:
+// Import it with an alias so `ui.Window(...)` and the other widget classes
+// stay qualified:
 //
 //   import std.ui as ui;
 //   import std.ui.window as ui_window;
 //
-//   let root = ui.window("Demo", 320, 200,
-//     ui.column(8, [ui.text("Hello", 24)]));
+//   let root = ui.Window("Demo", 320, 200,
+//     ui.Column(8, [ui.Text("Hello", 24)]));
 //   ui_window.run("Demo", root, 320, 200, 0);
 //
 // `run` returns the number of frames it presented. A `maxFrames` of zero or

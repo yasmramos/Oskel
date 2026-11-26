@@ -24,7 +24,7 @@ may change between minor versions.
   `docs/benchmarks.md` is the recorded run; the suite is not in CI, because it
   needs `cc`, `node`, `lua` and `luajit` and a timing test on a shared runner is
   a flaky test.
-- **`std.ui` adds a checkbox widget.** `ui.checkbox(label, checked, onChange)`
+- **`std.ui` adds a checkbox widget.** `ui.Checkbox(label, checked, onChange)`
   measures as a 16 px box plus the label, paints the box in its normal, hover
   and pressed shades, fills an inner square when checked, and calls
   `onChange(checked)` after a click toggles the state. The widget is Oskel over
@@ -145,6 +145,18 @@ may change between minor versions.
 
 ### Changed
 
+- **`std.ui` widgets are classes (breaking).** The lowercase widget
+  constructors are gone. `Window`, `Column`, `Row`, `Padding`, `Spacer`, `Text`,
+  `Button` and `Checkbox` are classes, and each owns its `measure`, `place`,
+  `collect`, `hitTest` and pointer-state methods through the `Widget` contract;
+  `Button` and `Checkbox` also implement `Interactive.activate`. `Text` exposes
+  `withColor`, and `Button` exposes `withStyle`/`withStates`, replacing
+  `textColor`, `buttonStyle` and `buttonStates`. A widget no longer carries a
+  `kind`: use `type(node)` (`"Checkbox"`, `"Button"`, ...). `layout`,
+  `commands`, `layoutWith` and the pointer functions keep their names, and the
+  display list still uses `kind` because it is the backend protocol. Classes
+  desugar to maps with a method table, so the VM and `oskel build` stay in step;
+  `native_build_ui.oskl` and the Skia fixtures cover both engines.
 - **`Future` is opaque to the type checker (PHASE 11.2.1).** Indexing,
   slicing, iterating and reading or assigning a member on a `Future`-typed
   value are compile errors, so user code cannot read or forge the
