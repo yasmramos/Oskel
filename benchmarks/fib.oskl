@@ -1,0 +1,10 @@
+// Benchmark: naive recursive fibonacci.
+//
+// The algorithm is identical in every language of the suite: no memoisation, no
+// accumulator, so `fib(30)` performs the same 2 692 537 calls everywhere.
+fn fib(n) {
+  if (n < 2) { return n; }
+  return fib(n - 1) + fib(n - 2);
+}
+
+print("fib ${fib(30)}");

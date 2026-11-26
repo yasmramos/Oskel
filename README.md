@@ -596,7 +596,24 @@ Linux, macOS or MSYS2:
 
 The positive tests use `assert` and `assertEq`; a script exits with a non-zero code if any assertion fails. The tests in `tests/errors/` check compile-time and runtime errors: they declare the expected exit code on their first line with `// expect-exit: N`. The bytecode compiler tests (`compiler_test.cpp`) verify the instruction sequence, the constant pools, the `nil`/boolean literals, the unary and compound operators, the comparisons, the `if`/`while`/`for` jumps with backpatching, the local slots and the rejection of assignments to immutable `let` bindings. The VM tests (`vm_test.cpp`) compile snippets to bytecode and check the execution of integer and float arithmetic, `%`, `**`, comparisons, unary operators, globals, strings, compound assignment, `if`/`else`, loops, `break`/`continue`, block shadowing, bitwise operators, `&&`/`||` short-circuiting, the ternary operator and runtime errors.
 
+## Benchmarks
+
+`benchmarks/` holds a small suite -- recursion, array growth and string
+building -- written once per language, compared against the VM's output before
+anything is timed, and run against C, CPython, Node, Lua and LuaJIT:
+
+```sh
+python3 benchmarks/run.py
+```
+
+It measures Oskel four ways: the VM with and without its JIT, the native binary
+`oskel build` emits and the WebAssembly module. The last recorded run and the
+method are in **[docs/benchmarks.md](docs/benchmarks.md)**; the harness details
+are in [benchmarks/README.md](benchmarks/README.md). It is a developer tool, not
+a CI gate.
+
 ## Limitations and roadmap
+
 
 Current limitations:
 
