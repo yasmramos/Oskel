@@ -2,7 +2,7 @@
 // sum their lengths. Same algorithm as `strings.oskl`.
 'use strict';
 
-const n = 5000;
+const n = 20000;
 const parts = [];
 for (let i = 0; i < n; i++) parts.push(`item-${i}`);
 const text = parts.join(',');

@@ -3723,29 +3723,34 @@ void emitArraySumMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& 
 // the bound `arr.join(separator?)` -- the hosted `bindArray` `join`. Each item
 // renders with `toString` (a string unquoted, a collection as its repr) and the
 // separator, empty when absent, goes between them.
+//
+// The parts go into one `AotStringBuilder`, whose growth doubles the block, so
+// the total work is linear in the result. Appending with `oskel_concat` per item
+// allocated and copied the whole accumulator every time, which is quadratic
+// (BACKLOG §6 item 36): 5 000 parts took 147 ms that way and 6.7 ms in the VM.
 void emitArrayJoinMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
                          const DataBlob& msgArgc) {
-  // Slots: -48 receiver, -56 length, -64 index, -80/-72 separator tag/payload,
-  // -96/-88 the rendered item, -112/-104 the running result.
+  // Slots: -48 receiver, -56 length, -64 index, -72 builder, -80 separator
+  // payload, -88 rendered item payload, -104/-96 the one-element argument
+  // window (`$str` reads a contiguous tag/payload pair).
   constexpr std::int64_t kReceiver = -48;
   constexpr std::int64_t kLength = -56;
   constexpr std::int64_t kIndex = -64;
-  constexpr std::int64_t kSepTag = -80;
-  constexpr std::int64_t kSepPayload = -72;
-  constexpr std::int64_t kItemTag = -96;
+  constexpr std::int64_t kBuilder = -72;
+  constexpr std::int64_t kSepPayload = -80;
   constexpr std::int64_t kItemPayload = -88;
-  constexpr std::int64_t kResultTag = -112;
-  constexpr std::int64_t kResultPayload = -104;
-  constexpr std::int32_t kFrameSize = 128;
+  constexpr std::int64_t kWindowTag = -104;
+  constexpr std::int64_t kWindowPayload = -96;
+  constexpr std::int32_t kFrameSize = 112;
 
   CodeGen::Label emptySep = cg.newLabel();
   CodeGen::Label loop = cg.newLabel();
+  CodeGen::Label iterate = cg.newLabel();
   CodeGen::Label noSeparator = cg.newLabel();
-  CodeGen::Label appendItem = cg.newLabel();
-  CodeGen::Label exitEmpty = cg.newLabel();
-  CodeGen::Label next = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
+  CodeGen::Label exitEmpty = cg.newLabel();
   CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
   CodeGen::Label exit = cg.newLabel();
 
   cg.bind(label);
@@ -3760,6 +3765,8 @@ void emitArrayJoinMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv&
   cg.movToMem(Rbp, kReceiver, Rbx);
   cg.movFromMem(Rax, Rbx, kTableLengthOffset);
   cg.movToMem(Rbp, kLength, Rax);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, exitEmpty);  // an empty receiver joins to ""
   cg.movImmToMem(Rbp, kIndex, 0);
   // The separator: args[0] rendered through `toString` when present (the
   // hosted `join` calls `args[0].toString()`, so any value is accepted), else
@@ -3767,27 +3774,39 @@ void emitArrayJoinMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv&
   cg.testReg(Rsi);
   cg.jcc(Jcc::Eq, emptySep);
   cg.movFromMem(Rax, Rdi, 0);
-  cg.movToMem(Rbp, kSepTag, Rax);
+  cg.movToMem(Rbp, kWindowTag, Rax);
   cg.movFromMem(Rax, Rdi, 8);
-  cg.movToMem(Rbp, kSepPayload, Rax);
-  cg.leaMem(Rdi, Rbp, kSepTag);
+  cg.movToMem(Rbp, kWindowPayload, Rax);
+  cg.leaMem(Rdi, Rbp, kWindowTag);
   cg.movImm(Rsi, 1);
   cg.callLabel(env.strBuiltin);
-  cg.movToMem(Rbp, kSepTag, Rax);
   cg.movToMem(Rbp, kSepPayload, Rdx);
   cg.jmp(loop);
   cg.bind(emptySep);
   cg.leaRipLabel(Rax, env.emptyString);
   cg.movToMem(Rbp, kSepPayload, Rax);
-  cg.movImm(Rax, kTagStr);
-  cg.movToMem(Rbp, kSepTag, Rax);
 
-  // The first item seeds the result; later items append the separator first.
   cg.bind(loop);
+  cg.callLabel(env.sbNew);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rbp, kBuilder, Rax);
+
+  cg.bind(iterate);
   cg.movFromMem(R8, Rbp, kIndex);
   cg.movFromMem(R9, Rbp, kLength);
   cg.cmpReg(R8, R9);
   cg.jcc(Jcc::Ae, done);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Eq, noSeparator);  // the first item takes no separator
+  cg.movFromMem(Rdi, Rbp, kBuilder);
+  cg.movFromMem(Rsi, Rbp, kSepPayload);
+  cg.movFromMem(Rdx, Rsi, 0);
+  cg.addImm32(Rsi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.callLabel(env.sbAppend);
+
+  cg.bind(noSeparator);
+  cg.movFromMem(R8, Rbp, kIndex);
   cg.movFromMem(R10, Rbp, kReceiver);
   cg.movFromMem(R11, R10, kTableBlockOffset);
   cg.movReg(Rax, R8);
@@ -3795,61 +3814,31 @@ void emitArrayJoinMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv&
   cg.addReg(Rax, R11);
   // rendered = $str(item): a one-element argument window, then (args, argc).
   cg.movFromMem(Rcx, Rax, 0);
-  cg.movToMem(Rbp, kItemTag, Rcx);
+  cg.movToMem(Rbp, kWindowTag, Rcx);
   cg.movFromMem(Rcx, Rax, 8);
-  cg.movToMem(Rbp, kItemPayload, Rcx);
-  cg.leaMem(Rdi, Rbp, kItemTag);
+  cg.movToMem(Rbp, kWindowPayload, Rcx);
+  cg.leaMem(Rdi, Rbp, kWindowTag);
   cg.movImm(Rsi, 1);
   cg.callLabel(env.strBuiltin);
-  cg.movToMem(Rbp, kItemTag, Rax);
   cg.movToMem(Rbp, kItemPayload, Rdx);
-
-  cg.movFromMem(R8, Rbp, kIndex);
-  cg.testReg(R8);
-  cg.jcc(Jcc::Eq, noSeparator);         // the first item, no separator yet
-  // result = concat(result, separator)
-  cg.movFromMem(Rdi, Rbp, kResultTag);
-  cg.movFromMem(Rsi, Rbp, kResultPayload);
-  cg.movFromMem(Rdx, Rbp, kSepTag);
-  cg.movFromMem(Rcx, Rbp, kSepPayload);
-  cg.callLabel(env.concat);
-  cg.movToMem(Rbp, kResultTag, Rax);
-  cg.movToMem(Rbp, kResultPayload, Rdx);
-
-  cg.bind(noSeparator);
-  cg.movFromMem(R8, Rbp, kIndex);
-  cg.testReg(R8);
-  cg.jcc(Jcc::Ne, appendItem);
-  // The first item: the result starts as the rendered item.
-  cg.movFromMem(Rax, Rbp, kItemTag);
-  cg.movToMem(Rbp, kResultTag, Rax);
-  cg.movFromMem(Rax, Rbp, kItemPayload);
-  cg.movToMem(Rbp, kResultPayload, Rax);
-  cg.jmp(next);
-  cg.bind(appendItem);
-  cg.movFromMem(Rdi, Rbp, kResultTag);
-  cg.movFromMem(Rsi, Rbp, kResultPayload);
-  cg.movFromMem(Rdx, Rbp, kItemTag);
-  cg.movFromMem(Rcx, Rbp, kItemPayload);
-  cg.callLabel(env.concat);
-  cg.movToMem(Rbp, kResultTag, Rax);
-  cg.movToMem(Rbp, kResultPayload, Rdx);
-
-  cg.bind(next);
+  cg.movFromMem(Rdi, Rbp, kBuilder);
+  cg.movFromMem(Rsi, Rbp, kItemPayload);
+  cg.movFromMem(Rdx, Rsi, 0);
+  cg.addImm32(Rsi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.callLabel(env.sbAppend);
   cg.movFromMem(R8, Rbp, kIndex);
   cg.addImm32(R8, 1);
   cg.movToMem(Rbp, kIndex, R8);
-  cg.jmp(loop);
+  cg.jmp(iterate);
 
   cg.bind(done);
-  cg.movFromMem(R8, Rbp, kLength);
-  cg.testReg(R8);
-  cg.jcc(Jcc::Eq, exitEmpty);
-  cg.movFromMem(Rax, Rbp, kResultTag);
-  cg.movFromMem(Rdx, Rbp, kResultPayload);
+  cg.movFromMem(R11, Rbp, kBuilder);
+  cg.movFromMem(Rdi, R11, kSbDataOffset);
+  cg.movFromMem(Rsi, R11, kSbLengthOffset);
+  cg.callLabel(env.strNew);
   cg.jmp(exit);
+
   cg.bind(exitEmpty);
-  // An empty receiver joins to the empty string, like the hosted loop.
   cg.leaRipLabel(Rdx, env.emptyString);
   cg.movImm(Rax, kTagStr);
 
@@ -3861,6 +3850,8 @@ void emitArrayJoinMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv&
 
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
+  cg.bind(oom);
+  emitFailCall(cg, env.fail, *env.msgOom);
 }
 
 // Stable merge sort over an array's items, shared by `sort` and `sorted`

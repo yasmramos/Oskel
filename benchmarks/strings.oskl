@@ -6,12 +6,10 @@
 // that exposed the allocator's register contract (docs/BACKLOG.md §6 item 34),
 // so it doubles as a stress test of the arena.
 //
-// `n` is bounded by the AOT and WASM `join`, which concatenates incrementally
-// and therefore allocates O(n^2) bytes (docs/BACKLOG.md §6 item 36): 5 000 parts
-// already reach ~125 MB there, while the VM's `join` is linear. Raise it only
-// after item 36 lands, otherwise the AOT column measures the allocator instead
-// of the language.
-var n = 5000;
+// `n` was capped at 5 000 while the AOT and WASM `join` appended with a fresh
+// concatenation per part and allocated O(n^2) bytes (docs/BACKLOG.md §6 item
+// 36); with the linear `join` of that item, 20 000 is cheap everywhere.
+var n = 20000;
 var parts = [];
 var i = 0;
 while (i < n) {

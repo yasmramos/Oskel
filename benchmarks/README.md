@@ -24,7 +24,7 @@ WebAssembly column.
 | `startup` | print one line | `startup 1` |
 | `fib` | naive `fib(30)`, 2 692 537 calls, no memoisation | `fib 832040` |
 | `arrays` | append 200 000 integers, then sum them | `arrays 19999900000 200000` |
-| `strings` | build 5 000 short strings, join with `,`, split, sum lengths | `strings 48889 5000 43890` |
+| `strings` | build 20 000 short strings, join with `,`, split, sum lengths | `strings 208889 20000 188890` |
 
 Oskel appears four times: `oskel-vm` (the development VM, JIT on),
 `oskel-nojit` (`--no-jit`), `oskel-aot` (`oskel build`, the freestanding image)
@@ -63,12 +63,12 @@ special-cased.
 `docs/benchmarks.md` is the last recorded run, with the machine in its header.
 Two things in it are expected and worth knowing before they look like bugs:
 
-- **`strings` is slow on `oskel-aot` and `oskel-wasm`.** Both build a `join` by
-  concatenating one item at a time, so the work is O(n²) in allocation while the
-  VM's `join` is linear (`std::string`). `n` is capped at 5 000 for that reason;
-  at 20 000 the WASM column dies in the host's `write` (`docs/BACKLOG.md` §6
-  items 36 and 37) and AOT allocates ~2 GB. The row is here because the suite
-  should show the regression, not hide it.
+- **`strings` is the allocation-heavy row, and it is where the suite earned its
+  keep.** Both the AOT and the WASM `join` appended one part at a time and
+  allocated quadratically (`docs/BACKLOG.md` §6 item 36): 5 000 parts took
+  140.3 ms in the binary and 356.7 ms in the module against 6.7 ms in the VM, and
+  20 000 needed ~2 GB. With the linear `join` of that item the binary takes
+  6.0 ms at 20 000 parts and the suite runs that size everywhere.
 - **`arrays` on `oskel-aot` pays for a closure per `push`.** `xs.push(i)` reads
   the method before every call and the arena never reclaims the closure
   (`docs/BACKLOG.md` §6 item 35). Caching it (`var p = xs.push;`) makes the
@@ -80,7 +80,9 @@ Add `<name>.oskl`, `.c`, `.py`, `.js` and `.lua` beside the others, print one
 line whose values are computed from the same algorithm in every language, and
 list the name in `BENCHMARKS` in `run.py`. Keep the sizes small enough that the
 whole suite finishes in seconds: the runner multiplies every row by
-`--reps + --warmup`, and `oskel-vm` is 300x slower than C on `fib`.
+`--reps + --warmup`, and `oskel-vm` is 350x slower than C on `fib`. A size that
+one backend cannot reach is a `fail` cell with its reason, not a smaller number
+everywhere -- that is how item 36 was found.
 
 A new language column is one `Implementation` in `run.py` -- a prepare step
 that compiles, the argv that runs the program, and the command that names the

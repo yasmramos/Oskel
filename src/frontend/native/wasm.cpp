@@ -7263,11 +7263,11 @@ void Runtime::emitArrayMethods() {
   }
   {
     Func f(m, methodHelpers[kMethodArrayJoin], {kI32, kI32, kI32});
-    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32),
-                  recvTag = f.addLocal(kI64), recvPayload = f.addLocal(kI64),
-                  addr = f.addLocal(kI32), sep = f.addLocal(kI32),
-                  out = f.addLocal(kI32), itemStr = f.addLocal(kI32);
-    std::uint32_t len = f.addLocal(kI64), i = f.addLocal(kI64),
+    std::uint32_t cell = f.addLocal(kI32), header = f.addLocal(kI32), recvTag = f.addLocal(kI64),
+                  recvPayload = f.addLocal(kI64), addr = f.addLocal(kI32), sep = f.addLocal(kI32),
+                  out = f.addLocal(kI32), parts = f.addLocal(kI32), itemStr = f.addLocal(kI32),
+                  dst = f.addLocal(kI32);
+    std::uint32_t len = f.addLocal(kI64), i = f.addLocal(kI64), total = f.addLocal(kI64),
                   itemTag = f.addLocal(kI64), itemPayload = f.addLocal(kI64);
     f.lget(1);
     f.i32c(1);
@@ -7291,16 +7291,34 @@ void Runtime::emitArrayMethods() {
     f.call(newStr);
     f.lset(sep);
     f.end();
+    // An empty receiver joins to the empty string, like the hosted loop.
     f.i32c(0);
     f.call(newStr);
     f.lset(out);
     f.lget(header);
     f.i64Load(kArrayLengthOffset);
     f.lset(len);
+    // Two passes: render every item once and total the bytes, then allocate
+    // the result exactly and copy. Appending with `concat` per item
+    // reallocated and copied the accumulator every time, which is quadratic
+    // (BACKLOG §6 item 36).
+    f.lget(len);
+    f.i64c(0);
+    f.i64Eq();
+    f.i32Eqz();
+    f.if_();
     f.lget(header);
     f.i64Load(kArrayItemsOffset);
     f.i32WrapI64();
     f.lset(addr);
+    f.lget(len);
+    f.i32WrapI64();
+    f.i32c(4);
+    f.i32Mul();
+    f.call(alloc);
+    f.lset(parts);
+    f.i64c(0);
+    f.lset(total);
     f.i64c(0);
     f.lset(i);
     f.block();
@@ -7309,15 +7327,6 @@ void Runtime::emitArrayMethods() {
     f.lget(len);
     f.i64GeU();
     f.brIf(1);
-    f.lget(i);
-    f.i64c(0);
-    f.i64GtS();
-    f.if_();
-    f.lget(out);
-    f.lget(sep);
-    f.call(concat);
-    f.lset(out);
-    f.end();
     f.lget(addr);
     f.lget(i);
     f.i32WrapI64();
@@ -7338,15 +7347,107 @@ void Runtime::emitArrayMethods() {
     f.lget(itemPayload);
     f.call(toStr);
     f.lset(itemStr);
-    f.lget(out);
+    f.lget(parts);
+    f.lget(i);
+    f.i32WrapI64();
+    f.i32c(4);
+    f.i32Mul();
+    f.i32Add();
     f.lget(itemStr);
-    f.call(concat);
-    f.lset(out);
+    f.i32Store(0);
+    f.lget(total);
+    f.lget(itemStr);
+    f.i64Load(0);
+    f.i64Add();
+    f.lset(total);
+    f.lget(i);
+    f.i64c(0);
+    f.i64GtU();
+    f.if_();
+    f.lget(total);
+    f.lget(sep);
+    f.i64Load(0);
+    f.i64Add();
+    f.lset(total);
+    f.end();
     f.lget(i);
     f.i64c(1);
     f.i64Add();
     f.lset(i);
     f.br(0);
+    f.end();
+    f.end();
+    // A result past the 32-bit address space cannot be allocated: `newStr`
+    // takes an `i32` length, so the wrapped value would under-allocate.
+    f.lget(total);
+    f.i64c(0xFFFFFFFFLL);
+    f.i64GtU();
+    f.if_();
+    emitFailStatic(f, sOutOfMemory);
+    f.end();
+    f.lget(total);
+    f.i32WrapI64();
+    f.call(newStr);
+    f.lset(out);
+    f.lget(out);
+    f.i32c(8);
+    f.i32Add();
+    f.lset(dst);
+    f.i64c(0);
+    f.lset(i);
+    f.block();
+    f.loop();
+    f.lget(i);
+    f.lget(len);
+    f.i64GeU();
+    f.brIf(1);
+    f.lget(i);
+    f.i64c(0);
+    f.i64GtU();
+    f.if_();
+    f.lget(dst);
+    f.lget(sep);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(sep);
+    f.i64Load(0);
+    f.i32WrapI64();
+    f.memoryCopy();
+    f.lget(dst);
+    f.lget(sep);
+    f.i64Load(0);
+    f.i32WrapI64();
+    f.i32Add();
+    f.lset(dst);
+    f.end();
+    f.lget(parts);
+    f.lget(i);
+    f.i32WrapI64();
+    f.i32c(4);
+    f.i32Mul();
+    f.i32Add();
+    f.i32Load(0);
+    f.lset(itemStr);
+    f.lget(dst);
+    f.lget(itemStr);
+    f.i32c(8);
+    f.i32Add();
+    f.lget(itemStr);
+    f.i64Load(0);
+    f.i32WrapI64();
+    f.memoryCopy();
+    f.lget(dst);
+    f.lget(itemStr);
+    f.i64Load(0);
+    f.i32WrapI64();
+    f.i32Add();
+    f.lset(dst);
+    f.lget(i);
+    f.i64c(1);
+    f.i64Add();
+    f.lset(i);
+    f.br(0);
+    f.end();
     f.end();
     f.end();
     f.i64c(static_cast<std::int64_t>(kStr));
