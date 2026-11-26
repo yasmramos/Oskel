@@ -449,7 +449,6 @@ void testContainerStructure() {
   }
 }
 
-
 std::uint32_t readBig32(const std::vector<std::uint8_t>& bytes, std::size_t offset) {
   if (offset + 4 > bytes.size()) return 0;
   return (static_cast<std::uint32_t>(bytes[offset]) << 24) |
@@ -493,8 +492,8 @@ void testSha256() {
 // hash taken over a stale buffer.
 void testCodeSignature() {
   const std::vector<std::uint8_t> text = {0xE8, 0, 0, 0, 0, 0xC3};
-  const std::vector<std::uint8_t> object = buildRelocatableObject(
-      Target::macX64(), text, {}, {{1, "write", true}}, {{"main", 0}});
+  const std::vector<std::uint8_t> object =
+      buildRelocatableObject(Target::macX64(), text, {}, {{1, "write", true}}, {{"main", 0}});
   LinkOptions options;
   options.target = Target::macX64();
   const std::vector<std::uint8_t> image =

@@ -439,8 +439,7 @@ std::vector<std::uint8_t> linkMachOExecutable(
   const std::uint32_t signatureSlots = codesign::codeSlots(signatureOffset);
   const std::uint64_t signatureBytes =
       codesign::signatureSize(kSignatureIdentifier, signatureSlots);
-  const std::uint64_t linkeditSize =
-      signatureOffset + signatureBytes - linkeditFileOffset;
+  const std::uint64_t linkeditSize = signatureOffset + signatureBytes - linkeditFileOffset;
   const std::uint64_t linkeditVmsize = alignUp(linkeditSize, kPageSize);
 
   std::vector<std::uint8_t> out(static_cast<std::size_t>(signatureOffset + signatureBytes), 0);
@@ -627,9 +626,8 @@ std::vector<std::uint8_t> linkMachOExecutable(
   const std::vector<std::uint8_t> code(out.begin(), out.begin() + signatureOffset);
   // The main executable starts at the beginning of __TEXT and spans the same
   // pages; the kernel reads the entry point from these on arm64.
-  const std::vector<std::uint8_t> signature =
-      codesign::adHocSignature(code, kSignatureIdentifier, 0, textFileSize,
-                               codesign::kExecSegMainBinary);
+  const std::vector<std::uint8_t> signature = codesign::adHocSignature(
+      code, kSignatureIdentifier, 0, textFileSize, codesign::kExecSegMainBinary);
   if (signature.size() != signatureBytes) {
     throw LinkError("internal: the signature size moved between layout and emission");
   }

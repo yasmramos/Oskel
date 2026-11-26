@@ -67,10 +67,8 @@ constexpr std::uint64_t kExecSegMainBinary = 1;
 // start of `__TEXT`; the kernel takes the entry point from them on arm64. The
 // x86-64 image passes the whole `__TEXT` and `kExecSegMainBinary`.
 std::vector<std::uint8_t> adHocSignature(const std::vector<std::uint8_t>& code,
-                                         const std::string& identifier,
-                                         std::uint64_t execSegBase,
-                                         std::uint64_t execSegLimit,
-                                         std::uint64_t execSegFlags);
+                                         const std::string& identifier, std::uint64_t execSegBase,
+                                         std::uint64_t execSegLimit, std::uint64_t execSegFlags);
 
 // Rounds an image length up to the 16-byte boundary `LC_CODE_SIGNATURE.dataoff`
 // is required to keep. A CodeDirectory page hash assumes its page is whole, so

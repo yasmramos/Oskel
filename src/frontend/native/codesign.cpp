@@ -18,14 +18,6 @@ constexpr std::uint32_t kHashSize = 32;
 // blob `codesign --sign -` writes for an identity that names no requirement.
 constexpr std::uint32_t kRequirementsSize = 12;
 
-void put32(std::vector<std::uint8_t>& out, std::size_t offset, std::uint32_t value) {
-  for (int i = 0; i < 4; ++i) out[offset + i] = static_cast<std::uint8_t>(value >> (8 * i));
-}
-
-void put64(std::vector<std::uint8_t>& out, std::size_t offset, std::uint64_t value) {
-  for (int i = 0; i < 8; ++i) out[offset + i] = static_cast<std::uint8_t>(value >> (8 * i));
-}
-
 // The CodeDirectory and the superblob are big-endian throughout -- not only
 // their magic, which only looks that way because every blob starts with one.
 // An image whose version reads 0x00020400 has its bytes in the wrong order.
@@ -40,8 +32,8 @@ void putBig64(std::vector<std::uint8_t>& out, std::size_t offset, std::uint64_t 
 // `magic`, `length` and `type` are the only big-endian fields: they are the
 // ones every blob shares, and Apple's own tooling reads them before it knows
 // which structure follows.
-void putBlobHeader(std::vector<std::uint8_t>& out, std::size_t offset,
-                   std::uint32_t magic, std::uint32_t size) {
+void putBlobHeader(std::vector<std::uint8_t>& out, std::size_t offset, std::uint32_t magic,
+                   std::uint32_t size) {
   for (int i = 0; i < 4; ++i) {
     out[offset + i] = static_cast<std::uint8_t>(magic >> (24 - 8 * i));
     out[offset + 4 + i] = static_cast<std::uint8_t>(size >> (24 - 8 * i));
@@ -147,10 +139,8 @@ std::size_t signatureSize(const std::string& identifier, std::uint32_t slots) {
 }
 
 std::vector<std::uint8_t> adHocSignature(const std::vector<std::uint8_t>& code,
-                                         const std::string& identifier,
-                                         std::uint64_t execSegBase,
-                                         std::uint64_t execSegLimit,
-                                         std::uint64_t execSegFlags) {
+                                         const std::string& identifier, std::uint64_t execSegBase,
+                                         std::uint64_t execSegLimit, std::uint64_t execSegFlags) {
   const std::uint64_t codeLimit = code.size();
   const std::uint32_t slots = codeSlots(codeLimit);
   const std::uint32_t directory = directorySize(identifier, slots);
@@ -178,8 +168,8 @@ std::vector<std::uint8_t> adHocSignature(const std::vector<std::uint8_t>& code,
   // Writing the identifier first would still be readable through the offsets,
   // but `codesign` walks the structure the documented way.
   const std::uint32_t hashOffset = static_cast<std::uint32_t>(kCodeDirectoryHeaderSize);
-  const std::uint32_t identOffset =
-      static_cast<std::uint32_t>(kCodeDirectoryHeaderSize + static_cast<std::size_t>(slots) * kHashSize);
+  const std::uint32_t identOffset = static_cast<std::uint32_t>(
+      kCodeDirectoryHeaderSize + static_cast<std::size_t>(slots) * kHashSize);
   putBig32(out, base + 16, hashOffset);
   putBig32(out, base + 20, identOffset);
   putBig32(out, base + 24, 0);  // nSpecialSlots
