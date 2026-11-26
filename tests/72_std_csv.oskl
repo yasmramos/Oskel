@@ -1,0 +1,186 @@
+// std.csv: RFC 4180 parsing, serialization and the header/map helpers.
+//
+// The module is pure Oskel over the portable primitive surface, so every
+// expected value here must hold on the development VM, under `oskel build` on
+// every AOT target and on WebAssembly (see `tests/native_build_csv.oskl`).
+
+import std.csv;
+import std.csv.*;
+import std.csv as csv;
+import { parse, stringify } from std.csv;
+
+// --- records, fields and quoting --------------------------------------------
+
+assertEq(parse(""), []);
+assertEq(parse("a"), [["a"]]);
+assertEq(parse("a,b,c"), [["a", "b", "c"]]);
+assertEq(parse("a,b\nc,d"), [["a", "b"], ["c", "d"]]);
+assertEq(parse("a,b\r\nc,d"), [["a", "b"], ["c", "d"]]);
+assertEq(parse("a,b\rc,d"), [["a", "b"], ["c", "d"]]);
+// A trailing separator closes the last record without adding an empty one.
+assertEq(parse("a,b\n"), [["a", "b"]]);
+assertEq(parse("a,b\r\n"), [["a", "b"]]);
+assertEq(parse("a,b\n\n"), [["a", "b"], [""]]);
+assertEq(parse("\n"), [[""]]);
+assertEq(parse("\r\n"), [[""]]);
+
+// Empty fields, including a trailing delimiter, are real fields.
+assertEq(parse(","), [["", ""]]);
+assertEq(parse("a,"), [["a", ""]]);
+assertEq(parse(",a"), [["", "a"]]);
+assertEq(parse("a,,c"), [["a", "", "c"]]);
+assertEq(parse("\"\""), [[""]]);
+assertEq(parse("\"\",\"\""), [["", ""]]);
+
+// Quoted fields may contain the delimiter, quotes and newlines.
+assertEq(parse("\"a,b\",c"), [["a,b", "c"]]);
+assertEq(parse("\"a\nb\",c"), [["a\nb", "c"]]);
+assertEq(parse("\"a\r\nb\",c"), [["a\r\nb", "c"]]);
+assertEq(parse("\"say \"\"hi\"\"\""), [["say \"hi\""]]);
+assertEq(parse("\"\"\"\""), [["\""]]);
+assertEq(parse("\"a\"\"b\""), [["a\"b"]]);
+// A quote inside an unquoted field is an ordinary character.
+assertEq(parse("a\"b"), [["a\"b"]]);
+assertEq(parse("a\"b,c"), [["a\"b", "c"]]);
+// Spaces are data, quoted or not.
+assertEq(parse(" a , b "), [[" a ", " b "]]);
+assertEq(parse("\" a \""), [[" a "]]);
+// Unicode is preserved; indices and lengths are code points.
+assertEq(parse("hé,\"a€b\"\n😀,x"), [["hé", "a€b"], ["😀", "x"]]);
+
+// --- custom delimiters ------------------------------------------------------
+
+assertEq(parseWith("a\tb\nc\td", "\t"), [["a", "b"], ["c", "d"]]);
+assertEq(parseWith("a;\"b;c\";d", ";"), [["a", "b;c", "d"]]);
+assertEq(parseWith("a|b", "|"), [["a", "b"]]);
+assertEq(csv.parseWith("a b", " "), [["a", "b"]]);
+
+// --- writing ----------------------------------------------------------------
+
+assertEq(stringify([]), "");
+assertEq(stringify([["a"]]), "a");
+assertEq(stringify([["a", "b"], ["c", "d"]]), "a,b\nc,d");
+assertEq(stringify([[""]]), "\"\"");
+assertEq(stringify([["", ""]]), "\"\",\"\"");
+assertEq(stringify([["a", ""]]), "a,\"\"");
+assertEq(stringify([["a,b"]]), "\"a,b\"");
+assertEq(stringify([["a\"b"]]), "\"a\"\"b\"");
+assertEq(stringify([["a\nb"]]), "\"a\nb\"");
+assertEq(stringify([["a\r\nb"]]), "\"a\r\nb\"");
+assertEq(stringify([[" a "]]), " a ");
+assertEq(stringify([["hé", "😀"]]), "hé,😀");
+// Any value uses its `str` form; nil is the empty field.
+assertEq(stringify([[1, true, nil, 1.5]]), "1,true,\"\",1.5");
+assertEq(stringifyWith([["a", "b"], ["c", "d"]], "\t", "\r\n"), "a\tb\r\nc\td");
+assertEq(stringifyWith([], ",", "\n"), "");
+assertEq(csv.stringify([["x"]]), "x");
+
+// A serialized table parses back to the same records, including the awkward
+// shapes (an empty field, an embedded quote, a newline, a delimiter).
+let tricky = [
+  ["plain", "a,b", "a\"b", "a\nb", "", " hé "],
+  ["", "x", "y", "z", "0", "😀"],
+];
+assertEq(parse(stringify(tricky)), tricky);
+assertEq(parseWith(stringifyWith(tricky, "\t", "\r\n"), "\t"), tricky);
+
+// --- header records ---------------------------------------------------------
+
+let table = parse("name,age\n\"Ada, A.\",36\nGrace,85\n");
+assertEq(table, [["name", "age"], ["Ada, A.", "36"], ["Grace", "85"]]);
+assertEq(toMaps(table), [
+  {"name": "Ada, A.", "age": "36"},
+  {"name": "Grace", "age": "85"},
+]);
+assertEq(toMaps([]), []);
+assertEq(toMaps([["a", "b"]]), []);
+// A short record is padded; fields beyond the header are ignored.
+assertEq(toMaps([["a", "b"], ["1"], ["1", "2", "3"]]), [
+  {"a": "1", "b": ""},
+  {"a": "1", "b": "2"},
+]);
+// A header-only table has no data records.
+assertEq(toMaps([["a", "b"], []]), [{"a": "", "b": ""}]);
+
+assertEq(fromMaps([{"name": "Ada", "age": 36}], ["name", "age"]), [
+  ["name", "age"],
+  ["Ada", "36"],
+]);
+assertEq(fromMaps([], ["a", "b"]), [["a", "b"]]);
+// A missing key is the empty field; nil and non-strings use the same rule.
+assertEq(fromMaps([{"a": true, "b": nil, "c": 1.5}], ["a", "b", "c", "d"]), [
+  ["a", "b", "c", "d"],
+  ["true", "", "1.5", ""],
+]);
+assertEq(fromMaps([{"a": "x"}], []), [[], []]);
+assertEq(fromMaps([{}], ["a"]), [["a"], [""]]);
+// The inverse round trip.
+assertEq(toMaps(fromMaps(toMaps(table), ["name", "age"])), toMaps(table));
+
+// --- validation and failures ------------------------------------------------
+
+assertEq(isValid("a,b"), true);
+assertEq(isValid(""), true);
+assertEq(isValid("\"a,b\""), true);
+assertEq(isValid("\"a"), false);
+assertEq(isValid("\"a\"b"), false);
+
+let ok = tryParse("a,b\nc,d");
+assertEq(ok.ok, true);
+assertEq(ok.value, [["a", "b"], ["c", "d"]]);
+assertEq(ok.error, nil);
+
+let bad = tryParse("\"oops");
+assertEq(bad.ok, false);
+assertEq(bad.value, nil);
+assertEq(type(bad.error), "string");
+assertEq(bad.error, "unterminated quoted field (line 1, column 6)");
+assertEq(tryParse("\"a\"b").error, "unexpected character after a closing quote (line 1, column 4)");
+assertEq(tryParse("a,b\n\"oops").error, "unterminated quoted field (line 2, column 6)");
+assertEq(tryParseWith("a\t\"b", "\t").error, "unterminated quoted field (line 1, column 5)");
+
+// `parse` turns the same failure into a runtime error naming the position.
+let raised = pcall(() => parse("\"oops"));
+assertEq(raised.ok, false);
+assertEq(raised.error.message, "std.csv.parse: unterminated quoted field (line 1, column 6)");
+// A delimiter that is not one code point, or that collides with the syntax,
+// is rejected before the input is read.
+assertEq(pcall(() => parseWith("a", "")).ok, false);
+assertEq(pcall(() => parseWith("a", ",,")).ok, false);
+assertEq(pcall(() => parseWith("a", "\"")).ok, false);
+assertEq(pcall(() => parseWith("a", "\n")).ok, false);
+assertEq(pcall(() => stringifyWith([["a"]], "", "\n")).ok, false);
+assertEq(pcall(() => stringifyWith([["a"]], ",", "")).ok, false);
+assertEq(pcall(() => stringifyWith([["a"]], ",", ";")).ok, false);
+assertEq(pcall(() => parse(42)).ok, false);
+assertEq(pcall(() => tryParse(42)).ok, false);
+assertEq(pcall(() => stringify("not an array")).ok, false);
+assertEq(pcall(() => stringify(["not a row"])).ok, false);
+assertEq(pcall(() => stringify([[]])).ok, false);
+assertEq(pcall(() => stringify([["a"], []])).ok, false);
+assertEq(pcall(() => toMaps([["a", "a"]])).ok, false);
+assertEq(pcall(() => toMaps([["a"], "not a row"])).ok, false);
+assertEq(pcall(() => fromMaps([{"a": 1}], ["a", "a"])).ok, false);
+assertEq(pcall(() => fromMaps([{"a": 1}], [1])).ok, false);
+assertEq(pcall(() => fromMaps(["not a map"], ["a"])).ok, false);
+
+// --- a larger table ---------------------------------------------------------
+
+// 60 rows with a delimiter, a quote and a newline in every row, so the writer
+// has to quote consistently and the reader has to undo it exactly.
+var source = [["id", "text", "note"]];
+var i = 0;
+while (i < 60) {
+  source[len(source)] = [str(i), "a,b " + str(i), "q\"q\nline " + str(i)];
+  i = i + 1;
+}
+let text = stringify(source);
+let decoded = parse(text);
+assertEq(decoded, source);
+assertEq(len(decoded), 61);
+assertEq(decoded[60][0], "59");
+assertEq(decoded[60][2], "q\"q\nline 59");
+assertEq(len(toMaps(decoded)), 60);
+assertEq(toMaps(decoded)[0]["id"], "0");
+
+print("std.csv ok");
