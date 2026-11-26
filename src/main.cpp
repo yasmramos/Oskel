@@ -26,13 +26,14 @@
 #include "frontend/diagnostic.h"
 #include "frontend/lexer.h"
 #include "frontend/parser.h"
+#include "jit/jit.h"
 #include "runtime/builtins.h"
 #include "version.h"
 #include "vm.h"
 
 namespace {
 
-const char *kUsage =
+const char* kUsage =
     "usage:\n"
     "  oskel                      start the interactive REPL\n"
     "  oskel <file.oskl> [args]   run a script\n"
@@ -53,6 +54,8 @@ const char *kUsage =
     "                            wasm32-freestanding-wasm (WebAssembly)\n"
     "  --mode <name>             link mode for `build` (default: freestanding);\n"
     "                            freestanding (self-contained) or hosted (links libc)\n"
+    "  --no-source-positions     omit FILE:LINE from a runtime error (frozen\n"
+    "                            freestanding image)\n"
     "  --link-lib <name>         library for the hosted link (repeatable), e.g. SDL3\n"
     "  -L, --library-path <dir>  where the hosted link finds lib<name>.so (repeatable)\n"
     "  --link-object <file>      extra object or ar archive for the hosted link (repeatable)\n"
@@ -147,6 +150,10 @@ int runChunk(const Bytecode &bytecode, const std::string &name,
   vm.sourceName = name;
   vm.scriptArgs = scriptArgs;
   vm.setJitEnabled(useJit);
+  if (useJit && !jitHostSupported()) {
+    std::cerr << "oskel: the JIT is unavailable on this host (" << jitUnsupportedReason()
+              << "); running interpreted\n";
+  }
   registerBuiltins(vm);
   try {
     vm.run(bytecode);
@@ -342,6 +349,10 @@ void repl(const std::vector<std::string> &scriptArgs, const std::string &argv0, 
   vm.sourceName = "<repl>";
   vm.scriptArgs = scriptArgs;
   vm.setJitEnabled(useJit);
+  if (useJit && !jitHostSupported()) {
+    std::cerr << "oskel: the JIT is unavailable on this host (" << jitUnsupportedReason()
+              << "); running interpreted\n";
+  }
   registerBuiltins(vm);
 
   // One compiler for the whole session so a module imported in an earlier

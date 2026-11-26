@@ -27,7 +27,7 @@ for language in languages {
 - `class` declarations (fields plus methods): instantiating is calling the class name (`Point(3, 4)`, no `new`), `self` is explicit and there is no inheritance. A class is parser sugar over a map plus closures, so it runs identically on the VM and under `oskel build`. Field and method annotations are checked at compile time.
 - `interface`/`trait` contracts with `class X implements A, B`: compile-time method and arity checking, importable across modules, with no runtime interface value and no inheritance.
 - `enum` declarations: scoped integer constants folded at compile time; module imports expose them like any other name.
-- `async fn` / `await` (PHASE 11.1, **surface only**): a call returns a `Future`, `await` yields its payload and the declared return type is the payload. This is not a complete async runtime: the body runs eagerly, `await` never suspends, and there is no scheduler, event loop, `then`/`catch` chaining, `spawn`/`join` or async lambda. A future is a plain map, so the surface behaves identically on the VM, `oskel build` and WASM.
+- `async fn` / `await` (PHASE 11.2.2): a call returns a pending `Future`, `await` yields its payload and the declared return type is the payload. `spawn f()` enqueues an async call explicitly, `yield()` lets the other ready tasks run, and a script drains its queue before exiting, so `async fn main` needs no top-level `await`. The scheduler is ordinary Oskel over maps and arrays, so the VM, `oskel build` and WASM agree. This is not yet a complete async runtime: the body is one eager step, so `await` on a pending future drains the queue instead of suspending the current body; there is no top-level `await`, `then`/`catch` chaining, separate `join` or async lambda. A future is a plain map at run time, but the compiler treats `Future` as opaque: indexing, slicing, iteration and member access on a `Future`-typed value are compile errors, so only `await` reads its state. A value erased to `any` can still reach the map until the runtime tag lands.
 - String interpolation with `"${expression}"` and UTF-8 support.
 - Ordered arrays and maps that preserve insertion order, with `for k, v in map` key/value iteration.
 - Ascending and descending ranges: `1..5`, `0..=10`, `5..0`.
@@ -435,8 +435,8 @@ needs the bundled SDL3 and Skia libraries.
 
 - Arithmetic, comparisons, logical and bitwise operators, control flow
   (`if`/`while`/`for`/`for-in`/`switch`), functions, closures, `defer`,
-  `struct`, `class`, `interface`/`trait`, `enum`, `async fn`/`await` (eager
-  surface, no scheduler), ranges,
+  `struct`, `class`, `interface`/`trait`, `enum`, `async fn`/`await`
+  (`spawn`/`yield` scheduler, eager steps), ranges,
   slicing and string interpolation.
 - Arrays and maps (literals, indexing, `in`, `for-in`, printing, and `+` to
   concatenate two arrays), including every bound collection method: the array
@@ -596,7 +596,24 @@ Linux, macOS or MSYS2:
 
 The positive tests use `assert` and `assertEq`; a script exits with a non-zero code if any assertion fails. The tests in `tests/errors/` check compile-time and runtime errors: they declare the expected exit code on their first line with `// expect-exit: N`. The bytecode compiler tests (`compiler_test.cpp`) verify the instruction sequence, the constant pools, the `nil`/boolean literals, the unary and compound operators, the comparisons, the `if`/`while`/`for` jumps with backpatching, the local slots and the rejection of assignments to immutable `let` bindings. The VM tests (`vm_test.cpp`) compile snippets to bytecode and check the execution of integer and float arithmetic, `%`, `**`, comparisons, unary operators, globals, strings, compound assignment, `if`/`else`, loops, `break`/`continue`, block shadowing, bitwise operators, `&&`/`||` short-circuiting, the ternary operator and runtime errors.
 
+## Benchmarks
+
+`benchmarks/` holds a small suite -- recursion, array growth and string
+building -- written once per language, compared against the VM's output before
+anything is timed, and run against C, CPython, Node, Lua and LuaJIT:
+
+```sh
+python3 benchmarks/run.py
+```
+
+It measures Oskel four ways: the VM with and without its JIT, the native binary
+`oskel build` emits and the WebAssembly module. The last recorded run and the
+method are in **[docs/benchmarks.md](docs/benchmarks.md)**; the harness details
+are in [benchmarks/README.md](benchmarks/README.md). It is a developer tool, not
+a CI gate.
+
 ## Limitations and roadmap
+
 
 Current limitations:
 

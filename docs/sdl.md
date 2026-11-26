@@ -94,11 +94,11 @@ in the host linker command. It is repeatable, it requires `--mode hosted` (the
 freestanding image has no linker), and the name is restricted to letters,
 digits, `_`, `+`, `-` and `.`. See
 `docs/language.md` for the flag and `docs/BACKLOG.md` §7 for the FFI limits.
-The hosted link is available on Linux, Windows and macOS x86-64. The VM half
-runs wherever CMake finds SDL3; the hosted AOT fixture (`oskel.build_hosted_sdl`)
-runs on Linux x86-64. A target whose FFI surface the module needs (a struct by
-value or a callback) is rejected with a dedicated message before an image is
-written.
+The hosted link is available on Linux, Windows and macOS x86-64. The SDL3
+module is exercised on all three: the hosted fixture runs on Linux, Windows and
+Intel macOS, while the macOS arm64 runner exercises the VM half only. A target
+whose FFI surface the module needs (a struct by value or a callback) is rejected
+with a dedicated message before an image is written.
 
 A freestanding build of a program that uses SDL3 fails with the dedicated
 message and exit 65, never with a mis-compiled binary:
@@ -209,7 +209,7 @@ explicitly, so a malformed coordinate cannot spin the normalization loop.
 | --- | --- |
 | `sdl.bindgen` | The module's `extern "C"` block is exactly what `bindgen` emits from `bindings/sdl/sdl3_subset.h` (a header edit that was not regenerated fails here). |
 | `sdl.bindings` | The VM opens a window and a software renderer under `SDL_VIDEODRIVER=dummy`, draws, pushes/polls every event kind, reads the `SDL_FRect` bits, and writes/reads a surface pixel (the seven-argument `SDL_ReadSurfacePixel`/`SDL_WriteSurfacePixel`, the AOT stack spill). |
-| `oskel.build_hosted_sdl` | The same script compiled with `--mode hosted --link-lib SDL3` prints byte-for-byte the VM's output, and `ldd` shows `libSDL3` (Linux x86-64). |
+| `oskel.build_hosted_sdl` | The same script compiled with `--mode hosted --link-lib SDL3` prints byte-for-byte the VM's output on Linux, Windows and Intel macOS; Linux also checks `ldd` and macOS `otool -L` for `libSDL3`. |
 | `oskel.check.sdl_import` | `oskel -c` type-checks the module on every platform, without SDL3. |
 | `oskel.build_sdl_freestanding_error` | A freestanding build rejects a used `SDL_*` symbol with the dedicated message, exit 65, and writes no binary. |
 | `oskel.build_link_lib_usage_error` | `--link-lib` without `--mode hosted`, and an invalid library name, are usage errors (exit 64). |

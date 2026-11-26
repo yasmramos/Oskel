@@ -1,0 +1,41 @@
+// Fixture for `oskel build` (tests/build_binary.cmake): the operator edge cases
+// BACKLOG §13 items 1-3 ask about. Each is a rule both engines must share, and
+// `pcall` turns a raised error into a value, so the wording is compared and not
+// only the result:
+//
+//   1. `-INT64_MIN` wraps instead of raising (the compiler's const folding
+//      warns; the runtime is expected to agree).
+//   2. `2 ** -1` yields a double (0.5), because the rank is the widest
+//      operand's -- PHASE 7c.1d.2 settled the rule.
+//   3. a shift count outside `0..63` raises `shift count must be between 0 and
+//      63` in both engines.
+
+fn neg(a: int): int { return -a; }
+fn power(a: int, b: int): int { return a ** b; }
+fn shl(a: int, b: int): int { return a << b; }
+fn shr(a: int, b: int): int { return a >> b; }
+
+// Reached through a value, so the operands are not constants the compiler can
+// fold -- the runtime rule is what runs.
+let negValue = neg;
+let powerValue = power;
+let shlValue = shl;
+let shrValue = shr;
+
+let minInt = 0 - 9223372036854775807 - 1;
+print("min", minInt);
+print("neg min", pcall(negValue, minInt));
+print("neg one", pcall(negValue, 1));
+
+print("pow 2^3", pcall(powerValue, 2, 3));
+print("pow 2^-1", pcall(powerValue, 2, -1));
+print("pow 2^0", pcall(powerValue, 2, 0));
+print("pow -2^3", pcall(powerValue, -2, 3));
+
+print("shl 1<<3", pcall(shlValue, 1, 3));
+print("shl 1<<63", pcall(shlValue, 1, 63));
+print("shl 1<<64", pcall(shlValue, 1, 64));
+print("shl 1<<-1", pcall(shlValue, 1, -1));
+print("shr -1>>63", pcall(shrValue, -1, 63));
+print("shr 16>>2", pcall(shrValue, 16, 2));
+print("shr 1>>64", pcall(shrValue, 1, 64));

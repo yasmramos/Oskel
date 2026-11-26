@@ -490,6 +490,30 @@ void emitWriteToFd(CodeGen& cg, CodeGen::Label writeLabel, std::int64_t fd) {
   }
 }
 
+// Emits a write of the decimal form of `reg` (taken as non-negative) to fd 2.
+// It builds the digits downward from `[rbp - 16]`, which the caller must have
+// covered by lowering `rsp` past it first. Clobbers rdi, rsi, rdx, r10, rax,
+// rcx and r8.
+void emitWriteUnsignedDecimal(CodeGen& cg, CodeGen::Label writeLabel, X64Reg reg) {
+  constexpr std::int32_t kScratch = -16;  // one past the last digit
+  CodeGen::Label loop = cg.newLabel();
+
+  cg.movReg(Rax, reg);
+  cg.leaMem(R8, Rbp, kScratch);
+  cg.bind(loop);
+  cg.movImm(Rcx, 10);
+  cg.divUnsigned(Rcx);  // rax /= 10, rdx = digit (rdx pre-zeroed)
+  cg.addImm32(Rdx, static_cast<std::int32_t>('0'));
+  cg.subRegImm32(R8, 1);
+  cg.movByteToMem(R8, 0, Rdx);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, loop);
+  cg.movReg(Rdi, R8);
+  cg.leaMem(Rsi, Rbp, kScratch);
+  cg.subReg(Rsi, R8);
+  emitWriteToFd(cg, writeLabel, 2);
+}
+
 // Emits `call fail(message)`: loads the message address and length, then calls
 // the shared fail helper. Never returns.
 void emitFailCall(CodeGen& cg, CodeGen::Label fail, const DataBlob& message) {
@@ -2087,23 +2111,56 @@ void emitCompare(CodeGen& cg, CodeGen::Label label, const DataBlob& message,
 // `void* oskel_alloc(long size)`: bump allocation from the arena seeded by
 // `oskel_init_arena`. The cursor and end live in r13/r14 (see `native/entry.h`);
 // this helper reads and advances the cursor only. Returns an 8-byte-aligned
-// pointer, or null when the region is exhausted (mirroring `Arena::allocate`).
-void emitAlloc(CodeGen& cg, CodeGen::Label label) {
+// pointer, or null when the current chunk is exhausted and `oskel_arena_grow`
+// cannot map another one (mirroring `Arena::allocate`).
+//
+// Contract: it clobbers only rax (the result) and the r10/r11 scratch pair;
+// every other register survives. That is *not* System V, but the whole emitted
+// runtime is written against it -- `oskel_concat` reads the second operand out
+// of rsi after the allocation, for one -- so the growth path has to keep the
+// promise the leaf version made by accident. It saves rdi, rsi, rdx, rcx, r8
+// and r9 around `oskel_arena_grow`; the cost is one slow path per chunk.
+//
+// Growth is invisible to the caller: the exhausted chunk is abandoned, the
+// cursor/end pair is repointed at a fresh region and the request is retried
+// from its base.
+void emitAlloc(CodeGen& cg, CodeGen::Label label, CodeGen::Label growLabel) {
+  CodeGen::Label retry = cg.newLabel();
+  CodeGen::Label overflow = cg.newLabel();
   CodeGen::Label exhausted = cg.newLabel();
 
   cg.bind(label);
+  cg.bind(retry);
   cg.movReg(Rax, kAotArenaCursor);
   cg.addImm32(Rax, 7);
   cg.movImm(R10, -8);
   cg.andReg(Rax, R10);      // rax = cursor aligned up to 8
   cg.movReg(R11, Rax);
   cg.addReg(R11, Rdi);      // r11 = new cursor
-  cg.jcc(Jcc::B, exhausted);        // wrapped: size was absurd
+  cg.jcc(Jcc::B, overflow);  // wrapped: size was absurd
   cg.cmpReg(R11, kAotArenaEnd);
-  cg.jcc(Jcc::A, exhausted);        // past the end
+  cg.jcc(Jcc::A, exhausted);  // past the end of this chunk
   cg.movReg(kAotArenaCursor, R11);
   cg.retInsn();
   cg.bind(exhausted);
+  cg.push(Rdi);
+  cg.push(Rsi);
+  cg.push(Rdx);
+  cg.push(Rcx);
+  cg.push(R8);
+  cg.push(R9);
+  cg.subRegImm32(Rsp, 8);   // six pushes leave rsp at 8 mod 16; this lands it on 0
+  cg.callLabel(growLabel);  // rax = 1 when a new chunk is in place
+  cg.addImm32(Rsp, 8);
+  cg.pop(R9);
+  cg.pop(R8);
+  cg.pop(Rcx);
+  cg.pop(Rdx);
+  cg.pop(Rsi);
+  cg.pop(Rdi);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Ne, retry);
+  cg.bind(overflow);
   cg.xorReg(Rax, Rax);
   cg.retInsn();
 }
@@ -3690,29 +3747,34 @@ void emitArraySumMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& 
 // the bound `arr.join(separator?)` -- the hosted `bindArray` `join`. Each item
 // renders with `toString` (a string unquoted, a collection as its repr) and the
 // separator, empty when absent, goes between them.
+//
+// The parts go into one `AotStringBuilder`, whose growth doubles the block, so
+// the total work is linear in the result. Appending with `oskel_concat` per item
+// allocated and copied the whole accumulator every time, which is quadratic
+// (BACKLOG §6 item 36): 5 000 parts took 147 ms that way and 6.7 ms in the VM.
 void emitArrayJoinMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env,
                          const DataBlob& msgArgc) {
-  // Slots: -48 receiver, -56 length, -64 index, -80/-72 separator tag/payload,
-  // -96/-88 the rendered item, -112/-104 the running result.
+  // Slots: -48 receiver, -56 length, -64 index, -72 builder, -80 separator
+  // payload, -88 rendered item payload, -104/-96 the one-element argument
+  // window (`$str` reads a contiguous tag/payload pair).
   constexpr std::int64_t kReceiver = -48;
   constexpr std::int64_t kLength = -56;
   constexpr std::int64_t kIndex = -64;
-  constexpr std::int64_t kSepTag = -80;
-  constexpr std::int64_t kSepPayload = -72;
-  constexpr std::int64_t kItemTag = -96;
+  constexpr std::int64_t kBuilder = -72;
+  constexpr std::int64_t kSepPayload = -80;
   constexpr std::int64_t kItemPayload = -88;
-  constexpr std::int64_t kResultTag = -112;
-  constexpr std::int64_t kResultPayload = -104;
-  constexpr std::int32_t kFrameSize = 128;
+  constexpr std::int64_t kWindowTag = -104;
+  constexpr std::int64_t kWindowPayload = -96;
+  constexpr std::int32_t kFrameSize = 112;
 
   CodeGen::Label emptySep = cg.newLabel();
   CodeGen::Label loop = cg.newLabel();
+  CodeGen::Label iterate = cg.newLabel();
   CodeGen::Label noSeparator = cg.newLabel();
-  CodeGen::Label appendItem = cg.newLabel();
-  CodeGen::Label exitEmpty = cg.newLabel();
-  CodeGen::Label next = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
+  CodeGen::Label exitEmpty = cg.newLabel();
   CodeGen::Label badArgc = cg.newLabel();
+  CodeGen::Label oom = cg.newLabel();
   CodeGen::Label exit = cg.newLabel();
 
   cg.bind(label);
@@ -3727,6 +3789,8 @@ void emitArrayJoinMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv&
   cg.movToMem(Rbp, kReceiver, Rbx);
   cg.movFromMem(Rax, Rbx, kTableLengthOffset);
   cg.movToMem(Rbp, kLength, Rax);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, exitEmpty);  // an empty receiver joins to ""
   cg.movImmToMem(Rbp, kIndex, 0);
   // The separator: args[0] rendered through `toString` when present (the
   // hosted `join` calls `args[0].toString()`, so any value is accepted), else
@@ -3734,27 +3798,39 @@ void emitArrayJoinMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv&
   cg.testReg(Rsi);
   cg.jcc(Jcc::Eq, emptySep);
   cg.movFromMem(Rax, Rdi, 0);
-  cg.movToMem(Rbp, kSepTag, Rax);
+  cg.movToMem(Rbp, kWindowTag, Rax);
   cg.movFromMem(Rax, Rdi, 8);
-  cg.movToMem(Rbp, kSepPayload, Rax);
-  cg.leaMem(Rdi, Rbp, kSepTag);
+  cg.movToMem(Rbp, kWindowPayload, Rax);
+  cg.leaMem(Rdi, Rbp, kWindowTag);
   cg.movImm(Rsi, 1);
   cg.callLabel(env.strBuiltin);
-  cg.movToMem(Rbp, kSepTag, Rax);
   cg.movToMem(Rbp, kSepPayload, Rdx);
   cg.jmp(loop);
   cg.bind(emptySep);
   cg.leaRipLabel(Rax, env.emptyString);
   cg.movToMem(Rbp, kSepPayload, Rax);
-  cg.movImm(Rax, kTagStr);
-  cg.movToMem(Rbp, kSepTag, Rax);
 
-  // The first item seeds the result; later items append the separator first.
   cg.bind(loop);
+  cg.callLabel(env.sbNew);
+  cg.testReg(Rax);
+  cg.jcc(Jcc::Eq, oom);
+  cg.movToMem(Rbp, kBuilder, Rax);
+
+  cg.bind(iterate);
   cg.movFromMem(R8, Rbp, kIndex);
   cg.movFromMem(R9, Rbp, kLength);
   cg.cmpReg(R8, R9);
   cg.jcc(Jcc::Ae, done);
+  cg.testReg(R8);
+  cg.jcc(Jcc::Eq, noSeparator);  // the first item takes no separator
+  cg.movFromMem(Rdi, Rbp, kBuilder);
+  cg.movFromMem(Rsi, Rbp, kSepPayload);
+  cg.movFromMem(Rdx, Rsi, 0);
+  cg.addImm32(Rsi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.callLabel(env.sbAppend);
+
+  cg.bind(noSeparator);
+  cg.movFromMem(R8, Rbp, kIndex);
   cg.movFromMem(R10, Rbp, kReceiver);
   cg.movFromMem(R11, R10, kTableBlockOffset);
   cg.movReg(Rax, R8);
@@ -3762,61 +3838,31 @@ void emitArrayJoinMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv&
   cg.addReg(Rax, R11);
   // rendered = $str(item): a one-element argument window, then (args, argc).
   cg.movFromMem(Rcx, Rax, 0);
-  cg.movToMem(Rbp, kItemTag, Rcx);
+  cg.movToMem(Rbp, kWindowTag, Rcx);
   cg.movFromMem(Rcx, Rax, 8);
-  cg.movToMem(Rbp, kItemPayload, Rcx);
-  cg.leaMem(Rdi, Rbp, kItemTag);
+  cg.movToMem(Rbp, kWindowPayload, Rcx);
+  cg.leaMem(Rdi, Rbp, kWindowTag);
   cg.movImm(Rsi, 1);
   cg.callLabel(env.strBuiltin);
-  cg.movToMem(Rbp, kItemTag, Rax);
   cg.movToMem(Rbp, kItemPayload, Rdx);
-
-  cg.movFromMem(R8, Rbp, kIndex);
-  cg.testReg(R8);
-  cg.jcc(Jcc::Eq, noSeparator);         // the first item, no separator yet
-  // result = concat(result, separator)
-  cg.movFromMem(Rdi, Rbp, kResultTag);
-  cg.movFromMem(Rsi, Rbp, kResultPayload);
-  cg.movFromMem(Rdx, Rbp, kSepTag);
-  cg.movFromMem(Rcx, Rbp, kSepPayload);
-  cg.callLabel(env.concat);
-  cg.movToMem(Rbp, kResultTag, Rax);
-  cg.movToMem(Rbp, kResultPayload, Rdx);
-
-  cg.bind(noSeparator);
-  cg.movFromMem(R8, Rbp, kIndex);
-  cg.testReg(R8);
-  cg.jcc(Jcc::Ne, appendItem);
-  // The first item: the result starts as the rendered item.
-  cg.movFromMem(Rax, Rbp, kItemTag);
-  cg.movToMem(Rbp, kResultTag, Rax);
-  cg.movFromMem(Rax, Rbp, kItemPayload);
-  cg.movToMem(Rbp, kResultPayload, Rax);
-  cg.jmp(next);
-  cg.bind(appendItem);
-  cg.movFromMem(Rdi, Rbp, kResultTag);
-  cg.movFromMem(Rsi, Rbp, kResultPayload);
-  cg.movFromMem(Rdx, Rbp, kItemTag);
-  cg.movFromMem(Rcx, Rbp, kItemPayload);
-  cg.callLabel(env.concat);
-  cg.movToMem(Rbp, kResultTag, Rax);
-  cg.movToMem(Rbp, kResultPayload, Rdx);
-
-  cg.bind(next);
+  cg.movFromMem(Rdi, Rbp, kBuilder);
+  cg.movFromMem(Rsi, Rbp, kItemPayload);
+  cg.movFromMem(Rdx, Rsi, 0);
+  cg.addImm32(Rsi, static_cast<std::int32_t>(kStringDataOffset));
+  cg.callLabel(env.sbAppend);
   cg.movFromMem(R8, Rbp, kIndex);
   cg.addImm32(R8, 1);
   cg.movToMem(Rbp, kIndex, R8);
-  cg.jmp(loop);
+  cg.jmp(iterate);
 
   cg.bind(done);
-  cg.movFromMem(R8, Rbp, kLength);
-  cg.testReg(R8);
-  cg.jcc(Jcc::Eq, exitEmpty);
-  cg.movFromMem(Rax, Rbp, kResultTag);
-  cg.movFromMem(Rdx, Rbp, kResultPayload);
+  cg.movFromMem(R11, Rbp, kBuilder);
+  cg.movFromMem(Rdi, R11, kSbDataOffset);
+  cg.movFromMem(Rsi, R11, kSbLengthOffset);
+  cg.callLabel(env.strNew);
   cg.jmp(exit);
+
   cg.bind(exitEmpty);
-  // An empty receiver joins to the empty string, like the hosted loop.
   cg.leaRipLabel(Rdx, env.emptyString);
   cg.movImm(Rax, kTagStr);
 
@@ -3828,6 +3874,8 @@ void emitArrayJoinMethod(CodeGen& cg, CodeGen::Label label, const CollectionEnv&
 
   cg.bind(badArgc);
   emitArityFailCall(cg, msgArgc);
+  cg.bind(oom);
+  emitFailCall(cg, env.fail, *env.msgOom);
 }
 
 // Stable merge sort over an array's items, shared by `sort` and `sorted`
@@ -7345,10 +7393,36 @@ void emitMapMemberGet(CodeGen& cg, const CollectionEnv& env, CodeGen::Label memb
   cg.xorReg(Rdx, Rdx);
 }
 
-// `AotValue oskel_member_get(AotValue obj, AotValue name)`: the constant-name
-// form `obj.name`. Arrays, maps, strings, ranges and errors each answer their
-// own members; anything else is "type has no member".
-void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
+// How the member-resolution body below is used (BACKLOG §6 item 35).
+enum class MemberUse {
+  Value,  // `obj.name`: return the member; a bound method becomes a closure
+  Call,   // `obj.name(...)`: call a method's body directly, binding nothing
+};
+
+// The constant-name form `obj.name`. Arrays, maps, strings, ranges and errors
+// each answer their own members; anything else is "type has no member".
+//
+// `MemberUse::Call` resolves the same names with two differences, neither of
+// them observable: a bound method's body is called with a stack-built `self`
+// instead of being bound to a closure over a heap cell, and any member that is
+// not a method is handed to `oskel_call` -- the very same call the closure form
+// made one instruction later, so `arr.length()` and a class method stored in a
+// map fail or run exactly as before. Nothing is allocated on the method path:
+// `xs.push(i)` in a loop used to allocate a cell and a closure per iteration,
+// ~44 ns of overhead per call against 37 ns for the push itself.
+void emitMemberGetBody(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env, MemberUse use) {
+  // Slots: the member name, the call's argument count and window (`Call` only),
+  // and the cell plus `self` a `Call` tail hands to a method body. `self` is an
+  // `AotClosure` whose single upvalue slot points at the cell, which is the
+  // only field a method body reads.
+  constexpr std::int64_t kName = -24;
+  constexpr std::int64_t kArgc = -32;
+  constexpr std::int64_t kArgs = -40;
+  constexpr std::int64_t kCellTag = -72;
+  constexpr std::int64_t kCellPayload = -64;
+  constexpr std::int64_t kSelf = -112;  // 32-byte header, upvalue[0] at -80
+  constexpr std::int32_t kFrameSize = 96;
+
   CodeGen::Label map = cg.newLabel();
   CodeGen::Label arr = cg.newLabel();
   CodeGen::Label str = cg.newLabel();
@@ -7363,7 +7437,6 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   CodeGen::Label rangeNotLength = cg.newLabel();
   CodeGen::Label bindToArray = cg.newLabel();
   CodeGen::Label bindRangeContains = cg.newLabel();
-  CodeGen::Label bindRange = cg.newLabel();
   CodeGen::Label mapMiss = cg.newLabel();
   CodeGen::Label isLength = cg.newLabel();
   CodeGen::Label done = cg.newLabel();
@@ -7393,7 +7466,7 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   CodeGen::Label bindJoin = cg.newLabel();
   CodeGen::Label bindSort = cg.newLabel();
   CodeGen::Label bindSorted = cg.newLabel();
-  CodeGen::Label bind = cg.newLabel();
+  CodeGen::Label valueDone = cg.newLabel();
   // The string methods, in selector order: the names are what `member_get`
   // compares against and the labels are where each match binds its closure.
   // The order is the order `bindStringMethod`'s method table uses, so the
@@ -7409,14 +7482,41 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   for (auto& l : strBind) l = cg.newLabel();
   CodeGen::Label strMethods = cg.newLabel();
 
+  // A bound method: bind it, or call the body it selects.
+  auto methodTail = [&](CodeGen::Label body, CodeGen::Label binder, std::int64_t which,
+                        std::int64_t tag) {
+    if (use == MemberUse::Value) {
+      cg.movImm(Rdx, which);
+      cg.movImm(Rdi, tag);
+      cg.movReg(Rsi, R12);
+      cg.callLabel(binder);
+    } else {
+      cg.movToMem(Rbp, kCellTag, Rbx);
+      cg.movToMem(Rbp, kCellPayload, R12);
+      cg.leaMem(Rax, Rbp, kCellTag);
+      // `self` is an `AotClosure`: its single upvalue slot, past the header,
+      // points at the cell the body reads the receiver from.
+      cg.movToMem(Rbp, kSelf + static_cast<std::int64_t>(kAotClosureHeaderSize), Rax);
+      cg.movFromMem(Rdi, Rbp, kArgs);
+      cg.movFromMem(Rsi, Rbp, kArgc);
+      cg.leaMem(Rdx, Rbp, kSelf);
+      cg.callLabel(body);
+    }
+    cg.jmp(done);
+  };
+
   cg.bind(label);
   prologue(cg);
   cg.push(Rbx);
   cg.push(R12);
-  cg.subRegImm32(Rsp, 16);
-  cg.movReg(Rbx, Rdi);          // obj tag
-  cg.movReg(R12, Rsi);          // obj payload
-  cg.movToMem(Rbp, -24, Rcx);   // name payload (AotString*)
+  cg.subRegImm32(Rsp, kFrameSize);
+  cg.movReg(Rbx, Rdi);           // obj tag
+  cg.movReg(R12, Rsi);           // obj payload
+  cg.movToMem(Rbp, kName, Rcx);  // name payload (AotString*)
+  if (use == MemberUse::Call) {
+    cg.movToMem(Rbp, kArgc, R8);
+    cg.movToMem(Rbp, kArgs, R9);
+  }
   cg.cmpImm32(Rbx, static_cast<std::int32_t>(kTagMap));
   cg.jcc(Jcc::Eq, map);
   cg.cmpImm32(Rbx, static_cast<std::int32_t>(kTagArray));
@@ -7447,11 +7547,11 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.bind(errorMessage);
   cg.movFromMem(Rdx, R12, kErrorMessageOffset);
   cg.movImm(Rax, kTagStr);
-  cg.jmp(done);
+  cg.jmp(valueDone);
   cg.bind(errorCode);
   cg.movFromMem(Rdx, R12, kErrorCodeOffset);
   cg.movImm(Rax, kTagInt);
-  cg.jmp(done);
+  cg.jmp(valueDone);
 
   cg.bind(map);
   cg.movReg(Rdi, R12);
@@ -7464,10 +7564,10 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.addReg(R10, Rax);
   cg.movFromMem(Rax, R10, kMapEntryValueOffset);
   cg.movFromMem(Rdx, R10, kMapEntryValueOffset + 8);
-  cg.jmp(done);
+  cg.jmp(valueDone);
   cg.bind(mapMiss);
-  emitMapMemberGet(cg, env, done);
-  cg.jmp(done);
+  emitMapMemberGet(cg, env, valueDone);
+  cg.jmp(valueDone);
 
   cg.bind(arr);
   cg.movFromMem(Rdi, Rbp, -24);
@@ -7479,7 +7579,7 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   // closure over the receiver, exactly like the hosted `bindArray`. The
   // selector is the method's index in `bindArrayMethod`'s table; any other
   // name is "no such member".
-  cg.movFromMem(Rdi, Rbp, -24);
+  cg.movFromMem(Rdi, Rbp, kName);
   cg.leaRipLabel(Rsi, env.pushConst);
   cg.callLabel(env.strEq);
   cg.testReg(Rax);
@@ -7601,84 +7701,31 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.jcc(Jcc::Ne, bindSorted);
   cg.jmp(failMember);
 
-  // Every `bind*` block loads the receiver (r12), sets the selector in rdx and
-  // calls the shared binder.
-  cg.bind(bindPush);
-  cg.movImm(Rdx, 0);            // push
-  cg.jmp(bind);
-  cg.bind(bindPop);
-  cg.movImm(Rdx, 1);            // pop
-  cg.jmp(bind);
-  cg.bind(bindShift);
-  cg.movImm(Rdx, 2);            // shift
-  cg.jmp(bind);
-  cg.bind(bindUnshift);
-  cg.movImm(Rdx, 3);            // unshift
-  cg.jmp(bind);
-  cg.bind(bindInsert);
-  cg.movImm(Rdx, 4);            // insert
-  cg.jmp(bind);
-  cg.bind(bindRemoveAt);
-  cg.movImm(Rdx, 5);            // removeAt
-  cg.jmp(bind);
-  cg.bind(bindContains);
-  cg.movImm(Rdx, 6);            // contains
-  cg.jmp(bind);
-  cg.bind(bindIndexOf);
-  cg.movImm(Rdx, 7);            // indexOf
-  cg.jmp(bind);
-  cg.bind(bindClear);
-  cg.movImm(Rdx, 8);            // clear
-  cg.jmp(bind);
-  cg.bind(bindSlice);
-  cg.movImm(Rdx, 9);            // slice
-  cg.jmp(bind);
-  cg.bind(bindConcat);
-  cg.movImm(Rdx, 10);           // concat
-  cg.jmp(bind);
-  cg.bind(bindReversed);
-  cg.movImm(Rdx, 11);           // reversed
-  cg.jmp(bind);
-  cg.bind(bindClone);
-  cg.movImm(Rdx, 12);           // clone
-  cg.jmp(bind);
-  cg.bind(bindMap);
-  cg.movImm(Rdx, 13);           // map
-  cg.jmp(bind);
-  cg.bind(bindFilter);
-  cg.movImm(Rdx, 14);           // filter
-  cg.jmp(bind);
-  cg.bind(bindEach);
-  cg.movImm(Rdx, 15);           // each
-  cg.jmp(bind);
-  cg.bind(bindFind);
-  cg.movImm(Rdx, 16);           // find
-  cg.jmp(bind);
-  cg.bind(bindAny);
-  cg.movImm(Rdx, 17);           // any
-  cg.jmp(bind);
-  cg.bind(bindAll);
-  cg.movImm(Rdx, 18);           // all
-  cg.jmp(bind);
-  cg.bind(bindReduce);
-  cg.movImm(Rdx, 19);           // reduce
-  cg.jmp(bind);
-  cg.bind(bindSum);
-  cg.movImm(Rdx, 20);           // sum
-  cg.jmp(bind);
-  cg.bind(bindJoin);
-  cg.movImm(Rdx, 21);           // join
-  cg.jmp(bind);
-  cg.bind(bindSort);
-  cg.movImm(Rdx, 22);           // sort
-  cg.jmp(bind);
-  cg.bind(bindSorted);
-  cg.movImm(Rdx, 23);           // sorted
-  cg.bind(bind);
-  cg.movImm(Rdi, kTagArray);
-  cg.movReg(Rsi, R12);
-  cg.callLabel(env.bindArrayMethod);
-  cg.jmp(done);
+  // Each `bind*` block is the method's selector in `bindArrayMethod`'s table;
+  // `methodTail` either binds it or calls the body.
+  struct ArrayTail {
+    CodeGen::Label branch;
+    CodeGen::Label body;
+    std::int64_t which;
+  };
+  const std::array<ArrayTail, 24> arrayTails = {{
+      {bindPush, env.pushMethod, 0},         {bindPop, env.popMethod, 1},
+      {bindShift, env.shiftMethod, 2},       {bindUnshift, env.unshiftMethod, 3},
+      {bindInsert, env.insertMethod, 4},     {bindRemoveAt, env.removeAtMethod, 5},
+      {bindContains, env.containsMethod, 6}, {bindIndexOf, env.indexOfMethod, 7},
+      {bindClear, env.clearMethod, 8},       {bindSlice, env.sliceMethod, 9},
+      {bindConcat, env.concatMethod, 10},    {bindReversed, env.reversedMethod, 11},
+      {bindClone, env.cloneMethod, 12},      {bindMap, env.mapMethod, 13},
+      {bindFilter, env.filterMethod, 14},    {bindEach, env.eachMethod, 15},
+      {bindFind, env.findMethod, 16},        {bindAny, env.anyMethod, 17},
+      {bindAll, env.allMethod, 18},          {bindReduce, env.reduceMethod, 19},
+      {bindSum, env.sumMethod, 20},          {bindJoin, env.joinMethod, 21},
+      {bindSort, env.sortMethod, 22},        {bindSorted, env.sortedMethod, 23},
+  }};
+  for (const ArrayTail& tail : arrayTails) {
+    cg.bind(tail.branch);
+    methodTail(tail.body, env.bindArrayMethod, tail.which, kTagArray);
+  }
 
   cg.bind(str);
   cg.movFromMem(Rdi, Rbp, -24);
@@ -7690,7 +7737,7 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.callLabel(env.utf8Len);
   cg.movReg(Rdx, Rax);
   cg.movImm(Rax, kTagInt);
-  cg.jmp(done);
+  cg.jmp(valueDone);
 
   // A string method: the twelve bound names, tried in selector order. Each
   // comparison goes through `strEq`; a match binds the closure and the call
@@ -7704,19 +7751,23 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
     cg.jcc(Jcc::Ne, strBind[i]);
   }
   cg.jmp(failMember);
-  for (std::size_t i = 0; i < kStringMethodConsts.size(); ++i) {
+  const std::array<CodeGen::Label, 19> kStringMethodBodies = {
+      env.stringUpperMethod,      env.stringLowerMethod,        env.stringTrimMethod,
+      env.stringTrimStartMethod,  env.stringTrimEndMethod,      env.stringContainsMethod,
+      env.stringStartsWithMethod, env.stringEndsWithMethod,     env.stringIndexOfMethod,
+      env.stringSubstrMethod,     env.stringReversedMethod,     env.stringRepeatMethod,
+      env.stringSplitMethod,      env.stringLinesMethod,        env.stringCharsMethod,
+      env.stringReplaceMethod,    env.stringReplaceFirstMethod, env.stringPadStartMethod,
+      env.stringPadEndMethod};
+  for (std::size_t i = 0; i < strBind.size(); ++i) {
     cg.bind(strBind[i]);
-    cg.movImm(Rdi, kTagStr);
-    cg.movReg(Rsi, R12);
-    cg.movImm(Rdx, static_cast<std::int64_t>(i));
-    cg.callLabel(env.bindStringMethod);
-    cg.jmp(done);
+    methodTail(kStringMethodBodies[i], env.bindStringMethod, static_cast<std::int64_t>(i), kTagStr);
   }
 
   cg.bind(isLength);
   cg.movFromMem(Rdx, R12, kTableLengthOffset);
   cg.movImm(Rax, kTagInt);
-  cg.jmp(done);
+  cg.jmp(valueDone);
 
   // A range's `.length`: the distance between the bounds, plus one when
   // inclusive, saturated at INT64_MAX so an overflowing span stays defined.
@@ -7757,7 +7808,7 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.bind(rangeUse);
   cg.movReg(Rdx, R10);
   cg.movImm(Rax, kTagInt);
-  cg.jmp(done);
+  cg.jmp(valueDone);
 
   // The two bound range methods. The receiver travels in the closure's single
   // upvalue cell, exactly like the array and string methods, so the binder is
@@ -7775,18 +7826,25 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   cg.jcc(Jcc::Ne, bindRangeContains);
   cg.jmp(failMember);
   cg.bind(bindToArray);
-  cg.movImm(Rdx, 0);               // toArray
-  cg.jmp(bindRange);
+  methodTail(env.rangeToArrayMethod, env.bindRangeMethod, 0, kTagRange);
   cg.bind(bindRangeContains);
-  cg.movImm(Rdx, 1);               // contains
-  cg.bind(bindRange);
-  cg.movImm(Rdi, kTagRange);
-  cg.movReg(Rsi, R12);
-  cg.callLabel(env.bindRangeMethod);
-  cg.jmp(done);
+  methodTail(env.rangeContainsMethod, env.bindRangeMethod, 1, kTagRange);
 
+  // A member that is not a method: the closure form returns it, so the call
+  // form hands it to `oskel_call` and gets the same "cannot call a value of
+  // type ..." the program saw through the closure, while a class method reached
+  // through a map still runs.
+  cg.bind(valueDone);
+  if (use == MemberUse::Call) {
+    cg.movReg(Rdi, Rax);
+    cg.movReg(Rcx, Rdx);  // the payload, parked while rdx takes the count
+    cg.movFromMem(Rdx, Rbp, kArgc);
+    cg.movReg(Rsi, Rcx);
+    cg.movFromMem(Rcx, Rbp, kArgs);
+    cg.callLabel(env.call);
+  }
   cg.bind(done);
-  cg.addImm32(Rsp, 16);
+  cg.addImm32(Rsp, kFrameSize);
   cg.pop(R12);
   cg.pop(Rbx);
   epilogue(cg);
@@ -7797,6 +7855,14 @@ void emitMemberGet(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) 
   emitTypeQuoteFail(cg, *env.msgBadIndex, Rbx, R12);
 }
 
+// The two entry points over one resolution body: `oskel_member_get` returns the
+// member, `oskel_bound_call` calls a method without binding it. Both instances
+// share the name comparisons; only the tails differ.
+void emitMemberGet(CodeGen& cg, CodeGen::Label valueLabel, CodeGen::Label callLabel,
+                   const CollectionEnv& env) {
+  emitMemberGetBody(cg, valueLabel, env, MemberUse::Value);
+  emitMemberGetBody(cg, callLabel, env, MemberUse::Call);
+}
 
 // `long oskel_str_hash(AotString* s)`: FNV-1a over the bytes. A leaf, and the
 // exact hash is private to the AOT runtime: `strEq` still decides equality.
@@ -9056,6 +9122,9 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   CodeGen::Label map = cg.newLabel();
   CodeGen::Label mapNoValue = cg.newLabel();
   CodeGen::Label str = cg.newLabel();
+  CodeGen::Label strSkip = cg.newLabel();
+  CodeGen::Label strSkipDone = cg.newLabel();
+  CodeGen::Label strStoreCursor = cg.newLabel();
   CodeGen::Label range = cg.newLabel();
   CodeGen::Label rangeAsc = cg.newLabel();
   CodeGen::Label rangeAscIncl = cg.newLabel();
@@ -9162,13 +9231,38 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.jmp(storeCursor);
 
   cg.bind(str);
-  cg.movReg(Rdi, R12);
-  cg.movFromMem(Rsi, Rbp, -32);
-  cg.callLabel(env.utf8CharAt);
-  cg.testReg(Rax);
-  cg.jcc(Jcc::Eq, doneTrue);
+  // The cursor is a byte offset, not a character index: the step reads the lead
+  // byte at the cursor and skips its continuation bytes, so a loop over an
+  // n-character string costs O(n) instead of rescanning from the start on every
+  // turn. `utf8CharAt` walks from byte 0 each call, which made the loop O(n^2)
+  // -- 200 000 characters took 24s. The WASM backend already steps this way.
+  cg.movFromMem(R9, R12, 0);     // string byte length
+  cg.movFromMem(R10, Rbp, -32);  // offset (cursor)
+  cg.cmpReg(R10, R9);
+  cg.jcc(Jcc::Ae, doneTrue);  // offset >= length: past the last byte
+  cg.movReg(R11, R10);
+  cg.addImm32(R11, 1);  // end = offset + 1, then the continuations
+  cg.bind(strSkip);
+  cg.cmpReg(R11, R9);
+  cg.jcc(Jcc::Ae, strSkipDone);
+  cg.movReg(Rax, R12);
+  cg.addReg(Rax, R11);
+  cg.movzxFromMem(Rax, Rax, kStringDataOffset);  // text[end]
+  cg.movReg(Rcx, Rax);
+  cg.andImm32(Rcx, 0xC0);
+  cg.cmpImm32(Rcx, 0x80);
+  cg.jcc(Jcc::Ne, strSkipDone);  // not a continuation byte: the char ends
+  cg.addImm32(R11, 1);
+  cg.jmp(strSkip);
+  cg.bind(strSkipDone);
+  cg.movReg(Rax, R12);
+  cg.addReg(Rax, R10);
+  cg.addImm32(Rax, static_cast<std::int32_t>(kStringDataOffset));  // char pointer
+  cg.movReg(Rdx, R11);
+  cg.subReg(Rdx, R10);              // char byte length
   cg.movToMem(Rbp, -40, Rax);       // char pointer
   cg.movToMem(Rbp, -48, Rdx);       // char byte length
+  cg.movToMem(Rbp, -32, R11);       // next cursor = end (stored by strStoreCursor)
   cg.movReg(Rdi, Rdx);
   cg.addImm32(Rdi, static_cast<std::int32_t>(kAotStringHeaderSize));
   cg.callLabel(env.alloc);
@@ -9185,7 +9279,7 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.movImm(Rax, kTagStr);
   // Without this jump the char just built would fall through into the range
   // code below, which overwrites rax:rdx with the cursor index.
-  cg.jmp(storeCursor);
+  cg.jmp(strStoreCursor);
 
   emitIterNextRange(cg, range, rangeAsc, rangeAscIncl, rangeDescIncl, rangeEmit,
                     rangeDescNext, rangeStoreCursor, doneTrue, done);
@@ -9196,6 +9290,15 @@ void emitIterNext(CodeGen& cg, CodeGen::Label label, const CollectionEnv& env) {
   cg.movImmToMem(Rbx, 0, kTagInt);
   cg.movToMem(Rbx, 8, R9);
   cg.xorReg(R8, R8);                // done = false
+  cg.jmp(done);
+
+  // A string's cursor is already the next byte offset (`end`), not an index to
+  // advance, so it is stored as it stands.
+  cg.bind(strStoreCursor);
+  cg.movFromMem(R9, Rbp, -32);
+  cg.movImmToMem(Rbx, 0, kTagInt);
+  cg.movToMem(Rbx, 8, R9);
+  cg.xorReg(R8, R8);  // done = false
   cg.jmp(done);
 
   cg.bind(doneTrue);
@@ -11878,6 +11981,19 @@ void emitChrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
   emitArityFailCall(cg, msgArgc);
 }
 
+// The blobs and the hidden global a diagnostic-enabled sink needs to print
+// `oskel: FILE:LINE: ` before the message (PHASE 7g.3). The line is read from
+// `lineSlot` at the moment of the failure: the lowering stores the source line
+// of the instruction it is about to run there before it runs it, so the value
+// the sink sees is the line of the failing instruction. All four blobs live in
+// the image and are addressed by label, like every other message.
+struct DebugSink {
+  int lineSlot = -1;   // hidden global holding the current source line
+  DataBlob path;       // the source path as the command line spelled it
+  DataBlob separator;  // `:` before the number and `: ` after it, split
+  DataBlob tail;       // so the digits can go in between
+};
+
 // `void oskel_fail_dynamic(char* text, long length)`: the one runtime-error
 // sink. It writes `oskel: ` + text + newline to stderr and exits 70 -- unless a
 // `pcall` is active, in which case it hands the text to the innermost one and
@@ -11890,9 +12006,9 @@ void emitChrBuiltin(CodeGen& cg, CodeGen::Label label, CodeGen::Label allocLabel
 // record, restores the `pcall` frame's `rsp`/`rbp` and jumps to its resume
 // address. That is the one non-local return in the AOT runtime (BACKLOG §6 item
 // 4). A program that never calls `pcall` keeps a sink with no handler check.
-void emitFailDynamic(CodeGen& cg, CodeGen::Label label, CodeGen::Label write,
-                     CodeGen::Label exit, const DataBlob& prefix, const DataBlob& newline,
-                     int handlerSlot) {
+void emitFailDynamic(CodeGen& cg, CodeGen::Label label, CodeGen::Label write, CodeGen::Label exit,
+                     const DataBlob& prefix, const DataBlob& newline, int handlerSlot,
+                     const DebugSink* debug = nullptr) {
   CodeGen::Label toHandler = cg.newLabel();
 
   cg.bind(label);
@@ -11908,9 +12024,36 @@ void emitFailDynamic(CodeGen& cg, CodeGen::Label label, CodeGen::Label write,
     cg.jcc(Jcc::Ne, toHandler);
   }
 
-  cg.leaRipLabel(Rdi, prefix.label);
-  cg.movImm(Rsi, static_cast<std::int64_t>(prefix.text.size()));
-  emitWriteToFd(cg, write, 2);
+  if (debug != nullptr) {
+    // `oskel: ` first, so the line still starts with the word every existing
+    // fixture greps for, then the position: `FILE:` `LINE` `: `.
+    cg.leaRipLabel(Rdi, prefix.label);
+    cg.movImm(Rsi, static_cast<std::int64_t>(prefix.text.size()));
+    emitWriteToFd(cg, write, 2);
+    cg.leaRipLabel(Rdi, debug->path.label);
+    cg.movImm(Rsi, static_cast<std::int64_t>(debug->path.text.size()));
+    emitWriteToFd(cg, write, 2);
+    cg.leaRipLabel(Rdi, debug->separator.label);
+    cg.movImm(Rsi, static_cast<std::int64_t>(debug->separator.text.size()));
+    emitWriteToFd(cg, write, 2);
+    // The formatter builds its digits below rbp, so the space has to be
+    // reserved: a `call` would otherwise push a return address over them. The
+    // line is loaded into rax immediately before the formatter, which moves it
+    // to rax itself, so no register has to hold it across a call (r13 is the
+    // arena cursor and must not be reused here).
+    cg.subRegImm32(Rsp, 32);
+    cg.movFromMem(Rax, kAotGlobalBase, 16LL * debug->lineSlot + 8);
+    emitWriteUnsignedDecimal(cg, write, Rax);
+    cg.addImm32(Rsp, 32);
+    cg.leaRipLabel(Rdi, debug->tail.label);
+    cg.movImm(Rsi, static_cast<std::int64_t>(debug->tail.text.size()));
+    emitWriteToFd(cg, write, 2);
+  } else {
+    cg.leaRipLabel(Rdi, prefix.label);
+    cg.movImm(Rsi, static_cast<std::int64_t>(prefix.text.size()));
+    emitWriteToFd(cg, write, 2);
+  }
+
   cg.movReg(Rdi, Rbx);
   cg.movReg(Rsi, R12);
   emitWriteToFd(cg, write, 2);
@@ -18636,7 +18779,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
 
   emitFail(cg, fail, failDynamic);
   emitWriteInt(cg, writeInt, entry.write);
-  emitAlloc(cg, handles.alloc);
+  emitAlloc(cg, handles.alloc, entry.arenaGrow);
   emitConcat(cg, handles.concat, handles.alloc, fail, msgOom);
   emitArrayConcat(cg, handles.arrayConcat, handles.alloc, env.blockEnsure, fail, msgOom);
   emitBindArrayMethod(cg, handles.bindArrayMethod, handles.cellNew, handles.closure,
@@ -18893,7 +19036,7 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
   emitTableNew(cg, handles.tableNew, env);
   emitPackRest(cg, handles.packRest, env);
   emitTableGet(cg, handles.tableGet, env);
-  emitMemberGet(cg, handles.memberGet, env);
+  emitMemberGet(cg, handles.memberGet, handles.boundCall, env);
   emitTableSet(cg, handles.tableSet, env);
   emitMemberSet(cg, handles.memberSet, env);
   emitContains(cg, handles.contains, env);
@@ -19004,8 +19147,17 @@ void emitAotRuntime(CodeGen& cg, const AotRuntimeHandles& handles,
 
   // The public builtins (PHASE 7c.5a). `str` and `isError` reuse the `$str` and
   // `$isError` code: the public names are just two more seeds of the same entry.
+  DebugSink debugSink;
+  const bool wantsDebug =
+      extras.sourcePath != nullptr && extras.sourcePath[0] != '\0' && extras.sourceLineSlot >= 0;
+  if (wantsDebug) {
+    debugSink.lineSlot = extras.sourceLineSlot;
+    debugSink.path = addText(extras.sourcePath);
+    debugSink.separator = addText(":");
+    debugSink.tail = addText(": ");
+  }
   emitFailDynamic(cg, failDynamic, entry.write, entry.exit, textOskelPrefix, textNewline,
-                  pcallHandlerSlot);
+                  pcallHandlerSlot, wantsDebug ? &debugSink : nullptr);
   emitLenBuiltin(cg, handles.lenBuiltin, env, msgLenType, msgLenArgc);
   emitTypeBuiltin(cg, handles.typeBuiltin, handles.alloc, fail, msgOom, typeNameNil,
                   typeNameBool, typeNameInt, typeNameFloat, typeNameDouble, typeNameStr,

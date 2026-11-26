@@ -57,7 +57,9 @@ struct AotRuntimeHandles {
   CodeGen::Label truthy;         // long      oskel_truthy(AotValue a)
   // Bump allocation from the arena seeded by `oskel_init_arena`: returns an
   // 8-byte-aligned pointer, or null when the region is exhausted. The size is
-  // in rdi.
+  // in rdi. It grows by mapping a new chunk (`entry.arenaGrow`) and preserves
+  // every register except rax and the r10/r11 scratch pair -- the contract the
+  // emitted helpers are written against, not the System V one.
   CodeGen::Label alloc;          // void* oskel_alloc(long size)
   // String concatenation: allocates `lenA + lenB + 8` bytes, writes the
   // combined length and bytes, and returns an `AotValue` (tag Str). Used by
@@ -123,6 +125,15 @@ struct AotRuntimeHandles {
   CodeGen::Label tableNew;   // AotValue oskel_table_new(long kind)
   CodeGen::Label tableGet;   // AotValue oskel_table_get(AotValue obj, AotValue index)
   CodeGen::Label memberGet;  // AotValue oskel_member_get(AotValue obj, AotValue name)
+  // `AotValue oskel_bound_call(AotValue recv, AotValue name, long argc,
+  // AotValue* args)`: the same constant-name resolution as `memberGet`, but a
+  // bound method's body is called directly instead of being bound to a fresh
+  // closure over a heap cell. `lower.cpp` reaches it from the fused
+  // `GETTABLE`+`CALL` pair, so `xs.push(i)` allocates nothing per call
+  // (BACKLOG §6 item 35). Anything that is not a method is handed to
+  // `oskel_call`, and every error message is `memberGet`'s.
+  CodeGen::Label boundCall;  // AotValue oskel_bound_call(AotValue recv, AotValue name, long argc,
+                             // AotValue* args)
   CodeGen::Label tableSet;   // void oskel_table_set(AotValue obj, AotValue index, AotValue value)
   CodeGen::Label memberSet;  // void oskel_member_set(AotValue obj, AotValue name, AotValue value)
   CodeGen::Label contains;   // AotValue oskel_contains(AotValue needle, AotValue haystack)
@@ -700,6 +711,13 @@ struct AotRuntimeExtras {
   // when some `GETGLOBAL` can reach a slot nothing has assigned, so a program
   // that assigns before it reads keeps its image byte for byte.
   bool needsGlobalGetChecked = false;
+  // PHASE 7g.3: the source path a runtime error names. Null (or empty) leaves
+  // the sink exactly as it was -- `oskel: <message>` with no position -- so a
+  // caller that wants no diagnostics gets the byte-identical image.
+  const char* sourcePath = nullptr;
+  // The hidden global the lowering publishes the current source line into, or
+  // -1 when no position tracking is emitted.
+  int sourceLineSlot = -1;
 };
 
 void emitAotRuntime(CodeGen& code, const AotRuntimeHandles& handles,

@@ -80,6 +80,40 @@ static bool loweringThrows(const Bytecode& proto, const char* needle) {
 
 // --- Structural tests ---
 
+// PHASE 7g.3: position tracking is opt-in at lowering time. The invariant that
+// matters is that the *line numbers* in the bytecode cannot reach the image
+// unless the caller supplies a source path -- otherwise `AGENTS.md`'s
+// byte-for-byte guarantee for the freestanding output would depend on whatever
+// the compiler happened to record. So: lower one proto with real lines and one
+// with every line zeroed, no `DebugSource`, and require identical bytes. With a
+// source path, the same pair must differ (the stores are emitted).
+static void testDiagnosticsAreOptIn() {
+  Instruction load = instr(OpCode::LOADK, 0, 0);
+  Instruction jump = instr(OpCode::JMP, 0, 0, 0, 2);
+  Instruction halt = instr(OpCode::HALT);
+  Instruction plainLoad = load;
+  Instruction plainJump = jump;
+  Instruction plainHalt = halt;
+  load.line = 1;
+  jump.line = 2;
+  halt.line = 3;
+
+  const Bytecode withLines = makeProto({load, jump, halt}, {Value(static_cast<int64_t>(1))}, 1);
+  const Bytecode withoutLines =
+      makeProto({plainLoad, plainJump, plainHalt}, {Value(static_cast<int64_t>(1))}, 1);
+
+  check(lowerToX64(Target::linuxX64(), withLines, CodeGen{}).code ==
+            lowerToX64(Target::linuxX64(), withoutLines, CodeGen{}).code,
+        "without a source path the line numbers must not reach the image");
+
+  check(lowerToX64(Target::linuxX64(), withLines, CodeGen{}, LinkMode::Freestanding,
+                   DebugSource{"prog.oskl"})
+                .code != lowerToX64(Target::linuxX64(), withoutLines, CodeGen{},
+                                    LinkMode::Freestanding, DebugSource{"prog.oskl"})
+                             .code,
+        "with a source path the line numbers must reach the image");
+}
+
 static void testImageIsSelfContained() {
   // The image carries the program, the runtime and `_start`, so it is larger
   // than the program alone and both entry points are inside it.
@@ -232,6 +266,16 @@ static void testIterOperandsLower() {
 static void testBadJumpTargetThrows() {
   auto proto = makeProto({instr(OpCode::JMP, 0, 0, 0, 99), instr(OpCode::HALT)}, {}, 1);
   check(loweringThrows(proto, "outside the code"), "an out-of-range jump target throws");
+}
+
+static void testJumpToCodeSizeLowers() {
+  // The VM accepts a jump target of exactly `code.size()`: the pc is set past
+  // the last instruction and the next dispatch falls off the end, which is an
+  // implicit `return nil`. The lowerer must accept it too, or AOT rejects a
+  // chunk the VM runs.
+  auto proto = makeProto({instr(OpCode::JMP, 0, 0, 0, 1)}, {}, 1);
+  LoweredChunk chunk = lower(proto);
+  check(!chunk.code.empty(), "a jump to exactly the code size lowers");
 }
 
 static void testUnassignedGlobalThrows() {
@@ -569,6 +613,15 @@ static void testExecUnop() {
        instr(OpCode::UNOP, 0, 0, static_cast<int>(UnaryOp::Not)), instr(OpCode::HALT)},
       {Value()}, 1);
   checkBool(notNil, true, "exec: !nil is true");
+}
+
+static void testExecJumpToEnd() {
+  // `JMP` to exactly `code.size()` falls off the end of the root chunk, so the
+  // result is nil -- the same value the VM's implicit `return nil` produces.
+  auto proto = makeProto({instr(OpCode::JMP, 0, 0, 0, 1)}, {}, 1);
+  AotValue value = run(proto);
+  check(value.tag == static_cast<std::uint64_t>(AotTag::Nil),
+        "exec: a jump to the end of the chunk yields nil");
 }
 
 static void testExecJumps() {
@@ -1297,12 +1350,14 @@ static void testExecCompiledCapture() {
 #endif  // LOWER_EXEC_TESTS
 
 int main() {
+  testDiagnosticsAreOptIn();
   testImageIsSelfContained();
   testMemSizeTargetGate();
   testBackingTargetGates();
   testCollectionsLower();
   testIterOperandsLower();
   testBadJumpTargetThrows();
+  testJumpToCodeSizeLowers();
   testUnassignedGlobalThrows();
   testHostBindingThrows();
   testUnusedHostBindingLowers();
@@ -1319,6 +1374,7 @@ int main() {
   testExecBitwise();
   testExecComparisonsAsValues();
   testExecUnop();
+  testExecJumpToEnd();
   testExecJumps();
   testExecBackwardJumpLoop();
   testExecManyRegisters();

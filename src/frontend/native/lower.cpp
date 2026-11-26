@@ -129,6 +129,19 @@ void emitFunctionEpilogue(CodeGen& cg) {
   cg.retInsn();
 }
 
+// PHASE 7g.3: publishes `line` in the hidden global at `slot` so the one
+// runtime-error sink can print `FILE:LINE: `. One store, and only when the line
+// changed since the previous instruction, so a straight-line block costs
+// nothing extra. `lastLine` is the value already published for this function;
+// a negative `slot` disables the tracking entirely and leaves the image
+// byte-for-byte what it was before this existed.
+void emitSourceLine(CodeGen& cg, int slot, int line, int& lastLine, bool force) {
+  if (slot < 0 || line <= 0 || (!force && line == lastLine)) return;
+  lastLine = line;
+  cg.movImm(X64Reg::Rax, static_cast<std::int64_t>(line));
+  cg.movToMem(kAotGlobalBase, 16LL * slot + 8, X64Reg::Rax);
+}
+
 // Loads register `index` into `tag`:`payload`. Two moves, the tagged load the
 // lowering table budgets.
 void loadValue(CodeGen& cg, int index, X64Reg tag, X64Reg payload) {
@@ -219,9 +232,30 @@ void callBinary(CodeGen& cg, CodeGen::Label helper, int lhs, int rhs, int dst) {
   storeValue(cg, dst, X64Reg::Rax, X64Reg::Rdx);
 }
 
+// Every instruction a jump can land on, per proto. A store emitted for the
+// fall-through path may be skipped on the jumping path, so these indices
+// publish their line unconditionally (PHASE 7g.3).
+std::unordered_set<std::size_t> jumpTargetIndices(const Bytecode& proto) {
+  std::unordered_set<std::size_t> targets;
+  for (const Instruction& instr : proto.code) {
+    const bool isJump = instr.op == OpCode::JMP || instr.op == OpCode::JMP_IF_FALSE ||
+                        instr.op == OpCode::JMP_IF_TRUE;
+    if (!isJump) continue;
+    if (instr.jump >= 0 && static_cast<std::size_t>(instr.jump) <= proto.code.size()) {
+      targets.insert(static_cast<std::size_t>(instr.jump));
+    }
+  }
+  return targets;
+}
+
+// `labels` carries one entry per instruction plus a trailing one for
+// `code.size()`. The VM accepts a target of exactly `size` -- a jump past the
+// last instruction falls off the end, which is an implicit `return nil` -- so
+// the lowerer binds that address to an end label that publishes nil and runs
+// the frame's epilogue. Rejecting it here would diverge from the VM.
 CodeGen::Label jumpTarget(const Instruction& instr, const Bytecode& proto,
                           const std::vector<CodeGen::Label>& labels) {
-  if (instr.jump < 0 || static_cast<std::size_t>(instr.jump) >= proto.code.size()) {
+  if (instr.jump < 0 || static_cast<std::size_t>(instr.jump) > proto.code.size()) {
     throw LoweringError("lowering: jump target " + std::to_string(instr.jump) +
                         " is outside the code (size " +
                         std::to_string(proto.code.size()) + ")");
@@ -838,6 +872,9 @@ struct FrameInfo {
   // The root chunk's shared callback arena-state slot, or -1. A child proto
   // never runs the root epilogue, so it stays -1 there.
   int callbackStateSlot = -1;
+  // PHASE 7g.3: the hidden global the current source line is published in, or
+  // -1 when the caller asked for no diagnostics.
+  int sourceLineSlot = -1;
   std::unordered_set<int> capturedSlots;
 };
 
@@ -971,16 +1008,85 @@ std::unordered_set<std::size_t> checkedGlobalReads(
   return checked;
 }
 
+// Whether `ins` overwrites R[reg]. A conservative answer only costs a fusion, so
+// an opcode that reads `a` without storing it is still reported as a write.
+bool writesRegister(const Instruction& ins, int reg) {
+  switch (ins.op) {
+    case OpCode::JMP:
+    case OpCode::JMP_IF_FALSE:
+    case OpCode::JMP_IF_TRUE:
+    case OpCode::SETTABLE:
+    case OpCode::RETURN:
+    case OpCode::HALT:
+      return false;
+    case OpCode::ITER:
+      return ins.a == reg || ins.d == reg || ins.e == reg;
+    default:
+      return ins.a == reg;
+  }
+}
+
+// Bound-method call fusion (BACKLOG §6 item 35). A method call compiles to
+// `R[a] = R[b].<const name>` followed by the argument evaluations and
+// `CALL R[a], n`, so the two instructions are *not* adjacent. `fused[i]` holds
+// the name's constant index (`-c - 1`) for both instructions of such a pair and
+// 0 for everything else (a member name always has `c <= -1`).
+//
+// The pairing is the last write of R[a] before the `CALL`: the callee slot is
+// live from the `GETTABLE` to the call, so nothing else writes it, and a window
+// bounded by the first overwrite, a jump target or a control-flow instruction
+// keeps the peephole honest. `lowerInstruction` then parks the receiver in R[a]
+// instead of building a closure and hands it to `oskel_bound_call`, which
+// resolves the name and calls a method body directly: `xs.push(i)` in a loop
+// allocated a cell and a closure per iteration, ~44 ns against the push's own
+// 37 ns. The parked register is unobservable -- the `CALL` result overwrites it
+// and a member value is never read as a closure.
+std::vector<int> fusedMemberCalls(const Bytecode& proto,
+                                  const std::unordered_set<std::size_t>& targets) {
+  constexpr std::size_t kWindow = 32;
+  std::vector<int> fused(proto.code.size() + 1, 0);
+  for (std::size_t i = 0; i < proto.code.size(); ++i) {
+    const Instruction& get = proto.code[i];
+    if (get.op != OpCode::GETTABLE || get.c >= 0) {
+      continue;
+    }
+    for (std::size_t j = i + 1; j < proto.code.size() && j <= i + kWindow; ++j) {
+      if (targets.count(j) != 0) {
+        break;  // control can enter the window
+      }
+      const Instruction& ins = proto.code[j];
+      if (ins.op == OpCode::JMP || ins.op == OpCode::JMP_IF_FALSE ||
+          ins.op == OpCode::JMP_IF_TRUE || ins.op == OpCode::RETURN || ins.op == OpCode::HALT) {
+        break;  // control leaves the window
+      }
+      if (!writesRegister(ins, get.a)) {
+        continue;
+      }
+      if (ins.op == OpCode::CALL && ins.a == get.a) {
+        fused[i] = get.c;
+        fused[j] = get.c;
+      }
+      break;  // R[a] was rewritten by something else
+    }
+  }
+  return fused;
+}
+
 void lowerInstruction(std::size_t index, const Instruction& instr, const Bytecode& proto,
-                      CodeGen& cg,
-                      const std::vector<CodeGen::Label>& labels,
+                      CodeGen& cg, const std::vector<CodeGen::Label>& labels,
                       const AotRuntimeHandles& rt, const GlobalSlots& globals,
                       const FrameInfo& frame,
                       const std::unordered_map<const Bytecode*, CodeGen::Label>& protoEntry,
                       const std::unordered_map<const Bytecode*, CodeGen::Label>& displayOf,
                       std::vector<StringConstant>& stringConstants,
-                      const std::unordered_set<std::size_t>& checkedReads) {
+                      const std::unordered_set<std::size_t>& checkedReads, int& lastPublishedLine,
+                      bool isJumpTarget, const std::vector<int>& fusedMembers) {
   const int fileRegisters = frame.fileRegisters;
+  // At a jump target the previous instruction emitted may belong to a
+  // different path, so a deduplicated store could leave a stale line behind
+  // (`if` inside a loop is enough to reach this). Publishing unconditionally
+  // there costs one store per loop header and per merge point.
+  emitSourceLine(cg, frame.sourceLineSlot, instr.line, lastPublishedLine, isJumpTarget);
   switch (instr.op) {
     case OpCode::LOADK: {
       const Value& value = proto.constants.at(static_cast<std::size_t>(instr.b));
@@ -1212,6 +1318,20 @@ void lowerInstruction(std::size_t index, const Instruction& instr, const Bytecod
       // Pass the callee (rdi:rsi), the count (rdx) and the argument window's
       // address (rcx) to `oskel_call`, which checks the callee is a function and
       // dispatches it. The result comes back in rax:rdx, straight into R[a].
+      if (fusedMembers.at(index) != 0) {
+        // The partner `GETTABLE` parked the receiver here. Pass it with the
+        // member name, the count and the window (r8:r9) to `oskel_bound_call`,
+        // which calls a method body directly and hands any other member to
+        // `oskel_call`, so no closure is built on the way.
+        loadValue(cg, instr.a, X64Reg::Rdi, X64Reg::Rsi);
+        loadMemberName(cg, proto, fusedMembers.at(index), X64Reg::Rdx, X64Reg::Rcx,
+                       stringConstants);
+        cg.movImm(X64Reg::R8, instr.b);
+        cg.leaMem(X64Reg::R9, kFileBase, slotOffset(instr.a + 1));
+        cg.callLabel(rt.boundCall);
+        storeValue(cg, instr.a, X64Reg::Rax, X64Reg::Rdx);
+        break;
+      }
       loadValue(cg, instr.a, X64Reg::Rdi, X64Reg::Rsi);
       cg.movImm(X64Reg::Rdx, instr.b);
       cg.leaMem(X64Reg::Rcx, kFileBase, slotOffset(instr.a + 1));
@@ -1306,6 +1426,14 @@ void lowerInstruction(std::size_t index, const Instruction& instr, const Bytecod
       // R[a] = R[b][R[c]] (dynamic index) or R[b].<name> (constant member name,
       // encoded as `-c - 1`). The name form loads the string constant into
       // rdx:rcx as a value, so both paths share one helper.
+      if (fusedMembers.at(index) != 0) {
+        // `obj.name(...)`: park the receiver in R[a] for the `CALL` below, which
+        // resolves the name and calls a method body without binding a closure
+        // (BACKLOG §6 item 35). The call's result overwrites R[a].
+        loadValue(cg, instr.b, X64Reg::Rax, X64Reg::Rdx);
+        storeValue(cg, instr.a, X64Reg::Rax, X64Reg::Rdx);
+        break;
+      }
       loadValue(cg, instr.b, X64Reg::Rdi, X64Reg::Rsi);
       if (instr.c >= 0) {
         loadValue(cg, instr.c, X64Reg::Rdx, X64Reg::Rcx);
@@ -1363,8 +1491,8 @@ void lowerInstruction(std::size_t index, const Instruction& instr, const Bytecod
 
 }  // namespace
 
-LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
-                        const CodeGen& /*codegen*/, LinkMode mode) {
+LoweredChunk lowerToX64(const Target& target, const Bytecode& proto, const CodeGen& /*codegen*/,
+                        LinkMode mode, const DebugSource& debug) {
   requireSupportedTarget(target);
   requireSupportedLinkMode(target, mode);
 
@@ -1691,6 +1819,16 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     globals.slotOfName[kAotArgsGlobal] = argsSlot;
   }
 
+  // PHASE 7g.3: a runtime error names its source position. The current line
+  // lives in a hidden global the sink reads, and the lowering stores it before
+  // each instruction (only when it changes). A caller that passes no source
+  // path gets no slot and no tracking, so its image stays byte for byte what it
+  // was.
+  int sourceLineSlot = -1;
+  if (!debug.path.empty()) {
+    sourceLineSlot = globals.count++;
+  }
+
   // A callback crosses a C boundary, where the C caller expects r13/r14/r15 to
   // be preserved. Those are the Oskel arena cursor/end and global base, so the
   // callback body parks them in a shared state block. The slot exists only when
@@ -1824,18 +1962,31 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     frame.fileLocals = rootLocals;
     frame.hasSelf = false;
     frame.callbackStateSlot = callbackStateSlot;
+    frame.sourceLineSlot = sourceLineSlot;
     frame.capturedSlots = capturedLocalSlots(proto);
     std::vector<CodeGen::Label> labels;
-    labels.reserve(proto.code.size());
+    labels.reserve(proto.code.size() + 1);
     for (std::size_t i = 0; i < proto.code.size(); ++i) labels.push_back(cg.newLabel());
+    labels.push_back(cg.newLabel());
     const std::unordered_set<std::size_t> checked =
         checkedGlobalReads(proto, globals, unsetCandidates);
     if (!checked.empty()) needsGlobalGetChecked = true;
+    // `lastPublishedLine` is per function: the previous function's last line is
+    // not what this frame published, so the first instruction always stores.
+    int lastPublishedLine = 0;
+    const std::unordered_set<std::size_t> jumpTargets = jumpTargetIndices(proto);
+    const std::vector<int> rootFusedMembers = fusedMemberCalls(proto, jumpTargets);
     for (std::size_t i = 0; i < proto.code.size(); ++i) {
       cg.bind(labels[i]);
-      lowerInstruction(i, proto.code[i], proto, cg, labels, rt, globals, frame,
-                       protoEntry, displayOf, stringConstants, checked);
+      lowerInstruction(i, proto.code[i], proto, cg, labels, rt, globals, frame, protoEntry,
+                       displayOf, stringConstants, checked, lastPublishedLine,
+                       jumpTargets.count(i) != 0, rootFusedMembers);
     }
+    // Falling off the end of the root chunk is an implicit nil result.
+    cg.bind(labels.back());
+    cg.movImm(X64Reg::Rax, static_cast<std::int64_t>(AotTag::Nil));
+    cg.movImm(X64Reg::Rdx, 0);
+    emitRootEpilogue(cg, frame.callbackStateSlot);
   }
 
   // Every child proto: a function with the lowering's own convention
@@ -1894,6 +2045,7 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     frame.fileRegisters = fnRegisters;
     frame.fileLocals = fnLocals;
     frame.hasSelf = true;
+    frame.sourceLineSlot = sourceLineSlot;
     frame.capturedSlots = capturedLocalSlots(fn);
 
     // Copy the fixed arguments into the register file. `args` points at the
@@ -1919,16 +2071,26 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
     }
 
     std::vector<CodeGen::Label> labels;
-    labels.reserve(fn.code.size());
+    labels.reserve(fn.code.size() + 1);
     for (std::size_t i = 0; i < fn.code.size(); ++i) labels.push_back(cg.newLabel());
+    labels.push_back(cg.newLabel());
     const std::unordered_set<std::size_t> checked =
         checkedGlobalReads(fn, globals, unsetCandidates);
     if (!checked.empty()) needsGlobalGetChecked = true;
+    int lastPublishedLine = 0;
+    const std::unordered_set<std::size_t> jumpTargets = jumpTargetIndices(fn);
+    const std::vector<int> fnFusedMembers = fusedMemberCalls(fn, jumpTargets);
     for (std::size_t i = 0; i < fn.code.size(); ++i) {
       cg.bind(labels[i]);
-      lowerInstruction(i, fn.code[i], fn, cg, labels, rt, globals, frame,
-                       protoEntry, displayOf, stringConstants, checked);
+      lowerInstruction(i, fn.code[i], fn, cg, labels, rt, globals, frame, protoEntry, displayOf,
+                       stringConstants, checked, lastPublishedLine, jumpTargets.count(i) != 0,
+                       fnFusedMembers);
     }
+    // Falling off the end of a function body is an implicit `return nil`.
+    cg.bind(labels.back());
+    cg.movImm(X64Reg::Rax, static_cast<std::int64_t>(AotTag::Nil));
+    cg.movImm(X64Reg::Rdx, 0);
+    emitFunctionEpilogue(cg);
   }
 
   // `main`: run the chunk and return 0, so the process exit code is a clean
@@ -1987,6 +2149,8 @@ LoweredChunk lowerToX64(const Target& target, const Bytecode& proto,
   extras.platformName = osName(target.os);
   extras.archName = archName(target.arch);
   extras.needsGlobalGetChecked = needsGlobalGetChecked;
+  extras.sourcePath = debug.path.empty() ? nullptr : debug.path.c_str();
+  extras.sourceLineSlot = sourceLineSlot;
   emitAotRuntime(cg, rt, entry, externThunks.empty() ? nullptr : &externThunks,
                  mode == LinkMode::Hosted, hasInput,
                  target.os == Os::Freestanding, randomStateSlot, pcallHandlerSlot,

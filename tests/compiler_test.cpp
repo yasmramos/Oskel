@@ -53,6 +53,21 @@ void expectCompileError(const std::string& source, const char* what) {
   std::fprintf(stderr, "expected CompileError for %s\n", what);
   std::exit(1);
 }
+// Like `expectCompileError`, but the message must also contain `needle`. The
+// assignment rule is written twice (a union probe and the plain path), so a
+// message pin keeps the two from drifting apart while they are unified.
+void expectCompileErrorContaining(const std::string& source, const char* needle, const char* what) {
+  try {
+    compileSource(source);
+  } catch (const CompileError& error) {
+    if (error.message.find(needle) != std::string::npos) return;
+    std::fprintf(stderr, "expected %s in the error for %s, got: %s\n", needle, what,
+                 error.message.c_str());
+    std::exit(1);
+  }
+  std::fprintf(stderr, "expected CompileError for %s\n", what);
+  std::exit(1);
+}
 
 void expectCompiles(const std::string& source) {
   try {
@@ -170,6 +185,29 @@ void testNewlineNormalization() {
   auto lines = lex("a\r\nb");
   assert(lines.size() == 3);
   assert(lines[0].line == 1 && lines[1].line == 2);
+}
+
+// Normalising the source before lexing must not move a token. `\r` sits at the
+// end of a line, so folding `\r\n` to `\n` cannot change a column *within*
+// that line, and a lone `\r` is a line break in the lexer and in
+// `lineText` alike -- the two agree, which is what a diagnostic needs
+// (BACKLOG §11 item 1).
+void testNewlineNormalizationKeepsPositions() {
+  const std::string lf = "let a = 1;\nlet b = ;\n";
+  const std::string crlf = "let a = 1;\r\nlet b = ;\r\n";
+  const std::string cr = "let a = 1;\rlet b = ;\r";
+
+  const auto positions = [](const std::string& source) {
+    std::vector<std::pair<int, int>> result;
+    for (const Token& token : lex(source)) {
+      result.push_back({token.line, token.col});
+    }
+    return result;
+  };
+
+  const auto expected = positions(lf);
+  assert(positions(crlf) == expected);
+  assert(positions(cr) == expected);
 }
 
 void testBoolAndNilLiterals() {
@@ -316,6 +354,42 @@ void testAssignment() {
   assert(bc.code[1].a == 0 && bc.code[1].b == 1);
   assert(bc.code[2].op == OpCode::HALT);
   assert(bc.numRegisters == 1);
+}
+
+// The assignment rule has two entry points: the plain path and the union
+// probe, which calls `assignError` per member instead of aborting on the first
+// miss. They are duplicated today (BACKLOG §3 item 1), so the messages are
+// pinned here: a union that fails must report the same diagnostic a plain
+// assignment would, and the two nullable hints must not drift apart.
+void testAssignmentErrorsAreSpecific() {
+  // Plain target: the hint names the target type.
+  expectCompileErrorContaining("let x: int? = nil;\nlet y: int = x;\n",
+                               "a nullable value is not allowed here (use 'int?')",
+                               "a nullable value into a plain int");
+  expectCompileErrorContaining("let x: int = nil;\n", "cannot assign 'nil' to 'int'",
+                               "nil into a plain int");
+  expectCompileErrorContaining("let s: string = nil;\n",
+                               "a nullable value is not allowed here (use 'string?')",
+                               "nil into a plain string");
+
+  // Union target: the hint cannot name one alternative, so it offers both
+  // spellings.
+  expectCompileErrorContaining("let x: int? = nil;\nlet y: int|string = x;\n",
+                               "a nullable value is not allowed here (add '| nil' or '?')",
+                               "a nullable value into a non-nullable union");
+  expectCompileErrorContaining("let x: int|string = nil;\n",
+                               "a nullable value is not allowed here (add '| nil' or '?')",
+                               "nil into a non-nullable union");
+
+  // A union whose members all miss reports the union as a whole: naming one
+  // member ('string') points at a type the caller never wrote at that site.
+  expectCompileErrorContaining("let u: int|string = 1;\nlet v: int = u;\n",
+                               "cannot assign 'int | string' to 'int'", "a union into an int");
+
+  // The nullable union and the union-to-union cases are allowed.
+  expectCompiles("let x: int|string|nil = nil;\nprint(x);\n");
+  expectCompiles("let u: int|string = 1;\nlet v: int|string = u;\nprint(v);\n");
+  expectCompiles("let x: int|string = 1;\nlet y: int|string|nil = x;\nprint(y);\n");
 }
 
 void testConstantDeduplication() {
@@ -612,6 +686,53 @@ void testDeferNestedConstructsCompile() {
   expectCompiles(
       "fn f() {\n"
       "  defer { var g = () => { return 1; }; }\n"
+      "}\n");
+}
+
+void testDeferRunsBeforeTryPropagation() {
+  // `try` propagates by emitting a RETURN, so it leaves the enclosing block
+  // early. The block's deferred call must be emitted before that RETURN, which
+  // is the same order `return` gets (tests/70_try_defer.oskl pins the run-time
+  // behaviour, this pins the emission order).
+  Bytecode bc = compileSource(
+      "fn fails() { return error(\"x\"); }\n"
+      "fn f() {\n"
+      "  if (true) {\n"
+      "    defer { print(\"cleanup\"); }\n"
+      "    let v = try fails();\n"
+      "  }\n"
+      "  return 1;\n"
+      "}\n");
+  const Bytecode* fProto = nullptr;
+  for (const auto& child : bc.children) {
+    if (child->name == "f") fProto = child.get();
+  }
+  assert(fProto != nullptr);
+  // `try` emits RETURN, so the proto has the propagation one and `return 1`.
+  // The deferred CALL must immediately precede the propagation RETURN.
+  size_t firstReturn = fProto->code.size();
+  for (size_t i = 0; i < fProto->code.size(); ++i) {
+    if (fProto->code[i].op == OpCode::RETURN) {
+      firstReturn = i;
+      break;
+    }
+  }
+  assert(firstReturn > 0 && "try must emit a RETURN");
+  assert(fProto->code[firstReturn - 1].op == OpCode::CALL &&
+         "the block's defer must run before the try propagation RETURN");
+}
+
+void testCatchKeepsDeferInScope() {
+  // `catch` does not leave the scope (it is `$isError` + a conditional MOVE),
+  // so a `defer` in the same block still runs at the block's normal exit, after
+  // the recovered value is produced.
+  expectCompiles(
+      "fn f() {\n"
+      "  {\n"
+      "    defer { print(\"cleanup\"); }\n"
+      "    let v = error(\"x\") catch 0;\n"
+      "  }\n"
+      "  return 1;\n"
       "}\n");
 }
 
@@ -1834,6 +1955,7 @@ int main() {
   testLeftAssociativePrecedence();
   testStringConstant();
   testNewlineNormalization();
+  testNewlineNormalizationKeepsPositions();
   testBoolAndNilLiterals();
   testVarWithoutInitializer();
   testModuloAndPower();
@@ -1843,6 +1965,7 @@ int main() {
   testCompoundBitwiseAssignment();
   testLetReassignment();
   testAssignment();
+  testAssignmentErrorsAreSpecific();
   testConstantDeduplication();
   testIfElseJumps();
   testIfWithoutElse();
@@ -1860,6 +1983,8 @@ int main() {
   testDeferRunsOnFallThrough();
   testDeferErrors();
   testDeferNestedConstructsCompile();
+  testDeferRunsBeforeTryPropagation();
+  testCatchKeepsDeferInScope();
   testBlockScopingBytecode();
   testShadowingSlots();
   testLocalImmutableAssignment();

@@ -513,11 +513,29 @@ class Compiler {
   // the implicit epilogue wrap their value in a future map, so the function's
   // call-site value is a `Future` while its annotation describes the payload.
   bool currentIsAsync_ = false;
+  // True while compiling the generated step function of an async body
+  // (PHASE 11.2.2). A `return` produces a `{kind: "done", value: ...}` status
+  // for the scheduler instead of a future.
+  bool currentAsyncBody_ = false;
+  // True when this chunk needs the hidden scheduler helpers, so the end of the
+  // chunk drains pending tasks (PHASE 11.2.2).
+  bool asyncPrelude_ = false;
+  // True once the helpers were emitted in this compilation session. They are
+  // globals shared by every module, so a second chunk (an imported module, a
+  // REPL entry) reuses them instead of resetting the ready queue.
+  bool asyncPreludeEmitted_ = false;
 
   // Infers the static type of an expression when it is evident from its shape
   // (a literal, or a variable whose type is known). Returns an empty TypeRef
   // when the type cannot be determined, which means "no check".
   TypeRef inferExprType(const Expr& expr) const;
+
+  // Rejects indexing, slicing, iteration and member access on a `Future`-typed
+  // value (PHASE 11.2.1). A future is a map at run time, so without this check
+  // user code could read or overwrite the `state`/`value` protocol that `await`
+  // owns. A value erased to `any` still reaches the map; the runtime tag that
+  // closes that hole is PHASE 11.2.5.
+  void checkFutureAccess(const Expr& object, int line, int col) const;
 
   // Capture list of the frame currently being compiled, keyed by variable
   // name and parallel to `bc_.upvalues`.
@@ -603,8 +621,8 @@ class Compiler {
   // names the target for the message.
   void checkAssignable(const TypeRef& from, const TypeRef& to, const std::string& context,
                        int line, int col);
-  // The non-union part of the assignment rule, as a message ("" means allowed).
-  // The union path in `checkAssignable` probes members with it without failing.
+  // The assignment rule as a message ("" means allowed), unions included. It is
+  // the single implementation: `checkAssignable` only reports its verdict.
   std::string assignError(const TypeRef& from, const TypeRef& to,
                           const std::string& context) const;
 
@@ -722,7 +740,7 @@ class Compiler {
   // Builds the future map an `async fn` returns: `{ state: "fulfilled", value:
   // value, error: nil }`. The map is the portable representation; no runtime
   // tag or builtin is added.
-  int compileMakeFuture(int value, int line, int col);
+  int compileMakeStatus(const std::string& kind, int value, int line, int col);
   // Converts `source` to a string through the compiler's private runtime
   // helper and returns the register holding the result.
   int compileToString(int source, int line, int col);
@@ -867,8 +885,21 @@ class Compiler {
   // inside it; empty for an ordinary function.
   int compileFunctionProto(const std::string& name, const std::vector<Param>& params,
                            const StmtPtr& body, int line, int col, const TypeRef& returnType,
-                           const std::string& ownerClass = std::string(),
-                           bool isAsync = false);
+                           const std::string& ownerClass = std::string(), bool isAsync = false,
+                           bool asyncBody = false);
+
+  // Compiles an `async fn` declaration into a factory closure (PHASE 11.2.2).
+  // The factory returns a pending future carrying the generated step function;
+  // the body itself is a separate proto that reads its parameters from the
+  // task frame. Returns a register holding the factory closure.
+  int compileAsyncFunctionValue(const std::string& name, const std::vector<Param>& params,
+                                const StmtPtr& body, int line, int col, const TypeRef& returnType,
+                                const std::string& ownerClass);
+
+  // Emits the hidden scheduler helpers once per chunk that contains async code
+  // (PHASE 11.2.2). They are ordinary Oskel functions over maps and arrays, so
+  // the VM, AOT and WASM share one implementation.
+  void compileAsyncPrelude();
 
   // Compiles a module's top-level statements into `bc_` (bindings stay
   // frame-local) and returns its public surface as a table. Called by

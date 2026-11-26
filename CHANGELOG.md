@@ -11,6 +11,65 @@ may change between minor versions.
 
 ### Added
 
+- **A compiled binary names the position of a runtime error (PHASE 7g.3).**
+  `oskel build app.oskl` now reports `oskel: app.oskl:12: <message>` instead of
+  a bare `oskel: <message>`, so a failure in the generated program is locatable
+  without a debugger — the last gap between the VM and the AOT backend on
+  debuggability. The lowering publishes the source line into a hidden global
+  before each instruction runs, deduplicated per line change and always
+  republished at a jump target, because a fall-through path can skip the store
+  that published and an `if` inside a loop would otherwise report a stale line.
+  The source path travels in the `.oskc` chunk (image format v2), so a build
+  from an image emits the same bytes as a build from the source and
+  `oskc_parity` stays exact. `--no-source-positions` drops the store and the
+  path and reproduces the pre-7g.3 freestanding image byte for byte.
+- **A benchmark suite in `benchmarks/`.** Four programs -- an empty one, naive
+  `fib(30)`, an array of 200 000 integers and a 5 000-part `join`/`split` --
+  written once per language and compared against the VM's output byte for byte
+  before anything is timed. `python3 benchmarks/run.py` measures Oskel four ways
+  (the VM with and without its JIT, the freestanding binary `oskel build` emits
+  and the WebAssembly module) against C, CPython, Node, Lua 5.4 and LuaJIT, and
+  writes a Markdown table with the median whole-process time, the environment
+  and the runtimes. It found two real defects on the first run: the AOT and
+  WASM `join` allocate quadratically (`docs/BACKLOG.md` §6 item 36) and the WASM
+  host harness truncated an address above 2 GiB (item 37, fixed here).
+  `docs/benchmarks.md` is the recorded run; the suite is not in CI, because it
+  needs `cc`, `node`, `lua` and `luajit` and a timing test on a shared runner is
+  a flaky test.
+- **`std.ui` adds a checkbox widget.** `ui.Checkbox(label, checked, onChange)`
+  measures as a 16 px box plus the label, paints the box in its normal, hover
+  and pressed shades, fills an inner square when checked, and calls
+  `onChange(checked)` after a click toggles the state. The widget is Oskel over
+  the portable primitive surface, so the VM and `oskel build` share the same
+  layout, display list and pointer behavior; `native_build_ui.oskl` and the
+  Skia fixtures pin the toggle, the cancellation on an outside release and the
+  checked/unchecked pixels.
+- **A macOS image carries its own ad-hoc code signature (PHASE 10.3d.3).** The
+  Mach-O linker now closes the executable with an `LC_CODE_SIGNATURE` over a
+  `CS_SuperBlob` holding a SHA-256 CodeDirectory and an empty requirements blob,
+  the pair `ld64.lld` writes when it signs off-macOS. An unsigned image cannot
+  start on arm64 macOS, and on both architectures the signature is what lets
+  the kernel map a page executable. The gap was hidden by the test suite: the
+  macOS end-to-end case re-signed the image with `codesign --force --sign -`
+  before running it, so the linker never had to sign. It now runs `codesign
+  --verify --strict`, which recomputes every page hash and rejects one that does
+  not match. `native/codesign.h` is standalone (no engine code), `sha256` is
+  pinned against three FIPS 180-4 vectors, and `testCodeSignature` re-derives
+  every page hash from the finished file on every host, since a hash taken over
+  a stale buffer is invisible to a structural parse. ARM64 remains open.
+- **The async scheduler (PHASE 11.2.2): pending futures, `spawn`, `yield`.**
+  Calling an `async fn` now returns a pending `Future` and enqueues its task;
+  `spawn f()` enqueues explicitly, `yield()` lets the other ready tasks run,
+  and `await` drains the queue when the future is pending before reading the
+  result. A script drains its queue before exiting, so `async fn main` runs
+  without a top-level `await`. The factory/step split and the scheduler are
+  ordinary Oskel over maps and arrays, so the VM, `oskel build` and WASM agree
+  and no opcode or builtin is added. The body is still one eager step: real
+  suspension at `await` is PHASE 11.2.3, top-level `await` is 11.2.4. Covered
+  by `tests/71_async_scheduler.oskl`,
+  `tests/native_build_async_scheduler.oskl` and the
+  `tests/errors/async_{spawn_outside,yield_outside,spawn_non_future}.oskl`
+  diagnostics.
 - **The release SDK bundles SDL3 and Skia.** `std.ui` and `std.ui.window` no
   longer depend on libraries the user installs. The artifacts workflow builds a
   shared SDL3 and a static Skia with vcpkg, links the static archive into
@@ -21,6 +80,16 @@ may change between minor versions.
   same pair with `tools/prepare_ui_deps.py`; the `install_stdlib` test runs the
   real shim from the installed tree. The Windows and macOS artifacts now build
   the UI backend instead of silently omitting it.
+- **The Skia and SDL3 end-to-end tests run on Windows and macOS.** `cxxbind.skia`
+  now registers wherever CMake finds Skia, not only on Linux: the VM half runs
+  on every platform, and the hosted x86-64 half builds and runs on Linux,
+  Windows and Intel macOS. `oskel.build_hosted_sdl` follows the same rule, so a
+  Windows or macOS regression in the FFI or the UI linker no longer hides
+  behind a Linux-only test. The harness passes `CC`, copies the Windows import
+  libraries and uses the platform's executable suffix, `NUL` and `otool -L`
+  instead of assuming POSIX. The artifacts matrix adds `oskel-macos-x64` on the
+  Intel runner, so that hosted half runs in CI; the vcpkg cache key now includes
+  the runner architecture, and only the arm64 job builds the macOS installers.
 - **`oskelp` supports multi-member workspaces.** A root `oskel.toml` with a
   `[workspace] members = [...]` table shares one `oskel.lock`, one
   `.oskel/deps` and one `target/` across every member. `build`, `check` and
@@ -42,8 +111,9 @@ may change between minor versions.
   `{state, value, error}`, so the feature adds no opcode and no builtin and the
   VM, the AOT backend and the WASM backend agree by construction. A pending
   future has no producer yet, and awaiting one is a runtime error. This is the
-  PHASE 11.1 surface, not a scheduler: `await` never suspends and PHASE 11.2
-  (pending futures, event loop, `spawn`/`join`, async lambda) is not started. Covered by
+  PHASE 11.1 surface, not a scheduler: `await` never suspends. The 11.2.2
+  entry above adds the pending futures, `spawn` and `yield`; suspension, a
+  `join` and an async lambda are still open. Covered by
   `tests/65_async.oskl`, `tests/65_async_modules.oskl`, the `oskel.build_binary_async`
   and `oskel.build_wasm_async` fixtures and the `tests/errors/async_*.oskl`
   diagnostics.
@@ -87,7 +157,219 @@ may change between minor versions.
 
 ### Changed
 
+- **`std.ui` widgets are classes (breaking).** The lowercase widget
+  constructors are gone. `Window`, `Column`, `Row`, `Padding`, `Spacer`, `Text`,
+  `Button` and `Checkbox` are classes, and each owns its `measure`, `place`,
+  `collect`, `hitTest` and pointer-state methods through the `Widget` contract;
+  `Button` and `Checkbox` also implement `Interactive.activate`. `Text` exposes
+  `withColor`, and `Button` exposes `withStyle`/`withStates`, replacing
+  `textColor`, `buttonStyle` and `buttonStates`. A widget no longer carries a
+  `kind`: use `type(node)` (`"Checkbox"`, `"Button"`, ...). `layout`,
+  `commands`, `layoutWith` and the pointer functions keep their names, and the
+  display list still uses `kind` because it is the backend protocol. Classes
+  desugar to maps with a method table, so the VM and `oskel build` stay in step;
+  `native_build_ui.oskl` and the Skia fixtures cover both engines.
+- **`Future` is opaque to the type checker (PHASE 11.2.1).** Indexing,
+  slicing, iterating and reading or assigning a member on a `Future`-typed
+  value are compile errors, so user code cannot read or forge the
+  `state`/`value`/`error` protocol that `await` owns. A local alias, a
+  parameter and a returned future keep the type. A future is still a map at run
+  time, so a value erased to `any` can bypass the check until PHASE 11.2.5 adds
+  a runtime tag. `tests/errors/async_future_*.oskl` pin every rejected form.
+- **`oskel build` map lookups are O(1) (BACKLOG §6 item 6).** The AOT map kept
+  an insertion-ordered entries array and `mapFind` scanned it, so a loop over a
+  large map was O(n²) where the VM used an `unordered_map`. The map header now
+  carries a lazily built open-addressing index (FNV-1a, linear probing): built
+  by the first lookup above eight entries, kept in step by every append, and
+  dropped by `delete`/`clear`. The entries stay the only source of truth — the
+  index is trusted only while its recorded count matches the map's length, so a
+  stale index costs a rebuild and never a wrong answer. 120k lookups over 300
+  keys measure 0.006s against 0.053s for the scan.
+  `tests/native_build_map_index.oskl` pins the parity with the VM byte for
+  byte.
+- **The test suite runs under `OSKEL_GC_STRESS` in CI (BACKLOG §20 item 7).**
+  A `gc-stress` job builds with `-DOSKEL_GC_STRESS=ON`, where the collector runs
+  at every safe point instead of only when enough objects were allocated, so a
+  root the collector forgets shows up as a failure instead of surviving until a
+  sanitizer run. Two fixtures build ~200k objects one at a time
+  (`tests/11_cycles.oskl`, `tests/47_deep_container_teardown.oskl`); a
+  collection per safe point is quadratic in the object count there and each
+  takes minutes, so both carry the `gc-stress-slow` label and the job runs
+  `ctest -LE gc-stress-slow` — 520 of 522 tests in 21s. The label is applied
+  unconditionally, so renaming a fixture breaks every configure rather than
+  only the stress job.
+- **The assignment rule is one function (BACKLOG §3 item 1).** `checkAssignable`
+  carried its own copy of the union cases — a per-member recursion plus the
+  `nil` and nullable probes — next to `assignError`'s plain path, so a change in
+  one could be missed in the other. `assignError` now covers unions by
+  recursing through itself and `checkAssignable` only reports its verdict. The
+  nullable hint is a single helper, so the plain form (`use 'int?'`) and the
+  union form (`add '| nil' or '?'`) cannot drift apart.
+  `testAssignmentErrorsAreSpecific` pins both hints and both union directions,
+  including the union-to-union and nullable-union cases that must still
+  compile.
+
 ### Fixed
+
+- **A bound method call no longer allocates in the native binary.** `xs.push(i)`
+  compiles to a member read plus a `CALL`, and the member read built an
+  `AotClosure` over a fresh heap cell before every call: ~44 ns of allocation
+  per call -- more than the push itself -- and unbounded arena growth in a loop.
+  The lowerer now recognises the pair (`GETTABLE` with a constant name whose
+  result the next `CALL` consumes) and hands the receiver, the name, the count
+  and the argument window to `oskel_bound_call`, which resolves the name through
+  the same comparisons `oskel_member_get` uses and calls the method body with a
+  stack-built `self`. Nothing is bound, nothing is allocated, and the member's
+  value still behaves as before: a member that is not a method goes to
+  `oskel_call` (so `arr.length()` reports the same "cannot call a value of type
+  'int'"), a missing member reports the same message, and a method *read* as a
+  value (`var p = xs.push`) still binds a closure, so `xs.push == xs.push`
+  stays `false` as in the VM. `benchmarks/arrays.oskl` drops from 20.9 ms to
+  12.5 ms (200 000 pushes), and the 5 000-call loop in
+  `tests/native_build_bound_call.oskl` runs the same as the VM;
+  `oskel.build_binary_bound_call` compares every method of the four families
+  with the VM byte for byte. `docs/BACKLOG.md` §6 item 35.
+- **`join` is linear in the AOT and WebAssembly backends.** Both built the
+  result by concatenating the accumulator with one item at a time, and a
+  concatenation allocates a fresh string, so joining n parts allocated O(n^2)
+  bytes: a 20 000-part `join` cost 2.5 s and ~2 GB in the native binary and 22 s
+  in the WebAssembly module, against 22 ms in the VM, whose `join` is a linear
+  `std::string`. The binary now appends each rendered part to an
+  `AotStringBuilder` (its growth doubles the block) and the module renders every
+  part once, totals the bytes and copies into one allocation, rejecting a result
+  past the 32-bit address space instead of wrapping its length. At 20 000 parts
+  the binary takes 6.0 ms -- faster than Node, Lua and CPython, and 3.8x faster
+  than the VM -- and the module 44.8 ms; `benchmarks/strings.oskl` runs that size
+  on every engine, and `tests/native_build_join_large.oskl` pins the result, the
+  separator shapes and a 20 MB join against the VM on both backends
+  (`docs/BACKLOG.md` §6 item 36).
+- **The WebAssembly host harness no longer mangles an address above 2 GiB.**
+  The JS API hands an `i32` parameter over as a signed number, so once the arena
+  passed 2 GiB the `ptr` the module passed to `oskel.write` arrived negative and
+  `new Uint8Array` rejected it with `RangeError: Start offset -232277628 ...`,
+  which looked like a broken module. A 20 000-part `join`, whose arena passes
+  2 GiB, now prints the same line as the VM and the native binary.
+  `tests/run_wasm.cjs` masks the three parameters.
+- **String iteration is linear and works on both engines (BACKLOG §6 items 7
+  and 10).** `for c in s` was O(n^2) everywhere: the VM rebuilt the whole
+  character vector on every turn and the AOT step called `utf8CharAt`, which
+  scans from byte 0 each time; only the WASM backend already stepped a byte
+  offset. The cursor is now a byte offset in the VM and in AOT too — each step
+  reads the lead byte and skips its continuation bytes — so 200 000 characters
+  went from 17s to 9ms on the VM and from 24s to 9ms in the binary, and the
+  1M-character loop that used to hang runs in 217ms and 37ms. Combined with the
+  arena growth above, the 40 000-character loop that used to die with
+  `oskel: out of memory` under `oskel build` now completes. The cursor is
+  internal to the compiler, so no program observes the change, and `nil` still
+  means "start at the first byte". `tests/native_build_string_iteration.oskl`
+  is the first test of string iteration at all: it pins ASCII, multibyte,
+  empty, `break` and the `arr.push(c)` non-aliasing case against the VM byte
+  for byte.
+
+- **The AOT arena no longer stops at 1 MiB.** A compiled binary mapped one fixed
+  region at entry and never grew it, so a program that allocated more than that
+  -- ten thousand `arr.push` calls, a twenty-thousand-part `join`, a map with
+  thirty thousand keys -- died with `oskel: out of memory` while the VM ran the
+  same source. `oskel_alloc` now maps a fresh chunk when the current one cannot
+  satisfy the request (`mmap` on freestanding Linux, `VirtualAlloc` on
+  freestanding Windows, `malloc` in the hosted modes) and retries; the
+  exhausted chunk is abandoned, because a bump region has no free, so peak
+  memory is the sum of the chunks rather than a hard ceiling. The allocator's
+  register contract is now explicit and enforced: it clobbers only `rax` and the
+  `r10`/`r11` scratch pair, which is what the emitted helpers are written
+  against -- string concatenation reads an operand out of `rsi` after the
+  allocation, so the growth path saves the caller-saved registers instead of
+  corrupting them. `tests/native_build_arena_growth.oskl` allocates ~8 MiB
+  across an array, a concatenation loop and a map and is compared with the VM on
+  the freestanding image, on the hosted image (`oskel.build_hosted_own_*`) and
+  on Windows. Bare metal has no page allocator, so its `.bss` region stays the
+  ceiling and the allocator keeps reporting `out of memory` there.
+
+- **A failed union assignment names the union, not one of its members.** When a
+  value of type `int | string` did not fit a plain target, the diagnostic
+  reported the last member the union probe tried — `cannot assign 'string' to
+  'int'` — pointing at a type the caller never wrote at that site. It now
+  reports `cannot assign 'int | string' to 'int'`. The rejection is decided by
+  the unified `assignError` (see Changed), so a union that fails reports the
+  same shape a plain assignment would.
+- **A malformed `struct`/`class`/`enum` declaration is now reported at the
+  declaration.** `parseProgram` registers type names in a prescan so a literal
+  or annotation written before the declaration still parses, but it took any
+  `struct`/`class`/`enum` followed by an identifier as a declaration without
+  checking for the `{`. A malformed declaration was therefore skipped, and a
+  *use* written before it failed instead: `let v = Point { x: 1 }; struct`
+  reported "expected ';' after variable declaration" at the use, several lines
+  away from the real problem. `rejectMalformedTypeDeclarations()` now checks
+  the `keyword Name {` shape in the same prescan pass and reports the
+  declaration itself; it looks only at brace depth 0, so a declaration inside a
+  block keeps its own "only allowed at the top level" message. A class's
+  optional `implements A, b.C` clause is skipped before the brace is expected,
+  so a valid declaration with one is not rejected by the check. The script-test
+  runner accepts an optional `// expect-message:` header, so the three new
+  `tests/errors/*_malformed_after_use.oskl` fixtures pin the message and not
+  just the exit code.
+- **Structural tests for the Mach-O and PE containers.** Each image is now
+  checked field by field on every host: load-command sizes sum to `sizeofcmds`,
+  segment file ranges and VM ranges are valid, `LC_MAIN` enters `__text`, the
+  symbol/indirect/bind tables lie inside the file, and the PE sections, data
+  directories and import descriptors are in range and terminated.
+- **A test for an object created during a collection.** A `clear` that
+  allocates used to have no coverage; the new case pins that the pass pins the
+  garbage before clearing and leaves the new object intact.
+- **A test that CRLF and CR-only sources keep token positions.** The lexer
+  folds line endings before scanning; the test proves the fold never moves a
+  token, which is what makes a Windows file report the same line and column.
+- **A test for a repeated `GcNode::track()`.** `track()` is guarded and
+  `link()` is private, so the double-link hazard was unreachable; the test
+  pins the invariant (it aborts without the guard).
+- **`oskel` says when the JIT is not available.** The JIT is on by default and
+  fails silent (`JitCode::assign` returns false) on any host without the
+  backend, so a Windows or macOS user got an interpreter with no hint. The
+  engine now prints the reason once at startup, in `runChunk` and in the REPL.
+- **A test for `SETUPVAL` through a null cell.** `GETUPVAL`, the failed run's
+  reset and a root `RETURN` were covered; the write side was not. Removing the
+  `SETUPVAL` null-cell guard segfaults the new test, so the guard is now pinned.
+- **Tests for `from` outside imports and a shared `extern "C"`.** A variable
+  named `from` stays an ordinary identifier beside an `import`, and two modules
+  that declare the same C symbol with the same signature bind one thunk instead
+  of failing. Both were uncovered behaviour; the tests pin it.
+- **A `JMP` to the end of a chunk lowers.** The VM accepts a jump target of
+  exactly `code.size()`: the pc passes the last instruction and the next
+  dispatch falls off the end, which is an implicit `return nil`. The AOT
+  lowerer rejected the same chunk with "jump target N is outside the code", so
+  a chunk the VM ran had no image. Each chunk now carries one extra label,
+  bound after the last instruction to publish `nil` and run the frame's
+  epilogue.
+- **The Mach-O linker writes the right indirect-symbol start index.** The
+  indirect symbol table holds the `__stubs` block first and the `__got`
+  pointers second, so `__stubs` starts at index 0 and `__got` at
+  `imports.size()`. The two sections had them swapped, which made dyld resolve
+  every GOT slot through the stub block: same symbol name, wrong section. A
+  data import (a pcrel `X86_64_RELOC_SIGNED` reference) is now covered by
+  `link_macho_test`, which is what exposed it.
+- **The JIT cache is bounded.** A long REPL session created a fresh `Bytecode`
+  per entry and the cache kept every one of them, plus its executable memory
+  mapping, alive for as long as the session lived. `Jit` now keeps at most
+  `kMaxEntries` (256) and evicts the oldest, mapping included; a proto that
+  comes back is recompiled. A failed compilation is still cached, so a proto
+  outside the JIT subset is analyzed once and not on every call.
+- **The macOS own linker emitted a desynchronised dyld bind stream.** The
+  `LC_DYLD_INFO_ONLY` bind stream wrote `0x32` where dyld expects
+  `SET_SEGMENT_AND_OFFSET_ULEB` (`0x70` with the segment index in the low
+  nibble, so `0x72` for `__DATA`); `0x32` is `SET_DYLIB_SPECIAL_IMM`, which
+  consumes no ULEB. Every instruction after the first symbol was therefore
+  decoded from the wrong offset, so the image could not bind its libSystem
+  imports even though the symbol names were still present in the bytes.
+  `link_macho_test` now walks the bind stream opcode by opcode -- it must reach
+  `DONE` at the exact end with one `DO_BIND` per import -- so the container is
+  checked on every host, not only where a Mach-O image can run.
+
+- **`import { x } from from;` silently resolved a module named `from`.** A
+  `from` keyword in the module-name or path-segment position of an `import` was
+  accepted as an identifier, so `import { square } from from;` and
+  `import m. from;` produced a confusing "module not found" instead of naming
+  the real problem. Both positions now report `'from' is a keyword and cannot
+  name a module` (or `... cannot be a module path segment`).
 
 - **`oskelint` missed an `enum` shadow and reported a bodyless parameter.** An
   `enum len { A, B }` binds a global named `len` — the compiler accepts it and

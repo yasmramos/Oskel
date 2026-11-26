@@ -12,7 +12,7 @@ The language surface this reference documents is implemented on the development 
 | --- | --- | --- |
 | Language core: functions, closures, control flow, collections | ✅ | ✅ (subset the lowerer covers) |
 | Types, nullability, `struct`, `class`, `enum`, variadics, `import`, `switch`, `defer` (PHASE 6.5/6.8/6.9) | ✅ | ✅ (all are compile-time; `struct`/`class` are erased, `enum` members fold to `LOADK`, `switch`/`defer` lower to existing opcodes) |
-| `async fn` / `await` (PHASE 11.1) | 🔶 eager surface only, no scheduler | 🔶 same surface (a future is a map built with existing opcodes; no backend change) |
+| `async fn` / `await` / `spawn` / `yield` (PHASE 11.2.2) | 🔶 pending futures, cooperative scheduler, eager steps | 🔶 same surface (future and task frames are maps built with existing opcodes; no backend change) |
 | `native fn` (PHASE 6.5) | ✅ | 🔶 only for the curated stubs the backend seeds; anything else fails the build (PHASE 7f) |
 | FFI with C (PHASE 6.6) | ✅ | 🔶 `--mode hosted` only; scalars, `cstring`/`ptr`, structs by value and C variadics, with callbacks on System V (PHASE 7f, §4.5) |
 | Error values, `pcall`, `try`/`catch`, unions, `@MustUse` (PHASE 6.7) | ✅ | ✅ `error` values, `try`/`catch` and `pcall` (PHASE 7c.5c/7c.5d); a raised error with no active `pcall` exits 70 |
@@ -28,7 +28,7 @@ The language surface this reference documents is implemented on the development 
    - [4.7 `struct`](#47-struct)
    - [4.8 `class`](#48-class)
    - [4.9 `enum`](#49-enum)
-   - [4.10 `async fn` and `await`](#410-async-fn-and-await)
+   - [4.10 `async fn`, `await`, `spawn` and `yield`](#410-async-fn-await-spawn-and-yield)
 5. [Operators](#5-operators)
 6. [Statements](#6-statements)
 7. [Functions and closures](#7-functions-and-closures)
@@ -94,8 +94,8 @@ Reserved words:
 
 ```text
 async  await  break  case   catch  class  const  continue  default  defer  do     else  enum  false  fn
-for    if     import in     let    native   nil      return struct switch true  try   var
-while
+for    if     import in     let    native   nil      return spawn  struct switch true  try   var
+while  yield
 ```
 
 They cannot be used as names of variables, parameters or unquoted map keys.
@@ -1331,12 +1331,13 @@ not as a runtime global.
 
 ---
 
-### 4.10 `async fn` and `await` (partial)
+### 4.10 `async fn`, `await`, `spawn` and `yield` (partial)
 
-> **PHASE 11.1 is a language surface, not a scheduler.** The body runs eagerly
-> and `await` never suspends. A complete async runtime (pending futures, an
-> event loop, `then`/`catch`, `spawn`/`join`, async lambdas) is PHASE 11.2 and
-> is not implemented.
+> **PHASE 11.2.2 has a scheduler, but the body is still one eager step.**
+> Calling an `async fn` returns a pending `Future` and enqueues its task;
+> `await` drains the ready queue, and `yield()` lets other ready tasks run. Real
+> suspension at `await` is PHASE 11.2.3, top-level `await` is 11.2.4, and the
+> runtime tag is 11.2.5.
 
 An `async fn` is a function whose call returns a `Future`; the declared return
 type is the payload type. `await` consumes a future and yields its payload, and
@@ -1344,6 +1345,7 @@ is only valid inside an `async fn`:
 
 ```oskel
 async fn fetchName(id: int): string {
+  yield();
   return "user-" + str(id);
 }
 
@@ -1353,38 +1355,53 @@ async fn greet(id: int): string {
 }
 
 async fn main(): void {
-  print(await greet(7));   // hello, user-7
+  let a = spawn greet(7);
+  let b = spawn greet(8);
+  print(await a);   // hello, user-7
+  print(await b);   // hello, user-8
 }
 
 main();
 ```
 
-- The body runs **eagerly** when the function is called. `await` reads a future
-  that is already settled; it does not suspend the caller. There is no event
-  loop and no scheduler in this phase (PHASE 11.1).
+- A call returns a **pending** future and enqueues its task. The task runs when
+  the scheduler drains the ready queue: at `await`, at `yield()`, or before the
+  script exits. `spawn f()` is the explicit enqueue; `await f()` also starts a
+  pending future.
+- The body is still one eager step. `await` on a pending future drains the
+  ready queue and re-reads the state; it does not suspend the current body.
+  `yield()` drains the ready queue and then the current body continues.
 - `Future` is a built-in type. `let f: Future = fetchName(1);` is valid, and the
   same future may be awaited more than once.
 - A call to an async function returns `Future`, so `let n: int = await f();`
   checks the payload. `await` on a value whose static type is neither `Future`
   nor unknown is a compile error.
-- `await` is rejected outside an `async fn`, including inside a lambda: a lambda
-  is not an async function. There is no top-level `await`.
+- `await`, `spawn` and `yield` are rejected outside an `async fn`, including
+  inside a lambda: a lambda is not an async function. There is no top-level
+  `await`.
 - An async method is declared with `async fn` inside a class and awaited like
   any other call: `await obj.m()`. A method replacement must match its
   asyncness.
 - `async fn init` is rejected: the constructor is called without `await`.
-- At run time a future is a map with the fields `state` (`"fulfilled"`,
-  `"rejected"` or `"pending"`), `value` and `error`; `type(future)` is `"map"`.
-  A `"pending"` future is not produced by this phase, and awaiting one raises a
-  runtime error. `"rejected"` is reserved for a future that carries an error.
-- The feature adds **no opcode and no builtin**: `NEWTABLE`/`SETTABLE`/
-  `GETTABLE` and the existing `panic` implement it, so the VM, the AOT backend
-  and WASM agree by construction.
+- The compiler treats `Future` as opaque (PHASE 11.2.1): indexing, slicing,
+  iterating and reading or assigning a member on a `Future`-typed value are
+  compile errors. A local alias, a parameter and a returned future keep the
+  type, so only `await` reads the payload.
+- At run time a future is a map with the fields `state` (`"pending"`,
+  `"fulfilled"` or `"rejected"`), `value`, `error`, `task` and `waiters`;
+  `type(future)` is `"map"`. A task frame is another map with `future`, `step`,
+  `args`, `enqueued` and `running`; `pc`, `regs` and `locals` are reserved for
+  PHASE 11.2.3. A value erased to `any` can bypass the compiler check until
+  PHASE 11.2.5 adds a runtime tag.
+- The feature adds **no opcode and no builtin**: the factory/step split and the
+  scheduler are ordinary Oskel over `NEWTABLE`/`SETTABLE`/`GETTABLE`, `CALL`
+  and `RETURN`, so the VM, the AOT backend and WASM agree by construction.
 
 A future is not a promise with `then`/`catch`; an error value crosses the
-boundary as the payload and can be inspected with `isError`. `Future` is a
-compile-time name, not an opaque runtime type: the value is an ordinary map,
-so code that ignores the annotation can inspect or mutate its fields.
+boundary as the payload and can be inspected with `isError`. `Future` is opaque
+to the type checker but not yet a runtime tag: the value is an ordinary map, so
+code that erases the type to `any` can still inspect or mutate its fields until
+PHASE 11.2.5.
 
 ---
 
@@ -3547,6 +3564,7 @@ oskelc <file.oskl>         the same compiler without the interpreter
 | `-o`, `--output <file>` | Output path for `build`/`oskelc` (default: the script's base name). |
 | `--target <name>` | Build target for `build`/`oskelc` (default: the host). |
 | `--mode <name>` | Link mode for `build`/`oskelc` (default: `freestanding`). |
+| `--no-source-positions` | Omits `FILE:LINE` from a runtime error so the binary reproduces the frozen freestanding image byte for byte. |
 | `--link-lib <name>` | Library for the hosted link (repeatable), e.g. `SDL3`. |
 | `-L`, `--library-path <dir>` | Where the hosted link finds `lib<name>.so` (repeatable). |
 | `--link-object <file>` | Extra object or `ar` archive for the hosted link (repeatable). Requires `--mode hosted`; not with `--emit-object`. |
@@ -3642,6 +3660,15 @@ oskel build app.oskl -o app                # std.ui: hosted + bundled SDL3/Skia
 oskel build app.oskl --mode hosted --link-lib SDL3 -o app   # custom SDL3
 ```
 
+`--no-source-positions` drops the source position from a runtime error: the
+binary then reports `oskel: <message>` instead of
+`oskel: FILE:LINE: <message>`. The position costs one hidden global store per
+line change and the path bytes, so this is the switch that reproduces the
+freestanding image byte for byte when the freestanding emitter must stay frozen.
+It is the only reason the image is not identical by default: without it, the
+emitted code carries the position, which is what makes a compiled program
+debuggable.
+
 `--link-lib <name>` adds a library to the hosted link as `-l<name>`, which is
 how an `extern "C"` symbol that lives in a third-party library resolves. It is
 repeatable, it is only meaningful with `--mode hosted` (the freestanding image
@@ -3728,7 +3755,7 @@ future work. `-c` is implemented; the `.oskc` format is specified in §19.1.
   through `std/internal/skia_ui.oskl` (`docs/cxxbind.md`); `std.ui.window`
   presents it in an SDL3 window and runs the event loop. Input widgets, real
   font metrics, text wrapping and dirty-region redraw are post-1.0 work.
-- No generics, full pattern matching, generators or transactions. These are out of scope (see `DEVELOPMENT.md`). `async fn`/`await` is only the PHASE 11.1 eager surface: there is no scheduler, no promise chaining and no async lambda, and `await` on the reserved `"pending"` state is a runtime error.
+- No generics, full pattern matching, generators or transactions. These are out of scope (see `DEVELOPMENT.md`). `async fn`/`await` has the PHASE 11.2.2 scheduler (`spawn`/`yield`, pending futures, eager steps): there is no real suspension yet, no top-level `await`, no promise chaining and no async lambda.
 - Map keys are always strings. Literals accept identifier, string, scalar (`int`, `float`, `double`, `true`, `false`, `nil`) and computed `[expr]` keys; non-string keys are canonicalized to their string form.
 - A body of `if`, `while`, `for` or `for-in` may be a block or a single statement without braces; a brace-less body is wrapped in a block, so its bytecode and scoping match the brace form. `switch` arms always require braces.
 - `for ... in` accepts the loop variable and the iterable with or without parentheses (`for x in xs` and `for (x in xs)`).
@@ -4008,7 +4035,7 @@ oskel build app.oskc -o app        # the same, through the alias
 | Offset | Size | Field |
 |--------|------|-------|
 | 0 | 4 | Magic `OSKC` |
-| 4 | 4 | Format version (`kOskcVersion`, currently 1) |
+| 4 | 4 | Format version (`kOskcVersion`, currently 2) |
 | 8 | 4 | Reserved flags, must be 0 |
 | 12 | 4 | FFI capability bits the chunk needs (see below) |
 | 16 | 4 | Requirement bits (see below) |
@@ -4021,10 +4048,17 @@ layout and therefore the version.
 length and its bytes), its frame counts, its variadic flag, its instruction
 stream, its constant pool, its child protos, its upvalue descriptors, its
 `extern "C"` declarations and its compiler bookkeeping (`nativeFns`,
-`nativeUses`, `usedMethods`). Every instruction records its source line and
-column, so a runtime error in a program loaded from an image still names the
-place in the original source. The source text itself is not stored; the name is,
-which is what the diagnostics print.
+`nativeUses`, `usedMethods`), then the path of the source it was compiled from.
+Every instruction records its source line and column, so a runtime error in a
+program loaded from an image still names the place in the original source. The
+source text itself is not stored; the name is, which is what the diagnostics
+print.
+
+The per-proto source path matters to the AOT backend: a generated binary embeds
+it, and a runtime error prints `oskel: FILE:LINE: <message>`. Storing it in the
+image is what makes `oskel build app.oskl` and `oskel build app.oskc` emit the
+same bytes -- without it the image build would name the `.oskc`, and the parity
+test would catch the difference.
 
 A constant is tagged by kind — `nil`, `bool`, `int`, `float`, `double`, `str` —
 and the writer refuses a value `LOADK` could not rebuild (an array, a map), so a

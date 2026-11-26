@@ -1,0 +1,73 @@
+// String iteration on both engines (BACKLOG §6 items 7 and 10). A `for c in s`
+// yields one single-code-point string per character, which is the rule the
+// hosted `utf8Chars` implements: a lead byte (anything that is not a
+// continuation byte) plus the continuation bytes that follow it.
+//
+// Before this fixture there was no test of string iteration at all, so the two
+// engines could disagree on the splitting rule and on the cursor without the
+// suite noticing. It runs the same source under the VM and in the compiled
+// binary (tests/build_binary.cmake) and compares the output byte for byte.
+
+// ASCII: one character per byte.
+var ascii = "abc";
+var letters = "";
+for c in ascii { letters = letters + c; }
+print(letters, len(letters));
+
+// Multibyte: "a", "é" (2 bytes), "€" (3 bytes) and an emoji (4 bytes) must each
+// arrive as one character, so the count is 4 and not the byte count 10.
+var mixed = "aé€😀";
+var count = 0;
+var rebuilt = "";
+for c in mixed {
+    count = count + 1;
+    rebuilt = rebuilt + c;
+}
+print(count, len(mixed), rebuilt);
+
+// The character is a string of its own, so a comparison and a slice see one
+// code point rather than a byte.
+for c in mixed {
+    if (c == "é") { print("found e-acute", len(c)); }
+    if (c == "😀") { print("found emoji", len(c)); }
+}
+
+// The loop variable is a fresh value per iteration: pushing it must keep every
+// character, not alias the array to the last one. This is the case the
+// backlog warns a shared buffer would break.
+var acc = [];
+for c in "xyz" { acc.push(c); }
+print(len(acc), acc[0], acc[1], acc[2]);
+
+// An empty string yields no iteration at all.
+var empty = 0;
+for c in "" { empty = empty + 1; }
+print("empty", empty);
+
+// The cursor is an index, so `break` mid-loop and a second loop over the same
+// string both behave: a fresh `for` restarts at the first character.
+var first = "";
+for c in "hello" { first = c; break; }
+print("break", first);
+var all = "";
+for c in "hello" { all = all + c; }
+for c in "hello" { all = all + c; }
+print(all);
+
+// Enough characters that a per-iteration rebuild of the character list would be
+// quadratic: 20 000 code points. The engine must not degrade to O(n^2) here.
+var big = "ab".repeat(10000);
+var seen = 0;
+for c in big { seen = seen + 1; }
+print("big", seen);
+
+// A string built at run time iterates the same way.
+var built = "";
+var i = 0;
+while (i < 5) {
+    built = built + str(i);
+    i = i + 1;
+}
+var digits = "";
+for c in built { digits = digits + c; }
+print(digits);

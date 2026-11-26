@@ -19,10 +19,10 @@ fn assertBool(actual: bool, expected: bool) {
 }
 
 var clicks = 0;
-let root = ui.window("Skia window", 160, 100,
-  ui.column(8, [
-    ui.text("Hello", 16),
-    ui.button("OK", () => clicks = clicks + 1),
+let root = ui.Window("Skia window", 160, 100,
+  ui.Column(8, [
+    ui.Text("Hello", 16),
+    ui.Button("OK", () => clicks = clicks + 1),
   ]));
 ui.layout(root, 160, 100);
 
@@ -31,6 +31,13 @@ ui.layout(root, 160, 100);
 assertBool(ui_window.click(root, 10, 40), true);
 assertEq(clicks, 1);
 assertBool(ui_window.click(root, 150, 90), false);
+
+// The window entry point dispatches a checkbox click through the same path.
+let accept = ui.Checkbox("Accept", false, (checked) => nil);
+let control = ui.Window("Control", 120, 24, ui.Column(0, [accept]));
+ui.layout(control, 120, 24);
+assertBool(ui_window.click(control, 8, 8), true);
+assertBool(accept.checked, true);
 
 // Two frames prove the full path: draw, snapshot, bulk read, texture upload,
 // renderer present.

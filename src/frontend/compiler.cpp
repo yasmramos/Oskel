@@ -27,6 +27,257 @@ namespace {
 // reaches.
 constexpr int kMaxCompileDepth = 256;
 
+// True when the static type is a `Future`, including a union that can hold one.
+// A union is rejected because the runtime value may be the future branch.
+bool isFutureType(const TypeRef& type) {
+  if (!type.isPresent()) return false;
+  if (type.name == "Future") return true;
+  for (const std::string& alternative : type.alternatives) {
+    if (alternative == "Future") return true;
+  }
+  return false;
+}
+
+bool stmtContainsAsync(const Stmt& stmt);
+
+bool exprContainsAsync(const Expr& expr) {
+  return std::visit(
+      [&](const auto& node) {
+        using T = std::decay_t<decltype(node)>;
+        if constexpr (std::is_same_v<T, AwaitExpr> || std::is_same_v<T, SpawnExpr> ||
+                      std::is_same_v<T, YieldExpr>) {
+          return true;
+        } else if constexpr (std::is_same_v<T, InterpExpr>) {
+          for (const InterpPart& part : node.parts) {
+            if (const auto* inner = std::get_if<ExprPtr>(&part.content)) {
+              if (*inner && exprContainsAsync(**inner)) return true;
+            }
+          }
+          return false;
+        } else if constexpr (std::is_same_v<T, ArrayExpr>) {
+          for (const ExprPtr& element : node.elements) {
+            if (element && exprContainsAsync(*element)) return true;
+          }
+          return false;
+        } else if constexpr (std::is_same_v<T, MapExpr>) {
+          for (const MapEntry& entry : node.entries) {
+            if (entry.keyExpr && exprContainsAsync(*entry.keyExpr)) return true;
+            if (entry.value && exprContainsAsync(*entry.value)) return true;
+          }
+          return false;
+        } else if constexpr (std::is_same_v<T, StructLitExpr>) {
+          for (const StructLitEntry& entry : node.entries) {
+            if (entry.value && exprContainsAsync(*entry.value)) return true;
+          }
+          return false;
+        } else if constexpr (std::is_same_v<T, UnaryExpr> || std::is_same_v<T, NonNullExpr>) {
+          return node.operand && exprContainsAsync(*node.operand);
+        } else if constexpr (std::is_same_v<T, BinaryExpr>) {
+          return (node.lhs && exprContainsAsync(*node.lhs)) ||
+                 (node.rhs && exprContainsAsync(*node.rhs));
+        } else if constexpr (std::is_same_v<T, AssignExpr>) {
+          return (node.target && exprContainsAsync(*node.target)) ||
+                 (node.value && exprContainsAsync(*node.value));
+        } else if constexpr (std::is_same_v<T, TernaryExpr>) {
+          return (node.condition && exprContainsAsync(*node.condition)) ||
+                 (node.thenExpr && exprContainsAsync(*node.thenExpr)) ||
+                 (node.elseExpr && exprContainsAsync(*node.elseExpr));
+        } else if constexpr (std::is_same_v<T, CallExpr>) {
+          if (node.callee && exprContainsAsync(*node.callee)) return true;
+          for (const ExprPtr& arg : node.args) {
+            if (arg && exprContainsAsync(*arg)) return true;
+          }
+          return false;
+        } else if constexpr (std::is_same_v<T, IndexExpr>) {
+          return (node.object && exprContainsAsync(*node.object)) ||
+                 (node.index && exprContainsAsync(*node.index));
+        } else if constexpr (std::is_same_v<T, SliceExpr>) {
+          return (node.object && exprContainsAsync(*node.object)) ||
+                 (node.start && exprContainsAsync(*node.start)) ||
+                 (node.end && exprContainsAsync(*node.end)) ||
+                 (node.step && exprContainsAsync(*node.step));
+        } else if constexpr (std::is_same_v<T, MemberExpr>) {
+          return node.object && exprContainsAsync(*node.object);
+        } else if constexpr (std::is_same_v<T, RangeExpr>) {
+          return (node.start && exprContainsAsync(*node.start)) ||
+                 (node.end && exprContainsAsync(*node.end));
+        } else if constexpr (std::is_same_v<T, TryExpr>) {
+          return node.operand && exprContainsAsync(*node.operand);
+        } else if constexpr (std::is_same_v<T, CatchExpr>) {
+          return (node.operand && exprContainsAsync(*node.operand)) ||
+                 (node.fallback && exprContainsAsync(*node.fallback));
+        } else if constexpr (std::is_same_v<T, LambdaExpr>) {
+          return node.isAsync || (node.body && stmtContainsAsync(*node.body));
+        } else {
+          return false;
+        }
+      },
+      expr.node);
+}
+
+bool stmtContainsAsync(const Stmt& stmt) {
+  return std::visit(
+      [&](const auto& node) {
+        using T = std::decay_t<decltype(node)>;
+        if constexpr (std::is_same_v<T, ExprStmt>) {
+          return node.expr && exprContainsAsync(*node.expr);
+        } else if constexpr (std::is_same_v<T, LetStmt>) {
+          return node.init && exprContainsAsync(*node.init);
+        } else if constexpr (std::is_same_v<T, FnDeclStmt>) {
+          return node.isAsync || (node.body && stmtContainsAsync(*node.body));
+        } else if constexpr (std::is_same_v<T, BlockStmt>) {
+          for (const StmtPtr& inner : node.stmts) {
+            if (inner && stmtContainsAsync(*inner)) return true;
+          }
+          return false;
+        } else if constexpr (std::is_same_v<T, IfStmt>) {
+          return (node.condition && exprContainsAsync(*node.condition)) ||
+                 (node.thenBranch && stmtContainsAsync(*node.thenBranch)) ||
+                 (node.elseBranch && stmtContainsAsync(*node.elseBranch));
+        } else if constexpr (std::is_same_v<T, WhileStmt>) {
+          return (node.condition && exprContainsAsync(*node.condition)) ||
+                 (node.body && stmtContainsAsync(*node.body));
+        } else if constexpr (std::is_same_v<T, DoWhileStmt>) {
+          return (node.body && stmtContainsAsync(*node.body)) ||
+                 (node.condition && exprContainsAsync(*node.condition));
+        } else if constexpr (std::is_same_v<T, ForStmt>) {
+          return (node.init && stmtContainsAsync(*node.init)) ||
+                 (node.condition && exprContainsAsync(*node.condition)) ||
+                 (node.step && exprContainsAsync(*node.step)) ||
+                 (node.body && stmtContainsAsync(*node.body));
+        } else if constexpr (std::is_same_v<T, ForInStmt>) {
+          return (node.iterable && exprContainsAsync(*node.iterable)) ||
+                 (node.body && stmtContainsAsync(*node.body));
+        } else if constexpr (std::is_same_v<T, ReturnStmt>) {
+          return node.value && exprContainsAsync(*node.value);
+        } else if constexpr (std::is_same_v<T, SwitchStmt>) {
+          if (node.subject && exprContainsAsync(*node.subject)) return true;
+          for (const SwitchCase& entry : node.cases) {
+            for (const ExprPtr& value : entry.values) {
+              if (value && exprContainsAsync(*value)) return true;
+            }
+            if (entry.body && stmtContainsAsync(*entry.body)) return true;
+          }
+          return node.defaultBody && stmtContainsAsync(*node.defaultBody);
+        } else if constexpr (std::is_same_v<T, DeferStmt>) {
+          return node.body && stmtContainsAsync(*node.body);
+        } else if constexpr (std::is_same_v<T, ExternBlockStmt>) {
+          for (const FnDeclStmt& decl : node.decls) {
+            if (decl.body && stmtContainsAsync(*decl.body)) return true;
+          }
+          return false;
+        } else {
+          return false;
+        }
+      },
+      stmt.node);
+}
+
+// The scheduler helpers (PHASE 11.2.2). They are ordinary Oskel over maps and
+// arrays: the VM, AOT and WASM already run those, so no backend grows a second
+// calling convention. The names use a `__oskel_` prefix so user code is very
+// unlikely to collide; the compiler refers to them by the same constants.
+constexpr const char* kAsyncSpawn = "__oskel_async_spawn";
+constexpr const char* kAsyncAwait = "__oskel_async_await";
+constexpr const char* kAsyncDrain = "__oskel_async_drain";
+constexpr const char* kAsyncYield = "__oskel_async_yield";
+
+const char* kAsyncPreludeSource = R"OSKEL(
+var __oskel_async_ready = [];
+
+fn __oskel_async_settle(future, value) {
+  future["state"] = "fulfilled";
+  future["value"] = value;
+  future["error"] = nil;
+  let waiters = future["waiters"];
+  if (waiters != nil) {
+    for waiter in waiters {
+      __oskel_async_ready.push(waiter);
+    }
+    waiters.clear();
+  }
+}
+
+fn __oskel_async_reject(future, err) {
+  future["state"] = "rejected";
+  future["value"] = nil;
+  future["error"] = err;
+  let waiters = future["waiters"];
+  if (waiters != nil) {
+    for waiter in waiters {
+      __oskel_async_ready.push(waiter);
+    }
+    waiters.clear();
+  }
+}
+
+fn __oskel_async_step(task) {
+  let future = task["future"];
+  if (future["state"] != "pending") {
+    return;
+  }
+  task["running"] = true;
+  let step = task["step"];
+  let status = step(task);
+  task["running"] = false;
+  if (status["kind"] == "done") {
+    __oskel_async_settle(future, status["value"]);
+  } else if (status["kind"] == "failed") {
+    __oskel_async_reject(future, status["error"]);
+  } else {
+    __oskel_async_reject(future, error("async task suspended without a scheduler"));
+  }
+}
+
+fn __oskel_async_spawn(future) {
+  if (future == nil) {
+    panic(error("spawn expects a Future"));
+  }
+  if (future["state"] != "pending") {
+    return future;
+  }
+  let task = future["task"];
+  if (task == nil) {
+    panic(error("spawn expects a Future created by an async function"));
+  }
+  if (task["running"] == true) {
+    return future;
+  }
+  if (task["enqueued"] == false) {
+    task["enqueued"] = true;
+    __oskel_async_ready.push(task);
+  }
+  return future;
+}
+
+fn __oskel_async_drain() {
+  while (__oskel_async_ready.length > 0) {
+    let task = __oskel_async_ready.shift();
+    task["enqueued"] = false;
+    __oskel_async_step(task);
+  }
+}
+
+fn __oskel_async_await(future) {
+  if (future == nil) {
+    panic(error("await expects a Future"));
+  }
+  if (future["state"] == "pending") {
+    __oskel_async_spawn(future);
+    __oskel_async_drain();
+  }
+  if (future["state"] == "pending") {
+    panic(error("async deadlock: await on a pending Future that cannot run"));
+  }
+  return future;
+}
+
+fn __oskel_async_yield() {
+  __oskel_async_drain();
+  return nil;
+}
+)OSKEL";
+
 }  // namespace
 
 Compiler::DepthGuard::DepthGuard(const Compiler& compiler) : compiler_(compiler) {
@@ -505,52 +756,25 @@ bool Compiler::lookupGlobalType(const std::string& name, TypeRef& out) const {
 // is unknown/`any`, when the types match, or when `from` is `int` widening to
 // `float`. `nil` only fits a nullable target. This is the single place the
 // assignment rule lives, shared by declarations, plain assignments and
-// parameters.
-void Compiler::checkAssignable(const TypeRef& from, const TypeRef& to,
-                               const std::string& context, int line, int col) {
-  // Union source (PHASE 6.7.4): every alternative must fit the target, so a
-  // value read out of the union never surprises the destination. Recursing per
-  // member also makes union-to-union fall out for free.
-  if (from.isUnion()) {
-    for (const std::string& member : from.members()) {
-      checkAssignable(TypeRef{member, from.nullable}, to, context, line, col);
-    }
-    return;
-  }
-
-  // Union target: the value may take any alternative, so it fits when it fits
-  // at least one. `nil` fits only when the union is nullable, and a nullable
-  // source needs a nullable target (the `?` of one member does not cover the
-  // whole union), so both are decided before probing.
-  if (to.isUnion()) {
-    if (from.name == "nil") {
-      if (to.nullable) return;
-      fail("cannot assign 'nil' to '" + describeType(to) + "' in " + context +
-               ": a nullable value is not allowed here (add '| nil' or '?')",
-           line, col);
-    }
-    if (from.nullable && !to.nullable) {
-      fail("cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " +
-               context + ": a nullable value is not allowed here (add '| nil' or '?')",
-           line, col);
-    }
-    TypeRef plain = from;
-    plain.nullable = false;
-    for (const std::string& member : to.members()) {
-      if (assignError(plain, TypeRef{member, false}, context).empty()) return;
-    }
-    fail("cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " +
-             context,
-         line, col);
-  }
-
+// parameters: it asks `assignError` for the verdict and reports it.
+void Compiler::checkAssignable(const TypeRef& from, const TypeRef& to, const std::string& context,
+                               int line, int col) {
   std::string error = assignError(from, to, context);
   if (!error.empty()) fail(error, line, col);
 }
 
-// The single-assignment rule without the union case, as a message ("" means the
-// assignment is allowed). Kept separate so the union path can probe members
-// without aborting the compilation on the first miss.
+// The hint that turns a rejected nullable value into something actionable: a
+// plain target can name its own nullable spelling, a union cannot, so it offers
+// both. Shared by the `nil` case and the nullable-source case so the two
+// cannot drift apart.
+static std::string nullableHint(const TypeRef& to) {
+  if (to.isUnion()) return "a nullable value is not allowed here (add '| nil' or '?')";
+  return "a nullable value is not allowed here (use '" + to.name + "?')";
+}
+
+// The assignment rule as a message ("" means the assignment is allowed). It
+// covers unions by recursion, so the plain and the union cases are one rule
+// rather than two that can disagree.
 std::string Compiler::assignError(const TypeRef& from, const TypeRef& to,
                                   const std::string& context) const {
   if (!to.isPresent() || !from.isPresent()) return "";  // any / unknown
@@ -572,8 +796,39 @@ std::string Compiler::assignError(const TypeRef& from, const TypeRef& to,
   // annotation is not written nullable (`native fn free(p: ptr); free(nil);`).
   if (from.name == "nil") {
     if (to.nullable || isPointerTypeName(to.name) || to.isCallback()) return "";
-    return "cannot assign 'nil' to '" + describeType(to) + "' in " + context +
-           ": a nullable value is not allowed here (use '" + to.name + "?')";
+    return "cannot assign 'nil' to '" + describeType(to) + "' in " + context + ": " +
+           nullableHint(to);
+  }
+
+  // A nullable value needs a nullable target, union or not: the `?` of one
+  // alternative does not cover the whole union, so this is decided before the
+  // members are probed.
+  if (from.nullable && !to.nullable) {
+    return "cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " +
+           context + ": " + nullableHint(to);
+  }
+
+  // Union source (PHASE 6.7.4): every alternative must fit the target, so a
+  // value read out of the union never surprises the destination. The rejection
+  // names the union as a whole: no single member is what the caller wrote.
+  if (from.isUnion()) {
+    for (const std::string& member : from.members()) {
+      if (assignError(TypeRef{member, from.nullable}, to, context).empty()) continue;
+      return "cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " +
+             context;
+    }
+    return "";
+  }
+
+  // Union target: the value may take any alternative, so it fits when it fits
+  // at least one.
+  if (to.isUnion()) {
+    TypeRef plain = from;
+    plain.nullable = false;
+    for (const std::string& member : to.members()) {
+      if (assignError(plain, TypeRef{member, false}, context).empty()) return "";
+    }
+    return "cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " + context;
   }
 
   // A Oskel function is the value behind a callback (`fn(int, int): int`): any
@@ -588,14 +843,7 @@ std::string Compiler::assignError(const TypeRef& from, const TypeRef& to,
   // -- or an enum and a plain int -- is a mistake the compiler can catch. The
   // value can be turned into an int explicitly with `int(...)`.
   if (isEnumTypeName(from.name) || isEnumTypeName(to.name)) {
-    if (from.name == to.name) {
-      if (from.nullable && !to.nullable) {
-        return "cannot assign '" + describeType(from) + "' to '" + describeType(to) +
-               "' in " + context + ": a nullable value is not allowed here (use '" +
-               to.name + "?')";
-      }
-      return "";
-    }
+    if (from.name == to.name) return "";
     if (isEnumTypeName(from.name) && isEnumTypeName(to.name)) {
       return "cannot assign '" + describeType(from) + "' to '" + describeType(to) + "' in " +
              context + ": different enum types";
@@ -604,16 +852,7 @@ std::string Compiler::assignError(const TypeRef& from, const TypeRef& to,
            context + ": an enum value is not an int (convert it explicitly with 'int(...)')";
   }
 
-  if (from.name == to.name) {
-    // Same type; a nullable value does not fit a non-nullable slot unless the
-    // value is provably non-nil (which `from.nullable` already encodes).
-    if (from.nullable && !to.nullable) {
-      return "cannot assign '" + describeType(from) + "' to '" + describeType(to) +
-             "' in " + context + ": a nullable value is not allowed here (use '" +
-             to.name + "?')";
-    }
-    return "";
-  }
+  if (from.name == to.name) return "";
 
   // FFI pointers (PHASE 6.6): a `cstring` is also a `ptr` (upcast to `void*`);
   // the reverse needs an explicit cast, so it is not implicit. A Oskel `string`
@@ -1045,6 +1284,10 @@ TypeRef Compiler::inferExprType(const Expr& expr) const {
     inner.nullable = false;
     return inner;
   }
+  // `spawn f()` (PHASE 11.2.2): the factory call yields a Future.
+  if (std::get_if<SpawnExpr>(&expr.node) != nullptr) return TypeRef{"Future", false};
+  // `yield()` (PHASE 11.2.2): the helper returns nil.
+  if (std::get_if<YieldExpr>(&expr.node) != nullptr) return TypeRef{"nil", false};
   // `await f()` (PHASE 11.1): the payload of an async function, recovered from
   // the declaration table. A `Future`-typed operand or an unknown one yields no
   // static type; `compileAwait` is where a non-Future operand is rejected.
@@ -1126,6 +1369,11 @@ TypeRef Compiler::inferExprType(const Expr& expr) const {
     }
   }
   return TypeRef{};  // any other shape: unknown, so no check
+}
+
+void Compiler::checkFutureAccess(const Expr& object, int line, int col) const {
+  if (!isFutureType(inferExprType(object))) return;
+  fail("a Future is opaque; use 'await' to read its value", line, col);
 }
 
 // The declared fields of a struct or class, or null when `name` is neither.
@@ -1220,6 +1468,8 @@ void Compiler::resetChunk(const std::string& name) {
   predeclaredFnSlots_.clear();
   inFunction_ = false;
   currentIsAsync_ = false;
+  currentAsyncBody_ = false;
+  asyncPrelude_ = false;
   currentLine_ = 1;
   currentCol_ = 1;
   moduleBody_ = false;
@@ -1245,6 +1495,8 @@ void Compiler::clearSession() {
   nativeSigs_.clear();
   functionReturnTypes_.clear();
   asyncReturnTypes_.clear();
+  asyncPrelude_ = false;
+  asyncPreludeEmitted_ = false;
   functionParams_.clear();
   externSignatures_.clear();
   mustUseGlobals_.clear();
@@ -1278,6 +1530,7 @@ Bytecode Compiler::compileTopLevelBody(const StmtPtr& program) {
   // The main chunk uses the global scope: its `let`s are globals, as in the
   // interpreter (and so the REPL keeps definitions between entries).
   scopes_.push_back(Scope{});
+  if (stmtContainsAsync(*program)) compileAsyncPrelude();
   if (const auto* block = std::get_if<BlockStmt>(&program->node)) {
     // Register the struct shapes first so a hoisted function (compiled next)
     // can already build a literal.
@@ -1331,11 +1584,38 @@ Bytecode Compiler::compileTopLevelBody(const StmtPtr& program) {
   // chunk's proto (PHASE 7f.2).
   flushModuleNativeUses();
 
+  // A script's async tasks run to completion before the process exits, so an
+  // `async fn main` needs no top-level `await` (PHASE 11.2.2). The helpers are
+  // global, so a module may have emitted them for this chunk.
+  if (asyncPrelude_ || asyncPreludeEmitted_) {
+    compileHelperCall(kAsyncDrain, {}, currentLine_, currentCol_);
+  }
   emit(OpCode::HALT);
 
   bc_.numRegisters = maxReg_;
   bc_.numLocals = maxLocal_;
   return std::move(bc_);
+}
+
+void Compiler::compileAsyncPrelude() {
+  asyncPrelude_ = true;
+  if (asyncPreludeEmitted_) return;
+  Parser parser(lex(kAsyncPreludeSource, 1, 1), "<async prelude>");
+  StmtPtr program = parser.parseProgram();
+  const bool savedModuleBody = moduleBody_;
+  moduleBody_ = false;
+  try {
+    if (const auto* block = std::get_if<BlockStmt>(&program->node)) {
+      compileBlockBody(*block);
+    } else {
+      compileStmt(*program);
+    }
+  } catch (...) {
+    moduleBody_ = savedModuleBody;
+    throw;
+  }
+  moduleBody_ = savedModuleBody;
+  asyncPreludeEmitted_ = true;
 }
 
 Bytecode Compiler::compileExpression(const ExprPtr& expr) {
@@ -1446,6 +1726,7 @@ Bytecode Compiler::compileReplEntry(const StmtPtr& program) {
   if (!program) fail("empty program", 1, 1);
 
   scopes_.push_back(Scope{});
+  if (stmtContainsAsync(*program)) compileAsyncPrelude();
   const auto* block = std::get_if<BlockStmt>(&program->node);
   if (!block) {
     compileStmt(*program);
@@ -1964,6 +2245,7 @@ ImportedModule Compiler::importModule(const StmtPtr& program, const std::string&
 // with '_' are exported.
 void Compiler::compileModuleBody(const StmtPtr& program) {
   pushScope();
+  if (program && stmtContainsAsync(*program)) compileAsyncPrelude();
 
   if (const auto* block = program ? std::get_if<BlockStmt>(&program->node) : nullptr) {
     // Top-level names of the module shadow a bare enum member, exactly as they
@@ -2524,9 +2806,14 @@ void Compiler::compileFnDecl(const FnDeclStmt& fn, int line, int col) {
     // error).
     bc_.nativeFns.push_back(fn.name);
     emit(OpCode::GETGLOBAL, reg, addString(fn.name));
+  } else if (fn.isAsync) {
+    int factory = compileAsyncFunctionValue(fn.name, fn.params, fn.body, line, col, fn.returnType,
+                                            std::string());
+    emit(OpCode::MOVE, reg, factory);
+    freeReg();
   } else {
     int child = compileFunctionProto(fn.name, fn.params, fn.body, line, col, fn.returnType,
-                                     std::string(), fn.isAsync);
+                                     std::string(), false);
     emit(OpCode::CLOSURE, reg, child);
   }
 
@@ -3002,7 +3289,7 @@ void Compiler::compileReturn(const ReturnStmt& stmt) {
   // An `async fn` returns a future, not the payload: wrap the value after the
   // deferred blocks so they cannot change what the future carries. The wrap is
   // ordinary map construction, so the VM, AOT and WASM agree by construction.
-  if (currentIsAsync_) reg = compileMakeFuture(reg, currentLine_, currentCol_);
+  if (currentAsyncBody_) reg = compileMakeStatus("done", reg, currentLine_, currentCol_);
   // A `return` at the top level of a function body is followed by the
   // implicit epilogue emitted in `compileFunctionProto`. Skipping the second
   // RETURN when the last instruction already returns keeps the frame stack
@@ -3014,10 +3301,10 @@ void Compiler::compileReturn(const ReturnStmt& stmt) {
   freeReg();
 }
 
-int Compiler::compileFunctionProto(const std::string& name,
-                                   const std::vector<Param>& params, const StmtPtr& body,
-                                   int line, int col, const TypeRef& returnType,
-                                   const std::string& ownerClass, bool isAsync) {
+int Compiler::compileFunctionProto(const std::string& name, const std::vector<Param>& params,
+                                   const StmtPtr& body, int line, int col,
+                                   const TypeRef& returnType, const std::string& ownerClass,
+                                   bool isAsync, bool asyncBody) {
   // Save the parent chunk and its compilation state. Functions are compiled
   // into their own proto with fresh registers, locals, scopes and loops.
   Bytecode parent = std::move(bc_);
@@ -3034,6 +3321,7 @@ int Compiler::compileFunctionProto(const std::string& name,
   const bool parentInFunction = inFunction_;
   const TypeRef parentReturnType = currentReturnType_;
   const bool parentIsAsync = currentIsAsync_;
+  const bool parentAsyncBody = currentAsyncBody_;
   const std::string parentOwnerClass = std::move(currentOwnerClass_);
 
   bc_ = Bytecode{};
@@ -3084,6 +3372,7 @@ int Compiler::compileFunctionProto(const std::string& name,
   }
   currentReturnType_ = returnType;
   currentIsAsync_ = isAsync;
+  currentAsyncBody_ = asyncBody;
   currentOwnerClass_ = ownerClass;
 
   // Incoming arguments already sit in R0 .. R(n-1), so the prologue only has
@@ -3111,7 +3400,7 @@ int Compiler::compileFunctionProto(const std::string& name,
   // Falling off the end of a function returns nil, like the interpreter.
   int nilReg = allocReg();
   emit(OpCode::LOADK, nilReg, addConstant(Value()));
-  if (currentIsAsync_) nilReg = compileMakeFuture(nilReg, line, col);
+  if (currentAsyncBody_) nilReg = compileMakeStatus("done", nilReg, line, col);
   emit(OpCode::RETURN, nilReg);
 
   bc_.numRegisters = maxReg_;
@@ -3136,11 +3425,99 @@ int Compiler::compileFunctionProto(const std::string& name,
   inFunction_ = savedParent.inFunction;
   currentReturnType_ = parentReturnType;
   currentIsAsync_ = parentIsAsync;
+  currentAsyncBody_ = parentAsyncBody;
   currentOwnerClass_ = std::move(parentOwnerClass);
 
   int index = static_cast<int>(bc_.children.size());
   bc_.children.push_back(std::make_shared<Bytecode>(std::move(proto)));
   return index;
+}
+
+int Compiler::compileAsyncFunctionValue(const std::string& name, const std::vector<Param>& params,
+                                        const StmtPtr& body, int line, int col,
+                                        const TypeRef& returnType, const std::string& ownerClass) {
+  auto literal = [&](Value value) { return makeExpr(LiteralExpr{std::move(value)}, line, col); };
+  auto variable = [&](const std::string& var) { return makeExpr(VariableExpr{var}, line, col); };
+  auto entry = [](const std::string& key, ExprPtr value) {
+    return MapEntry{key, nullptr, std::move(value)};
+  };
+
+  // The step function takes the task frame as its only parameter and binds the
+  // declared parameters from `frame.args`. The rest of the body is unchanged,
+  // so parameter access, closures and nested functions keep their normal
+  // lowering.
+  std::vector<StmtPtr> bodyStatements;
+  for (size_t i = 0; i < params.size(); ++i) {
+    const Param& param = params[i];
+    ExprPtr args = makeExpr(IndexExpr{variable("$frame"), literal(Value("args"))}, line, col);
+    ExprPtr value =
+        makeExpr(IndexExpr{std::move(args), literal(Value(static_cast<int64_t>(i)))}, line, col);
+    TypeRef type = param.variadic ? TypeRef{"array", false} : param.type;
+    bodyStatements.push_back(
+        makeStmt(LetStmt{param.name, type, std::move(value), Tok::Let}, line, col));
+  }
+  if (const auto* block = std::get_if<BlockStmt>(&body->node)) {
+    for (const StmtPtr& statement : block->stmts) bodyStatements.push_back(statement);
+  } else {
+    bodyStatements.push_back(body);
+  }
+  StmtPtr stepBody = makeStmt(BlockStmt{std::move(bodyStatements)}, line, col);
+  std::vector<Param> frameParam{Param{"$frame", TypeRef{}, false}};
+  int stepChild = compileFunctionProto(name + "$step", frameParam, stepBody, line, col, returnType,
+                                       ownerClass, false, true);
+
+  int stepReg = allocReg();
+  emit(OpCode::CLOSURE, stepReg, stepChild);
+  int stepSlot = declareLocal("$asyncStep", false, TypeRef{"function", false});
+  emit(OpCode::DECLLOCAL, stepReg, stepSlot);
+  freeReg();
+
+  // The factory is what the function name binds to. It builds the pending
+  // future and the task frame and returns the future without running the body.
+  std::vector<MapEntry> futureEntries;
+  futureEntries.push_back(entry("$future", literal(Value(true))));
+  futureEntries.push_back(entry("state", literal(Value(std::string("pending")))));
+  futureEntries.push_back(entry("value", literal(Value())));
+  futureEntries.push_back(entry("error", literal(Value())));
+  futureEntries.push_back(entry("waiters", makeExpr(ArrayExpr{}, line, col)));
+
+  std::vector<ExprPtr> args;
+  for (const Param& param : params) args.push_back(variable(param.name));
+  std::vector<MapEntry> taskEntries;
+  taskEntries.push_back(entry("future", variable("$future")));
+  taskEntries.push_back(entry("step", variable("$asyncStep")));
+  taskEntries.push_back(entry("pc", literal(Value(static_cast<int64_t>(0)))));
+  taskEntries.push_back(entry("args", makeExpr(ArrayExpr{std::move(args)}, line, col)));
+  taskEntries.push_back(entry("regs", makeExpr(ArrayExpr{}, line, col)));
+  taskEntries.push_back(entry("locals", makeExpr(ArrayExpr{}, line, col)));
+  taskEntries.push_back(entry("done", literal(Value(false))));
+  taskEntries.push_back(entry("enqueued", literal(Value(false))));
+  taskEntries.push_back(entry("running", literal(Value(false))));
+
+  std::vector<StmtPtr> factoryStatements;
+  factoryStatements.push_back(
+      makeStmt(LetStmt{"$future", TypeRef{}, makeExpr(MapExpr{std::move(futureEntries)}, line, col),
+                       Tok::Let},
+               line, col));
+  factoryStatements.push_back(makeStmt(
+      LetStmt{"$task", TypeRef{}, makeExpr(MapExpr{std::move(taskEntries)}, line, col), Tok::Let},
+      line, col));
+  ExprPtr target =
+      makeExpr(IndexExpr{variable("$future"), literal(Value(std::string("task")))}, line, col);
+  factoryStatements.push_back(makeStmt(
+      ExprStmt{makeExpr(AssignExpr{std::move(target), Tok::Eq, variable("$task"), line, col}, line,
+                        col)},
+      line, col));
+  ExprPtr spawnCall = makeExpr(CallExpr{variable(kAsyncSpawn), {variable("$future")}}, line, col);
+  factoryStatements.push_back(makeStmt(ExprStmt{std::move(spawnCall)}, line, col));
+  factoryStatements.push_back(makeStmt(ReturnStmt{variable("$future")}, line, col));
+  StmtPtr factoryBody = makeStmt(BlockStmt{std::move(factoryStatements)}, line, col);
+  int factoryChild = compileFunctionProto(name, params, factoryBody, line, col,
+                                          TypeRef{"Future", false}, ownerClass, false, false);
+
+  int factoryReg = allocReg();
+  emit(OpCode::CLOSURE, factoryReg, factoryChild);
+  return factoryReg;
 }
 
 int Compiler::compileLambda(const LambdaExpr& lambda, int line, int col) {
@@ -3158,9 +3535,13 @@ int Compiler::compileLambda(const LambdaExpr& lambda, int line, int col) {
   // copied: `compileFunctionProto` moves `currentOwnerClass_` into its saved
   // frame, which would dangle a reference into it.
   const std::string owner = lambda.ownerClass.empty() ? currentOwnerClass_ : lambda.ownerClass;
-  int child = compileFunctionProto(lambda.name.empty() ? "<anonymous>" : lambda.name, lambda.params,
-                                   lambda.body, line, col, lambda.returnType, owner,
-                                   lambda.isAsync);
+  const std::string name = lambda.name.empty() ? "<anonymous>" : lambda.name;
+  if (lambda.isAsync) {
+    return compileAsyncFunctionValue(name, lambda.params, lambda.body, line, col, lambda.returnType,
+                                     owner);
+  }
+  int child = compileFunctionProto(name, lambda.params, lambda.body, line, col, lambda.returnType,
+                                   owner, false);
   int reg = allocReg();
   emit(OpCode::CLOSURE, reg, child);
   return reg;
@@ -3276,6 +3657,7 @@ void Compiler::compileFor(const ForStmt& s) {
 }
 
 void Compiler::compileForIn(const ForInStmt& s) {
+  checkFutureAccess(*s.iterable, s.iterable->line, s.iterable->col);
   // Evaluate the iterable once. The cursor starts as nil, which tells ITER to
   // initialize it from the iterable on the first call (0 for arrays, strings
   // and maps; the start bound for ranges).
@@ -3806,9 +4188,11 @@ int Compiler::compileAssign(const AssignExpr& assign, int line, int col) {
   int object = 0;
   int key = 0;
   if (const auto* index = std::get_if<IndexExpr>(&assign.target->node)) {
+    checkFutureAccess(*index->object, assign.target->line, assign.target->col);
     object = compileExpr(*index->object);
     key = compileExpr(*index->index);
   } else if (const auto* member = std::get_if<MemberExpr>(&assign.target->node)) {
+    checkFutureAccess(*member->object, assign.target->line, assign.target->col);
     checkFieldAssign(*member, assign);
     // A compound assignment reads the member first; record the name for the
     // WASM backend's method reachability analysis (PHASE 9.4).
@@ -4090,33 +4474,26 @@ int Compiler::compileSlice(const SliceExpr& slice, int line, int col) {
   return object;
 }
 
-// Builds the map an `async fn` returns. A future is deliberately a plain map:
-// the VM, the AOT backend and the WASM backend all already construct and read
-// maps, so async needs no runtime tag, no builtin and no opcode. The keys are
-// the private protocol `await` reads (`state`, `value`, `error`); user code can
-// see and mutate them, because `Future` is a compile-time name rather than an
-// opaque runtime type.
-int Compiler::compileMakeFuture(int value, int line, int col) {
+// Builds the status map a generated async step returns to the scheduler
+// (PHASE 11.2.2). It is an ordinary map, so the VM, AOT and WASM share it.
+int Compiler::compileMakeStatus(const std::string& kind, int value, int line, int col) {
   currentLine_ = line;
   currentCol_ = col;
   int map = allocReg();
   emit(OpCode::NEWTABLE, map, 0, 1);
-  int state = allocReg();
-  emit(OpCode::LOADK, state, addConstant(Value("fulfilled")));
-  emit(OpCode::SETTABLE, state, map, -addString("state") - 1);
+  int kindReg = allocReg();
+  emit(OpCode::LOADK, kindReg, addConstant(Value(kind)));
+  emit(OpCode::SETTABLE, kindReg, map, -addString("kind") - 1);
   freeReg();
   emit(OpCode::SETTABLE, value, map, -addString("value") - 1);
-  int nil = allocReg();
-  emit(OpCode::LOADK, nil, addConstant(Value()));
-  emit(OpCode::SETTABLE, nil, map, -addString("error") - 1);
-  freeReg();
   return map;
 }
 
-// `await expr` (PHASE 11.1): read the future's state and yield its payload, or
-// raise the carried error. Every path is an existing opcode or a `panic` call,
-// so the three engines behave identically. A pending future has no scheduler in
-// this phase; it is a runtime error rather than a silent nil.
+// `await expr` (PHASE 11.1/11.2.2): read the future's state and yield its
+// payload, or raise the carried error. A pending future is handed to the
+// scheduler, which runs ready tasks until the future settles; if it cannot,
+// the helper raises a deadlock error. Every path is an existing opcode or a
+// helper call, so the three engines behave identically.
 int Compiler::compileAwait(const AwaitExpr& awaited, int line, int col) {
   TypeRef operandType = inferExprType(*awaited.operand);
   if (operandType.isPresent() && operandType.name != "Future" && operandType.name != "any") {
@@ -4129,14 +4506,15 @@ int Compiler::compileAwait(const AwaitExpr& awaited, int line, int col) {
   // argument list, an assignment) expects the expression to leave its value in
   // the register it reserved, and reusing it keeps the arguments contiguous.
   int state = allocReg();
-  emit(OpCode::GETTABLE, state, future, -addString("state") - 1);
   int fulfilled = allocReg();
   emit(OpCode::LOADK, fulfilled, addConstant(Value("fulfilled")));
   int isFulfilled = allocReg();
-  emit(OpCode::EQ, isFulfilled, state, fulfilled);
   int rejected = allocReg();
   emit(OpCode::LOADK, rejected, addConstant(Value("rejected")));
   int isRejected = allocReg();
+  const int stateStart = currentOffset();
+  emit(OpCode::GETTABLE, state, future, -addString("state") - 1);
+  emit(OpCode::EQ, isFulfilled, state, fulfilled);
   emit(OpCode::EQ, isRejected, state, rejected);
   int checkRejected = emitJump(OpCode::JMP_IF_FALSE, isFulfilled);
   // The map is dead on this path after the read, so the payload replaces it in
@@ -4150,10 +4528,9 @@ int Compiler::compileAwait(const AwaitExpr& awaited, int line, int col) {
   emit(OpCode::LOADK, future, addConstant(Value()));
   compileHelperCall("panic", {error}, line, col);
   patchJump(pending, currentOffset());
-  emit(OpCode::LOADK, future, addConstant(Value()));
-  int message = allocReg();
-  emit(OpCode::LOADK, message, addConstant(Value("await on a pending Future is not supported yet")));
-  compileHelperCall("panic", {message}, line, col);
+  compileHelperCall(kAsyncAwait, {future}, line, col);
+  int resume = emitJump(OpCode::JMP);
+  patchJump(resume, stateStart);
   patchJump(endJump, currentOffset());
   freeReg(nextReg_ - future - 1);
   return future;
@@ -4280,9 +4657,12 @@ int Compiler::compileExpr(const Expr& expr) {
             return compileAssign(assign, expr.line, expr.col);
           },
           [&](const CallExpr& call) -> int { return compileCall(call, expr.line, expr.col); },
-          [&](const LambdaExpr& lambda) -> int { return compileLambda(lambda, expr.line, expr.col); },
+          [&](const LambdaExpr& lambda) -> int {
+            return compileLambda(lambda, expr.line, expr.col);
+          },
           [&](const TernaryExpr& ternary) -> int { return compileTernary(ternary); },
           [&](const IndexExpr& index) -> int {
+            checkFutureAccess(*index.object, expr.line, expr.col);
             int object = compileExpr(*index.object);
             int key = compileExpr(*index.index);
             emit(OpCode::GETTABLE, object, object, key);
@@ -4290,9 +4670,11 @@ int Compiler::compileExpr(const Expr& expr) {
             return object;
           },
           [&](const SliceExpr& slice) -> int {
+            checkFutureAccess(*slice.object, expr.line, expr.col);
             return compileSlice(slice, expr.line, expr.col);
           },
           [&](const MemberExpr& member) -> int {
+            if (member.object) checkFutureAccess(*member.object, expr.line, expr.col);
             // `Color.RED` and the imported `geom.Color.RED` (PHASE 6.9) are
             // compile-time constants, not table reads: emit a `LOADK` of the
             // folded integer. The parser rejects a binding with an enum name,
@@ -4367,9 +4749,22 @@ int Compiler::compileExpr(const Expr& expr) {
           [&](const AwaitExpr& awaited) -> int {
             return compileAwait(awaited, expr.line, expr.col);
           },
-          [&](const RangeExpr& range) -> int {
-            return compileRange(range, expr.line, expr.col);
+          [&](const SpawnExpr& spawned) -> int {
+            TypeRef operandType = inferExprType(*spawned.operand);
+            if (operandType.isPresent() && operandType.name != "Future" &&
+                operandType.name != "any") {
+              fail("'spawn' expects a Future, found '" + describeType(operandType) + "'", expr.line,
+                   expr.col);
+            }
+            int future = compileExpr(*spawned.operand);
+            compileHelperCall(kAsyncSpawn, {future}, expr.line, expr.col);
+            freeReg();
+            return future;
           },
+          [&](const YieldExpr&) -> int {
+            return compileHelperCall(kAsyncYield, {}, expr.line, expr.col);
+          },
+          [&](const RangeExpr& range) -> int { return compileRange(range, expr.line, expr.col); },
           [&](const TryExpr& node) -> int { return compileTry(node, expr.line, expr.col); },
           [&](const CatchExpr& node) -> int { return compileCatch(node, expr.line, expr.col); },
           [&](const auto&) -> int {

@@ -211,6 +211,9 @@ void writeChunk(std::vector<std::uint8_t>& out, const Bytecode& chunk) {
   writeStringList(out, chunk.nativeFns);
   writeStringList(out, chunk.nativeUses);
   writeStringList(out, chunk.usedMethods);
+  // Version 2: the source this chunk came from, so a binary built from the
+  // image reports the same position and is byte for byte the source build.
+  appendString(out, chunk.sourcePath);
 }
 
 ffi::FfiField readFfiField(Reader& reader) {
@@ -551,6 +554,7 @@ Bytecode readChunk(Reader& reader, int depth) {
   chunk.nativeFns = readStringList(reader, "native fn name");
   chunk.nativeUses = readStringList(reader, "native use name");
   chunk.usedMethods = readStringList(reader, "used method name");
+  chunk.sourcePath = reader.str("source path");
 
   for (const Instruction& instruction : chunk.code) {
     validateInstruction(instruction, chunk);

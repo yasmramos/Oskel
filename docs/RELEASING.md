@@ -41,12 +41,13 @@ value before configuring if CMake does not see it. The release SDK must contain
 `lib/oskel/ui` with SDL3 and `libskia_shim`; the `install_stdlib` test fails when
 that directory is missing.
 
-- The suite is green on Linux, Windows and macOS; the CI runs all three.
+- The suite is green on Linux, Windows and macOS (arm64 and Intel); the CI runs
+  all four jobs.
 - The AOT execution tests (`oskel.build_binary`) run on Linux x86-64 only and
   skip themselves elsewhere.
-- The hosted-mode tests build and run on Linux and Windows x86-64, and on an
-  x86-64 macOS host. The arm64 macOS runner builds the x86-64 Mach-O image and
-  checks its libSystem dependency but does not run it (that needs Rosetta).
+- The hosted-mode tests build and run on Linux, Windows and Intel macOS x86-64.
+  The arm64 macOS runner builds the x86-64 Mach-O image and checks its libSystem
+  dependency but does not run it (that needs Rosetta).
 - Update `CHANGELOG.md`: move the entries under `[Unreleased]` into a new
   `[x.y.z] - YYYY-MM-DD` section and leave `[Unreleased]` empty.
 
@@ -67,9 +68,10 @@ git push origin v0.3.0
 
 The tag push triggers `.github/workflows/artifacts.yml`, which:
 
-1. builds and tests on Linux, Windows and macOS;
+1. builds and tests on Linux, Windows and macOS (arm64 and Intel);
 2. packages the engine (`oskel` + `share/oskel/std`), the Windows installer,
-   the Linux `.deb`/`.rpm`, the macOS `.pkg`/`.dmg` and the VS Code extension;
+   the Linux `.deb`/`.rpm`, the arm64 macOS `.pkg`/`.dmg` and the VS Code
+   extension;
 3. creates the GitHub Release with `--generate-notes` and a `SHA256SUMS` file.
 
 Branch pushes and pull requests stop at the artifacts; only a tag publishes.

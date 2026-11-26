@@ -1,9 +1,12 @@
 # PHASE 11.2 design — scheduler and suspension
 
-Status: **design only**. PHASE 11.1 provides `async fn`, `await` and `Future`,
-but the body runs eagerly: a future is already settled when the caller receives
-it, `await` never suspends and there is no pending-future producer. This page
-records the design for the real async runtime. It is not implemented.
+Status: **11.2.2 implemented; 11.2.3-11.2.5 design only.** PHASE 11.1 provides
+`async fn`, `await` and `Future`; 11.2.1 makes `Future` opaque to the compiler.
+11.2.2 adds the pending-future producer, the cooperative ready queue, `spawn`
+and `yield`, and drains the queue before a script exits. The body is still one
+eager step: `await` on a pending future runs the ready tasks to completion and
+then re-reads the state, but it does not suspend the *current* body. 11.2.3
+adds the body splitter and real suspension; top-level `await` is 11.2.4.
 
 `DEVELOPMENT.md` §PHASE 11 is the current status; this page is the design
 record for the slices that follow.
@@ -31,8 +34,9 @@ async fn main(): void {
 - Calling an `async fn` returns a **pending** `Future`; it does not run the
   body.
 - `spawn f(...)` enqueues the call as a task and returns its future.
-- `await f` on a pending future suspends the current task, not the process.
-  Other ready tasks run until `f` settles, then the awaiter resumes.
+- `await f` on a pending future hands control to the ready queue until `f`
+  settles, then continues (11.2.3 turns the continuation into a real
+  suspension instead of an eager drain).
 - `await f` on a fulfilled future returns its payload immediately; on a
   rejected future it yields the error value (the current error-value model,
   not an exception).
@@ -78,10 +82,31 @@ runtime tag that closes that hole is 11.2.5.
   "state":   "pending" | "fulfilled" | "rejected",
   "value":   <payload> | nil,
   "error":   <error> | nil,
-  "task":    <closure> | nil,
+  "task":    <task frame> | nil,
   "waiters": <array of continuations>
 }
 ```
+
+A task frame is itself a map, so no backend needs a new value kind:
+
+```text
+{
+  "future":   <the future map>,
+  "step":     <closure: the generated body>,
+  "args":     <array: the factory arguments>,
+  "pc":       0,
+  "regs":     [],
+  "locals":   [],
+  "done":     false,
+  "enqueued": false,
+  "running":  false
+}
+```
+
+11.2.2 uses `future`, `step`, `args`, `enqueued` and `running`; `pc`, `regs`
+and `locals` are reserved for the 11.2.3 splitter. The factory enqueues the
+task when it builds the future, so `await f()` and `spawn f()` both see a
+pending task that the ready queue can run.
 
 `state` and `value` keep the PHASE 11.1 shape, so an existing `Future`-typed
 value remains readable. `task` is the resumable body; `waiters` are the
@@ -241,6 +266,21 @@ awaiting task receives the error value.
 common `await f()` form does not require `spawn`. `spawn` is the explicit way
 to start a task without awaiting it immediately.
 
+### 5.1 11.2.2 implementation
+
+The helpers are emitted as ordinary Oskel once per compilation session, the
+first time a chunk contains async code (`compileAsyncPrelude`): `__oskel_async_settle`, `__oskel_async_reject`,
+`__oskel_async_step`, `__oskel_async_spawn`, `__oskel_async_drain`,
+`__oskel_async_await` and `__oskel_async_yield`. The factory enqueues its task;
+`await` drains the queue when the future is pending, then re-reads the state;
+`yield()` drains the queue and returns, so the current body continues rather
+than suspending. The end of a top-level chunk calls `__oskel_async_drain`, which
+is what lets `async fn main` run without a top-level `await`. A task that is
+already running is never re-enqueued, so a cycle reports the deadlock message
+instead of looping; the full waiter/continuation protocol is 11.2.3. The
+helpers and the ready array are globals, so an imported module and the root
+chunk share one scheduler.
+
 ## 6. AOT and WASM
 
 No new opcode and no backend-specific suspension mechanism:
@@ -251,11 +291,12 @@ No new opcode and no backend-specific suspension mechanism:
 - The scheduler and `spawn`/`yield` are ordinary Oskel functions over maps and
   arrays, emitted into the program's prelude. They are not new builtins, so
   `check_builtin_parity` needs no exception.
-- `$awaitProbe` is compiler-private and emitted as a normal proto; the AOT
-  lowerer treats it like any other function.
+- The 11.2.3 splitter will emit a compiler-private `$awaitProbe` as a normal
+  proto; the AOT lowerer then treats it like any other function.
 - The freestanding, hosted and WASM images carry the same scheduler code. A
   program that never mentions `async` must keep its byte-for-byte image; the
-  prelude functions are emitted only when an async proto exists.
+  prelude functions are emitted once per compilation session, and only when a
+  chunk mentions async.
 
 The AOT backend's JIT is unaffected: the JIT accepts only integer-only protos
 and falls back to the interpreter for everything else. Async bodies fall back
@@ -291,8 +332,8 @@ the first candidate is a retirement, not a 41st opcode.
 
 | Slice | Scope | Exit criterion |
 |-------|-------|----------------|
-| 11.2.1 | Compiler-enforced `Future` opacity and state transitions; no scheduler yet | Direct indexing/member access on a `Future` is rejected, pending/fulfilled/rejected are distinguishable |
-| 11.2.2 | Task frame, factory/body split, `spawn`, `yield`, ready queue | A spawned task runs after the spawner reaches `await`; VM/AOT/WASM order matches |
+| 11.2.1 | ✅ Compiler-enforced `Future` opacity; no scheduler yet | Direct indexing/slicing/iteration/member access on a `Future` is rejected; `tests/errors/async_future_*.oskl` |
+| 11.2.2 | ✅ Task frame, factory/body split, `spawn`, `yield`, ready queue | A spawned task runs after the spawner reaches `await`; VM/AOT/WASM order matches |
 | 11.2.3 | Split at `await`, spill/restore, suspension | A task suspends at a pending future and resumes after it settles; interleaving order is asserted |
 | 11.2.4 | Top-level `await`, unhandled rejection, deadlock diagnostics | Scripts can await at top level; stuck and unhandled cases have tests |
 | 11.2.5 | Runtime tag, cancellation, async timers/I/O | Optional; only after 11.2.1-11.2.4 are stable |
@@ -304,8 +345,9 @@ that makes `await` meaningful.
 
 ## 10. Tests
 
-- `tests/71_async_scheduler.oskl` — `spawn`, `yield`, ready order, two waiters
-  on one future, `await` on a settled future, an async `main`.
+- `tests/71_async_scheduler.oskl` — `spawn`, `yield`, ready order, `await` on a
+  settled future and an async `main`. (Two waiters on one future need the
+  11.2.3 suspension; the fixture grows them then.)
 - `tests/71_async_suspend.oskl` — an await inside a loop, an await inside a
   closure-free block, nested awaits, a local captured by a closure before the
   await and read after it.
@@ -314,8 +356,9 @@ that makes `await` meaningful.
 - `tests/native_build_async_scheduler.oskl` and
   `tests/native_build_async_suspend.oskl` — the VM/AOT/WASM parity fixtures;
   registered like the other `native_build_*` cases.
-- `tests/errors/async_spawn_outside.oskl`, `async_await_deadlock.oskl` — the
-  compile/runtime diagnostics.
+- `tests/errors/async_spawn_outside.oskl`, `async_yield_outside.oskl`,
+  `async_spawn_non_future.oskl` — the 11.2.2 compile diagnostics. The deadlock
+  fixture arrives with 11.2.4.
 
 Each parity fixture runs the same `-DOSKEL_ARGS` vector on the VM and the
 compiled binary, as `tests/build_binary.cmake` already does.
@@ -334,7 +377,7 @@ compiled binary, as `tests/build_binary.cmake` already does.
   uses `defer` around an `await`.
 - **Code size.** Every async body gets a dispatch prologue and a spill/restore
   path. A program with no async must not pay for it; the prelude is emitted
-  only when the chunk contains an async proto.
+  only when the session contains an async proto.
 - **WASM control flow.** The splitter emits many blocks and jumps; the WASM
   validator rejects an unbalanced block/loop, so the emitter's label discipline
   needs the same tests as the existing structured-control lowering.
