@@ -555,12 +555,13 @@ match the x86-64 backend. Strings, ranges, closures/upvalues, error values,
 arrays and maps (indexing, iteration, structural equality, `str`/`repr`),
 slicing, variadic functions, control flow, the portable builtins and the
 array/map/string *methods* (`.push`, `.map`, `.split`, ...) work;
-`std/json`, `std/datetime`, `std/collections`, `std/path`, `std/hash`,
-`std/uuid`, `std/url`, `std/cli`, `std/log`, `std/semver`, `std/terminal` and
-the bound half of `std.math` build and agree with the VM byte for byte, and `double` printing is
-the same shortest round-trip form. A builtin with no WASM body is seeded as a
-closure that raises a clear runtime error when called. The remaining gaps are
-listed in [DEVELOPMENT.md](DEVELOPMENT.md) PHASE 9 and `docs/BACKLOG.md` §6.
+`std/json`, `std/datetime`, `std/collections`, `std/path`, `std/csv`,
+`std/hash`, `std/uuid`, `std/url`, `std/cli`, `std/log`, `std/semver`,
+`std/terminal` and the bound half of `std.math` build and agree with the VM
+byte for byte, and `double` printing is the same shortest round-trip form. A
+builtin with no WASM body is seeded as a closure that raises a clear runtime
+error when called. The remaining gaps are listed in
+[DEVELOPMENT.md](DEVELOPMENT.md) PHASE 9 and `docs/BACKLOG.md` §6.
 
 ## Tests
 

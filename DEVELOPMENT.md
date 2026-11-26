@@ -619,6 +619,19 @@ previous one.
   are maps with closures, so the VM, the AOT backend and WebAssembly agree. See
   `docs/language.md` §12.14/§18, `tests/62_std_io.oskl` and the AOT/WASM
   fixture `tests/native_build_io.oskl`.
+- **Standard library: `std.csv`** — **done**: RFC 4180 comma-separated values
+  as ordinary arrays of field strings, so no new runtime type, opcode or
+  builtin is added. `parse`/`parseWith` read records (quoted fields, doubled
+  quotes, embedded delimiters and newlines, `\r\n`/`\n`/`\r` separators),
+  `stringify`/`stringifyWith` write them back with the quoting a round trip
+  needs, `tryParse`/`tryParseWith`/`isValid` expose malformed input as a value
+  instead of an abort, and `toMaps`/`fromMaps` treat the first record as a
+  header and convert between rows and maps. The reader rejects a character
+  after a closing quote instead of silently accepting `"a"b`. The module is
+  pure Oskel over the portable primitive surface and assembles its output with
+  `std.io.StringWriter`, so the VM, `oskel build` and WebAssembly agree byte
+  for byte. See `docs/language.md` §12.19, `tests/72_std_csv.oskl` and the
+  AOT/WASM fixture `tests/native_build_csv.oskl`.
 
 ### PHASE 6.6 — FFI with C (1.0)
 
@@ -2305,10 +2318,10 @@ because the arena never reclaims. `tests/native_build_wasm_pointers.oskl`
 covers the happy paths; the error paths stay in the AOT fixture because
 `pcall` is VM-only. The standard-library modules stay on the portable
 primitive surface: `std/json`,
-`std/datetime`, `std/collections`, `std/path`, `std/hash`, `std/uuid`,
-`std/url`, `std/cli`, `std/log`, `std/semver`, `std/terminal` and the bound
-half of `std.math` build and agree with the VM byte for byte; the host clock
-is what lets `std/datetime` read `time()`/`clock()`.
+`std/datetime`, `std/collections`, `std/path`, `std/csv`, `std/hash`,
+`std/uuid`, `std/url`, `std/cli`, `std/log`, `std/semver`, `std/terminal`
+and the bound half of `std.math` build and agree with the VM byte for byte;
+the host clock is what lets `std/datetime` read `time()`/`clock()`.
 
 Still open, and each reported rather than mis-compiled:
 

@@ -11,6 +11,19 @@ may change between minor versions.
 
 ### Added
 
+- **`std.csv`: RFC 4180 parsing and serialization.** `parse`/`parseWith` read
+  records as arrays of field strings, with quoted fields, doubled quotes,
+  embedded delimiters and newlines, and `\r\n`/`\n`/`\r` separators;
+  `stringify`/`stringifyWith` write the same shape back with the quoting a
+  round trip needs. `tryParse`/`tryParseWith`/`isValid` report malformed input
+  (an unterminated quoted field, a character after a closing quote) as a value
+  with its line and column instead of aborting, and `toMaps`/`fromMaps`
+  convert between records and header-keyed maps. The module is pure Oskel over
+  the portable primitive surface, and `stringify` assembles its output with
+  `std.io.StringWriter` so a large table stays linear. The VM, `oskel build`
+  and WebAssembly agree byte for byte; `tests/72_std_csv.oskl` and
+  `tests/native_build_csv.oskl` are the fixtures. See `docs/language.md`
+  §12.19.
 - **A compiled binary names the position of a runtime error (PHASE 7g.3).**
   `oskel build app.oskl` now reports `oskel: app.oskl:12: <message>` instead of
   a bare `oskel: <message>`, so a failure in the generated program is locatable
