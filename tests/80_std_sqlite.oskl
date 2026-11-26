@@ -1,0 +1,87 @@
+// `std.sqlite`: the VM/AOT-hosted SQLite3 wrapper.
+//
+// The test uses an in-memory database, so it needs no file and no cleanup.
+// `tests/build_hosted_sqlite.cmake` runs this same file through
+// `oskel build --mode hosted --link-lib sqlite3` and compares the output with
+// the VM's; `tests/native_build_sqlite_freestanding.oskl` pins the clean
+// freestanding rejection.
+
+import std.sqlite;
+
+let db = sqlite.Database(":memory:");
+
+db.exec("CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT NOT NULL, score REAL)");
+let first = db.run("INSERT INTO people (name, score) VALUES (?, ?)", "Ada", 9.5);
+assertEq(first.changes, 1);
+assertEq(first.lastInsertRowId, 1);
+db.run("INSERT INTO people (name, score) VALUES (?, ?)", "Grace", 9.75);
+db.run("INSERT INTO people (name, score) VALUES (?, ?)", "Linus", 7.0);
+
+let rows = db.query("SELECT id, name, score FROM people ORDER BY id");
+assertEq(len(rows), 3);
+assertEq(rows[0].id, 1);
+assertEq(rows[0].name, "Ada");
+assertEq(rows[0].score, 9.5);
+assertEq(rows[2].name, "Linus");
+
+let one = db.query("SELECT name FROM people WHERE id = ?", 2);
+assertEq(one[0].name, "Grace");
+
+let updated = db.run("UPDATE people SET score = ? WHERE name = ?", 10.0, "Linus");
+assertEq(updated.changes, 1);
+let deleted = db.run("DELETE FROM people WHERE name = ?", "Grace");
+assertEq(deleted.changes, 1);
+assertEq(db.query("SELECT COUNT(*) AS n FROM people")[0].n, 2);
+
+// TEXT, NULL and BLOB round trips.
+db.exec("CREATE TABLE notes (body TEXT)");
+db.run("INSERT INTO notes (body) VALUES (?)", "hello, sqlite");
+assertEq(db.query("SELECT body FROM notes")[0].body, "hello, sqlite");
+db.run("INSERT INTO notes (body) VALUES (?)", nil);
+assertEq(db.query("SELECT body FROM notes WHERE body IS NULL")[0].body == nil, true);
+
+db.exec("CREATE TABLE blobs (data BLOB)");
+db.run("INSERT INTO blobs (data) VALUES (?)", [0, 1, 2, 255]);
+let blob = db.query("SELECT data FROM blobs")[0].data;
+assertEq(len(blob), 4);
+assertEq(blob[0], 0);
+assertEq(blob[3], 255);
+
+// A committed transaction keeps its row; a failing one rolls back.
+db.transaction(() => {
+  db.run("INSERT INTO notes (body) VALUES (?)", "tx");
+});
+assertEq(db.query("SELECT COUNT(*) AS n FROM notes")[0].n, 3);
+let failed = pcall(() => {
+  db.transaction(() => {
+    db.run("INSERT INTO notes (body) VALUES (?)", "rollback");
+    panic("boom");
+  });
+});
+assertEq(failed.ok, false);
+assertEq(db.query("SELECT COUNT(*) AS n FROM notes")[0].n, 3);
+
+// `prepare` exposes the step-by-step API; `defer` finalizes on every path.
+let stmt = db.prepare("SELECT body FROM notes ORDER BY rowid");
+assertEq(stmt.columnCount(), 1);
+assertEq(stmt.columns()[0], "body");
+var seen = 0;
+while (true) {
+  let code = stmt.step();
+  if (code == sqlite.SQLITE_ROW) {
+    let kind = type(stmt.value(0));
+    assertEq(kind == "string" || kind == "nil", true);
+    seen = seen + 1;
+  } else if (code == sqlite.SQLITE_DONE) {
+    break;
+  } else {
+    panic("sqlite: step: " + db.error());
+  }
+}
+assertEq(seen, 3);
+stmt.finalize();
+
+assertEq(len(db.version()) > 0, true);
+assertEq(db.autocommit(), true);
+db.close();
+print("std.sqlite ok");

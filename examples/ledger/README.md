@@ -48,6 +48,11 @@ oskelp build --manifest-path examples/ledger/oskel.toml
 
 Inside the project directory the `--manifest-path` argument is unnecessary.
 
+On Windows the freestanding image has no process argument vector, so
+`oskelp build` reports that `args()` needs one. The VM (`oskelp run`) is the
+Windows path for this project; `oskelp build --mode hosted` with a C toolchain
+also works.
+
 ## Commands
 
 | Command | Meaning |

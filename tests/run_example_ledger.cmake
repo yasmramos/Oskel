@@ -174,7 +174,11 @@ require_failure("unknown command" 2)
 require_contains("unknown command" "${run_err}" "unknown command 'nope'")
 
 # --- 5. the native binary agrees with the VM -------------------------------
-if(OSKEL_AOT_RUNNABLE)
+# The freestanding Windows image has no process argument vector, so a program
+# that reads `args()` cannot be built there; the VM is the Windows path for
+# this project, and a hosted build needs a C toolchain the CTest does not set
+# up. Linux and macOS run the freestanding/hosted native half.
+if(OSKEL_AOT_RUNNABLE AND NOT WIN32)
   run_oskelp(build)
   require_success("oskelp build")
   set(native "${project}/target/ledger${exe_suffix}")

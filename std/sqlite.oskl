@@ -1,0 +1,431 @@
+// Standard library: SQLite3.
+//
+// Imported as `import std.sqlite;` (qualified: `sqlite.Database`),
+// `import std.sqlite.*;` (unqualified: `Database`), `import std.sqlite as db;`
+// or `import { Database } from std.sqlite;`.
+//
+// The low-level C declarations live in `std/internal/sqlite_bindings.oskl`,
+// which `bindgen` generates from `bindings/sqlite/sqlite3_subset.h`. This
+// module is the hand-written layer over them: a `Database` class and a
+// `Statement` class over the portable primitive surface (maps, arrays,
+// closures, `defer` and `pcall`).
+//
+//   let db = sqlite.Database(":memory:");
+//   db.exec("CREATE TABLE people (id INTEGER PRIMARY KEY, name TEXT)");
+//   db.run("INSERT INTO people (name) VALUES (?)", "Ada");
+//   for row in db.query("SELECT id, name FROM people") {
+//     print(row.id, row.name);
+//   }
+//   db.close();
+//
+// A parameter is positional (`?`). The wrapper binds an `int`/`bool` as an
+// INTEGER, a `float`/`double` as a REAL, a `string` as TEXT, `nil` as NULL and
+// an array of bytes (`0..255`) as a BLOB. A column comes back as an `int`, a
+// `double`, a `string`, an array of bytes for a BLOB, or `nil`.
+//
+// `query` returns every row as a map from the column name to the value; a
+// duplicate column name keeps the last one. `run` returns
+// `{changes, lastInsertRowId}` and expects a statement that produces no rows.
+// `prepare` returns a `Statement` for a step-by-step loop; `defer` its
+// `finalize` (or use `query`/`run`, which do it for you).
+//
+// SQLite is a host library. The development engine links it when CMake finds
+// it; a native binary needs `oskel build --mode hosted --link-lib sqlite3`.
+// The freestanding image has no host, so a used `sqlite3_*` symbol is a build
+// error there, and WebAssembly has no SQLite binding at all. The module is
+// therefore VM/AOT-hosted only; it is not part of the portable surface.
+
+import std.internal.sqlite_bindings as sqlite3;
+
+// `memcpy` copies a TEXT/BLOB column into an owned buffer; `cstr(buffer)` then
+// reads it without stopping at an embedded NUL. The generated SQLite bindings
+// do not include it because it is not part of SQLite's API.
+extern "C" {
+  fn memcpy(dest: ptr, src: ptr, n: size_t): ptr;
+}
+
+// Re-export the result and column codes a caller needs.
+let SQLITE_OK = sqlite3.SQLITE_OK;
+let SQLITE_ROW = sqlite3.SQLITE_ROW;
+let SQLITE_DONE = sqlite3.SQLITE_DONE;
+let SQLITE_INTEGER = sqlite3.SQLITE_INTEGER;
+let SQLITE_FLOAT = sqlite3.SQLITE_FLOAT;
+let SQLITE_TEXT = sqlite3.SQLITE_TEXT;
+let SQLITE_BLOB = sqlite3.SQLITE_BLOB;
+let SQLITE_NULL = sqlite3.SQLITE_NULL;
+
+// SQLite compares the text/blob destructor against this cast; `bindgen` cannot
+// express a function-pointer cast, so the value is built here.
+let _TRANSIENT = intToPtr(-1);
+
+// Reads the 64-bit pointer a C out-parameter wrote into an 8-byte buffer.
+// Little-endian on every target the AOT backend supports.
+fn _loadPtr(slot) {
+  var value = 0;
+  var i = 0;
+  while (i < 8) {
+    value = value | (loadByte(slot, i) << (8 * i));
+    i = i + 1;
+  }
+  if (value == 0) {
+    return nil;
+  }
+  return intToPtr(value);
+}
+
+fn _open(path: string, flags: int) {
+  let slot = buffer(8);
+  let code = sqlite3.sqlite3_open_v2(cstring(path), slot, flags, intToPtr(0));
+  let handle = _loadPtr(slot);
+  if (code != sqlite3.SQLITE_OK) {
+    var message = "out of memory";
+    if (handle != nil) {
+      message = cstr(sqlite3.sqlite3_errmsg(handle));
+      sqlite3.sqlite3_close(handle);
+    }
+    panic("sqlite: open '" + path + "': " + message);
+  }
+  if (handle == nil) {
+    panic("sqlite: open '" + path + "': no database handle");
+  }
+  return handle;
+}
+
+// A connection. `Database(path)` opens read-write and creates the file;
+// `Database({path: path, flags: flags})` passes `sqlite3_open_v2` flags.
+class Database {
+  handle: ptr;
+  path: string;
+
+  fn init(options) {
+    var path = options;
+    var flags = sqlite3.SQLITE_OPEN_READWRITE | sqlite3.SQLITE_OPEN_CREATE;
+    if (type(options) == "map") {
+      path = options.path;
+      if (options.flags != nil) {
+        flags = options.flags;
+      }
+    }
+    if (type(path) != "string") {
+      panic("sqlite: Database() expects a path string or {path, flags}");
+    }
+    self.path = path;
+    self.handle = _open(path, flags);
+  }
+
+  // The last error message, or "database is closed".
+  fn error(): string {
+    if (self.handle == nil) {
+      return "database is closed";
+    }
+    return cstr(sqlite3.sqlite3_errmsg(self.handle));
+  }
+
+  // Runs one or more statements and returns the number of changed rows. Use
+  // `query` for a SELECT; `exec` discards every row.
+  fn exec(sql: string) {
+    if (self.handle == nil) {
+      panic("sqlite: exec on a closed database");
+    }
+    let code = sqlite3.sqlite3_exec(self.handle, cstring(sql),
+      intToPtr(0), intToPtr(0), intToPtr(0));
+    if (code != sqlite3.SQLITE_OK) {
+      panic("sqlite: exec: " + self.error());
+    }
+    return self.changes();
+  }
+
+  // Prepares a statement. The caller owns it and must call `finalize`.
+  fn prepare(sql: string) {
+    return Statement(self, sql);
+  }
+
+  // Runs a statement that produces rows and returns every row as a map.
+  fn query(sql: string, params...) {
+    let stmt = Statement(self, sql);
+    defer { stmt.finalize(); }
+    stmt.bind(params);
+    var rows = [];
+    while (true) {
+      let code = stmt.step();
+      if (code == sqlite3.SQLITE_ROW) {
+        rows[len(rows)] = stmt.row();
+      } else if (code == sqlite3.SQLITE_DONE) {
+        break;
+      } else {
+        panic("sqlite: query: " + self.error());
+      }
+    }
+    return rows;
+  }
+
+  // Runs a statement that produces no rows and returns the change summary.
+  fn run(sql: string, params...) {
+    let stmt = Statement(self, sql);
+    defer { stmt.finalize(); }
+    stmt.bind(params);
+    let code = stmt.step();
+    if (code != sqlite3.SQLITE_DONE) {
+      panic("sqlite: run: " + self.error());
+    }
+    return {changes: self.changes(), lastInsertRowId: self.lastInsertRowId()};
+  }
+
+  // Runs `body` inside BEGIN/COMMIT; a panic rolls back and is re-raised.
+  fn transaction(body) {
+    self.exec("BEGIN");
+    let result = pcall(body);
+    if (result.ok) {
+      self.exec("COMMIT");
+      return result.value;
+    }
+    pcall(() => self.exec("ROLLBACK"));
+    if (result.error == nil) {
+      panic("sqlite: transaction failed");
+    }
+    panic(result.error);
+  }
+
+  // Rows changed by the most recent INSERT/UPDATE/DELETE.
+  fn changes(): int {
+    return sqlite3.sqlite3_changes(self.handle);
+  }
+
+  // Rows changed since the connection opened.
+  fn totalChanges(): int {
+    return sqlite3.sqlite3_total_changes(self.handle);
+  }
+
+  // The rowid of the most recent successful INSERT.
+  fn lastInsertRowId(): int {
+    return sqlite3.sqlite3_last_insert_rowid(self.handle);
+  }
+
+  // The SQLite library version, for example "3.45.1".
+  fn version(): string {
+    return cstr(sqlite3.sqlite3_libversion());
+  }
+
+  fn versionNumber(): int {
+    return sqlite3.sqlite3_libversion_number();
+  }
+
+  fn busyTimeout(ms: int) {
+    return sqlite3.sqlite3_busy_timeout(self.handle, ms);
+  }
+
+  fn autocommit(): bool {
+    return sqlite3.sqlite3_get_autocommit(self.handle) != 0;
+  }
+
+  fn errcode(): int {
+    return sqlite3.sqlite3_errcode(self.handle);
+  }
+
+  fn extendedErrcode(): int {
+    return sqlite3.sqlite3_extended_errcode(self.handle);
+  }
+
+  fn extendedResultCodes(on: bool) {
+    return sqlite3.sqlite3_extended_result_codes(self.handle, on ? 1 : 0);
+  }
+
+  // Closes the connection. Every statement must be finalized first; SQLite
+  // reports BUSY otherwise and the wrapper leaves the handle open.
+  fn close() {
+    if (self.handle == nil) {
+      return;
+    }
+    let code = sqlite3.sqlite3_close(self.handle);
+    if (code != sqlite3.SQLITE_OK) {
+      panic("sqlite: close: " + self.error());
+    }
+    self.handle = nil;
+  }
+}
+
+// A prepared statement. Prefer `Database.query`/`run`; use this when the
+// rows need to be processed one at a time or the statement is reused.
+class Statement {
+  db;
+  handle: ptr;
+  sql: string;
+
+  fn init(db, sql: string) {
+    if (db.handle == nil) {
+      panic("sqlite: prepare on a closed database");
+    }
+    self.db = db;
+    self.sql = sql;
+    let slot = buffer(8);
+    let code = sqlite3.sqlite3_prepare_v2(db.handle, cstring(sql), -1, slot, intToPtr(0));
+    if (code != sqlite3.SQLITE_OK) {
+      panic("sqlite: prepare: " + db.error());
+    }
+    self.handle = _loadPtr(slot);
+    if (self.handle == nil) {
+      panic("sqlite: prepare: no statement for '" + sql + "'");
+    }
+  }
+
+  fn finalize() {
+    if (self.handle != nil) {
+      sqlite3.sqlite3_finalize(self.handle);
+      self.handle = nil;
+    }
+  }
+
+  fn reset(): int {
+    return sqlite3.sqlite3_reset(self.handle);
+  }
+
+  fn clearBindings(): int {
+    return sqlite3.sqlite3_clear_bindings(self.handle);
+  }
+
+  fn parameterCount(): int {
+    return sqlite3.sqlite3_bind_parameter_count(self.handle);
+  }
+
+  fn columnCount(): int {
+    return sqlite3.sqlite3_column_count(self.handle);
+  }
+
+  // Binds the array positionally: `stmt.bind([1, "a"])` fills `?1`, `?2`.
+  fn bind(params) {
+    if (type(params) != "array") {
+      panic("sqlite: bind() expects an array of values");
+    }
+    var i = 0;
+    while (i < len(params)) {
+      self._bindOne(i + 1, params[i]);
+      i = i + 1;
+    }
+    return self;
+  }
+
+  fn _bindOne(index: int, value) {
+    let kind = type(value);
+    var code = sqlite3.SQLITE_OK;
+    if (value == nil) {
+      code = sqlite3.sqlite3_bind_null(self.handle, index);
+    } else if (kind == "bool") {
+      code = sqlite3.sqlite3_bind_int64(self.handle, index, value == true ? 1 : 0);
+    } else if (kind == "int") {
+      code = sqlite3.sqlite3_bind_int64(self.handle, index, value);
+    } else if (kind == "float" || kind == "double") {
+      code = sqlite3.sqlite3_bind_double(self.handle, index, value);
+    } else if (kind == "string") {
+      code = sqlite3.sqlite3_bind_text(self.handle, index, cstring(value), -1, _TRANSIENT);
+    } else if (kind == "cstring") {
+      code = sqlite3.sqlite3_bind_text(self.handle, index, value, -1, _TRANSIENT);
+    } else if (kind == "array") {
+      let blob = buffer(len(value));
+      var j = 0;
+      while (j < len(value)) {
+        storeByte(blob, j, value[j]);
+        j = j + 1;
+      }
+      code = sqlite3.sqlite3_bind_blob(self.handle, index, blob, len(value), _TRANSIENT);
+    } else {
+      panic("sqlite: cannot bind a value of type '" + kind + "'");
+    }
+    if (code != sqlite3.SQLITE_OK) {
+      panic("sqlite: bind " + str(index) + ": " + self.db.error());
+    }
+  }
+
+  // SQLITE_ROW, SQLITE_DONE or an error code.
+  fn step(): int {
+    return sqlite3.sqlite3_step(self.handle);
+  }
+
+  // The current row as a map from column name to value.
+  fn row() {
+    var result = {};
+    let count = self.columnCount();
+    var i = 0;
+    while (i < count) {
+      let name = cstr(sqlite3.sqlite3_column_name(self.handle, i));
+      result[name] = self.value(i);
+      i = i + 1;
+    }
+    return result;
+  }
+
+  // The column names, in select order.
+  fn columns() {
+    var names = [];
+    let count = self.columnCount();
+    var i = 0;
+    while (i < count) {
+      names[len(names)] = cstr(sqlite3.sqlite3_column_name(self.handle, i));
+      i = i + 1;
+    }
+    return names;
+  }
+
+  // One column of the current row: int, double, string, byte array or nil.
+  fn value(index: int) {
+    let kind = sqlite3.sqlite3_column_type(self.handle, index);
+    if (kind == sqlite3.SQLITE_INTEGER) {
+      return sqlite3.sqlite3_column_int64(self.handle, index);
+    }
+    if (kind == sqlite3.SQLITE_FLOAT) {
+      return sqlite3.sqlite3_column_double(self.handle, index);
+    }
+    if (kind == sqlite3.SQLITE_TEXT) {
+      return self._text(index);
+    }
+    if (kind == sqlite3.SQLITE_BLOB) {
+      return self._blob(index);
+    }
+    return nil;
+  }
+
+  // Copies the column's bytes into an owned buffer, or nil for an empty value.
+  fn _bytes(index: int) {
+    let n = sqlite3.sqlite3_column_bytes(self.handle, index);
+    if (n <= 0) {
+      return nil;
+    }
+    let data = buffer(n);
+    memcpy(data, sqlite3.sqlite3_column_blob(self.handle, index), n);
+    return data;
+  }
+
+  fn _text(index: int) {
+    let data = self._bytes(index);
+    if (data == nil) {
+      return "";
+    }
+    return cstr(data);
+  }
+
+  fn _blob(index: int) {
+    let data = self._bytes(index);
+    if (data == nil) {
+      return [];
+    }
+    var out = [];
+    var i = 0;
+    while (i < byteLen(data)) {
+      out[len(out)] = loadByte(data, i);
+      i = i + 1;
+    }
+    return out;
+  }
+}
+
+// Convenience constructors and the library version without a connection.
+fn open(path: string) {
+  return Database(path);
+}
+
+fn openReadOnly(path: string) {
+  return Database({path: path, flags: sqlite3.SQLITE_OPEN_READONLY});
+}
+
+fn version(): string {
+  return cstr(sqlite3.sqlite3_libversion());
+}
