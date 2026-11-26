@@ -14,10 +14,10 @@ fn assertEqStr(actual: string, expected: string) {
   }
 }
 
-let root = ui.window("Demo", 120, 80,
-  ui.column(8, [
-    ui.text("Hi", 16),
-    ui.button("OK", () => nil),
+let root = ui.Window("Demo", 120, 80,
+  ui.Column(8, [
+    ui.Text("Hi", 16),
+    ui.Button("OK", () => nil),
   ]));
 ui.layout(root, 120, 80);
 
@@ -45,8 +45,8 @@ canvas.close();
 surface.close();
 
 // A checkbox paints its box in every pointer state and fills it when checked.
-let control = ui.window("Check", 120, 24,
-  ui.checkbox("Accept", false, (checked) => nil));
+let control = ui.Window("Check", 120, 24,
+  ui.Checkbox("Accept", false, (checked) => nil));
 ui.layout(control, 120, 24);
 let controlSurface = skia.Surfaces.raster(120, 24);
 let controlCanvas = controlSurface.getCanvas();

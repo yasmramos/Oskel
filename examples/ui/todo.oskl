@@ -42,8 +42,8 @@ var nextSample = 0;
 // The two widgets that `refresh` mutates in place. `ui_window.run` keeps the
 // root it is handed, so the tree is rebuilt by replacing `tasksColumn.children`
 // instead of replacing the root.
-var tasksColumn = ui.column(6, []);
-var statusText = ui.text("", 14);
+var tasksColumn = ui.Column(6, []);
+var statusText = ui.Text("", 14);
 
 fn pendingCount(): int {
   var pending = 0;
@@ -81,13 +81,13 @@ fn clearAll() {
 fn taskRow(task, index) {
   let label = task.done ? "✓ " + task.text : "• " + task.text;
   let color = task.done ? 0xFF16A34A : 0xFF111827;
-  return ui.row(8, [
-    ui.textColor(label, 16, color),
-    ui.button("Toggle", () => {
+  return ui.Row(8, [
+    ui.Text(label, 16).withColor(color),
+    ui.Button("Toggle", () => {
       task.done = task.done == false;
       refresh();
     }),
-    ui.button("Remove", () => {
+    ui.Button("Remove", () => {
       removeTask(index);
       refresh();
     }),
@@ -100,7 +100,7 @@ fn refresh() {
     rows.push(taskRow(tasks[i], i));
   }
   if (len(rows) == 0) {
-    rows.push(ui.text("No tasks. Add one below.", 16));
+    rows.push(ui.Text("No tasks. Add one below.", 16));
   }
   tasksColumn.children = rows;
   statusText.content = "${pendingCount()} of ${len(tasks)} tasks pending";
@@ -108,13 +108,13 @@ fn refresh() {
 
 // The first button in paint order, for the bounded headless run.
 fn firstButton(node) {
-  if (node.kind == "button") {
+  if (type(node) == "Button") {
     return node;
   }
-  if (node.kind == "window" || node.kind == "padding") {
+  if (type(node) == "Window" || type(node) == "Padding") {
     return firstButton(node.child);
   }
-  if (node.kind == "column" || node.kind == "row") {
+  if (type(node) == "Column" || type(node) == "Row") {
     for child in node.children {
       let found = firstButton(child);
       if (found != nil) {
@@ -125,21 +125,21 @@ fn firstButton(node) {
   return nil;
 }
 
-let root = ui.window("Oskel Todo", WIDTH, HEIGHT,
-  ui.column(12, [
-    ui.text("Oskel Todo", 28),
-    ui.text("A task list built with std.ui and std.ui.window.", 14),
+let root = ui.Window("Oskel Todo", WIDTH, HEIGHT,
+  ui.Column(12, [
+    ui.Text("Oskel Todo", 28),
+    ui.Text("A task list built with std.ui and std.ui.window.", 14),
     tasksColumn,
-    ui.row(8, [
-      ui.button("Add task", () => {
+    ui.Row(8, [
+      ui.Button("Add task", () => {
         addTask();
         refresh();
       }),
-      ui.button("Clear done", () => {
+      ui.Button("Clear done", () => {
         clearDone();
         refresh();
       }),
-      ui.button("Clear all", () => {
+      ui.Button("Clear all", () => {
         clearAll();
         refresh();
       }),

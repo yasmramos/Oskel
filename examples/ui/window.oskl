@@ -17,15 +17,15 @@ import std.ui.window as ui_window;
 
 var clicks = 0;
 
-let root = ui.window("Oskel UI", 420, 240,
-  ui.column(12, [
-    ui.text("Hello from Oskel", 32),
-    ui.textColor("Skia inside an SDL3 window", 18, 0xFF444444),
-    ui.button("Click me", () => {
+let root = ui.Window("Oskel UI", 420, 240,
+  ui.Column(12, [
+    ui.Text("Hello from Oskel", 32),
+    ui.Text("Skia inside an SDL3 window", 18).withColor(0xFF444444),
+    ui.Button("Click me", () => {
       clicks = clicks + 1;
       print("clicked " + str(clicks));
     }),
-    ui.checkbox("Track clicks", false, (checked) => {
+    ui.Checkbox("Track clicks", false, (checked) => {
       print("tracking " + str(checked));
     }),
   ]));

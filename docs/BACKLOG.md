@@ -1459,8 +1459,8 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
    `bindings/skia/skia.oskelbind` compiles against a real Skia build; the
    opt-in `cxxbind.skia` test draws, reads pixels and renders a widget tree on
    the VM and the hosted AOT binary. `std/ui.oskl` is the first declarative
-   layer (`window`, `column`, `row`, `padding`, `spacer`, `text`, `button`,
-   `checkbox`; layout, `rect`/`text` display list and hit testing), and
+   layer (`Window`, `Column`, `Row`, `Padding`, `Spacer`, `Text`, `Button`,
+   `Checkbox`; layout, `rect`/`text` display list and hit testing), and
    `std/internal/skia_ui.oskl` renders it. `std.ui.window` now presents the
    raster surface through a streaming `SDL_Texture`, runs the event loop and
    dispatches left clicks through `hitTest`; `std.internal.sdl` and the Skia

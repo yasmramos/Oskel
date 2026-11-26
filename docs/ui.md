@@ -16,11 +16,11 @@ VM and under `oskel build` (`tests/native_build_ui.oskl`).
 ```oskel
 import std.ui as ui;
 
-let root = ui.window("Demo", 320, 200,
-  ui.column(8, [
-    ui.text("Hello", 24),
-    ui.button("OK", () => print("clicked")),
-    ui.checkbox("Accept", false, (checked) => print(checked)),
+let root = ui.Window("Demo", 320, 200,
+  ui.Column(8, [
+    ui.Text("Hello", 24),
+    ui.Button("OK", () => print("clicked")),
+    ui.Checkbox("Accept", false, (checked) => print(checked)),
   ]));
 
 ui.layout(root, 320, 200);
@@ -45,8 +45,8 @@ internal SDL3 and Skia modules, so user code never names them:
 import std.ui as ui;
 import std.ui.window as ui_window;
 
-let root = ui.window("Demo", 320, 200,
-  ui.column(8, [ui.text("Hello", 24), ui.button("OK", () => print("clicked"))]));
+let root = ui.Window("Demo", 320, 200,
+  ui.Column(8, [ui.Text("Hello", 24), ui.Button("OK", () => print("clicked"))]));
 
 // maxFrames <= 0 runs until the window closes or Escape is pressed.
 ui_window.run("Demo", root, 320, 200, 0);
@@ -100,25 +100,29 @@ they are not part of the public API and are not documented for users.
 
 ## Widgets
 
-| Constructor | Meaning |
+| Class | Meaning |
 | --- | --- |
-| `window(title, width, height, child)` | top-level frame and background |
-| `column(gap, children)` | vertical stack |
-| `row(gap, children)` | horizontal stack |
-| `padding(all, child)` | inset one child |
-| `spacer(height)` | empty vertical space |
-| `text(content, size)` | black text |
-| `textColor(content, size, color)` | text with an ARGB colour |
-| `button(label, onClick)` | blue button with white text and distinct hover/pressed shades |
-| `buttonStyle(label, onClick, background, color)` | button with explicit colours; hover and pressed reuse the background |
-| `buttonStates(label, onClick, background, hoverBackground, pressedBackground, color)` | button with explicit colours for each pointer state |
-| `checkbox(label, checked, onChange)` | 16 px box plus label; a click toggles `checked` and calls `onChange(checked)` |
+| `Window(title, width, height, child)` | top-level frame and background |
+| `Column(gap, children)` | vertical stack |
+| `Row(gap, children)` | horizontal stack |
+| `Padding(all, child)` | inset one child |
+| `Spacer(height)` | empty vertical space |
+| `Text(content, size)` | black text; `Text(...).withColor(color)` sets an ARGB colour |
+| `Button(label, onClick)` | blue button with white text and distinct hover/pressed shades |
+| `Button(...).withStyle(background, color)` | explicit colours; hover and pressed reuse the background |
+| `Button(...).withStates(background, hoverBackground, pressedBackground, color)` | explicit colours for each pointer state |
+| `Checkbox(label, checked, onChange)` | 16 px box plus label; a click toggles `checked` and calls `onChange(checked)` |
 
-A widget is a map with a `kind`, a frame (`x`, `y`, `w`, `h`) and the fields its
-kind needs. `layout` mutates the tree and attaches the frame; `commands` reads
-the frames and returns new maps, so drawing never mutates the tree. A button
-and a checkbox also carry `hover` and `pressed`, which the pointer primitives
-mutate; their fill comes from `background`, `hoverBackground` or
+A widget is an instance of a class implementing `Widget`. Each class owns its
+`measure`, `place`, `collect`, `hitTest` and pointer-state methods; `layout`
+and `commands` are thin entry points. `type(node)` reports the class name, so a
+`Checkbox` is a `Checkbox`, not a map with a `kind`. Oskel erases classes to
+maps with a method table, so the VM and `oskel build` run the same code.
+
+`layout` mutates the tree and attaches the frame (`x`, `y`, `w`, `h`);
+`commands` reads the frames and returns new maps, so drawing never mutates the
+tree. A `Button` and a `Checkbox` carry `hover` and `pressed`, which the pointer
+primitives mutate; their fill comes from `background`, `hoverBackground` or
 `pressedBackground` in that precedence. A checked checkbox paints a filled
 square inside the box.
 
@@ -160,8 +164,8 @@ the widgets and the window entry point:
 import std.ui as ui;
 import std.ui.window as ui_window;
 
-let root = ui.window("Demo", 320, 200,
-  ui.column(8, [ui.text("Hello", 24)]));
+let root = ui.Window("Demo", 320, 200,
+  ui.Column(8, [ui.Text("Hello", 24)]));
 ui_window.run("Demo", root, 320, 200, 0);
 ```
 
@@ -179,8 +183,8 @@ build.
   `std.ui.window` uses Skia's real advance width through `layoutWith`; headless
   `layout` keeps the deterministic fixed advance. A checkbox is pointer-only:
   the loop does not give it keyboard focus or toggle it on Space yet.
-- `std.ui` itself has no event loop; `std.ui.window` owns it. A button stores
-  `onClick`, `hover` and `pressed`; a checkbox stores `checked`, `onChange`,
+- `std.ui` itself has no event loop; `std.ui.window` owns it. A `Button` stores
+  `onClick`, `hover` and `pressed`; a `Checkbox` stores `checked`, `onChange`,
   `hover` and `pressed`. The window loop updates the state from mouse events,
   runs the button handler or toggles the checkbox on release over the pressed
   widget.

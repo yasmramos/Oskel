@@ -8,12 +8,18 @@ fn assertEq(actual, expected) {
   }
 }
 
-let root = ui.window("Demo", 200, 120,
-  ui.column(8, [
-    ui.text("Hello", 20),
-    ui.button("OK", () => nil),
+let root = ui.Window("Demo", 200, 120,
+  ui.Column(8, [
+    ui.Text("Hello", 20),
+    ui.Button("OK", () => nil),
   ]));
 ui.layout(root, 200, 120);
+
+// Widgets are class instances, so `type` reports the class name.
+assertEq(type(root), "Window");
+assertEq(type(root.child), "Column");
+assertEq(type(root.child.children[0]), "Text");
+assertEq(type(root.child.children[1]), "Button");
 
 let commands = ui.commands(root);
 assertEq(len(commands), 4);
@@ -64,8 +70,8 @@ assert(!ui.pointerCancel(root));
 
 // A complete click still works for headless callers.
 var clicks = 0;
-let clickable = ui.window("Click", 80, 30,
-  ui.button("Go", () => clicks = clicks + 1));
+let clickable = ui.Window("Click", 80, 30,
+  ui.Button("Go", () => clicks = clicks + 1));
 ui.layout(clickable, 80, 30);
 assertEq(ui.click(clickable, 10, 10), true);
 assertEq(clicks, 1);
@@ -78,8 +84,8 @@ fn onCheck(value) {
   checks = checks + 1;
   lastCheck = value;
 }
-let control = ui.window("Control", 180, 30,
-  ui.column(0, [ui.checkbox("Accept", false, onCheck)]));
+let control = ui.Window("Control", 180, 30,
+  ui.Column(0, [ui.Checkbox("Accept", false, onCheck)]));
 ui.layout(control, 180, 30);
 let unchecked = ui.commands(control);
 assertEq(len(unchecked), 3);
@@ -93,7 +99,7 @@ assertEq(unchecked[2].x, 24);
 assertEq(unchecked[2].color, 0xFF000000);
 let controlHit = ui.hitTest(control, 8, 8);
 assert(controlHit != nil);
-assertEq(controlHit.kind, "checkbox");
+assertEq(type(controlHit), "Checkbox");
 
 assert(ui.pointerMove(control, 8, 8));
 assertEq(ui.commands(control)[1].color, 0xFFD1D5DB);
@@ -118,10 +124,10 @@ assertEq(controlHit.checked, false);
 assertEq(len(ui.commands(control)), 3);
 
 // A row places the next widget after the checkbox's measured width.
-let measuredCheck = ui.window("Check row", 200, 30,
-  ui.row(0, [
-    ui.checkbox("A", false, (checked) => nil),
-    ui.text("B", 10),
+let measuredCheck = ui.Window("Check row", 200, 30,
+  ui.Row(0, [
+    ui.Checkbox("A", false, (checked) => nil),
+    ui.Text("B", 10),
   ]));
 ui.layout(measuredCheck, 200, 30);
 let checkRow = ui.commands(measuredCheck);
@@ -145,9 +151,9 @@ assertEq(controlHit.pressed, false);
 assertEq(controlHit.checked, false);
 
 // Explicit state colours.
-let custom = ui.window("Custom", 80, 30,
-  ui.buttonStates("X", () => nil, 0xFF111111, 0xFF222222, 0xFF333333,
-                  0xFFFFFFFF));
+let custom = ui.Window("Custom", 80, 30,
+  ui.Button("X", () => nil).withStates(0xFF111111, 0xFF222222, 0xFF333333,
+                                       0xFFFFFFFF));
 ui.layout(custom, 80, 30);
 assertEq(ui.commands(custom)[1].color, 0xFF111111);
 _ = ui.pointerMove(custom, 10, 10);
@@ -158,11 +164,11 @@ _ = ui.pointerUp(custom, 10, 10);
 assertEq(ui.commands(custom)[1].color, 0xFF222222);
 
 // A row with a padded button and a spacer.
-let bar = ui.window("Bar", 100, 40,
-  ui.row(4, [
-    ui.text("A", 10),
-    ui.padding(2, ui.button("B", () => nil)),
-    ui.spacer(5),
+let bar = ui.Window("Bar", 100, 40,
+  ui.Row(4, [
+    ui.Text("A", 10),
+    ui.Padding(2, ui.Button("B", () => nil)),
+    ui.Spacer(5),
   ]));
 ui.layout(bar, 100, 40);
 let barCommands = ui.commands(bar);
@@ -179,10 +185,10 @@ assertEq(barHit.label, "B");
 fn wide(text, size): int {
   return len(text) * size * 2;
 }
-let measured = ui.window("Measured", 200, 60,
-  ui.row(0, [
-    ui.text("A", 10),
-    ui.button("B", () => nil),
+let measured = ui.Window("Measured", 200, 60,
+  ui.Row(0, [
+    ui.Text("A", 10),
+    ui.Button("B", () => nil),
   ]));
 ui.layoutWith(measured, 200, 60, wide);
 let measuredCommands = ui.commands(measured);
@@ -191,8 +197,8 @@ assertEq(measuredCommands[2].w, 52);
 assertEq(measuredCommands[3].x, 32);
 
 // Explicit colours: text and button styles.
-let styled = ui.window("Styled", 60, 30,
-  ui.buttonStyle("S", () => nil, 0xFF000000, 0xFFFFFFFF));
+let styled = ui.Window("Styled", 60, 30,
+  ui.Button("S", () => nil).withStyle(0xFF000000, 0xFFFFFFFF));
 ui.layout(styled, 60, 30);
 let styledCommands = ui.commands(styled);
 assertEq(styledCommands[1].color, 0xFF000000);
@@ -204,7 +210,7 @@ assertEq(ui.commands(styled)[1].color, 0xFF000000);
 _ = ui.pointerUp(styled, 10, 10);
 assertEq(ui.commands(styled)[1].color, 0xFF000000);
 
-let tinted = ui.window("Tinted", 40, 20, ui.textColor("T", 10, 0xFF00FF00));
+let tinted = ui.Window("Tinted", 40, 20, ui.Text("T", 10).withColor(0xFF00FF00));
 ui.layout(tinted, 40, 20);
 assertEq(ui.commands(tinted)[1].color, 0xFF00FF00);
 
