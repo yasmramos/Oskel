@@ -1,0 +1,20 @@
+// Benchmark: append n integers to an array, then sum them.
+//
+// `xs.push(i)` is the idiomatic append, and in the AOT backend it allocates a
+// bound-method closure before every call (docs/BACKLOG.md §6 item 35), so this
+// row also measures that overhead. Caching the closure (`var p = xs.push;`)
+// makes the binary faster and is not what the suite measures: the point is the
+// code a user writes.
+var n = 200000;
+var xs = [];
+var i = 0;
+while (i < n) {
+  xs.push(i);
+  i = i + 1;
+}
+
+var sum = 0;
+for x in xs {
+  sum = sum + x;
+}
+print("arrays ${sum} ${len(xs)}");

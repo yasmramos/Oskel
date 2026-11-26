@@ -27,9 +27,12 @@ let instance = null;
 const imports = {
   oskel: {
     write(fd, ptr, len) {
-      const view = new Uint8Array(instance.exports.memory.buffer, ptr, len);
+      // The JS API hands an `i32` parameter over as a *signed* number, but a
+      // linear-memory address is unsigned: once the arena passes 2 GiB `ptr`
+      // arrives negative and `Uint8Array` rejects it. Mask both.
+      const view = new Uint8Array(instance.exports.memory.buffer, ptr >>> 0, len >>> 0);
       const bytes = Buffer.from(view);
-      if (fd === 2) process.stderr.write(bytes);
+      if ((fd >>> 0) === 2) process.stderr.write(bytes);
       else process.stdout.write(bytes);
       return len;
     },
