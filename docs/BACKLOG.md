@@ -817,9 +817,13 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     the identifier, `codeLimit == dataoff`, `nCodeSlots` and each page hash all
     match the finished file, and `testSha256` pins the hash against three
     FIPS 180-4 vectors (the empty string, `abc` and a two-block message, so the
-    padding path is covered). Still open here: ARM64. Its `execSegBase`/
-    `execSegLimit`/`execSegFlags` and the `CS_EXECSEG_MAIN_BINARY` flag belong to
-    that slice -- the x86-64 image leaves them zero, as `ld64.lld` does.
+    padding path is covered). The directory is version `0x20400`, so it carries
+    the `execSegBase`/`execSegLimit`/`execSegFlags` triple: base `0` and limit
+    `__TEXT`'s file size bound the executable segment, and the flags are
+    `CS_EXECSEG_MAIN_BINARY` (`1`) because this image *is* the main binary. An
+    independent parser confirms them on a real image (`execSegLimit` equal to
+    the `__TEXT` `filesize`, flags `1`). Still open here: ARM64, which needs its
+    own slice before any of this can be exercised on an Apple Silicon host.
 
 31. **[P0] [done]** VM/AOT divergence in reading a global before it is assigned:
     the VM fails with `runtime error: undefined variable '<name>'` and exit 70,
