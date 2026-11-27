@@ -1,0 +1,15 @@
+// expect-exit: 65
+// A loop that awaits is the 11.2.3b slice; it is rejected, not miscompiled.
+async fn f(): int {
+  return 1;
+}
+
+async fn g(): int {
+  var total = 0;
+  while (total < 2) {
+    total = total + await f();
+  }
+  return total;
+}
+
+g();

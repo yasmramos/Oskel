@@ -737,6 +737,13 @@ class Compiler {
   // or raises the carried error. It is a few existing opcodes, not an opcode of
   // its own, so the VM, AOT and WASM share one implementation.
   int compileAwait(const AwaitExpr& awaited, int line, int col);
+  // PHASE 11.2.3: splits an async body at every `await`/`yield` into a chain of
+  // continuation closures. The result ends with a scheduler status map; the
+  // payload of every `return` is checked against `returnType` before the return
+  // is rewritten to `__oskel_async_done`. A construct the splitter cannot lower
+  // yet (a loop, `switch`, `defer` or `try` across a suspension) is a compile
+  // error naming the next slice.
+  StmtPtr lowerAsyncBody(const StmtPtr& body, const TypeRef& returnType, int line, int col);
   // Builds the future map an `async fn` returns: `{ state: "fulfilled", value:
   // value, error: nil }`. The map is the portable representation; no runtime
   // tag or builtin is added.

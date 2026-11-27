@@ -1,0 +1,138 @@
+// PHASE 11.2.3: a body that awaits suspends at the `await` and resumes from a
+// continuation closure. Locals declared before the suspension are the same
+// cells after it, and a closure created before it keeps sharing them. The
+// scheduler parks the task on the awaited future and wakes it when the future
+// settles; two tasks may wait on the same future.
+//
+// The splitter lowers straight-line bodies, `if`, `let`/`return`/expression
+// awaits, `yield`, and awaits nested in ordinary expressions. Loops, `switch`,
+// `defer` and `try` across a suspension are the next slice (11.2.3b) and are
+// rejected at compile time with a message naming it.
+
+var log: array = [];
+var order: array = [];
+
+fn note(text: string): void {
+  log.push(text);
+}
+
+fn mark(value: int): int {
+  order.push(value);
+  return value;
+}
+
+fn take(a: int, b: int, c: int): int {
+  return a + b + c;
+}
+
+async fn later(): int {
+  order.push(3);
+  return 3;
+}
+
+async fn one(): int {
+  return 1;
+}
+
+async fn innerNested(): int {
+  return 7;
+}
+
+async fn outerNested(): Future {
+  return innerNested();
+}
+
+async fn two(): int {
+  return 2;
+}
+
+// Two awaits nested in one expression are hoisted in evaluation order.
+async fn sumAwait(): int {
+  return 1 + await one() + await two();
+}
+
+// A suspension inside an `if` branch resumes in that branch only.
+async fn branch(flag: bool): int {
+  if (flag) {
+    return await one();
+  }
+  note("else");
+  return await two();
+}
+
+// `x` and the closure that reads it survive the suspension as the same cells.
+async fn captured(): int {
+  var x = 1;
+  let read = () => x;
+  let v = await one();
+  x = x + v + 1;
+  return read() + x;
+}
+
+async fn waiter(future: Future): int {
+  return await future;
+}
+
+// Two tasks wait on the same future: both are woken when it settles.
+async fn shared(): int {
+  let future = spawn one();
+  let a = waiter(future);
+  let b = waiter(future);
+  return await a + await b;
+}
+
+async fn task(id: int): int {
+  note("start " + str(id));
+  yield();
+  note("end " + str(id));
+  return id;
+}
+
+async fn interleave(): void {
+  let a = spawn task(1);
+  let b = spawn task(2);
+  await a;
+  await b;
+}
+
+async fn main(): void {
+  assertEq(await sumAwait(), 4);
+  assertEq(await branch(true), 1);
+  assertEq(await branch(false), 2);
+  assertEq(await captured(), 6);
+  assertEq(await shared(), 2);
+
+  // An await whose operand is itself a future-of-a-future.
+  assertEq(await (await outerNested()), 7);
+
+  // `yield()` resumes with nil.
+  let yielded = yield();
+  assertEq(yielded, nil);
+
+  // Awaits nested in a map and an array literal.
+  let m = {"a": await one(), "b": await two()};
+  assertEq(m["a"] + m["b"], 3);
+  let values = [await one(), await two()];
+  assertEq(values[0] + values[1], 3);
+
+  // Evaluation order: the left operand and earlier arguments run before the
+  // await, the right/later ones after it.
+  assertEq(mark(1) + await later() + mark(2), 6);
+  assertEq(order.join(","), "1,3,2");
+  order.clear();
+  assertEq(take(mark(1), await later(), mark(2)), 6);
+  assertEq(order.join(","), "1,3,2");
+  order.clear();
+  let ordered = [mark(1), await later(), mark(2)];
+  assertEq(ordered[0] + ordered[1] + ordered[2], 6);
+  assertEq(order.join(","), "1,3,2");
+  order.clear();
+
+  // FIFO: both tasks start, then finish in the order they yielded.
+  await interleave();
+  assertEq(log.join(","), "else,start 1,start 2,end 1,end 2");
+
+  print("async suspend ok");
+}
+
+main();
