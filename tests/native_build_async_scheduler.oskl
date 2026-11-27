@@ -1,6 +1,6 @@
-// PHASE 11.2.2 VM/AOT/WASM parity: the scheduler is ordinary Oskel over maps
-// and arrays, so all three engines must produce the same order. The body is
-// still one eager step; 11.2.3 adds suspension at `await`.
+// PHASE 11.2.2/11.2.3 VM/AOT/WASM parity: the scheduler and the splitter are
+// ordinary Oskel over maps and arrays, so all three engines must produce the
+// same order. A `yield` requeues the current task, so the two bodies interleave.
 var log: array = [];
 
 fn note(text: string): void {

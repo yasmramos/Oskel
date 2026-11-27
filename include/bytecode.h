@@ -164,6 +164,11 @@ struct Instruction {
 struct UpvalDesc {
   bool inParentLocal = true;
   int index = 0;
+  // True when the captured local is boxed (PHASE 11.2.3). An async body that
+  // can suspend boxes every local in a one-element array so a closure created
+  // before an `await` and the resumed body keep sharing the binding. A read or
+  // write of a boxed upvalue goes through `GETTABLE`/`SETTABLE` on that array.
+  bool boxed = false;
 };
 
 // One C function declared in an `extern "C"` block (PHASE 6.6). The

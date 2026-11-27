@@ -227,6 +227,11 @@ class Compiler {
     // a call to it is a warning. A local that shadows the name is a different
     // function, so it carries its own flag.
     bool isMustUse = false;
+    // True when the cell holds a one-element array instead of the value itself
+    // (PHASE 11.2.3). A local of an async body that can suspend is boxed so
+    // the value can be spilled into the task frame and a closure created before
+    // an `await` keeps sharing the binding with the resumed body.
+    bool boxed = false;
   };
 
   struct Scope {
@@ -237,6 +242,21 @@ class Compiler {
     // them (in reverse order) at every point where the scope exits -- normal
     // fall-through, `return`, or `break`/`continue` that leaves the scope.
     std::vector<StmtPtr> defers;
+  };
+
+  // One suspension point of a generated async step (PHASE 11.2.3). The step
+  // dispatch jumps here by `pc`; `regs`/`locals` say how much of the frame the
+  // suspend path spilled, and `resumeOffset` is the instruction the dispatch
+  // continues at after restoring them.
+  struct AsyncSuspendPoint {
+    int resumeId = 0;
+    int resumeOffset = 0;
+    int resultReg = 0;
+    int regCount = 0;
+    int localCount = 0;
+    bool isYield = false;
+    int line = 1;
+    int col = 1;
   };
 
   struct Loop {
@@ -278,6 +298,13 @@ class Compiler {
     int line = 1;
     int col = 1;
     bool inFunction = false;
+    // Async-splitter state of the frame (PHASE 11.2.3): whether its locals are
+    // boxed, the suspension points emitted so far, the first scratch register
+    // reserved for the dispatch, and the instruction the body starts at.
+    bool boxLocals = false;
+    std::vector<AsyncSuspendPoint> suspendPoints;
+    int asyncScratchBase = 0;
+    int asyncBodyStart = 0;
     // Capture list of this frame, keyed by variable name and parallel to
     // `bc.upvalues`, so a name that is used twice is captured once.
     std::unordered_map<std::string, int> upvalueNames;
@@ -517,6 +544,19 @@ class Compiler {
   // (PHASE 11.2.2). A `return` produces a `{kind: "done", value: ...}` status
   // for the scheduler instead of a future.
   bool currentAsyncBody_ = false;
+  // True while compiling an async body that can suspend (PHASE 11.2.3). Every
+  // local is boxed in a one-element array so it survives the suspension, and
+  // `await`/`yield` emit a spill/return instead of draining the queue.
+  bool boxLocals_ = false;
+  // Suspension points of the body currently being compiled. Used to emit the
+  // resume dispatch once the body is complete; compiler state only, so the
+  // `.oskc` image is unchanged.
+  std::vector<AsyncSuspendPoint> suspendPoints_;
+  // First register of the scratch window the splitter reserves at the bottom of
+  // the step frame (the body's temporaries start above it).
+  int asyncScratchBase_ = 0;
+  // Instruction the step body starts at (after the jump to the dispatch).
+  int asyncBodyStart_ = 0;
   // True when this chunk needs the hidden scheduler helpers, so the end of the
   // chunk drains pending tasks (PHASE 11.2.2).
   bool asyncPrelude_ = false;
@@ -735,15 +775,28 @@ class Compiler {
   int compileInterpolation(const InterpExpr& interpolation, int line, int col);
   // `await expr` (PHASE 11.1): reads the future's state and yields its payload,
   // or raises the carried error. It is a few existing opcodes, not an opcode of
-  // its own, so the VM, AOT and WASM share one implementation.
+  // its own, so the VM, AOT and WASM share one implementation. Inside an async
+  // body that can suspend (PHASE 11.2.3) the pending path spills the frame and
+  // returns a `suspended` status instead of draining the queue.
   int compileAwait(const AwaitExpr& awaited, int line, int col);
-  // PHASE 11.2.3: splits an async body at every `await`/`yield` into a chain of
-  // continuation closures. The result ends with a scheduler status map; the
-  // payload of every `return` is checked against `returnType` before the return
-  // is rewritten to `__oskel_async_done`. A construct the splitter cannot lower
-  // yet (a loop, `switch`, `defer` or `try` across a suspension) is a compile
-  // error naming the next slice.
-  StmtPtr lowerAsyncBody(const StmtPtr& body, const TypeRef& returnType, int line, int col);
+  // Emits the suspend path of an `await`/`yield` (PHASE 11.2.3): spill the live
+  // registers and locals into the task frame, publish `pc`, and return a status
+  // map. Returns the index of the recorded suspension point so the caller can
+  // patch its resume offset.
+  int emitSuspend(int futureReg, int resultReg, bool isYield, int line, int col);
+  // Emits the `pc` dispatch that resumes a suspended step: restore the spilled
+  // registers and locals, write the settled value into the result register and
+  // jump to the resume offset.
+  void emitAsyncDispatch(int line, int col);
+  // Slot of the generated `$frame` parameter of the current step.
+  int asyncFrameSlot(int line, int col);
+  // A fresh register holding the integer 0, used as the index of a boxed local.
+  int emitZeroReg();
+  // Creates a one-element array holding `value` and returns its register.
+  int emitBoxNew(int value, int line, int col);
+  // Writes a boxed local or upvalue through its one-element array.
+  void emitBoxedLocalWrite(int slot, int value, int line, int col);
+  void emitBoxedUpvalueWrite(int index, int value, int line, int col);
   // Builds the future map an `async fn` returns: `{ state: "fulfilled", value:
   // value, error: nil }`. The map is the portable representation; no runtime
   // tag or builtin is added.
