@@ -1,3 +1,7 @@
+# The generator (Ninja) is a configure-time choice, so it is pinned in
+# CMakePresets.json (`cmake --preset ninja`) and never selected here: CMake has
+# already picked one before it reads this file.
+
 cmake_minimum_required(VERSION 3.15)
 
 project(oskel VERSION 0.3.0 LANGUAGES CXX)
