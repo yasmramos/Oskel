@@ -56,8 +56,18 @@ On Windows use `build.bat`.
 
 ### CMake
 
+Ninja is the recommended generator; `CMakePresets.json` pins it:
+
 ```sh
-cmake -S . -B build-cmake -DCMAKE_BUILD_TYPE=Release
+cmake --preset ninja
+cmake --build --preset ninja
+ctest --preset ninja
+```
+
+Without presets, pass `-G Ninja` yourself:
+
+```sh
+cmake -S . -B build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build-cmake -j4
 ```
 

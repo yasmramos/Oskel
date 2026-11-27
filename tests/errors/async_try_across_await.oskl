@@ -1,0 +1,11 @@
+// expect-exit: 65
+// `try` returns from the enclosing function; a segment closure is not it.
+async fn f(): int {
+  return 1;
+}
+
+async fn g(): int {
+  return try (await f());
+}
+
+g();

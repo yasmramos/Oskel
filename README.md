@@ -97,8 +97,20 @@ CXX=clang++ CXXFLAGS="-O0 -g" ./build.sh
 
 ### CMake
 
+Ninja is the recommended generator; the presets in `CMakePresets.json` pin it
+for a Release build in `build/`:
+
 ```sh
-cmake -S . -B build-cmake -DCMAKE_BUILD_TYPE=Release
+cmake --preset ninja
+cmake --build --preset ninja
+ctest --preset ninja
+./build/oskel examples/hello.oskl
+```
+
+Without presets, pass `-G Ninja` explicitly (or use CMake's default generator):
+
+```sh
+cmake -S . -B build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build-cmake
 ./build-cmake/oskel examples/hello.oskl
 ```

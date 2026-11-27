@@ -1438,6 +1438,12 @@ std::uint64_t emitHostedRuntime(CodeGen& code, const RuntimeHandles& handles,
   code.movImm(X64Reg::Rdx, 0644);
   code.xorReg(X64Reg::Rax, X64Reg::Rax);  // variadic: no vector arguments
   code.callExternal("open");
+  // libc `open` returns `int`, so the upper half of rax is undefined. Sign-
+  // extend it: the runtime's `open < 0` checks (fileExists, fsOpen) must see a
+  // failed open as negative on every POSIX host, not just where the C library
+  // happens to sign-extend eax.
+  code.shlImm8(X64Reg::Rax, 32);
+  code.sarImm8(X64Reg::Rax, 32);
   code.movReg(X64Reg::Rsp, X64Reg::Rbp);
   code.pop(X64Reg::Rbp);
   code.retInsn();

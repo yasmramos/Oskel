@@ -279,10 +279,15 @@ class Parser {
   // at depth 0 (a program's top level), so an import nested in a block or a
   // function body is rejected at parse time.
   int nestingDepth_ = 0;
-  // Number of enclosing `async fn` bodies being parsed. `await` is only valid
-  // while it is positive; a lambda resets it to zero, so a lambda written inside
-  // an async function cannot await (a user lambda has no async form).
+  // Number of enclosing `async fn` bodies being parsed. `await` is valid while
+  // it is positive; a non-async function or lambda resets it to zero, so
+  // `await` cannot cross a function boundary. The program/module top level is
+  // accepted separately, through `functionDepth_`.
   int asyncDepth_ = 0;
+  // Number of enclosing function bodies (named functions, methods and lambdas),
+  // async or not. `await` is allowed at the top level, where this is zero, and
+  // inside an `async fn`; it is rejected inside any other function body.
+  int functionDepth_ = 0;
   // Current recursion depth of the expression/statement/type walk. The
   // recursive-descent parser consumes one C++ frame per nested construct, so a
   // deeply nested source (e.g. thousands of `(` or `[`) would otherwise
@@ -322,6 +327,19 @@ class Parser {
    private:
     int& depth_;
     int saved_;
+  };
+
+  // Counts enclosing function bodies so `await` can tell the program's top
+  // level (depth zero) from the inside of any function.
+  class FunctionScope {
+   public:
+    explicit FunctionScope(int& depth) : depth_(depth) { ++depth_; }
+    ~FunctionScope() { --depth_; }
+    FunctionScope(const FunctionScope&) = delete;
+    FunctionScope& operator=(const FunctionScope&) = delete;
+
+   private:
+    int& depth_;
   };
 
   bool foldConstant(const Expr& expr, Value& out, std::string& reason) const;

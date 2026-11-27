@@ -12,7 +12,7 @@ The language surface this reference documents is implemented on the development 
 | --- | --- | --- |
 | Language core: functions, closures, control flow, collections | ✅ | ✅ (subset the lowerer covers) |
 | Types, nullability, `struct`, `class`, `enum`, variadics, `import`, `switch`, `defer` (PHASE 6.5/6.8/6.9) | ✅ | ✅ (all are compile-time; `struct`/`class` are erased, `enum` members fold to `LOADK`, `switch`/`defer` lower to existing opcodes) |
-| `async fn` / `await` / `spawn` / `yield` (PHASE 11.2.2) | 🔶 pending futures, cooperative scheduler, eager steps | 🔶 same surface (future and task frames are maps built with existing opcodes; no backend change) |
+| `async fn` / `await` / `spawn` / `yield` (PHASE 11.2.3a) | 🔶 real suspension for straight-line bodies and `if`; loops/`switch`/`defer`/`try` across a suspension are 11.2.3b | 🔶 same surface (future and task frames are maps built with existing opcodes; no backend change) |
 | `native fn` (PHASE 6.5) | ✅ | 🔶 only for the curated stubs the backend seeds; anything else fails the build (PHASE 7f) |
 | FFI with C (PHASE 6.6) | ✅ | 🔶 `--mode hosted` only; scalars, `cstring`/`ptr`, structs by value and C variadics, with callbacks on System V (PHASE 7f, §4.5) |
 | Error values, `pcall`, `try`/`catch`, unions, `@MustUse` (PHASE 6.7) | ✅ | ✅ `error` values, `try`/`catch` and `pcall` (PHASE 7c.5c/7c.5d); a raised error with no active `pcall` exits 70 |
@@ -1333,15 +1333,18 @@ not as a runtime global.
 
 ### 4.10 `async fn`, `await`, `spawn` and `yield` (partial)
 
-> **PHASE 11.2.2 has a scheduler, but the body is still one eager step.**
+> **PHASE 11.2.3a suspends straight-line bodies and `if`; 11.2.4a adds top-level `await`.**
 > Calling an `async fn` returns a pending `Future` and enqueues its task;
-> `await` drains the ready queue, and `yield()` lets other ready tasks run. Real
-> suspension at `await` is PHASE 11.2.3, top-level `await` is 11.2.4, and the
-> runtime tag is 11.2.5.
+> `await` parks the current task on the future and resumes it from a
+> continuation when the future settles, and `yield()` parks it at the back of
+> the ready queue. Loops, `switch`, `defer` and `try` across a suspension are
+> PHASE 11.2.3b and are rejected at compile time. A top-level `await` is
+> accepted and drains the same queue. Deadlock and unhandled-rejection
+> diagnostics are 11.2.4b, and the runtime tag is 11.2.5.
 
 An `async fn` is a function whose call returns a `Future`; the declared return
 type is the payload type. `await` consumes a future and yields its payload, and
-is only valid inside an `async fn`:
+is valid inside an `async fn` or at the top level of a program or module:
 
 ```oskel
 async fn fetchName(id: int): string {
@@ -1364,21 +1367,38 @@ async fn main(): void {
 main();
 ```
 
+The top level of a script is not an `async fn`, but it may await directly
+(PHASE 11.2.4a). The script already drains its queue before exiting, so this is
+a convenience for a script that wants the payload in a top-level binding:
+
+```oskel
+let name = await fetchName(7);
+print(name);   // user-7
+```
+
 - A call returns a **pending** future and enqueues its task. The task runs when
   the scheduler drains the ready queue: at `await`, at `yield()`, or before the
   script exits. `spawn f()` is the explicit enqueue; `await f()` also starts a
   pending future.
-- The body is still one eager step. `await` on a pending future drains the
-  ready queue and re-reads the state; it does not suspend the current body.
-  `yield()` drains the ready queue and then the current body continues.
+- A body that awaits is split into continuation closures. `await` on a pending
+  future suspends the current task; the scheduler wakes it with the payload
+  when the future settles. `yield()` suspends the task and puts it at the back
+  of the ready queue, so another ready task runs first.
+- The splitter covers straight-line bodies, `if`, `let`/`return`/expression
+  awaits, `yield`, and awaits nested in ordinary expressions (calls, binary
+  operators, arrays, maps, indexing). A loop, a `switch`, a `defer` or a `try`
+  across a suspension, and an `await` inside a ternary branch or a `catch`
+  fallback, are compile errors naming PHASE 11.2.3b.
 - `Future` is a built-in type. `let f: Future = fetchName(1);` is valid, and the
   same future may be awaited more than once.
 - A call to an async function returns `Future`, so `let n: int = await f();`
   checks the payload. `await` on a value whose static type is neither `Future`
   nor unknown is a compile error.
-- `await`, `spawn` and `yield` are rejected outside an `async fn`, including
-  inside a lambda: a lambda is not an async function. There is no top-level
-  `await`.
+- `await` is allowed inside an `async fn` and at the **top level** of a program
+  or module (PHASE 11.2.4a). It is rejected inside any other function body,
+  including a lambda and a non-async function nested in an async one: entering
+  a function body resets the async context. `spawn` and `yield` remain
+  async-function-only; at the top level use `await`, which drains the queue.
 - An async method is declared with `async fn` inside a class and awaited like
   any other call: `await obj.m()`. A method replacement must match its
   asyncness.
@@ -1389,10 +1409,10 @@ main();
   type, so only `await` reads the payload.
 - At run time a future is a map with the fields `state` (`"pending"`,
   `"fulfilled"` or `"rejected"`), `value`, `error`, `task` and `waiters`;
-  `type(future)` is `"map"`. A task frame is another map with `future`, `step`,
-  `args`, `enqueued` and `running`; `pc`, `regs` and `locals` are reserved for
-  PHASE 11.2.3. A value erased to `any` can bypass the compiler check until
-  PHASE 11.2.5 adds a runtime tag.
+  `type(future)` is `"map"`. A task frame is another map with `future`, `cont`,
+  `wait`, `args`, `enqueued` and `running`; `cont` is the current continuation
+  and `wait` is the future it suspended on. A value erased to `any` can bypass
+  the compiler check until PHASE 11.2.5 adds a runtime tag.
 - The feature adds **no opcode and no builtin**: the factory/step split and the
   scheduler are ordinary Oskel over `NEWTABLE`/`SETTABLE`/`GETTABLE`, `CALL`
   and `RETURN`, so the VM, the AOT backend and WASM agree by construction.
@@ -4114,7 +4134,7 @@ future work. `-c` is implemented; the `.oskc` format is specified in §19.1.
   through `std/internal/skia_ui.oskl` (`docs/cxxbind.md`); `std.ui.window`
   presents it in an SDL3 window and runs the event loop. Input widgets, real
   font metrics, text wrapping and dirty-region redraw are post-1.0 work.
-- No generics, full pattern matching, generators or transactions. These are out of scope (see `DEVELOPMENT.md`). `async fn`/`await` has the PHASE 11.2.2 scheduler (`spawn`/`yield`, pending futures, eager steps): there is no real suspension yet, no top-level `await`, no promise chaining and no async lambda.
+- No generics, full pattern matching, generators or transactions. These are out of scope (see `DEVELOPMENT.md`). `async fn`/`await` has the PHASE 11.2.3a splitter (real suspension for straight-line bodies and `if`) plus PHASE 11.2.4a top-level `await` (`spawn`/`yield`, pending futures): loops/`switch`/`defer`/`try` across a suspension, deadlock/unhandled-rejection diagnostics, promise chaining and async lambdas are not implemented.
 - Map keys are always strings. Literals accept identifier, string, scalar (`int`, `float`, `double`, `true`, `false`, `nil`) and computed `[expr]` keys; non-string keys are canonicalized to their string form.
 - A body of `if`, `while`, `for` or `for-in` may be a block or a single statement without braces; a brace-less body is wrapped in a block, so its bytecode and scoping match the brace form. `switch` arms always require braces.
 - `for ... in` accepts the loop variable and the iterable with or without parentheses (`for x in xs` and `for (x in xs)`).

@@ -1,5 +1,5 @@
 // expect-exit: 65
-// `await` is only valid inside an `async fn`.
+// `await` is only valid inside an `async fn` or at the top level.
 fn f() {
   let x = await 1;
 }

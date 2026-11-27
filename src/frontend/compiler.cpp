@@ -173,6 +173,148 @@ bool stmtContainsAsync(const Stmt& stmt) {
       stmt.node);
 }
 
+// One walk over an async body for the PHASE 11.2.3 splitter. `suspend` marks an
+// `await`/`yield`; `defer` and `tryExpr` mark constructs the splitter cannot
+// lower yet, because both do a non-local `return` that a segment closure would
+// capture. `ret` marks a `return` for the loop/switch guard. Nested function
+// bodies are separate compilation units, so the walk stops at a lambda or a
+// `fn` declaration: their own async bodies are lowered by their own factory.
+struct AsyncScan {
+  bool suspend = false;
+  bool defer = false;
+  bool tryExpr = false;
+  bool ret = false;
+};
+
+void scanAsyncExpr(const Expr& expr, AsyncScan& scan);
+void scanAsyncStmt(const Stmt& stmt, AsyncScan& scan);
+
+void scanAsyncExpr(const Expr& expr, AsyncScan& scan) {
+  std::visit(
+      [&](const auto& node) {
+        using T = std::decay_t<decltype(node)>;
+        if constexpr (std::is_same_v<T, AwaitExpr>) {
+          scan.suspend = true;
+          if (node.operand) scanAsyncExpr(*node.operand, scan);
+        } else if constexpr (std::is_same_v<T, YieldExpr>) {
+          scan.suspend = true;
+        } else if constexpr (std::is_same_v<T, TryExpr>) {
+          scan.tryExpr = true;
+          if (node.operand) scanAsyncExpr(*node.operand, scan);
+        } else if constexpr (std::is_same_v<T, LambdaExpr>) {
+          // A lambda is its own function; its body is lowered separately.
+        } else if constexpr (std::is_same_v<T, InterpExpr>) {
+          for (const InterpPart& part : node.parts) {
+            if (const auto* inner = std::get_if<ExprPtr>(&part.content)) {
+              if (*inner) scanAsyncExpr(**inner, scan);
+            }
+          }
+        } else if constexpr (std::is_same_v<T, ArrayExpr>) {
+          for (const ExprPtr& element : node.elements) {
+            if (element) scanAsyncExpr(*element, scan);
+          }
+        } else if constexpr (std::is_same_v<T, MapExpr>) {
+          for (const MapEntry& entry : node.entries) {
+            if (entry.keyExpr) scanAsyncExpr(*entry.keyExpr, scan);
+            if (entry.value) scanAsyncExpr(*entry.value, scan);
+          }
+        } else if constexpr (std::is_same_v<T, StructLitExpr>) {
+          for (const StructLitEntry& entry : node.entries) {
+            if (entry.value) scanAsyncExpr(*entry.value, scan);
+          }
+        } else if constexpr (std::is_same_v<T, UnaryExpr> || std::is_same_v<T, NonNullExpr> ||
+                             std::is_same_v<T, SpawnExpr>) {
+          if (node.operand) scanAsyncExpr(*node.operand, scan);
+        } else if constexpr (std::is_same_v<T, MemberExpr>) {
+          if (node.object) scanAsyncExpr(*node.object, scan);
+        } else if constexpr (std::is_same_v<T, BinaryExpr>) {
+          if (node.lhs) scanAsyncExpr(*node.lhs, scan);
+          if (node.rhs) scanAsyncExpr(*node.rhs, scan);
+        } else if constexpr (std::is_same_v<T, AssignExpr>) {
+          if (node.target) scanAsyncExpr(*node.target, scan);
+          if (node.value) scanAsyncExpr(*node.value, scan);
+        } else if constexpr (std::is_same_v<T, TernaryExpr>) {
+          if (node.condition) scanAsyncExpr(*node.condition, scan);
+          if (node.thenExpr) scanAsyncExpr(*node.thenExpr, scan);
+          if (node.elseExpr) scanAsyncExpr(*node.elseExpr, scan);
+        } else if constexpr (std::is_same_v<T, CallExpr>) {
+          if (node.callee) scanAsyncExpr(*node.callee, scan);
+          for (const ExprPtr& arg : node.args) {
+            if (arg) scanAsyncExpr(*arg, scan);
+          }
+        } else if constexpr (std::is_same_v<T, IndexExpr>) {
+          if (node.object) scanAsyncExpr(*node.object, scan);
+          if (node.index) scanAsyncExpr(*node.index, scan);
+        } else if constexpr (std::is_same_v<T, SliceExpr>) {
+          if (node.object) scanAsyncExpr(*node.object, scan);
+          if (node.start) scanAsyncExpr(*node.start, scan);
+          if (node.end) scanAsyncExpr(*node.end, scan);
+          if (node.step) scanAsyncExpr(*node.step, scan);
+        } else if constexpr (std::is_same_v<T, RangeExpr>) {
+          if (node.start) scanAsyncExpr(*node.start, scan);
+          if (node.end) scanAsyncExpr(*node.end, scan);
+        } else if constexpr (std::is_same_v<T, CatchExpr>) {
+          if (node.operand) scanAsyncExpr(*node.operand, scan);
+          if (node.fallback) scanAsyncExpr(*node.fallback, scan);
+        }
+      },
+      expr.node);
+}
+
+void scanAsyncStmt(const Stmt& stmt, AsyncScan& scan) {
+  std::visit(
+      [&](const auto& node) {
+        using T = std::decay_t<decltype(node)>;
+        if constexpr (std::is_same_v<T, ExprStmt>) {
+          if (node.expr) scanAsyncExpr(*node.expr, scan);
+        } else if constexpr (std::is_same_v<T, LetStmt>) {
+          if (node.init) scanAsyncExpr(*node.init, scan);
+        } else if constexpr (std::is_same_v<T, FnDeclStmt>) {
+          // A nested function is its own compilation unit.
+        } else if constexpr (std::is_same_v<T, BlockStmt>) {
+          for (const StmtPtr& inner : node.stmts) {
+            if (inner) scanAsyncStmt(*inner, scan);
+          }
+        } else if constexpr (std::is_same_v<T, IfStmt>) {
+          if (node.condition) scanAsyncExpr(*node.condition, scan);
+          if (node.thenBranch) scanAsyncStmt(*node.thenBranch, scan);
+          if (node.elseBranch) scanAsyncStmt(*node.elseBranch, scan);
+        } else if constexpr (std::is_same_v<T, WhileStmt>) {
+          if (node.condition) scanAsyncExpr(*node.condition, scan);
+          if (node.body) scanAsyncStmt(*node.body, scan);
+        } else if constexpr (std::is_same_v<T, DoWhileStmt>) {
+          if (node.body) scanAsyncStmt(*node.body, scan);
+          if (node.condition) scanAsyncExpr(*node.condition, scan);
+        } else if constexpr (std::is_same_v<T, ForStmt>) {
+          if (node.init) scanAsyncStmt(*node.init, scan);
+          if (node.condition) scanAsyncExpr(*node.condition, scan);
+          if (node.step) scanAsyncExpr(*node.step, scan);
+          if (node.body) scanAsyncStmt(*node.body, scan);
+        } else if constexpr (std::is_same_v<T, ForInStmt>) {
+          if (node.iterable) scanAsyncExpr(*node.iterable, scan);
+          if (node.body) scanAsyncStmt(*node.body, scan);
+        } else if constexpr (std::is_same_v<T, ReturnStmt>) {
+          scan.ret = true;
+          if (node.value) scanAsyncExpr(*node.value, scan);
+        } else if constexpr (std::is_same_v<T, SwitchStmt>) {
+          if (node.subject) scanAsyncExpr(*node.subject, scan);
+          for (const SwitchCase& entry : node.cases) {
+            for (const ExprPtr& value : entry.values) {
+              if (value) scanAsyncExpr(*value, scan);
+            }
+            if (entry.body) scanAsyncStmt(*entry.body, scan);
+          }
+          if (node.defaultBody) scanAsyncStmt(*node.defaultBody, scan);
+        } else if constexpr (std::is_same_v<T, DeferStmt>) {
+          scan.defer = true;
+          if (node.body) scanAsyncStmt(*node.body, scan);
+        } else if constexpr (std::is_same_v<T, ExternBlockStmt>) {
+          // Separate function declarations.
+        }
+      },
+      stmt.node);
+}
+
 // The scheduler helpers (PHASE 11.2.2). They are ordinary Oskel over maps and
 // arrays: the VM, AOT and WASM already run those, so no backend grows a second
 // calling convention. The names use a `__oskel_` prefix so user code is very
@@ -181,6 +323,14 @@ constexpr const char* kAsyncSpawn = "__oskel_async_spawn";
 constexpr const char* kAsyncAwait = "__oskel_async_await";
 constexpr const char* kAsyncDrain = "__oskel_async_drain";
 constexpr const char* kAsyncYield = "__oskel_async_yield";
+// PHASE 11.2.3: the continuation protocol. `bind` suspends the current task on
+// a pending future, `done` reports the payload, `yield_cont` re-enqueues the
+// task with its continuation, and `again` trampolines a loop iteration without
+// growing the native stack.
+constexpr const char* kAsyncBind = "__oskel_async_bind";
+constexpr const char* kAsyncDone = "__oskel_async_done";
+constexpr const char* kAsyncAgain = "__oskel_async_again";
+constexpr const char* kAsyncYieldCont = "__oskel_async_yield_cont";
 
 const char* kAsyncPreludeSource = R"OSKEL(
 var __oskel_async_ready = [];
@@ -192,6 +342,7 @@ fn __oskel_async_settle(future, value) {
   let waiters = future["waiters"];
   if (waiters != nil) {
     for waiter in waiters {
+      waiter["enqueued"] = true;
       __oskel_async_ready.push(waiter);
     }
     waiters.clear();
@@ -205,10 +356,73 @@ fn __oskel_async_reject(future, err) {
   let waiters = future["waiters"];
   if (waiters != nil) {
     for waiter in waiters {
+      waiter["enqueued"] = true;
       __oskel_async_ready.push(waiter);
     }
     waiters.clear();
   }
+}
+
+// The 11.2.3 continuation protocol. A step returns one of:
+//   { kind: "done", value: v }
+//   { kind: "failed", error: e }
+//   { kind: "suspended", future: f }   // bind already registered the task
+//   { kind: "yield" }                  // yield_cont already re-enqueued it
+//   { kind: "again", cont: c }         // run c immediately, same turn
+fn __oskel_async_bind(task, future, cont) {
+  if (future == nil) {
+    panic(error("await expects a Future"));
+  }
+  let state = future["state"];
+  if (state == "fulfilled" || state == "rejected") {
+    // Trampoline: the scheduler runs the continuation in its own loop, so a
+    // chain of already-settled awaits does not grow the native stack.
+    task["cont"] = cont;
+    return {"kind": "again", "cont": cont, "wait": future};
+  }
+  if (state == "pending") {
+    var waiters = future["waiters"];
+    if (waiters == nil) {
+      waiters = [];
+      future["waiters"] = waiters;
+    }
+    waiters.push(task);
+    task["cont"] = cont;
+    task["wait"] = future;
+    return {"kind": "suspended", "future": future};
+  }
+  panic(error("await expects a Future"));
+}
+
+fn __oskel_async_done(value) {
+  return {"kind": "done", "value": value};
+}
+
+fn __oskel_async_again(cont) {
+  return {"kind": "again", "cont": cont};
+}
+
+fn __oskel_async_yield_cont(task, cont) {
+  task["cont"] = cont;
+  task["wait"] = nil;
+  task["enqueued"] = false;
+  __oskel_async_ready.push(task);
+  task["enqueued"] = true;
+  return {"kind": "yield"};
+}
+
+// The value a woken continuation receives: the payload of the future it was
+// waiting on, the error value when that future was rejected, or nil after a
+// yield.
+fn __oskel_async_value(task) {
+  let wait = task["wait"];
+  if (wait == nil) {
+    return nil;
+  }
+  if (wait["state"] == "rejected") {
+    return wait["error"];
+  }
+  return wait["value"];
 }
 
 fn __oskel_async_step(task) {
@@ -217,15 +431,32 @@ fn __oskel_async_step(task) {
     return;
   }
   task["running"] = true;
-  let step = task["step"];
-  let status = step(task);
-  task["running"] = false;
-  if (status["kind"] == "done") {
-    __oskel_async_settle(future, status["value"]);
-  } else if (status["kind"] == "failed") {
-    __oskel_async_reject(future, status["error"]);
+  var status = nil;
+  if (task["cont"] != nil) {
+    status = task["cont"](__oskel_async_value(task));
   } else {
-    __oskel_async_reject(future, error("async task suspended without a scheduler"));
+    let step = task["step"];
+    status = step(task);
+  }
+  while (status["kind"] == "again") {
+    task["cont"] = status["cont"];
+    if (status["wait"] != nil) {
+      task["wait"] = status["wait"];
+    } else {
+      task["wait"] = nil;
+    }
+    status = task["cont"](__oskel_async_value(task));
+  }
+  task["running"] = false;
+  let kind = status["kind"];
+  if (kind == "done") {
+    __oskel_async_settle(future, status["value"]);
+  } else if (kind == "failed") {
+    __oskel_async_reject(future, status["error"]);
+  } else if (kind == "yield" || kind == "suspended") {
+    // yield_cont re-enqueued the task; bind registered it as a waiter.
+  } else {
+    __oskel_async_reject(future, error("async task returned an unknown status"));
   }
 }
 
@@ -243,6 +474,10 @@ fn __oskel_async_spawn(future) {
   if (task["running"] == true) {
     return future;
   }
+  if (task["wait"] != nil) {
+    // Suspended on a future: settling it will enqueue the task.
+    return future;
+  }
   if (task["enqueued"] == false) {
     task["enqueued"] = true;
     __oskel_async_ready.push(task);
@@ -258,6 +493,8 @@ fn __oskel_async_drain() {
   }
 }
 
+// The 11.2.2 eager helpers stay for a body that never suspends. A body with an
+// `await`/`yield` is lowered to continuations and never calls them.
 fn __oskel_async_await(future) {
   if (future == nil) {
     panic(error("await expects a Future"));
@@ -3433,6 +3670,462 @@ int Compiler::compileFunctionProto(const std::string& name, const std::vector<Pa
   return index;
 }
 
+StmtPtr Compiler::lowerAsyncBody(const StmtPtr& body, const TypeRef& returnType, int line,
+                                 int col) {
+  struct Cps {
+    Compiler& self;
+    const TypeRef& returnType;
+    int line;
+    int col;
+    int counter = 0;
+
+    ExprPtr var(const std::string& name) { return makeExpr(VariableExpr{name}, line, col); }
+    ExprPtr nilValue() { return makeExpr(LiteralExpr{Value()}, line, col); }
+    ExprPtr call(ExprPtr callee, std::vector<ExprPtr> args) {
+      return makeExpr(CallExpr{std::move(callee), std::move(args)}, line, col);
+    }
+    ExprPtr helper(const char* name, std::vector<ExprPtr> args) {
+      return call(var(name), std::move(args));
+    }
+    StmtPtr ret(ExprPtr value) { return makeStmt(ReturnStmt{std::move(value)}, line, col); }
+    StmtPtr block(std::vector<StmtPtr> stmts) {
+      return makeStmt(BlockStmt{std::move(stmts)}, line, col);
+    }
+    StmtPtr let(const std::string& name, ExprPtr init) {
+      return makeStmt(LetStmt{name, TypeRef{}, std::move(init), Tok::Let}, line, col);
+    }
+    StmtPtr varDecl(const std::string& name, ExprPtr init) {
+      return makeStmt(LetStmt{name, TypeRef{}, std::move(init), Tok::Var}, line, col);
+    }
+    ExprPtr lambda(std::vector<Param> params, std::vector<StmtPtr> stmts) {
+      return makeExpr(LambdaExpr{std::move(params), block(std::move(stmts)), std::string(),
+                                 TypeRef{}, std::string(), false},
+                      line, col);
+    }
+    std::string fresh(const std::string& base) {
+      return "$async_" + base + std::to_string(counter++);
+    }
+    std::vector<StmtPtr> blockStmts(const StmtPtr& stmt) {
+      if (!stmt) return {};
+      if (auto* nested = std::get_if<BlockStmt>(&stmt->node)) return nested->stmts;
+      return {stmt};
+    }
+    // A direct initializer/return value is left for `cpsBlock`, which turns it
+    // into a suspension; only an await nested inside a larger expression is
+    // hoisted by `anf`.
+    bool isDirectSuspend(const ExprPtr& expr) {
+      return expr && (std::get_if<AwaitExpr>(&expr->node) != nullptr ||
+                      std::get_if<YieldExpr>(&expr->node) != nullptr);
+    }
+    // Materializes an operand into a `let` temporary. A later operand that
+    // suspends must not move this evaluation after the suspension, so every
+    // operand that precedes a possible `await` is read at its source position.
+    // A literal has no side effect and no mutable cell, so it stays inline.
+    ExprPtr forceTemp(ExprPtr value, std::vector<StmtPtr>& prefix) {
+      if (!value) return value;
+      if (std::get_if<LiteralExpr>(&value->node) != nullptr) return value;
+      if (auto* variable = std::get_if<VariableExpr>(&value->node)) {
+        // A temp this pass already created must not be wrapped again, or the
+        // splitter would chase its own `let` forever. `self` stays inline so a
+        // field write keeps its declared type check.
+        if (variable->name.rfind("$async_", 0) == 0 || variable->name == "self") {
+          return value;
+        }
+      }
+      std::string tmp = fresh("tmp");
+      prefix.push_back(let(tmp, std::move(value)));
+      return var(tmp);
+    }
+    // An assignment target is an lvalue: only its object/index parts can be
+    // materialized, never the target itself.
+    ExprPtr anfLValue(ExprPtr target, std::vector<StmtPtr>& prefix) {
+      if (!target) return target;
+      if (auto* index = std::get_if<IndexExpr>(&target->node)) {
+        index->object = forceTemp(anf(index->object, prefix), prefix);
+        index->index = forceTemp(anf(index->index, prefix), prefix);
+      } else if (auto* member = std::get_if<MemberExpr>(&target->node)) {
+        member->object = forceTemp(anf(member->object, prefix), prefix);
+      }
+      return target;
+    }
+    void checkAwait(const AwaitExpr& awaited, int awaitLine, int awaitCol) {
+      TypeRef operandType = self.inferExprType(*awaited.operand);
+      if (operandType.isPresent() && operandType.name != "Future" && operandType.name != "any") {
+        fail("'await' expects a Future, found '" + describeType(operandType) + "'", awaitLine,
+             awaitCol);
+      }
+    }
+    void checkReturn(const ReturnStmt& stmt, int returnLine, int returnCol) {
+      if (stmt.value) {
+        if (returnType.isPresent() && returnType.name == "void") {
+          fail(
+              "cannot return a value from a function declared to return 'void'; "
+              "use a bare 'return;'",
+              stmt.value->line, stmt.value->col);
+        }
+        if (returnType.isPresent()) {
+          TypeRef valueType = self.inferExprType(*stmt.value);
+          self.checkAssignable(valueType, returnType, "the return type", stmt.value->line,
+                               stmt.value->col);
+        }
+      } else if (returnType.isPresent() && returnType.name != "any" && returnType.name != "void" &&
+                 !returnType.nullable) {
+        fail("cannot return 'nil' from a function declared to return '" + describeType(returnType) +
+                 "' (use '" + returnType.name + "?')",
+             returnLine, returnCol);
+      }
+    }
+
+    ExprPtr anf(ExprPtr expr, std::vector<StmtPtr>& prefix) {
+      if (!expr) return expr;
+      return std::visit(
+          [&](auto& node) -> ExprPtr {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, AwaitExpr>) {
+              checkAwait(node, expr->line, expr->col);
+              ExprPtr operand = anf(node.operand, prefix);
+              std::string tmp = fresh("await");
+              prefix.push_back(
+                  let(tmp, makeExpr(AwaitExpr{std::move(operand)}, expr->line, expr->col)));
+              return var(tmp);
+            } else if constexpr (std::is_same_v<T, YieldExpr>) {
+              std::string tmp = fresh("yield");
+              prefix.push_back(varDecl(tmp, nilValue()));
+              prefix.push_back(makeStmt(ExprStmt{makeExpr(YieldExpr{}, expr->line, expr->col)},
+                                        expr->line, expr->col));
+              return var(tmp);
+            } else if constexpr (std::is_same_v<T, InterpExpr>) {
+              InterpExpr out = node;
+              for (InterpPart& part : out.parts) {
+                if (auto* inner = std::get_if<ExprPtr>(&part.content)) {
+                  *inner = forceTemp(anf(*inner, prefix), prefix);
+                }
+              }
+              return makeExpr(std::move(out), expr->line, expr->col);
+            } else if constexpr (std::is_same_v<T, ArrayExpr>) {
+              ArrayExpr out = node;
+              for (ExprPtr& element : out.elements) {
+                element = forceTemp(anf(element, prefix), prefix);
+              }
+              return makeExpr(std::move(out), expr->line, expr->col);
+            } else if constexpr (std::is_same_v<T, MapExpr>) {
+              MapExpr out = node;
+              for (MapEntry& entry : out.entries) {
+                if (entry.keyExpr) entry.keyExpr = forceTemp(anf(entry.keyExpr, prefix), prefix);
+                entry.value = forceTemp(anf(entry.value, prefix), prefix);
+              }
+              return makeExpr(std::move(out), expr->line, expr->col);
+            } else if constexpr (std::is_same_v<T, StructLitExpr>) {
+              StructLitExpr out = node;
+              for (StructLitEntry& entry : out.entries) {
+                entry.value = forceTemp(anf(entry.value, prefix), prefix);
+              }
+              return makeExpr(std::move(out), expr->line, expr->col);
+            } else if constexpr (std::is_same_v<T, UnaryExpr>) {
+              UnaryExpr out = node;
+              out.operand = anf(out.operand, prefix);
+              return makeExpr(std::move(out), expr->line, expr->col);
+            } else if constexpr (std::is_same_v<T, NonNullExpr>) {
+              NonNullExpr out = node;
+              out.operand = anf(out.operand, prefix);
+              return makeExpr(std::move(out), expr->line, expr->col);
+            } else if constexpr (std::is_same_v<T, MemberExpr>) {
+              MemberExpr out = node;
+              out.object = anf(out.object, prefix);
+              return makeExpr(std::move(out), expr->line, expr->col);
+            } else if constexpr (std::is_same_v<T, BinaryExpr>) {
+              BinaryExpr out = node;
+              out.lhs = forceTemp(anf(out.lhs, prefix), prefix);
+              out.rhs = anf(out.rhs, prefix);
+              return makeExpr(std::move(out), expr->line, expr->col);
+            } else if constexpr (std::is_same_v<T, AssignExpr>) {
+              AssignExpr out = node;
+              out.target = anfLValue(out.target, prefix);
+              out.value = anf(out.value, prefix);
+              return makeExpr(std::move(out), expr->line, expr->col);
+            } else if constexpr (std::is_same_v<T, TernaryExpr>) {
+              TernaryExpr out = node;
+              out.condition = forceTemp(anf(out.condition, prefix), prefix);
+              // A branch runs conditionally: hoisting an await out of it would
+              // run it unconditionally, so the splitter rejects it for now.
+              if (out.thenExpr) {
+                AsyncScan branchScan;
+                scanAsyncExpr(*out.thenExpr, branchScan);
+                if (branchScan.suspend) {
+                  fail("await inside a ternary branch is not supported yet (PHASE 11.2.3b)",
+                       out.thenExpr->line, out.thenExpr->col);
+                }
+              }
+              if (out.elseExpr) {
+                AsyncScan branchScan;
+                scanAsyncExpr(*out.elseExpr, branchScan);
+                if (branchScan.suspend) {
+                  fail("await inside a ternary branch is not supported yet (PHASE 11.2.3b)",
+                       out.elseExpr->line, out.elseExpr->col);
+                }
+              }
+              out.thenExpr = anf(out.thenExpr, prefix);
+              out.elseExpr = anf(out.elseExpr, prefix);
+              return makeExpr(std::move(out), expr->line, expr->col);
+            } else if constexpr (std::is_same_v<T, CallExpr>) {
+              CallExpr out = node;
+              out.callee = anf(out.callee, prefix);
+              if (auto* member = std::get_if<MemberExpr>(&out.callee->node)) {
+                member->object = forceTemp(std::move(member->object), prefix);
+              }
+              for (ExprPtr& arg : out.args) arg = forceTemp(anf(arg, prefix), prefix);
+              return makeExpr(std::move(out), expr->line, expr->col);
+            } else if constexpr (std::is_same_v<T, IndexExpr>) {
+              IndexExpr out = node;
+              out.object = forceTemp(anf(out.object, prefix), prefix);
+              out.index = anf(out.index, prefix);
+              return makeExpr(std::move(out), expr->line, expr->col);
+            } else if constexpr (std::is_same_v<T, SliceExpr>) {
+              SliceExpr out = node;
+              out.object = forceTemp(anf(out.object, prefix), prefix);
+              out.start = forceTemp(anf(out.start, prefix), prefix);
+              out.end = forceTemp(anf(out.end, prefix), prefix);
+              out.step = anf(out.step, prefix);
+              return makeExpr(std::move(out), expr->line, expr->col);
+            } else if constexpr (std::is_same_v<T, RangeExpr>) {
+              RangeExpr out = node;
+              out.start = forceTemp(anf(out.start, prefix), prefix);
+              out.end = anf(out.end, prefix);
+              return makeExpr(std::move(out), expr->line, expr->col);
+            } else if constexpr (std::is_same_v<T, SpawnExpr>) {
+              SpawnExpr out = node;
+              out.operand = anf(out.operand, prefix);
+              return makeExpr(std::move(out), expr->line, expr->col);
+            } else if constexpr (std::is_same_v<T, CatchExpr>) {
+              CatchExpr out = node;
+              out.operand = anf(out.operand, prefix);
+              if (out.fallback) {
+                AsyncScan branchScan;
+                scanAsyncExpr(*out.fallback, branchScan);
+                if (branchScan.suspend) {
+                  fail("await inside a 'catch' fallback is not supported yet (PHASE 11.2.3b)",
+                       out.fallback->line, out.fallback->col);
+                }
+              }
+              out.fallback = anf(out.fallback, prefix);
+              return makeExpr(std::move(out), expr->line, expr->col);
+            } else {
+              // Literal, Variable, Lambda (a separate function) and Try (checked
+              // by the body scan) have no child await to hoist.
+              return expr;
+            }
+          },
+          expr->node);
+    }
+
+    StmtPtr anfStmt(const StmtPtr& stmt, std::vector<StmtPtr>& prefix) {
+      if (!stmt) return stmt;
+      return std::visit(
+          [&](auto& node) -> StmtPtr {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, ExprStmt>) {
+              ExprPtr expr = isDirectSuspend(node.expr) ? node.expr : anf(node.expr, prefix);
+              return makeStmt(ExprStmt{std::move(expr)}, stmt->line, stmt->col);
+            } else if constexpr (std::is_same_v<T, LetStmt>) {
+              if (node.type.isPresent() && node.init) {
+                TypeRef valueType = self.inferExprType(*node.init);
+                self.checkAssignable(valueType, node.type, "'" + node.name + "'", node.init->line,
+                                     node.init->col);
+              }
+              ExprPtr init = isDirectSuspend(node.init) ? node.init : anf(node.init, prefix);
+              return makeStmt(LetStmt{node.name, node.type, std::move(init), node.kind}, stmt->line,
+                              stmt->col);
+            } else if constexpr (std::is_same_v<T, ReturnStmt>) {
+              checkReturn(node, stmt->line, stmt->col);
+              ExprPtr value = isDirectSuspend(node.value) ? node.value : anf(node.value, prefix);
+              return makeStmt(ReturnStmt{std::move(value)}, stmt->line, stmt->col);
+            } else if constexpr (std::is_same_v<T, IfStmt>) {
+              return makeStmt(IfStmt{anf(node.condition, prefix), node.thenBranch, node.elseBranch},
+                              stmt->line, stmt->col);
+            } else if constexpr (std::is_same_v<T, WhileStmt> || std::is_same_v<T, DoWhileStmt> ||
+                                 std::is_same_v<T, ForStmt> || std::is_same_v<T, ForInStmt>) {
+              AsyncScan loopScan;
+              scanAsyncStmt(*stmt, loopScan);
+              if (loopScan.suspend) {
+                fail("await inside a loop is not supported yet (PHASE 11.2.3b)", stmt->line,
+                     stmt->col);
+              }
+              if (loopScan.ret) {
+                fail(
+                    "return inside a loop in an async body that suspends is not supported "
+                    "yet (PHASE 11.2.3b)",
+                    stmt->line, stmt->col);
+              }
+              return stmt;
+            } else if constexpr (std::is_same_v<T, SwitchStmt>) {
+              AsyncScan switchScan;
+              scanAsyncStmt(*stmt, switchScan);
+              if (switchScan.suspend) {
+                fail("await inside a switch is not supported yet (PHASE 11.2.3b)", stmt->line,
+                     stmt->col);
+              }
+              if (switchScan.ret) {
+                fail(
+                    "return inside a switch in an async body that suspends is not supported "
+                    "yet (PHASE 11.2.3b)",
+                    stmt->line, stmt->col);
+              }
+              return stmt;
+            } else if constexpr (std::is_same_v<T, DeferStmt>) {
+              fail("defer across an await is not supported yet (PHASE 11.2.3b)", stmt->line,
+                   stmt->col);
+            } else {
+              return stmt;
+            }
+          },
+          stmt->node);
+    }
+
+    StmtPtr cpsBlock(std::vector<StmtPtr> stmts, ExprPtr k) {
+      if (stmts.empty()) return block({ret(call(std::move(k), {}))});
+      StmtPtr first = stmts.front();
+      std::vector<StmtPtr> rest(stmts.begin() + 1, stmts.end());
+
+      std::vector<StmtPtr> prefix;
+      StmtPtr rewritten = anfStmt(first, prefix);
+      if (!prefix.empty()) {
+        std::vector<StmtPtr> combined = std::move(prefix);
+        combined.push_back(rewritten);
+        combined.insert(combined.end(), rest.begin(), rest.end());
+        return cpsBlock(std::move(combined), std::move(k));
+      }
+
+      if (auto* letStmt = std::get_if<LetStmt>(&rewritten->node)) {
+        if (letStmt->init) {
+          if (auto* awaited = std::get_if<AwaitExpr>(&letStmt->init->node)) {
+            return lowerAwait(*awaited, letStmt->name, letStmt->type, letStmt->kind,
+                              std::move(rest), std::move(k), false);
+          }
+          if (std::get_if<YieldExpr>(&letStmt->init->node)) {
+            std::vector<StmtPtr> yieldRest;
+            yieldRest.push_back(makeStmt(
+                LetStmt{letStmt->name, letStmt->type, nilValue(), letStmt->kind}, line, col));
+            yieldRest.insert(yieldRest.end(), rest.begin(), rest.end());
+            return lowerYield(std::move(yieldRest), std::move(k));
+          }
+        }
+      }
+      if (auto* exprStmt = std::get_if<ExprStmt>(&rewritten->node)) {
+        if (exprStmt->expr) {
+          if (auto* awaited = std::get_if<AwaitExpr>(&exprStmt->expr->node)) {
+            return lowerAwait(*awaited, std::string(), TypeRef{}, Tok::Let, std::move(rest),
+                              std::move(k), false);
+          }
+          if (std::get_if<YieldExpr>(&exprStmt->expr->node)) {
+            return lowerYield(std::move(rest), std::move(k));
+          }
+        }
+      }
+      if (auto* returnStmt = std::get_if<ReturnStmt>(&rewritten->node)) {
+        if (returnStmt->value) {
+          // A status helper call is already a step result; wrapping it in
+          // `done` would settle the task with the status map itself.
+          if (auto* statusCall = std::get_if<CallExpr>(&returnStmt->value->node)) {
+            if (auto* callee = std::get_if<VariableExpr>(&statusCall->callee->node)) {
+              if (callee->name == kAsyncBind || callee->name == kAsyncYieldCont ||
+                  callee->name == kAsyncAgain) {
+                return rewritten;
+              }
+            }
+          }
+          if (auto* awaited = std::get_if<AwaitExpr>(&returnStmt->value->node)) {
+            return lowerAwait(*awaited, std::string(), TypeRef{}, Tok::Let, {}, std::move(k), true);
+          }
+          if (std::get_if<YieldExpr>(&returnStmt->value->node)) {
+            ExprPtr kDone = lambda({}, {ret(helper(kAsyncDone, {nilValue()}))});
+            return lowerYield({}, std::move(kDone));
+          }
+        }
+        return ret(helper(kAsyncDone, {returnStmt->value ? returnStmt->value : nilValue()}));
+      }
+      if (auto* ifStmt = std::get_if<IfStmt>(&rewritten->node)) {
+        return lowerIf(*ifStmt, std::move(rest), std::move(k));
+      }
+      if (auto* nested = std::get_if<BlockStmt>(&rewritten->node)) {
+        std::string kName = fresh("k");
+        StmtPtr kDecl = let(kName, lambda({}, {cpsBlock(std::move(rest), std::move(k))}));
+        return block({kDecl, cpsBlock(nested->stmts, var(kName))});
+      }
+      std::vector<StmtPtr> tail;
+      tail.push_back(rewritten);
+      tail.push_back(cpsBlock(std::move(rest), std::move(k)));
+      return block(std::move(tail));
+    }
+
+    StmtPtr lowerAwait(const AwaitExpr& awaited, const std::string& bindName,
+                       const TypeRef& bindType, Tok bindKind, std::vector<StmtPtr> rest, ExprPtr k,
+                       bool doneAfter) {
+      checkAwait(awaited, line, col);
+      std::string futureName = fresh("future");
+      std::string param = "$async_value";
+      // The operand may itself suspend (`await (await f())` or an await in an
+      // argument). ANF hoists those into the prefix; `cpsBlock` lowers them and
+      // only then reaches the bind for this await.
+      std::vector<StmtPtr> operandPrefix;
+      ExprPtr operand = anf(awaited.operand, operandPrefix);
+      std::vector<StmtPtr> contBody;
+      if (doneAfter) {
+        contBody.push_back(ret(helper(kAsyncDone, {var(param)})));
+      } else {
+        if (!bindName.empty()) {
+          contBody.push_back(
+              makeStmt(LetStmt{bindName, bindType, var(param), bindKind}, line, col));
+        }
+        contBody.push_back(cpsBlock(std::move(rest), std::move(k)));
+      }
+      ExprPtr cont = lambda({Param{param, TypeRef{}, false}}, std::move(contBody));
+      std::vector<StmtPtr> out;
+      out.push_back(let(futureName, std::move(operand)));
+      out.push_back(ret(helper(kAsyncBind, {var("$task"), var(futureName), std::move(cont)})));
+      if (!operandPrefix.empty()) {
+        AsyncScan prefixScan;
+        for (const StmtPtr& stmt : operandPrefix) scanAsyncStmt(*stmt, prefixScan);
+        std::vector<StmtPtr> combined = std::move(operandPrefix);
+        combined.insert(combined.end(), out.begin(), out.end());
+        if (!prefixScan.suspend) return block(std::move(combined));
+        // The combined block always returns the bind, so this fallthrough
+        // continuation is unreachable; it only satisfies the signature.
+        ExprPtr kDone = lambda({}, {ret(helper(kAsyncDone, {nilValue()}))});
+        return cpsBlock(std::move(combined), std::move(kDone));
+      }
+      return block(std::move(out));
+    }
+
+    StmtPtr lowerYield(std::vector<StmtPtr> rest, ExprPtr k) {
+      // The scheduler calls every task continuation with one argument (the
+      // settled value, or nil for a yield); this one ignores it.
+      ExprPtr cont = lambda({Param{"$async_value", TypeRef{}, false}},
+                            {cpsBlock(std::move(rest), std::move(k))});
+      return ret(helper(kAsyncYieldCont, {var("$task"), std::move(cont)}));
+    }
+
+    StmtPtr lowerIf(const IfStmt& ifStmt, std::vector<StmtPtr> rest, ExprPtr k) {
+      std::string kName = fresh("k");
+      StmtPtr kDecl = let(kName, lambda({}, {cpsBlock(std::move(rest), std::move(k))}));
+      ExprPtr kVar = var(kName);
+      StmtPtr thenCps = cpsBlock(blockStmts(ifStmt.thenBranch), kVar);
+      StmtPtr elseCps = ifStmt.elseBranch ? cpsBlock(blockStmts(ifStmt.elseBranch), kVar)
+                                          : block({ret(call(kVar, {}))});
+      return block({kDecl, makeStmt(IfStmt{ifStmt.condition, thenCps, elseCps}, line, col)});
+    }
+
+    StmtPtr lower(const StmtPtr& bodyStmt) {
+      std::vector<StmtPtr> stmts = blockStmts(bodyStmt);
+      ExprPtr k0 = lambda({}, {ret(helper(kAsyncDone, {nilValue()}))});
+      return cpsBlock(std::move(stmts), std::move(k0));
+    }
+  };
+
+  Cps cps{*this, returnType, line, col};
+  StmtPtr out = cps.lower(body);
+  return out;
+}
+
 int Compiler::compileAsyncFunctionValue(const std::string& name, const std::vector<Param>& params,
                                         const StmtPtr& body, int line, int col,
                                         const TypeRef& returnType, const std::string& ownerClass) {
@@ -3441,6 +4134,88 @@ int Compiler::compileAsyncFunctionValue(const std::string& name, const std::vect
   auto entry = [](const std::string& key, ExprPtr value) {
     return MapEntry{key, nullptr, std::move(value)};
   };
+
+  // PHASE 11.2.3: a body that suspends is split into continuation closures.
+  // The factory creates the future and the task, then a zero-argument closure
+  // that captures the declared parameters and `$task`; the scheduler calls that
+  // closure and the `bind`/`yield_cont` helpers replace `$task.cont` on every
+  // suspension. Locals stay ordinary cells of the segment closure, so a
+  // variable declared before an `await` is the same cell after it, and a
+  // closure created before the await keeps sharing it.
+  AsyncScan scan;
+  scanAsyncStmt(*body, scan);
+  if (scan.suspend) {
+    if (scan.defer) {
+      fail("defer across an await is not supported yet (PHASE 11.2.3b)", line, col);
+    }
+    if (scan.tryExpr) {
+      fail("'try' across an await is not supported yet (PHASE 11.2.3b)", line, col);
+    }
+    StmtPtr cpsBody = lowerAsyncBody(body, returnType, line, col);
+    AsyncScan finalScan;
+    scanAsyncStmt(*cpsBody, finalScan);
+    if (finalScan.suspend) {
+      fail("internal compiler error: await survived the async splitter", line, col);
+    }
+
+    std::vector<MapEntry> futureEntries;
+    futureEntries.push_back(entry("$future", literal(Value(true))));
+    futureEntries.push_back(entry("state", literal(Value(std::string("pending")))));
+    futureEntries.push_back(entry("value", literal(Value())));
+    futureEntries.push_back(entry("error", literal(Value())));
+    futureEntries.push_back(entry("waiters", makeExpr(ArrayExpr{}, line, col)));
+
+    std::vector<ExprPtr> taskArgs;
+    for (const Param& param : params) taskArgs.push_back(variable(param.name));
+    std::vector<MapEntry> taskEntries;
+    taskEntries.push_back(entry("future", variable("$future")));
+    taskEntries.push_back(entry("cont", literal(Value())));
+    taskEntries.push_back(entry("wait", literal(Value())));
+    taskEntries.push_back(entry("pc", literal(Value(static_cast<int64_t>(0)))));
+    taskEntries.push_back(entry("args", makeExpr(ArrayExpr{std::move(taskArgs)}, line, col)));
+    taskEntries.push_back(entry("regs", makeExpr(ArrayExpr{}, line, col)));
+    taskEntries.push_back(entry("locals", makeExpr(ArrayExpr{}, line, col)));
+    taskEntries.push_back(entry("done", literal(Value(false))));
+    taskEntries.push_back(entry("enqueued", literal(Value(false))));
+    taskEntries.push_back(entry("running", literal(Value(false))));
+
+    std::vector<StmtPtr> factoryStmts;
+    factoryStmts.push_back(
+        makeStmt(LetStmt{"$future", TypeRef{},
+                         makeExpr(MapExpr{std::move(futureEntries)}, line, col), Tok::Let},
+                 line, col));
+    factoryStmts.push_back(makeStmt(
+        LetStmt{"$task", TypeRef{}, makeExpr(MapExpr{std::move(taskEntries)}, line, col), Tok::Let},
+        line, col));
+    ExprPtr futureTask =
+        makeExpr(IndexExpr{variable("$future"), literal(Value(std::string("task")))}, line, col);
+    factoryStmts.push_back(makeStmt(
+        ExprStmt{makeExpr(AssignExpr{std::move(futureTask), Tok::Eq, variable("$task"), line, col},
+                          line, col)},
+        line, col));
+    ExprPtr contLambda =
+        makeExpr(LambdaExpr{std::vector<Param>{Param{"$async_start", TypeRef{}, false}}, cpsBody,
+                            std::string(), TypeRef{}, std::string(), false},
+                 line, col);
+    factoryStmts.push_back(
+        makeStmt(LetStmt{"$cont", TypeRef{}, std::move(contLambda), Tok::Let}, line, col));
+    ExprPtr taskCont =
+        makeExpr(IndexExpr{variable("$task"), literal(Value(std::string("cont")))}, line, col);
+    factoryStmts.push_back(makeStmt(
+        ExprStmt{makeExpr(AssignExpr{std::move(taskCont), Tok::Eq, variable("$cont"), line, col},
+                          line, col)},
+        line, col));
+    factoryStmts.push_back(makeStmt(
+        ExprStmt{makeExpr(CallExpr{variable(kAsyncSpawn), {variable("$future")}}, line, col)}, line,
+        col));
+    factoryStmts.push_back(makeStmt(ReturnStmt{variable("$future")}, line, col));
+    StmtPtr factoryBody = makeStmt(BlockStmt{std::move(factoryStmts)}, line, col);
+    int factoryChild = compileFunctionProto(name, params, factoryBody, line, col,
+                                            TypeRef{"Future", false}, ownerClass, false, false);
+    int factoryReg = allocReg();
+    emit(OpCode::CLOSURE, factoryReg, factoryChild);
+    return factoryReg;
+  }
 
   // The step function takes the task frame as its only parameter and binds the
   // declared parameters from `frame.args`. The rest of the body is unchanged,

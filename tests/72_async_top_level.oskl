@@ -1,0 +1,52 @@
+// PHASE 11.2.4a: `await` at the program's top level.
+//
+// The chunk is not an `async fn`, but the scheduler and the future protocol are
+// ordinary Oskel, so a top-level `await` drains the ready queue exactly like one
+// inside an async function. The script already drains before HALT, so an async
+// `main` needs no top-level await; this fixture covers the statement, `let`,
+// `if` and loop positions directly at the top level.
+
+var log: array = [];
+
+fn note(text: string): void {
+  log.push(text);
+}
+
+async fn task(id: int): int {
+  note("start " + str(id));
+  yield();
+  note("end " + str(id));
+  return id * 10;
+}
+
+let a = task(1);
+let b = task(2);
+note("spawned");
+
+// `await` in a top-level `let` initializer.
+let first: int = await a;
+assertEq(first, 10);
+note("a");
+
+// `await` inside a top-level `if`.
+if (first == 10) {
+  assertEq(await b, 20);
+  note("b");
+}
+
+// `await` inside a top-level loop.
+var total = 0;
+for i in [0, 1, 2] {
+  total += await task(i + 3);
+}
+assertEq(total, 120);
+
+// Awaiting a settled future is immediate and stable.
+assertEq(await a, 10);
+
+// `yield()` parks the task at the back of the ready queue: task 1 resumes
+// before task 2, so the ends are FIFO.
+assertEq(log.join(","),
+         "spawned,start 1,start 2,end 1,end 2,a,b," +
+         "start 3,end 3,start 4,end 4,start 5,end 5");
+print("top-level await ok");
