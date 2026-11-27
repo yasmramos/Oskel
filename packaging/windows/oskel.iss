@@ -1,7 +1,7 @@
 ; Inno Setup script for the Oskel development engine on Windows.
 ;
 ; Build with:
-;   iscc /DAppVersion=0.1.0 /DStageDir=C:\path\to\stage packaging\windows\oskel.iss
+;   iscc /DAppVersion=0.3.0 /DStageDir=C:\path\to\stage packaging\windows\oskel.iss
 ;
 ; `StageDir` is the tree produced by `cmake --install --prefix stage`:
 ;   stage\bin\oskel.exe     the development engine (VM, REPL)
@@ -15,7 +15,7 @@
 ; executable, with no environment variable needed.
 
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "0.3.0"
 #endif
 #ifndef StageDir
   #define StageDir "..\..\stage"
