@@ -173,143 +173,130 @@ bool stmtContainsAsync(const Stmt& stmt) {
       stmt.node);
 }
 
-// One walk over an async body for the PHASE 11.2.3 splitter. `suspend` marks an
-// `await`/`yield`; `defer` and `tryExpr` mark constructs the splitter cannot
-// lower yet, because both do a non-local `return` that a segment closure would
-// capture. `ret` marks a `return` for the loop/switch guard. Nested function
-// bodies are separate compilation units, so the walk stops at a lambda or a
-// `fn` declaration: their own async bodies are lowered by their own factory.
-struct AsyncScan {
-  bool suspend = false;
-  bool defer = false;
-  bool tryExpr = false;
-  bool ret = false;
-};
-
-void scanAsyncExpr(const Expr& expr, AsyncScan& scan);
-void scanAsyncStmt(const Stmt& stmt, AsyncScan& scan);
-
-void scanAsyncExpr(const Expr& expr, AsyncScan& scan) {
-  std::visit(
+// True when an expression of *this* function body contains an `await` or a
+// `yield` (PHASE 11.2.3). A nested lambda or function is its own step, so the
+// walk stops there; `spawn` is not a suspension, but an `await` in its operand
+// belongs to this body.
+bool exprContainsSuspension(const Expr& expr) {
+  return std::visit(
       [&](const auto& node) {
         using T = std::decay_t<decltype(node)>;
-        if constexpr (std::is_same_v<T, AwaitExpr>) {
-          scan.suspend = true;
-          if (node.operand) scanAsyncExpr(*node.operand, scan);
-        } else if constexpr (std::is_same_v<T, YieldExpr>) {
-          scan.suspend = true;
-        } else if constexpr (std::is_same_v<T, TryExpr>) {
-          scan.tryExpr = true;
-          if (node.operand) scanAsyncExpr(*node.operand, scan);
-        } else if constexpr (std::is_same_v<T, LambdaExpr>) {
-          // A lambda is its own function; its body is lowered separately.
+        if constexpr (std::is_same_v<T, AwaitExpr> || std::is_same_v<T, YieldExpr>) {
+          return true;
+        } else if constexpr (std::is_same_v<T, SpawnExpr>) {
+          return node.operand && exprContainsSuspension(*node.operand);
         } else if constexpr (std::is_same_v<T, InterpExpr>) {
           for (const InterpPart& part : node.parts) {
             if (const auto* inner = std::get_if<ExprPtr>(&part.content)) {
-              if (*inner) scanAsyncExpr(**inner, scan);
+              if (*inner && exprContainsSuspension(**inner)) return true;
             }
           }
+          return false;
         } else if constexpr (std::is_same_v<T, ArrayExpr>) {
           for (const ExprPtr& element : node.elements) {
-            if (element) scanAsyncExpr(*element, scan);
+            if (element && exprContainsSuspension(*element)) return true;
           }
+          return false;
         } else if constexpr (std::is_same_v<T, MapExpr>) {
           for (const MapEntry& entry : node.entries) {
-            if (entry.keyExpr) scanAsyncExpr(*entry.keyExpr, scan);
-            if (entry.value) scanAsyncExpr(*entry.value, scan);
+            if (entry.keyExpr && exprContainsSuspension(*entry.keyExpr)) return true;
+            if (entry.value && exprContainsSuspension(*entry.value)) return true;
           }
+          return false;
         } else if constexpr (std::is_same_v<T, StructLitExpr>) {
           for (const StructLitEntry& entry : node.entries) {
-            if (entry.value) scanAsyncExpr(*entry.value, scan);
+            if (entry.value && exprContainsSuspension(*entry.value)) return true;
           }
-        } else if constexpr (std::is_same_v<T, UnaryExpr> || std::is_same_v<T, NonNullExpr> ||
-                             std::is_same_v<T, SpawnExpr>) {
-          if (node.operand) scanAsyncExpr(*node.operand, scan);
-        } else if constexpr (std::is_same_v<T, MemberExpr>) {
-          if (node.object) scanAsyncExpr(*node.object, scan);
+          return false;
+        } else if constexpr (std::is_same_v<T, UnaryExpr> || std::is_same_v<T, NonNullExpr>) {
+          return node.operand && exprContainsSuspension(*node.operand);
         } else if constexpr (std::is_same_v<T, BinaryExpr>) {
-          if (node.lhs) scanAsyncExpr(*node.lhs, scan);
-          if (node.rhs) scanAsyncExpr(*node.rhs, scan);
+          return (node.lhs && exprContainsSuspension(*node.lhs)) ||
+                 (node.rhs && exprContainsSuspension(*node.rhs));
         } else if constexpr (std::is_same_v<T, AssignExpr>) {
-          if (node.target) scanAsyncExpr(*node.target, scan);
-          if (node.value) scanAsyncExpr(*node.value, scan);
+          return (node.target && exprContainsSuspension(*node.target)) ||
+                 (node.value && exprContainsSuspension(*node.value));
         } else if constexpr (std::is_same_v<T, TernaryExpr>) {
-          if (node.condition) scanAsyncExpr(*node.condition, scan);
-          if (node.thenExpr) scanAsyncExpr(*node.thenExpr, scan);
-          if (node.elseExpr) scanAsyncExpr(*node.elseExpr, scan);
+          return (node.condition && exprContainsSuspension(*node.condition)) ||
+                 (node.thenExpr && exprContainsSuspension(*node.thenExpr)) ||
+                 (node.elseExpr && exprContainsSuspension(*node.elseExpr));
         } else if constexpr (std::is_same_v<T, CallExpr>) {
-          if (node.callee) scanAsyncExpr(*node.callee, scan);
+          if (node.callee && exprContainsSuspension(*node.callee)) return true;
           for (const ExprPtr& arg : node.args) {
-            if (arg) scanAsyncExpr(*arg, scan);
+            if (arg && exprContainsSuspension(*arg)) return true;
           }
+          return false;
         } else if constexpr (std::is_same_v<T, IndexExpr>) {
-          if (node.object) scanAsyncExpr(*node.object, scan);
-          if (node.index) scanAsyncExpr(*node.index, scan);
+          return (node.object && exprContainsSuspension(*node.object)) ||
+                 (node.index && exprContainsSuspension(*node.index));
         } else if constexpr (std::is_same_v<T, SliceExpr>) {
-          if (node.object) scanAsyncExpr(*node.object, scan);
-          if (node.start) scanAsyncExpr(*node.start, scan);
-          if (node.end) scanAsyncExpr(*node.end, scan);
-          if (node.step) scanAsyncExpr(*node.step, scan);
+          return (node.object && exprContainsSuspension(*node.object)) ||
+                 (node.start && exprContainsSuspension(*node.start)) ||
+                 (node.end && exprContainsSuspension(*node.end)) ||
+                 (node.step && exprContainsSuspension(*node.step));
+        } else if constexpr (std::is_same_v<T, MemberExpr>) {
+          return node.object && exprContainsSuspension(*node.object);
         } else if constexpr (std::is_same_v<T, RangeExpr>) {
-          if (node.start) scanAsyncExpr(*node.start, scan);
-          if (node.end) scanAsyncExpr(*node.end, scan);
+          return (node.start && exprContainsSuspension(*node.start)) ||
+                 (node.end && exprContainsSuspension(*node.end));
+        } else if constexpr (std::is_same_v<T, TryExpr>) {
+          return node.operand && exprContainsSuspension(*node.operand);
         } else if constexpr (std::is_same_v<T, CatchExpr>) {
-          if (node.operand) scanAsyncExpr(*node.operand, scan);
-          if (node.fallback) scanAsyncExpr(*node.fallback, scan);
+          return (node.operand && exprContainsSuspension(*node.operand)) ||
+                 (node.fallback && exprContainsSuspension(*node.fallback));
+        } else {
+          return false;
         }
       },
       expr.node);
 }
 
-void scanAsyncStmt(const Stmt& stmt, AsyncScan& scan) {
-  std::visit(
+bool stmtContainsSuspension(const Stmt& stmt) {
+  return std::visit(
       [&](const auto& node) {
         using T = std::decay_t<decltype(node)>;
         if constexpr (std::is_same_v<T, ExprStmt>) {
-          if (node.expr) scanAsyncExpr(*node.expr, scan);
+          return node.expr && exprContainsSuspension(*node.expr);
         } else if constexpr (std::is_same_v<T, LetStmt>) {
-          if (node.init) scanAsyncExpr(*node.init, scan);
-        } else if constexpr (std::is_same_v<T, FnDeclStmt>) {
-          // A nested function is its own compilation unit.
+          return node.init && exprContainsSuspension(*node.init);
         } else if constexpr (std::is_same_v<T, BlockStmt>) {
           for (const StmtPtr& inner : node.stmts) {
-            if (inner) scanAsyncStmt(*inner, scan);
+            if (inner && stmtContainsSuspension(*inner)) return true;
           }
+          return false;
         } else if constexpr (std::is_same_v<T, IfStmt>) {
-          if (node.condition) scanAsyncExpr(*node.condition, scan);
-          if (node.thenBranch) scanAsyncStmt(*node.thenBranch, scan);
-          if (node.elseBranch) scanAsyncStmt(*node.elseBranch, scan);
+          return (node.condition && exprContainsSuspension(*node.condition)) ||
+                 (node.thenBranch && stmtContainsSuspension(*node.thenBranch)) ||
+                 (node.elseBranch && stmtContainsSuspension(*node.elseBranch));
         } else if constexpr (std::is_same_v<T, WhileStmt>) {
-          if (node.condition) scanAsyncExpr(*node.condition, scan);
-          if (node.body) scanAsyncStmt(*node.body, scan);
+          return (node.condition && exprContainsSuspension(*node.condition)) ||
+                 (node.body && stmtContainsSuspension(*node.body));
         } else if constexpr (std::is_same_v<T, DoWhileStmt>) {
-          if (node.body) scanAsyncStmt(*node.body, scan);
-          if (node.condition) scanAsyncExpr(*node.condition, scan);
+          return (node.body && stmtContainsSuspension(*node.body)) ||
+                 (node.condition && exprContainsSuspension(*node.condition));
         } else if constexpr (std::is_same_v<T, ForStmt>) {
-          if (node.init) scanAsyncStmt(*node.init, scan);
-          if (node.condition) scanAsyncExpr(*node.condition, scan);
-          if (node.step) scanAsyncExpr(*node.step, scan);
-          if (node.body) scanAsyncStmt(*node.body, scan);
+          return (node.init && stmtContainsSuspension(*node.init)) ||
+                 (node.condition && exprContainsSuspension(*node.condition)) ||
+                 (node.step && exprContainsSuspension(*node.step)) ||
+                 (node.body && stmtContainsSuspension(*node.body));
         } else if constexpr (std::is_same_v<T, ForInStmt>) {
-          if (node.iterable) scanAsyncExpr(*node.iterable, scan);
-          if (node.body) scanAsyncStmt(*node.body, scan);
+          return (node.iterable && exprContainsSuspension(*node.iterable)) ||
+                 (node.body && stmtContainsSuspension(*node.body));
         } else if constexpr (std::is_same_v<T, ReturnStmt>) {
-          scan.ret = true;
-          if (node.value) scanAsyncExpr(*node.value, scan);
+          return node.value && exprContainsSuspension(*node.value);
         } else if constexpr (std::is_same_v<T, SwitchStmt>) {
-          if (node.subject) scanAsyncExpr(*node.subject, scan);
+          if (node.subject && exprContainsSuspension(*node.subject)) return true;
           for (const SwitchCase& entry : node.cases) {
             for (const ExprPtr& value : entry.values) {
-              if (value) scanAsyncExpr(*value, scan);
+              if (value && exprContainsSuspension(*value)) return true;
             }
-            if (entry.body) scanAsyncStmt(*entry.body, scan);
+            if (entry.body && stmtContainsSuspension(*entry.body)) return true;
           }
-          if (node.defaultBody) scanAsyncStmt(*node.defaultBody, scan);
+          return node.defaultBody && stmtContainsSuspension(*node.defaultBody);
         } else if constexpr (std::is_same_v<T, DeferStmt>) {
-          scan.defer = true;
-          if (node.body) scanAsyncStmt(*node.body, scan);
-        } else if constexpr (std::is_same_v<T, ExternBlockStmt>) {
-          // Separate function declarations.
+          return node.body && stmtContainsSuspension(*node.body);
+        } else {
+          return false;
         }
       },
       stmt.node);
@@ -323,14 +310,11 @@ constexpr const char* kAsyncSpawn = "__oskel_async_spawn";
 constexpr const char* kAsyncAwait = "__oskel_async_await";
 constexpr const char* kAsyncDrain = "__oskel_async_drain";
 constexpr const char* kAsyncYield = "__oskel_async_yield";
-// PHASE 11.2.3: the continuation protocol. `bind` suspends the current task on
-// a pending future, `done` reports the payload, `yield_cont` re-enqueues the
-// task with its continuation, and `again` trampolines a loop iteration without
-// growing the native stack.
-constexpr const char* kAsyncBind = "__oskel_async_bind";
-constexpr const char* kAsyncDone = "__oskel_async_done";
-constexpr const char* kAsyncAgain = "__oskel_async_again";
-constexpr const char* kAsyncYieldCont = "__oskel_async_yield_cont";
+
+// Registers the splitter reserves at the bottom of a suspending step frame
+// (PHASE 11.2.3). The body's temporaries start above them, so the dispatch can
+// use the window without saving or restoring it.
+constexpr int kAsyncScratchCount = 8;
 
 const char* kAsyncPreludeSource = R"OSKEL(
 var __oskel_async_ready = [];
@@ -342,6 +326,7 @@ fn __oskel_async_settle(future, value) {
   let waiters = future["waiters"];
   if (waiters != nil) {
     for waiter in waiters {
+      waiter["waiting"] = false;
       waiter["enqueued"] = true;
       __oskel_async_ready.push(waiter);
     }
@@ -356,73 +341,12 @@ fn __oskel_async_reject(future, err) {
   let waiters = future["waiters"];
   if (waiters != nil) {
     for waiter in waiters {
+      waiter["waiting"] = false;
       waiter["enqueued"] = true;
       __oskel_async_ready.push(waiter);
     }
     waiters.clear();
   }
-}
-
-// The 11.2.3 continuation protocol. A step returns one of:
-//   { kind: "done", value: v }
-//   { kind: "failed", error: e }
-//   { kind: "suspended", future: f }   // bind already registered the task
-//   { kind: "yield" }                  // yield_cont already re-enqueued it
-//   { kind: "again", cont: c }         // run c immediately, same turn
-fn __oskel_async_bind(task, future, cont) {
-  if (future == nil) {
-    panic(error("await expects a Future"));
-  }
-  let state = future["state"];
-  if (state == "fulfilled" || state == "rejected") {
-    // Trampoline: the scheduler runs the continuation in its own loop, so a
-    // chain of already-settled awaits does not grow the native stack.
-    task["cont"] = cont;
-    return {"kind": "again", "cont": cont, "wait": future};
-  }
-  if (state == "pending") {
-    var waiters = future["waiters"];
-    if (waiters == nil) {
-      waiters = [];
-      future["waiters"] = waiters;
-    }
-    waiters.push(task);
-    task["cont"] = cont;
-    task["wait"] = future;
-    return {"kind": "suspended", "future": future};
-  }
-  panic(error("await expects a Future"));
-}
-
-fn __oskel_async_done(value) {
-  return {"kind": "done", "value": value};
-}
-
-fn __oskel_async_again(cont) {
-  return {"kind": "again", "cont": cont};
-}
-
-fn __oskel_async_yield_cont(task, cont) {
-  task["cont"] = cont;
-  task["wait"] = nil;
-  task["enqueued"] = false;
-  __oskel_async_ready.push(task);
-  task["enqueued"] = true;
-  return {"kind": "yield"};
-}
-
-// The value a woken continuation receives: the payload of the future it was
-// waiting on, the error value when that future was rejected, or nil after a
-// yield.
-fn __oskel_async_value(task) {
-  let wait = task["wait"];
-  if (wait == nil) {
-    return nil;
-  }
-  if (wait["state"] == "rejected") {
-    return wait["error"];
-  }
-  return wait["value"];
 }
 
 fn __oskel_async_step(task) {
@@ -431,32 +355,32 @@ fn __oskel_async_step(task) {
     return;
   }
   task["running"] = true;
-  var status = nil;
-  if (task["cont"] != nil) {
-    status = task["cont"](__oskel_async_value(task));
-  } else {
-    let step = task["step"];
-    status = step(task);
-  }
-  while (status["kind"] == "again") {
-    task["cont"] = status["cont"];
-    if (status["wait"] != nil) {
-      task["wait"] = status["wait"];
-    } else {
-      task["wait"] = nil;
-    }
-    status = task["cont"](__oskel_async_value(task));
-  }
+  let step = task["step"];
+  let status = step(task);
   task["running"] = false;
   let kind = status["kind"];
   if (kind == "done") {
     __oskel_async_settle(future, status["value"]);
   } else if (kind == "failed") {
     __oskel_async_reject(future, status["error"]);
-  } else if (kind == "yield" || kind == "suspended") {
-    // yield_cont re-enqueued the task; bind registered it as a waiter.
+  } else if (kind == "yielded") {
+    task["waiting"] = false;
+    task["enqueued"] = true;
+    __oskel_async_ready.push(task);
   } else {
-    __oskel_async_reject(future, error("async task returned an unknown status"));
+    // Suspended on another future: wait until it settles, then the waiter is
+    // enqueued again. The single-threaded scheduler makes the check race-free.
+    let waiting = status["future"];
+    if (waiting == nil) {
+      __oskel_async_reject(future, error("async task suspended without a Future"));
+    } else if (waiting["state"] != "pending") {
+      task["waiting"] = false;
+      task["enqueued"] = true;
+      __oskel_async_ready.push(task);
+    } else {
+      task["waiting"] = true;
+      waiting["waiters"].push(task);
+    }
   }
 }
 
@@ -474,8 +398,7 @@ fn __oskel_async_spawn(future) {
   if (task["running"] == true) {
     return future;
   }
-  if (task["wait"] != nil) {
-    // Suspended on a future: settling it will enqueue the task.
+  if (task["waiting"] == true) {
     return future;
   }
   if (task["enqueued"] == false) {
@@ -493,8 +416,6 @@ fn __oskel_async_drain() {
   }
 }
 
-// The 11.2.2 eager helpers stay for a body that never suspends. A body with an
-// `await`/`yield` is lowered to continuations and never calls them.
 fn __oskel_async_await(future) {
   if (future == nil) {
     panic(error("await expects a Future"));
@@ -877,7 +798,9 @@ int Compiler::allocLocalSlot() {
 int Compiler::declareLocal(const std::string& name, bool isImmutable, const TypeRef& type) {
   int slot = allocLocalSlot();
   Scope& scope = scopes_.back();
-  scope.vars[name] = LocalVar{name, slot, isImmutable, type};
+  LocalVar var{name, slot, isImmutable, type};
+  var.boxed = boxLocals_ && name != "$frame";
+  scope.vars[name] = var;
   return slot;
 }
 
@@ -911,11 +834,11 @@ int Compiler::resolveFromFrame(Bytecode& proto, std::unordered_map<std::string, 
   UpvalDesc descriptor;
   LocalVar local;
   if (resolveLocalIn(parent->scopes, name, local)) {
-    descriptor = UpvalDesc{true, local.slot};
+    descriptor = UpvalDesc{true, local.slot, local.boxed};
   } else {
     int outer = resolveFromFrame(parent->bc, parent->upvalueNames, parent->enclosing, name);
     if (outer < 0) return -1;
-    descriptor = UpvalDesc{false, outer};
+    descriptor = UpvalDesc{false, outer, parent->bc.upvalues[static_cast<size_t>(outer)].boxed};
   }
 
   proto.upvalues.push_back(descriptor);
@@ -2092,9 +2015,16 @@ void Compiler::compileBlockBody(const BlockStmt& block) {
           predeclaredLetSlots_[let] = slot;
           // Create the cell before any closure is built: a hoisted function
           // captures the slot while it is still nil, so the cell must already
-          // exist and be the one the later declaration fills in.
+          // exist and be the one the later declaration fills in. A suspending
+          // async body boxes it (PHASE 11.2.3).
           ensureNil();
-          emit(OpCode::DECLLOCAL, nilReg, slot);
+          if (boxLocals_) {
+            int box = emitBoxNew(nilReg, currentLine_, currentCol_);
+            emit(OpCode::DECLLOCAL, box, slot);
+            freeReg();
+          } else {
+            emit(OpCode::DECLLOCAL, nilReg, slot);
+          }
         }
       } else if (const auto* fn = std::get_if<FnDeclStmt>(&child->node)) {
         blockTypes[fn->name] = TypeRef{"function", false};
@@ -2108,7 +2038,13 @@ void Compiler::compileBlockBody(const BlockStmt& block) {
           slot = allocLocalSlot();
           blockSlots[fn->name] = slot;
           ensureNil();
-          emit(OpCode::DECLLOCAL, nilReg, slot);
+          if (boxLocals_) {
+            int box = emitBoxNew(nilReg, currentLine_, currentCol_);
+            emit(OpCode::DECLLOCAL, box, slot);
+            freeReg();
+          } else {
+            emit(OpCode::DECLLOCAL, nilReg, slot);
+          }
         }
         predeclaredFnSlots_[fn] = slot;
       }
@@ -2119,8 +2055,14 @@ void Compiler::compileBlockBody(const BlockStmt& block) {
     // bodies capture the right cells even when the declaration appears later.
     std::unordered_map<std::string, LocalVar> beforeHoisting = scopes_.back().vars;
     for (const auto& [name, slot] : blockSlots) {
-      scopes_.back().vars[name] = LocalVar{name, slot, blockImmutable[name], blockTypes[name],
-                                           blockNatives[name], blockMustUse[name]};
+      LocalVar var{name,
+                   slot,
+                   blockImmutable[name],
+                   blockTypes[name],
+                   blockNatives[name],
+                   blockMustUse[name]};
+      var.boxed = boxLocals_;
+      scopes_.back().vars[name] = var;
     }
     for (const auto& child : block.stmts) {
       if (!child) continue;
@@ -2136,8 +2078,9 @@ void Compiler::compileBlockBody(const BlockStmt& block) {
       if (!child) continue;
       if (const auto* fn = std::get_if<FnDeclStmt>(&child->node)) {
         int slot = predeclaredFnSlots_[fn];
-        scopes_.back().vars[fn->name] =
-            LocalVar{fn->name, slot, false, TypeRef{"function", false}, fn->isNative, fn->mustUse};
+        LocalVar var{fn->name, slot, false, TypeRef{"function", false}, fn->isNative, fn->mustUse};
+        var.boxed = boxLocals_;
+        scopes_.back().vars[fn->name] = var;
       }
     }
   } else if (hasHoistedFunction) {
@@ -2266,25 +2209,47 @@ void Compiler::compileLet(const LetStmt& s) {
     auto predeclared = predeclaredLetSlots_.find(&s);
     if (predeclared != predeclaredLetSlots_.end()) {
       int slot = predeclared->second;
-      emit(OpCode::SETLOCAL, reg, slot);
-      scopes_.back().vars[s.name] = LocalVar{s.name, slot, s.kind != Tok::Var, declared};
+      if (boxLocals_) {
+        emitBoxedLocalWrite(slot, reg, currentLine_, currentCol_);
+      } else {
+        emit(OpCode::SETLOCAL, reg, slot);
+      }
+      LocalVar var{s.name, slot, s.kind != Tok::Var, declared};
+      var.boxed = boxLocals_;
+      scopes_.back().vars[s.name] = var;
     } else if (s.kind == Tok::Var) {
       // `var` redeclares a binding only when it already exists in the *current*
       // scope. A declaration in a nested block shadows an enclosing binding by
       // creating a new cell.
       auto existing = scopes_.back().vars.find(s.name);
       if (existing != scopes_.back().vars.end()) {
-        emit(OpCode::SETLOCAL, reg, existing->second.slot);
+        if (existing->second.boxed) {
+          emitBoxedLocalWrite(existing->second.slot, reg, currentLine_, currentCol_);
+        } else {
+          emit(OpCode::SETLOCAL, reg, existing->second.slot);
+        }
         existing->second.type = declared;
       } else {
         int slot = declareLocal(s.name, false, declared);
-        emit(OpCode::DECLLOCAL, reg, slot);
+        if (boxLocals_) {
+          int box = emitBoxNew(reg, currentLine_, currentCol_);
+          emit(OpCode::DECLLOCAL, box, slot);
+          freeReg();
+        } else {
+          emit(OpCode::DECLLOCAL, reg, slot);
+        }
       }
     } else {
       // Nested block: frame-local variable. The declaration happens after the
       // initializer is compiled.
       int slot = declareLocal(s.name, s.kind != Tok::Var, declared);
-      emit(OpCode::DECLLOCAL, reg, slot);
+      if (boxLocals_) {
+        int box = emitBoxNew(reg, currentLine_, currentCol_);
+        emit(OpCode::DECLLOCAL, box, slot);
+        freeReg();
+      } else {
+        emit(OpCode::DECLLOCAL, reg, slot);
+      }
     }
   }
   freeReg();
@@ -3111,18 +3076,33 @@ void Compiler::compileFnDecl(const FnDeclStmt& fn, int line, int col) {
     auto predeclared = predeclaredFnSlots_.find(&fn);
     if (predeclared != predeclaredFnSlots_.end()) {
       int slot = predeclared->second;
-      emit(OpCode::SETLOCAL, reg, slot);
-      scopes_.back().vars[fn.name] =
-          LocalVar{fn.name, slot, false, TypeRef{"function", false}, fn.isNative, fn.mustUse};
+      if (boxLocals_) {
+        emitBoxedLocalWrite(slot, reg, currentLine_, currentCol_);
+      } else {
+        emit(OpCode::SETLOCAL, reg, slot);
+      }
+      LocalVar var{fn.name, slot, false, TypeRef{"function", false}, fn.isNative, fn.mustUse};
+      var.boxed = boxLocals_;
+      scopes_.back().vars[fn.name] = var;
     } else {
       auto existing = scopes_.back().vars.find(fn.name);
       if (existing != scopes_.back().vars.end()) {
-        emit(OpCode::SETLOCAL, reg, existing->second.slot);
+        if (existing->second.boxed) {
+          emitBoxedLocalWrite(existing->second.slot, reg, currentLine_, currentCol_);
+        } else {
+          emit(OpCode::SETLOCAL, reg, existing->second.slot);
+        }
         existing->second.isNative = fn.isNative;
         existing->second.isMustUse = fn.mustUse;
       } else {
         int slot = declareLocal(fn.name, false, TypeRef{"function", false});
-        emit(OpCode::DECLLOCAL, reg, slot);
+        if (boxLocals_) {
+          int box = emitBoxNew(reg, currentLine_, currentCol_);
+          emit(OpCode::DECLLOCAL, box, slot);
+          freeReg();
+        } else {
+          emit(OpCode::DECLLOCAL, reg, slot);
+        }
         scopes_.back().vars[fn.name].isNative = fn.isNative;
         scopes_.back().vars[fn.name].isMustUse = fn.mustUse;
       }
@@ -3559,6 +3539,10 @@ int Compiler::compileFunctionProto(const std::string& name, const std::vector<Pa
   const TypeRef parentReturnType = currentReturnType_;
   const bool parentIsAsync = currentIsAsync_;
   const bool parentAsyncBody = currentAsyncBody_;
+  const bool parentBoxLocals = boxLocals_;
+  std::vector<AsyncSuspendPoint> parentSuspendPoints = std::move(suspendPoints_);
+  const int parentAsyncScratchBase = asyncScratchBase_;
+  const int parentAsyncBodyStart = asyncBodyStart_;
   const std::string parentOwnerClass = std::move(currentOwnerClass_);
 
   bc_ = Bytecode{};
@@ -3579,6 +3563,10 @@ int Compiler::compileFunctionProto(const std::string& name, const std::vector<Pa
   // to this function, so any outer `defer` context must not reject it.
   deferStack_.clear();
   inFunction_ = true;
+  boxLocals_ = false;
+  suspendPoints_.clear();
+  asyncScratchBase_ = 0;
+  asyncBodyStart_ = 0;
 
   // The child frame keeps the parent's state alive so nested closures can
   // resolve and re-export upvalues through it (see `resolveFromFrame`). A
@@ -3599,6 +3587,12 @@ int Compiler::compileFunctionProto(const std::string& name, const std::vector<Pa
   saved.enclosing = funcStack_.empty() ? nullptr : &funcStack_.back();
   funcStack_.push_back(std::move(saved));
 
+  // A body that can suspend boxes its locals and splits at every `await` or
+  // `yield` (PHASE 11.2.3). A body with no suspension keeps the plain lowering,
+  // so a simple `async fn` is unchanged. The flag is set before the parameters
+  // are declared, so their `LocalVar` records the box.
+  boxLocals_ = asyncBody && body && stmtContainsSuspension(*body);
+
   // The function body lives in the parameter scope; it is not a nested block.
   pushScope();
   for (const Param& param : params) {
@@ -3613,12 +3607,34 @@ int Compiler::compileFunctionProto(const std::string& name, const std::vector<Pa
   currentOwnerClass_ = ownerClass;
 
   // Incoming arguments already sit in R0 .. R(n-1), so the prologue only has
-  // to box each one into its cell. Afterwards the registers are reusable.
+  // to box each one into its cell. Afterwards the registers are reusable. A
+  // suspending body boxes the parameter in a one-element array so a closure
+  // created before an `await` keeps sharing the binding after it; `$frame` is
+  // the step's own parameter and stays a plain value.
   for (size_t i = 0; i < params.size(); ++i) {
-    emit(OpCode::DECLLOCAL, static_cast<int>(i), static_cast<int>(i));
+    if (boxLocals_ && params[i].name != "$frame") {
+      const int savedNext = nextReg_;
+      nextReg_ = bc_.numParams;  // temporaries must not clobber the arguments
+      int box = emitBoxNew(static_cast<int>(i), line, col);
+      emit(OpCode::DECLLOCAL, box, static_cast<int>(i));
+      freeReg();
+      nextReg_ = savedNext;
+    } else {
+      emit(OpCode::DECLLOCAL, static_cast<int>(i), static_cast<int>(i));
+    }
   }
-  maxReg_ = bc_.numParams;
+  maxReg_ = std::max(maxReg_, bc_.numParams);
   nextReg_ = 0;
+
+  // Reserve the scratch window the splitter uses and jump over the body to the
+  // resume dispatch, which is emitted once every suspension point is known.
+  int dispatchJump = -1;
+  if (boxLocals_) {
+    asyncScratchBase_ = nextReg_;
+    for (int i = 0; i < kAsyncScratchCount; ++i) allocReg();
+    dispatchJump = emitJump(OpCode::JMP);
+    asyncBodyStart_ = currentOffset();
+  }
 
   if (!body) {
     fail("internal compiler error: function body is missing", line, col);
@@ -3639,6 +3655,11 @@ int Compiler::compileFunctionProto(const std::string& name, const std::vector<Pa
   emit(OpCode::LOADK, nilReg, addConstant(Value()));
   if (currentAsyncBody_) nilReg = compileMakeStatus("done", nilReg, line, col);
   emit(OpCode::RETURN, nilReg);
+
+  if (boxLocals_) {
+    patchJump(dispatchJump, currentOffset());
+    emitAsyncDispatch(line, col);
+  }
 
   bc_.numRegisters = maxReg_;
   bc_.numLocals = maxLocal_;
@@ -3663,467 +3684,15 @@ int Compiler::compileFunctionProto(const std::string& name, const std::vector<Pa
   currentReturnType_ = parentReturnType;
   currentIsAsync_ = parentIsAsync;
   currentAsyncBody_ = parentAsyncBody;
+  boxLocals_ = parentBoxLocals;
+  suspendPoints_ = std::move(parentSuspendPoints);
+  asyncScratchBase_ = parentAsyncScratchBase;
+  asyncBodyStart_ = parentAsyncBodyStart;
   currentOwnerClass_ = std::move(parentOwnerClass);
 
   int index = static_cast<int>(bc_.children.size());
   bc_.children.push_back(std::make_shared<Bytecode>(std::move(proto)));
   return index;
-}
-
-StmtPtr Compiler::lowerAsyncBody(const StmtPtr& body, const TypeRef& returnType, int line,
-                                 int col) {
-  struct Cps {
-    Compiler& self;
-    const TypeRef& returnType;
-    int line;
-    int col;
-    int counter = 0;
-
-    ExprPtr var(const std::string& name) { return makeExpr(VariableExpr{name}, line, col); }
-    ExprPtr nilValue() { return makeExpr(LiteralExpr{Value()}, line, col); }
-    ExprPtr call(ExprPtr callee, std::vector<ExprPtr> args) {
-      return makeExpr(CallExpr{std::move(callee), std::move(args)}, line, col);
-    }
-    ExprPtr helper(const char* name, std::vector<ExprPtr> args) {
-      return call(var(name), std::move(args));
-    }
-    StmtPtr ret(ExprPtr value) { return makeStmt(ReturnStmt{std::move(value)}, line, col); }
-    StmtPtr block(std::vector<StmtPtr> stmts) {
-      return makeStmt(BlockStmt{std::move(stmts)}, line, col);
-    }
-    StmtPtr let(const std::string& name, ExprPtr init) {
-      return makeStmt(LetStmt{name, TypeRef{}, std::move(init), Tok::Let}, line, col);
-    }
-    StmtPtr varDecl(const std::string& name, ExprPtr init) {
-      return makeStmt(LetStmt{name, TypeRef{}, std::move(init), Tok::Var}, line, col);
-    }
-    ExprPtr lambda(std::vector<Param> params, std::vector<StmtPtr> stmts) {
-      return makeExpr(LambdaExpr{std::move(params), block(std::move(stmts)), std::string(),
-                                 TypeRef{}, std::string(), false},
-                      line, col);
-    }
-    std::string fresh(const std::string& base) {
-      return "$async_" + base + std::to_string(counter++);
-    }
-    std::vector<StmtPtr> blockStmts(const StmtPtr& stmt) {
-      if (!stmt) return {};
-      if (auto* nested = std::get_if<BlockStmt>(&stmt->node)) return nested->stmts;
-      return {stmt};
-    }
-    // A direct initializer/return value is left for `cpsBlock`, which turns it
-    // into a suspension; only an await nested inside a larger expression is
-    // hoisted by `anf`.
-    bool isDirectSuspend(const ExprPtr& expr) {
-      return expr && (std::get_if<AwaitExpr>(&expr->node) != nullptr ||
-                      std::get_if<YieldExpr>(&expr->node) != nullptr);
-    }
-    // Materializes an operand into a `let` temporary. A later operand that
-    // suspends must not move this evaluation after the suspension, so every
-    // operand that precedes a possible `await` is read at its source position.
-    // A literal has no side effect and no mutable cell, so it stays inline.
-    ExprPtr forceTemp(ExprPtr value, std::vector<StmtPtr>& prefix) {
-      if (!value) return value;
-      if (std::get_if<LiteralExpr>(&value->node) != nullptr) return value;
-      if (auto* variable = std::get_if<VariableExpr>(&value->node)) {
-        // A temp this pass already created must not be wrapped again, or the
-        // splitter would chase its own `let` forever. `self` stays inline so a
-        // field write keeps its declared type check.
-        if (variable->name.rfind("$async_", 0) == 0 || variable->name == "self") {
-          return value;
-        }
-      }
-      std::string tmp = fresh("tmp");
-      prefix.push_back(let(tmp, std::move(value)));
-      return var(tmp);
-    }
-    // An assignment target is an lvalue: only its object/index parts can be
-    // materialized, never the target itself.
-    ExprPtr anfLValue(ExprPtr target, std::vector<StmtPtr>& prefix) {
-      if (!target) return target;
-      if (auto* index = std::get_if<IndexExpr>(&target->node)) {
-        index->object = forceTemp(anf(index->object, prefix), prefix);
-        index->index = forceTemp(anf(index->index, prefix), prefix);
-      } else if (auto* member = std::get_if<MemberExpr>(&target->node)) {
-        member->object = forceTemp(anf(member->object, prefix), prefix);
-      }
-      return target;
-    }
-    void checkAwait(const AwaitExpr& awaited, int awaitLine, int awaitCol) {
-      TypeRef operandType = self.inferExprType(*awaited.operand);
-      if (operandType.isPresent() && operandType.name != "Future" && operandType.name != "any") {
-        fail("'await' expects a Future, found '" + describeType(operandType) + "'", awaitLine,
-             awaitCol);
-      }
-    }
-    void checkReturn(const ReturnStmt& stmt, int returnLine, int returnCol) {
-      if (stmt.value) {
-        if (returnType.isPresent() && returnType.name == "void") {
-          fail(
-              "cannot return a value from a function declared to return 'void'; "
-              "use a bare 'return;'",
-              stmt.value->line, stmt.value->col);
-        }
-        if (returnType.isPresent()) {
-          TypeRef valueType = self.inferExprType(*stmt.value);
-          self.checkAssignable(valueType, returnType, "the return type", stmt.value->line,
-                               stmt.value->col);
-        }
-      } else if (returnType.isPresent() && returnType.name != "any" && returnType.name != "void" &&
-                 !returnType.nullable) {
-        fail("cannot return 'nil' from a function declared to return '" + describeType(returnType) +
-                 "' (use '" + returnType.name + "?')",
-             returnLine, returnCol);
-      }
-    }
-
-    ExprPtr anf(ExprPtr expr, std::vector<StmtPtr>& prefix) {
-      if (!expr) return expr;
-      return std::visit(
-          [&](auto& node) -> ExprPtr {
-            using T = std::decay_t<decltype(node)>;
-            if constexpr (std::is_same_v<T, AwaitExpr>) {
-              checkAwait(node, expr->line, expr->col);
-              ExprPtr operand = anf(node.operand, prefix);
-              std::string tmp = fresh("await");
-              prefix.push_back(
-                  let(tmp, makeExpr(AwaitExpr{std::move(operand)}, expr->line, expr->col)));
-              return var(tmp);
-            } else if constexpr (std::is_same_v<T, YieldExpr>) {
-              std::string tmp = fresh("yield");
-              prefix.push_back(varDecl(tmp, nilValue()));
-              prefix.push_back(makeStmt(ExprStmt{makeExpr(YieldExpr{}, expr->line, expr->col)},
-                                        expr->line, expr->col));
-              return var(tmp);
-            } else if constexpr (std::is_same_v<T, InterpExpr>) {
-              InterpExpr out = node;
-              for (InterpPart& part : out.parts) {
-                if (auto* inner = std::get_if<ExprPtr>(&part.content)) {
-                  *inner = forceTemp(anf(*inner, prefix), prefix);
-                }
-              }
-              return makeExpr(std::move(out), expr->line, expr->col);
-            } else if constexpr (std::is_same_v<T, ArrayExpr>) {
-              ArrayExpr out = node;
-              for (ExprPtr& element : out.elements) {
-                element = forceTemp(anf(element, prefix), prefix);
-              }
-              return makeExpr(std::move(out), expr->line, expr->col);
-            } else if constexpr (std::is_same_v<T, MapExpr>) {
-              MapExpr out = node;
-              for (MapEntry& entry : out.entries) {
-                if (entry.keyExpr) entry.keyExpr = forceTemp(anf(entry.keyExpr, prefix), prefix);
-                entry.value = forceTemp(anf(entry.value, prefix), prefix);
-              }
-              return makeExpr(std::move(out), expr->line, expr->col);
-            } else if constexpr (std::is_same_v<T, StructLitExpr>) {
-              StructLitExpr out = node;
-              for (StructLitEntry& entry : out.entries) {
-                entry.value = forceTemp(anf(entry.value, prefix), prefix);
-              }
-              return makeExpr(std::move(out), expr->line, expr->col);
-            } else if constexpr (std::is_same_v<T, UnaryExpr>) {
-              UnaryExpr out = node;
-              out.operand = anf(out.operand, prefix);
-              return makeExpr(std::move(out), expr->line, expr->col);
-            } else if constexpr (std::is_same_v<T, NonNullExpr>) {
-              NonNullExpr out = node;
-              out.operand = anf(out.operand, prefix);
-              return makeExpr(std::move(out), expr->line, expr->col);
-            } else if constexpr (std::is_same_v<T, MemberExpr>) {
-              MemberExpr out = node;
-              out.object = anf(out.object, prefix);
-              return makeExpr(std::move(out), expr->line, expr->col);
-            } else if constexpr (std::is_same_v<T, BinaryExpr>) {
-              BinaryExpr out = node;
-              out.lhs = forceTemp(anf(out.lhs, prefix), prefix);
-              out.rhs = anf(out.rhs, prefix);
-              return makeExpr(std::move(out), expr->line, expr->col);
-            } else if constexpr (std::is_same_v<T, AssignExpr>) {
-              AssignExpr out = node;
-              out.target = anfLValue(out.target, prefix);
-              out.value = anf(out.value, prefix);
-              return makeExpr(std::move(out), expr->line, expr->col);
-            } else if constexpr (std::is_same_v<T, TernaryExpr>) {
-              TernaryExpr out = node;
-              out.condition = forceTemp(anf(out.condition, prefix), prefix);
-              // A branch runs conditionally: hoisting an await out of it would
-              // run it unconditionally, so the splitter rejects it for now.
-              if (out.thenExpr) {
-                AsyncScan branchScan;
-                scanAsyncExpr(*out.thenExpr, branchScan);
-                if (branchScan.suspend) {
-                  fail("await inside a ternary branch is not supported yet (PHASE 11.2.3b)",
-                       out.thenExpr->line, out.thenExpr->col);
-                }
-              }
-              if (out.elseExpr) {
-                AsyncScan branchScan;
-                scanAsyncExpr(*out.elseExpr, branchScan);
-                if (branchScan.suspend) {
-                  fail("await inside a ternary branch is not supported yet (PHASE 11.2.3b)",
-                       out.elseExpr->line, out.elseExpr->col);
-                }
-              }
-              out.thenExpr = anf(out.thenExpr, prefix);
-              out.elseExpr = anf(out.elseExpr, prefix);
-              return makeExpr(std::move(out), expr->line, expr->col);
-            } else if constexpr (std::is_same_v<T, CallExpr>) {
-              CallExpr out = node;
-              out.callee = anf(out.callee, prefix);
-              if (auto* member = std::get_if<MemberExpr>(&out.callee->node)) {
-                member->object = forceTemp(std::move(member->object), prefix);
-              }
-              for (ExprPtr& arg : out.args) arg = forceTemp(anf(arg, prefix), prefix);
-              return makeExpr(std::move(out), expr->line, expr->col);
-            } else if constexpr (std::is_same_v<T, IndexExpr>) {
-              IndexExpr out = node;
-              out.object = forceTemp(anf(out.object, prefix), prefix);
-              out.index = anf(out.index, prefix);
-              return makeExpr(std::move(out), expr->line, expr->col);
-            } else if constexpr (std::is_same_v<T, SliceExpr>) {
-              SliceExpr out = node;
-              out.object = forceTemp(anf(out.object, prefix), prefix);
-              out.start = forceTemp(anf(out.start, prefix), prefix);
-              out.end = forceTemp(anf(out.end, prefix), prefix);
-              out.step = anf(out.step, prefix);
-              return makeExpr(std::move(out), expr->line, expr->col);
-            } else if constexpr (std::is_same_v<T, RangeExpr>) {
-              RangeExpr out = node;
-              out.start = forceTemp(anf(out.start, prefix), prefix);
-              out.end = anf(out.end, prefix);
-              return makeExpr(std::move(out), expr->line, expr->col);
-            } else if constexpr (std::is_same_v<T, SpawnExpr>) {
-              SpawnExpr out = node;
-              out.operand = anf(out.operand, prefix);
-              return makeExpr(std::move(out), expr->line, expr->col);
-            } else if constexpr (std::is_same_v<T, CatchExpr>) {
-              CatchExpr out = node;
-              out.operand = anf(out.operand, prefix);
-              if (out.fallback) {
-                AsyncScan branchScan;
-                scanAsyncExpr(*out.fallback, branchScan);
-                if (branchScan.suspend) {
-                  fail("await inside a 'catch' fallback is not supported yet (PHASE 11.2.3b)",
-                       out.fallback->line, out.fallback->col);
-                }
-              }
-              out.fallback = anf(out.fallback, prefix);
-              return makeExpr(std::move(out), expr->line, expr->col);
-            } else {
-              // Literal, Variable, Lambda (a separate function) and Try (checked
-              // by the body scan) have no child await to hoist.
-              return expr;
-            }
-          },
-          expr->node);
-    }
-
-    StmtPtr anfStmt(const StmtPtr& stmt, std::vector<StmtPtr>& prefix) {
-      if (!stmt) return stmt;
-      return std::visit(
-          [&](auto& node) -> StmtPtr {
-            using T = std::decay_t<decltype(node)>;
-            if constexpr (std::is_same_v<T, ExprStmt>) {
-              ExprPtr expr = isDirectSuspend(node.expr) ? node.expr : anf(node.expr, prefix);
-              return makeStmt(ExprStmt{std::move(expr)}, stmt->line, stmt->col);
-            } else if constexpr (std::is_same_v<T, LetStmt>) {
-              if (node.type.isPresent() && node.init) {
-                TypeRef valueType = self.inferExprType(*node.init);
-                self.checkAssignable(valueType, node.type, "'" + node.name + "'", node.init->line,
-                                     node.init->col);
-              }
-              ExprPtr init = isDirectSuspend(node.init) ? node.init : anf(node.init, prefix);
-              return makeStmt(LetStmt{node.name, node.type, std::move(init), node.kind}, stmt->line,
-                              stmt->col);
-            } else if constexpr (std::is_same_v<T, ReturnStmt>) {
-              checkReturn(node, stmt->line, stmt->col);
-              ExprPtr value = isDirectSuspend(node.value) ? node.value : anf(node.value, prefix);
-              return makeStmt(ReturnStmt{std::move(value)}, stmt->line, stmt->col);
-            } else if constexpr (std::is_same_v<T, IfStmt>) {
-              return makeStmt(IfStmt{anf(node.condition, prefix), node.thenBranch, node.elseBranch},
-                              stmt->line, stmt->col);
-            } else if constexpr (std::is_same_v<T, WhileStmt> || std::is_same_v<T, DoWhileStmt> ||
-                                 std::is_same_v<T, ForStmt> || std::is_same_v<T, ForInStmt>) {
-              AsyncScan loopScan;
-              scanAsyncStmt(*stmt, loopScan);
-              if (loopScan.suspend) {
-                fail("await inside a loop is not supported yet (PHASE 11.2.3b)", stmt->line,
-                     stmt->col);
-              }
-              if (loopScan.ret) {
-                fail(
-                    "return inside a loop in an async body that suspends is not supported "
-                    "yet (PHASE 11.2.3b)",
-                    stmt->line, stmt->col);
-              }
-              return stmt;
-            } else if constexpr (std::is_same_v<T, SwitchStmt>) {
-              AsyncScan switchScan;
-              scanAsyncStmt(*stmt, switchScan);
-              if (switchScan.suspend) {
-                fail("await inside a switch is not supported yet (PHASE 11.2.3b)", stmt->line,
-                     stmt->col);
-              }
-              if (switchScan.ret) {
-                fail(
-                    "return inside a switch in an async body that suspends is not supported "
-                    "yet (PHASE 11.2.3b)",
-                    stmt->line, stmt->col);
-              }
-              return stmt;
-            } else if constexpr (std::is_same_v<T, DeferStmt>) {
-              fail("defer across an await is not supported yet (PHASE 11.2.3b)", stmt->line,
-                   stmt->col);
-            } else {
-              return stmt;
-            }
-          },
-          stmt->node);
-    }
-
-    StmtPtr cpsBlock(std::vector<StmtPtr> stmts, ExprPtr k) {
-      if (stmts.empty()) return block({ret(call(std::move(k), {}))});
-      StmtPtr first = stmts.front();
-      std::vector<StmtPtr> rest(stmts.begin() + 1, stmts.end());
-
-      std::vector<StmtPtr> prefix;
-      StmtPtr rewritten = anfStmt(first, prefix);
-      if (!prefix.empty()) {
-        std::vector<StmtPtr> combined = std::move(prefix);
-        combined.push_back(rewritten);
-        combined.insert(combined.end(), rest.begin(), rest.end());
-        return cpsBlock(std::move(combined), std::move(k));
-      }
-
-      if (auto* letStmt = std::get_if<LetStmt>(&rewritten->node)) {
-        if (letStmt->init) {
-          if (auto* awaited = std::get_if<AwaitExpr>(&letStmt->init->node)) {
-            return lowerAwait(*awaited, letStmt->name, letStmt->type, letStmt->kind,
-                              std::move(rest), std::move(k), false);
-          }
-          if (std::get_if<YieldExpr>(&letStmt->init->node)) {
-            std::vector<StmtPtr> yieldRest;
-            yieldRest.push_back(makeStmt(
-                LetStmt{letStmt->name, letStmt->type, nilValue(), letStmt->kind}, line, col));
-            yieldRest.insert(yieldRest.end(), rest.begin(), rest.end());
-            return lowerYield(std::move(yieldRest), std::move(k));
-          }
-        }
-      }
-      if (auto* exprStmt = std::get_if<ExprStmt>(&rewritten->node)) {
-        if (exprStmt->expr) {
-          if (auto* awaited = std::get_if<AwaitExpr>(&exprStmt->expr->node)) {
-            return lowerAwait(*awaited, std::string(), TypeRef{}, Tok::Let, std::move(rest),
-                              std::move(k), false);
-          }
-          if (std::get_if<YieldExpr>(&exprStmt->expr->node)) {
-            return lowerYield(std::move(rest), std::move(k));
-          }
-        }
-      }
-      if (auto* returnStmt = std::get_if<ReturnStmt>(&rewritten->node)) {
-        if (returnStmt->value) {
-          // A status helper call is already a step result; wrapping it in
-          // `done` would settle the task with the status map itself.
-          if (auto* statusCall = std::get_if<CallExpr>(&returnStmt->value->node)) {
-            if (auto* callee = std::get_if<VariableExpr>(&statusCall->callee->node)) {
-              if (callee->name == kAsyncBind || callee->name == kAsyncYieldCont ||
-                  callee->name == kAsyncAgain) {
-                return rewritten;
-              }
-            }
-          }
-          if (auto* awaited = std::get_if<AwaitExpr>(&returnStmt->value->node)) {
-            return lowerAwait(*awaited, std::string(), TypeRef{}, Tok::Let, {}, std::move(k), true);
-          }
-          if (std::get_if<YieldExpr>(&returnStmt->value->node)) {
-            ExprPtr kDone = lambda({}, {ret(helper(kAsyncDone, {nilValue()}))});
-            return lowerYield({}, std::move(kDone));
-          }
-        }
-        return ret(helper(kAsyncDone, {returnStmt->value ? returnStmt->value : nilValue()}));
-      }
-      if (auto* ifStmt = std::get_if<IfStmt>(&rewritten->node)) {
-        return lowerIf(*ifStmt, std::move(rest), std::move(k));
-      }
-      if (auto* nested = std::get_if<BlockStmt>(&rewritten->node)) {
-        std::string kName = fresh("k");
-        StmtPtr kDecl = let(kName, lambda({}, {cpsBlock(std::move(rest), std::move(k))}));
-        return block({kDecl, cpsBlock(nested->stmts, var(kName))});
-      }
-      std::vector<StmtPtr> tail;
-      tail.push_back(rewritten);
-      tail.push_back(cpsBlock(std::move(rest), std::move(k)));
-      return block(std::move(tail));
-    }
-
-    StmtPtr lowerAwait(const AwaitExpr& awaited, const std::string& bindName,
-                       const TypeRef& bindType, Tok bindKind, std::vector<StmtPtr> rest, ExprPtr k,
-                       bool doneAfter) {
-      checkAwait(awaited, line, col);
-      std::string futureName = fresh("future");
-      std::string param = "$async_value";
-      // The operand may itself suspend (`await (await f())` or an await in an
-      // argument). ANF hoists those into the prefix; `cpsBlock` lowers them and
-      // only then reaches the bind for this await.
-      std::vector<StmtPtr> operandPrefix;
-      ExprPtr operand = anf(awaited.operand, operandPrefix);
-      std::vector<StmtPtr> contBody;
-      if (doneAfter) {
-        contBody.push_back(ret(helper(kAsyncDone, {var(param)})));
-      } else {
-        if (!bindName.empty()) {
-          contBody.push_back(
-              makeStmt(LetStmt{bindName, bindType, var(param), bindKind}, line, col));
-        }
-        contBody.push_back(cpsBlock(std::move(rest), std::move(k)));
-      }
-      ExprPtr cont = lambda({Param{param, TypeRef{}, false}}, std::move(contBody));
-      std::vector<StmtPtr> out;
-      out.push_back(let(futureName, std::move(operand)));
-      out.push_back(ret(helper(kAsyncBind, {var("$task"), var(futureName), std::move(cont)})));
-      if (!operandPrefix.empty()) {
-        AsyncScan prefixScan;
-        for (const StmtPtr& stmt : operandPrefix) scanAsyncStmt(*stmt, prefixScan);
-        std::vector<StmtPtr> combined = std::move(operandPrefix);
-        combined.insert(combined.end(), out.begin(), out.end());
-        if (!prefixScan.suspend) return block(std::move(combined));
-        // The combined block always returns the bind, so this fallthrough
-        // continuation is unreachable; it only satisfies the signature.
-        ExprPtr kDone = lambda({}, {ret(helper(kAsyncDone, {nilValue()}))});
-        return cpsBlock(std::move(combined), std::move(kDone));
-      }
-      return block(std::move(out));
-    }
-
-    StmtPtr lowerYield(std::vector<StmtPtr> rest, ExprPtr k) {
-      // The scheduler calls every task continuation with one argument (the
-      // settled value, or nil for a yield); this one ignores it.
-      ExprPtr cont = lambda({Param{"$async_value", TypeRef{}, false}},
-                            {cpsBlock(std::move(rest), std::move(k))});
-      return ret(helper(kAsyncYieldCont, {var("$task"), std::move(cont)}));
-    }
-
-    StmtPtr lowerIf(const IfStmt& ifStmt, std::vector<StmtPtr> rest, ExprPtr k) {
-      std::string kName = fresh("k");
-      StmtPtr kDecl = let(kName, lambda({}, {cpsBlock(std::move(rest), std::move(k))}));
-      ExprPtr kVar = var(kName);
-      StmtPtr thenCps = cpsBlock(blockStmts(ifStmt.thenBranch), kVar);
-      StmtPtr elseCps = ifStmt.elseBranch ? cpsBlock(blockStmts(ifStmt.elseBranch), kVar)
-                                          : block({ret(call(kVar, {}))});
-      return block({kDecl, makeStmt(IfStmt{ifStmt.condition, thenCps, elseCps}, line, col)});
-    }
-
-    StmtPtr lower(const StmtPtr& bodyStmt) {
-      std::vector<StmtPtr> stmts = blockStmts(bodyStmt);
-      ExprPtr k0 = lambda({}, {ret(helper(kAsyncDone, {nilValue()}))});
-      return cpsBlock(std::move(stmts), std::move(k0));
-    }
-  };
-
-  Cps cps{*this, returnType, line, col};
-  StmtPtr out = cps.lower(body);
-  return out;
 }
 
 int Compiler::compileAsyncFunctionValue(const std::string& name, const std::vector<Param>& params,
@@ -4134,88 +3703,6 @@ int Compiler::compileAsyncFunctionValue(const std::string& name, const std::vect
   auto entry = [](const std::string& key, ExprPtr value) {
     return MapEntry{key, nullptr, std::move(value)};
   };
-
-  // PHASE 11.2.3: a body that suspends is split into continuation closures.
-  // The factory creates the future and the task, then a zero-argument closure
-  // that captures the declared parameters and `$task`; the scheduler calls that
-  // closure and the `bind`/`yield_cont` helpers replace `$task.cont` on every
-  // suspension. Locals stay ordinary cells of the segment closure, so a
-  // variable declared before an `await` is the same cell after it, and a
-  // closure created before the await keeps sharing it.
-  AsyncScan scan;
-  scanAsyncStmt(*body, scan);
-  if (scan.suspend) {
-    if (scan.defer) {
-      fail("defer across an await is not supported yet (PHASE 11.2.3b)", line, col);
-    }
-    if (scan.tryExpr) {
-      fail("'try' across an await is not supported yet (PHASE 11.2.3b)", line, col);
-    }
-    StmtPtr cpsBody = lowerAsyncBody(body, returnType, line, col);
-    AsyncScan finalScan;
-    scanAsyncStmt(*cpsBody, finalScan);
-    if (finalScan.suspend) {
-      fail("internal compiler error: await survived the async splitter", line, col);
-    }
-
-    std::vector<MapEntry> futureEntries;
-    futureEntries.push_back(entry("$future", literal(Value(true))));
-    futureEntries.push_back(entry("state", literal(Value(std::string("pending")))));
-    futureEntries.push_back(entry("value", literal(Value())));
-    futureEntries.push_back(entry("error", literal(Value())));
-    futureEntries.push_back(entry("waiters", makeExpr(ArrayExpr{}, line, col)));
-
-    std::vector<ExprPtr> taskArgs;
-    for (const Param& param : params) taskArgs.push_back(variable(param.name));
-    std::vector<MapEntry> taskEntries;
-    taskEntries.push_back(entry("future", variable("$future")));
-    taskEntries.push_back(entry("cont", literal(Value())));
-    taskEntries.push_back(entry("wait", literal(Value())));
-    taskEntries.push_back(entry("pc", literal(Value(static_cast<int64_t>(0)))));
-    taskEntries.push_back(entry("args", makeExpr(ArrayExpr{std::move(taskArgs)}, line, col)));
-    taskEntries.push_back(entry("regs", makeExpr(ArrayExpr{}, line, col)));
-    taskEntries.push_back(entry("locals", makeExpr(ArrayExpr{}, line, col)));
-    taskEntries.push_back(entry("done", literal(Value(false))));
-    taskEntries.push_back(entry("enqueued", literal(Value(false))));
-    taskEntries.push_back(entry("running", literal(Value(false))));
-
-    std::vector<StmtPtr> factoryStmts;
-    factoryStmts.push_back(
-        makeStmt(LetStmt{"$future", TypeRef{},
-                         makeExpr(MapExpr{std::move(futureEntries)}, line, col), Tok::Let},
-                 line, col));
-    factoryStmts.push_back(makeStmt(
-        LetStmt{"$task", TypeRef{}, makeExpr(MapExpr{std::move(taskEntries)}, line, col), Tok::Let},
-        line, col));
-    ExprPtr futureTask =
-        makeExpr(IndexExpr{variable("$future"), literal(Value(std::string("task")))}, line, col);
-    factoryStmts.push_back(makeStmt(
-        ExprStmt{makeExpr(AssignExpr{std::move(futureTask), Tok::Eq, variable("$task"), line, col},
-                          line, col)},
-        line, col));
-    ExprPtr contLambda =
-        makeExpr(LambdaExpr{std::vector<Param>{Param{"$async_start", TypeRef{}, false}}, cpsBody,
-                            std::string(), TypeRef{}, std::string(), false},
-                 line, col);
-    factoryStmts.push_back(
-        makeStmt(LetStmt{"$cont", TypeRef{}, std::move(contLambda), Tok::Let}, line, col));
-    ExprPtr taskCont =
-        makeExpr(IndexExpr{variable("$task"), literal(Value(std::string("cont")))}, line, col);
-    factoryStmts.push_back(makeStmt(
-        ExprStmt{makeExpr(AssignExpr{std::move(taskCont), Tok::Eq, variable("$cont"), line, col},
-                          line, col)},
-        line, col));
-    factoryStmts.push_back(makeStmt(
-        ExprStmt{makeExpr(CallExpr{variable(kAsyncSpawn), {variable("$future")}}, line, col)}, line,
-        col));
-    factoryStmts.push_back(makeStmt(ReturnStmt{variable("$future")}, line, col));
-    StmtPtr factoryBody = makeStmt(BlockStmt{std::move(factoryStmts)}, line, col);
-    int factoryChild = compileFunctionProto(name, params, factoryBody, line, col,
-                                            TypeRef{"Future", false}, ownerClass, false, false);
-    int factoryReg = allocReg();
-    emit(OpCode::CLOSURE, factoryReg, factoryChild);
-    return factoryReg;
-  }
 
   // The step function takes the task frame as its only parameter and binds the
   // declared parameters from `frame.args`. The rest of the body is unchanged,
@@ -4268,6 +3755,7 @@ int Compiler::compileAsyncFunctionValue(const std::string& name, const std::vect
   taskEntries.push_back(entry("done", literal(Value(false))));
   taskEntries.push_back(entry("enqueued", literal(Value(false))));
   taskEntries.push_back(entry("running", literal(Value(false))));
+  taskEntries.push_back(entry("waiting", literal(Value(false))));
 
   std::vector<StmtPtr> factoryStatements;
   factoryStatements.push_back(
@@ -4459,14 +3947,26 @@ void Compiler::compileForIn(const ForInStmt& s) {
   // the body capture the value of their own iteration (interpreter parity).
   pushScope();
   int slot = declareLocal(s.var, false);
-  emit(OpCode::DECLLOCAL, item, slot);
+  if (boxLocals_) {
+    int box = emitBoxNew(item, currentLine_, currentCol_);
+    emit(OpCode::DECLLOCAL, box, slot);
+    freeReg();
+  } else {
+    emit(OpCode::DECLLOCAL, item, slot);
+  }
 
   // `for k, v in map`: the second variable holds the value that ITER produced
   // alongside the key (a non-map iterable makes ITER raise with a message that
   // points at the loop).
   if (!s.valueVar.empty()) {
     int valueSlot = declareLocal(s.valueVar, false);
-    emit(OpCode::DECLLOCAL, value, valueSlot);
+    if (boxLocals_) {
+      int box = emitBoxNew(value, currentLine_, currentCol_);
+      emit(OpCode::DECLLOCAL, box, valueSlot);
+      freeReg();
+    } else {
+      emit(OpCode::DECLLOCAL, value, valueSlot);
+    }
   }
 
   loops_.push_back(Loop{});
@@ -4769,11 +4269,28 @@ int Compiler::compileVariable(const std::string& name) {
   // for the lowerer to count.
   if (nativeSigFor(name) != nullptr) recordNativeUse(name);
   if (resolveLocal(name, local)) {
-    emit(OpCode::GETLOCAL, reg, local.slot);
+    if (local.boxed) {
+      int box = allocReg();
+      emit(OpCode::GETLOCAL, box, local.slot);
+      int zero = emitZeroReg();
+      emit(OpCode::GETTABLE, reg, box, zero);
+      freeReg(2);
+    } else {
+      emit(OpCode::GETLOCAL, reg, local.slot);
+    }
   } else if (int upvalue = resolveUpvalue(name); upvalue >= 0) {
     // Captured by an enclosing function: a shared cell reached through the
-    // closure's upvalue list (PHASE 6b).
-    emit(OpCode::GETUPVAL, reg, upvalue);
+    // closure's upvalue list (PHASE 6b). A boxed capture is read through its
+    // one-element array (PHASE 11.2.3).
+    if (bc_.upvalues[static_cast<size_t>(upvalue)].boxed) {
+      int box = allocReg();
+      emit(OpCode::GETUPVAL, box, upvalue);
+      int zero = emitZeroReg();
+      emit(OpCode::GETTABLE, reg, box, zero);
+      freeReg(2);
+    } else {
+      emit(OpCode::GETUPVAL, reg, upvalue);
+    }
   } else {
     emit(OpCode::GETGLOBAL, reg, addString(importBindingName(name)));
   }
@@ -4871,6 +4388,55 @@ int Compiler::compileAssign(const AssignExpr& assign, int line, int col) {
       fail("cannot assign to immutable variable '" + name + "'", line, col);
     }
 
+    // A local of a suspending async body, and an upvalue that captures one, is
+    // a box (a one-element array); the read and the write go through it
+    // (PHASE 11.2.3).
+    const bool localBoxed = isLocal && local.boxed;
+    const bool upvalueBoxed =
+        upvalueSlot >= 0 && bc_.upvalues[static_cast<size_t>(upvalueSlot)].boxed;
+    auto readTarget = [&](int dest) {
+      if (isLocal) {
+        if (localBoxed) {
+          int box = allocReg();
+          emit(OpCode::GETLOCAL, box, local.slot);
+          int zero = emitZeroReg();
+          emit(OpCode::GETTABLE, dest, box, zero);
+          freeReg(2);
+        } else {
+          emit(OpCode::GETLOCAL, dest, local.slot);
+        }
+      } else if (upvalueSlot >= 0) {
+        if (upvalueBoxed) {
+          int box = allocReg();
+          emit(OpCode::GETUPVAL, box, upvalueSlot);
+          int zero = emitZeroReg();
+          emit(OpCode::GETTABLE, dest, box, zero);
+          freeReg(2);
+        } else {
+          emit(OpCode::GETUPVAL, dest, upvalueSlot);
+        }
+      } else {
+        emit(OpCode::GETGLOBAL, dest, addString(importBindingName(name)));
+      }
+    };
+    auto writeTarget = [&](int value) {
+      if (isLocal) {
+        if (localBoxed) {
+          emitBoxedLocalWrite(local.slot, value, line, col);
+        } else {
+          emit(OpCode::SETLOCAL, value, local.slot);
+        }
+      } else if (upvalueSlot >= 0) {
+        if (upvalueBoxed) {
+          emitBoxedUpvalueWrite(upvalueSlot, value, line, col);
+        } else {
+          emit(OpCode::SETUPVAL, value, upvalueSlot);
+        }
+      } else {
+        emitAssignGlobal(value, importBindingName(name));
+      }
+    };
+
     // Type check (PHASE 6.5): a plain assignment must respect the binding's
     // declared or inferred type. Compound assignments (+=, ...) are left alone
     // because their result type is not tracked statically.
@@ -4897,13 +4463,7 @@ int Compiler::compileAssign(const AssignExpr& assign, int line, int col) {
 
     if (assign.op == Tok::Eq) {
       int value = compileExpr(*assign.value);
-      if (isLocal) {
-        emit(OpCode::SETLOCAL, value, local.slot);
-      } else if (upvalueSlot >= 0) {
-        emit(OpCode::SETUPVAL, value, upvalueSlot);
-      } else {
-        emitAssignGlobal(value, importBindingName(name));
-      }
+      writeTarget(value);
       return value;
     }
 
@@ -4911,22 +4471,8 @@ int Compiler::compileAssign(const AssignExpr& assign, int line, int col) {
     // when the operator does not short-circuit (see compileLogicalAssign).
     if (isLogicalAssignOp(assign.op)) {
       int current = allocReg();
-      if (isLocal) {
-        emit(OpCode::GETLOCAL, current, local.slot);
-      } else if (upvalueSlot >= 0) {
-        emit(OpCode::GETUPVAL, current, upvalueSlot);
-      } else {
-        emit(OpCode::GETGLOBAL, current, addString(importBindingName(name)));
-      }
-      return compileLogicalAssign(assign, current, [&] {
-        if (isLocal) {
-          emit(OpCode::SETLOCAL, current, local.slot);
-        } else if (upvalueSlot >= 0) {
-          emit(OpCode::SETUPVAL, current, upvalueSlot);
-        } else {
-          emitAssignGlobal(current, importBindingName(name));
-        }
-      });
+      readTarget(current);
+      return compileLogicalAssign(assign, current, [&] { writeTarget(current); });
     }
 
     OpCode op;
@@ -4935,24 +4481,12 @@ int Compiler::compileAssign(const AssignExpr& assign, int line, int col) {
     }
 
     int current = allocReg();
-    if (isLocal) {
-      emit(OpCode::GETLOCAL, current, local.slot);
-    } else if (upvalueSlot >= 0) {
-      emit(OpCode::GETUPVAL, current, upvalueSlot);
-    } else {
-      emit(OpCode::GETGLOBAL, current, addString(importBindingName(name)));
-    }
+    readTarget(current);
     int right = compileExpr(*assign.value);
     emit(op, current, current, right);
     freeReg();
 
-    if (isLocal) {
-      emit(OpCode::SETLOCAL, current, local.slot);
-    } else if (upvalueSlot >= 0) {
-      emit(OpCode::SETUPVAL, current, upvalueSlot);
-    } else {
-      emitAssignGlobal(current, importBindingName(name));
-    }
+    writeTarget(current);
     return current;
   }
 
@@ -5085,7 +4619,10 @@ int Compiler::compileTry(const TryExpr& node, int line, int col) {
   // Leaving the function exits every scope in it, so every deferred block runs
   // (LIFO) before the RETURN, exactly as for an explicit `return`.
   emitDeferredBlocks(1);
-  emit(OpCode::RETURN, result);
+  // The error path leaves an async step too, so it must return the scheduler
+  // status rather than the raw value (PHASE 11.2.3).
+  int status = currentAsyncBody_ ? compileMakeStatus("done", result, line, col) : result;
+  emit(OpCode::RETURN, status);
   patchJump(skip, currentOffset());
   lastWasConditionalReturn_ = true;
   return result;
@@ -5249,6 +4786,53 @@ int Compiler::compileSlice(const SliceExpr& slice, int line, int col) {
   return object;
 }
 
+// ------------------------------------------------------------------- boxes
+
+int Compiler::emitZeroReg() {
+  int reg = allocReg();
+  emit(OpCode::LOADK, reg, addConstant(Value(static_cast<std::int64_t>(0))));
+  return reg;
+}
+
+int Compiler::emitBoxNew(int value, int line, int col) {
+  currentLine_ = line;
+  currentCol_ = col;
+  int box = allocReg();
+  emit(OpCode::NEWTABLE, box, 1, 0);
+  int zero = emitZeroReg();
+  emit(OpCode::SETTABLE, value, box, zero);
+  freeReg();
+  return box;
+}
+
+void Compiler::emitBoxedLocalWrite(int slot, int value, int line, int col) {
+  currentLine_ = line;
+  currentCol_ = col;
+  int box = allocReg();
+  emit(OpCode::GETLOCAL, box, slot);
+  int zero = emitZeroReg();
+  emit(OpCode::SETTABLE, value, box, zero);
+  freeReg(2);
+}
+
+void Compiler::emitBoxedUpvalueWrite(int index, int value, int line, int col) {
+  currentLine_ = line;
+  currentCol_ = col;
+  int box = allocReg();
+  emit(OpCode::GETUPVAL, box, index);
+  int zero = emitZeroReg();
+  emit(OpCode::SETTABLE, value, box, zero);
+  freeReg(2);
+}
+
+int Compiler::asyncFrameSlot(int line, int col) {
+  LocalVar local;
+  if (!resolveLocal("$frame", local)) {
+    fail("internal compiler error: async step has no $frame", line, col);
+  }
+  return local.slot;
+}
+
 // Builds the status map a generated async step returns to the scheduler
 // (PHASE 11.2.2). It is an ordinary map, so the VM, AOT and WASM share it.
 int Compiler::compileMakeStatus(const std::string& kind, int value, int line, int col) {
@@ -5264,11 +4848,13 @@ int Compiler::compileMakeStatus(const std::string& kind, int value, int line, in
   return map;
 }
 
-// `await expr` (PHASE 11.1/11.2.2): read the future's state and yield its
-// payload, or raise the carried error. A pending future is handed to the
-// scheduler, which runs ready tasks until the future settles; if it cannot,
-// the helper raises a deadlock error. Every path is an existing opcode or a
-// helper call, so the three engines behave identically.
+// `await expr` (PHASE 11.1/11.2.2/11.2.3): read the future's state and yield
+// its payload, or raise the carried error. At the top level a pending future
+// is handed to the scheduler, which runs ready tasks until the future settles
+// (the chunk is not a task, so it cannot suspend). Inside an async body that
+// can suspend, the pending path spills the frame and returns a `suspended`
+// status; the dispatch resumes it with the settled value. Every path is an
+// existing opcode or a helper call, so the three engines behave identically.
 int Compiler::compileAwait(const AwaitExpr& awaited, int line, int col) {
   TypeRef operandType = inferExprType(*awaited.operand);
   if (operandType.isPresent() && operandType.name != "Future" && operandType.name != "any") {
@@ -5280,6 +4866,39 @@ int Compiler::compileAwait(const AwaitExpr& awaited, int line, int col) {
   // The operand's own register is the result, like `a!!`: the caller (a call
   // argument list, an assignment) expects the expression to leave its value in
   // the register it reserved, and reusing it keeps the arguments contiguous.
+
+  if (currentAsyncBody_) {
+    int state = allocReg();
+    int fulfilled = allocReg();
+    emit(OpCode::LOADK, fulfilled, addConstant(Value("fulfilled")));
+    int isFulfilled = allocReg();
+    int rejected = allocReg();
+    emit(OpCode::LOADK, rejected, addConstant(Value("rejected")));
+    int isRejected = allocReg();
+    emit(OpCode::GETTABLE, state, future, -addString("state") - 1);
+    emit(OpCode::EQ, isFulfilled, state, fulfilled);
+    emit(OpCode::EQ, isRejected, state, rejected);
+    int toFulfilled = emitJump(OpCode::JMP_IF_TRUE, isFulfilled);
+    int toRejected = emitJump(OpCode::JMP_IF_TRUE, isRejected);
+    int point = emitSuspend(future, future, false, line, col);
+    patchJump(toFulfilled, currentOffset());
+    // The map is dead on this path after the read, so the payload replaces it
+    // in place; the rejected path below still sees the map.
+    emit(OpCode::GETTABLE, future, future, -addString("value") - 1);
+    int endJump = emitJump(OpCode::JMP);
+    patchJump(toRejected, currentOffset());
+    int error = allocReg();
+    emit(OpCode::GETTABLE, error, future, -addString("error") - 1);
+    emit(OpCode::LOADK, future, addConstant(Value()));
+    compileHelperCall("panic", {error}, line, col);
+    freeReg();
+    const int end = currentOffset();
+    patchJump(endJump, end);
+    suspendPoints_[static_cast<size_t>(point)].resumeOffset = end;
+    freeReg(nextReg_ - future - 1);
+    return future;
+  }
+
   int state = allocReg();
   int fulfilled = allocReg();
   emit(OpCode::LOADK, fulfilled, addConstant(Value("fulfilled")));
@@ -5309,6 +4928,148 @@ int Compiler::compileAwait(const AwaitExpr& awaited, int line, int col) {
   patchJump(endJump, currentOffset());
   freeReg(nextReg_ - future - 1);
   return future;
+}
+
+// Emits the suspend path of an `await`/`yield` (PHASE 11.2.3). The frame is a
+// map: `regs` and `locals` carry the live registers and the boxed locals, `pc`
+// names the resume point, and `awaiting` is the future a `suspended` task waits
+// on. `resultReg` is the register the dispatch fills with the settled value (or
+// nil for a `yield`). Returns the index of the recorded suspension point.
+int Compiler::emitSuspend(int futureReg, int resultReg, bool isYield, int line, int col) {
+  const int frameReg = asyncScratchBase_ + 0;
+  const int arrReg = asyncScratchBase_ + 1;
+  const int idxReg = asyncScratchBase_ + 2;
+  const int tmpReg = asyncScratchBase_ + 3;
+  const int frameSlot = asyncFrameSlot(line, col);
+
+  AsyncSuspendPoint point;
+  point.resumeId = static_cast<int>(suspendPoints_.size()) + 1;
+  point.resultReg = resultReg;
+  point.regCount = nextReg_;
+  point.localCount = nextLocal_;
+  point.isYield = isYield;
+  point.line = line;
+  point.col = col;
+
+  currentLine_ = line;
+  currentCol_ = col;
+  emit(OpCode::GETLOCAL, frameReg, frameSlot);
+
+  // The body's temporaries live above the scratch window, so the window itself
+  // is never part of the saved state. The arrays are dense: `regs[j]` is the
+  // j-th live temporary (register `base + kAsyncScratchCount + j`) and
+  // `locals[j]` is local `j + 1`. Building them from index 0 grows the array,
+  // which is the only way `SETTABLE` appends.
+  emit(OpCode::NEWTABLE, arrReg, 0, 0);
+  for (int i = asyncScratchBase_ + kAsyncScratchCount, j = 0; i < point.regCount; ++i, ++j) {
+    emit(OpCode::LOADK, idxReg, addConstant(Value(static_cast<std::int64_t>(j))));
+    emit(OpCode::SETTABLE, i, arrReg, idxReg);
+  }
+  emit(OpCode::SETTABLE, arrReg, frameReg, -addString("regs") - 1);
+
+  // Local 0 is the step's `$frame` parameter, rebound on every call.
+  emit(OpCode::NEWTABLE, arrReg, 0, 0);
+  for (int i = 1, j = 0; i < point.localCount; ++i, ++j) {
+    emit(OpCode::LOADK, idxReg, addConstant(Value(static_cast<std::int64_t>(j))));
+    emit(OpCode::GETLOCAL, tmpReg, i);
+    emit(OpCode::SETTABLE, tmpReg, arrReg, idxReg);
+  }
+  emit(OpCode::SETTABLE, arrReg, frameReg, -addString("locals") - 1);
+
+  emit(OpCode::LOADK, tmpReg, addConstant(Value(static_cast<std::int64_t>(point.resumeId))));
+  emit(OpCode::SETTABLE, tmpReg, frameReg, -addString("pc") - 1);
+  if (!isYield) {
+    emit(OpCode::SETTABLE, futureReg, frameReg, -addString("awaiting") - 1);
+  }
+
+  int map = allocReg();
+  emit(OpCode::NEWTABLE, map, 0, 1);
+  int kind = allocReg();
+  emit(OpCode::LOADK, kind, addConstant(Value(isYield ? "yielded" : "suspended")));
+  emit(OpCode::SETTABLE, kind, map, -addString("kind") - 1);
+  if (!isYield) {
+    emit(OpCode::SETTABLE, futureReg, map, -addString("future") - 1);
+  }
+  freeReg();
+  emit(OpCode::RETURN, map);
+  freeReg();
+
+  point.resumeOffset = currentOffset();
+  suspendPoints_.push_back(point);
+  return static_cast<int>(suspendPoints_.size()) - 1;
+}
+
+// Emits the `pc` dispatch of a suspended step (PHASE 11.2.3). The dispatch
+// restores the spilled registers and boxed locals, writes the settled value
+// into the await's result register, and jumps to the resume offset. A `yield`
+// resumes with nil.
+void Compiler::emitAsyncDispatch(int line, int col) {
+  const int frameReg = asyncScratchBase_ + 0;
+  const int pcReg = asyncScratchBase_ + 1;
+  const int arrReg = asyncScratchBase_ + 2;
+  const int idxReg = asyncScratchBase_ + 3;
+  const int tmpReg = asyncScratchBase_ + 4;
+  const int eqReg = asyncScratchBase_ + 5;
+  const int stateReg = asyncScratchBase_ + 6;
+  const int frameSlot = asyncFrameSlot(line, col);
+
+  currentLine_ = line;
+  currentCol_ = col;
+  // The dispatch can call `panic`; keep its temporaries above the scratch
+  // window, which the restore loop uses.
+  nextReg_ = asyncScratchBase_ + kAsyncScratchCount;
+  if (maxReg_ < nextReg_) maxReg_ = nextReg_;
+
+  emit(OpCode::GETLOCAL, frameReg, frameSlot);
+  emit(OpCode::GETTABLE, pcReg, frameReg, -addString("pc") - 1);
+  emit(OpCode::LOADK, tmpReg, addConstant(Value(static_cast<std::int64_t>(0))));
+  emit(OpCode::EQ, eqReg, pcReg, tmpReg);
+  int toBody = emitJump(OpCode::JMP_IF_TRUE, eqReg);
+  patchJump(toBody, asyncBodyStart_);
+
+  for (const AsyncSuspendPoint& point : suspendPoints_) {
+    emit(OpCode::LOADK, tmpReg, addConstant(Value(static_cast<std::int64_t>(point.resumeId))));
+    emit(OpCode::EQ, eqReg, pcReg, tmpReg);
+    int skip = emitJump(OpCode::JMP_IF_FALSE, eqReg);
+
+    emit(OpCode::GETTABLE, arrReg, frameReg, -addString("regs") - 1);
+    for (int i = asyncScratchBase_ + kAsyncScratchCount, j = 0; i < point.regCount; ++i, ++j) {
+      emit(OpCode::LOADK, idxReg, addConstant(Value(static_cast<std::int64_t>(j))));
+      emit(OpCode::GETTABLE, i, arrReg, idxReg);
+    }
+    emit(OpCode::GETTABLE, arrReg, frameReg, -addString("locals") - 1);
+    for (int i = 1, j = 0; i < point.localCount; ++i, ++j) {
+      emit(OpCode::LOADK, idxReg, addConstant(Value(static_cast<std::int64_t>(j))));
+      emit(OpCode::GETTABLE, tmpReg, arrReg, idxReg);
+      emit(OpCode::DECLLOCAL, tmpReg, i);
+    }
+
+    if (point.isYield) {
+      emit(OpCode::LOADK, point.resultReg, addConstant(Value()));
+    } else {
+      emit(OpCode::GETTABLE, tmpReg, frameReg, -addString("awaiting") - 1);
+      emit(OpCode::GETTABLE, stateReg, tmpReg, -addString("state") - 1);
+      emit(OpCode::LOADK, eqReg, addConstant(Value("fulfilled")));
+      emit(OpCode::EQ, eqReg, stateReg, eqReg);
+      int rejected = emitJump(OpCode::JMP_IF_FALSE, eqReg);
+      emit(OpCode::GETTABLE, point.resultReg, tmpReg, -addString("value") - 1);
+      int done = emitJump(OpCode::JMP);
+      patchJump(rejected, currentOffset());
+      int error = allocReg();
+      emit(OpCode::GETTABLE, error, tmpReg, -addString("error") - 1);
+      compileHelperCall("panic", {error}, point.line, point.col);
+      freeReg(2);
+      patchJump(done, currentOffset());
+    }
+
+    int jump = emitJump(OpCode::JMP);
+    patchJump(jump, point.resumeOffset);
+    patchJump(skip, currentOffset());
+  }
+
+  // The factory seeds `pc` with 0, so this only catches a corrupted frame.
+  int fallback = emitJump(OpCode::JMP);
+  patchJump(fallback, asyncBodyStart_);
 }
 
 int Compiler::compileInterpolation(const InterpExpr& interpolation, int /*line*/, int /*col*/) {
@@ -5537,6 +5298,13 @@ int Compiler::compileExpr(const Expr& expr) {
             return future;
           },
           [&](const YieldExpr&) -> int {
+            if (currentAsyncBody_) {
+              // A real yield: requeue the task and resume after the scheduler
+              // runs the other ready tasks (PHASE 11.2.3).
+              int result = allocReg();
+              emitSuspend(-1, result, true, expr.line, expr.col);
+              return result;
+            }
             return compileHelperCall(kAsyncYield, {}, expr.line, expr.col);
           },
           [&](const RangeExpr& range) -> int { return compileRange(range, expr.line, expr.col); },

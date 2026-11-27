@@ -2121,7 +2121,7 @@ if(BUILD_TESTING)
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/native_build_async_top_level.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
-    # PHASE 11.2.3: the continuation splitter adds no opcode either. The same
+    # PHASE 11.2.3: the state-machine splitter adds no opcode either. The same
     # fixture runs on the VM and in a native binary, so a suspension that only
     # works in one backend cannot pass.
     add_test(NAME oskel.build_binary_async_suspend
@@ -2129,6 +2129,16 @@ if(BUILD_TESTING)
         "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
         "-DOSKEL_TEST_NAME=oskel.build_binary_async_suspend"
         "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/71_async_suspend.oskl"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
+
+    # PHASE 11.2.3b: the shapes the continuation splitter rejected (loops,
+    # `switch`, `defer` and `try` across an `await`, a ternary branch) now
+    # suspend like any other expression, on all three engines.
+    add_test(NAME oskel.build_binary_async_suspend_b
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_TEST_NAME=oskel.build_binary_async_suspend_b"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/71_async_suspend_b.oskl"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_binary.cmake")
 
     # The pointer builtins (BACKLOG §6 item 25): `cstring`/`cstr`/`buffer`/
@@ -2467,6 +2477,16 @@ if(BUILD_TESTING)
         "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
 
+    add_test(NAME oskel.build_wasm_async_suspend_b
+      COMMAND ${CMAKE_COMMAND}
+        "-DOSKEL_TEST_NAME=oskel.build_wasm_async_suspend_b"
+        "-DOSKEL_EXE=$<TARGET_FILE:oskel>"
+        "-DOSKEL_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/tests/71_async_suspend_b.oskl"
+        "-DNODE_EXE=${OSKEL_NODE_EXE}"
+        "-DWASM_RUNNER=${CMAKE_CURRENT_SOURCE_DIR}/tests/run_wasm.cjs"
+        "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/wasm_case.cmake")
+
     # `range` takes one or two bounds: `range(5)` starts at 0. The fixture also
     # pins `assertEq` and `exit`, so a wrong arity check in the WASM builtin
     # cannot pass unnoticed.
@@ -2776,6 +2796,7 @@ if(BUILD_TESTING)
       oskel.build_wasm_string_methods oskel.build_wasm_range_methods
       oskel.build_wasm_pointers oskel.build_wasm_async
       oskel.build_wasm_async_modules oskel.build_wasm_async_scheduler
+      oskel.build_wasm_async_suspend oskel.build_wasm_async_suspend_b
       oskel.build_wasm_io oskel.build_wasm_math
       oskel.build_wasm_double_format oskel.build_wasm_tree_shake
       oskel.build_wasm_hash oskel.build_wasm_uuid oskel.build_wasm_url

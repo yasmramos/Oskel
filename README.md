@@ -27,7 +27,7 @@ for language in languages {
 - `class` declarations (fields plus methods): instantiating is calling the class name (`Point(3, 4)`, no `new`), `self` is explicit and there is no inheritance. A class is parser sugar over a map plus closures, so it runs identically on the VM and under `oskel build`. Field and method annotations are checked at compile time.
 - `interface`/`trait` contracts with `class X implements A, B`: compile-time method and arity checking, importable across modules, with no runtime interface value and no inheritance.
 - `enum` declarations: scoped integer constants folded at compile time; module imports expose them like any other name.
-- `async fn` / `await` (PHASE 11.2.2): a call returns a pending `Future`, `await` yields its payload and the declared return type is the payload. `spawn f()` enqueues an async call explicitly, `yield()` lets the other ready tasks run, and a script drains its queue before exiting, so `async fn main` needs no top-level `await`. The scheduler is ordinary Oskel over maps and arrays, so the VM, `oskel build` and WASM agree. This is not yet a complete async runtime: the body is one eager step, so `await` on a pending future drains the queue instead of suspending the current body; there is no top-level `await`, `then`/`catch` chaining, separate `join` or async lambda. A future is a plain map at run time, but the compiler treats `Future` as opaque: indexing, slicing, iteration and member access on a `Future`-typed value are compile errors, so only `await` reads its state. A value erased to `any` can still reach the map until the runtime tag lands.
+- `async fn` / `await` (PHASE 11.2.2/11.2.3): a call returns a pending `Future`, `await` suspends the current task until the future settles and yields its payload, and the declared return type is the payload. `spawn f()` enqueues an async call explicitly, `yield()` requeues the current task so the other ready tasks run, and a script drains its queue before exiting, so `async fn main` needs no top-level `await` (a top-level `await` is also accepted, PHASE 11.2.4a). The scheduler and the splitter are ordinary Oskel over maps and arrays, so the VM, `oskel build` and WASM agree. This is not yet a complete async runtime: there is no `then`/`catch` chaining, no separate `join`, no async lambda, no cancellation and no async I/O driver. A future is a plain map at run time, but the compiler treats `Future` as opaque: indexing, slicing, iteration and member access on a `Future`-typed value are compile errors, so only `await` reads its state. A value erased to `any` can still reach the map until the runtime tag lands.
 - String interpolation with `"${expression}"` and UTF-8 support.
 - Ordered arrays and maps that preserve insertion order, with `for k, v in map` key/value iteration.
 - Ascending and descending ranges: `1..5`, `0..=10`, `5..0`.
@@ -455,7 +455,7 @@ needs the bundled SDL3 and Skia libraries.
 - Arithmetic, comparisons, logical and bitwise operators, control flow
   (`if`/`while`/`for`/`for-in`/`switch`), functions, closures, `defer`,
   `struct`, `class`, `interface`/`trait`, `enum`, `async fn`/`await`
-  (`spawn`/`yield` scheduler, eager steps), ranges,
+  (`spawn`/`yield` scheduler, real suspension at `await`/`yield`), ranges,
   slicing and string interpolation.
 - Arrays and maps (literals, indexing, `in`, `for-in`, printing, and `+` to
   concatenate two arrays), including every bound collection method: the array

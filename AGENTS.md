@@ -1082,10 +1082,13 @@ it as a caveat:
   involved, which is why the VM, `oskel build` and WASM agree by
   construction. The prelude is emitted only when the session mentions async,
   so a non-async image stays byte-identical.
-- The body is still one eager step. `await` on a pending future drains the
-  ready queue and re-reads the state; it does not suspend the current body.
-  `yield()` drains the queue and then the current body continues. Real
-  suspension is 11.2.3; top-level `await` landed in 11.2.4a.
+- A body that can suspend is split into a resumable state machine
+  (PHASE 11.2.3a/11.2.3b): every local is boxed in a one-element array, the
+  step reserves an eight-register scratch window, and a pending `await` spills
+  the live registers plus the boxed locals into the task frame, publishes `pc`
+  and returns a `suspended` status. The `pc` dispatch restores them and resumes
+  at the offset, so loops, `switch`, `defer`, `try` and a ternary branch may
+  all suspend. Top-level `await` landed in 11.2.4a.
 - The end of a top-level chunk calls `__oskel_async_drain` before `HALT`, so
   `async fn main` runs without a top-level `await`. `compileModuleBody` does
   not drain, so a module's tasks wait for the root chunk.

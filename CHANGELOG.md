@@ -11,25 +11,25 @@ may change between minor versions.
 
 ### Added
 
-- **Real suspension at `await` (PHASE 11.2.3a).** A body with `await` or
-  `yield` is now lowered to continuation-passing style instead of one eager
-  step: ANF hoists nested awaits into `let` temporaries in source order, each
-  suspension becomes a `__oskel_async_bind` call with a continuation closure,
-  `yield` becomes `__oskel_async_yield_cont`, and `return` becomes
-  `__oskel_async_done`. The continuation is an ordinary closure, so a local
-  declared before the `await` is the same cell after it and a closure created
-  before the await keeps sharing it; no register spilling, no new opcode and no
-  backend change. The scheduler parks the task in `future.waiters` and wakes it
-  with the payload when the future settles; two tasks may wait on the same
-  future. Straight-line bodies, `if`, `let`/`return`/expression awaits,
-  `yield`, and awaits nested in calls, binary operators, arrays, maps and
-  indexing are covered. Loops, `switch`, `defer` and `try` across a suspension,
-  and an `await` inside a ternary branch or a `catch` fallback, are compile
-  errors naming PHASE 11.2.3b. Covered by `tests/71_async_suspend.oskl` on the
-  VM and by `oskel.build_binary_async_suspend`/`oskel.build_wasm_async_suspend`,
-  plus the
-  `tests/errors/async_{await_in_loop,defer_across_await,try_across_await,await_in_ternary}.oskl`
-  guards. The 11.2.2 scheduler fixture's interleaving order changes to FIFO
+- **Real suspension at `await` (PHASE 11.2.3a/11.2.3b).** A body with `await`
+  or `yield` is now split into a resumable state machine instead of one eager
+  step: every local is boxed in a one-element array so a closure created before
+  the `await` keeps sharing the binding, the step reserves an eight-register
+  scratch window, and a pending `await` spills the live registers and the
+  boxed locals into the task frame, publishes `pc` and returns a `suspended`
+  status. The `pc` dispatch restores them, writes the settled value into the
+  await's own result register and resumes. `yield` uses the same path and
+  resumes with nil. No new opcode and no backend change, so the VM, the AOT
+  binary and WASM share one implementation. Because the resume point is an
+  instruction offset, loops (`while`/`for`/`for-in`), `switch`, `defer`, `try`
+  and a ternary branch may all contain an `await`, with `break`, `continue` and
+  `return` working across it; `try`'s error path wraps the error in a `done`
+  status so the scheduler never reads it as a status map. Covered by
+  `tests/71_async_suspend.oskl` (straight-line and `if`) and
+  `tests/71_async_suspend_b.oskl` (loops, `switch`, `defer`, `try`, ternary,
+  captures) on the VM and by
+  `oskel.build_binary_async_suspend{,_b}`/`oskel.build_wasm_async_suspend{,_b}`.
+  The 11.2.2 scheduler fixture's interleaving order changes to FIFO
   (`start 1,start 2,end 1,end 2`).
 
 - **Top-level `await` (PHASE 11.2.4a).** A script or module may await directly
@@ -136,8 +136,8 @@ may change between minor versions.
   without a top-level `await`. The factory/step split and the scheduler are
   ordinary Oskel over maps and arrays, so the VM, `oskel build` and WASM agree
   and no opcode or builtin is added. The body is still one eager step in
-  11.2.2; the 11.2.3a entry above replaces it with real suspension for
-  straight-line bodies and `if`, and top-level `await` is 11.2.4. Covered
+  11.2.2; the 11.2.3 entry above replaces it with real suspension for every
+  construct that can contain an `await`, and top-level `await` is 11.2.4. Covered
   by `tests/71_async_scheduler.oskl`,
   `tests/native_build_async_scheduler.oskl` and the
   `tests/errors/async_{spawn_outside,yield_outside,spawn_non_future}.oskl`
@@ -184,10 +184,9 @@ may change between minor versions.
   VM, the AOT backend and the WASM backend agree by construction. A pending
   future has no producer yet, and awaiting one is a runtime error. This is the
   PHASE 11.1 surface, not a scheduler: `await` never suspends. The 11.2.2
-  entry above adds the pending futures, `spawn` and `yield`; the 11.2.3a entry
-  adds real suspension for straight-line bodies and `if`.
-  Loops/`switch`/`defer`/`try` across a suspension, a `join` and an async
-  lambda are still open. Covered by
+  entry above adds the pending futures, `spawn` and `yield`; the 11.2.3 entry
+  adds real suspension for every construct that can contain an `await`.
+  A `join`, `then`/`catch` chaining and an async lambda are still open. Covered by
   `tests/65_async.oskl`, `tests/65_async_modules.oskl`, the `oskel.build_binary_async`
   and `oskel.build_wasm_async` fixtures and the `tests/errors/async_*.oskl`
   diagnostics.

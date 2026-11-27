@@ -1,13 +1,13 @@
 # PHASE 11.2 design — scheduler and suspension
 
-Status: **11.2.2, 11.2.3a and 11.2.4a implemented; 11.2.3b, 11.2.4b and 11.2.5
+Status: **11.2.2, 11.2.3a/11.2.3b and 11.2.4a implemented; 11.2.4b and 11.2.5
 design only.** PHASE 11.1 provides `async fn`, `await` and `Future`; 11.2.1
 makes `Future` opaque to the compiler. 11.2.2 adds the pending-future producer,
 the cooperative ready queue, `spawn` and `yield`, and drains the queue before a
-script exits. 11.2.3a adds the body splitter and real suspension for
-straight-line bodies and `if` (see §9.1); loops, `switch`, `defer` and `try`
-across a suspension are 11.2.3b. 11.2.4a adds top-level `await`; 11.2.4b adds
-the deadlock and unhandled-rejection diagnostics.
+script exits. 11.2.3 adds the state-machine splitter and real suspension for
+straight-line bodies, `if`, loops, `switch`, `defer`, `try` and ternary
+branches (see §9.1). 11.2.4a adds top-level `await`; 11.2.4b adds the deadlock
+and unhandled-rejection diagnostics.
 
 `DEVELOPMENT.md` §PHASE 11 is the current status; this page is the design
 record for the slices that follow.
@@ -35,9 +35,8 @@ async fn main(): void {
 - Calling an `async fn` returns a **pending** `Future`; it does not run the
   body.
 - `spawn f(...)` enqueues the call as a task and returns its future.
-- `await f` on a pending future hands control to the ready queue until `f`
-  settles, then continues (11.2.3 turns the continuation into a real
-  suspension instead of an eager drain).
+- `await f` on a pending future suspends the current task and resumes it once
+  `f` settles (11.2.3).
 - `await f` on a fulfilled future returns its payload immediately; on a
   rejected future it yields the error value (the current error-value model,
   not an exception).
@@ -84,7 +83,7 @@ runtime tag that closes that hole is 11.2.5.
   "value":   <payload> | nil,
   "error":   <error> | nil,
   "task":    <task frame> | nil,
-  "waiters": <array of continuations>
+  "waiters": <array of tasks>
 }
 ```
 
@@ -98,20 +97,23 @@ A task frame is itself a map, so no backend needs a new value kind:
   "pc":       0,
   "regs":     [],
   "locals":   [],
+  "awaiting": nil,
   "done":     false,
   "enqueued": false,
-  "running":  false
+  "running":  false,
+  "waiting":  false
 }
 ```
 
-11.2.2 uses `future`, `step`, `args`, `enqueued` and `running`; `pc`, `regs`
-and `locals` are reserved for the 11.2.3 splitter. The factory enqueues the
-task when it builds the future, so `await f()` and `spawn f()` both see a
-pending task that the ready queue can run.
+`pc`, `regs` and `locals` carry the suspension state: the resume point, the
+spilled temporaries and the boxed locals. `awaiting` is the future the task
+suspended on. The factory enqueues the task when it builds the future, so
+`await f()` and `spawn f()` both see a pending task that the ready queue can
+run.
 
 `state` and `value` keep the PHASE 11.1 shape, so an existing `Future`-typed
-value remains readable. `task` is the resumable body; `waiters` are the
-continuations to enqueue when the future settles.
+value remains readable. `task` is the resumable body; `waiters` are the tasks
+to enqueue when the future settles.
 
 A rejected future carries an error value. `await` returns that error value, so
 `isError(await f())` keeps working; an unhandled rejection is not a process
@@ -195,26 +197,23 @@ else:
   return { kind: "suspended", future: f }
 ```
 
-`$awaitProbe` is a compiler-private helper emitted as ordinary bytecode, not a
-new opcode and not a public builtin. It reads the future map: a fulfilled
-future returns `{ready: true, value: ...}`; a rejected one returns the error as
-the payload; a pending one returns `{ready: false}`.
+The state check is inline, not a helper: `GETTABLE state`, `EQ "fulfilled"`,
+`EQ "rejected"` and the two conditional jumps, all opcodes the three engines
+already implement. On the fulfilled path the payload replaces the future in the
+result register; on the rejected path `panic(error)` raises the carried error;
+on the pending path the spill runs.
 
-The compiler must spill every register that is live across the await. The
-existing register allocator already knows the live range at each instruction;
-the pass records that set on the await instruction and emits the spill/restore
-pairs. Locals are already cells, so they survive in `frame.locals`; a local
-that is captured by a closure is the same cell before and after the await.
+The splitter does not need liveness data. Every temporary lives above a
+fixed-size scratch window reserved at the bottom of the step frame, so the
+pending path spills the whole range above the window (`frame.regs`) and the
+dispatch restores it. Locals are boxed in one-element arrays (`frame.locals`),
+so a local captured by a closure is the same cell before and after the await;
+the dispatch restores the cells, and the closure keeps reading the same array.
 
 ### 4.3 Returns
 
-Every `return` in the body becomes:
-
-```text
-frame.future.value = <value>
-frame.future.state = "fulfilled"
-return { kind: "done", value: <value> }
-```
+Every `return` in the body becomes `return { kind: "done", value: <value> }`;
+the scheduler writes the value into the future and wakes its waiters.
 
 A body that falls off the end fulfills with `nil`, as today. A `return` inside
 a `defer` or a loop is handled by the same rewrite; the splitter treats the
@@ -286,7 +285,7 @@ first time a chunk contains async code (`compileAsyncPrelude`): `__oskel_async_s
 than suspending. The end of a top-level chunk calls `__oskel_async_drain`, which
 is what lets `async fn main` run without a top-level `await`. A task that is
 already running is never re-enqueued, so a cycle reports the deadlock message
-instead of looping; the full waiter/continuation protocol is 11.2.3. The
+instead of looping; the full waiter protocol is 11.2.3. The
 helpers and the ready array are globals, so an imported module and the root
 chunk share one scheduler.
 
@@ -300,8 +299,9 @@ No new opcode and no backend-specific suspension mechanism:
 - The scheduler and `spawn`/`yield` are ordinary Oskel functions over maps and
   arrays, emitted into the program's prelude. They are not new builtins, so
   `check_builtin_parity` needs no exception.
-- The 11.2.3 splitter will emit a compiler-private `$awaitProbe` as a normal
-  proto; the AOT lowerer then treats it like any other function.
+- The splitter emits only `GETTABLE`/`EQ`/`JMP`/`SETTABLE`/`NEWTABLE` and the
+  scheduler's ordinary calls, so the AOT lowerer and the WASM emitter treat a
+  step like any other function.
 - The freestanding, hosted and WASM images carry the same scheduler code. A
   program that never mentions `async` must keep its byte-for-byte image; the
   prelude functions are emitted once per compilation session, and only when a
@@ -343,52 +343,51 @@ the first candidate is a retirement, not a 41st opcode.
 |-------|-------|----------------|
 | 11.2.1 | ✅ Compiler-enforced `Future` opacity; no scheduler yet | Direct indexing/slicing/iteration/member access on a `Future` is rejected; `tests/errors/async_future_*.oskl` |
 | 11.2.2 | ✅ Task frame, factory/body split, `spawn`, `yield`, ready queue | A spawned task runs after the spawner reaches `await`; VM/AOT/WASM order matches |
-| 11.2.3a | ✅ Continuation-closure splitter: straight-line, `if`, `let`/`return`/expression awaits, `yield` | A task suspends at a pending future and resumes after it settles; interleaving order is asserted (`tests/71_async_suspend.oskl`) |
-| 11.2.3b | Loops (`while`/`for`/`for-in`/`do-while`) with `again`, `switch`, `defer`/`try` across a suspension | A loop may await and resume per iteration; `break`/`continue`/`return` work across it |
+| 11.2.3a | ✅ State-machine splitter: straight-line, `if`, `let`/`return`/expression awaits, `yield` | A task suspends at a pending future and resumes after it settles; interleaving order is asserted (`tests/71_async_suspend.oskl`) |
+| 11.2.3b | ✅ Loops (`while`/`for`/`for-in`/`do-while`), `switch`, `defer`/`try` and ternary branches across a suspension | A loop may await and resume per iteration; `break`/`continue`/`return` work across it (`tests/71_async_suspend_b.oskl`) |
 | 11.2.4a | ✅ Top-level `await` | A script or module may await at its top level; VM/AOT/WASM agree |
 | 11.2.4b | Unhandled rejection, deadlock diagnostics | Stuck and unhandled cases have tests |
 | 11.2.5 | Runtime tag, cancellation, async timers/I/O | Optional; only after 11.2.1-11.2.4 are stable |
 
 11.2.1 is deliberately separate: it fixes the opaque-value contract and gives
 the scheduler a real `pending` state without requiring the control-flow
-splitter. 11.2.2 can then schedule eager bodies; 11.2.3a adds the suspension
-that makes `await` meaningful for straight-line code and branches.
+splitter. 11.2.2 can then schedule eager bodies; 11.2.3 adds the state machine
+that makes `await` meaningful everywhere.
 
-### 9.1 11.2.3a implementation: continuation closures
+### 9.1 11.2.3 implementation: a resumable state machine
 
-The splitter does **not** spill registers or build a numeric state machine. It
-lowers the body to continuation-passing style at the AST level:
+The splitter keeps the body as one proto and resumes it at an instruction
+offset; it does not lower the body to continuation-passing style. The generated
+step reserves an eight-register scratch window at the bottom of its frame and
+jumps over the body to a `pc` dispatch:
 
-- ANF hoists every `await`/`yield` nested in an expression into a `let`
-  temporary, preserving evaluation order (`1 + await f() + 2` awaits once,
-  in the same order as the source).
-- A suspension becomes
-  `return __oskel_async_bind($task, future, ($v) => { ...rest... })`; the
-  rest of the block is compiled into that closure. A `yield` becomes
-  `__oskel_async_yield_cont($task, ($v) => { ...rest... })`.
-- Because the continuation is a real Oskel closure, the existing capture
-  already keeps locals as cells: a variable declared before the `await` is the
-  same cell after it, and a closure created before the await keeps sharing it.
-  No liveness analysis and no spill/restore are needed.
-- `return` becomes `__oskel_async_done(value)`. An `if` gives both branches one
-  continuation variable for the rest of the block, so the rest is compiled once
-  rather than duplicated.
-- The scheduler calls `task.cont(value)` with the settled payload (the error
-  value for a rejected future, or nil after a yield). `bind` parks the task in
-  `future.waiters`; `settle`/`reject` move it back to the ready queue. Two
-  tasks may wait on the same future.
+- A body that can suspend boxes every local in a one-element array
+  (`boxLocals_`), so a local is a cell on the VM, the AOT binary and WASM
+  alike; `GETTABLE`/`SETTABLE` on that array are the read and the write, and a
+  captured local is captured as the array itself.
+- `await` checks the future's state inline. On the pending path the step
+  spills every register above the scratch window plus the boxed locals into
+  `frame.regs`/`frame.locals`, publishes `pc` and `awaiting`, and returns
+  `{kind: "suspended", future: f}`. The scheduler parks the task in
+  `future.waiters` and re-enqueues it when the future settles.
+- The dispatch matches `pc`, restores the registers and the cells, writes the
+  settled value into the await's own result register (so a call argument list
+  stays contiguous) and jumps to the resume offset. A rejected future raises
+  the carried error there.
+- `yield` uses the same path with `{kind: "yielded"}` and resumes with nil;
+  `try`'s error path wraps the error in a `done` status so the scheduler never
+  reads an error as a status map.
+- Because the resume point is an instruction offset, loops, `switch`, `defer`,
+  `try` and a ternary branch need no special lowering: their jumps and their
+  per-frame defer stack survive the spill like any other state.
 
-This slice covers straight-line bodies, `if`, `let`/`return`/expression awaits,
-`yield`, and awaits nested in ordinary expressions (calls, binary operators,
-arrays, maps, indexing). The next slice (11.2.3b) adds loops with the `again`
-trampoline, `switch`, and `defer`/`try` across a suspension; until then the
-splitter rejects them with a compile error naming 11.2.3b.
-
-The trade-off is code size: each suspension adds a closure proto, bounded by
-the number of `await`/`yield` sites, and an `if` reuses one continuation
-variable instead of duplicating the rest. In exchange, the splitter needs no
-register liveness data, and the VM, AOT and WASM share the same closures, maps
-and calls.
+The cost is one box per local in a suspending body and a spill of the live
+register range at each suspension. In exchange there is no closure per
+`await`, no AST rewriting and no evaluation-order hoisting, and every shape the
+language accepts suspends. `tests/71_async_suspend.oskl` pins the straight-line
+and `if` shapes; `tests/71_async_suspend_b.oskl` pins loops (including a
+`continue`), `switch`, `defer`, `try`, a ternary and a closure per loop
+iteration.
 
 ## 10. Tests
 
@@ -399,39 +398,42 @@ and calls.
   the await and read after it, two waiters on one future, `yield` resuming
   with nil, awaits in a map and an array, side-effect order across a
   suspension, and the FIFO interleaving order.
+- `tests/71_async_suspend_b.oskl` — the 11.2.3b shapes: `for`/`for-in`/
+  `while`, a `continue` across a suspension, `switch`, `defer`, `try`, a
+  ternary branch, two awaits in one expression, a method, and a closure per
+  loop iteration.
 - `tests/71_async_errors.oskl` — a rejected future, `isError(await f())`, an
   unhandled rejection and a deadlock (arrives with 11.2.4b).
 - `tests/72_async_top_level.oskl` — `await` in a top-level `let`, `if` and
   loop, with the scheduler order asserted.
 - `tests/native_build_async_top_level.oskl` — the 11.2.4a VM/AOT/WASM parity
   fixture.
-- `tests/native_build_async_scheduler.oskl` and
-  `tests/71_async_suspend.oskl` (the `build_binary`/`build_wasm` cases) — the
+- `tests/native_build_async_scheduler.oskl`, `tests/71_async_suspend.oskl` and
+  `tests/71_async_suspend_b.oskl` (the `build_binary`/`build_wasm` cases) — the
   VM/AOT/WASM parity fixtures.
 - `tests/errors/async_spawn_outside.oskl`, `async_yield_outside.oskl`,
   `async_spawn_non_future.oskl` — the 11.2.2 compile diagnostics;
   `async_await_nested_fn.oskl` pins the async-context reset in a non-async
   function. The deadlock fixture arrives with 11.2.4b.
-- `tests/errors/async_await_in_loop.oskl`,
-  `async_defer_across_await.oskl`, `async_try_across_await.oskl`,
-  `async_await_in_ternary.oskl` — the 11.2.3b guards.
 
 Each parity fixture runs the same `-DOSKEL_ARGS` vector on the VM and the
 compiled binary, as `tests/build_binary.cmake` already does.
 
 ## 11. Risks
 
-- **Locals captured by closures.** The continuation-closure design makes this
-  the critical invariant: the closure must capture the *cell*, not a snapshot.
-  The fixture awaits after creating a closure that reads a local, mutates the
-  local after the await, and checks the closure sees the mutation.
-- **Expression order.** ANF must hoist awaits in source order; a wrong order
-  changes which side effects run before a suspension. The fixture awaits on
-  both sides of a binary operator and inside call arguments.
-- **`defer` and `try` across a suspension.** A `defer` that must run when the
-  body returns has to run on the final resume, not on a suspension. The
-  splitter needs a per-frame defer stack; 11.2.3 covers it before any fixture
-  uses `defer` around an `await`.
+- **Locals captured by closures.** The boxing makes this the critical
+  invariant: a closure must capture the one-element array, not a snapshot, and
+  the dispatch must restore that same array. The fixture awaits after creating
+  a closure that reads a local, mutates the local after the await, and checks
+  the closure sees the mutation.
+- **Expression order.** The spill must preserve evaluation order: a left
+  operand and earlier arguments run before the await, the rest after it. The
+  fixture asserts the side-effect order (`1,3,2`).
+- **`defer` and `try` across a suspension.** The defer stack and the `try`
+  frame are per-call compiler state, so a suspension inside them resumes with
+  the same stack; `try`'s error path returns a `done` status so the scheduler
+  settles the future with the error. `tests/71_async_suspend_b.oskl` covers
+  both.
 - **Code size.** Every async body gets a dispatch prologue and a spill/restore
   path. A program with no async must not pay for it; the prelude is emitted
   only when the session contains an async proto.

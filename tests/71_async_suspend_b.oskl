@@ -1,0 +1,207 @@
+// PHASE 11.2.3: real suspension inside an `async fn`.
+//
+// A body that can suspend is split at every `await`/`yield`. The pending path
+// spills the live registers and the boxed locals into the task frame, returns
+// to the scheduler, and resumes at the recorded point once the awaited future
+// settles. The cases below are the shapes that only work with a real split:
+// loop cursors, a local captured by a closure, two awaits in one expression or
+// call argument list, a `defer` that runs after a resume, `try` around an
+// await, a method that mutates `self` between resumes, and a `yield` that
+// requeues the current task.
+
+var log: array = [];
+
+fn note(text: string): void {
+  log.push(text);
+}
+
+async fn pause(): void {
+  yield();
+}
+
+async fn value(n: int): int {
+  await pause();
+  return n;
+}
+
+fn add(a: int, b: int): int {
+  return a + b;
+}
+
+// A range cursor and an accumulator survive two suspensions.
+async fn sum(): int {
+  var total = 0;
+  for i in 0..3 {
+    total = total + await value(i);
+  }
+  return total;
+}
+
+// A map iterator keeps its state in registers across a suspension.
+async fn mapLoop(): int {
+  var total = 0;
+  for k, v in { "a": 1, "b": 2 } {
+    total = total + await value(v);
+  }
+  return total;
+}
+
+// A `while` condition and its step are re-evaluated after each resume, and a
+// `continue` jumps back to the condition with the cursor restored.
+async fn whileLoop(): int {
+  var i = 0;
+  var total = 0;
+  while (i < 3) {
+    total = total + await value(i);
+    i = i + 1;
+  }
+  return total;
+}
+
+async fn skipOdd(): int {
+  var i = 0;
+  var total = 0;
+  while (i < 4) {
+    i = i + 1;
+    if (i == 2) {
+      continue;
+    }
+    total = total + await value(i);
+  }
+  return total;
+}
+
+// A `switch` scrutinee is live across the arm's suspension.
+async fn switched(n: int): int {
+  switch (n) {
+    case 1: {
+      return await value(10);
+    }
+    default: {
+      return await value(20);
+    }
+  }
+}
+
+// Only the taken ternary branch suspends.
+async fn ternary(flag: bool): int {
+  return flag ? await value(1) : 0;
+}
+
+// Each `for` iteration binds a fresh variable, so a closure created in the body
+// keeps its own value across the suspension.
+async fn loopClosures(): array {
+  let fns = [];
+  for i in 0..3 {
+    fns.push(() => i);
+    await pause();
+  }
+  return [fns[0](), fns[1](), fns[2]()];
+}
+
+// The first result is live in a register across the second suspension.
+async fn expr(): int {
+  return 1 + await value(10) + await value(100);
+}
+
+// The call argument window is contiguous and survives the second suspension.
+async fn callArgs(): int {
+  return add(await value(1), await value(2));
+}
+
+// The first interpolation part is live across the second suspension.
+async fn text(): string {
+  return "${await value(1)}-${await value(2)}";
+}
+
+// A closure created before the suspension must see the writes made after it,
+// which only works when the local is boxed.
+async fn captured(): int {
+  var n = 0;
+  let inc = () => { n = n + 1; };
+  await pause();
+  inc();
+  inc();
+  return n;
+}
+
+// `defer` runs at the return, after the body resumed.
+async fn deferred(): int {
+  defer { note("defer"); }
+  await pause();
+  note("after await");
+  return 7;
+}
+
+// `try` around an await keeps the error payload; the error path leaves the
+// step through the scheduler status, not with a raw value.
+async fn failing(): error {
+  return error("boom");
+}
+
+async fn guarded(): error {
+  return try await failing();
+}
+
+// A method mutates `self` between two resumes.
+class Counter {
+  value: int = 0;
+
+  async fn bump(by: int): int {
+    await pause();
+    self.value = self.value + by;
+    return self.value;
+  }
+
+  async fn twice(): int {
+    await self.bump(1);
+    return await self.bump(1);
+  }
+}
+
+async fn task(id: int): int {
+  note("start " + str(id));
+  yield();
+  note("end " + str(id));
+  return id * 10;
+}
+
+async fn main(): void {
+  assertEq(await sum(), 3);
+  assertEq(await mapLoop(), 3);
+  assertEq(await whileLoop(), 3);
+  assertEq(await skipOdd(), 8);
+  assertEq(await switched(1), 10);
+  assertEq(await switched(2), 20);
+  assertEq(await ternary(true), 1);
+  assertEq(await ternary(false), 0);
+  assertEq(await expr(), 111);
+  assertEq(await callArgs(), 3);
+  assertEq(await text(), "1-2");
+  assertEq(await captured(), 2);
+
+  let loopFns = await loopClosures();
+  assertEq(loopFns[0], 0);
+  assertEq(loopFns[1], 1);
+  assertEq(loopFns[2], 2);
+
+  assertEq(await deferred(), 7);
+
+  let e = await guarded();
+  assertEq(isError(e), true);
+
+  let counter = Counter();
+  assertEq(await counter.twice(), 2);
+
+  // A `yield` requeues the current task, so the second task starts before the
+  // first one finishes: an eager body would print `end 2` before `end 1`.
+  let a = spawn task(1);
+  let b = spawn task(2);
+  assertEq(await a, 10);
+  assertEq(await b, 20);
+
+  assertEq(log.join(","), "after await,defer,start 1,start 2,end 1,end 2");
+  print("async suspend ok");
+}
+
+main();
