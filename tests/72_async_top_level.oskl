@@ -44,7 +44,9 @@ assertEq(total, 120);
 // Awaiting a settled future is immediate and stable.
 assertEq(await a, 10);
 
+// `yield()` parks the task at the back of the ready queue: task 1 resumes
+// before task 2, so the ends are FIFO.
 assertEq(log.join(","),
-         "spawned,start 1,start 2,end 2,end 1,a,b," +
+         "spawned,start 1,start 2,end 1,end 2,a,b," +
          "start 3,end 3,start 4,end 4,start 5,end 5");
 print("top-level await ok");

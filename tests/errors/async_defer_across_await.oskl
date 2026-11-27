@@ -1,0 +1,14 @@
+// expect-exit: 65
+// A deferred block would run at the segment boundary, not at function exit.
+async fn f(): int {
+  return 1;
+}
+
+async fn g(): int {
+  defer {
+    print("done");
+  }
+  return await f();
+}
+
+g();

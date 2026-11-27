@@ -1,10 +1,10 @@
 // PHASE 11.2.2: the cooperative task scheduler.
 //
-// Calling an `async fn` now returns a *pending* future and enqueues its task;
-// `spawn` is the explicit form, and `await` drains the ready queue until the
-// future settles. `yield()` lets the other ready tasks run before the current
-// body continues. The body is still one eager step in this phase: suspension
-// inside a body (the 11.2.3 splitter) is not implemented yet.
+// Calling an `async fn` returns a *pending* future and enqueues its task;
+// `spawn` is the explicit form. A body that suspends is split into continuation
+// closures (PHASE 11.2.3), so `yield()` parks the task at the back of the ready
+// queue and another task runs before it resumes. The expected log is therefore
+// the FIFO order: both tasks start, then finish in the order they yielded.
 //
 // The script's pending tasks are drained before the process exits, so an
 // `async fn main` needs no top-level `await`.
@@ -40,7 +40,7 @@ async fn main(): void {
   assertEq(await c, 30);
 
   assertEq(log.join(","),
-           "spawned,start 1,start 2,end 2,end 1,a,b,start 3,end 3");
+           "spawned,start 1,start 2,end 1,end 2,a,b,start 3,end 3");
   print("async scheduler ok");
 }
 
