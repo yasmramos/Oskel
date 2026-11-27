@@ -853,21 +853,24 @@ divergence or robustness, **[P2]** performance, **[P3]** cleanup or tooling.
     task; `spawn` is the explicit enqueue, `yield()` drains the ready queue,
     and `await` drains it when the future is pending before re-reading the
     state. A script drains its queue before `HALT`, so `async fn main` runs
-    without a top-level `await`. The body is still one eager step: `await` does
+    without a top-level `await`. PHASE 11.2.4a adds a top-level `await`: the
+    chunk is not an async function, but the helpers are global, so the same
+    drain applies. The body is still one eager step: `await` does
     not suspend the current body, and `yield()` does not requeue the current
-    task. There is no top-level `await`, no separate `join`, no `then`/`catch`
-    chaining, no async lambda, no cancellation and no async I/O driver; a
-    pending future that can never run reports a deadlock error rather than
-    spinning. The future and task frames are plain maps, so `type(future)` is
-    `"map"` and a value erased to `any` can still reach the keys; PHASE 11.2.5
-    tracks the runtime tag. PHASE 11.2.1 makes the type checker enforce
-    opacity (`tests/errors/async_future_*.oskl`). PHASE 11.2.3 adds the body
-    splitter and real suspension, 11.2.4 top-level `await` plus deadlock and
-    unhandled-rejection diagnostics, and 11.2.5 the runtime tag. Tests:
+    task. There is no separate `join`, no `then`/`catch` chaining, no async
+    lambda, no cancellation and no async I/O driver; a pending future that can
+    never run reports a deadlock error rather than spinning. The future and
+    task frames are plain maps, so `type(future)` is `"map"` and a value erased
+    to `any` can still reach the keys; PHASE 11.2.5 tracks the runtime tag.
+    PHASE 11.2.1 makes the type checker enforce opacity
+    (`tests/errors/async_future_*.oskl`). PHASE 11.2.3 adds the body splitter
+    and real suspension; 11.2.4b adds the deadlock and unhandled-rejection
+    diagnostics; 11.2.5 adds the runtime tag. Tests:
     `tests/65_async.oskl`, `tests/65_async_modules.oskl`,
-    `tests/71_async_scheduler.oskl`,
+    `tests/71_async_scheduler.oskl`, `tests/72_async_top_level.oskl`,
     `tests/native_build_async_scheduler.oskl`,
-    `tests/errors/async_{spawn_outside,yield_outside,spawn_non_future}.oskl`,
+    `tests/native_build_async_top_level.oskl`,
+    `tests/errors/async_{spawn_outside,yield_outside,spawn_non_future,await_nested_fn}.oskl`,
     and the `oskel.build_binary_async*`/`oskel.build_wasm_async*` fixtures.
     The design and slice table are in `docs/phase11-async-design.md`.
 

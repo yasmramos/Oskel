@@ -1111,29 +1111,26 @@ StmtPtr Parser::parseFnDecl(bool mustUse, bool isAsync) {
   auto params = parseParams();
   TypeRef returnType = parseTypeAnnotation(/*allowVoid=*/true);
   StmtPtr body;
-  if (check(Tok::Arrow)) {
-    const Token& arrow = advance();
-    const bool isBlock = check(Tok::LBrace);
-    if (isAsync) {
-      AsyncScope scope(asyncDepth_, asyncDepth_ + 1);
+  {
+    // A function body is a hard boundary for `await`: an `async fn` enters with
+    // a positive depth, any other function resets it to zero, so `await` inside
+    // a non-async function nested in an async one is rejected too.
+    FunctionScope function(functionDepth_);
+    AsyncScope scope(asyncDepth_, isAsync ? asyncDepth_ + 1 : 0);
+    if (check(Tok::Arrow)) {
+      const Token& arrow = advance();
+      const bool isBlock = check(Tok::LBrace);
       body = parseFunctionBody(arrow);
+      // An expression body is a statement of its own and needs a terminator.
+      if (isBlock) {
+        match(Tok::Semicolon);
+      } else {
+        consume(Tok::Semicolon, "expected ';' after the function body");
+      }
     } else {
-      body = parseFunctionBody(arrow);
-    }
-    // An expression body is a statement of its own and needs a terminator.
-    if (isBlock) {
+      body = parseBlock();
       match(Tok::Semicolon);
-    } else {
-      consume(Tok::Semicolon, "expected ';' after the function body");
     }
-  } else {
-    if (isAsync) {
-      AsyncScope scope(asyncDepth_, asyncDepth_ + 1);
-      body = parseBlock();
-    } else {
-      body = parseBlock();
-    }
-    match(Tok::Semicolon);
   }
   FnDeclStmt decl{name.lexeme, std::move(params), std::move(returnType), std::move(body), false,
                   mustUse};
@@ -1700,28 +1697,22 @@ StmtPtr Parser::parseClassDecl() {
         if (param.name == "self") error(methodName, "'self' is reserved inside a class");
       }
       method.returnType = parseTypeAnnotation(/*allowVoid=*/true);
-      if (check(Tok::Arrow)) {
-        const Token& arrow = advance();
-        const bool isBlock = check(Tok::LBrace);
-        if (isAsync) {
-          AsyncScope scope(asyncDepth_, asyncDepth_ + 1);
+      {
+        FunctionScope function(functionDepth_);
+        AsyncScope scope(asyncDepth_, isAsync ? asyncDepth_ + 1 : 0);
+        if (check(Tok::Arrow)) {
+          const Token& arrow = advance();
+          const bool isBlock = check(Tok::LBrace);
           method.body = parseFunctionBody(arrow);
+          if (isBlock) {
+            match(Tok::Semicolon);
+          } else {
+            consume(Tok::Semicolon, "expected ';' after the method body");
+          }
         } else {
-          method.body = parseFunctionBody(arrow);
-        }
-        if (isBlock) {
+          method.body = parseBlock();
           match(Tok::Semicolon);
-        } else {
-          consume(Tok::Semicolon, "expected ';' after the method body");
         }
-      } else {
-        if (isAsync) {
-          AsyncScope scope(asyncDepth_, asyncDepth_ + 1);
-          method.body = parseBlock();
-        } else {
-          method.body = parseBlock();
-        }
-        match(Tok::Semicolon);
       }
       methods.push_back(std::move(method));
       continue;
@@ -1963,6 +1954,7 @@ ExprPtr Parser::parseLambda() {
   {
     // A lambda is not an async function: `await` cannot cross its boundary,
     // even when the lambda is written inside an async function body.
+    FunctionScope function(functionDepth_);
     AsyncScope scope(asyncDepth_, 0);
     body = parseFunctionBody(arrow);
   }
@@ -2581,11 +2573,13 @@ ExprPtr Parser::parseUnary() {
   DepthGuard guard(*this);
   // `await expr` (PHASE 11.1): unwrap a `Future`. It binds like the other
   // prefix operators, so `await f().x` awaits the call and then reads `.x`.
-  // The parser rejects it outside an `async fn`; a lambda resets the depth.
+  // It is allowed inside an `async fn` and at the program/module top level
+  // (PHASE 11.2.4a); any other function body rejects it.
   if (check(Tok::Await)) {
     const Token& op = advance();
-    if (asyncDepth_ == 0) {
-      throw CompileError{"'await' is only allowed inside an 'async fn'", op.line, op.col};
+    if (asyncDepth_ == 0 && functionDepth_ > 0) {
+      throw CompileError{"'await' is only allowed inside an 'async fn' or at the top level",
+                         op.line, op.col};
     }
     auto operand = parseUnary();
     return makeExpr(AwaitExpr{std::move(operand)}, op.line, op.col);

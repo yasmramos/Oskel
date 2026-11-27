@@ -11,6 +11,13 @@ may change between minor versions.
 
 ### Added
 
+- **Top-level `await` (PHASE 11.2.4a).** A script or module may await directly
+  at its top level; the chunk is not an `async fn`, but the scheduler helpers
+  are globals, so the same drain applies. A non-async function or lambda nested
+  in an async function now correctly rejects `await` (the async context no
+  longer leaks into a nested body). `tests/72_async_top_level.oskl`,
+  `tests/native_build_async_top_level.oskl` (VM/AOT/WASM) and
+  `tests/errors/async_await_nested_fn.oskl` pin it. See `docs/language.md` §4.10.
 - **SQLite3 (`std.sqlite`).** A `Database`/`Statement` wrapper over the C
   API: positional `?` parameters, `exec`/`run`/`query`, transactions,
   step-by-step statements, and TEXT/NULL/BLOB round trips. The C declarations
