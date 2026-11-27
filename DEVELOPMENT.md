@@ -2498,7 +2498,8 @@ Design for the scheduler and suspension: `docs/phase11-async-design.md`.
   when `f` is pending, then re-reads its state; `spawn f()` is the explicit way
   to enqueue a call, and `yield()` drains the queue before the current body
   continues. A script drains its queue before `HALT`, so `async fn main` runs
-  without a top-level `await`. The body is still one eager step: real
+  without a top-level `await`; a top-level `await` (11.2.4a) is also accepted
+  and drains the same queue. The body is still one eager step: real
   suspension at `await` is 11.2.3.
 - **Representation.** A future is an ordinary map built with the opcodes the
   language already has: `{ "$future": true, state: "pending", value: nil,
@@ -2523,10 +2524,12 @@ Design for the scheduler and suspension: `docs/phase11-async-design.md`.
   the runtime tag that closes that hole is PHASE 11.2.5.
 - **Typing.** `Future` joins the built-in type vocabulary. A call to an async
   function returns `Future`, so `let f: Future = f();` type-checks and
-  `let n: int = await f();` checks the payload. `await` outside an `async fn`
-  is a parser error, and a lambda does not inherit the enclosing function's
-  async context (`() => await x` is rejected): it is not an `async fn`. There
-  is no top-level `await`; the chunk is not an async function.
+  `let n: int = await f();` checks the payload. `await` is a parser error
+  inside any non-async function body, and a lambda does not inherit the
+  enclosing function's async context (`() => await x` is rejected): it is not an
+  `async fn`. The program or module top level is allowed (11.2.4a); the parser
+  tracks it with `functionDepth_`, so a non-async function nested in an async
+  one is rejected too.
 - **Methods and values.** An `async fn` method is a closure in the instance
   map like any other method, so `await obj.m()` works. The method signature
   records its asyncness and a replacement lambda must match it, or `await`
@@ -2563,9 +2566,9 @@ Design for the scheduler and suspension: `docs/phase11-async-design.md`.
   runs ready tasks, but the body is still one eager step: `await` on a pending
   future drains the queue and re-reads the state instead of suspending the
   current body, and `yield()` drains the queue rather than requeueing the
-  current task. There is no top-level `await`, no separate `join`, no promise
-  chaining (`then`), no async lambda and no cancellation; 11.2.3 adds the body
-  splitter and real suspension, 11.2.4 top-level `await`, deadlock and
+  current task. Top-level `await` landed in 11.2.4a; there is no separate
+  `join`, no promise chaining (`then`), no async lambda and no cancellation;
+  11.2.3 adds the body splitter and real suspension, 11.2.4b the deadlock and
   unhandled-rejection diagnostics, and 11.2.5 the runtime tag. `type(future)`
   still says `"map"`, because the representation is a map and the type checker
   erases `Future`; a value erased to `any` can still be passed to code
@@ -2675,7 +2678,7 @@ Phase 6.6: ✅ completed (type vocabulary, `extern "C"` declarations + marshalli
 Phase 6.7: ✅ completed (6.7.1 `pcall`, 6.7.2 `error` type, 6.7.3 `try`/`catch`, 6.7.4 unions `T | E` and 6.7.5 `@MustUse` done)
 Phase 6.8: ✅ completed (`class`: named shapes with methods, desugared by the parser into a top-level constructor function — a map plus closures capturing an explicit `self`; no `new`, no inheritance, no new opcode, and identical on the VM and the AOT backend)
 Phase 6.9: ✅ completed (`enum`: a scoped set of integer constants, folded by the parser; no opcode, no engine code, and identical on the VM, the AOT backend and WASM)
-Phase 11: 🔶 in progress (11.1 `async fn`/`await`/`Future` surface done; 11.2.1 compiler-enforced `Future` opacity done; 11.2.2 pending futures, cooperative scheduler, `spawn`/`yield` and end-of-script drain done; 11.2.3-11.2.5 suspension, top-level `await` and the runtime tag not started)
+Phase 11: 🔶 in progress (11.1 `async fn`/`await`/`Future` surface done; 11.2.1 compiler-enforced `Future` opacity done; 11.2.2 pending futures, cooperative scheduler, `spawn`/`yield` and end-of-script drain done; 11.2.4a top-level `await` done; 11.2.3 suspension, 11.2.4b deadlock/unhandled-rejection diagnostics and 11.2.5 runtime tag not started)
 Phase 12.1/12.2: ✅ completed (`interface`/`trait`, `class ... implements`, and imported interfaces; see the section above)
 Phase 7: 🔶 in progress (7a, 7b, 7c.0, 7c.1a-d, 7c.2a-d, 7c.3, 7c.3b, 7c.3c, 7c.3d, 7c.3e, 7c.3f, 7c.3g, 7c.3h, 7c.3i, 7c.3j, 7c.3k, 7c.3l, 7c.4a-d, 7c.5a, 7c.5b, 7c.5c, 7c.5d, 7c.6, 7d, 7e, 7g done; 7f — FFI in AOT — 7f.1-7f.11 done, scalar, `cstring`/`ptr`, struct-by-value `extern "C"` (register and class-MEMORY), callbacks (including a struct return) and a stored callback resolve in the hosted backend on Linux and macOS, and the scalar/`cstring`/`ptr`/struct-by-value surface plus a C variadic on Windows. 7c.5b covers every builtin the AOT runtime can implement without the host, and the fourteen that needed one (files, `clock`, `args`, raw memory) landed as BACKLOG §6 item 25, so no builtin is VM-only any more -- a target that cannot back one rejects it by name; `random`/`seed` joined the AOT side in 7c.5b.6 and `pcall` in 7c.5d)
 Phase 8: 🔶 in progress (JIT for the development VM, slices 1-4 done: integer leaf protos with constant folding, strength reduction, compare-branch fusion and web-based register allocation with copy coalescing)
@@ -2748,7 +2751,7 @@ and is no longer in the tree.
 | Superinstructions | Violate the 40-opcode ceiling |
 | Inline caching | Changes the bytecode contract |
 | Runtime specialization | Changes the bytecode contract |
-| Generics, full pattern matching, generators, transactions | Out of scope (2.0 monomorphizes concrete, annotated types only; no user-defined generics). `async`/`await` stops at the PHASE 11.2.2 scheduler (pending futures, `spawn`/`yield`, eager steps); PHASE 11.2.3-11.2.5 (suspension, top-level `await`, runtime tag) are not implemented. |
+| Generics, full pattern matching, generators, transactions | Out of scope (2.0 monomorphizes concrete, annotated types only; no user-defined generics). `async`/`await` stops at the PHASE 11.2.2 scheduler (pending futures, `spawn`/`yield`, eager steps) plus the PHASE 11.2.4a top-level `await`; PHASE 11.2.3 (suspension), 11.2.4b (deadlock/unhandled-rejection diagnostics) and 11.2.5 (runtime tag) are not implemented. |
 
 **Note**: there is **no** host FFI dependency. The development engine emits its
 own x86-64 descriptor/closure stubs; the machine-code emitter, the static

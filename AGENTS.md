@@ -1085,7 +1085,7 @@ it as a caveat:
 - The body is still one eager step. `await` on a pending future drains the
   ready queue and re-reads the state; it does not suspend the current body.
   `yield()` drains the queue and then the current body continues. Real
-  suspension is 11.2.3; top-level `await` is 11.2.4.
+  suspension is 11.2.3; top-level `await` landed in 11.2.4a.
 - The end of a top-level chunk calls `__oskel_async_drain` before `HALT`, so
   `async fn main` runs without a top-level `await`. `compileModuleBody` does
   not drain, so a module's tasks wait for the root chunk.
@@ -1099,10 +1099,13 @@ it as a caveat:
   `compileMakeStatus("done", ...)`. `compileFunctionProto(..., asyncBody=true)`
   saves/restores it, so a nested lambda inside a step does not inherit the
   status wrapping.
-- The parser tracks `asyncDepth_`: an async function body increments it and a
-  lambda **resets it to zero**, so `() => await x` is rejected even inside an
-  async function. There is no top-level `await`, and `async fn init` is rejected
-  because the constructor is called without `await`.
+- The parser tracks `asyncDepth_` and `functionDepth_`: entering any function
+  body increments the latter, an async body also increments the former and any
+  other body **resets it to zero**, so `() => await x` and a non-async `fn`
+  nested in an async one are rejected. `await` is accepted at the top level,
+  where `functionDepth_` is zero (PHASE 11.2.4a); `spawn`/`yield` stay
+  async-only. `async fn init` is rejected because the constructor is called
+  without `await`.
 - `asyncReturnTypes_` holds the payload type of every async function in scope.
   `compileFnDecl` puts `Future` in `functionReturnTypes_` (the call-site type)
   and the annotation in `asyncReturnTypes_`; `inferExprType` uses the latter to
@@ -1114,13 +1117,15 @@ it as a caveat:
   obj.m()` would otherwise await a payload. An async method is still a factory
   closure in the instance map.
 - Tests: `tests/65_async.oskl` (payloads, recursion, values, methods, error
-  values), `tests/65_async_modules.oskl` (imported async functions) and
-  `tests/71_async_scheduler.oskl` (spawn, yield, order, async main) run on the
-  VM; `oskel.build_binary_async*` and `oskel.build_wasm_async*` compare them
-  byte for byte, and `tests/native_build_async_scheduler.oskl` adds the
-  scheduler order for VM/AOT/WASM. The compile diagnostics live in
+  values), `tests/65_async_modules.oskl` (imported async functions),
+  `tests/71_async_scheduler.oskl` (spawn, yield, order, async main) and
+  `tests/72_async_top_level.oskl` (top-level await in a `let`, `if` and loop)
+  run on the VM; `oskel.build_binary_async*` and `oskel.build_wasm_async*`
+  compare them byte for byte, and
+  `tests/native_build_async_{scheduler,top_level}.oskl` add the order and the
+  top-level await for VM/AOT/WASM. The compile diagnostics live in
   `tests/errors/async_*.oskl` (`async_spawn_outside`, `async_yield_outside`,
-  `async_spawn_non_future`).
+  `async_spawn_non_future`, `async_await_nested_fn`).
 
 ## The VS Code extension
 

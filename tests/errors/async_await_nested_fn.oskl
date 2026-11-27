@@ -1,0 +1,8 @@
+// expect-exit: 65
+// A non-async function nested in an async one is still not an async context:
+// entering any function body resets the parser's async depth.
+async fn outer(): void {
+  fn inner(): void {
+    let x = await 1;
+  }
+}

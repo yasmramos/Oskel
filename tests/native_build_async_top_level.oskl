@@ -1,0 +1,27 @@
+// PHASE 11.2.4a VM/AOT/WASM parity: a top-level `await` uses the same
+// scheduler and future maps as one inside an `async fn`, so all three engines
+// must produce the same output.
+async fn task(id: int): int {
+  yield();
+  return id * 10;
+}
+
+let a = task(1);
+let b = task(2);
+
+let first = await a;
+let second = await b;
+print(first);
+print(second);
+
+var total = 0;
+for i in [0, 1, 2] {
+  total += await task(i + 3);
+}
+print(total);
+
+if (first == 10) {
+  print(await a);
+}
+
+print("top-level await native ok");

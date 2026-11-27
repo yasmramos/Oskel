@@ -1333,15 +1333,15 @@ not as a runtime global.
 
 ### 4.10 `async fn`, `await`, `spawn` and `yield` (partial)
 
-> **PHASE 11.2.2 has a scheduler, but the body is still one eager step.**
+> **PHASE 11.2.4a adds top-level `await`; the body is still one eager step.**
 > Calling an `async fn` returns a pending `Future` and enqueues its task;
 > `await` drains the ready queue, and `yield()` lets other ready tasks run. Real
-> suspension at `await` is PHASE 11.2.3, top-level `await` is 11.2.4, and the
-> runtime tag is 11.2.5.
+> suspension at `await` is PHASE 11.2.3, deadlock and unhandled-rejection
+> diagnostics are 11.2.4b, and the runtime tag is 11.2.5.
 
 An `async fn` is a function whose call returns a `Future`; the declared return
 type is the payload type. `await` consumes a future and yields its payload, and
-is only valid inside an `async fn`:
+is valid inside an `async fn` or at the top level of a program or module:
 
 ```oskel
 async fn fetchName(id: int): string {
@@ -1364,6 +1364,15 @@ async fn main(): void {
 main();
 ```
 
+The top level of a script is not an `async fn`, but it may await directly
+(PHASE 11.2.4a). The script already drains its queue before exiting, so this is
+a convenience for a script that wants the payload in a top-level binding:
+
+```oskel
+let name = await fetchName(7);
+print(name);   // user-7
+```
+
 - A call returns a **pending** future and enqueues its task. The task runs when
   the scheduler drains the ready queue: at `await`, at `yield()`, or before the
   script exits. `spawn f()` is the explicit enqueue; `await f()` also starts a
@@ -1376,9 +1385,11 @@ main();
 - A call to an async function returns `Future`, so `let n: int = await f();`
   checks the payload. `await` on a value whose static type is neither `Future`
   nor unknown is a compile error.
-- `await`, `spawn` and `yield` are rejected outside an `async fn`, including
-  inside a lambda: a lambda is not an async function. There is no top-level
-  `await`.
+- `await` is allowed inside an `async fn` and at the **top level** of a program
+  or module (PHASE 11.2.4a). It is rejected inside any other function body,
+  including a lambda and a non-async function nested in an async one: entering
+  a function body resets the async context. `spawn` and `yield` remain
+  async-function-only; at the top level use `await`, which drains the queue.
 - An async method is declared with `async fn` inside a class and awaited like
   any other call: `await obj.m()`. A method replacement must match its
   asyncness.
@@ -4114,7 +4125,7 @@ future work. `-c` is implemented; the `.oskc` format is specified in §19.1.
   through `std/internal/skia_ui.oskl` (`docs/cxxbind.md`); `std.ui.window`
   presents it in an SDL3 window and runs the event loop. Input widgets, real
   font metrics, text wrapping and dirty-region redraw are post-1.0 work.
-- No generics, full pattern matching, generators or transactions. These are out of scope (see `DEVELOPMENT.md`). `async fn`/`await` has the PHASE 11.2.2 scheduler (`spawn`/`yield`, pending futures, eager steps): there is no real suspension yet, no top-level `await`, no promise chaining and no async lambda.
+- No generics, full pattern matching, generators or transactions. These are out of scope (see `DEVELOPMENT.md`). `async fn`/`await` has the PHASE 11.2.2 scheduler (`spawn`/`yield`, pending futures, eager steps) and PHASE 11.2.4a top-level `await`: there is no real suspension yet, no promise chaining and no async lambda.
 - Map keys are always strings. Literals accept identifier, string, scalar (`int`, `float`, `double`, `true`, `false`, `nil`) and computed `[expr]` keys; non-string keys are canonicalized to their string form.
 - A body of `if`, `while`, `for` or `for-in` may be a block or a single statement without braces; a brace-less body is wrapped in a block, so its bytecode and scoping match the brace form. `switch` arms always require braces.
 - `for ... in` accepts the loop variable and the iterable with or without parentheses (`for x in xs` and `for (x in xs)`).
